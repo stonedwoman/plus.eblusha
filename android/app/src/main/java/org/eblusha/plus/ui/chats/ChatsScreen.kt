@@ -9,13 +9,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,6 +39,9 @@ import org.eblusha.plus.feature.chats.ChatsViewModel
 import org.eblusha.plus.feature.chats.ChatsViewModelFactory
 import org.eblusha.plus.feature.chats.ConversationPreview
 import org.eblusha.plus.feature.session.SessionUser
+import org.eblusha.plus.ui.components.Avatar
+import org.eblusha.plus.ui.components.UnreadBadge
+import org.eblusha.plus.ui.theme.LocalSpacing
 
 @Composable
 fun ChatsRoute(
@@ -63,39 +71,56 @@ fun ChatsScreen(
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
 ) {
+    val spacing = LocalSpacing.current
     Surface(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Column(modifier = Modifier.fillMaxSize().padding(spacing.lg)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text(text = user.displayName ?: user.username, style = MaterialTheme.typography.headlineSmall)
-                    user.eblid?.let { Text(text = "EBLID: $it", style = MaterialTheme.typography.bodySmall) }
+                Avatar(
+                    name = user.displayName ?: user.username,
+                    imageUrl = user.avatarUrl,
+                    size = 56.dp
+                )
+                Spacer(modifier = Modifier.width(spacing.md))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = user.displayName ?: user.username, style = MaterialTheme.typography.titleLarge)
+                    user.eblid?.let { Text(text = "EBLID: $it", style = MaterialTheme.typography.labelMedium) }
                 }
                 TextButton(onClick = onLogout) {
                     Text("Выйти")
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(spacing.md))
+            OutlinedTextField(
+                value = "",
+                onValueChange = {},
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Поиск или начало нового чата") },
+                leadingIcon = { androidx.compose.material3.Icon(Icons.Default.Search, contentDescription = null) },
+                singleLine = true,
+                enabled = false
+            )
+
+            Spacer(modifier = Modifier.height(spacing.md))
             Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
                 Text("Обновить беседы")
             }
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(spacing.md))
             Divider()
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(spacing.md))
 
             when (state) {
                 ChatsUiState.Loading -> Text(
                     text = "Загружаем чаты…",
                     style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.padding(top = 24.dp)
+                    modifier = Modifier.padding(top = spacing.xl)
                 )
                 is ChatsUiState.Error -> ErrorState(message = state.message, onRetry = onRefresh)
                 is ChatsUiState.Success -> ConversationsList(conversations = state.items)
@@ -117,18 +142,19 @@ private fun ErrorState(message: String, onRetry: () -> Unit) {
 
 @Composable
 private fun ConversationsList(conversations: List<ConversationPreview>) {
+    val spacing = LocalSpacing.current
     if (conversations.isEmpty()) {
         Text(
             text = "Чатов пока нет — начните новый диалог с десктопа.",
             style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.padding(top = 24.dp)
+            modifier = Modifier.padding(top = spacing.xl)
         )
         return
     }
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         items(conversations) { conversation ->
             ConversationItem(conversation)
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(spacing.md))
         }
     }
 }
@@ -139,33 +165,36 @@ private fun ConversationItem(item: ConversationPreview) {
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors()
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                if (item.unreadCount > 0) {
-                    Text(
-                        text = item.unreadCount.toString(),
-                        color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier
-                            .background(
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                                shape = MaterialTheme.shapes.small
-                            )
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = item.subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Avatar(
+                name = item.title,
+                imageUrl = null,
+                size = 48.dp
             )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    item.lastMessageTime?.let {
+                        Text(text = it, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = item.subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            UnreadBadge(count = item.unreadCount)
         }
     }
 }
