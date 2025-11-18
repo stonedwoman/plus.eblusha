@@ -83,7 +83,7 @@ class ChatsViewModel(
             unreadCount = unread,
             isGroup = conversation.isGroup,
             lastMessageTime = formatTime(conversation.lastMessageAt ?: lastMessage?.createdAt),
-            avatarUrl = resolveAvatar(conversation.participants, user.id)
+            avatarUrl = conversation.avatarUrl ?: resolveAvatar(conversation.participants, user.id)
         )
     }
 

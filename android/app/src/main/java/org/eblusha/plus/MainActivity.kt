@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.eblusha.plus.core.di.AppContainer
+import org.eblusha.plus.feature.chats.ConversationPreview
 import org.eblusha.plus.ui.chats.ChatsRoute
 import org.eblusha.plus.ui.theme.EblushaPlusTheme
 import org.eblusha.plus.feature.session.SessionUiState
@@ -78,6 +79,7 @@ private fun SessionScreen(
     onLogin: (String, String) -> Unit,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
+    onConversationClick: (ConversationPreview) -> Unit = {},
 ) {
     Box(
         modifier = Modifier
@@ -93,6 +95,7 @@ private fun SessionScreen(
                 container = container,
                 currentUser = state.user,
                 onLogout = onLogout,
+                onConversationClick = onConversationClick
             )
         }
     }
