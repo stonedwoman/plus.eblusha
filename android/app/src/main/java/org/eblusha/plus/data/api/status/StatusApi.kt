@@ -15,6 +15,7 @@ data class StatusResponse(
 )
 
 @Serializable
+@Serializable
 data class StatusUser(
     val id: String,
     val username: String,
