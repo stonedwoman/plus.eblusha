@@ -16,6 +16,6 @@ class EblushaApp : Application() {
     override fun onCreate() {
         super.onCreate()
         // Здесь будет bootstrap (логирование, подключение к LiveKit и т.д.)
-        container = AppContainer()
+        container = AppContainer(this)
     }
 }
