@@ -45,8 +45,8 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "+debug"
-            val debugApiBase = localProps.getOrDefault("eblusha.debugApiUrl", "https://ru.eblusha.com/api/")
-            val debugWsBase = localProps.getOrDefault("eblusha.debugWsUrl", "https://ru.eblusha.com")
+            val debugApiBase = localProps.getOrDefault("eblusha.debugApiUrl", "https://ru.eblusha.org/api/")
+            val debugWsBase = localProps.getOrDefault("eblusha.debugWsUrl", "https://ru.eblusha.org")
             buildConfigField("String", "API_BASE_URL", "\"$debugApiBase\"")
             buildConfigField("String", "WS_BASE_URL", "\"$debugWsBase\"")
         }
