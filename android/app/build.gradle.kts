@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -25,10 +26,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "API_BASE_URL", "\"https://plus.eblusha.org/api/\"")
+            buildConfigField("String", "WS_BASE_URL", "\"https://plus.eblusha.org\"")
         }
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "+debug"
+            buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:4000/api/\"")
+            buildConfigField("String", "WS_BASE_URL", "\"http://10.0.2.2:4000\"")
         }
     }
 
@@ -64,6 +69,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.coil.compose)
+    implementation(libs.retrofit.core)
+    implementation(libs.retrofit.serialization)
+    implementation(libs.okhttp.core)
+    implementation(libs.okhttp.logging)
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.android.material)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
