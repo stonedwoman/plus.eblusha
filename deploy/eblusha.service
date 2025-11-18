@@ -1,0 +1,18 @@
+[Unit]
+Description=Eblusha Plus API
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+EnvironmentFile=/opt/eblusha-plus/.env
+Environment="TZ=Europe/Kiev"
+WorkingDirectory=/opt/eblusha-plus
+ExecStart=/usr/bin/node dist/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target
+
+

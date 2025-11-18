@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Debug: Mobile Chat Keyboard/VH</title>
+    <style>
+      :root { --vh: 1vh; --safe-bottom: env(safe-area-inset-bottom, 0px); --kb: 0px; }
+      html, body { margin:0; height:100%; overflow:hidden; background:#0b0b0f; color:#f4f5f7; font-family: -apple-system, system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; touch-action: manipulation; position: fixed; width: 100%; }
+      .app { height: calc(var(--vh, 1vh) * 100); display:flex; flex-direction:column; position: relative; }
+      header { padding: 12px 16px; border-bottom: 1px solid #313643; background:#111316; position: relative; }
+      .content { flex:1; min-height:0; overflow:auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; padding:16px; background:#1b1f27; display:flex; flex-direction:column; gap:12px; justify-content:flex-end; }
+      .bubble { align-self:flex-start; background:#232731; border:1px solid #313643; border-radius:12px; padding:10px 12px; max-width: 70%; }
+      .input-bar { position: sticky; bottom: 0; background:#232731; border-top:1px solid #313643; padding:8px; padding-bottom: calc(8px + var(--safe-bottom)); }
+      .input-row { display:flex; gap:8px; align-items:center; }
+      .input-row input[type=text] { flex:1; padding:12px; border-radius:8px; border:1px solid #313643; background:#1b1f27; color:#f4f5f7; font-size:16px; }
+      .btn { padding:8px 12px; border-radius:8px; background:#d97706; color:#fff; border:none; font-weight:600; }
+      .panel { position:fixed; left:8px; right:8px; top:calc(env(safe-area-inset-top, 0px) + 8px); transform: translateY(var(--vvShift, 0px)); will-change: transform; z-index:2000; background:rgba(20,22,28,0.85); backdrop-filter: blur(4px); border:1px solid #313643; border-radius:8px; padding:8px; font-size:12px; line-height:1.4; max-height:45vh; overflow:auto; pointer-events:none; }
+      .panel .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; pointer-events:auto; }
+      .panel button { pointer-events:auto; }
+      .panel code { background:#111316; padding:2px 6px; border-radius:6px; border:1px solid #313643; }
+      /* Fixed mode */
+      .fixed .input-bar { position: fixed; left:0; right:0; bottom: calc(var(--safe-bottom) + var(--kb)); }
+      .fixed .content { padding-bottom: calc(var(--barH, 72px) + var(--safe-bottom) + var(--kb)); }
+    </style>
+    <script src="/js/lock-viewport.js"></script>
+  </head>
+  <body>
+    <div class="panel">
+      <div class="row">
+        <button class="btn" id="toggleMode">Toggle sticky/fixed</button>
+        <span>mode: <code id="modeLabel">sticky</code></span>
+        <span>--vh: <code id="vhVar">n/a</code></span>
+        <span>--kb: <code id="kbVar">0</code></span>
+      </div>
+      <div class="row">
+        <span>innerHeight: <code id="ih">n/a</code></span>
+        <span>vv.height: <code id="vvh">n/a</code></span>
+        <span>vv.offsetTop: <code id="vvo">n/a</code></span>
+        <span>vv.pageTop: <code id="vvp">n/a</code></span>
+        <span>pageYOffset: <code id="py">n/a</code></span>
+        <span>clientH: <code id="ch">n/a</code></span>
+      </div>
+    </div>
+    <div class="app" id="app">
+      <header>
+        <strong>Тестовый диалог</strong>
+      </header>
+      <div class="content" id="content">
+        <div class="bubble">Сообщение 1</div>
+        <div class="bubble">Сообщение 2</div>
+        <div class="bubble">Сообщение 3</div>
+        <div class="bubble">Сообщение 4</div>
+      </div>
+      <div class="input-bar">
+        <div class="input-row">
+          <input type="text" placeholder="Напишите сообщение..." id="msg" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="text" enterkeyhint="send" />
+          <button class="btn" id="send">Отпр.</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      (function(){
+        var root = document.documentElement;
+        var app = document.getElementById('app');
+        var modeLabel = document.getElementById('modeLabel');
+        var ih = document.getElementById('ih');
+        var vvh = document.getElementById('vvh');
+        var vvo = document.getElementById('vvo');
+        var ch = document.getElementById('ch');
+        var vvp = document.getElementById('vvp');
+        var py = document.getElementById('py');
+        var vhVar = document.getElementById('vhVar');
+        var kbVar = document.getElementById('kbVar');
+
+        function readCSSVar(name){
+          return getComputedStyle(root).getPropertyValue(name).trim();
+        }
+        var isFixed = false;
+        var lastOffsetTop = 0;
+        function updateStats(){
+          try {
+            ih.textContent = String(window.innerHeight);
+            vvh.textContent = window.visualViewport ? String(window.visualViewport.height) : 'n/a';
+            vvo.textContent = window.visualViewport ? String(window.visualViewport.offsetTop) : 'n/a';
+            vvp.textContent = window.visualViewport && 'pageTop' in window.visualViewport ? String(window.visualViewport.pageTop) : 'n/a';
+            py.textContent = String(window.pageYOffset || document.documentElement.scrollTop || 0);
+            ch.textContent = String(document.documentElement.clientHeight);
+            vhVar.textContent = readCSSVar('--vh');
+            
+            var v = window.visualViewport;
+            var ot = v ? (v.offsetTop || 0) : 0;
+            var vvh_val = v ? v.height : window.innerHeight;
+            var ih_val = window.innerHeight;
+            
+            // Calculate keyboard height: on iOS, when keyboard is open, offsetTop increases
+            // Keyboard height ≈ offsetTop when keyboard is visible
+            var kb = 0;
+            if (ot > 0 && vvh_val < ih_val) {
+              // Standard case: visual viewport shrinks
+              kb = ih_val - vvh_val;
+            } else if (ot > 50) {
+              // iOS case: visual viewport doesn't shrink, but offsetTop increases
+              // Estimate keyboard height from offsetTop (rough approximation)
+              kb = Math.max(0, ot - 50); // Subtract some threshold
+            }
+            root.style.setProperty('--kb', kb + 'px');
+            kbVar.textContent = String(kb);
+            
+            // Fix overlay to visual viewport by translating with layout scroll
+            var pageY = (window.pageYOffset || document.documentElement.scrollTop || 0);
+            root.style.setProperty('--vvShift', pageY + 'px');
+            
+            // Prevent auto-scroll: reset page scroll when iOS tries to scroll
+            if (!isFixed && ot !== lastOffsetTop && ot > 0) {
+              // iOS scrolled the page, prevent it
+              if (window.pageYOffset > 0 || document.documentElement.scrollTop > 0) {
+                window.scrollTo(0, 0);
+                document.documentElement.scrollTop = 0;
+              }
+            }
+            lastOffsetTop = ot;
+          } catch {}
+        }
+        function updateBarH(){
+          try {
+            var bar = document.querySelector('.input-bar');
+            if (!bar) return;
+            var h = Math.round(bar.getBoundingClientRect().height);
+            root.style.setProperty('--barH', h + 'px');
+          } catch {}
+        }
+        updateStats();
+        updateBarH();
+        window.addEventListener('resize', updateStats, { passive: true });
+        window.addEventListener('resize', updateBarH, { passive: true });
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', function(){ updateStats(); updateBarH(); scrollToBottomIfNeeded(); }, { passive: true });
+          window.visualViewport.addEventListener('scroll', function(){ updateStats(); updateBarH(); scrollToBottomIfNeeded(); }, { passive: true });
+        }
+
+        function scrollToBottom(){
+          var content = document.getElementById('content');
+          if (content) content.scrollTop = content.scrollHeight;
+        }
+        function scrollToBottomIfNeeded(){
+          var active = document.activeElement;
+          var tf = document.getElementById('msg');
+          if (active === tf) scrollToBottom();
+        }
+
+        document.getElementById('toggleMode').addEventListener('click', function(){
+          if (app.classList.contains('fixed')) {
+            app.classList.remove('fixed');
+            modeLabel.textContent = 'sticky';
+            isFixed = false;
+          } else {
+            app.classList.add('fixed');
+            modeLabel.textContent = 'fixed';
+            isFixed = true;
+          }
+          updateStats();
+        });
+
+        var tf = document.getElementById('msg');
+        tf.addEventListener('focus', function(){ 
+          // Prevent iOS auto-scroll
+          setTimeout(function(){
+            window.scrollTo(0, 0);
+            document.documentElement.scrollTop = 0;
+            scrollToBottom();
+          }, 50);
+        });
+        document.getElementById('send').addEventListener('click', function(){
+          var v = tf.value.trim();
+          if (!v) return tf.focus();
+          var d = document.createElement('div'); d.className='bubble'; d.textContent = v; document.getElementById('content').appendChild(d);
+          tf.value = ''; tf.focus();
+          var content = document.getElementById('content'); content.scrollTop = content.scrollHeight;
+        });
+      })();
+    </script>
+  </body>
+  </html>
+
+

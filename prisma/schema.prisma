@@ -1,0 +1,277 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String                      @id @default(cuid())
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+  username          String                      @unique
+  eblid             String?                     @unique
+  email             String?                     @unique
+  phone             String?                     @unique
+  displayName       String?
+  bio               String?
+  avatarUrl         String?
+  passwordHash      String
+  status            UserStatus                  @default(OFFLINE)
+  lastSeenAt        DateTime?
+  contactsRequested Contact[]                   @relation("ContactRequester")
+  contactsReceived  Contact[]                   @relation("ContactAddressee")
+  conversations     ConversationParticipant[]
+  conversationsCreated Conversation[]          @relation("ConversationCreator")
+  messages          Message[]
+  messageReactions  MessageReaction[]
+  messageReceipts   MessageReceipt[]
+  tokens            RefreshToken[]
+  callSessions      CallSession[]               @relation("CallSessionInitiator")
+  callParticipations CallParticipant[]
+  devices           UserDevice[]
+}
+
+model Contact {
+  id            String           @id @default(cuid())
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  requesterId   String
+  addresseeId   String
+  status        ContactStatus    @default(PENDING)
+  requester     User             @relation("ContactRequester", fields: [requesterId], references: [id])
+  addressee     User             @relation("ContactAddressee", fields: [addresseeId], references: [id])
+
+  @@unique([requesterId, addresseeId])
+  @@index([addresseeId, status])
+  @@index([requesterId, status])
+}
+
+model Conversation {
+  id             String                    @id @default(cuid())
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+  title          String?
+  avatarUrl      String?
+  isGroup        Boolean                   @default(false)
+  /// Marks a conversation as secret (ephemeral 1:1 chats, end-to-end friendly)
+  isSecret       Boolean                   @default(false)
+  /// Optional message TTL in seconds for secret conversations; null means use default
+  secretTtlSeconds Int?
+  secretStatus   SecretConversationStatus  @default(ACTIVE)
+  secretInitiatorDeviceId String?
+  secretPeerDeviceId String?
+  lastMessageAt  DateTime?
+  createdById    String?
+  createdBy      User?                     @relation("ConversationCreator", fields: [createdById], references: [id])
+  participants   ConversationParticipant[]
+  messages       Message[]
+  callSessions   CallSession[]
+}
+
+model ConversationParticipant {
+  id             String                 @id @default(cuid())
+  conversationId String
+  userId         String
+  role           ConversationRole       @default(MEMBER)
+  joinedAt       DateTime               @default(now())
+  mutedUntil     DateTime?
+  conversation   Conversation           @relation(fields: [conversationId], references: [id])
+  user           User                   @relation(fields: [userId], references: [id])
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id             String          @id @default(cuid())
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  conversationId String
+  senderId       String
+  type           MessageType     @default(TEXT)
+  content        String?
+  metadata       Json?
+  replyToId      String?
+  replyTo        Message?        @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies        Message[]        @relation("MessageReplies")
+  deletedAt      DateTime?
+  /// Optional expiration time (for secret/ephemeral messages)
+  expiresAt      DateTime?
+  conversation   Conversation    @relation(fields: [conversationId], references: [id])
+  sender         User            @relation(fields: [senderId], references: [id])
+  attachments    MessageAttachment[]
+  reactions      MessageReaction[]
+  receipts       MessageReceipt[]
+
+  @@index([conversationId, createdAt])
+  @@index([replyToId])
+}
+
+model MessageAttachment {
+  id        String          @id @default(cuid())
+  createdAt DateTime        @default(now())
+  messageId String
+  url       String
+  type      AttachmentType
+  size      Int?
+  metadata  Json?
+  message   Message         @relation(fields: [messageId], references: [id])
+
+  @@index([messageId])
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  messageId String
+  userId    String
+  emoji     String
+  message   Message  @relation(fields: [messageId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId, emoji])
+}
+
+model MessageReceipt {
+  id        String        @id @default(cuid())
+  createdAt DateTime      @default(now())
+  messageId String
+  userId    String
+  status    ReceiptStatus @default(DELIVERED)
+  message   Message       @relation(fields: [messageId], references: [id])
+  user      User          @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId])
+  @@index([userId, status])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  token     String    @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model CallSession {
+  id              String        @id @default(cuid())
+  startedAt       DateTime      @default(now())
+  endedAt         DateTime?
+  conversationId  String
+  initiatorId     String
+  roomName        String
+  type            CallType      @default(VOICE)
+  conversation    Conversation  @relation(fields: [conversationId], references: [id])
+  initiator       User          @relation("CallSessionInitiator", fields: [initiatorId], references: [id])
+  participants    CallParticipant[]
+
+  @@index([conversationId])
+}
+
+model CallParticipant {
+  id        String      @id @default(cuid())
+  sessionId String
+  userId    String
+  joinedAt  DateTime    @default(now())
+  leftAt    DateTime?
+  session   CallSession @relation(fields: [sessionId], references: [id])
+  user      User        @relation(fields: [userId], references: [id])
+
+  @@unique([sessionId, userId])
+  @@index([userId])
+}
+
+enum UserStatus {
+  ONLINE
+  OFFLINE
+  AWAY
+  DND
+}
+
+enum ContactStatus {
+  PENDING
+  ACCEPTED
+  BLOCKED
+}
+
+enum ConversationRole {
+  MEMBER
+  ADMIN
+  OWNER
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  FILE
+  SYSTEM
+  CALL
+}
+
+enum AttachmentType {
+  IMAGE
+  VIDEO
+  AUDIO
+  FILE
+}
+
+enum ReceiptStatus {
+  DELIVERED
+  READ
+  SEEN
+}
+
+enum CallType {
+  VOICE
+  VIDEO
+}
+
+model UserDevice {
+  id          String        @id
+  userId      String
+  name        String
+  platform    String?
+  publicKey   String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  lastSeenAt  DateTime?
+  revokedAt   DateTime?
+  user        User          @relation(fields: [userId], references: [id])
+  prekeys     DevicePrekey[]
+
+  @@index([userId])
+}
+
+model DevicePrekey {
+  id         String      @id @default(cuid())
+  deviceId   String
+  keyId      String
+  publicKey  String
+  createdAt  DateTime    @default(now())
+  consumedAt DateTime?
+  device     UserDevice  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, keyId])
+  @@index([deviceId, consumedAt])
+}
+
+enum SecretConversationStatus {
+  ACTIVE
+  PENDING
+  CANCELLED
+}
