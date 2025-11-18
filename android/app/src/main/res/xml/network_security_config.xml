@@ -6,7 +6,7 @@
     </domain-config>
 
     <domain-config>
-        <domain includeSubdomains="true">ru.eblusha.com</domain>
+        <domain includeSubdomains="true">ru.eblusha.org</domain>
         <trust-anchors>
             <certificates src="system" />
             <certificates src="user" />
