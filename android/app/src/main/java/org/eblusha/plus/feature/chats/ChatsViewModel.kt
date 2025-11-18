@@ -13,6 +13,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.data.api.conversations.ConversationEdge
+import org.eblusha.plus.data.api.conversations.ConversationParticipant
 import org.eblusha.plus.data.api.conversations.ConversationsApi
 import org.eblusha.plus.data.api.conversations.MessageSnippet
 import org.eblusha.plus.data.api.conversations.ParticipantUser
