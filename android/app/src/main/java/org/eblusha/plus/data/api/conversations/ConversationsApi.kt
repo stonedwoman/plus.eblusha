@@ -26,6 +26,7 @@ data class Conversation(
     val title: String? = null,
     val isGroup: Boolean = false,
     val lastMessageAt: String? = null,
+    val avatarUrl: String? = null,
     val messages: List<MessageSnippet> = emptyList(),
     val participants: List<ConversationParticipant> = emptyList(),
 )

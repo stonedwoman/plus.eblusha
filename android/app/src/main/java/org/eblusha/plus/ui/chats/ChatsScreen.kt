@@ -1,6 +1,7 @@
 package org.eblusha.plus.ui.chats
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,15 +13,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -48,6 +50,7 @@ fun ChatsRoute(
     container: AppContainer,
     currentUser: SessionUser,
     onLogout: () -> Unit,
+    onConversationClick: (ConversationPreview) -> Unit = {},
 ) {
     val viewModel: ChatsViewModel = viewModel(factory = ChatsViewModelFactory(container))
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -61,6 +64,7 @@ fun ChatsRoute(
         user = currentUser,
         onRefresh = viewModel::refresh,
         onLogout = onLogout,
+        onConversationClick = onConversationClick
     )
 }
 
@@ -70,6 +74,7 @@ fun ChatsScreen(
     user: SessionUser,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
+    onConversationClick: (ConversationPreview) -> Unit,
 ) {
     val spacing = LocalSpacing.current
     Surface(
@@ -98,18 +103,34 @@ fun ChatsScreen(
             }
 
             Spacer(modifier = Modifier.height(spacing.md))
-            OutlinedTextField(
-                value = "",
-                onValueChange = {},
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Поиск или начало нового чата") },
-                leadingIcon = { androidx.compose.material3.Icon(Icons.Default.Search, contentDescription = null) },
-                singleLine = true,
-                enabled = false
-            )
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = spacing.lg, vertical = spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
+                    Spacer(modifier = Modifier.width(spacing.sm))
+                    Text(
+                        text = "Поиск или начало нового чата",
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(spacing.md))
-            Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = onRefresh,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
                 Text("Обновить беседы")
             }
             Spacer(modifier = Modifier.height(spacing.md))
@@ -123,7 +144,7 @@ fun ChatsScreen(
                     modifier = Modifier.padding(top = spacing.xl)
                 )
                 is ChatsUiState.Error -> ErrorState(message = state.message, onRetry = onRefresh)
-                is ChatsUiState.Success -> ConversationsList(conversations = state.items)
+                is ChatsUiState.Success -> ConversationsList(conversations = state.items, onConversationClick = onConversationClick)
             }
         }
     }
@@ -141,7 +162,10 @@ private fun ErrorState(message: String, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun ConversationsList(conversations: List<ConversationPreview>) {
+private fun ConversationsList(
+    conversations: List<ConversationPreview>,
+    onConversationClick: (ConversationPreview) -> Unit
+) {
     val spacing = LocalSpacing.current
     if (conversations.isEmpty()) {
         Text(
@@ -153,17 +177,23 @@ private fun ConversationsList(conversations: List<ConversationPreview>) {
     }
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         items(conversations) { conversation ->
-            ConversationItem(conversation)
+            ConversationItem(conversation, onConversationClick)
             Spacer(modifier = Modifier.height(spacing.md))
         }
     }
 }
 
 @Composable
-private fun ConversationItem(item: ConversationPreview) {
+private fun ConversationItem(
+    item: ConversationPreview,
+    onClick: (ConversationPreview) -> Unit
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors()
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick(item) },
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(20.dp)
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
@@ -183,7 +213,11 @@ private fun ConversationItem(item: ConversationPreview) {
                         modifier = Modifier.weight(1f)
                     )
                     item.lastMessageTime?.let {
-                        Text(text = it, style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
                     }
                 }
                 Spacer(modifier = Modifier.height(4.dp))
