@@ -7,6 +7,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.data.api.conversations.ConversationEdge
 import org.eblusha.plus.data.api.conversations.ConversationsApi
@@ -26,6 +30,7 @@ data class ConversationPreview(
     val subtitle: String,
     val unreadCount: Int,
     val isGroup: Boolean,
+    val lastMessageTime: String?,
 )
 
 class ChatsViewModel(
@@ -74,7 +79,8 @@ class ChatsViewModel(
             title = title,
             subtitle = subtitle,
             unreadCount = unread,
-            isGroup = conversation.isGroup
+            isGroup = conversation.isGroup,
+            lastMessageTime = formatTime(conversation.lastMessageAt ?: lastMessage?.createdAt)
         )
     }
 
@@ -97,6 +103,22 @@ class ChatsViewModel(
         val peer = conversation.participants.firstOrNull { it.user?.id != currentUserId }
         val user = peer?.user
         return user?.displayName ?: user?.username
+    }
+
+    private fun formatTime(timestamp: String?): String? {
+        if (timestamp.isNullOrBlank()) return null
+        return try {
+            val instant = OffsetDateTime.parse(timestamp).atZoneSameInstant(ZoneId.systemDefault())
+            val now = ZonedDateTime.now()
+            val formatter = when {
+                instant.toLocalDate().isEqual(now.toLocalDate()) -> DateTimeFormatter.ofPattern("HH:mm")
+                instant.year == now.year -> DateTimeFormatter.ofPattern("d MMM")
+                else -> DateTimeFormatter.ofPattern("d MMM yyyy")
+            }
+            instant.format(formatter)
+        } catch (error: Throwable) {
+            null
+        }
     }
 }
 
