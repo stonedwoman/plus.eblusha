@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.eblusha.plus.core.di.AppContainer
+import org.eblusha.plus.data.api.auth.AuthApi
+import org.eblusha.plus.data.api.auth.LoginRequest
 import org.eblusha.plus.data.api.status.StatusApi
 import org.eblusha.plus.data.api.status.StatusUser
 import org.eblusha.plus.data.session.SessionStore
@@ -32,6 +34,7 @@ data class SessionUser(
 class SessionViewModel(
     private val sessionStore: SessionStore,
     private val statusApi: StatusApi,
+    private val authApi: AuthApi,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<SessionUiState>(SessionUiState.Loading)
@@ -56,6 +59,18 @@ class SessionViewModel(
     fun submitToken(token: String) {
         viewModelScope.launch {
             sessionStore.setAccessToken(token.trim())
+        }
+    }
+
+    fun login(username: String, password: String) {
+        viewModelScope.launch {
+            _uiState.value = SessionUiState.Loading
+            try {
+                val response = authApi.login(LoginRequest(username.trim(), password))
+                sessionStore.setAccessToken(response.accessToken)
+            } catch (error: Throwable) {
+                _uiState.value = SessionUiState.Error(error.message ?: "Не удалось войти")
+            }
         }
     }
 
@@ -104,7 +119,8 @@ class SessionViewModelFactory(
         if (modelClass.isAssignableFrom(SessionViewModel::class.java)) {
             return SessionViewModel(
                 sessionStore = container.sessionStore,
-                statusApi = container.statusApi
+                statusApi = container.statusApi,
+                authApi = container.authApi,
             ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")

@@ -1,6 +1,7 @@
 package org.eblusha.plus.core.di
 
 import android.content.Context
+import org.eblusha.plus.data.api.auth.AuthApi
 import org.eblusha.plus.data.api.conversations.ConversationsApi
 import org.eblusha.plus.data.api.status.StatusApi
 import org.eblusha.plus.data.network.NetworkModule
@@ -17,5 +18,6 @@ class AppContainer(context: Context) {
     val sessionStore = SessionStore(context, accessTokenProvider)
     val statusApi: StatusApi = networkModule.create()
     val conversationsApi: ConversationsApi = networkModule.create()
+    val authApi: AuthApi = networkModule.create()
 }
 

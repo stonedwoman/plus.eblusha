@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -30,6 +31,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -57,6 +60,7 @@ class MainActivity : ComponentActivity() {
                         container = container,
                         state = state,
                         onSubmitToken = sessionViewModel::submitToken,
+                        onLogin = sessionViewModel::login,
                         onRefresh = sessionViewModel::refresh,
                         onLogout = sessionViewModel::logout
                     )
@@ -71,6 +75,7 @@ private fun SessionScreen(
     container: AppContainer,
     state: SessionUiState,
     onSubmitToken: (String) -> Unit,
+    onLogin: (String, String) -> Unit,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
 ) {
@@ -82,7 +87,7 @@ private fun SessionScreen(
     ) {
         when (state) {
             SessionUiState.Loading -> CircularProgressIndicator()
-            SessionUiState.LoggedOut -> LoggedOutContent(onSubmitToken)
+            SessionUiState.LoggedOut -> LoggedOutContent(onLogin, onSubmitToken)
             is SessionUiState.Error -> ErrorContent(state.message, onRefresh, onLogout)
             is SessionUiState.LoggedIn -> ChatsRoute(
                 container = container,
@@ -94,7 +99,12 @@ private fun SessionScreen(
 }
 
 @Composable
-private fun LoggedOutContent(onSubmitToken: (String) -> Unit) {
+private fun LoggedOutContent(
+    onLogin: (String, String) -> Unit,
+    onSubmitToken: (String) -> Unit,
+) {
+    var username by rememberSaveable { mutableStateOf("") }
+    var password by rememberSaveable { mutableStateOf("") }
     var token by rememberSaveable { mutableStateOf("") }
     Column(
         modifier = Modifier
@@ -109,11 +119,48 @@ private fun LoggedOutContent(onSubmitToken: (String) -> Unit) {
             textAlign = TextAlign.Center
         )
         Text(
-            text = "Чтобы протестировать API, вставьте access token и мы загрузим профиль через /status/me.",
+            text = "Войдите по логину и паролю, чтобы загрузить ваши чаты.",
             modifier = Modifier.padding(top = 12.dp),
             textAlign = TextAlign.Center
         )
         Spacer(modifier = Modifier.height(16.dp))
+        OutlinedTextField(
+            value = username,
+            onValueChange = { username = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Логин") },
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+            singleLine = true
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Пароль") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Button(
+            onClick = {
+                onLogin(username, password)
+                password = ""
+            },
+            enabled = username.isNotBlank() && password.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Войти")
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+        Divider()
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "Нужно быстро проверить API? Вставьте access token вручную.",
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(12.dp))
         OutlinedTextField(
             value = token,
             onValueChange = { token = it },
