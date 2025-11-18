@@ -1,8 +1,21 @@
+import java.io.File
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
 }
+
+val localProps = Properties().apply {
+    val file = File(rootProject.rootDir, "local.properties")
+    if (file.exists()) {
+        load(file.inputStream())
+    }
+}
+
+fun Properties.getOrDefault(key: String, default: String): String =
+    this.getProperty(key) ?: default
 
 android {
     namespace = "org.eblusha.plus"
@@ -32,8 +45,10 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "+debug"
-            buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:4000/api/\"")
-            buildConfigField("String", "WS_BASE_URL", "\"http://10.0.2.2:4000\"")
+            val debugApiBase = localProps.getOrDefault("eblusha.debugApiUrl", "https://plus.eblusha.org/api/")
+            val debugWsBase = localProps.getOrDefault("eblusha.debugWsUrl", "https://plus.eblusha.org")
+            buildConfigField("String", "API_BASE_URL", "\"$debugApiBase\"")
+            buildConfigField("String", "WS_BASE_URL", "\"$debugWsBase\"")
         }
     }
 
