@@ -31,6 +31,7 @@ data class ConversationPreview(
     val unreadCount: Int,
     val isGroup: Boolean,
     val lastMessageTime: String?,
+    val avatarUrl: String?,
 )
 
 class ChatsViewModel(
@@ -80,7 +81,8 @@ class ChatsViewModel(
             subtitle = subtitle,
             unreadCount = unread,
             isGroup = conversation.isGroup,
-            lastMessageTime = formatTime(conversation.lastMessageAt ?: lastMessage?.createdAt)
+            lastMessageTime = formatTime(conversation.lastMessageAt ?: lastMessage?.createdAt),
+            avatarUrl = resolveAvatar(conversation.participants, user.id)
         )
     }
 
@@ -103,6 +105,11 @@ class ChatsViewModel(
         val peer = conversation.participants.firstOrNull { it.user?.id != currentUserId }
         val user = peer?.user
         return user?.displayName ?: user?.username
+    }
+
+    private fun resolveAvatar(participants: List<ConversationParticipant>, currentUserId: String): String? {
+        val peer = participants.firstOrNull { it.user?.id != currentUserId }
+        return peer?.user?.avatarUrl
     }
 
     private fun formatTime(timestamp: String?): String? {

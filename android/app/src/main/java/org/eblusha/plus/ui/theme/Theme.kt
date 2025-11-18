@@ -19,6 +19,7 @@ private val LightColors = lightColorScheme(
     tertiary = Sky,
     background = Color.White,
     surface = Color.White,
+    surfaceVariant = Color(0xFFF1EFF8),
     onSurface = Plum0
 )
 
@@ -29,6 +30,7 @@ private val DarkColors = darkColorScheme(
     tertiary = Sky,
     background = Plum0,
     surface = Plum1,
+    surfaceVariant = Color(0xFF2E2A40),
     onSurface = Color.White
 )
 
