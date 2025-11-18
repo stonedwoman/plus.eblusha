@@ -171,7 +171,7 @@ private fun ConversationItem(item: ConversationPreview) {
         ) {
             Avatar(
                 name = item.title,
-                imageUrl = null,
+                imageUrl = item.avatarUrl,
                 size = 48.dp
             )
             Spacer(modifier = Modifier.width(12.dp))
