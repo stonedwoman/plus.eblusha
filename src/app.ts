@@ -1,0 +1,44 @@
+import express from "express";
+import cors from "cors";
+import cookieParser from "cookie-parser";
+import helmet from "helmet";
+import compression from "compression";
+import morgan from "morgan";
+import env from "./config/env";
+import routes from "./routes";
+
+const app = express();
+
+// Respect reverse proxy headers (X-Forwarded-*) so we can generate correct absolute URLs
+app.set("trust proxy", true);
+
+app.use(
+  helmet({
+    // Allow cross-origin loading of static uploads in <img> tags
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
+app.use(
+  cors({
+    origin: env.CLIENT_URL ?? true,
+    credentials: true,
+  })
+);
+app.use(
+  compression({
+    threshold: 0,
+  })
+);
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+app.use(morgan(env.NODE_ENV === "development" ? "dev" : "combined"));
+
+app.use("/api", routes);
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
+
+export default app;
+

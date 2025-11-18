@@ -1,0 +1,5501 @@
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
+import { createPortal } from 'react-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '../../utils/api'
+import type { AxiosError } from 'axios'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted } from '../../utils/socket'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, LogOut, Lock } from 'lucide-react'
+const CallOverlay = lazy(() => import('../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
+import { useAppStore } from '../../domain/store/appStore'
+import { Avatar } from '../components/Avatar'
+import { useCallStore } from '../../domain/store/callStore'
+import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
+import { e2eeManager } from '../../domain/e2ee/e2eeManager'
+
+export default function ChatsPage() {
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [callConvId, setCallConvId] = useState<string | null>(null)
+  const [minimizedCallConvId, setMinimizedCallConvId] = useState<string | null>(null)
+  const [messageText, setMessageText] = useState('')
+  const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const attachInputRef = useRef<HTMLInputElement | null>(null)
+  const ringCtxRef = useRef<AudioContext | null>(null)
+  const ringOscRef = useRef<OscillatorNode | null>(null)
+  const ringGainRef = useRef<GainNode | null>(null)
+  const ringTimerRef = useRef<number | null>(null)
+  const ringingConvIdRef = useRef<string | null>(null)
+  const ringAudioRef = useRef<HTMLAudioElement | null>(null)
+  const messagesRef = useRef<HTMLDivElement | null>(null)
+  // notify sound
+  const notifyAudioRef = useRef<HTMLAudioElement | null>(null)
+  const notifyUnlockedRef = useRef<boolean>(false)
+  const [typing, setTyping] = useState(false)
+  const [typingDots, setTypingDots] = useState(1)
+  const [leftAlignAll, setLeftAlignAll] = useState(false)
+  const typingTimer = useRef<number | null>(null)
+  const tm = useRef<{ pinTimer: number | null }>({ pinTimer: null })
+  const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; messageId: string | null }>(() => ({ open: false, x: 0, y: 0, messageId: null }))
+  const [convMenu, setConvMenu] = useState<{ open: boolean; x: number; y: number; conversationId: string | null }>(() => ({ open: false, x: 0, y: 0, conversationId: null }))
+  const convMenuRef = useRef<HTMLDivElement | null>(null)
+  const convScrollRef = useRef<HTMLDivElement | null>(null)
+  const [groupAvatarEditor, setGroupAvatarEditor] = useState(false)
+  const [reactionBar, setReactionBar] = useState<{ open: boolean; x: number; y: number; messageId: string | null }>(() => ({ open: false, x: 0, y: 0, messageId: null }))
+  const [forwardModal, setForwardModal] = useState<{ open: boolean; messageId: string | null }>({ open: false, messageId: null })
+  const [addParticipantsModal, setAddParticipantsModal] = useState(false)
+  const [addParticipantsSelectedIds, setAddParticipantsSelectedIds] = useState<string[]>([])
+  const [addParticipantsLoading, setAddParticipantsLoading] = useState(false)
+  const [addParticipantsMode, setAddParticipantsMode] = useState<'friends' | 'eblid'>('friends')
+  const [addParticipantsEblDigits, setAddParticipantsEblDigits] = useState<string[]>(['', '', '', ''])
+  const addParticipantsEblRefs = [
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+  ]
+  const [addParticipantsFoundUser, setAddParticipantsFoundUser] = useState<any | null>(null)
+  const [addParticipantsSearchError, setAddParticipantsSearchError] = useState<string | null>(null)
+  const [addParticipantsSearching, setAddParticipantsSearching] = useState(false)
+  const addParticipantsSearchTokenRef = useRef(0)
+  const [convHasTopFade, setConvHasTopFade] = useState(false)
+  const [convHasBottomFade, setConvHasBottomFade] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
+  const isMobileRef = useRef(isMobile)
+  const [mobileView, setMobileView] = useState<'list' | 'conversation'>('list')
+useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
+  const [showJump, setShowJump] = useState(false)
+  const visibleObserver = useRef<IntersectionObserver | null>(null)
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
+  const nodesByMessageId = useRef<Map<string, HTMLElement>>(new Map())
+  const nearBottomRef = useRef<boolean>(true)
+  const userStickyScrollRef = useRef<boolean>(false)
+  const batchToRead = useRef<Set<string>>(new Set())
+  const batchTimer = useRef<number | null>(null)
+  const scrollPinTimerRef = useRef<number | null>(null)
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null)
+  const touchDeltaRef = useRef<number>(0)
+  const [newGroupOpen, setNewGroupOpen] = useState(false)
+  const [groupTitle, setGroupTitle] = useState('')
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [creatingGroup, setCreatingGroup] = useState(false)
+  const [newGroupAvatarFile, setNewGroupAvatarFile] = useState<File | null>(null)
+  const [newGroupAvatarPreviewUrl, setNewGroupAvatarPreviewUrl] = useState<string | null>(null)
+  const [newGroupAvatarSourceUrl, setNewGroupAvatarSourceUrl] = useState<string | null>(null)
+  const [newGroupAvatarBlob, setNewGroupAvatarBlob] = useState<Blob | null>(null)
+  const [newGroupAvatarEditorOpen, setNewGroupAvatarEditorOpen] = useState(false)
+  const newGroupFileInputRef = useRef<HTMLInputElement | null>(null)
+  const newGroupEditorRef = useRef<HTMLDivElement | null>(null)
+  const newGroupImageRef = useRef<HTMLImageElement | null>(null)
+  const newGroupCropCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const [newGroupCrop, setNewGroupCrop] = useState({ x: 0, y: 0, scale: 1 })
+  const [newGroupDragOver, setNewGroupDragOver] = useState(false)
+  const [contactsOpen, setContactsOpen] = useState(false)
+  const [eblDigits, setEblDigits] = useState<string[]>(['', '', '', ''])
+  const eblRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)]
+  const [foundUser, setFoundUser] = useState<any | null>(null)
+  const [sendingInvite, setSendingInvite] = useState(false)
+  const [myEblid, setMyEblid] = useState<string>('')
+  const [mePopupOpen, setMePopupOpen] = useState(false)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const [selectedAvatarFile, setSelectedAvatarFile] = useState<File | null>(null)
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null)
+  const cropCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const [crop, setCrop] = useState({ x: 0, y: 0, scale: 1 })
+  const [uploadProgress, setUploadProgress] = useState<number>(0)
+  const editorRef = useRef<HTMLDivElement | null>(null)
+  const imageRef = useRef<HTMLImageElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const touchStateRef = useRef<{ touches: React.Touch[], initialDistance: number, initialScale: number, initialX: number, initialY: number } | null>(null)
+  const rafRef = useRef<number | null>(null)
+  // Refs для редактора группы
+  const groupEditorRef = useRef<HTMLDivElement | null>(null)
+  const groupImageRef = useRef<HTMLImageElement | null>(null)
+  const groupTouchStateRef = useRef<{ touches: React.Touch[], initialDistance: number, initialScale: number, initialX: number, initialY: number } | null>(null)
+  const groupRafRef = useRef<number | null>(null)
+  const groupCropCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const groupFileInputRef = useRef<HTMLInputElement | null>(null)
+  const [groupCrop, setGroupCrop] = useState({ x: 0, y: 0, scale: 1 })
+  const [groupAvatarPreviewUrl, setGroupAvatarPreviewUrl] = useState<string | null>(null)
+  const [groupSelectedAvatarFile, setGroupSelectedAvatarFile] = useState<File | null>(null)
+  const [groupDragOver, setGroupDragOver] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null)
+  const [lightbox, setLightbox] = useState<{ open: boolean; index: number; items: string[] }>({ open: false, index: 0, items: [] })
+  const [lightboxScale, setLightboxScale] = useState<number>(1)
+  const [attachUploading, setAttachUploading] = useState(false)
+  const [attachProgress, setAttachProgress] = useState(0)
+  const [attachDragOver, setAttachDragOver] = useState(false)
+  const [pendingByConv, setPendingByConv] = useState<Record<string, Array<{ id: string; createdAt: number; senderId: string; attachments: Array<{ url: string; type: 'IMAGE' | 'FILE'; width?: number; height?: number; progress?: number; __pending?: boolean }> }>>>({})
+  const [clipboardImage, setClipboardImage] = useState<{ file: File; preview: string } | null>(null)
+  const [e2eeVersion, setE2eeVersion] = useState(0)
+const activeConversationIdRef = useRef<string | null>(null)
+useEffect(() => { activeConversationIdRef.current = activeId }, [activeId])
+const clipboardImageRef = useRef<{ file: File; preview: string } | null>(null)
+useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage])
+  const devicesQuery = useQuery({
+    queryKey: ['my-devices'],
+    queryFn: async () => {
+      const response = await api.get('/devices')
+      return response.data.devices as Array<{ id: string; name?: string; platform?: string | null; userId: string }>
+    },
+  })
+  const [pingMs, setPingMs] = useState<number | null>(null)
+  const [isSocketOnline, setIsSocketOnline] = useState<boolean>(() => socket.connected)
+  const [myPresence, setMyPresence] = useState<'ONLINE' | 'AWAY' | 'OFFLINE' | null>(null)
+  const [loadedImages, setLoadedImages] = useState<Record<string, boolean>>({})
+  const [imageDimensions, setImageDimensions] = useState<Record<string, { width: number; height: number }>>({})
+  const [endSecretModalOpen, setEndSecretModalOpen] = useState(false)
+  const [pendingSecretOffers, setPendingSecretOffers] = useState<Record<string, { from: { id: string; name: string; deviceId?: string | null } }>>({})
+  const [secretRequestLoading, setSecretRequestLoading] = useState(false)
+  const [secretActionLoading, setSecretActionLoading] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const me = useAppStore((s) => s.session?.user)
+  const callStore = useCallStore()
+  const client = useQueryClient()
+  const lightboxTimerRef = useRef<number | null>(null)
+  const attachInputOverlayRef = useRef<HTMLDivElement | null>(null)
+  const [activeCalls, setActiveCalls] = useState<Record<string, { startedAt: number | null; endedAt?: number | null; active: boolean; participants?: string[]; elapsedMs?: number }>>({})
+  const [timerTick, setTimerTick] = useState(0)
+  const callConvIdRef = useRef<string | null>(null)
+  useEffect(() => { callConvIdRef.current = callConvId }, [callConvId])
+  const inviterByConvRef = useRef<Record<string, string>>({})
+  useEffect(() => {
+    const id = window.setInterval(() => setTimerTick((t) => (t + 1) % 1000000), 1000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    const update = () => {
+      const mobile = window.innerWidth <= 768
+      setIsMobile(mobile)
+      isMobileRef.current = mobile
+      if (!mobile) {
+        setMobileView('conversation')
+      } else if (!activeId) {
+        setMobileView('list')
+      }
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId])
+
+  useEffect(() => {
+    if (!isMobile) return
+    if (activeId) setMobileView('conversation')
+    else setMobileView('list')
+  }, [isMobile, activeId])
+
+  // Initialize/subscribe to server call status for group calls
+  useEffect(() => {
+    const handleSingle = (p: { conversationId: string; active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }) => {
+      console.log('[CallStatus] Single:', p)
+      setActiveCalls((prev) => {
+        const list = client.getQueryData(['conversations']) as any[] | undefined
+        const conv = Array.isArray(list) ? list.find((r: any) => r.conversation.id === p.conversationId)?.conversation : null
+        const current = prev[p.conversationId]
+        const activeConvId = useCallStore.getState().activeConvId
+        const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2))) || (!!current && (current.participants ? current.participants.length > 1 : true)) || activeConvId === p.conversationId
+        if (!isGroup) {
+          return prev
+        }
+
+        const participants = p.participants || []
+        if (p.active) {
+          const serverStartedAt = typeof p.startedAt === 'number' && p.startedAt > 0 ? p.startedAt : (current?.startedAt ?? Date.now())
+          return {
+            ...prev,
+            [p.conversationId]: {
+              active: true,
+              startedAt: serverStartedAt,
+              participants,
+              endedAt: null,
+              elapsedMs: typeof p.elapsedMs === 'number' ? p.elapsedMs : undefined,
+            },
+          }
+        }
+
+        const endedAt = current?.active ? Date.now() : (current?.endedAt ?? null)
+        return {
+          ...prev,
+          [p.conversationId]: {
+            active: false,
+            startedAt: current?.startedAt ?? null,
+            endedAt,
+            participants: [],
+            elapsedMs: undefined,
+          },
+        }
+      })
+    }
+    const handleBulk = (payload: { statuses: Record<string, { active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }> }) => {
+      console.log('[CallStatus] Bulk:', payload)
+      setActiveCalls((prev) => {
+        const merged = { ...prev }
+        const list = client.getQueryData(['conversations']) as any[] | undefined
+        
+        for (const [cid, st] of Object.entries(payload.statuses || {})) {
+          const conv = Array.isArray(list) ? list.find((r: any) => r.conversation.id === cid)?.conversation : null
+          const current = prev[cid]
+          const activeConvId = useCallStore.getState().activeConvId
+          const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2))) || (!!current && (current.participants ? current.participants.length > 1 : true)) || activeConvId === cid
+          if (!isGroup) continue
+
+          const participants = st.participants || []
+          if (st.active) {
+            const serverStartedAt = typeof st.startedAt === 'number' && st.startedAt > 0 ? st.startedAt : (current?.startedAt ?? Date.now())
+            merged[cid] = {
+              active: true,
+              startedAt: serverStartedAt,
+              participants,
+              endedAt: null,
+              elapsedMs: typeof st.elapsedMs === 'number' ? st.elapsedMs : undefined,
+            }
+            continue
+          }
+
+          const endedAt = current?.active ? Date.now() : (current?.endedAt ?? null)
+          merged[cid] = {
+            active: false,
+            startedAt: current?.startedAt ?? null,
+            endedAt,
+            participants: [],
+            elapsedMs: undefined,
+          }
+        }
+        return merged
+      })
+    }
+    onCallStatus(handleSingle)
+    onCallStatusBulk(handleBulk)
+    return () => {
+      socket.off('call:status', handleSingle as any)
+      socket.off('call:status:bulk', handleBulk as any)
+    }
+  }, [])
+
+  // (moved below queries declaration)
+
+  // keep menu within viewport
+  useEffect(() => {
+    if (!contextMenu.open) return
+    const menu = menuRef.current
+    if (!menu) return
+    const vw = window.innerWidth
+    const vh = (window as any).visualViewport ? (window as any).visualViewport.height : window.innerHeight
+    const rect = menu.getBoundingClientRect()
+    let left = contextMenu.x
+    let top = contextMenu.y
+    if (left + rect.width > vw - 8) left = Math.max(8, vw - rect.width - 8)
+    if (top + rect.height > vh - 8) top = Math.max(8, vh - rect.height - 8)
+    if (left !== contextMenu.x || top !== contextMenu.y) {
+      setContextMenu((s) => ({ ...s, x: left, y: top }))
+    }
+  }, [contextMenu.open, contextMenu.x, contextMenu.y])
+
+  useEffect(() => {
+    if (!convMenu.open) return
+    const menu = convMenuRef.current
+    if (!menu) return
+    const vw = window.innerWidth
+    const vh = (window as any).visualViewport ? (window as any).visualViewport.height : window.innerHeight
+    const rect = menu.getBoundingClientRect()
+    let left = convMenu.x
+    let top = convMenu.y
+    if (left + rect.width > vw - 8) left = Math.max(8, vw - rect.width - 8)
+    if (top + rect.height > vh - 8) top = Math.max(8, vh - rect.height - 8)
+    if (left !== convMenu.x || top !== convMenu.y) {
+      setConvMenu((s) => ({ ...s, x: left, y: top }))
+    }
+  }, [convMenu.open, convMenu.x, convMenu.y])
+
+  function selectConversation(id: string) {
+    setActiveId((prev) => {
+      try {
+        if (prev && prev !== id) {
+          const prevRow = (conversationsQuery.data || []).find((r: any) => r.conversation.id === prev)
+          const prevConv = prevRow?.conversation
+          if (prevConv?.isSecret) {
+            // Drop cached messages for secret conversations when leaving them
+            client.removeQueries({ queryKey: ['messages', prev] })
+          }
+        }
+      } catch {
+        // ignore cache cleanup errors
+      }
+        return id
+      })
+    if (isMobile) {
+      setMobileView('conversation')
+    }
+    // Очищаем изображение из буфера обмена при смене чата
+    if (clipboardImage) {
+      URL.revokeObjectURL(clipboardImage.preview)
+      setClipboardImage(null)
+    }
+  }
+
+  async function ensureLocalDevice(): Promise<{ deviceId: string; publicKey: string } | null> {
+    let info = getStoredDeviceInfo()
+    if (!info) {
+      info = await ensureDeviceBootstrap()
+    }
+    if (!info) return null
+    return info
+  }
+
+  async function initiateSecretChat(targetUserId: string) {
+    if (secretRequestLoading) return
+    setSecretRequestLoading(true)
+    const MAX_REBOOT_ATTEMPTS = 2
+    let rebootAttempts = 0
+    const tryRebootstrap = async () => {
+      if (rebootAttempts >= MAX_REBOOT_ATTEMPTS) {
+        throw new Error('Не удалось подготовить устройство для секретного чата. Попробуйте позже.')
+      }
+      rebootAttempts += 1
+      await rebootstrapDevice()
+    }
+    try {
+      while (true) {
+        const device = await ensureLocalDevice()
+        if (!device) {
+          alert('Не удалось инициализировать устройство для секретного чата')
+          return
+        }
+        try {
+          const payload = {
+            participantIds: [targetUserId],
+            isGroup: false,
+            isSecret: true,
+            initiatorDeviceId: device.deviceId,
+          }
+          console.log('[SecretChat] Creating with payload:', payload)
+          await api.post('/conversations', payload)
+          client.invalidateQueries({ queryKey: ['conversations'] })
+          return
+        } catch (err: any) {
+          console.error('[SecretChat] Creation error:', err?.response?.data || err)
+          const message = err?.response?.data?.message
+          const errors = err?.response?.data?.errors
+          if (errors) {
+            console.error('[SecretChat] Validation errors:', errors)
+          }
+          const isInvalidDevice =
+            err?.response?.status === 400 &&
+            typeof message === 'string' &&
+            message.toLowerCase().includes('invalid initiator device')
+          if (isInvalidDevice) {
+            await tryRebootstrap()
+            continue
+          }
+          const errorMsg = errors
+            ? `Ошибка валидации: ${errors.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ')}`
+            : message || 'Не удалось отправить запрос на секретный чат'
+          throw new Error(errorMsg)
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to start secret conversation:', err)
+      const errorMessage = err?.message || err?.response?.data?.message || 'Не удалось отправить запрос на секретный чат'
+      alert(errorMessage)
+    } finally {
+      setSecretRequestLoading(false)
+    }
+  }
+
+  const handleDeclinePendingSecret = async (conversationId: string) => {
+    setSecretActionLoading(true)
+    try {
+      declineSecretChat(conversationId)
+      setPendingSecretOffers((prev) => {
+        const copy = { ...prev }
+        delete copy[conversationId]
+        return copy
+      })
+      client.invalidateQueries({ queryKey: ['conversations'] })
+    } finally {
+      setSecretActionLoading(false)
+    }
+  }
+
+  const handleAcceptPendingSecret = async (conversationId: string) => {
+    setSecretActionLoading(true)
+    try {
+      const device = await ensureLocalDevice()
+      if (!device) {
+        alert('Не удалось инициализировать устройство для секретного чата')
+        return
+      }
+      acceptSecretChat(conversationId, device.deviceId)
+      client.invalidateQueries({ queryKey: ['conversations'] })
+      selectConversation(conversationId)
+    } catch (err) {
+      console.error('Failed to accept secret chat:', err)
+      alert('Не удалось принять секретный чат')
+    } finally {
+      setSecretActionLoading(false)
+    }
+  }
+
+  async function sendMessageToConversation(
+    conversation: any | null | undefined,
+    payload: { type: string; content?: string; metadata?: Record<string, any>; replyToId?: string },
+  ) {
+    if (!conversation) return
+    if (conversation.isSecret) {
+      const encrypted = await e2eeManager.encryptPayload(conversation, payload)
+      await api.post('/conversations/send', encrypted)
+      return
+    }
+    await api.post('/conversations/send', { conversationId: conversation.id, ...payload })
+  }
+
+  const closeAddParticipantsModal = () => {
+    setAddParticipantsModal(false)
+    setAddParticipantsSelectedIds([])
+    setAddParticipantsLoading(false)
+    setAddParticipantsMode('friends')
+    setAddParticipantsEblDigits(['', '', '', ''])
+    setAddParticipantsFoundUser(null)
+    setAddParticipantsSearchError(null)
+    setAddParticipantsSearching(false)
+  }
+
+  const handleAddParticipants = async () => {
+    if (!activeId || addParticipantsSelectedIds.length === 0) {
+      closeAddParticipantsModal()
+      return
+    }
+    setAddParticipantsLoading(true)
+    try {
+      await api.post(`/conversations/${activeId}/participants`, { participantIds: addParticipantsSelectedIds })
+      client.invalidateQueries({ queryKey: ['conversations'] })
+      conversationsQuery.refetch()
+      closeAddParticipantsModal()
+    } catch (err: any) {
+      console.error('Error adding participants:', err)
+      alert(err.response?.data?.message || 'Не удалось добавить участников')
+    } finally {
+      setAddParticipantsLoading(false)
+    }
+  }
+
+  const handleAddParticipantByEbl = async () => {
+    if (!activeId || !addParticipantsFoundUser) return
+    setAddParticipantsLoading(true)
+    try {
+      await api.post(`/conversations/${activeId}/participants`, { participantIds: [addParticipantsFoundUser.id] })
+      client.invalidateQueries({ queryKey: ['conversations'] })
+      conversationsQuery.refetch()
+      closeAddParticipantsModal()
+    } catch (err: any) {
+      console.error('Error adding participant by EBLID:', err)
+      alert(err.response?.data?.message || 'Не удалось добавить участника')
+    } finally {
+      setAddParticipantsLoading(false)
+    }
+  }
+
+  const onChangeAddParticipantsDigit = (idx: number, val: string) => {
+    if (!/^\d?$/.test(val)) return
+    const next = [...addParticipantsEblDigits]
+    next[idx] = val
+    setAddParticipantsEblDigits(next)
+    if (val && idx < 3) addParticipantsEblRefs[idx + 1].current?.focus()
+    if (!val && idx > 0) addParticipantsEblRefs[idx - 1].current?.focus()
+    const full = next.join('')
+    if (full.length === 4 && /^\d{4}$/.test(full)) {
+      const token = Date.now()
+      addParticipantsSearchTokenRef.current = token
+      setAddParticipantsSearching(true)
+      setAddParticipantsSearchError(null)
+      api
+        .get('/contacts/search', { params: { query: full } })
+        .then((resp) => {
+          if (addParticipantsSearchTokenRef.current !== token) return
+          const user = resp.data.results?.[0] ?? null
+          setAddParticipantsFoundUser(user)
+          setAddParticipantsSearchError(user ? null : 'Пользователь не найден')
+        })
+        .catch(() => {
+          if (addParticipantsSearchTokenRef.current !== token) return
+          setAddParticipantsFoundUser(null)
+          setAddParticipantsSearchError('Не удалось выполнить поиск')
+        })
+        .finally(() => {
+          if (addParticipantsSearchTokenRef.current === token) {
+            setAddParticipantsSearching(false)
+          }
+        })
+    } else {
+      setAddParticipantsFoundUser(null)
+      setAddParticipantsSearchError(null)
+      setAddParticipantsSearching(false)
+    }
+  }
+
+  function backToList() {
+    if (isMobile) {
+      // If current conversation is secret, drop its messages cache when leaving
+      if (activeId) {
+        try {
+          const row = (conversationsQuery.data || []).find((r: any) => r.conversation.id === activeId)
+          const conv = row?.conversation
+          if (conv?.isSecret) {
+            client.removeQueries({ queryKey: ['messages', activeId] })
+          }
+        } catch {
+          // ignore cache cleanup errors
+        }
+      }
+      setMobileView('list')
+      setActiveId(null)
+      setShowJump(false)
+    }
+    // Очищаем изображение из буфера обмена при закрытии чата
+    if (clipboardImage) {
+      URL.revokeObjectURL(clipboardImage.preview)
+      setClipboardImage(null)
+    }
+  }
+
+  const meInfoQuery = useQuery({
+    queryKey: ['me-info'],
+    queryFn: async () => {
+      const r = await api.get('/status/me')
+      return r.data.user as any
+    }
+  })
+  const conversationsQuery = useQuery({
+    queryKey: ['conversations'],
+    queryFn: async () => {
+      const response = await api.get('/conversations')
+      return response.data.conversations
+    },
+  })
+
+  const messagesQuery = useQuery({
+    queryKey: ['messages', activeId],
+    enabled: !!activeId,
+    queryFn: async () => {
+      const response = await api.get(`/conversations/${activeId}/messages`)
+      return response.data.messages as Array<any>
+    },
+    refetchInterval: activeId ? 15000 : false,
+  })
+
+  useEffect(() => {
+    const error = messagesQuery.error as AxiosError | undefined
+    if (error?.response?.status === 403 && activeId) {
+      console.warn('[ChatsPage] Lost access to conversation, closing view', activeId)
+      client.removeQueries({ queryKey: ['messages', activeId] })
+      setActiveId(null)
+    }
+  }, [messagesQuery.error, activeId, client])
+
+  const contactsQuery = useQuery({
+    queryKey: ['accepted-contacts'],
+    queryFn: async () => {
+      const r = await api.get('/contacts', { params: { filter: 'accepted' } })
+      return r.data.contacts as Array<any>
+    },
+  })
+
+  const incomingContactsQuery = useQuery({
+    queryKey: ['incoming-contacts'],
+    queryFn: async () => {
+      const r = await api.get('/contacts', { params: { filter: 'incoming' } })
+      return r.data.contacts as Array<any>
+    },
+  })
+
+  const closeNewGroupModal = () => {
+    setNewGroupOpen(false)
+    setGroupTitle('')
+    setSelectedIds([])
+    setCreatingGroup(false)
+    if (newGroupAvatarPreviewUrl) {
+      try {
+        URL.revokeObjectURL(newGroupAvatarPreviewUrl)
+      } catch {
+        // ignore
+      }
+    }
+    setNewGroupAvatarPreviewUrl(null)
+    if (newGroupAvatarSourceUrl) {
+      try {
+        URL.revokeObjectURL(newGroupAvatarSourceUrl)
+      } catch {
+        // ignore
+      }
+    }
+    setNewGroupAvatarSourceUrl(null)
+    setNewGroupAvatarFile(null)
+    setNewGroupAvatarBlob(null)
+    setNewGroupCrop({ x: 0, y: 0, scale: 1 })
+    setNewGroupAvatarEditorOpen(false)
+  }
+
+  // Scroll shadows for conversations list
+  useEffect(() => {
+    const el = convScrollRef.current
+    if (!el) return
+
+    const update = () => {
+      const { scrollTop, scrollHeight, clientHeight } = el
+      const hasTop = scrollTop > 2
+      const hasBottom = scrollHeight - scrollTop - clientHeight > 2
+      setConvHasTopFade(hasTop)
+      setConvHasBottomFade(hasBottom)
+    }
+
+    update()
+    el.addEventListener('scroll', update)
+    window.addEventListener('resize', update)
+
+    return () => {
+      el.removeEventListener('scroll', update)
+      window.removeEventListener('resize', update)
+    }
+  }, [conversationsQuery.data?.length])
+
+  useEffect(() => {
+    try {
+      const list = (conversationsQuery.data || []).map((r: any) => r.conversation.id)
+      console.log('[CallStatus] Requesting statuses for:', list)
+      if (list.length > 0) requestCallStatuses(list)
+      for (const cid of list) { try { joinConversation(cid) } catch {} }
+    } catch {}
+  }, [conversationsQuery.data])
+
+  const activeConversation = useMemo(() => {
+    return conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
+  }, [conversationsQuery.data, activeId])
+
+  const localDeviceId = useMemo(() => getStoredDeviceInfo()?.deviceId ?? null, [e2eeVersion])
+  const myDevicesMap = useMemo(() => {
+    const map: Record<string, { id: string; name?: string; platform?: string | null; userId: string }> = {}
+    for (const device of devicesQuery.data || []) {
+      map[device.id] = device
+    }
+    return map
+  }, [devicesQuery.data])
+
+  const resolveConversationDeviceId = useCallback(
+    (conversation: any | null | undefined) => {
+      if (!conversation?.isSecret) return null
+      const ids = [conversation.secretInitiatorDeviceId, conversation.secretPeerDeviceId]
+      for (const deviceId of ids) {
+        if (!deviceId) continue
+        const info = myDevicesMap[deviceId]
+        if (info?.userId && me?.id && info.userId === me.id) {
+          return deviceId
+        }
+      }
+      if (me?.id) {
+        if (conversation.createdById === me.id && conversation.secretInitiatorDeviceId) {
+          return conversation.secretInitiatorDeviceId
+        }
+        if (conversation.createdById !== me.id && conversation.secretPeerDeviceId) {
+          return conversation.secretPeerDeviceId
+        }
+      }
+      return null
+    },
+    [myDevicesMap, me?.id],
+  )
+
+  const myConversationDeviceId = useMemo(() => resolveConversationDeviceId(activeConversation), [activeConversation, resolveConversationDeviceId])
+  const connectedDeviceName = useMemo(() => {
+    if (!myConversationDeviceId) return undefined
+    const fromMap = myDevicesMap[myConversationDeviceId]?.name
+    if (fromMap && fromMap.trim()) return fromMap
+    const localInfo = getStoredDeviceInfo()
+    if (localInfo && localInfo.deviceId === myConversationDeviceId && localInfo.name) {
+      return localInfo.name
+    }
+    return undefined
+  }, [myConversationDeviceId, myDevicesMap, e2eeVersion])
+
+  const isSecretBlockedForDevice = useCallback(
+    (conversationId: string) => {
+      if (!conversationId) return false
+      const conv = (conversationsQuery.data || []).find((row: any) => row?.conversation?.id === conversationId)?.conversation
+      if (!conv?.isSecret) return false
+      const convDeviceId = resolveConversationDeviceId(conv)
+      return Boolean(convDeviceId && localDeviceId && convDeviceId !== localDeviceId)
+    },
+    [conversationsQuery.data, localDeviceId, resolveConversationDeviceId],
+  )
+  const conversationSecretInactive = !!(activeConversation?.isSecret && (activeConversation.secretStatus ?? 'ACTIVE') !== 'ACTIVE')
+  const conversationSecretSessionReady = useMemo(() => {
+    if (!activeConversation?.isSecret) return true
+    return e2eeManager.hasSession(activeConversation.id)
+  }, [activeConversation?.id, activeConversation?.isSecret, e2eeVersion])
+  const secretBlockedByOtherDevice = Boolean(
+    activeConversation?.isSecret &&
+    !conversationSecretInactive &&
+    !conversationSecretSessionReady &&
+    myConversationDeviceId &&
+    localDeviceId &&
+    myConversationDeviceId !== localDeviceId,
+  )
+  const endSecretLabel = secretBlockedByOtherDevice ? 'Завершить везде' : 'Завершить'
+  const endSecretTitle = secretBlockedByOtherDevice ? 'Завершить везде' : 'Завершить секретный чат'
+
+  useEffect(() => {
+    if (!activeConversation?.isSecret) return
+    if (activeConversation.secretStatus !== 'ACTIVE') return
+    let cancelled = false
+    e2eeManager.ensureSession(activeConversation).then((session) => {
+      if (!cancelled && session) {
+        setE2eeVersion((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
+      }
+    }).catch((err) => {
+      console.warn('Failed to ensure E2EE session', err)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeConversation?.id, activeConversation?.secretStatus, activeConversation?.isSecret])
+
+  useEffect(() => {
+    if (!activeConversation?.isSecret) return
+    if (!messagesQuery.data || messagesQuery.data.length === 0) return
+    const updated = e2eeManager.processHandshakes(activeConversation, messagesQuery.data)
+    if (updated) {
+      setE2eeVersion((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
+    }
+  }, [messagesQuery.data, activeConversation?.id, activeConversation?.isSecret, activeConversation?.secretStatus])
+
+  const displayedMessages = useMemo(() => {
+    if (!messagesQuery.data) return []
+    if (!activeConversation?.isSecret) {
+      return messagesQuery.data
+    }
+    return messagesQuery.data
+      .filter((msg: any) => {
+        const meta = (msg?.metadata ?? {}) as Record<string, any>
+        const e2eeMeta = meta.e2ee
+        return !(e2eeMeta && e2eeMeta.kind === 'handshake')
+      })
+      .map((msg: any) => e2eeManager.transformMessage(activeConversation.id, msg))
+  }, [messagesQuery.data, activeConversation?.id, activeConversation?.isSecret, e2eeVersion])
+
+  useEffect(() => {
+    const pendingIds = new Set(
+      (conversationsQuery.data || [])
+        .map((r: any) => r.conversation)
+        .filter((conv: any) => conv?.isSecret && (conv.secretStatus ?? 'ACTIVE') === 'PENDING')
+        .map((conv: any) => conv.id)
+    )
+    setPendingSecretOffers((prev) => {
+      let changed = false
+      const copy = { ...prev }
+      for (const id of Object.keys(copy)) {
+        if (!pendingIds.has(id)) {
+          delete copy[id]
+          changed = true
+        }
+      }
+      return changed ? copy : prev
+    })
+  }, [conversationsQuery.data])
+
+  const pendingSecretContext = useMemo(() => {
+    if (!activeConversation || activeConversation.isGroup || activeConversation.isSecret) return null
+    if (!me?.id) return null
+    const activeKey = makeParticipantsKey(activeConversation.participants || [])
+    if (!activeKey) return null
+    const rows = conversationsQuery.data || []
+    for (const row of rows) {
+      const conv = row.conversation
+      if (!conv?.isSecret) continue
+      if ((conv.secretStatus ?? 'ACTIVE') !== 'PENDING') continue
+      const convKey = makeParticipantsKey(conv.participants || [])
+      if (convKey !== activeKey) continue
+      const initiatorUser = (conv.participants || []).find((p: any) => p.user.id === conv.createdById)?.user
+      const initiatorName = pendingSecretOffers[conv.id]?.from?.name ?? initiatorUser?.displayName ?? initiatorUser?.username ?? 'Собеседник'
+      return {
+        conversationId: conv.id,
+        isInitiator: conv.createdById === me.id,
+        initiatorName,
+      }
+    }
+    return null
+  }, [activeConversation, conversationsQuery.data, me?.id, pendingSecretOffers])
+
+  // Проверка: если звонок не активен, но callConvId установлен, сбросить его
+  useEffect(() => {
+    if (callConvId && activeId) {
+      // Для групп не закрываем оверлей по временному inactive статусу
+      try {
+        const conv = (conversationsQuery.data || []).find((r: any) => r.conversation.id === activeId)?.conversation
+        const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
+        if (isGroup) return
+      } catch {}
+      const entry = activeCalls[activeId]
+      // Для 1:1 закрываем оверлей, если звонок не активен или завершен
+      if (entry && (!entry.active || entry.endedAt) && callConvId === activeId) {
+        setCallConvId(null)
+        setMinimizedCallConvId(null)
+        callStore.endCall()
+      }
+    }
+  }, [callConvId, activeId, activeCalls, timerTick, conversationsQuery.data]) // Добавляем зависимости для корректной проверки типа беседы
+
+  const usersById = useMemo(() => {
+    const map: Record<string, any> = {}
+    if (activeConversation) {
+      for (const p of activeConversation.participants) {
+        map[p.user.id] = p.user
+      }
+    }
+    // don't overwrite participant data (which contains up-to-date avatarUrl) with stale session
+    if (me && !map[me.id]) map[me.id] = me
+    return map
+  }, [activeConversation, me])
+
+  const activeConversationParticipantIds = useMemo(() => {
+    if (!activeConversation) return []
+    return (activeConversation.participants || []).map((p: any) => p.user.id)
+  }, [activeConversation])
+
+  const eligibleContactsForAdd = useMemo(() => {
+    if (!activeConversation || !contactsQuery.data) return []
+    const participantIds = new Set(activeConversationParticipantIds)
+    return contactsQuery.data.filter((c: any) => !participantIds.has(c.friend.id))
+  }, [activeConversation, contactsQuery.data, activeConversationParticipantIds])
+
+  const addParticipantsFoundUserStatus = {
+    alreadyInChat: addParticipantsFoundUser ? activeConversationParticipantIds.includes(addParticipantsFoundUser.id) : false,
+    isSelf: addParticipantsFoundUser ? addParticipantsFoundUser.id === me?.id : false,
+  }
+
+  useEffect(() => {
+    if (!addParticipantsModal) return
+    if (addParticipantsMode === 'eblid') {
+      addParticipantsEblRefs[0].current?.focus()
+    }
+  }, [addParticipantsModal, addParticipantsMode])
+
+  // Realtime presence updates into conversations list
+  useEffect(() => {
+    const handler = (p: { userId: string; status: string }) => {
+      // Update status in conversations cache
+      client.setQueryData(['conversations'], (old: any) => {
+        if (!old) return old
+        return old.map((row: any) => {
+          const updated = {
+            ...row,
+            conversation: {
+              ...row.conversation,
+              participants: row.conversation.participants.map((cp: any) =>
+                cp.user.id === p.userId
+                  ? {
+                      ...cp,
+                      user: {
+                        ...cp.user,
+                        status: p.status,
+                        lastSeenAt:
+                          p.status === 'ONLINE'
+                            ? new Date().toISOString()
+                            : (p.status === 'OFFLINE' ? new Date().toISOString() : cp.user.lastSeenAt),
+                      },
+                    }
+                  : cp
+              ),
+            },
+          }
+          return updated
+        })
+      })
+    }
+    onPresenceUpdate(handler)
+    return () => { socket.off('presence:update', handler as any) }
+  }, [client])
+
+  // Reflect socket connection status in UI (especially for mobile self-status)
+  useEffect(() => {
+    // iOS Safari: refresh viewport height and trigger re-render on focus to avoid stale layout/state
+    const onFocus = () => {
+      try {
+        const h = (window.visualViewport ? window.visualViewport.height : window.innerHeight) * 0.01
+        document.documentElement.style.setProperty('--vh', h + 'px')
+      } catch {}
+      client.invalidateQueries({ queryKey: ['me-info'] })
+      setIsSocketOnline(socket.connected)
+    }
+    window.addEventListener('focus', onFocus)
+    const onConnect = () => {
+      setIsSocketOnline(true)
+      try {
+        const list = (conversationsQuery.data || []).map((r: any) => r.conversation.id)
+        // re-join all conversation rooms after reconnect so we receive call:status broadcasts
+        for (const cid of list) { try { joinConversation(cid) } catch {} }
+        if (list.length > 0) requestCallStatuses(list)
+      } catch {}
+    }
+    const onDisconnect = () => setIsSocketOnline(false)
+    socket.on('connect', onConnect)
+    socket.on('disconnect', onDisconnect)
+    // initialize once in case it changed before
+    setIsSocketOnline(socket.connected)
+    const onVis = () => { client.invalidateQueries({ queryKey: ['me-info'] }) }
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      socket.off('connect', onConnect as any)
+      socket.off('disconnect', onDisconnect as any)
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [client])
+
+  // Keep own presence in sync with server events, like for other users
+  useEffect(() => {
+    const handler = (payload: { userId: string; status: string }) => {
+      if (!me?.id) return
+      if (payload.userId === me.id) {
+        const v = (payload.status || '').toUpperCase()
+        if (v === 'ONLINE' || v === 'AWAY' || v === 'OFFLINE') setMyPresence(v)
+      }
+    }
+    onPresenceUpdate(handler)
+    return () => { socket.off('presence:update', handler as any) }
+  }, [me?.id])
+
+  // Initialize own presence from meInfo endpoint when available
+  useEffect(() => {
+    const v = ((meInfoQuery.data as any)?.status || '').toString().toUpperCase()
+    if (v === 'ONLINE' || v === 'AWAY' || v === 'OFFLINE') setMyPresence(v)
+  }, [meInfoQuery.data])
+
+  // Lightbox keyboard controls
+  useEffect(() => {
+    if (!lightbox.open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightbox((l) => ({ ...l, open: false }))
+      if (e.key === 'ArrowLeft') setLightbox((l) => ({ ...l, index: (l.index - 1 + l.items.length) % l.items.length }))
+      if (e.key === 'ArrowRight') setLightbox((l) => ({ ...l, index: (l.index + 1) % l.items.length }))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [lightbox.open])
+
+  // Live profile updates (avatar/name) across app
+  useEffect(() => {
+    const handler = (p: { userId: string; avatarUrl?: string | null; displayName?: string | null }) => {
+      client.setQueryData(['conversations'], (old: any) => {
+        if (!old) return old
+        return old.map((row: any) => ({
+          ...row,
+          conversation: {
+            ...row.conversation,
+            participants: row.conversation.participants.map((cp: any) => cp.user.id === p.userId ? { ...cp, user: { ...cp.user, avatarUrl: p.avatarUrl ?? cp.user.avatarUrl, displayName: p.displayName ?? cp.user.displayName } } : cp)
+          }
+        }))
+      })
+      if (p.userId === me?.id) meInfoQuery.refetch()
+    }
+    onProfileUpdate(handler)
+    return () => { socket.off('profile:update', handler as any) }
+  }, [client, me?.id])
+
+  function hashToGray(userId: string | null | undefined) {
+    // Все сообщения собеседника используют один цвет
+    return '#191d23'
+  }
+
+  
+
+  // Глобальный обработчик paste для вставки изображений из буфера обмена (когда фокус не в поле ввода)
+  useEffect(() => {
+    if (!activeId) return
+    
+    const handlePaste = async (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement
+      // Если фокус в поле ввода, не обрабатываем здесь (обработчик на input сам обработает)
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+        return
+      }
+      
+      const items = e.clipboardData?.items
+      if (!items) return
+      
+      // Проверяем, есть ли изображение в буфере обмена
+      let hasImage = false
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          hasImage = true
+          break
+        }
+      }
+      
+      if (!hasImage) return
+      
+      // Обрабатываем изображения, когда фокус не в поле ввода
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (item.type.indexOf('image') !== -1) {
+          e.preventDefault()
+          e.stopPropagation()
+          const file = item.getAsFile()
+          if (file) {
+            const preview = URL.createObjectURL(file)
+            setClipboardImage({ file, preview })
+          }
+          break
+        }
+      }
+    }
+    
+    window.addEventListener('paste', handlePaste, true)
+    return () => {
+      window.removeEventListener('paste', handlePaste, true)
+    }
+  }, [activeId])
+
+  useEffect(() => {
+    conversationsQuery.refetch()
+    connectSocket()
+    onConversationNew(() => conversationsQuery.refetch())
+    onConversationDeleted((payload) => {
+      const convId = payload?.conversationId
+      if (!convId) {
+        conversationsQuery.refetch()
+        return
+      }
+      setPendingSecretOffers((prev) => {
+        if (!prev[convId]) return prev
+        const copy = { ...prev }
+        delete copy[convId]
+        return copy
+      })
+      setPendingByConv((prev) => {
+        if (!prev[convId]) return prev
+        const copy = { ...prev }
+        delete copy[convId]
+        return copy
+      })
+      e2eeManager.clearSession(convId)
+      client.removeQueries({ queryKey: ['messages', convId] })
+      client.setQueryData(['conversations'], (prev: any) => {
+        if (!Array.isArray(prev)) return prev
+        return prev.filter((row: any) => row?.conversation?.id !== convId)
+      })
+      const isDeletingActive = activeConversationIdRef.current === convId
+      if (isDeletingActive) {
+        setActiveId((prev) => (prev === convId ? null : prev))
+        setShowJump(false)
+        const clip = clipboardImageRef.current
+        if (clip) {
+          URL.revokeObjectURL(clip.preview)
+          setClipboardImage(null)
+        }
+        if (isMobileRef.current) {
+          setMobileView('list')
+        }
+      }
+      conversationsQuery.refetch()
+    })
+    onConversationUpdated(() => { conversationsQuery.refetch() })
+    onConversationMemberRemoved(() => { conversationsQuery.refetch() })
+    const offSecretOffer = onSecretChatOffer((payload) => {
+      setPendingSecretOffers((prev) => ({ ...prev, [payload.conversationId]: payload }))
+      conversationsQuery.refetch()
+    })
+    const offSecretAccepted = onSecretChatAccepted((payload) => {
+      setPendingSecretOffers((prev) => {
+        const copy = { ...prev }
+        delete copy[payload.conversationId]
+        return copy
+      })
+      client.invalidateQueries({ queryKey: ['conversations'] })
+      selectConversation(payload.conversationId)
+    })
+    onIncomingCall(({ conversationId, from, video }) => {
+      // debounce duplicate incoming for same conv
+      if (ringingConvIdRef.current && ringingConvIdRef.current === conversationId) return
+      // stop previous ring if any
+      stopRingtone()
+      // suppress popup for group calls or if already in this call
+      try {
+        const list = client.getQueryData(['conversations']) as any[] | undefined
+        const conv = Array.isArray(list) ? list.find((r: any) => r.conversation.id === conversationId)?.conversation : null
+        const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
+        inviterByConvRef.current[conversationId] = from.id
+        const isAlreadyInThisCall = callConvIdRef.current === conversationId
+        if (isGroup) {
+          // group calls: no popup here; status is driven by room join/leave events
+          return
+        }
+        if (isAlreadyInThisCall) return
+      } catch {}
+      ringingConvIdRef.current = conversationId
+      callStore.startIncoming({ conversationId, from, video })
+      // start ringtone from file
+      let started = false
+      try {
+        ringAudioRef.current = new Audio('/ring.mp3')
+        ringAudioRef.current.loop = true
+        ringAudioRef.current.volume = 0.9
+        ringAudioRef.current.play().then(() => { started = true }).catch(() => {})
+      } catch {}
+      // auto-decline after 25s
+      ringTimerRef.current = window.setTimeout(() => {
+        declineCall(conversationId)
+        stopRingtone()
+        callStore.setIncoming(null)
+      }, 25000)
+    })
+    onCallAccepted(({ conversationId }) => {
+      // Для всех типов звонков (1:1 и группы) устанавливаем activeCalls вручную
+      // Это обеспечивает единообразное поведение: звонок становится активным сразу
+          setActiveCalls((prev) => {
+        const current = prev[conversationId]
+        if (!current?.active) {
+          return { ...prev, [conversationId]: { startedAt: Date.now(), active: true, participants: [me?.id || ''].filter(Boolean) } }
+        }
+        return prev
+      })
+      // Открываем оверлей для всех, кто принял звонок (и для создателя, и для присоединившихся)
+        setCallConvId(conversationId)
+      setMinimizedCallConvId((prev) => prev === conversationId ? null : prev) // Сбрасываем минимизацию для нового звонка
+      stopRingtone()
+    })
+    onCallDeclined(({ conversationId }) => {
+      // Обновляем состояние звонка - устанавливаем как неактивный
+      setActiveCalls((prev) => {
+        const current = prev[conversationId]
+        if (current) {
+          // Если звонок был активен, помечаем как завершенный
+          if (current.active) {
+            return { ...prev, [conversationId]: { ...current, active: false, endedAt: Date.now() } }
+          }
+          // Если звонок не был активен (только начался), удаляем запись
+          const { [conversationId]: _omit, ...rest } = prev
+          return rest
+        }
+        return prev
+      })
+      // Сбрасываем callConvId только если это текущий активный звонок
+      if (callConvId === conversationId) {
+      setCallConvId(null)
+        setMinimizedCallConvId(null)
+        callStore.endCall()
+      }
+      callStore.setIncoming(null)
+      stopRingtone()
+    })
+    onCallEnded(({ conversationId }) => {
+      // Игнорируем для групповых звонков — статус придет отдельным событием call:status
+      try {
+        const list = client.getQueryData(['conversations']) as any[] | undefined
+        const conv = Array.isArray(list) ? list.find((r: any) => r.conversation.id === conversationId)?.conversation : null
+        const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
+        if (isGroup) return
+      } catch {}
+      // Для 1:1 звонков обновляем состояние
+      setActiveCalls((prev) => {
+        const current = prev[conversationId]
+        if (current?.active) {
+          return { ...prev, [conversationId]: { ...current, active: false, endedAt: Date.now() } }
+        }
+        const { [conversationId]: _omit, ...rest } = prev
+        return rest
+      })
+      // Сбрасываем callConvId только если это текущий активный звонок
+      if (callConvId === conversationId) {
+        setCallConvId(null)
+        setMinimizedCallConvId(null)
+        callStore.endCall()
+      }
+      callStore.setIncoming(null)
+      stopRingtone()
+    })
+    onReceiptsUpdate(({ conversationId }) => {
+      client.invalidateQueries({ queryKey: ['messages', conversationId] })
+      client.refetchQueries({ queryKey: ['messages', conversationId] })
+    })
+    // prepare notification audio and unlock on first user gesture (autoplay policy)
+    try {
+      if (!notifyAudioRef.current) {
+        notifyAudioRef.current = new Audio('/notify.mp3')
+        notifyAudioRef.current.preload = 'auto'
+        notifyAudioRef.current.volume = 0.9
+      }
+      const unlock = async () => {
+        if (!notifyAudioRef.current || notifyUnlockedRef.current) return
+        try {
+          notifyAudioRef.current.volume = 0
+          await notifyAudioRef.current.play()
+          notifyAudioRef.current.pause()
+          notifyAudioRef.current.currentTime = 0
+          notifyAudioRef.current.volume = 0.9
+          notifyUnlockedRef.current = true
+          window.removeEventListener('click', unlock)
+          window.removeEventListener('keydown', unlock)
+          window.removeEventListener('touchstart', unlock)
+        } catch {}
+      }
+      window.addEventListener('click', unlock)
+      window.addEventListener('keydown', unlock)
+      window.addEventListener('touchstart', unlock)
+    } catch {}
+    return () => {
+      offSecretOffer?.()
+      offSecretAccepted?.()
+    }
+  }, [])
+  // live update contacts tiles
+  useEffect(() => {
+    onContactRequest(() => { incomingContactsQuery.refetch() })
+    onContactAccepted(() => { contactsQuery.refetch(); conversationsQuery.refetch(); incomingContactsQuery.refetch() })
+    onContactRemoved(() => { contactsQuery.refetch(); incomingContactsQuery.refetch() })
+  }, [])
+
+  // Touch event handlers for personal avatar editor
+  useEffect(() => {
+    if (!avatarPreviewUrl) return
+    const editor = editorRef.current
+    if (!editor) return
+
+    const getDistance = (touch1: Touch, touch2: Touch) => {
+      const dx = touch2.clientX - touch1.clientX
+      const dy = touch2.clientY - touch1.clientY
+      return Math.sqrt(dx * dx + dy * dy)
+    }
+
+    const getCenter = (touch1: Touch, touch2: Touch) => ({
+      x: (touch1.clientX + touch2.clientX) / 2,
+      y: (touch1.clientY + touch2.clientY) / 2
+    })
+
+    const cropSize = 240
+    const isPointInCircle = (x: number, y: number, centerX: number, centerY: number, radius: number) => {
+      const dx = x - centerX
+      const dy = y - centerY
+      return dx * dx + dy * dy <= radius * radius
+    }
+
+    const handleTouchStart = (e: TouchEvent) => {
+      const rect = editor.getBoundingClientRect()
+      if (!rect) return
+      const editorWidth = rect.width
+      const editorHeight = rect.height
+      const centerX = editorWidth / 2
+      const centerY = editorHeight / 2
+      const radius = cropSize / 2
+
+      if (e.touches.length === 1) {
+        const touch = e.touches[0]
+        const touchX = touch.clientX - rect.left
+        const touchY = touch.clientY - rect.top
+        
+        if (!isPointInCircle(touchX, touchY, centerX, centerY, radius)) {
+          return
+        }
+        
+        touchStateRef.current = {
+          touches: [touch],
+          initialDistance: 0,
+          initialScale: crop.scale,
+          initialX: crop.x,
+          initialY: crop.y
+        }
+        e.preventDefault()
+      } else if (e.touches.length === 2) {
+        const touch1 = e.touches[0]
+        const touch2 = e.touches[1]
+        const center = getCenter(touch1, touch2)
+        const centerTouchX = center.x - rect.left
+        const centerTouchY = center.y - rect.top
+        
+        if (!isPointInCircle(centerTouchX, centerTouchY, centerX, centerY, radius)) {
+          return
+        }
+        
+        const distance = getDistance(touch1, touch2)
+        touchStateRef.current = {
+          touches: [touch1, touch2],
+          initialDistance: distance,
+          initialScale: crop.scale,
+          initialX: crop.x,
+          initialY: crop.y
+        }
+        e.preventDefault()
+      }
+    }
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!touchStateRef.current) return
+      e.preventDefault()
+
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current)
+      }
+
+      rafRef.current = requestAnimationFrame(() => {
+        if (!touchStateRef.current) return
+
+        const rect = editor.getBoundingClientRect()
+        if (!rect) return
+        const editorWidth = rect.width
+        const editorHeight = rect.height
+        const centerX = editorWidth / 2
+        const centerY = editorHeight / 2
+
+        const touchesCount = e.touches.length
+        const initialTouchesCount = touchStateRef.current.touches.length
+
+        if (touchesCount === 1 && initialTouchesCount === 1) {
+          const touch = e.touches[0]
+          const initialTouch = touchStateRef.current.touches[0]
+          
+          const deltaX = touch.clientX - initialTouch.clientX
+          const deltaY = touch.clientY - initialTouch.clientY
+          
+          setCrop((prev) => {
+            let newX = touchStateRef.current!.initialX + deltaX
+            let newY = touchStateRef.current!.initialY + deltaY
+            
+            const img = imageRef.current
+            if (img) {
+              const currentScale = prev.scale
+              const imgScaledWidth = img.naturalWidth * currentScale
+              const imgScaledHeight = img.naturalHeight * currentScale
+              const maxX = centerX + cropSize / 2
+              const minX = centerX - cropSize / 2 - imgScaledWidth
+              const maxY = centerY + cropSize / 2
+              const minY = centerY - cropSize / 2 - imgScaledHeight
+              
+              newX = Math.max(minX, Math.min(maxX, newX))
+              newY = Math.max(minY, Math.min(maxY, newY))
+            }
+            
+            return { ...prev, x: newX, y: newY }
+          })
+        } else if (touchesCount === 2 && initialTouchesCount === 2) {
+          const touch1 = e.touches[0]
+          const touch2 = e.touches[1]
+          const distance = getDistance(touch1, touch2)
+          const scaleChange = distance / touchStateRef.current.initialDistance
+          const newScale = Math.max(0.1, Math.min(10, touchStateRef.current.initialScale * scaleChange))
+          
+          const img = imageRef.current
+          if (img) {
+            const imgWidth = img.naturalWidth
+            const imgHeight = img.naturalHeight
+            const initialCenterX = touchStateRef.current.initialX + (imgWidth * touchStateRef.current.initialScale) / 2
+            const initialCenterY = touchStateRef.current.initialY + (imgHeight * touchStateRef.current.initialScale) / 2
+            const vectorX = initialCenterX - centerX
+            const vectorY = initialCenterY - centerY
+            const scaleRatio = newScale / touchStateRef.current.initialScale
+            const newCenterX = centerX + vectorX * scaleRatio
+            const newCenterY = centerY + vectorY * scaleRatio
+            const newX = newCenterX - (imgWidth * newScale) / 2
+            const newY = newCenterY - (imgHeight * newScale) / 2
+            setCrop({ x: newX, y: newY, scale: newScale })
+          }
+        }
+        
+        rafRef.current = null
+      })
+    }
+
+    const handleTouchEnd = () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      touchStateRef.current = null
+    }
+
+    editor.addEventListener('touchstart', handleTouchStart, { passive: false })
+    editor.addEventListener('touchmove', handleTouchMove, { passive: false })
+    editor.addEventListener('touchend', handleTouchEnd, { passive: true })
+    editor.addEventListener('touchcancel', handleTouchEnd, { passive: true })
+
+    return () => {
+      editor.removeEventListener('touchstart', handleTouchStart)
+      editor.removeEventListener('touchmove', handleTouchMove)
+      editor.removeEventListener('touchend', handleTouchEnd)
+      editor.removeEventListener('touchcancel', handleTouchEnd)
+    }
+  }, [avatarPreviewUrl, crop.scale, crop.x, crop.y])
+
+  // Touch event handlers for group avatar editor
+  useEffect(() => {
+    if (!groupAvatarPreviewUrl) return
+    const editor = groupEditorRef.current
+    if (!editor) return
+
+    const getDistance = (touch1: Touch, touch2: Touch) => {
+      const dx = touch2.clientX - touch1.clientX
+      const dy = touch2.clientY - touch1.clientY
+      return Math.sqrt(dx * dx + dy * dy)
+    }
+
+    const getCenter = (touch1: Touch, touch2: Touch) => ({
+      x: (touch1.clientX + touch2.clientX) / 2,
+      y: (touch1.clientY + touch2.clientY) / 2
+    })
+
+    const cropSize = 240
+    const isPointInCircle = (x: number, y: number, centerX: number, centerY: number, radius: number) => {
+      const dx = x - centerX
+      const dy = y - centerY
+      return dx * dx + dy * dy <= radius * radius
+    }
+
+    const handleTouchStart = (e: TouchEvent) => {
+      const rect = editor.getBoundingClientRect()
+      if (!rect) return
+      const editorWidth = rect.width
+      const editorHeight = rect.height
+      const centerX = editorWidth / 2
+      const centerY = editorHeight / 2
+      const radius = cropSize / 2
+
+      if (e.touches.length === 1) {
+        const touch = e.touches[0]
+        const touchX = touch.clientX - rect.left
+        const touchY = touch.clientY - rect.top
+        
+        if (!isPointInCircle(touchX, touchY, centerX, centerY, radius)) {
+          return
+        }
+        
+        groupTouchStateRef.current = {
+          touches: [touch],
+          initialDistance: 0,
+          initialScale: groupCrop.scale,
+          initialX: groupCrop.x,
+          initialY: groupCrop.y
+        }
+        e.preventDefault()
+      } else if (e.touches.length === 2) {
+        const touch1 = e.touches[0]
+        const touch2 = e.touches[1]
+        const center = getCenter(touch1, touch2)
+        const centerTouchX = center.x - rect.left
+        const centerTouchY = center.y - rect.top
+        
+        if (!isPointInCircle(centerTouchX, centerTouchY, centerX, centerY, radius)) {
+          return
+        }
+        
+        const distance = getDistance(touch1, touch2)
+        groupTouchStateRef.current = {
+          touches: [touch1, touch2],
+          initialDistance: distance,
+          initialScale: groupCrop.scale,
+          initialX: groupCrop.x,
+          initialY: groupCrop.y
+        }
+        e.preventDefault()
+      }
+    }
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!groupTouchStateRef.current) return
+      e.preventDefault()
+
+      if (groupRafRef.current !== null) {
+        cancelAnimationFrame(groupRafRef.current)
+      }
+
+      groupRafRef.current = requestAnimationFrame(() => {
+        if (!groupTouchStateRef.current) return
+
+        const rect = editor.getBoundingClientRect()
+        if (!rect) return
+        const editorWidth = rect.width
+        const editorHeight = rect.height
+        const centerX = editorWidth / 2
+        const centerY = editorHeight / 2
+
+        const touchesCount = e.touches.length
+        const initialTouchesCount = groupTouchStateRef.current.touches.length
+
+        if (touchesCount === 1 && initialTouchesCount === 1) {
+          const touch = e.touches[0]
+          const initialTouch = groupTouchStateRef.current.touches[0]
+          
+          const deltaX = touch.clientX - initialTouch.clientX
+          const deltaY = touch.clientY - initialTouch.clientY
+          
+          setGroupCrop((prev) => {
+            let newX = groupTouchStateRef.current!.initialX + deltaX
+            let newY = groupTouchStateRef.current!.initialY + deltaY
+            
+            const img = groupImageRef.current
+            if (img) {
+              const currentScale = prev.scale
+              const imgScaledWidth = img.naturalWidth * currentScale
+              const imgScaledHeight = img.naturalHeight * currentScale
+              const maxX = centerX + cropSize / 2
+              const minX = centerX - cropSize / 2 - imgScaledWidth
+              const maxY = centerY + cropSize / 2
+              const minY = centerY - cropSize / 2 - imgScaledHeight
+              
+              newX = Math.max(minX, Math.min(maxX, newX))
+              newY = Math.max(minY, Math.min(maxY, newY))
+            }
+            
+            return { ...prev, x: newX, y: newY }
+          })
+        } else if (touchesCount === 2 && initialTouchesCount === 2) {
+          const touch1 = e.touches[0]
+          const touch2 = e.touches[1]
+          const distance = getDistance(touch1, touch2)
+          const scaleChange = distance / groupTouchStateRef.current.initialDistance
+          const newScale = Math.max(0.1, Math.min(10, groupTouchStateRef.current.initialScale * scaleChange))
+          
+          const img = groupImageRef.current
+          if (img) {
+            const imgWidth = img.naturalWidth
+            const imgHeight = img.naturalHeight
+            const initialCenterX = groupTouchStateRef.current.initialX + (imgWidth * groupTouchStateRef.current.initialScale) / 2
+            const initialCenterY = groupTouchStateRef.current.initialY + (imgHeight * groupTouchStateRef.current.initialScale) / 2
+            const vectorX = initialCenterX - centerX
+            const vectorY = initialCenterY - centerY
+            const scaleRatio = newScale / groupTouchStateRef.current.initialScale
+            const newCenterX = centerX + vectorX * scaleRatio
+            const newCenterY = centerY + vectorY * scaleRatio
+            const newX = newCenterX - (imgWidth * newScale) / 2
+            const newY = newCenterY - (imgHeight * newScale) / 2
+            setGroupCrop({ x: newX, y: newY, scale: newScale })
+          }
+        }
+        
+        groupRafRef.current = null
+      })
+    }
+
+    const handleTouchEnd = () => {
+      if (groupRafRef.current !== null) {
+        cancelAnimationFrame(groupRafRef.current)
+        groupRafRef.current = null
+      }
+      groupTouchStateRef.current = null
+    }
+
+    editor.addEventListener('touchstart', handleTouchStart, { passive: false })
+    editor.addEventListener('touchmove', handleTouchMove, { passive: false })
+    editor.addEventListener('touchend', handleTouchEnd, { passive: true })
+    editor.addEventListener('touchcancel', handleTouchEnd, { passive: true })
+
+    return () => {
+      editor.removeEventListener('touchstart', handleTouchStart)
+      editor.removeEventListener('touchmove', handleTouchMove)
+      editor.removeEventListener('touchend', handleTouchEnd)
+      editor.removeEventListener('touchcancel', handleTouchEnd)
+    }
+  }, [groupAvatarPreviewUrl, groupCrop.scale, groupCrop.x, groupCrop.y])
+
+  function stopRingtone() {
+    try {
+      ringTimerRef.current && clearTimeout(ringTimerRef.current)
+      ringTimerRef.current = null
+      if (ringAudioRef.current) {
+        try { ringAudioRef.current.pause(); ringAudioRef.current.currentTime = 0 } catch {}
+        ringAudioRef.current = null
+      }
+      ringOscRef.current?.stop()
+      ringOscRef.current?.disconnect()
+      ringGainRef.current?.disconnect()
+      ringOscRef.current = null
+      ringGainRef.current = null
+      ringingConvIdRef.current = null
+    } catch {}
+  }
+
+  // Join/leave rooms on active chat change
+  // Унифицированная логика обновления сообщений для всех типов бесед (1:1 и группы)
+  useEffect(() => {
+    const onNew = async (payload: any) => {
+      const conversationId = payload.conversationId
+      const isActive = conversationId === activeId
+      
+      // Для неактивных чатов: инвалидируем список бесед, чтобы получить актуальный unreadCount с сервера
+      if (!isActive) {
+        client.invalidateQueries({ queryKey: ['conversations'] })
+        return
+      }
+      
+      // Для активного чата: обновляем сообщения
+      if (!activeId) return
+      const incoming = payload.message ?? payload
+      if (incoming && incoming.id) {
+        // Remove any pending messages that might match this one (by sender and attachments)
+        setPendingByConv((prev) => {
+          const convPending = prev[activeId] || []
+          if (convPending.length === 0) return prev
+          // Check if this message matches any pending by comparing attachments
+          const incomingAttachments = (incoming.attachments || []).map((a: any) => a.url).sort()
+          const filtered = convPending.filter((pending) => {
+            if (pending.senderId !== incoming.senderId) return true
+            const pendingAttachments = pending.attachments.map((a) => a.url).sort()
+            // If attachments match (or both have same number), remove pending
+            if (pendingAttachments.length === incomingAttachments.length) {
+              // For images, compare by checking if URLs match or are similar
+              const match = pendingAttachments.every((pUrl, idx) => {
+                const iUrl = incomingAttachments[idx]
+                // If pending has blob URL and incoming has real URL, it's likely the same message
+                return pUrl === iUrl || (pUrl.startsWith('blob:') && iUrl && !iUrl.startsWith('blob:'))
+              })
+              return !match
+            }
+            return true
+          })
+          if (filtered.length === convPending.length) return prev
+          if (filtered.length === 0) {
+            const { [activeId]: _, ...rest } = prev
+            return rest
+          }
+          return { ...prev, [activeId]: filtered }
+        })
+        // Оптимистичное обновление кэша (работает для всех типов бесед)
+        appendMessageToCache(activeId, incoming)
+      }
+      // Всегда делаем refetch для получения актуальных данных (как для 1:1, так и для групп)
+      messagesQuery.refetch()
+    }
+    const onTyping = (p: any) => {
+      if (p.conversationId !== activeId) return
+      setTyping(true)
+      if (typingTimer.current) window.clearTimeout(typingTimer.current)
+      typingTimer.current = window.setTimeout(() => setTyping(false), 2000)
+    }
+    const onReaction = (payload: { conversationId: string; messageId: string; message?: any }) => {
+      if (!activeId || payload.conversationId !== activeId) {
+        client.invalidateQueries({ queryKey: ['conversations'] })
+        return
+      }
+      if (payload.message) {
+        updateMessageInCache(activeId, payload.message)
+      } else {
+        messagesQuery.refetch()
+      }
+    }
+    socket.on('message:new', onNew)
+    socket.on('conversation:typing', onTyping)
+    socket.on('message:reaction', onReaction)
+    return () => {
+      socket.off('message:new', onNew as any)
+      socket.off('conversation:typing', onTyping as any)
+      socket.off('message:reaction', onReaction as any)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId])
+
+  // Unified handler for message:notify - handles both active and inactive chats
+  useEffect(() => {
+    const handler = async (p: { conversationId: string; messageId: string; senderId: string; message?: any }) => {
+      if (isSecretBlockedForDevice(p.conversationId)) {
+        return
+      }
+      const isMine = p.senderId === me?.id
+      const isViewing = p.conversationId === activeId
+      const visible = document.visibilityState === 'visible'
+      
+      // Воспроизводим звук уведомления, если нужно
+      if (!isMine && (!isViewing || !visible)) {
+        if (notifyAudioRef.current && notifyUnlockedRef.current) {
+          notifyAudioRef.current.currentTime = 0
+          notifyAudioRef.current.play().catch(() => {})
+        }
+      }
+      
+      // Если это текущий чат, обновляем сообщения немедленно
+      if (isViewing) {
+        // Если есть полное сообщение в payload, используем оптимистичное обновление
+        if (p.message && p.message.id) {
+          appendMessageToCache(activeId, p.message)
+        }
+        // Всегда делаем refetch для получения актуальных данных
+        messagesQuery.refetch().catch(() => {})
+        return
+      }
+      
+      // Для неактивных чатов: НЕ увеличиваем счетчик локально
+      // Вместо этого полагаемся на refetch из message:new события
+      // Это предотвращает двойное увеличение счетчика
+    }
+    socket.on('message:notify', handler)
+    return () => { socket.off('message:notify', handler) }
+  }, [activeId, me?.id, messagesQuery, isSecretBlockedForDevice])
+
+  // notifications disabled
+
+  // autoscroll to bottom when chat opens (агрессивно только на мобильных)
+  useEffect(() => {
+    if (!activeId) return
+    const el = messagesRef.current
+    if (!el) return
+    const scrollToBottom = () => {
+      if (el) {
+        el.scrollTop = el.scrollHeight
+        nearBottomRef.current = true
+        userStickyScrollRef.current = false
+      }
+    }
+    if (isMobileRef.current) {
+      scrollToBottom()
+      const t1 = window.setTimeout(scrollToBottom, 50)
+      const t2 = window.setTimeout(scrollToBottom, 200)
+      return () => {
+        window.clearTimeout(t1)
+        window.clearTimeout(t2)
+      }
+    }
+    // На десктопе достаточно одного вызова при открытии
+    scrollToBottom()
+    return
+  }, [activeId])
+
+  // keep pinned to bottom while keyboard is opening/moving on mobile (iOS visualViewport)
+  useEffect(() => {
+    if (!isMobileRef.current) return
+    const el = messagesRef.current
+    if (!el) return
+    const handleVV = () => {
+      const active = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
+      if (active && active === inputRef.current) {
+        el.scrollTop = el.scrollHeight
+        nearBottomRef.current = true
+        userStickyScrollRef.current = false
+      }
+    }
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', handleVV, { passive: true } as any)
+      window.visualViewport.addEventListener('scroll', handleVV, { passive: true } as any)
+    }
+    return () => {
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', handleVV as any)
+        window.visualViewport.removeEventListener('scroll', handleVV as any)
+      }
+    }
+  }, [activeId])
+
+  // Dev-only: warn if credential-like inputs are present on chat page
+  useEffect(() => {
+    if (!(import.meta as any).env?.DEV) return
+    const suspects = document.querySelectorAll(
+      'input[type="password"], input[autocomplete*="password" i], input[name*="pass" i], input[name*="user" i], input[name*="email" i], input[autocomplete*="username" i]'
+    )
+    if (suspects.length) {
+      // eslint-disable-next-line no-console
+      console.warn('Credential-like inputs present on chat page:', suspects)
+    }
+  }, [])
+
+  // автопрокрутка по новым сообщениям отключена, чтобы не мешать ручному скроллу
+
+  // animate typing dots and keep view pinned to bottom when typing shown (только на мобильных)
+  useEffect(() => {
+    if (!typing || !isMobileRef.current) return
+    const el = messagesRef.current
+    const id = window.setInterval(() => {
+      setTypingDots((d) => (d % 3) + 1)
+      if (el) {
+        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+        if (nearBottom) el.scrollTop = el.scrollHeight
+      }
+    }, 500)
+    return () => window.clearInterval(id)
+  }, [typing])
+
+  // Show jump-to-bottom button when user scrolls up
+  useEffect(() => {
+    const el = messagesRef.current
+    if (!el) return
+    let raf = 0
+    let lastScrollTop = el.scrollTop
+    const onScroll = () => {
+      if (raf) cancelAnimationFrame(raf)
+      const currentScrollTop = el.scrollTop
+      const scrollDelta = Math.abs(currentScrollTop - lastScrollTop)
+      // Only mark as user scroll if there's actual movement (not just programmatic scroll)
+      if (scrollDelta > 1) {
+        userStickyScrollRef.current = true
+      }
+      raf = requestAnimationFrame(() => {
+        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8
+        nearBottomRef.current = nearBottom
+        setShowJump(!nearBottom)
+        if (nearBottom) {
+          // Only reset user sticky scroll if we're actually near bottom
+          // Give a small delay to allow programmatic scrolls
+          window.setTimeout(() => {
+            if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
+              userStickyScrollRef.current = false
+            }
+          }, 100)
+        }
+        lastScrollTop = el.scrollTop
+      })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [activeId])
+
+  // detect wide area to left-align all messages
+  useEffect(() => {
+    const measure = () => {
+      if (!messagesRef.current) return
+      const width = messagesRef.current.clientWidth
+      setLeftAlignAll(width >= 900)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [activeId])
+
+  function onChangeDigit(idx: number, val: string) {
+    if (!/^\d?$/.test(val)) return
+    const next = [...eblDigits]
+    next[idx] = val
+    setEblDigits(next)
+    if (val && idx < 3) eblRefs[idx + 1].current?.focus()
+    if (!val && idx > 0) eblRefs[idx - 1].current?.focus()
+    const full = next.join('')
+    if (full.length === 4 && /^\d{4}$/.test(full)) {
+      ;(async () => {
+        try {
+          const resp = await api.get('/contacts/search', { params: { query: full } })
+          setFoundUser(resp.data.results?.[0] ?? null)
+        } catch { setFoundUser(null) }
+      })()
+    } else {
+      setFoundUser(null)
+    }
+  }
+
+  async function openContactsOverlay() {
+    setContactsOpen(true)
+    try {
+      const r = await api.get('/status/me')
+      setMyEblid(r.data.user?.eblid ?? '')
+    } catch {}
+  }
+
+  async function sendInvite() {
+    const code = eblDigits.join('')
+    if (!/^\d{4}$/.test(code)) return
+    setSendingInvite(true)
+    try {
+      await api.post('/contacts/add', { identifier: code })
+      setSendingInvite(false)
+    } catch { setSendingInvite(false) }
+  }
+
+  // Simplified: mark all messages as READ if chat is open and window focused
+  function markAllReadNow() {
+    if (!activeId || !messagesQuery.data || !me?.id) return
+    const unreadIds = (messagesQuery.data as Array<any>)
+      .filter((m) => m.senderId !== me.id)
+      .filter((m) => !(m.receipts || []).some((r: any) => r.userId === me.id && (r.status === 'READ' || r.status === 'SEEN')))
+      .map((m) => m.id)
+    if (unreadIds.length === 0) return
+    api.post('/messages/receipts', { messageIds: unreadIds, status: 'READ' })
+      .then(() => { client.invalidateQueries({ queryKey: ['messages', activeId] }); })
+      .catch(() => {})
+  }
+
+  useEffect(() => {
+    if (document.hasFocus()) markAllReadNow()
+    if (activeId) {
+      // also mark conversation read on server to zero unreadCount
+      api.post('/messages/mark-conversation-read', { conversationId: activeId }).catch(() => {})
+      // Optimistically zero unread locally
+      client.setQueryData(['conversations'], (old: any) => {
+        if (!old) return old
+        return old.map((row: any) => row.conversation.id === activeId ? { ...row, unreadCount: 0 } : row)
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId])
+
+  useEffect(() => {
+    if (document.hasFocus()) markAllReadNow()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesQuery.data])
+
+  useEffect(() => {
+    const onFocus = () => markAllReadNow()
+    const onVis = () => { if (document.visibilityState === 'visible') markAllReadNow() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVis)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, messagesQuery.data])
+
+  // batch sender for receipts
+  function scheduleSendReceipts() {
+    if (batchTimer.current) return
+    batchTimer.current = window.setTimeout(() => {
+      const ids = Array.from(batchToRead.current)
+      batchToRead.current.clear()
+      batchTimer.current && clearTimeout(batchTimer.current)
+      batchTimer.current = null
+      if (!ids.length) return
+      api.post('/messages/receipts', { messageIds: ids, status: 'READ' })
+        .then(() => { if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] }) })
+        .catch(() => {})
+    }, 250)
+  }
+
+  // Observe bubbles and mark as READ when visible in viewport and app focused/visible
+  useEffect(() => {
+    if (!activeId || !messagesQuery.data || !me?.id) return
+    // Clean previous
+    visibleObserver.current?.disconnect()
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting || entry.intersectionRatio < 0.6) continue
+        if (!(document.hasFocus() || document.visibilityState === 'visible')) continue
+        const el = entry.target as HTMLElement
+        const mid = el.dataset.mid
+        if (!mid) continue
+        const msg = (messagesQuery.data as Array<any>).find((m) => m.id === mid)
+        if (!msg) continue
+        if (msg.senderId === me.id) continue
+        const already = (msg.receipts || []).some((r: any) => r.userId === me.id && (r.status === 'READ' || r.status === 'SEEN'))
+        if (already) continue
+        batchToRead.current.add(mid)
+        observer.unobserve(el)
+      }
+      if (batchToRead.current.size) scheduleSendReceipts()
+    }, { root: messagesRef.current!, threshold: [0.25] })
+    visibleObserver.current = observer
+    // Attach to all eligible message bubbles
+    for (const m of messagesQuery.data as Array<any>) {
+      if (m.senderId === me.id) continue
+      const already = (m.receipts || []).some((r: any) => r.userId === me.id && (r.status === 'READ' || r.status === 'SEEN'))
+      if (already) continue
+      const node = nodesByMessageId.current.get(m.id)
+      if (node) observer.observe(node)
+    }
+    return () => {
+      observer.disconnect()
+    }
+  }, [activeId, messagesQuery.data, me?.id])
+
+  // do not auto-mark all as READ on load; handled on message arrival if window focused
+
+  // detect wide area to left-align all messages
+  useEffect(() => {
+    const measure = () => {
+      if (!messagesRef.current) return
+      const width = messagesRef.current.clientWidth
+      setLeftAlignAll(width >= 900)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [activeId])
+
+  // send typing indicator with debounce
+  function notifyTyping() {
+    if (!activeId) return
+    socket.emit('conversation:typing', { conversationId: activeId, typing: true })
+    typingTimer.current && clearTimeout(typingTimer.current)
+    typingTimer.current = window.setTimeout(() => {
+      socket.emit('conversation:typing', { conversationId: activeId!, typing: false })
+    }, 1500)
+  }
+
+  async function uploadAndSendAttachments(files: File[], textContent: string = '', replyToId?: string) {
+    if (!activeId || files.length === 0) return
+    if (activeConversation?.isSecret) {
+      alert('Вложения в секретных беседах пока недоступны. Эта функция появится позже.')
+      return
+    }
+    setAttachUploading(true)
+    setAttachProgress(0)
+    try {
+      // Build optimistic pending entry
+      const pid = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const pendingAttachments: Array<{ url: string; type: 'IMAGE' | 'FILE'; width?: number; height?: number; progress?: number; __pending?: boolean }> = []
+      const totalSize = files.reduce((s, f) => s + f.size, 0)
+      // Precompute dimensions for images
+      for (const f of files) {
+        if (f.type.startsWith('image/')) {
+          const blobUrl = URL.createObjectURL(f)
+          const { width, height } = await getImageSize(blobUrl)
+          pendingAttachments.push({ url: blobUrl, type: 'IMAGE', width, height, progress: 0, __pending: true })
+        } else {
+          pendingAttachments.push({ url: f.name, type: 'FILE', __pending: true, progress: 0 })
+        }
+      }
+      setPendingByConv((prev) => ({
+        ...prev,
+        [activeId!]: [
+          ...(prev[activeId!] || []),
+          { id: pid, createdAt: Date.now(), senderId: me?.id || 'me', attachments: pendingAttachments, content: textContent },
+        ],
+      }))
+
+      const uploaded: Array<{ url: string; type: 'IMAGE' | 'FILE'; metadata?: { width?: number; height?: number } }> = []
+      let done = 0
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i]
+        const pendingAtt = pendingAttachments[i]
+        const form = new FormData(); form.append('file', f)
+        const url = await new Promise<string>((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+          xhr.open('POST', '/api/upload')
+          try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const percent = Math.round(((done + e.loaded) / totalSize) * 100)
+              setAttachProgress(percent)
+              // update corresponding pending attachment progress
+              setPendingByConv((prev) => {
+                const arr = prev[activeId!] || []
+                const copy = arr.map((m) => ({ ...m, attachments: m.attachments.map((a) => ({ ...a })) }))
+                const last = copy[copy.length - 1]
+                if (last) {
+                  const idx = last.attachments.findIndex((a) => a.__pending && a.type === (f.type.startsWith('image/') ? 'IMAGE' : 'FILE') && (!a.width || a.url.startsWith('blob:')))
+                  if (idx >= 0) last.attachments[idx].progress = percent
+                }
+                return { ...prev, [activeId!]: copy }
+              })
+            }
+          }
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState === 4) {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                try { const resp = JSON.parse(xhr.responseText); resolve(resp.url) } catch (err) { reject(err) }
+              } else reject(new Error('upload failed'))
+            }
+          }
+          xhr.send(form)
+        })
+        const uploadItem: { url: string; type: 'IMAGE' | 'FILE'; metadata?: { width?: number; height?: number } } = { 
+          url, 
+          type: f.type.startsWith('image/') ? 'IMAGE' : 'FILE' 
+        }
+        // Добавляем размеры в metadata для изображений
+        if (pendingAtt && pendingAtt.type === 'IMAGE' && pendingAtt.width && pendingAtt.height) {
+          uploadItem.metadata = { width: pendingAtt.width, height: pendingAtt.height }
+        }
+        uploaded.push(uploadItem)
+        done += f.size
+        setAttachProgress(Math.round((done / (files.reduce((s, x) => s + x.size, 0))) * 100))
+      }
+      // Send as FILE message if there is no text and only attachments
+      const msgType = uploaded.every((u) => u.type === 'IMAGE') ? 'IMAGE' : 'FILE'
+      await api.post('/conversations/send', { conversationId: activeId, type: msgType, content: textContent, attachments: uploaded, replyToId })
+      // Remove pending message after successful send
+      setPendingByConv((prev) => {
+        const convPending = prev[activeId!] || []
+        const filtered = convPending.filter((m) => m.id !== pid)
+        if (filtered.length === 0) {
+          const { [activeId!]: _, ...rest } = prev
+          return rest
+        }
+        return { ...prev, [activeId!]: filtered }
+      })
+      client.invalidateQueries({ queryKey: ['messages', activeId] })
+    } catch {}
+    setAttachUploading(false)
+  }
+
+  async function getImageSize(url: string): Promise<{ width: number; height: number }> {
+    return new Promise((resolve) => {
+      const img = new Image()
+      img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
+      img.onerror = () => resolve({ width: 320, height: 200 })
+      img.src = url
+    })
+  }
+
+  // ping to eblusha.org (approximate)
+  useEffect(() => {
+    let timer: number | null = null
+    const ping = async () => {
+      const start = performance.now()
+      try {
+        await fetch('https://eblusha.org/', { mode: 'no-cors' })
+        setPingMs(Math.round(performance.now() - start))
+      } catch {
+        setPingMs(null)
+      }
+    }
+    ping()
+    timer = window.setInterval(ping, 15000)
+    return () => { if (timer) clearInterval(timer) }
+  }, [])
+
+  // poll conversations every 20s for status/lastSeen updates
+  useEffect(() => {
+    let t: number | null = null
+    const tick = () => client.invalidateQueries({ queryKey: ['conversations'] })
+    t = window.setInterval(tick, 20000)
+    return () => { if (t) clearInterval(t) }
+  }, [client])
+
+  function formatPresence(u: any): string {
+    const status = u.status as string | undefined
+    const last = u.lastSeenAt ? new Date(u.lastSeenAt) : null
+    if (status === 'ONLINE') return 'ОНЛАЙН'
+    if (!last) return 'оффлайн'
+    const now = new Date()
+    const diffMs = now.getTime() - last.getTime()
+    const diffMin = Math.floor(diffMs / 60000)
+    if (diffMin < 1) return 'был(а) онлайн только что'
+    if (diffMin < 60) return `был(а) онлайн ${diffMin} мин назад`
+    const diffH = Math.floor(diffMin / 60)
+    if (diffH < 24) return `был(а) онлайн ${diffH} ч назад`
+    const opts: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
+    const dateStr = last.toLocaleDateString()
+    const timeStr = last.toLocaleTimeString([], opts)
+    return `был(а) онлайн ${dateStr} в ${timeStr}`
+  }
+
+  function formatDuration(ms: number): string {
+    const totalSec = Math.max(0, Math.floor(ms / 1000))
+    const hours = Math.floor(totalSec / 3600)
+    const minutes = Math.floor((totalSec % 3600) / 60)
+    const seconds = totalSec % 60
+    if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    return `${minutes}:${String(seconds).padStart(2, '0')}`
+  }
+
+  function renderConversationList(mobile: boolean) {
+    const className = mobile ? 'conversations-list slider-panel' : 'conversations-list'
+    return (
+      <aside className={className}>
+        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center' }}>
+            <div className="logo">
+              <span>Е</span>
+              <span className="b">Б</span>
+              <span>луша</span>
+            </div>
+            <div className="subtitle">Здесь мы общаемся</div>
+          </div>
+        </header>
+        <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div
+            ref={convScrollRef}
+            className="conversations-scroll-container"
+            style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1, overflow: 'auto', paddingTop: '10px' }}
+          >
+          {conversationsQuery.data?.slice().sort((a: any, b: any) => {
+            const la = a.conversation.messages?.[0]?.createdAt ? new Date(a.conversation.messages[0].createdAt).getTime() : 0
+            const lb = b.conversation.messages?.[0]?.createdAt ? new Date(b.conversation.messages[0].createdAt).getTime() : 0
+            return lb - la
+          }).filter((row: any) => {
+            const conv = row.conversation
+            if (conv.isSecret && (conv.secretStatus ?? 'ACTIVE') !== 'ACTIVE') {
+              return false
+            }
+            return true
+          }).map((row: any) => {
+            const c = row.conversation
+            const othersArr = c.participants
+              .filter((p: any) => p.user.id !== me?.id)
+              .map((p: any) => p.user)
+            const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
+            const title = c.title ?? fallbackName
+            const isGroup = c.isGroup || c.participants.length > 2
+            const isSecret = !!c.isSecret
+            const participantsText = othersArr.map((u: any) => u.displayName ?? u.username).join(', ')
+            const isActive = activeId === c.id
+            const isConnectedToCall = callConvId === c.id
+            return (
+              <div key={c.id} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setConvMenu({ open: true, x: e.clientX, y: e.clientY, conversationId: c.id }) }} onClick={() => selectConversation(c.id)} className="tile" style={{ ...(row.unreadCount > 0 ? { borderColor: 'var(--brand-600)', boxShadow: '0 3px 10px rgba(227,139,10,0.15)' } : {}), ...(isActive ? { borderColor: 'var(--brand-600)', boxShadow: '0 4px 12px rgba(227,139,10,0.14)' } : {}), ...(isConnectedToCall ? { background: 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)' } : {}) }}>
+                {isGroup ? (
+                  (() => {
+                    const entry = activeCalls[c.id]
+                    const isCallActive = entry?.active
+                    return (
+                      <Avatar 
+                        name={title?.trim()?.charAt(0) || 'Г'} 
+                        id={c.id} 
+                        avatarUrl={c.avatarUrl && c.avatarUrl.trim() ? c.avatarUrl : undefined}
+                        presence={isCallActive ? 'IN_CALL' : undefined}
+                      />
+                    )
+                  })()
+                ) : (
+                  (() => {
+                    const entry = activeCalls[c.id]
+                    const isCallActive = entry?.active
+                    return (
+                      <Avatar
+                        name={othersArr[0]?.displayName ?? othersArr[0]?.username ?? 'D'}
+                        id={othersArr[0]?.id ?? c.id}
+                        presence={isCallActive ? 'IN_CALL' : (othersArr[0]?.status ?? 'OFFLINE')}
+                        avatarUrl={othersArr[0]?.avatarUrl && othersArr[0].avatarUrl.trim() ? othersArr[0].avatarUrl : undefined}
+                      />
+                    )
+                  })()
+                )}
+                <div>
+                  <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span>{title}</span>
+                    {isSecret && (
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: 18,
+                          height: 18,
+                          borderRadius: 999,
+                          background: 'rgba(34,197,94,0.12)',
+                        }}
+                      >
+                        <Lock size={12} color="#22c55e" />
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: row.unreadCount > 0 ? 'var(--brand-600)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {row.unreadCount > 0
+                      ? `${row.unreadCount} непрочитанных`
+                      : (() => {
+                            const entry = activeCalls[c.id]
+                            if (entry?.active) {
+                            // Используем elapsedMs с сервера и добавляем локальный тик для плавного обновления между событиями
+                            // Re-render each second via timerTick, compute from startedAt to avoid double counting
+                            const elapsedMs = entry.startedAt ? (Date.now() - entry.startedAt) : (typeof entry.elapsedMs === 'number' ? entry.elapsedMs : 0)
+                            return <span>{formatDuration(elapsedMs)}</span>
+                          } else if (entry && entry.endedAt) {
+                            // Звонок завершен
+                            const endedAt = entry.endedAt
+                            const now = Date.now()
+                            const diffMs = now - endedAt
+                            const diffMin = Math.floor(diffMs / 60000)
+                            if (diffMin < 1) return <span>Завершен только что</span>
+                            if (diffMin < 60) return <span>Завершен {diffMin} мин назад</span>
+                            const diffH = Math.floor(diffMin / 60)
+                            if (diffH < 24) return <span>Завершен {diffH} ч назад</span>
+                            const endedDate = new Date(endedAt)
+                            const dateStr = endedDate.toLocaleDateString()
+                            const timeStr = endedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                            return <span>Завершен {dateStr} в {timeStr}</span>
+                          }
+                          // Для групповых бесед показываем null, для личных - статус
+                          return isGroup ? null : formatPresence(othersArr[0] ?? {})
+                        })()}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+          </div>
+          {convHasTopFade && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                height: '24px',
+                background: 'linear-gradient(to bottom, var(--surface-200) 0%, rgba(35, 39, 49, 0) 100%)',
+                pointerEvents: 'none',
+                zIndex: 10,
+              }}
+            />
+          )}
+          {convHasBottomFade && (
+            <div
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: '24px',
+                background: 'linear-gradient(to top, var(--surface-200) 0%, rgba(35, 39, 49, 0) 100%)',
+                pointerEvents: 'none',
+                zIndex: 10,
+              }}
+            />
+          )}
+        </div>
+        <div className="conv-footer">
+          <div style={{ borderTop: '1px solid var(--surface-border)', marginTop: 8, marginBottom: 8 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div onClick={() => setNewGroupOpen(true)} className="tile" style={{ marginTop: 0, flex: 1 }}>
+            <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#10b981', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <PlusCircle size={22} />
+            </div>
+            <div>
+                  <div style={{ fontWeight: 600 }}>Беседа</div>
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>Групповой чат</div>
+            </div>
+          </div>
+              <div onClick={openContactsOverlay} className="tile" style={{ marginTop: 0, flex: 1 }}>
+            <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#6366f1', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {incomingContactsQuery.data && incomingContactsQuery.data.length > 0 ? (
+                <BellRing size={22} />
+              ) : (contactsQuery.data && contactsQuery.data.length > 0 ? <Users size={22} /> : <UserPlus size={22} />)}
+            </div>
+            <div>
+              <div style={{ fontWeight: 600 }}>Контакты</div>
+              <div style={{ fontSize: 12, color: '#6b7280' }}>
+                {incomingContactsQuery.data && incomingContactsQuery.data.length > 0
+                  ? 'Новый запрос в друзья'
+                  : (contactsQuery.data && contactsQuery.data.length > 0 ? 'Список контактов' : 'Добавить контакт')}
+              </div>
+            </div>
+          </div>
+            </div>
+            <div className="tile" onClick={() => setMePopupOpen(true)} style={{ cursor: 'pointer', marginTop: 0 }}>
+            {(() => {
+              const directStatus = myPresence ?? (meInfoQuery.data as any)?.status
+              const fallbackStatus = isSocketOnline ? 'ONLINE' : 'OFFLINE'
+              const normalized = (directStatus ?? fallbackStatus ?? 'OFFLINE').toString().toUpperCase()
+              const presenceValue = (['ONLINE', 'AWAY', 'OFFLINE'].includes(normalized) ? normalized : fallbackStatus) as 'ONLINE' | 'AWAY' | 'OFFLINE'
+              const avatarUrl = (meInfoQuery.data as any)?.avatarUrl ?? me?.avatarUrl ?? undefined
+              return (
+                <Avatar
+                  name={me?.displayName ?? me?.username ?? 'Me'}
+                  id={me?.id ?? 'me'}
+                  presence={presenceValue}
+                  avatarUrl={avatarUrl}
+                />
+              )
+            })()}
+            <div>
+              <div style={{ fontWeight: 700 }}>{me?.displayName ?? me?.username ?? 'Я'}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>EBLID: {meInfoQuery.data?.eblid ?? '— — — —'}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    )
+  }
+
+  function renderMessagesPane(mobile: boolean) {
+    const sectionClass = mobile ? 'messages-pane slider-panel' : 'messages-pane'
+    const secretInactive = conversationSecretInactive
+    const secretSessionReady = conversationSecretSessionReady
+    let secretBlockedText = ''
+    if (activeConversation?.isSecret) {
+      if (secretInactive) {
+        secretBlockedText = 'Секретный чат станет доступен после подтверждения собеседника.'
+      } else if (secretBlockedByOtherDevice) {
+        secretBlockedText = connectedDeviceName
+          ? `Секретный чат подключён на устройстве «${connectedDeviceName}»`
+          : 'Секретный чат подключён на другом устройстве.'
+      } else if (!secretSessionReady) {
+        secretBlockedText = 'Готовим защищённое подключение...'
+      }
+    }
+    return (
+      <section className={sectionClass}>
+        <header
+          style={{
+            ...(() => {
+              if (!activeId) return {}
+              const callEntry = activeCalls[activeId]
+              const isActive = callEntry?.active
+              if (isActive) {
+                return {
+                  background: 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)',
+                  borderBottom: '2px solid var(--brand)',
+                }
+              }
+              return {}
+            })(),
+            display: 'flex',
+            flexDirection: isMobile ? 'column' : 'row',
+            justifyContent: isMobile ? 'flex-start' : 'space-between',
+            alignItems: isMobile ? 'stretch' : 'center',
+            flexShrink: 0,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              width: isMobile ? '100%' : 'auto',
+              padding: isMobile ? '0 8px' : '0',
+            }}
+          >
+            {mobile && (
+              <button className="btn btn-icon btn-ghost" onClick={backToList}>
+                <ArrowLeft size={18} />
+              </button>
+            )}
+            {activeConversation ? (
+              (() => {
+                const othersArr = activeConversation.participants.filter((p: any) => p.user.id !== me?.id).map((p: any) => p.user)
+                const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
+                const title = activeConversation.title ?? fallbackName
+                const isGroup = activeConversation.isGroup || activeConversation.participants.length > 2
+                const isSecret = !!activeConversation.isSecret && !isGroup
+                const callEntry = activeCalls[activeConversation.id]
+                const isActive = callEntry?.active
+                return isGroup ? (
+                  <>
+                    <div onClick={() => setGroupAvatarEditor(true)} style={{ cursor: 'pointer' }}>
+                      <Avatar 
+                        name={title?.trim()?.charAt(0) || 'Г'} 
+                        id={activeConversation.id} 
+                        size={60} 
+                        avatarUrl={activeConversation.avatarUrl && activeConversation.avatarUrl.trim() ? activeConversation.avatarUrl : undefined}
+                        presence={isActive ? 'IN_CALL' : undefined}
+                      />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0, order: isMobile ? 1 : 2 }}>
+                      <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {title}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        {isActive ? (
+                          <>
+                            {(() => {
+                              const participants = callEntry.participants || []
+                              const allParticipants = activeConversation.participants || []
+                              // Используем elapsedMs с сервера и добавляем локальный тик для плавного обновления между событиями
+                              // Re-render each second via timerTick, compute from startedAt to avoid double counting
+                              const elapsedMs = callEntry.startedAt ? (Date.now() - callEntry.startedAt) : (typeof callEntry.elapsedMs === 'number' ? callEntry.elapsedMs : 0)
+                              return (
+                                <>
+                                  {callEntry.active && <span>{formatDuration(elapsedMs)}</span>}
+                                  {allParticipants.length > 0 && (
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                      {callEntry.startedAt && ' • '}
+                                      {allParticipants.map((p: any, idx: number) => {
+                                        const u = p.user
+                                        const isInCall = participants.length > 0 && participants.includes(u.id)
+                                        return (
+                                          <span key={u.id} style={{ fontWeight: isInCall ? 700 : 400, color: isInCall ? 'var(--brand-600)' : 'var(--text-muted)' }}>
+                                            {idx > 0 && ', '}
+                                            {u.displayName ?? u.username}
+                                            {isInCall && ' ✓'}
+                                          </span>
+                                        )
+                                      })}
+                                    </span>
+                                  )}
+                                </>
+                              )
+                            })()}
+                          </>
+                        ) : callEntry && callEntry.endedAt ? (
+                          (() => {
+                            // Звонок завершен
+                            const endedAt = callEntry.endedAt
+                            const now = Date.now()
+                            const diffMs = now - endedAt
+                            const diffMin = Math.floor(diffMs / 60000)
+                            let timeText = ''
+                            if (diffMin < 1) timeText = 'Завершен только что'
+                            else if (diffMin < 60) timeText = `Завершен ${diffMin} мин назад`
+                            else {
+                              const diffH = Math.floor(diffMin / 60)
+                              if (diffH < 24) timeText = `Завершен ${diffH} ч назад`
+                              else {
+                                const endedDate = new Date(endedAt)
+                                const dateStr = endedDate.toLocaleDateString()
+                                const timeStr = endedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                timeText = `Завершен ${dateStr} в ${timeStr}`
+                              }
+                            }
+                            const allParticipants = activeConversation.participants || []
+                            return (
+                              <>
+                                <span>{timeText}</span>
+                                {allParticipants.length > 0 && (
+                                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    {' • '}
+                                    {allParticipants.map((p: any, idx: number) => {
+                                      const u = p.user
+                                      return (
+                                        <span key={u.id}>
+                                          {idx > 0 && ', '}
+                                          {u.displayName ?? u.username}
+                                        </span>
+                                      )
+                                    })}
+                                  </span>
+                                )}
+                              </>
+                            )
+                          })()
+                        ) : (
+                          othersArr.map((u: any) => u.displayName ?? u.username).join(', ')
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      className={isMobile ? 'btn btn-secondary' : 'btn btn-icon btn-ghost'}
+                      title="Добавить участников"
+                      onClick={() => {
+                        setAddParticipantsSelectedIds([])
+                        setAddParticipantsMode('friends')
+                        setAddParticipantsEblDigits(['', '', '', ''])
+                        setAddParticipantsFoundUser(null)
+                        setAddParticipantsSearchError(null)
+                        setAddParticipantsSearching(false)
+                        setAddParticipantsModal(true)
+                      }}
+                      style={
+                        isMobile
+                          ? {
+                              padding: '8px 16px',
+                              height: 42,
+                              borderRadius: 999,
+                              fontSize: 14,
+                              fontWeight: 500,
+                              whiteSpace: 'nowrap',
+                              flexShrink: 0,
+                              marginLeft: 'auto',
+                              order: 2,
+                            }
+                          : {
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: 60,
+                              height: 60,
+                              minWidth: 60,
+                              minHeight: 60,
+                              borderRadius: 999,
+                              order: 1,
+                            }
+                      }
+                    >
+                      {isMobile ? (
+                        <>
+                          <UserPlus size={16} />
+                          <span style={{ marginLeft: 6 }}>Добавить</span>
+                        </>
+                      ) : (
+                        <UserPlus size={20} />
+                      )}
+                    </button>
+                  </>
+                ) : (
+                  (() => {
+                    const peer: any = othersArr[0]
+                    return (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <Avatar
+                          name={peer?.displayName ?? peer?.username ?? 'D'}
+                          id={peer?.id ?? activeConversation.id}
+                          avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
+                          presence={(callEntry?.active ? 'IN_CALL' : (peer?.status ?? 'OFFLINE'))}
+                          size={60}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span>{title}</span>
+                            {isSecret && (
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  width: 20,
+                                  height: 20,
+                                  borderRadius: 999,
+                                  background: 'rgba(34,197,94,0.12)',
+                                }}
+                              >
+                                <Lock size={14} color="#22c55e" />
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                            {callEntry?.active ? (
+                              (() => {
+                                const elapsedMs = callEntry.startedAt ? (Date.now() - callEntry.startedAt) : (typeof callEntry.elapsedMs === 'number' ? callEntry.elapsedMs : 0)
+                                return <span>{formatDuration(elapsedMs)}</span>
+                              })()
+                            ) : callEntry && callEntry.endedAt ? (
+                              (() => {
+                                const endedAt = callEntry.endedAt
+                                const now = Date.now()
+                                const diffMs = now - endedAt
+                                const diffMin = Math.floor(diffMs / 60000)
+                                if (diffMin < 1) return <span>Завершен только что</span>
+                                if (diffMin < 60) return <span>Завершен {diffMin} мин назад</span>
+                                const diffH = Math.floor(diffMin / 60)
+                                if (diffH < 24) return <span>Завершен {diffH} ч назад</span>
+                                const endedDate = new Date(endedAt)
+                                const dateStr = endedDate.toLocaleDateString()
+                                const timeStr = endedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                return <span>Завершен {dateStr} в {timeStr}</span>
+                              })()
+                            ) : (
+                              peer ? (peer.status === 'ONLINE' ? 'ОНЛАЙН' : formatPresence(peer)) : ''
+                            )}
+                          </div>
+                        </div>
+                        {peer?.id && (
+                          <button
+                            className={isSecret ? 'btn btn-primary' : isMobile ? 'btn btn-secondary' : 'btn btn-icon btn-ghost'}
+                            title={isSecret ? endSecretTitle : 'Начать секретный чат'}
+                            disabled={!isSecret && secretRequestLoading}
+                            onClick={async () => {
+                              if (isSecret) {
+                                setEndSecretModalOpen(true)
+                                return
+                              }
+                              await initiateSecretChat(peer.id)
+                            }}
+                            style={
+                              isSecret
+                                ? {
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 6,
+                                    padding: isMobile ? '8px 14px' : '10px 18px',
+                                    height: isMobile ? 42 : 44,
+                                    borderRadius: 999,
+                                    background: '#ef4444',
+                                    borderColor: '#ef4444',
+                                    color: '#fff',
+                                    fontSize: isMobile ? 14 : 15,
+                                    fontWeight: 600,
+                                    // На мобильных прижимаем кнопку к правому краю шапки
+                                    ...(isMobile ? { marginLeft: 'auto', alignSelf: 'flex-end' } : {}),
+                                  }
+                                : isMobile
+                                  ? {
+                                      padding: '8px 12px',
+                                      height: 42,
+                                      borderRadius: 999,
+                                      fontSize: 14,
+                                      fontWeight: 500,
+                                      whiteSpace: 'nowrap',
+                                    }
+                                  : undefined
+                            }
+                          >
+                            {isSecret ? (
+                              <span style={{ fontWeight: 600 }}>{endSecretLabel}</span>
+                            ) : isMobile ? (
+                              <>
+                                <Lock size={16} />
+                                <span style={{ marginLeft: 6 }}>Секретный чат</span>
+                              </>
+                            ) : (
+                              <Lock size={18} />
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })()
+                )
+              })()
+            ) : (
+              <div>Выберите чат</div>
+            )}
+        </div>
+          {endSecretModalOpen &&
+            activeConversation &&
+            !!activeConversation.isSecret &&
+            (activeConversation.participants?.length ?? 0) <= 2 &&
+            typeof document !== 'undefined' &&
+            createPortal(
+              <div
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  background: 'rgba(10,12,16,0.6)',
+                  backdropFilter: 'blur(4px) saturate(110%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: isMobile ? '0 16px' : 0,
+                  boxSizing: 'border-box',
+                  zIndex: 80,
+                }}
+                onClick={() => setEndSecretModalOpen(false)}
+              >
+                <div
+                  style={{
+                    background: 'var(--surface-200)',
+                    padding: isMobile ? 16 : 20,
+                    borderRadius: isMobile ? 20 : 16,
+                    width: '100%',
+                    maxWidth: 420,
+                    border: '1px solid var(--surface-border)',
+                    boxShadow: 'var(--shadow-medium)',
+                    color: 'var(--text-primary)',
+                    textAlign: isMobile ? 'center' : 'left',
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 12,
+                      flexDirection: isMobile ? 'column' : 'row',
+                      gap: isMobile ? 8 : 0,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 18, width: '100%' }}>Завершить секретный чат?</div>
+                    <button
+                      className="btn btn-icon btn-ghost"
+                      onClick={() => setEndSecretModalOpen(false)}
+                      style={{ alignSelf: isMobile ? 'flex-end' : undefined }}
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
+                    Сообщения этого секретного чата будут удалены у всех участников. Это действие необратимо.
+                  </div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: isMobile ? 'center' : 'flex-end',
+                      alignItems: 'center',
+                      flexDirection: isMobile ? 'column' : 'row',
+                      gap: isMobile ? 12 : 8,
+                    }}
+                  >
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => setEndSecretModalOpen(false)}
+                      style={isMobile ? { width: '100%' } : undefined}
+                    >
+                      Отменить
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      style={{
+                        background: '#ef4444',
+                        borderColor: '#ef4444',
+                        width: isMobile ? '100%' : undefined,
+                      }}
+                      onClick={async () => {
+                        if (!activeId) return
+                        try {
+                          await api.delete(`/conversations/${activeId}`)
+                          client.invalidateQueries({ queryKey: ['conversations'] })
+                          client.removeQueries({ queryKey: ['messages', activeId] })
+                          setEndSecretModalOpen(false)
+                          setActiveId(null)
+                        } catch (err) {
+                          // eslint-disable-next-line no-console
+                          console.error('Failed to end secret conversation:', err)
+                        }
+                      }}
+                    >
+                      Завершить
+                    </button>
+                  </div>
+                </div>
+              </div>,
+              document.body,
+            )}
+          {activeId && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                width: isMobile ? '100%' : 'auto',
+                padding: isMobile ? '0 8px' : '0',
+                justifyContent: isMobile ? 'center' : 'flex-end',
+                marginLeft: isMobile ? 0 : 'auto',
+              }}
+            >
+              {(() => {
+                const callEntry = activeCalls[activeId]
+                // isActive - звонок активен (независимо от того, присоединены ли мы)
+                const isActive = callEntry?.active
+                const isMinimized = minimizedCallConvId === activeId
+                const isGroup = activeConversation?.isGroup || (activeConversation?.participants.length ?? 0) > 2
+                const isJoined = callConvId === activeId // Проверяем, присоединены ли мы к звонку
+                
+                const buttonBaseStyle = {
+                  display: 'flex' as const,
+                  alignItems: 'center' as const,
+                  justifyContent: 'center' as const,
+                  gap: 6,
+                  padding: isMobile ? '8px 12px' : '12px 16px',
+                  flex: isMobile ? 1 : 'auto' as const,
+                  minWidth: isMobile ? 0 : 'auto' as const,
+                  fontSize: isMobile ? '14px' : '15px',
+                  fontWeight: isMobile ? 500 : 600,
+                  height: isMobile ? '42px' : '46px',
+                  minHeight: isMobile ? '42px' : '46px',
+                  boxSizing: 'border-box' as const
+                }
+
+                const handleStartCall = () => {
+                  if (!activeId) return
+                  try {
+                    inviteCall(activeId, false)
+                    callStore.startOutgoing(activeId, false)
+                    setActiveCalls((prev) => {
+                      const current = prev[activeId]
+                      const myId = me?.id
+                      if (!current?.active) {
+                        return { ...prev, [activeId]: { startedAt: Date.now(), active: true, participants: myId ? [myId] : [] } }
+                      }
+                      if (myId && current.participants && !current.participants.includes(myId)) {
+                        return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
+                      }
+                      return prev
+                    })
+                    setCallConvId(activeId)
+                    setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                  } catch (err) {
+                    console.error('Error starting call:', err)
+                  }
+                }
+
+                const handleStartVideoCall = () => {
+                  if (!activeId) return
+                  try {
+                    inviteCall(activeId, true)
+                    callStore.startOutgoing(activeId, true)
+                    setActiveCalls((prev) => {
+                      const current = prev[activeId]
+                      const myId = me?.id
+                      if (!current?.active) {
+                        return { ...prev, [activeId]: { startedAt: Date.now(), active: true, participants: myId ? [myId] : [] } }
+                      }
+                      if (myId && current.participants && !current.participants.includes(myId)) {
+                        return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
+                      }
+                      return prev
+                    })
+                    setCallConvId(activeId)
+                    setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                  } catch (err) {
+                    console.error('Error starting call:', err)
+                  }
+                }
+                if (isActive) {
+                  // Если звонок активен, но мы не присоединены - показываем "подключиться"
+                  // Это работает для всех типов звонков (1:1 и группы)
+                  if (!isJoined) {
+                    // Звонок активен, но мы не присоединены - показываем "подключиться"
+                    return (
+                      <>
+                        <button 
+                          className="btn btn-secondary" 
+                          onClick={() => {
+                            setCallConvId(activeId!)
+                            setMinimizedCallConvId((prev) => prev === activeId ? null : prev)
+                            callStore.startOutgoing(activeId!, false)
+                            const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
+                            if (isGroupCall) {
+                              try { joinCallRoom(activeId!, false) } catch {}
+                            }
+                          }}
+                          style={buttonBaseStyle}
+                        >
+                          <Phone size={isMobile ? 16 : 18} />
+                          {isMobile ? 'Подключиться' : ' Подключиться'}
+                    </button>
+                        <button 
+                          className="btn btn-primary" 
+                          onClick={() => {
+                            setCallConvId(activeId!)
+                            setMinimizedCallConvId((prev) => prev === activeId ? null : prev)
+                            callStore.startOutgoing(activeId!, true)
+                            const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
+                            if (isGroupCall) {
+                              try { joinCallRoom(activeId!, true) } catch {}
+                            }
+                          }}
+                          style={buttonBaseStyle}
+                        >
+                          <Video size={isMobile ? 16 : 18} />
+                          {isMobile ? 'Подключиться с видео' : ' Подключиться с видео'}
+                        </button>
+                      </>
+                    )
+                  }
+                  
+                  // Мы присоединены к звонку - показываем "развернуть" (если минимизирован) и "сбросить"
+                  return (
+                    <>
+                      {isMinimized ? (
+                        <button 
+                          className="btn btn-secondary"
+                          onClick={() => {
+                            setMinimizedCallConvId(null)
+                          }}
+                          style={buttonBaseStyle}
+                        >
+                          <Maximize2 size={isMobile ? 16 : 18} />
+                          {isMobile ? 'Развернуть' : ' Развернуть'}
+                        </button>
+                      ) : (
+                        !isMobile && <div style={{ flex: 1 }} />
+                      )}
+                      <button 
+                        className="btn"
+                        onClick={() => {
+                          const count = activeConversation?.participants?.length ?? 0
+                          const isDialog = count <= 2
+                          const isGroupCall = activeConversation?.isGroup || (count > 2)
+                          if (isDialog && callConvId) {
+                            endCall(callConvId)
+                            setActiveCalls((prev) => {
+                              const current = prev[callConvId]
+                              if (current?.active) {
+                                return { ...prev, [callConvId]: { ...current, active: false, endedAt: Date.now() } }
+                              }
+                              return prev
+                            })
+                          } else if (isGroupCall && callConvId) {
+                            try { leaveCallRoom(callConvId) } catch {}
+                            setActiveCalls((prev) => {
+                              const current = prev[callConvId]
+                              if (!current) return prev
+                              if (!current.participants) return prev
+                              const myId = me?.id
+                              if (!myId) return prev
+                              if (!current.participants.includes(myId)) return prev
+                              return { ...prev, [callConvId]: { ...current, participants: current.participants.filter((id: string) => id !== myId) } }
+                            })
+                          }
+                          setCallConvId(null)
+                          setMinimizedCallConvId(null)
+                          callStore.endCall()
+                          stopRingtone()
+                        }}
+                        style={{ 
+                          ...buttonBaseStyle,
+                          background: '#ef4444',
+                          color: '#fff'
+                        }}
+                      >
+                        <PhoneOff size={isMobile ? 16 : 18} />
+                        {isMobile ? 'Сбросить' : ' Сбросить'}
+                      </button>
+                    </>
+                  )
+                }
+                
+                return (
+                  <>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={handleStartCall}
+                      style={buttonBaseStyle}
+                    >
+                      <Phone size={isMobile ? 16 : 18} />
+                      {isMobile ? 'Начать звонок' : ' Начать звонок'}
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleStartVideoCall}
+                      style={buttonBaseStyle}
+                    >
+                      <Video size={isMobile ? 16 : 18} />
+                      {isMobile ? 'Начать с видео' : ' Начать с видео'}
+                    </button>
+                  </>
+                )
+              })()}
+            </div>
+          )}
+        </header>
+        {!activeConversation?.isSecret && pendingSecretContext && (
+          <div
+            style={{
+              margin: '12px 12px 0',
+              padding: '12px 16px',
+              borderRadius: 12,
+              border: '1px solid rgba(20,184,166,0.4)',
+              background: 'linear-gradient(135deg, rgba(13,148,136,0.15), rgba(6,95,70,0.25))',
+              color: '#ccfbf1',
+              display: 'flex',
+              flexDirection: isMobile ? 'column' : 'row',
+              gap: 12,
+              alignItems: isMobile ? 'stretch' : 'center',
+            }}
+          >
+            {pendingSecretContext.isInitiator ? (
+              <>
+                <div style={{ flex: 1 }}>
+                  Ждём подтверждения собеседника, чтобы начать секретный чат.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => handleDeclinePendingSecret(pendingSecretContext.conversationId)}
+                    disabled={secretActionLoading}
+                    style={{ color: '#f87171' }}
+                  >
+                    Отменить
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ flex: 1 }}>
+                  {pendingSecretContext.initiatorName} предлагает начать секретный чат на этом устройстве.
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => handleAcceptPendingSecret(pendingSecretContext.conversationId)}
+                    disabled={secretActionLoading}
+                  >
+                    Принять
+                  </button>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => handleDeclinePendingSecret(pendingSecretContext.conversationId)}
+                    disabled={secretActionLoading}
+                    style={{ color: '#bae6fd' }}
+                  >
+                    Отказаться
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        <div className="messages-container" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            height: '24px',
+            background: 'linear-gradient(to bottom, var(--surface-200) 0%, rgba(35, 39, 49, 0) 100%)',
+            pointerEvents: 'none',
+            zIndex: 10
+          }} />
+          <div
+            ref={messagesRef}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: 'auto',
+              padding: 16,
+              display: 'block',
+            }}
+          >
+            {!activeId ? (
+              <div className="messages-empty">Сообщения появятся здесь</div>
+            ) : (activeConversation?.isSecret && (!secretSessionReady || secretInactive)) ? (
+              <div className="messages-empty">{secretBlockedText}</div>
+            ) : (
+              (() => {
+                const list = (displayedMessages ? [...displayedMessages] : []).
+                  filter((m: any) => !m.deletedAt).
+                  sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
+                const pending = pendingByConv[activeId!] || []
+                const fullList = [...(list || []), ...pending]
+                if (!fullList) return null
+                return fullList.map((m: any, i: number) => {
+                  if (m.deletedAt) return null
+                  
+                  // Системные сообщения отображаются по-особому
+                  if (m.type === 'SYSTEM') {
+                    return (
+                      <div key={m.id} style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '12px 16px', marginTop: 8 }}>
+                        <div style={{ 
+                          fontSize: 13, 
+                          color: 'var(--text-muted)', 
+                          textAlign: 'center',
+                          fontStyle: 'italic',
+                          opacity: 0.8
+                        }}>
+                          {m.content}
+                        </div>
+                      </div>
+                    )
+                  }
+                  
+                  const prev = fullList[i - 1]
+                  const next = fullList[i + 1]
+                  const isLastOfRun = !next || next.senderId !== m.senderId
+                  const isPrevSame = !!prev && prev.senderId === m.senderId
+                  const isMe = m.senderId === me?.id
+                  const baseRow = leftAlignAll ? 'msg left' : (isMe ? 'msg me' : 'msg them')
+                  const spacingClass = isPrevSame ? 'compact' : 'gap'
+                  const rowClass = `${baseRow} ${spacingClass}`
+                  const baseBubble = leftAlignAll ? 'msg-bubble left' : (isMe ? 'msg-bubble me' : 'msg-bubble them')
+                  const bubbleClass = isLastOfRun ? `${baseBubble} ${isMe && !leftAlignAll ? 'tail-right' : 'tail-left'}` : baseBubble
+                  const senderUser = usersById[m.senderId]
+                  const avatarName = senderUser?.displayName ?? senderUser?.username ?? (isMe ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
+                  const avatarId = senderUser?.id ?? (isMe ? (me?.id ?? 'me') : 'user')
+                  const bg = isMe ? '#303845' : hashToGray(m.senderId)
+                  const fg = isMe ? '#f1f3f6' : '#f1f3f6'
+                  const showAvatar = leftAlignAll && isLastOfRun
+                  const showSpacer = leftAlignAll
+                  const createdAt = m.createdAt ? new Date(m.createdAt) : null
+                  const timeLabel = createdAt ? createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+                  const otherIds: string[] = (activeConversation?.participants || []).map((p: any) => p.user.id).filter((id: string) => id !== me?.id)
+                  const receipts = (m.receipts || []) as Array<any>
+                  const readByAny = isMe && otherIds.some((uid) => receipts.some((r) => r.userId === uid && (r.status === 'READ' || r.status === 'SEEN')))
+                  const ticks = isMe ? (readByAny ? '✓' : '') : ''
+                      const openMenuAt = (clientX: number, clientY: number) => {
+                        setContextMenu({ open: true, x: clientX, y: clientY, messageId: m.id })
+                      }
+                      const onContextMenu = (e: React.MouseEvent) => {
+                    e.preventDefault()
+                        openMenuAt(e.clientX, e.clientY)
+                  }
+                  const scrollToQuoted = () => {
+                    const qid = (m as any).replyTo?.id as string | undefined
+                    if (!qid) return
+                    const el = nodesByMessageId.current.get(qid)
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  const imagesInThread = fullList.filter((x: any) => (x.attachments || []).some((a: any) => a.type === 'IMAGE')).flatMap((x: any) => x.attachments.filter((a: any) => a.type === 'IMAGE').map((a: any) => a.url))
+                  const openLightbox = (url: string) => {
+                    const index = imagesInThread.findIndex((u: string) => u === url)
+                    setLightbox({ open: true, index: index >= 0 ? index : 0, items: imagesInThread })
+                  }
+                      const onLongPress = {
+                        onPointerDown: (e: any) => {
+                          const id = window.setTimeout(() => openMenuAt(e.clientX, e.clientY), 450)
+                          const clear = () => { window.clearTimeout(id); window.removeEventListener('pointerup', clear); window.removeEventListener('pointermove', cancel) }
+                          const cancel = () => { window.clearTimeout(id); window.removeEventListener('pointerup', clear); window.removeEventListener('pointermove', cancel) }
+                          window.addEventListener('pointerup', clear, { passive: true } as any)
+                          window.addEventListener('pointermove', cancel, { passive: true } as any)
+                        }
+                      }
+                      const rowHandlers = isMobile ? {} : { onContextMenu, ...onLongPress }
+                      return (
+                        <div key={m.id} className={rowClass} {...rowHandlers}>
+                      {showSpacer && (showAvatar ? (
+                        <Avatar name={avatarName} id={avatarId} avatarUrl={(() => {
+                          const userAvatar = usersById[m.senderId]?.avatarUrl
+                          return userAvatar && userAvatar.trim() ? userAvatar : undefined
+                        })()} />
+                      ) : (
+                        <div className="avatar-spacer" />
+                      ))}
+                      <div
+                        className={bubbleClass}
+                        data-mid={m.id}
+                        ref={(el) => {
+                          if (!el) { nodesByMessageId.current.delete(m.id); return }
+                          nodesByMessageId.current.set(m.id, el)
+                          visibleObserver.current?.observe(el)
+                        }}
+                        style={{ ['--bubble-bg' as any]: bg, ['--bubble-fg' as any]: fg }}
+                        onClick={(e) => {
+                          if (!isMobile) return
+                          const target = e.target as HTMLElement
+                          if (target.closest('a, button, input, textarea, img, video')) return
+                          const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                          if (selection && selection.toString()) return
+                          openMenuAt(e.clientX, e.clientY)
+                        }}
+                      >
+                        {(m.reactions && m.reactions.length > 0) && (() => {
+                          const grouped: Record<string, number> = {}
+                          for (const r of m.reactions) grouped[r.emoji] = (grouped[r.emoji] || 0) + 1
+                          return (
+                            <div style={{ position: 'absolute', bottom: -18, right: isMe ? 8 : undefined, left: !isMe ? 8 : undefined, display: 'flex', gap: 6, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', borderRadius: 12, padding: '2px 6px', zIndex: 5, pointerEvents: 'auto' }}>
+                              {Object.entries(grouped).map(([emo, cnt]) => <span key={emo} style={{ fontSize: 12, color: '#ffc46b' }}>{emo}{cnt>1?` ${cnt}`:''}</span>)}
+                            </div>
+                          )
+                        })()}
+                        {m.replyTo && (
+                          <div
+                            onClick={scrollToQuoted}
+                            style={{
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              padding: '6px 8px',
+                              borderRadius: 8,
+                              marginBottom: 6,
+                              background: isMe ? '#303845' : '#191d23',
+                              color: '#f1f3f6',
+                              borderLeft: isMe ? '3px solid #ff9e1a' : '3px solid #ff9e1a',
+                            }}
+                          >
+                            Ответ на: {(m.replyTo.content ?? 'сообщение')}
+                          </div>
+                        )}
+                        <>
+                          <div style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>{m.content}</div>
+                          {(m.attachments || []).map((att: any, idx: number) => {
+                            if (att.type === 'IMAGE') {
+                              const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
+                              const isMobile = vw <= 768
+                              // Для мобильных: максимум половина экрана, минимум 320px
+                              // Для десктопа: максимум 600px, минимум 320px
+                              const maxScreen = isMobile 
+                                ? Math.max(320, Math.floor(vw / 2))
+                                : Math.min(600, Math.max(320, Math.floor(vw / 3)))
+                              
+                              // Используем реальные размеры изображения из разных источников
+                              // Приоритет: imageDimensions (загруженные) > att.width/height > metadata.width/height > fallback
+                              const dimKey = `${att.url || idx}`
+                              const loadedDims = imageDimensions[dimKey]
+                              const baseW = loadedDims?.width || att.width || att.metadata?.width || maxScreen
+                              const baseH = loadedDims?.height || att.height || att.metadata?.height || Math.round(baseW * 0.75)
+                              const ratio = baseH / baseW || 0.75 // высота / ширина
+                              
+                              // Масштабируем изображение с сохранением пропорций
+                              // Для очень широких изображений (ratio < 0.5) используем меньшую максимальную высоту
+                              const maxWidth = maxScreen
+                              // Для широких изображений ограничиваем высоту сильнее, чтобы избежать обрезки
+                              let maxHeight = maxScreen
+                              if (ratio < 0.5) {
+                                // Для очень широких изображений (ширина в 2+ раза больше высоты)
+                                // Используем меньшую максимальную высоту, чтобы изображение полностью поместилось
+                                maxHeight = Math.max(Math.round(maxScreen * 0.6), 200)
+                              } else if (ratio < 0.7) {
+                                // Для широких изображений (ширина примерно в 1.4 раза больше высоты)
+                                maxHeight = Math.max(Math.round(maxScreen * 0.75), 200)
+                              }
+                              
+                              // Вычисляем масштаб для обоих измерений
+                              const scaleByWidth = baseW > maxWidth ? maxWidth / baseW : 1
+                              const scaleByHeight = baseH > maxHeight ? maxHeight / baseH : 1
+                              
+                              // Используем меньший масштаб, чтобы оба измерения поместились в ограничения
+                              const scale = Math.min(scaleByWidth, scaleByHeight, 1)
+                              
+                              // Вычисляем финальные размеры с сохранением пропорций
+                              // Используем точные вычисления без округления до финального шага
+                              let targetW = baseW * scale
+                              let targetH = baseH * scale
+                              
+                              // Пересчитываем одно измерение на основе другого для точного соответствия пропорциям
+                              // Это гарантирует, что targetH / targetW === ratio точно
+                              if (targetW > maxWidth) {
+                                targetW = maxWidth
+                                targetH = targetW * ratio
+                              }
+                              if (targetH > maxHeight) {
+                                targetH = maxHeight
+                                targetW = targetH / ratio
+                              }
+                              
+                              // Округляем только в конце
+                              targetW = Math.round(targetW)
+                              targetH = Math.round(targetH)
+                              
+                              const placeholderKey = `${att.url || idx}`
+                              const isLoaded = !!loadedImages[placeholderKey]
+                              const isPending = att.__pending || !isLoaded
+                              
+                              return (
+                                <div key={`${att.url}-${idx}`} style={{ 
+                                  maxWidth: '100%',
+                                  maxHeight: targetH,
+                                  width: isPending ? Math.min(targetW, typeof window !== 'undefined' ? window.innerWidth - 100 : targetW) : 'fit-content',
+                                  height: isPending ? targetH : 'auto',
+                                  minWidth: 0,
+                                  minHeight: isPending ? targetH : 0,
+                                  marginTop: 8, 
+                                  position: 'relative',
+                                  borderRadius: 10,
+                                  overflow: 'hidden',
+                                  display: 'inline-block',
+                                  lineHeight: 0,
+                                  boxSizing: 'border-box'
+                                }}>
+                                  {isPending && (
+                                  <div
+                                    style={{
+                                        position: 'absolute',
+                                        inset: 0,
+                                      width: '100%',
+                                        height: '100%',
+                                      borderRadius: 10,
+                                        background: 'var(--surface-100)',
+                                        border: '1px solid var(--surface-border)',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        zIndex: 1
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          position: 'absolute',
+                                          inset: 0,
+                                          background: 'linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.1) 37%, transparent 63%)',
+                                      backgroundSize: '400% 100%',
+                                      animation: 'eb-shimmer 1.2s ease-in-out infinite',
+                                        }}
+                                      />
+                                      {typeof att.progress === 'number' && att.progress < 100 ? (
+                                        <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                                          <div style={{ width: 40, height: 40, border: '3px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                                          <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>{att.progress}%</div>
+                                        </div>
+                                      ) : (
+                                        <div style={{ position: 'relative', zIndex: 2, width: 40, height: 40, border: '3px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                                      )}
+                                    </div>
+                                  )}
+                                  <img
+                                    src={att.url}
+                                    alt="img"
+                                    style={{ 
+                                      maxWidth: '100%',
+                                      maxHeight: targetH,
+                                      width: 'auto',
+                                      height: 'auto',
+                                      objectFit: 'contain', 
+                                      borderRadius: 10, 
+                                      cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in', 
+                                      opacity: att.__pending ? 0.85 : 1, 
+                                      display: isLoaded ? 'block' : 'none',
+                                      position: 'relative',
+                                      zIndex: 0,
+                                      background: 'var(--surface-100)',
+                                      verticalAlign: 'top'
+                                    }}
+                                    onLoad={(e) => {
+                                      const img = e.target as HTMLImageElement
+                                      // Если размеры не были известны, сохраняем реальные размеры загруженного изображения
+                                      if ((!att.width && !att.metadata?.width) && img.naturalWidth && img.naturalHeight) {
+                                        setImageDimensions((prev) => ({
+                                          ...prev,
+                                          [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight }
+                                        }))
+                                      }
+                                      setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
+                                      if (messagesRef.current && nearBottomRef.current) {
+                                        const el = messagesRef.current
+                                        el.scrollTop = el.scrollHeight
+                                      }
+                                    }}
+                                    onError={(e) => {
+                                      // Hide broken image, keep placeholder visible
+                                      const target = e.target as HTMLImageElement
+                                      if (target) target.style.display = 'none'
+                                    }}
+                                    onClick={() => { if (!att.__pending) openLightbox(att.url) }}
+                                  />
+                                  {isLoaded && typeof att.progress === 'number' && att.progress < 100 && (
+                                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 6, background: 'rgba(0,0,0,0.15)', borderRadius: '0 0 10px 10px', overflow: 'hidden', zIndex: 3 }}>
+                                      <div style={{ width: `${att.progress}%`, height: '100%', background: 'rgba(255,255,255,0.9)' }} />
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            }
+                            return (
+                              <div key={`${att.url}-${idx}`} style={{ marginTop: 8 }}>
+                                {att.__pending ? (
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#6b7280' }}>Файл: {att.url}</div>
+                                ) : (
+                                  <a href={att.url} target="_blank" rel="noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Файл: {att.url.split('/').pop()}</a>
+                                )}
+                                {typeof att.progress === 'number' && att.progress < 100 && (
+                                  <div style={{ height: 6, background: '#e5e7eb', borderRadius: 6, overflow: 'hidden', marginTop: 6 }}>
+                                    <div style={{ width: `${att.progress}%`, height: '100%', background: 'var(--brand)' }} />
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </>
+                        <div className="msg-meta" style={{ color: '#9aa0a8' }}>
+                          {timeLabel} {ticks}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })
+              })()
+            )}
+          </div>
+          {activeId && (
+            <button
+              className={showJump ? 'jump-bottom jump-bottom--visible' : 'jump-bottom'}
+              onClick={() => {
+                if (messagesRef.current) {
+                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
+                }
+                nearBottomRef.current = true
+                userStickyScrollRef.current = false
+                setShowJump(false)
+              }}
+            >
+              ↓
+            </button>
+          )}
+          <div className="msg-input-bar"
+            style={{ flexShrink: 0 }}
+            onDragOver={(e) => { e.preventDefault(); setAttachDragOver(true) }}
+            onDragLeave={() => setAttachDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault(); setAttachDragOver(false)
+              const files = Array.from(e.dataTransfer.files || [])
+              uploadAndSendAttachments(files)
+            }}
+          >
+            {activeConversation?.isSecret && (!secretSessionReady || secretInactive) ? (
+              <div style={{ padding: 12, borderRadius: 8, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
+                {secretBlockedText}
+              </div>
+            ) : (
+            <>
+            {replyTo && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, background: 'var(--surface-100)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
+                <Reply size={16} color="var(--text-muted)" />
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Ответ на:</div>
+                <div style={{ fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>{replyTo.preview}</div>
+                <button className="btn btn-icon btn-ghost" onClick={() => setReplyTo(null)} style={{ marginLeft: 'auto', flexShrink: 0 }}>
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+            {clipboardImage && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, background: 'var(--surface-100)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
+                <img src={clipboardImage.preview} alt="Preview" style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 6 }} />
+                <div style={{ flex: 1, fontSize: 12, color: 'var(--text-muted)' }}>Изображение из буфера обмена</div>
+                <button className="btn btn-icon btn-ghost" onClick={() => {
+                  if (clipboardImage) URL.revokeObjectURL(clipboardImage.preview)
+                  setClipboardImage(null)
+                }} style={{ flexShrink: 0 }}>
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+            <input type="file" multiple style={{ display: 'none' }} ref={attachInputRef} onChange={async (e) => {
+              const files = Array.from(e.target.files || [])
+              if (!activeId || files.length === 0) return
+              await uploadAndSendAttachments(files)
+            }} />
+            <form autoComplete="off" onSubmit={async (e) => {
+                    e.preventDefault()
+              if (!activeId) return
+                    const value = messageText.trim()
+              
+              // Если есть изображение из буфера обмена, отправляем его вместе с текстом (или без текста)
+              if (clipboardImage) {
+                const file = clipboardImage.file
+                const preview = clipboardImage.preview
+                URL.revokeObjectURL(preview)
+                setClipboardImage(null)
+                
+                // Отправляем изображение с текстом как подписью
+                await uploadAndSendAttachments([file], value || '', replyTo?.id)
+                setMessageText('')
+                setReplyTo(null)
+              } else if (value) {
+                // Если нет изображения, но есть текст, отправляем только текст
+                    await sendMessageToConversation(activeConversation, { type: 'TEXT', content: value, replyToId: replyTo?.id })
+                    setMessageText('')
+                    setReplyTo(null)
+              }
+              
+                    client.invalidateQueries({ queryKey: ['messages', activeId] })
+                    setTimeout(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight }, 0)
+            }} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <input
+                type="text"
+                placeholder={clipboardImage ? "Добавьте подпись к изображению..." : "Напишите сообщение..."}
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                onPaste={async (e) => {
+                  if (!activeId) return
+                  const items = e.clipboardData?.items
+                  if (!items) return
+                  
+                  for (let i = 0; i < items.length; i++) {
+                    const item = items[i]
+                    if (item.type.indexOf('image') !== -1) {
+                      e.preventDefault()
+                      const file = item.getAsFile()
+                      if (file) {
+                        const preview = URL.createObjectURL(file)
+                        setClipboardImage({ file, preview })
+                      }
+                      break
+                    }
+                  }
+                }}
+                ref={inputRef}
+                style={{ flex: 1, minWidth: 0, padding: '12px 16px', borderRadius: 8, border: '1px solid var(--surface-border)', background: 'var(--surface-100)', color: 'var(--text-primary)', fontSize: 16 }}
+              />
+              <button type="button" className="btn btn-secondary" onClick={() => attachInputRef.current?.click()} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>{isMobile ? <Paperclip size={16} /> : 'Прикрепить'}</button>
+            </form>
+            {attachUploading && (
+              <div style={{ height: 6, background: 'var(--surface-100)', borderRadius: 3, overflow: 'hidden', marginTop: 10 }}>
+                <div style={{ width: `${attachProgress}%`, height: '100%', background: 'var(--brand)', transition: 'width 0.2s ease' }} />
+              </div>
+            )}
+            </>
+            )}
+          </div>
+        </div>
+        <Suspense fallback={null}>
+          {callConvId && (
+            <CallOverlay
+              open={!!callConvId}
+              conversationId={callConvId}
+              minimized={minimizedCallConvId === callConvId}
+              peerAvatarUrl={(() => {
+            const parts = activeConversation?.participants || []
+            if (parts.length === 2) {
+              const peer = parts.find((p: any) => p.user.id !== me?.id)?.user
+              return peer?.avatarUrl ?? null
+            }
+            return null
+          })()}
+              avatarsByName={(() => {
+            const parts = activeConversation?.participants || []
+            const map: Record<string, string | null> = {}
+            for (const p of parts) {
+              const u = p.user
+              const name = u.displayName ?? u.username ?? u.id
+              map[name] = u.avatarUrl ?? null
+            }
+            // include me fallback
+            if (me) map[me.displayName ?? me.username ?? me.id] = (meInfoQuery.data?.avatarUrl ?? me.avatarUrl ?? null)
+            return map
+          })()}
+              avatarsById={(() => {
+            const parts = activeConversation?.participants || []
+            const map: Record<string, string | null> = {}
+            for (const p of parts) {
+              const u = p.user
+              map[u.id] = u.avatarUrl ?? null
+            }
+            if (me) map[me.id] = (meInfoQuery.data?.avatarUrl ?? me.avatarUrl ?? null)
+            return map
+          })()}
+              localUserId={me?.id ?? null}
+              isGroup={(() => {
+                const parts = activeConversation?.participants || []
+                return !!activeConversation?.isGroup
+              })()}
+              onMinimize={() => {
+                if (callConvId) {
+                  setMinimizedCallConvId(callConvId)
+                }
+              }}
+              onClose={() => {
+            const count = activeConversation?.participants?.length ?? 0
+            const isDialog = count <= 2
+            const isGroup = activeConversation?.isGroup || (count > 2)
+            
+            // Для всех типов звонков завершаем звонок при закрытии
+            if (callConvId) {
+              // Для 1:1 звонков вызываем endCall на сервере
+              if (isDialog) {
+                endCall(callConvId)
+              }
+              // Для всех типов устанавливаем endedAt при закрытии
+              setActiveCalls((prev) => {
+                const current = prev[callConvId]
+                if (!current) return prev
+                if (isGroup) {
+                  const participants = (current.participants || []).filter((id: string) => id !== me?.id)
+                  return { ...prev, [callConvId]: { ...current, participants } }
+                }
+                if (current.active) {
+                  return { ...prev, [callConvId]: { ...current, active: false, endedAt: Date.now() } }
+                }
+                return prev
+              })
+            }
+            setCallConvId(null)
+            setMinimizedCallConvId(null)
+            callStore.endCall()
+            stopRingtone()
+              }}
+              initialVideo={callStore.initialVideo}
+              initialAudio={callStore.initialAudio}
+            />
+          )}
+        </Suspense>
+        {callStore.incoming && createPortal(
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }}>
+            <div style={{ background: 'var(--surface-200)', borderRadius: 16, border: '1px solid var(--surface-border)', padding: 24, width: 'min(92vw, 440px)', boxShadow: 'var(--shadow-sharp)', transform: 'translateY(-4vh)', color: 'var(--text-primary)' }}>
+              <div style={{ fontWeight: 700, marginBottom: 12 }}>{callStore.incoming.video ? 'Входящий видеозвонок' : 'Входящий аудиозвонок'}</div>
+              <div className="caller-tile" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: 'var(--surface-100)', border: '1px solid var(--surface-border)', borderRadius: 12, marginBottom: 12 }}>
+                <Avatar
+                  name={(callStore.incoming.from.name ?? callStore.incoming.from.id)}
+                  id={callStore.incoming.from.id}
+                  size={64}
+                  avatarUrl={
+                    callStore.incoming.from.avatarUrl ??
+                    (conversationsQuery.data?.find((r: any) => r.conversation.id === callStore.incoming!.conversationId)?.conversation?.participants?.find((p: any) => p.user.id === callStore.incoming!.from.id)?.user?.avatarUrl) ??
+                    (contactsQuery.data?.find((c: any) => c.friend?.id === callStore.incoming!.from.id)?.friend?.avatarUrl) ??
+                    undefined
+                  }
+                />
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 16 }}>{callStore.incoming.from.name ?? callStore.incoming.from.id}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>звонит…</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-primary" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => {
+                    const convId = callStore.incoming!.conversationId
+                    acceptCall(convId, false)
+                    callStore.startOutgoing(convId, false)
+                    setCallConvId(convId)
+                    setMinimizedCallConvId((prev) => prev === convId ? null : prev) // Сбрасываем минимизацию для нового звонка
+                    // Для 1:1 звонков устанавливаем activeCalls при принятии
+                    setActiveCalls((prev) => {
+                      const current = prev[convId]
+                      if (!current?.active) {
+                        return { ...prev, [convId]: { startedAt: Date.now(), active: true, participants: [me?.id || ''].filter(Boolean) } }
+                      }
+                      return prev
+                    })
+                    callStore.setIncoming(null)
+                    stopRingtone()
+                  }}>
+                    <Phone size={18} />
+                    <span>Ответить</span>
+                  </button>
+                  <button className="btn" style={{ background: 'var(--brand)', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => {
+                    const convId = callStore.incoming!.conversationId
+                    acceptCall(convId, true)
+                    callStore.startOutgoing(convId, true)
+                    setCallConvId(convId)
+                    setMinimizedCallConvId((prev) => prev === convId ? null : prev) // Сбрасываем минимизацию для нового звонка
+                    // Для 1:1 звонков устанавливаем activeCalls при принятии
+                    setActiveCalls((prev) => {
+                      const current = prev[convId]
+                      if (!current?.active) {
+                        return { ...prev, [convId]: { startedAt: Date.now(), active: true, participants: [me?.id || ''].filter(Boolean) } }
+                      }
+                      return prev
+                    })
+                    callStore.setIncoming(null)
+                    stopRingtone()
+                  }}>
+                    <Video size={18} />
+                    <span>Ответить с видео</span>
+                  </button>
+                </div>
+                <div style={{ display: 'flex' }}>
+                  <button className="btn" style={{ background: '#ef4444', color: '#fff', width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { declineCall(callStore.incoming!.conversationId); callStore.setIncoming(null); stopRingtone() }}>
+                    <PhoneOff size={18} />
+                    <span>Отмена</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>, document.body)
+        }
+      </section>
+    )
+  }
+
+  function appendMessageToCache(conversationId: string, msg: any) {
+    if (!msg) return
+    client.setQueryData(['messages', conversationId], (old: any) => {
+      const list = Array.isArray(old) ? [...old] : []
+      if (list.some((m: any) => m.id === msg.id)) return list
+      list.push(msg)
+      list.sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+      return list
+    })
+  }
+
+  function updateMessageInCache(conversationId: string, msg: any) {
+    if (!msg) return
+    client.setQueryData(['messages', conversationId], (old: any) => {
+      if (!Array.isArray(old)) return old
+      const idx = old.findIndex((m: any) => m.id === msg.id)
+      if (idx === -1) return old
+      const next = [...old]
+      next[idx] = { ...next[idx], ...msg }
+      return next
+    })
+  }
+
+  return (
+    <>
+    <div className={isMobile ? 'chats-page mobile-slider' : 'chats-page'}>
+      {isMobile ? (
+        <div
+          className="slider-inner"
+          style={{ transform: `translateX(${mobileView === 'conversation' ? '-100vw' : '0'})` }}
+          onTouchStart={(e) => { const t = e.touches[0]; touchStartRef.current = { x: t.clientX, y: t.clientY }; touchDeltaRef.current = 0; }}
+          onTouchMove={(e) => { if (!touchStartRef.current) return; const t = e.touches[0]; touchDeltaRef.current = t.clientX - touchStartRef.current.x; }}
+          onTouchEnd={() => { const d = touchDeltaRef.current; touchStartRef.current = null; if (Math.abs(d) < 50) return; if (d < 0 && activeId) setMobileView('conversation'); if (d > 0) setMobileView('list'); }}
+        >
+          {renderConversationList(true)}
+          {renderMessagesPane(true)}
+        </div>
+      ) : (
+        <>
+          {renderConversationList(false)}
+          {renderMessagesPane(false)}
+        </>
+      )}
+    </div>
+    {mePopupOpen && (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }}>
+        <div style={{ background: 'var(--surface-200)', padding: 24, borderRadius: 16, width: 440, maxWidth: '90vw', border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-medium)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Профиль</div>
+            <button className="btn btn-icon btn-ghost" onClick={() => setMePopupOpen(false)}><X size={18} /></button>
+          </div>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
+            <Avatar name={me?.displayName ?? me?.username ?? 'Me'} id={me?.id ?? 'me'} avatarUrl={avatarPreviewUrl ?? meInfoQuery.data?.avatarUrl ?? undefined} />
+            <div>
+              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{me?.displayName ?? me?.username}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>EBLID: {meInfoQuery.data?.eblid ?? '— — — —'}</div>
+            </div>
+          </div>
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (!file) return
+            setSelectedAvatarFile(file)
+            try { setAvatarPreviewUrl(URL.createObjectURL(file)) } catch {}
+          }} style={{ display: 'none' }} />
+          {!avatarPreviewUrl && (
+            <>
+              <div style={{ marginBottom: 8, color: 'var(--text-muted)', fontSize: 12, fontWeight: 500 }}>Загрузка аватара</div>
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault(); setDragOver(false)
+              const file = e.dataTransfer.files?.[0]
+              if (file) { setSelectedAvatarFile(file); try { setAvatarPreviewUrl(URL.createObjectURL(file)) } catch {} }
+            }}
+            style={{
+                  border: '2px dashed ' + (dragOver ? 'var(--brand-600)' : 'var(--surface-border)'),
+                  borderRadius: 12,
+              padding: 20,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              cursor: 'pointer',
+                  background: dragOver ? 'rgba(217,119,6,0.1)' : 'var(--surface-100)',
+              transition: 'all .2s ease',
+                  marginBottom: 16,
+            }}
+          >
+                <UploadCloud size={18} color="var(--text-muted)" />
+                <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>Перетащите файл сюда или нажмите, чтобы выбрать</div>
+          </div>
+            </>
+          )}
+          {avatarPreviewUrl && (
+            <div style={{ border: '1px solid var(--surface-border)', borderRadius: 16, padding: 16, marginTop: 16, background: 'var(--surface-100)', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+              <div style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 12, fontWeight: 600 }}>Настройка аватара</div>
+              <div 
+                ref={editorRef}
+                onWheel={(e) => {
+                  e.preventDefault()
+                  const delta = -e.deltaY * 0.001
+                  const newScale = Math.max(0.1, Math.min(10, crop.scale * (1 + delta)))
+                  const rect = editorRef.current?.getBoundingClientRect()
+                  if (rect) {
+                    const x = e.clientX - rect.left
+                    const y = e.clientY - rect.top
+                    const scaleChange = newScale / crop.scale
+                    const newX = x - (x - crop.x) * scaleChange
+                    const newY = y - (y - crop.y) * scaleChange
+                    setCrop({ x: newX, y: newY, scale: newScale })
+                  }
+                }}
+                  onPointerDown={(e) => {
+                  if (e.pointerType === 'touch') return // Touch обрабатывается в addEventListener
+                  const rect = editorRef.current?.getBoundingClientRect()
+                  if (!rect) return
+                  const editorWidth = rect.width
+                  const editorHeight = rect.height
+                  const centerX = editorWidth / 2
+                  const centerY = editorHeight / 2
+                  const cropSizeValue = 240
+                  const radius = cropSizeValue / 2
+                  const x = e.clientX - rect.left
+                  const y = e.clientY - rect.top
+                  
+                  // Проверяем, что клик внутри круга
+                  const dx = x - centerX
+                  const dy = y - centerY
+                  if (dx * dx + dy * dy > radius * radius) {
+                    return
+                  }
+                  
+                    try { (e.currentTarget as any).setPointerCapture?.((e as any).pointerId) } catch {}
+                  const startX = e.clientX
+                  const startY = e.clientY
+                  const start = { ...crop }
+                    const onMove = (ev: PointerEvent) => {
+                      ev.preventDefault()
+                    const deltaX = ev.clientX - startX
+                    const deltaY = ev.clientY - startY
+                    setCrop({ ...start, x: start.x + deltaX, y: start.y + deltaY })
+                    }
+                    const onUp = () => {
+                      window.removeEventListener('pointermove', onMove as any)
+                      window.removeEventListener('pointerup', onUp)
+                    }
+                    window.addEventListener('pointermove', onMove as any, { passive: false } as any)
+                    window.addEventListener('pointerup', onUp, { passive: true } as any)
+                }}
+                style={{ 
+                position: 'relative', 
+                width: '100%', 
+                height: 320, 
+                background: 'var(--surface-200)', 
+                overflow: 'hidden', 
+                borderRadius: 12, 
+                touchAction: 'none',
+                border: '1px solid var(--surface-border)',
+                boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.1)',
+                cursor: 'move'
+              }}>
+                <img 
+                  ref={imageRef}
+                  src={avatarPreviewUrl} 
+                  alt="preview" 
+                  style={{ 
+                    position: 'absolute', 
+                    left: crop.x, 
+                    top: crop.y, 
+                    transform: `scale(${crop.scale})`, 
+                    transformOrigin: 'top left',
+                    willChange: 'transform',
+                    pointerEvents: 'none'
+                  }} 
+                  draggable={false}
+                  onLoad={(e) => {
+                    const img = e.currentTarget
+                    const editor = editorRef.current
+                    if (!editor) return
+                    const editorWidth = editor.clientWidth
+                    const editorHeight = editor.clientHeight
+                    const cropSizeValue = 240
+                    const imgWidth = img.naturalWidth
+                    const imgHeight = img.naturalHeight
+                    const centerX = editorWidth / 2
+                    const centerY = editorHeight / 2
+                    
+                    // Рассчитываем масштаб, чтобы изображение максимально заполняло круг
+                    const scaleX = cropSizeValue / imgWidth
+                    const scaleY = cropSizeValue / imgHeight
+                    const initialScale = Math.max(scaleX, scaleY) * 1.2 // 1.2 для запаса
+                    
+                    // Центрируем изображение относительно центра круга
+                    const initialX = centerX - (imgWidth * initialScale) / 2
+                    const initialY = centerY - (imgHeight * initialScale) / 2
+                    
+                    setCrop({ x: initialX, y: initialY, scale: initialScale })
+                  }}
+                />
+                {/* Маска с градиентом для более плавного эффекта */}
+                <div style={{ 
+                  position: 'absolute', 
+                  inset: 0, 
+                  pointerEvents: 'none', 
+                  borderRadius: '50%', 
+                  boxShadow: '0 0 0 9999px rgba(0,0,0,0.65)', 
+                  width: 240, 
+                  height: 240, 
+                  margin: 'auto',
+                  border: '2px solid rgba(255,255,255,0.3)',
+                  boxSizing: 'border-box'
+                }} />
+                {/* Сетка для лучшего позиционирования */}
+                <div style={{
+                  position: 'absolute',
+                  inset: 0,
+                  pointerEvents: 'none',
+                  borderRadius: '50%',
+                  width: 240,
+                  height: 240,
+                  margin: 'auto',
+                  background: `
+                    linear-gradient(to right, rgba(255,255,255,0.1) 1px, transparent 1px),
+                    linear-gradient(to bottom, rgba(255,255,255,0.1) 1px, transparent 1px)
+                  `,
+                  backgroundSize: '60px 60px',
+                  opacity: 0.5
+                }} />
+              </div>
+              <div style={{ marginTop: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 500 }}>Масштаб</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', background: 'var(--surface-200)', padding: '4px 8px', borderRadius: 6 }}>
+                    {Math.round(crop.scale * 100)}%
+              </div>
+                </div>
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ fontSize: 18, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }} onClick={() => setCrop((c) => ({ ...c, scale: Math.max(0.1, c.scale - 0.1) }))}>−</div>
+                  <input 
+                    type="range" 
+                    min={0.1} 
+                    max={10} 
+                    step={0.05} 
+                    value={crop.scale} 
+                    onChange={(e) => setCrop((c) => ({ ...c, scale: parseFloat(e.target.value) }))} 
+                    style={{ 
+                      flex: 1, 
+                      height: 6,
+                      background: 'var(--surface-200)',
+                      borderRadius: 3,
+                      outline: 'none',
+                      cursor: 'pointer'
+                    }}
+                  />
+                  <div style={{ fontSize: 18, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }} onClick={() => setCrop((c) => ({ ...c, scale: Math.min(10, c.scale + 0.1) }))}>+</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12, fontSize: 11, color: 'var(--text-muted)' }}>
+                  <div style={{ flex: 1, textAlign: 'center', padding: '6px', background: 'var(--surface-200)', borderRadius: 6 }}>
+                    {isMobile ? 'Два пальца для масштаба, один для перемещения' : 'Перетащите для перемещения, колесико мыши для масштаба'}
+                  </div>
+                </div>
+              </div>
+              <canvas ref={cropCanvasRef} width={240} height={240} style={{ display: 'none' }} />
+            </div>
+          )}
+          {selectedAvatarFile && (
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+              <button className="btn btn-secondary" onClick={() => { setSelectedAvatarFile(null); if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl); setAvatarPreviewUrl(null) }}>Отмена</button>
+              <button className="btn btn-primary" disabled={uploadingAvatar} onClick={async () => {
+                if (!selectedAvatarFile) return
+                setUploadingAvatar(true)
+                setUploadProgress(0)
+                try {
+                  let blobToSend: Blob | null = null
+                  if (cropCanvasRef.current && avatarPreviewUrl) {
+                    const img = await new Promise<HTMLImageElement>((resolve) => { const i = new Image(); i.onload = () => resolve(i); i.src = avatarPreviewUrl })
+                    const ctx = cropCanvasRef.current.getContext('2d')!
+                    const size = 240
+                    ctx.clearRect(0,0,size,size)
+                    ctx.save()
+                    ctx.beginPath(); ctx.arc(size/2, size/2, size/2, 0, Math.PI*2); ctx.closePath(); ctx.clip()
+                    const vw = editorRef.current?.clientWidth ?? 320
+                    const vh = editorRef.current?.clientHeight ?? 320
+                    const viewportCenter = { x: vw / 2, y: vh / 2 }
+                    const viewRect = { x: viewportCenter.x - size/2, y: viewportCenter.y - size/2, w: size, h: size }
+                    const srcX = (viewRect.x - crop.x) / crop.scale
+                    const srcY = (viewRect.y - crop.y) / crop.scale
+                    const srcW = viewRect.w / crop.scale
+                    const srcH = viewRect.h / crop.scale
+                    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, size, size)
+                    ctx.restore()
+                    blobToSend = await new Promise<Blob | null>((resolve) => cropCanvasRef.current!.toBlob((b) => resolve(b), 'image/png'))
+                  }
+                  const form = new FormData()
+                  form.append('file', blobToSend ?? selectedAvatarFile)
+                  const url = await new Promise<string>((resolve, reject) => {
+                    const xhr = new XMLHttpRequest()
+                    xhr.open('POST', '/api/upload')
+                    try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
+                    xhr.upload.onprogress = (e) => { if (e.lengthComputable) setUploadProgress(Math.round(100 * e.loaded / e.total)) }
+                    xhr.onreadystatechange = () => {
+                      if (xhr.readyState === 4) {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                          try { const resp = JSON.parse(xhr.responseText); resolve(resp.url) } catch (err) { reject(err) }
+                        } else reject(new Error('upload failed'))
+                      }
+                    }
+                    xhr.send(form)
+                  })
+                  await api.patch('/status/me', { avatarUrl: url })
+                  setSelectedAvatarFile(null)
+                  if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl)
+                  setAvatarPreviewUrl(null)
+                  meInfoQuery.refetch()
+                } catch {}
+                setUploadingAvatar(false)
+                setUploadMessage('Готово')
+                setTimeout(() => setUploadMessage(null), 2200)
+              }}>{uploadingAvatar ? 'Загрузка...' : 'Загрузить'}</button>
+            </div>
+          )}
+          {uploadingAvatar && (
+            <div style={{ height: 8, background: 'var(--surface-100)', borderRadius: 6, overflow: 'hidden', marginTop: 12 }}>
+              <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'var(--brand)', transition: 'width 0.2s ease' }} />
+            </div>
+          )}
+          {uploadMessage && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, color: '#16a34a', fontSize: 14 }}>
+              <CheckCircle size={16} />
+              <span>{uploadMessage}</span>
+            </div>
+          )}
+          <div style={{ borderTop: '1px solid var(--surface-border)', marginTop: 24, paddingTop: 20 }}>
+            <button 
+              className="btn btn-secondary" 
+              onClick={async () => {
+                try {
+                  await api.post('/auth/logout')
+                } catch {
+                  // Ignore errors during logout
+                }
+                useAppStore.getState().setSession(null)
+                setMePopupOpen(false)
+              }}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#f87171' }}
+            >
+              <LogOut size={18} />
+              <span>Выйти из Еблуши</span>
+            </button>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setMePopupOpen(false)}>Закрыть</button>
+          </div>
+        </div>
+      </div>
+    )}
+    {newGroupAvatarEditorOpen && (
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(10,12,16,0.55)',
+          backdropFilter: 'blur(4px) saturate(110%)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 85,
+        }}
+        onClick={() => setNewGroupAvatarEditorOpen(false)}
+      >
+        <div
+          style={{
+            background: 'var(--surface-200)',
+            padding: 24,
+            borderRadius: 16,
+            width: 440,
+            maxWidth: '90vw',
+            border: '1px solid var(--surface-border)',
+            boxShadow: 'var(--shadow-medium)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 20,
+            }}
+          >
+            <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Аватар группы</div>
+            <button className="btn btn-icon btn-ghost" onClick={() => setNewGroupAvatarEditorOpen(false)}>
+              <X size={18} />
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
+            <Avatar
+              name={groupTitle.trim() || '?'}
+              id="new-group-avatar-preview"
+              avatarUrl={newGroupAvatarPreviewUrl ?? undefined}
+              size={60}
+            />
+            <div>
+              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{groupTitle || 'Новая группа'}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Нажмите, чтобы изменить аватар</div>
+            </div>
+          </div>
+
+          <input
+            ref={newGroupFileInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (!file) return
+              setNewGroupAvatarFile(file)
+              if (newGroupAvatarSourceUrl) {
+                try {
+                  URL.revokeObjectURL(newGroupAvatarSourceUrl)
+                } catch {
+                  // ignore
+                }
+              }
+              try {
+                const url = URL.createObjectURL(file)
+                setNewGroupAvatarSourceUrl(url)
+              } catch {
+                setNewGroupAvatarSourceUrl(null)
+              }
+              setNewGroupCrop({ x: 0, y: 0, scale: 1 })
+            }}
+          />
+
+          {!newGroupAvatarSourceUrl && (
+            <>
+              <div
+                onClick={() => newGroupFileInputRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  setNewGroupDragOver(true)
+                }}
+                onDragLeave={() => setNewGroupDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  setNewGroupDragOver(false)
+                  const file = e.dataTransfer.files?.[0]
+                  if (file) {
+                    setNewGroupAvatarFile(file)
+                    if (newGroupAvatarSourceUrl) {
+                      try {
+                        URL.revokeObjectURL(newGroupAvatarSourceUrl)
+                      } catch {
+                        // ignore
+                      }
+                    }
+                    try {
+                      const url = URL.createObjectURL(file)
+                      setNewGroupAvatarSourceUrl(url)
+                    } catch {
+                      setNewGroupAvatarSourceUrl(null)
+                    }
+                    setNewGroupCrop({ x: 0, y: 0, scale: 1 })
+                  }
+                }}
+                style={{
+                  border: '2px dashed ' + (newGroupDragOver ? 'var(--brand-600)' : 'var(--surface-border)'),
+                  borderRadius: 12,
+                  padding: 20,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                  cursor: 'pointer',
+                  background: newGroupDragOver ? 'rgba(217,119,6,0.1)' : 'var(--surface-100)',
+                  transition: 'all .2s ease',
+                  marginBottom: 16,
+                }}
+              >
+                <UploadCloud size={18} color="var(--text-muted)" />
+                <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+                  Перетащите файл сюда или нажмите, чтобы выбрать
+                </div>
+              </div>
+            </>
+          )}
+
+          {newGroupAvatarSourceUrl && (
+            <div
+              style={{
+                border: '1px solid var(--surface-border)',
+                borderRadius: 16,
+                padding: 16,
+                marginTop: 16,
+                background: 'var(--surface-100)',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+              }}
+            >
+              <div style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 12, fontWeight: 600 }}>
+                Настройка аватара
+              </div>
+              <div
+                ref={newGroupEditorRef}
+                onWheel={(e) => {
+                  e.preventDefault()
+                  const delta = -e.deltaY * 0.001
+                  const newScale = Math.max(0.1, Math.min(10, newGroupCrop.scale * (1 + delta)))
+                  const rect = newGroupEditorRef.current?.getBoundingClientRect()
+                  if (rect) {
+                    const x = e.clientX - rect.left
+                    const y = e.clientY - rect.top
+                    const scaleChange = newScale / newGroupCrop.scale
+                    const newX = x - (x - newGroupCrop.x) * scaleChange
+                    const newY = y - (y - newGroupCrop.y) * scaleChange
+                    setNewGroupCrop({ x: newX, y: newY, scale: newScale })
+                  }
+                }}
+                onPointerDown={(e) => {
+                  if (e.pointerType === 'touch') return
+                  const rect = newGroupEditorRef.current?.getBoundingClientRect()
+                  if (!rect) return
+                  const editorWidth = rect.width
+                  const editorHeight = rect.height
+                  const centerX = editorWidth / 2
+                  const centerY = editorHeight / 2
+                  const cropSizeValue = 240
+                  const radius = cropSizeValue / 2
+                  const x = e.clientX - rect.left
+                  const y = e.clientY - rect.top
+                  const dx = x - centerX
+                  const dy = y - centerY
+                  if (dx * dx + dy * dy > radius * radius) {
+                    return
+                  }
+                  try {
+                    ;(e.currentTarget as any).setPointerCapture?.((e as any).pointerId)
+                  } catch {
+                    // ignore
+                  }
+                  const startX = e.clientX
+                  const startY = e.clientY
+                  const start = { ...newGroupCrop }
+                  const onMove = (ev: PointerEvent) => {
+                    ev.preventDefault()
+                    const deltaX = ev.clientX - startX
+                    const deltaY = ev.clientY - startY
+                    setNewGroupCrop({ ...start, x: start.x + deltaX, y: start.y + deltaY })
+                  }
+                  const onUp = () => {
+                    window.removeEventListener('pointermove', onMove as any)
+                    window.removeEventListener('pointerup', onUp)
+                  }
+                  window.addEventListener('pointermove', onMove as any, { passive: false } as any)
+                  window.addEventListener('pointerup', onUp, { passive: true } as any)
+                }}
+                style={{
+                  position: 'relative',
+                  width: '100%',
+                  height: 320,
+                  background: 'var(--surface-200)',
+                  overflow: 'hidden',
+                  borderRadius: 12,
+                  touchAction: 'none',
+                  border: '1px solid var(--surface-border)',
+                  boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.1)',
+                  cursor: 'move',
+                }}
+              >
+                <img
+                  ref={newGroupImageRef}
+                  src={newGroupAvatarSourceUrl}
+                  alt="preview"
+                  style={{
+                    position: 'absolute',
+                    left: newGroupCrop.x,
+                    top: newGroupCrop.y,
+                    transform: `scale(${newGroupCrop.scale})`,
+                    transformOrigin: 'top left',
+                    willChange: 'transform',
+                    pointerEvents: 'none',
+                  }}
+                  draggable={false}
+                  onLoad={(e) => {
+                    const img = e.currentTarget
+                    const editor = newGroupEditorRef.current
+                    if (!editor) return
+                    const editorWidth = editor.clientWidth
+                    const editorHeight = editor.clientHeight
+                    const cropSizeValue = 240
+                    const imgWidth = img.naturalWidth
+                    const imgHeight = img.naturalHeight
+                    const centerX = editorWidth / 2
+                    const centerY = editorHeight / 2
+                    const scaleX = cropSizeValue / imgWidth
+                    const scaleY = cropSizeValue / imgHeight
+                    const initialScale = Math.max(scaleX, scaleY) * 1.2
+                    const initialX = centerX - (imgWidth * initialScale) / 2
+                    const initialY = centerY - (imgHeight * initialScale) / 2
+                    setNewGroupCrop({ x: initialX, y: initialY, scale: initialScale })
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    pointerEvents: 'none',
+                    borderRadius: '50%',
+                    boxShadow: '0 0 0 9999px rgba(0,0,0,0.65)',
+                    width: 240,
+                    height: 240,
+                    margin: 'auto',
+                    border: '2px solid rgba(255,255,255,0.3)',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    pointerEvents: 'none',
+                    borderRadius: '50%',
+                    width: 240,
+                    height: 240,
+                    margin: 'auto',
+                    background: `
+                      radial-gradient(circle at center, transparent 55%, rgba(17,24,39,0.9) 60%),
+                      linear-gradient(to right, rgba(255,255,255,0.1) 1px, transparent 1px),
+                      linear-gradient(to bottom, rgba(255,255,255,0.1) 1px, transparent 1px)
+                    `,
+                    backgroundSize: '100% 100%, 16px 16px, 16px 16px',
+                    mixBlendMode: 'soft-light',
+                  }}
+                />
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Масштаб</div>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 18,
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                    }}
+                    onClick={() =>
+                      setNewGroupCrop((c) => ({
+                        ...c,
+                        scale: Math.max(0.1, c.scale - 0.1),
+                      }))
+                    }
+                  >
+                    −
+                  </div>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={4}
+                    step={0.01}
+                    value={newGroupCrop.scale}
+                    onChange={(e) => {
+                      const next = parseFloat(e.target.value)
+                      const rect = newGroupEditorRef.current?.getBoundingClientRect()
+                      if (!rect) {
+                        setNewGroupCrop((c) => ({ ...c, scale: next }))
+                        return
+                      }
+                      const centerX = rect.width / 2
+                      const centerY = rect.height / 2
+                      const scaleChange = next / newGroupCrop.scale
+                      const newX = centerX - (centerX - newGroupCrop.x) * scaleChange
+                      const newY = centerY - (centerY - newGroupCrop.y) * scaleChange
+                      setNewGroupCrop({ x: newX, y: newY, scale: next })
+                    }}
+                    style={{
+                      flex: 1,
+                      height: 6,
+                      background: 'var(--surface-200)',
+                      borderRadius: 3,
+                      outline: 'none',
+                      cursor: 'pointer',
+                    }}
+                  />
+                  <div
+                    style={{
+                      fontSize: 18,
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                    }}
+                    onClick={() =>
+                      setNewGroupCrop((c) => ({
+                        ...c,
+                        scale: Math.min(10, c.scale + 0.1),
+                      }))
+                    }
+                  >
+                    +
+                  </div>
+                </div>
+              </div>
+
+              <canvas
+                ref={newGroupCropCanvasRef}
+                width={240}
+                height={240}
+                style={{ display: 'none' }}
+              />
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setNewGroupAvatarEditorOpen(false)
+              }}
+            >
+              Отмена
+            </button>
+            <button
+              className="btn btn-primary"
+              disabled={!newGroupAvatarSourceUrl}
+              onClick={async () => {
+                if (!newGroupAvatarSourceUrl || !newGroupCropCanvasRef.current) {
+                  setNewGroupAvatarEditorOpen(false)
+                  return
+                }
+                try {
+                  const img = await new Promise<HTMLImageElement>((resolve) => {
+                    const i = new Image()
+                    i.onload = () => resolve(i)
+                    i.src = newGroupAvatarSourceUrl
+                  })
+                  const canvas = newGroupCropCanvasRef.current
+                  const ctx = canvas.getContext('2d')
+                  if (!ctx) throw new Error('Could not get 2d context')
+                  const size = 240
+                  ctx.clearRect(0, 0, size, size)
+                  ctx.save()
+                  ctx.beginPath()
+                  ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2)
+                  ctx.closePath()
+                  ctx.clip()
+                  const vw = newGroupEditorRef.current?.clientWidth ?? 320
+                  const vh = newGroupEditorRef.current?.clientHeight ?? 320
+                  const viewportCenter = { x: vw / 2, y: vh / 2 }
+                  const viewRect = {
+                    x: viewportCenter.x - size / 2,
+                    y: viewportCenter.y - size / 2,
+                    w: size,
+                    h: size,
+                  }
+                  const srcX = (viewRect.x - newGroupCrop.x) / newGroupCrop.scale
+                  const srcY = (viewRect.y - newGroupCrop.y) / newGroupCrop.scale
+                  const srcW = viewRect.w / newGroupCrop.scale
+                  const srcH = viewRect.h / newGroupCrop.scale
+                  ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, size, size)
+                  ctx.restore()
+                  const blob = await new Promise<Blob | null>((resolve) =>
+                    canvas.toBlob((b) => resolve(b), 'image/png'),
+                  )
+                  if (blob) {
+                    if (newGroupAvatarPreviewUrl) {
+                      try {
+                        URL.revokeObjectURL(newGroupAvatarPreviewUrl)
+                      } catch {
+                        // ignore
+                      }
+                    }
+                    const url = URL.createObjectURL(blob)
+                    setNewGroupAvatarBlob(blob)
+                    setNewGroupAvatarPreviewUrl(url)
+                  }
+                } catch {
+                  // ignore errors, just close
+                } finally {
+                  setNewGroupAvatarEditorOpen(false)
+                }
+              }}
+            >
+              Сохранить
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {newGroupOpen && (
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(10,12,16,0.55)',
+          backdropFilter: 'blur(4px) saturate(110%)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 60,
+        }}
+        onClick={closeNewGroupModal}
+      >
+        <div
+          style={{
+            background: 'var(--surface-200)',
+            padding: 16,
+            borderRadius: 10,
+            width: 520,
+            border: '1px solid var(--surface-border)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 8,
+              color: 'var(--text-primary)',
+            }}
+          >
+            <div style={{ fontWeight: 700 }}>Создать групповой чат</div>
+            <button className="btn btn-icon btn-ghost" onClick={closeNewGroupModal}>
+              <X size={16} />
+            </button>
+          </div>
+
+          {(() => {
+            const trimmedTitle = groupTitle.trim()
+            const avatarName = trimmedTitle ? trimmedTitle : '?'
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <input
+                  placeholder="Название"
+                  value={groupTitle}
+                  onChange={(e) => setGroupTitle(e.target.value)}
+                  style={{
+                    flex: 1,
+                    width: '100%',
+                    padding: 10,
+                    borderRadius: 8,
+                    border: '1px solid var(--surface-border)',
+                    background: 'var(--surface-100)',
+                    color: 'var(--text-primary)',
+                  }}
+                />
+                <input
+                  ref={newGroupFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (!file) return
+                    setNewGroupAvatarFile(file)
+                    if (newGroupAvatarSourceUrl) {
+                      try {
+                        URL.revokeObjectURL(newGroupAvatarSourceUrl)
+                      } catch {
+                        // ignore
+                      }
+                    }
+                    try {
+                      const url = URL.createObjectURL(file)
+                      setNewGroupAvatarSourceUrl(url)
+                    } catch {
+                      setNewGroupAvatarSourceUrl(null)
+                    }
+                    // Открываем редактор после выбора файла
+                    setNewGroupAvatarEditorOpen(true)
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-icon btn-ghost"
+                  onClick={() => setNewGroupAvatarEditorOpen(true)}
+                  title="Выбрать аватар группы"
+                  style={{ borderRadius: '50%', padding: 0, width: 44, height: 44, flexShrink: 0 }}
+                >
+                  <Avatar
+                    name={avatarName}
+                    id="new-group-avatar"
+                    avatarUrl={newGroupAvatarPreviewUrl ?? undefined}
+                    size={40}
+                  />
+                </button>
+              </div>
+            )
+          })()}
+
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Выберите участников</div>
+          <div
+            style={{
+              maxHeight: 280,
+              overflow: 'auto',
+              display: 'grid',
+              gridTemplateColumns: '1fr',
+              gap: 8,
+            }}
+          >
+            {contactsQuery.data?.map((c: any) => {
+              const u = c.friend
+              const checked = selectedIds.includes(u.id)
+              return (
+                <div
+                  key={c.id}
+                  className="tile"
+                  onClick={() =>
+                    setSelectedIds((prev) => (checked ? prev.filter((id) => id !== u.id) : [...prev, u.id]))
+                  }
+                  style={{ cursor: 'pointer', borderColor: checked ? 'var(--brand-600)' : undefined }}
+                >
+                  <Avatar
+                    name={u.displayName ?? u.username}
+                    id={u.id}
+                    presence={u.status}
+                    avatarUrl={u.avatarUrl ?? undefined}
+                  />
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
+                    <div style={{ fontSize: 12, color: '#6b7280' }}>
+                      {checked ? 'Выбрано' : 'Нажмите, чтобы выбрать'}
+                    </div>
+                  </div>
+                  <div style={{ marginLeft: 'auto' }}>
+                    <input type="checkbox" readOnly checked={checked} />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+            <button
+              className="btn btn-primary"
+              disabled={selectedIds.length === 0 || creatingGroup}
+              onClick={async () => {
+                if (selectedIds.length === 0 || creatingGroup) return
+                setCreatingGroup(true)
+                try {
+                  const resp = await api.post('/conversations', {
+                    participantIds: selectedIds,
+                    title: groupTitle || undefined,
+                    isGroup: true,
+                  })
+                  const convId = resp.data?.conversation?.id as string | undefined
+
+                  if (convId && (newGroupAvatarBlob || newGroupAvatarFile)) {
+                    try {
+                      const form = new FormData()
+                      form.append('file', newGroupAvatarBlob ?? newGroupAvatarFile!)
+                      const url = await new Promise<string>((resolve, reject) => {
+                        const xhr = new XMLHttpRequest()
+                        xhr.open('POST', '/api/upload')
+                        try {
+                          const token = useAppStore.getState().session?.accessToken
+                          if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+                        } catch {
+                          // ignore
+                        }
+                        xhr.onreadystatechange = () => {
+                          if (xhr.readyState === 4) {
+                            if (xhr.status >= 200 && xhr.status < 300) {
+                              try {
+                                const data = JSON.parse(xhr.responseText)
+                                resolve(data.url)
+                              } catch (err) {
+                                reject(err)
+                              }
+                            } else {
+                              reject(new Error(`upload failed: ${xhr.status} ${xhr.statusText}`))
+                            }
+                          }
+                        }
+                        xhr.onerror = () => reject(new Error('Network error during upload'))
+                        xhr.send(form)
+                      })
+                      await api.patch(`/conversations/${convId}`, { avatarUrl: url })
+                    } catch (avatarErr) {
+                      console.error('Error setting group avatar:', avatarErr)
+                      // Не блокируем создание беседы из-за ошибок аватара
+                    }
+                  }
+
+                  client.invalidateQueries({ queryKey: ['conversations'] })
+                  if (resp.data?.conversation?.id) {
+                    selectConversation(resp.data.conversation.id)
+                  }
+                  closeNewGroupModal()
+                } catch (err: any) {
+                  console.error('Error creating group:', err)
+                  alert(err?.response?.data?.message || 'Не удалось создать беседу')
+                } finally {
+                  setCreatingGroup(false)
+                }
+              }}
+            >
+              {creatingGroup ? 'Создание...' : 'Создать'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {contactsOpen && (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }}>
+        <div style={{ background: 'var(--surface-200)', padding: 16, borderRadius: 16, width: 520, border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-sharp)', color: 'var(--text-primary)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontWeight: 700 }}>Контакты</div>
+            <button className="btn btn-icon btn-ghost" onClick={() => setContactsOpen(false)}><X size={16} /></button>
+          </div>
+          {incomingContactsQuery.data && incomingContactsQuery.data.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>Новые запросы</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {incomingContactsQuery.data.map((c: any) => (
+                  <div key={c.id} className="tile">
+                    <Avatar name={(c.friend.displayName ?? c.friend.username)} id={c.friend.id} presence={c.friend.status} avatarUrl={c.friend.avatarUrl ?? undefined} />
+                    <div>
+                      <div style={{ fontWeight: 600 }}>{c.friend.displayName ?? c.friend.username}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>хочет добавить вас</div>
+                    </div>
+                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                      <button className="btn btn-secondary" onClick={async () => { await api.post('/contacts/respond', { contactId: c.id, action: 'reject' }); incomingContactsQuery.refetch() }}>Отклонить</button>
+                      <button className="btn btn-primary" onClick={async () => { await api.post('/contacts/respond', { contactId: c.id, action: 'accept' }); contactsQuery.refetch(); incomingContactsQuery.refetch(); conversationsQuery.refetch() }}>Добавить</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div style={{ marginBottom: 8, color: 'var(--text-muted)' }}>Поиск по EBLID</div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 12 }}>
+            {[0,1,2,3].map((i) => (
+              <input
+                key={i}
+                ref={eblRefs[i]}
+                type="tel"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
+                enterKeyHint="done"
+                value={eblDigits[i]}
+                onChange={(e) => onChangeDigit(i, e.target.value.replace(/\D/g,'').slice(0,1))}
+                maxLength={1}
+                style={{ width: 52, height: 56, fontSize: 22, textAlign: 'center', borderRadius: 8, border: '1px solid var(--surface-border)', background: 'var(--surface-100)', color: 'var(--text-primary)' }}
+              />
+            ))}
+          </div>
+          {foundUser && (
+            <div className="tile" style={{ marginBottom: 12 }}>
+              <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={foundUser.status} avatarUrl={foundUser.avatarUrl ?? undefined} />
+              <div>
+                <div style={{ fontWeight: 600 }}>{foundUser.displayName ?? foundUser.username}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Найден по EBLID</div>
+              </div>
+              <div style={{ marginLeft: 'auto' }}>
+                <button disabled={sendingInvite} className="btn btn-primary" onClick={sendInvite}>Добавить</button>
+              </div>
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Мой EBLID:</div>
+            <div style={{ fontWeight: 700 }}>{myEblid || '— — — —'}</div>
+            <button className="btn btn-secondary btn-icon" onClick={() => { if (myEblid) navigator.clipboard.writeText(myEblid) }} title="Скопировать EBLID"><Copy size={16} /></button>
+          </div>
+
+          <div style={{ marginTop: 16, fontWeight: 700 }}>Мои друзья</div>
+          <div style={{ maxHeight: 300, overflow: 'auto', marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {(contactsQuery.data || []).map((c: any) => {
+              const u = c.friend
+              return (
+                <div key={c.id} className="tile">
+                  <Avatar name={u.displayName ?? u.username} id={u.id} presence={u.status} avatarUrl={u.avatarUrl ?? undefined} />
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Контакт</div>
+                  </div>
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={async () => {
+                        await api.post('/contacts/remove', { contactId: c.id })
+                        contactsQuery.refetch()
+                      }}
+                    >
+                      Удалить
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={async () => {
+                        await initiateSecretChat(u.id)
+                        setContactsOpen(false)
+                        client.invalidateQueries({ queryKey: ['conversations'] })
+                      }}
+                    >
+                      Секретный чат
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={async () => {
+                        const resp = await api.post('/conversations', { participantIds: [u.id], isGroup: false })
+                        setContactsOpen(false)
+                        selectConversation(resp.data.conversation.id)
+                        client.invalidateQueries({ queryKey: ['conversations'] })
+                      }}
+                    >
+                      Открыть чат
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    )}
+    {contextMenu.open && contextMenu.messageId && (
+      <div style={{ position: 'fixed', inset: 0, background: 'transparent', zIndex: 45 }} onClick={() => setContextMenu({ open: false, x: 0, y: 0, messageId: null })}>
+        <div
+          ref={menuRef}
+          className="msg-menu"
+          style={{ position: 'absolute', left: contextMenu.x, top: contextMenu.y, color: '#ffffff' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ display: 'flex', gap: 6, padding: 6, borderBottom: '1px solid var(--surface-border)' }}>
+            {['👍','❤️','👎','🔥'].map((emo) => (
+              <button key={emo} onClick={async () => {
+                try {
+                  const mid = contextMenu.messageId!
+                  // toggle: если уже есть моя реакция этим эмодзи — удаляем
+                  const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                  const mine = (found?.reactions || []).some((r: any) => r.userId === me?.id && r.emoji === emo)
+                  if (mine) await api.post('/messages/unreact', { messageId: mid, emoji: emo })
+                  else await api.post('/messages/react', { messageId: mid, emoji: emo })
+                  if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                } catch {}
+                setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+              }} style={{ fontSize: 16, color: '#ffffff' }}>{emo}</button>
+            ))}
+          </div>
+          <button style={{ color: '#ffffff' }} onClick={() => {
+            const mid = contextMenu.messageId!
+            const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+            setReplyTo({ id: mid, preview: (found?.content ?? '').slice(0, 100) })
+            setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+          }}>Цитировать</button>
+          {(() => {
+            const mid = contextMenu.messageId!
+            const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+            const canDelete = found?.senderId === me?.id
+            if (!canDelete) return null
+            return (
+              <button style={{ color: '#ffffff' }} onClick={async () => {
+                try {
+                  await api.post('/messages/delete', { messageId: contextMenu.messageId })
+                  if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                } catch {}
+                setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+              }}>Удалить</button>
+            )
+          })()}
+          <button style={{ color: '#ffffff' }} onClick={async () => {
+            const mid = contextMenu.messageId!
+            const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+            try { await navigator.clipboard.writeText(found?.content || '') } catch {}
+            setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+          }}>Копировать</button>
+          <button style={{ color: '#ffffff' }} onClick={() => { setForwardModal({ open: true, messageId: contextMenu.messageId }); setContextMenu({ open: false, x: 0, y: 0, messageId: null }) }}>Переслать</button>
+        </div>
+      </div>
+    )}
+    {lightbox.open && (
+      <div className="lightbox-backdrop" onClick={() => setLightbox({ ...lightbox, open: false })}>
+        <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
+          <button className="lightbox-arrow" onClick={() => setLightbox((l) => ({ ...l, index: (l.index - 1 + l.items.length) % l.items.length }))}>{'‹'}</button>
+          <img src={lightbox.items[lightbox.index]} alt="preview" style={{ transform: `scale(${lightboxScale})`, transformOrigin: 'center center' }} />
+          <button className="lightbox-arrow" onClick={() => setLightbox((l) => ({ ...l, index: (l.index + 1) % l.items.length }))}>{'›'}</button>
+          <button className="lightbox-close" onClick={() => setLightbox({ ...lightbox, open: false })}>✕</button>
+          <div style={{ position: 'absolute', bottom: -48, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 8 }}>
+            <button className="btn btn-secondary" onClick={() => setLightboxScale((s) => Math.max(0.25, s - 0.25))}>-</button>
+            <button className="btn btn-secondary" onClick={() => setLightboxScale(1)}>100%</button>
+            <button className="btn btn-secondary" onClick={() => setLightboxScale((s) => Math.min(4, s + 0.25))}>+</button>
+          </div>
+        </div>
+      </div>
+    )}
+    {forwardModal.open && (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setForwardModal({ open: false, messageId: null })}>
+        <div style={{ background: 'var(--surface-200)', padding: 16, borderRadius: 12, width: 420, border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-sharp)', color: 'var(--text-primary)' }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>Переслать сообщение</div>
+          <div style={{ maxHeight: 320, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {(conversationsQuery.data || []).map((row: any) => {
+              const c = row.conversation
+              const othersArr = c.participants.filter((p: any) => p.user.id !== me?.id).map((p: any) => p.user)
+              const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
+              const title = c.title ?? fallbackName
+              return (
+                <div key={c.id} className="tile" onClick={async () => {
+                  const mid = forwardModal.messageId!
+                  const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                  if (!found) return
+                  await sendMessageToConversation(c, { type: 'TEXT', content: `↪ ${found.content ?? ''}`, replyToId: undefined })
+                  setForwardModal({ open: false, messageId: null })
+                }}>
+                  <div style={{ fontWeight: 600 }}>{title}</div>
+                </div>
+              )
+            })}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+            <button className="btn btn-secondary" onClick={() => setForwardModal({ open: false, messageId: null })}>Отмена</button>
+          </div>
+        </div>
+      </div>
+    )}
+    {addParticipantsModal && activeConversation && (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }} onClick={closeAddParticipantsModal}>
+        <div style={{ background: 'var(--surface-200)', padding: 24, borderRadius: 16, width: 440, maxWidth: '90vw', border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-medium)', color: 'var(--text-primary)' }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, fontSize: 20 }}>Добавить участников</div>
+            <button className="btn btn-icon btn-ghost" onClick={closeAddParticipantsModal}><X size={18} /></button>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            {[
+              { key: 'friends', label: 'Из друзей' },
+              { key: 'eblid', label: 'По EBLID' },
+            ].map((opt) => {
+              const active = addParticipantsMode === opt.key
+              return (
+                <button
+                  key={opt.key}
+                  className="btn btn-ghost"
+                  onClick={() => setAddParticipantsMode(opt.key as 'friends' | 'eblid')}
+                  style={{
+                    flex: 1,
+                    borderRadius: 999,
+                    border: active ? '1px solid var(--brand-500)' : '1px solid var(--surface-border)',
+                    background: active ? 'var(--surface-100)' : 'transparent',
+                    color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+                    fontWeight: active ? 600 : 500,
+                  }}
+                >
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+            {addParticipantsMode === 'friends'
+              ? 'Выберите контакты, которых нужно пригласить в эту беседу.'
+              : 'Введите EBLID пользователя, чтобы пригласить его в беседу.'}
+          </div>
+          {addParticipantsMode === 'friends' ? (
+            <div style={{ maxHeight: 320, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {eligibleContactsForAdd.length === 0 ? (
+                <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>Все ваши контакты уже находятся в этой беседе.</div>
+              ) : (
+                eligibleContactsForAdd.map((c: any) => {
+                  const u = c.friend
+                  const checked = addParticipantsSelectedIds.includes(u.id)
+                  return (
+                    <div
+                      key={c.id}
+                      className="tile"
+                      onClick={() =>
+                        setAddParticipantsSelectedIds((prev) => (checked ? prev.filter((id) => id !== u.id) : [...prev, u.id]))
+                      }
+                      style={{
+                        cursor: 'pointer',
+                        borderColor: checked ? 'var(--brand-600)' : undefined,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                      }}
+                    >
+                      <Avatar
+                        name={u.displayName ?? u.username}
+                        id={u.id}
+                        presence={u.status}
+                        avatarUrl={u.avatarUrl ?? undefined}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{u.status === 'ONLINE' ? 'ОНЛАЙН' : formatPresence(u)}</div>
+                      </div>
+                      <div style={{ width: 18, height: 18, borderRadius: 4, border: '2px solid var(--surface-border)', background: checked ? 'var(--brand-600)' : 'transparent' }} />
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+                {[0, 1, 2, 3].map((i) => (
+                  <input
+                    key={i}
+                    ref={addParticipantsEblRefs[i]}
+                    type="tel"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    autoComplete="one-time-code"
+                    enterKeyHint="done"
+                    value={addParticipantsEblDigits[i]}
+                    onChange={(e) => onChangeAddParticipantsDigit(i, e.target.value.replace(/\D/g, '').slice(0, 1))}
+                    maxLength={1}
+                    style={{
+                      width: 56,
+                      height: 60,
+                      fontSize: 24,
+                      textAlign: 'center',
+                      borderRadius: 10,
+                      border: '1px solid var(--surface-border)',
+                      background: 'var(--surface-100)',
+                      color: 'var(--text-primary)',
+                      fontWeight: 600,
+                    }}
+                  />
+                ))}
+              </div>
+              {addParticipantsSearching && (
+                <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>Ищем пользователя…</div>
+              )}
+              {addParticipantsFoundUser && (
+                <div className="tile" style={{ alignItems: 'center', gap: 12 }}>
+                  <Avatar
+                    name={addParticipantsFoundUser.displayName ?? addParticipantsFoundUser.username}
+                    id={addParticipantsFoundUser.id}
+                    presence={addParticipantsFoundUser.status}
+                    avatarUrl={addParticipantsFoundUser.avatarUrl ?? undefined}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600 }}>{addParticipantsFoundUser.displayName ?? addParticipantsFoundUser.username}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {addParticipantsFoundUserStatus.alreadyInChat
+                        ? 'Уже в беседе'
+                        : addParticipantsFoundUserStatus.isSelf
+                        ? 'Это вы'
+                        : 'Найден по EBLID'}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!addParticipantsFoundUser && addParticipantsSearchError && (
+                <div style={{ textAlign: 'center', fontSize: 13, color: '#f87171' }}>{addParticipantsSearchError}</div>
+              )}
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 20 }}>
+            <button className="btn btn-secondary" onClick={closeAddParticipantsModal}>Отмена</button>
+            <button
+              className="btn btn-primary"
+              disabled={
+                addParticipantsLoading ||
+                (addParticipantsMode === 'friends'
+                  ? addParticipantsSelectedIds.length === 0
+                  : !addParticipantsFoundUser ||
+                    addParticipantsFoundUserStatus.alreadyInChat ||
+                    addParticipantsFoundUserStatus.isSelf)
+              }
+              onClick={addParticipantsMode === 'friends' ? handleAddParticipants : handleAddParticipantByEbl}
+            >
+              {addParticipantsLoading ? 'Добавление...' : 'Добавить'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    {convMenu.open && convMenu.conversationId && (
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'transparent',
+          zIndex: 45,
+        }}
+        onClick={() => setConvMenu({ open: false, x: 0, y: 0, conversationId: null })}
+      >
+        <div
+          ref={convMenuRef}
+          className="msg-menu"
+          style={{ position: 'absolute', left: convMenu.x, top: convMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {(() => {
+            const row = (conversationsQuery.data || []).find(
+              (r: any) => r.conversation.id === convMenu.conversationId
+            )
+            const c = row?.conversation || (activeId === convMenu.conversationId ? activeConversation : null)
+            const isGroup = !!(c && (c.isGroup || (c.participants?.length ?? 0) > 2))
+
+            const handleClick = async () => {
+              try {
+                if (isGroup) {
+                  await api.delete(`/conversations/${convMenu.conversationId}/participants/me`)
+                } else {
+                  await api.delete(`/conversations/${convMenu.conversationId}`)
+                }
+                client.invalidateQueries({ queryKey: ['conversations'] })
+                if (activeId === convMenu.conversationId) {
+                  setActiveId(null)
+                  if (isMobile) setMobileView('list')
+                }
+              } catch {
+                // ignore
+              }
+              setConvMenu({ open: false, x: 0, y: 0, conversationId: null })
+            }
+
+            return (
+              <button
+                onClick={handleClick}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ef4444' }}
+              >
+                {isGroup ? <LogOut size={16} /> : <Trash2 size={16} />}
+                {isGroup ? 'Выйти из беседы' : 'Удалить беседу'}
+              </button>
+            )
+          })()}
+        </div>
+      </div>
+    )}
+    {groupAvatarEditor && activeConversation && (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setGroupAvatarEditor(false)}>
+        <div style={{ background: 'var(--surface-200)', padding: 24, borderRadius: 16, width: 440, maxWidth: '90vw', border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-medium)' }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Изменить аватар группы</div>
+            <button className="btn btn-icon btn-ghost" onClick={() => setGroupAvatarEditor(false)}><X size={18} /></button>
+          </div>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
+            <Avatar name={activeConversation.title?.trim()?.charAt(0) || 'Г'} id={activeConversation.id} avatarUrl={groupAvatarPreviewUrl ?? activeConversation.avatarUrl ?? undefined} size={60} />
+            <div>
+              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{activeConversation.title || 'Группа'}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Нажмите, чтобы изменить аватар</div>
+            </div>
+          </div>
+          <input ref={groupFileInputRef} type="file" accept="image/*" onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (!file) return
+            setGroupSelectedAvatarFile(file)
+            try { setGroupAvatarPreviewUrl(URL.createObjectURL(file)) } catch {}
+          }} style={{ display: 'none' }} />
+          {!groupAvatarPreviewUrl && (
+            <>
+              <div style={{ marginBottom: 8, color: 'var(--text-muted)', fontSize: 12, fontWeight: 500 }}>Загрузка аватара</div>
+          <div
+                onClick={() => groupFileInputRef.current?.click()}
+                onDragOver={(e) => { e.preventDefault(); setGroupDragOver(true) }}
+                onDragLeave={() => setGroupDragOver(false)}
+            onDrop={(e) => {
+                  e.preventDefault(); setGroupDragOver(false)
+              const file = e.dataTransfer.files?.[0]
+                  if (file) { setGroupSelectedAvatarFile(file); try { setGroupAvatarPreviewUrl(URL.createObjectURL(file)) } catch {} }
+            }}
+            style={{
+                  border: '2px dashed ' + (groupDragOver ? 'var(--brand-600)' : 'var(--surface-border)'),
+                  borderRadius: 12,
+              padding: 20,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              cursor: 'pointer',
+                  background: groupDragOver ? 'rgba(217,119,6,0.1)' : 'var(--surface-100)',
+              transition: 'all .2s ease',
+                  marginBottom: 16,
+            }}
+          >
+                <UploadCloud size={18} color="var(--text-muted)" />
+                <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>Перетащите файл сюда или нажмите, чтобы выбрать</div>
+          </div>
+            </>
+          )}
+          {groupAvatarPreviewUrl && (
+            <div style={{ border: '1px solid var(--surface-border)', borderRadius: 16, padding: 16, marginTop: 16, background: 'var(--surface-100)', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+              <div style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 12, fontWeight: 600 }}>Настройка аватара</div>
+              <div 
+                ref={groupEditorRef}
+                onWheel={(e) => {
+                  e.preventDefault()
+                  const delta = -e.deltaY * 0.001
+                  const newScale = Math.max(0.1, Math.min(10, groupCrop.scale * (1 + delta)))
+                  const rect = groupEditorRef.current?.getBoundingClientRect()
+                  if (rect) {
+                    const x = e.clientX - rect.left
+                    const y = e.clientY - rect.top
+                    const scaleChange = newScale / groupCrop.scale
+                    const newX = x - (x - groupCrop.x) * scaleChange
+                    const newY = y - (y - groupCrop.y) * scaleChange
+                    setGroupCrop({ x: newX, y: newY, scale: newScale })
+                  }
+                }}
+                  onPointerDown={(e) => {
+                  if (e.pointerType === 'touch') return // Touch обрабатывается в addEventListener
+                  const rect = groupEditorRef.current?.getBoundingClientRect()
+                  if (!rect) return
+                  const editorWidth = rect.width
+                  const editorHeight = rect.height
+                  const centerX = editorWidth / 2
+                  const centerY = editorHeight / 2
+                  const cropSizeValue = 240
+                  const radius = cropSizeValue / 2
+                  const x = e.clientX - rect.left
+                  const y = e.clientY - rect.top
+                  
+                  // Проверяем, что клик внутри круга
+                  const dx = x - centerX
+                  const dy = y - centerY
+                  if (dx * dx + dy * dy > radius * radius) {
+                    return
+                  }
+                  
+                    try { (e.currentTarget as any).setPointerCapture?.((e as any).pointerId) } catch {}
+                  const startX = e.clientX
+                  const startY = e.clientY
+                  const start = { ...groupCrop }
+                    const onMove = (ev: PointerEvent) => {
+                      ev.preventDefault()
+                    const deltaX = ev.clientX - startX
+                    const deltaY = ev.clientY - startY
+                    setGroupCrop({ ...start, x: start.x + deltaX, y: start.y + deltaY })
+                    }
+                    const onUp = () => {
+                      window.removeEventListener('pointermove', onMove as any)
+                      window.removeEventListener('pointerup', onUp)
+                    }
+                    window.addEventListener('pointermove', onMove as any, { passive: false } as any)
+                    window.addEventListener('pointerup', onUp, { passive: true } as any)
+                }}
+                style={{ 
+                position: 'relative', 
+                width: '100%', 
+                height: 320, 
+                background: 'var(--surface-200)', 
+                overflow: 'hidden', 
+                borderRadius: 12, 
+                touchAction: 'none',
+                border: '1px solid var(--surface-border)',
+                boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.1)',
+                cursor: 'move'
+              }}>
+                <img 
+                  ref={groupImageRef}
+                  src={groupAvatarPreviewUrl} 
+                  alt="preview" 
+                  style={{ 
+                    position: 'absolute', 
+                    left: groupCrop.x, 
+                    top: groupCrop.y, 
+                    transform: `scale(${groupCrop.scale})`, 
+                    transformOrigin: 'top left',
+                    willChange: 'transform',
+                    pointerEvents: 'none'
+                  }} 
+                  draggable={false}
+                  onLoad={(e) => {
+                    const img = e.currentTarget
+                    const editor = groupEditorRef.current
+                    if (!editor) return
+                    const editorWidth = editor.clientWidth
+                    const editorHeight = editor.clientHeight
+                    const cropSizeValue = 240
+                    const imgWidth = img.naturalWidth
+                    const imgHeight = img.naturalHeight
+                    const centerX = editorWidth / 2
+                    const centerY = editorHeight / 2
+                    
+                    // Рассчитываем масштаб, чтобы изображение максимально заполняло круг
+                    const scaleX = cropSizeValue / imgWidth
+                    const scaleY = cropSizeValue / imgHeight
+                    const initialScale = Math.max(scaleX, scaleY) * 1.2 // 1.2 для запаса
+                    
+                    // Центрируем изображение относительно центра круга
+                    const initialX = centerX - (imgWidth * initialScale) / 2
+                    const initialY = centerY - (imgHeight * initialScale) / 2
+                    
+                    setGroupCrop({ x: initialX, y: initialY, scale: initialScale })
+                  }}
+                />
+                {/* Маска с градиентом для более плавного эффекта */}
+                <div style={{ 
+                  position: 'absolute', 
+                  inset: 0, 
+                  pointerEvents: 'none', 
+                  borderRadius: '50%', 
+                  boxShadow: '0 0 0 9999px rgba(0,0,0,0.65)', 
+                  width: 240, 
+                  height: 240, 
+                  margin: 'auto',
+                  border: '2px solid rgba(255,255,255,0.3)',
+                  boxSizing: 'border-box'
+                }} />
+                {/* Сетка для лучшего позиционирования */}
+                <div style={{
+                  position: 'absolute',
+                  inset: 0,
+                  pointerEvents: 'none',
+                  borderRadius: '50%',
+                  width: 240,
+                  height: 240,
+                  margin: 'auto',
+                  background: `
+                    linear-gradient(to right, rgba(255,255,255,0.1) 1px, transparent 1px),
+                    linear-gradient(to bottom, rgba(255,255,255,0.1) 1px, transparent 1px)
+                  `,
+                  backgroundSize: '60px 60px',
+                  opacity: 0.5
+                }} />
+              </div>
+              <div style={{ marginTop: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 500 }}>Масштаб</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', background: 'var(--surface-200)', padding: '4px 8px', borderRadius: 6 }}>
+                    {Math.round(groupCrop.scale * 100)}%
+              </div>
+                </div>
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ fontSize: 18, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }} onClick={() => setGroupCrop((c) => ({ ...c, scale: Math.max(0.1, c.scale - 0.1) }))}>−</div>
+                  <input 
+                    type="range" 
+                    min={0.1} 
+                    max={10} 
+                    step={0.01} 
+                    value={groupCrop.scale} 
+                    onChange={(e) => {
+                      const newScale = parseFloat(e.target.value)
+                      setGroupCrop((prev) => {
+                        const rect = groupEditorRef.current?.getBoundingClientRect()
+                        if (!rect) return { ...prev, scale: newScale }
+                        const editorWidth = rect.width
+                        const editorHeight = rect.height
+                        const centerX = editorWidth / 2
+                        const centerY = editorHeight / 2
+                        const img = groupImageRef.current
+                        if (img) {
+                          const imgWidth = img.naturalWidth
+                          const imgHeight = img.naturalHeight
+                          const initialCenterX = prev.x + (imgWidth * prev.scale) / 2
+                          const initialCenterY = prev.y + (imgHeight * prev.scale) / 2
+                          const vectorX = initialCenterX - centerX
+                          const vectorY = initialCenterY - centerY
+                          const scaleRatio = newScale / prev.scale
+                          const newCenterX = centerX + vectorX * scaleRatio
+                          const newCenterY = centerY + vectorY * scaleRatio
+                          const newX = newCenterX - (imgWidth * newScale) / 2
+                          const newY = newCenterY - (imgHeight * newScale) / 2
+                          return { x: newX, y: newY, scale: newScale }
+                        }
+                        return { ...prev, scale: newScale }
+                      })
+                    }}
+                    style={{ flex: 1, height: 6, background: 'var(--surface-200)', borderRadius: 3, outline: 'none', cursor: 'pointer' }}
+                  />
+                  <div style={{ fontSize: 18, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }} onClick={() => setGroupCrop((c) => ({ ...c, scale: Math.min(10, c.scale + 0.1) }))}>+</div>
+                </div>
+              </div>
+              <canvas ref={groupCropCanvasRef} width={240} height={240} style={{ display: 'none' }} />
+            </div>
+          )}
+          {groupSelectedAvatarFile && (
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button className="btn btn-secondary" onClick={() => { 
+                setGroupSelectedAvatarFile(null)
+                if (groupAvatarPreviewUrl) URL.revokeObjectURL(groupAvatarPreviewUrl)
+                setGroupAvatarPreviewUrl(null)
+                setGroupCrop({ x: 0, y: 0, scale: 1 })
+              }}>Отмена</button>
+              <button className="btn btn-primary" disabled={uploadingAvatar} onClick={async () => {
+                if (!groupSelectedAvatarFile || !activeConversation) return
+                setUploadingAvatar(true)
+                setUploadProgress(0)
+                try {
+                  let blobToSend: Blob | null = null
+                  if (groupCropCanvasRef.current && groupAvatarPreviewUrl) {
+                    const img = await new Promise<HTMLImageElement>((resolve) => { const i = new Image(); i.onload = () => resolve(i); i.src = groupAvatarPreviewUrl })
+                    const ctx = groupCropCanvasRef.current.getContext('2d')!
+                    if (!ctx) {
+                      throw new Error('Could not get 2d context from canvas')
+                    }
+                    const size = 240
+                    ctx.clearRect(0,0,size,size)
+                    ctx.save()
+                    ctx.beginPath(); ctx.arc(size/2, size/2, size/2, 0, Math.PI*2); ctx.closePath(); ctx.clip()
+                    const vw = groupEditorRef.current?.clientWidth ?? 320
+                    const vh = groupEditorRef.current?.clientHeight ?? 320
+                    const viewportCenter = { x: vw / 2, y: vh / 2 }
+                    const viewRect = { x: viewportCenter.x - size/2, y: viewportCenter.y - size/2, w: size, h: size }
+                    const srcX = (viewRect.x - groupCrop.x) / groupCrop.scale
+                    const srcY = (viewRect.y - groupCrop.y) / groupCrop.scale
+                    const srcW = viewRect.w / groupCrop.scale
+                    const srcH = viewRect.h / groupCrop.scale
+                    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, size, size)
+                    ctx.restore()
+                    blobToSend = await new Promise<Blob | null>((resolve) => groupCropCanvasRef.current!.toBlob((b) => resolve(b), 'image/png'))
+                  }
+                  if (!blobToSend && !groupSelectedAvatarFile) {
+                    throw new Error('No file to upload')
+                  }
+                  const form = new FormData()
+                  form.append('file', blobToSend ?? groupSelectedAvatarFile!)
+                  const url = await new Promise<string>((resolve, reject) => {
+                    const xhr = new XMLHttpRequest()
+                    xhr.open('POST', '/api/upload')
+                    try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
+                    xhr.upload.onprogress = (e) => { 
+                      if (e.lengthComputable) {
+                        setUploadProgress(Math.round(100 * e.loaded / e.total))
+                      }
+                    }
+                    xhr.onreadystatechange = () => {
+                      if (xhr.readyState === 4) {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                          try { 
+                            const resp = JSON.parse(xhr.responseText)
+                            resolve(resp.url) 
+                          } catch (err) { 
+                            reject(err) 
+                          }
+                        } else {
+                          reject(new Error(`upload failed: ${xhr.status} ${xhr.statusText}`))
+                      }
+                      }
+                    }
+                    xhr.onerror = () => {
+                      reject(new Error('Network error during upload'))
+                    }
+                    xhr.send(form)
+                  })
+                  await api.patch(`/conversations/${activeConversation.id}`, { avatarUrl: url })
+                  // Обновляем данные беседы оптимистично
+                  client.setQueryData(['conversations'], (old: any) => {
+                    if (!Array.isArray(old)) return old
+                    return old.map((r: any) => {
+                      if (r.conversation?.id === activeConversation.id) {
+                        return {
+                          ...r,
+                          conversation: {
+                            ...r.conversation,
+                            avatarUrl: url
+                          }
+                        }
+                      }
+                      return r
+                    })
+                  })
+                  client.invalidateQueries({ queryKey: ['conversations'] })
+                  await conversationsQuery.refetch()
+                  setGroupSelectedAvatarFile(null)
+                  if (groupAvatarPreviewUrl) URL.revokeObjectURL(groupAvatarPreviewUrl)
+                  setGroupAvatarPreviewUrl(null)
+                  setGroupCrop({ x: 0, y: 0, scale: 1 })
+                  setGroupAvatarEditor(false)
+                setUploadMessage('Готово')
+                setTimeout(() => setUploadMessage(null), 2200)
+                } catch (err) {
+                  console.error('Error uploading group avatar:', err)
+                  setUploadMessage(`Ошибка: ${err instanceof Error ? err.message : 'Неизвестная ошибка'}`)
+                  setTimeout(() => setUploadMessage(null), 3000)
+                } finally {
+                  setUploadingAvatar(false)
+                }
+              }}>{uploadingAvatar ? 'Загрузка...' : 'Загрузить'}</button>
+            </div>
+          )}
+          {uploadingAvatar && (
+            <div style={{ height: 6, background: 'var(--surface-100)', borderRadius: 3, overflow: 'hidden', marginTop: 12 }}>
+              <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'var(--brand)', transition: 'width 0.2s ease' }} />
+            </div>
+          )}
+          {uploadMessage && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, color: '#16a34a' }}>
+              <CheckCircle size={16} />
+              <span>{uploadMessage}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+    </>
+  )
+}
+
+function makeParticipantsKey(list: Array<{ user: { id: string } }> | undefined | null): string {
+  return (list ?? []).map((p) => p.user.id).sort().join(',')
+}
+
+
+
