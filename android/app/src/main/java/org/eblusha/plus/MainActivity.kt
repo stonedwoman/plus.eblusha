@@ -33,6 +33,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import org.eblusha.plus.core.di.AppContainer
+import org.eblusha.plus.ui.chats.ChatsRoute
 import org.eblusha.plus.ui.theme.EblushaPlusTheme
 import org.eblusha.plus.feature.session.SessionUiState
 import org.eblusha.plus.feature.session.SessionUser
@@ -40,8 +42,9 @@ import org.eblusha.plus.feature.session.SessionViewModel
 import org.eblusha.plus.feature.session.SessionViewModelFactory
 
 class MainActivity : ComponentActivity() {
+    private val container: AppContainer by lazy { (application as EblushaApp).container }
     private val sessionViewModel: SessionViewModel by viewModels {
-        SessionViewModelFactory((application as EblushaApp).container)
+        SessionViewModelFactory(container)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,6 +54,7 @@ class MainActivity : ComponentActivity() {
             EblushaPlusTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     SessionScreen(
+                        container = container,
                         state = state,
                         onSubmitToken = sessionViewModel::submitToken,
                         onRefresh = sessionViewModel::refresh,
@@ -64,6 +68,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun SessionScreen(
+    container: AppContainer,
     state: SessionUiState,
     onSubmitToken: (String) -> Unit,
     onRefresh: () -> Unit,
@@ -79,7 +84,11 @@ private fun SessionScreen(
             SessionUiState.Loading -> CircularProgressIndicator()
             SessionUiState.LoggedOut -> LoggedOutContent(onSubmitToken)
             is SessionUiState.Error -> ErrorContent(state.message, onRefresh, onLogout)
-            is SessionUiState.LoggedIn -> LoggedInContent(state.user, onRefresh, onLogout)
+            is SessionUiState.LoggedIn -> ChatsRoute(
+                container = container,
+                currentUser = state.user,
+                onLogout = onLogout,
+            )
         }
     }
 }
@@ -124,44 +133,6 @@ private fun LoggedOutContent(onSubmitToken: (String) -> Unit) {
         ) {
             Text("Сохранить токен")
         }
-    }
-}
-
-@Composable
-private fun LoggedInContent(
-    user: SessionUser,
-    onRefresh: () -> Unit,
-    onLogout: () -> Unit,
-) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = "Привет, ${user.displayName ?: user.username}",
-            style = MaterialTheme.typography.headlineMedium,
-            textAlign = TextAlign.Center
-        )
-        user.status?.let {
-            Text(
-                text = "Статус: $it",
-                modifier = Modifier.padding(top = 8.dp),
-                style = MaterialTheme.typography.bodyLarge
-            )
-        }
-        user.eblid?.let {
-            Text(text = "EBLID: $it", style = MaterialTheme.typography.bodyMedium)
-        }
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
-            Text("Обновить профиль")
-        }
-        Spacer(modifier = Modifier.height(12.dp))
-        LogoutButton(onClick = onLogout)
-    }
-}
-
-@Composable
-private fun LogoutButton(onClick: () -> Unit) {
-    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-        Text("Выйти из аккаунта")
     }
 }
 
