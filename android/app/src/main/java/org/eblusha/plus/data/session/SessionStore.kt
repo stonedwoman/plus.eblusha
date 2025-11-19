@@ -33,6 +33,8 @@ class SessionStore(
 
     private object Keys {
         val ACCESS_TOKEN = stringPreferencesKey("access_token")
+        val USERNAME = stringPreferencesKey("username")
+        val PASSWORD = stringPreferencesKey("password")
     }
 
     val accessTokenFlow: Flow<String?> = dataStore.data
@@ -60,7 +62,30 @@ class SessionStore(
     }
 
     suspend fun clear() {
-        setAccessToken(null)
+        dataStore.edit { prefs ->
+            prefs.remove(Keys.ACCESS_TOKEN)
+            prefs.remove(Keys.USERNAME)
+            prefs.remove(Keys.PASSWORD)
+        }
+        tokenProvider.updateToken(null)
     }
+    
+    suspend fun setCredentials(username: String, password: String) {
+        dataStore.edit { prefs ->
+            prefs[Keys.USERNAME] = username
+            prefs[Keys.PASSWORD] = password
+        }
+    }
+    
+    suspend fun getCredentials(): Pair<String?, String?> {
+        val prefs = dataStore.data.firstOrNull() ?: return null to null
+        return prefs[Keys.USERNAME] to prefs[Keys.PASSWORD]
+    }
+    
+    val usernameFlow: Flow<String?> = dataStore.data
+        .catch { exception ->
+            if (exception is IOException) emit(emptyPreferences()) else throw exception
+        }
+        .map { prefs -> prefs[Keys.USERNAME] }
 }
 

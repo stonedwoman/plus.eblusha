@@ -19,6 +19,8 @@ import retrofit2.converter.kotlinx.serialization.asConverterFactory
  */
 class NetworkModule(
     private val tokenProvider: AccessTokenProvider,
+    private val sessionStore: org.eblusha.plus.data.session.SessionStore? = null,
+    private val authApi: org.eblusha.plus.data.api.auth.AuthApi? = null,
     private val baseUrl: String = AppConfig.apiBaseUrl,
 ) {
 
@@ -36,13 +38,19 @@ class NetworkModule(
     }
 
     val okHttpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .addInterceptor(AuthTokenInterceptor(tokenProvider))
             .addInterceptor(loggingInterceptor)
-            .build()
+        
+        // Add token refresh interceptor if sessionStore and authApi are provided
+        if (sessionStore != null && authApi != null) {
+            builder.addInterceptor(TokenRefreshInterceptor(sessionStore, authApi))
+        }
+        
+        builder.build()
     }
 
     val retrofit: Retrofit by lazy {

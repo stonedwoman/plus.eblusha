@@ -30,11 +30,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.flow.firstOrNull
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -124,7 +126,7 @@ private fun SessionScreen(
     ) {
         when (state) {
             SessionUiState.Loading -> CircularProgressIndicator()
-            SessionUiState.LoggedOut -> LoggedOutContent(onLogin, onSubmitToken)
+            SessionUiState.LoggedOut -> LoggedOutContent(container, onLogin, onSubmitToken)
             is SessionUiState.Error -> ErrorContent(state.message, onRefresh, onLogout)
             is SessionUiState.LoggedIn -> MessengerNavHost(container, state.user, onLogout)
         }
@@ -231,12 +233,22 @@ private fun MessengerNavHost(
 
 @Composable
 private fun LoggedOutContent(
+    container: AppContainer,
     onLogin: (String, String) -> Unit,
     onSubmitToken: (String) -> Unit,
 ) {
+    // Load saved username
     var username by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var token by rememberSaveable { mutableStateOf("") }
+    
+    // Load saved username on first composition
+    LaunchedEffect(Unit) {
+        val savedUsername = container.sessionStore.usernameFlow.firstOrNull()
+        if (!savedUsername.isNullOrBlank()) {
+            username = savedUsername
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
