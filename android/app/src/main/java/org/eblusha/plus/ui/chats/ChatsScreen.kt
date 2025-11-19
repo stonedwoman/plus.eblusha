@@ -305,12 +305,14 @@ private fun QuickActionsRow() {
         horizontalArrangement = Arrangement.spacedBy(spacing.md)
     ) {
         ActionCard(
+            modifier = Modifier.weight(1f),
             title = "Беседа",
             subtitle = "Групповой чат",
             icon = Icons.Default.Add,
             tint = MaterialTheme.colorScheme.secondary
         )
         ActionCard(
+            modifier = Modifier.weight(1f),
             title = "Контакты",
             subtitle = "Список контактов",
             icon = Icons.Default.Person,
@@ -321,13 +323,14 @@ private fun QuickActionsRow() {
 
 @Composable
 private fun ActionCard(
+    modifier: Modifier = Modifier,
     title: String,
     subtitle: String,
     icon: ImageVector,
     tint: Color
 ) {
     Card(
-        modifier = Modifier.weight(1f),
+        modifier = modifier,
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
