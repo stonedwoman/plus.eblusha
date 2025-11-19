@@ -89,7 +89,8 @@ class CallViewModel(
 
                 // Create Room instance
                 android.util.Log.d("CallViewModel", "Creating Room instance...")
-                room = LiveKit.create(context)
+                val liveKit = LiveKit.create(context)
+                room = liveKit.createRoom()
                 android.util.Log.d("CallViewModel", "Room created: ${room != null}")
                 
                 // Subscribe to room events before connecting
@@ -125,7 +126,8 @@ class CallViewModel(
         
         // Observe room events using Flow
         viewModelScope.launch {
-            r.events.collect { event: RoomEvent ->
+            try {
+                r.events.collect { event: RoomEvent ->
                 android.util.Log.d("CallViewModel", "RoomEvent: $event")
                 when (event) {
                     is RoomEvent.Connected -> {
@@ -177,6 +179,8 @@ class CallViewModel(
                                         isAudioEnabled = hasAudioPermission,
                                         localVideoTrack = localVideoTrack
                                     )
+                                } else {
+                                    // State is not Connected, skip update
                                 }
 
                             } catch (e: Exception) {
@@ -213,6 +217,8 @@ class CallViewModel(
                         if (track is RemoteVideoTrack) {
                             remoteTracks.add(track)
                             updateRemoteTracks()
+                        } else {
+                            // Not a video track, ignore
                         }
                     }
                     is RoomEvent.TrackUnsubscribed -> {
@@ -221,12 +227,16 @@ class CallViewModel(
                         if (track is RemoteVideoTrack) {
                             remoteTracks.remove(track)
                             updateRemoteTracks()
+                        } else {
+                            // Not a video track, ignore
                         }
                     }
                     else -> {
                         android.util.Log.d("CallViewModel", "Unhandled RoomEvent: $event")
                     }
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("CallViewModel", "Error in room events flow", e)
             }
         }
     }
@@ -237,10 +247,22 @@ class CallViewModel(
                 // Get camera track from local participant
                 // videoTrackPublications is a Map<String, VideoTrackPublication>
                 val publications = participant.videoTrackPublications
-                val cameraPublication = publications.values.firstOrNull { publication ->
-                    publication.source == Track.Source.CAMERA
+                val cameraPublication = (publications as? Map<String, *>)?.values?.firstOrNull { pub ->
+                    try {
+                        val publication = pub as? Any
+                        val sourceMethod = publication?.javaClass?.getMethod("getSource")
+                        val source = sourceMethod?.invoke(publication)
+                        source == Track.Source.CAMERA
+                    } catch (e: Exception) {
+                        false
+                    }
                 }
-                localVideoTrack = cameraPublication?.track as? LocalVideoTrack
+                localVideoTrack = try {
+                    val trackMethod = cameraPublication?.javaClass?.getMethod("getTrack")
+                    trackMethod?.invoke(cameraPublication) as? LocalVideoTrack
+                } catch (e: Exception) {
+                    null
+                }
                 android.util.Log.d("CallViewModel", "Local video track: ${localVideoTrack != null}")
                 
                 val currentState = _uiState.value
@@ -267,11 +289,19 @@ class CallViewModel(
         android.util.Log.d("CallViewModel", "Collecting tracks for participant: ${participant.identity}")
         // videoTrackPublications is a Map<String, VideoTrackPublication>
         val publications = participant.videoTrackPublications
-        publications.values.forEach { publication ->
-            val track = publication.track
-            if (track is RemoteVideoTrack && !remoteTracks.contains(track)) {
-                remoteTracks.add(track)
-                android.util.Log.d("CallViewModel", "Added remote video track: ${track.sid}")
+        if (publications is Map<*, *>) {
+            (publications as Map<String, *>).values.forEach { pub ->
+                try {
+                    val publication = pub as? Any
+                    val trackMethod = publication?.javaClass?.getMethod("getTrack")
+                    val track = trackMethod?.invoke(publication) as? RemoteVideoTrack
+                    if (track != null && !remoteTracks.contains(track)) {
+                        remoteTracks.add(track)
+                        android.util.Log.d("CallViewModel", "Added remote video track: ${track.sid}")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("CallViewModel", "Error accessing track from publication", e)
+                }
             }
         }
         updateRemoteTracks()
