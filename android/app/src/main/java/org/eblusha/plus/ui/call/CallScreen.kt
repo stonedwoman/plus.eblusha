@@ -35,6 +35,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,9 +87,20 @@ fun CallRoute(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     android.util.Log.d("CallRoute", "State collected: $state")
 
+    LaunchedEffect(conversationId) {
+        container.realtimeService.joinCallRoom(conversationId, isVideoCall)
+        container.realtimeService.requestCallStatuses(listOf(conversationId))
+    }
+    DisposableEffect(conversationId) {
+        onDispose {
+            container.realtimeService.leaveCallRoom(conversationId)
+        }
+    }
+
     CallScreen(
         state = state,
         onHangUp = {
+            container.realtimeService.leaveCallRoom(conversationId)
             viewModel.hangUp()
             onHangUp()
         },
