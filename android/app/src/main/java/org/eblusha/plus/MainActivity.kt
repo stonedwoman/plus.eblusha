@@ -1,9 +1,15 @@
                                                                                                                                                                                                                                 package org.eblusha.plus
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,9 +61,32 @@ class MainActivity : ComponentActivity() {
     private val sessionViewModel: SessionViewModel by viewModels {
         SessionViewModelFactory(container)
     }
+    
+    // Request permissions on app startup
+    private val requestPermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val audioGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
+        val cameraGranted = permissions[Manifest.permission.CAMERA] ?: false
+        android.util.Log.d("MainActivity", "Permissions result: audio=$audioGranted, camera=$cameraGranted")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Request permissions on first launch
+        val permissionsToRequest = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.CAMERA)
+        }
+        if (permissionsToRequest.isNotEmpty()) {
+            android.util.Log.d("MainActivity", "Requesting permissions on startup: $permissionsToRequest")
+            requestPermissionsLauncher.launch(permissionsToRequest.toTypedArray())
+        }
+        
         setContent {
             val state by sessionViewModel.uiState.collectAsStateWithLifecycle()
             EblushaPlusTheme {
