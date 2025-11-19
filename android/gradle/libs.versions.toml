@@ -16,7 +16,7 @@ datastore = "1.1.1"
 navigationCompose = "2.8.1"
 accompanistSystemUi = "0.36.0"
 socketIo = "2.1.0"
-livekit = "2.0.0"
+livekit = "2.22.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version = "1.13.1" }
