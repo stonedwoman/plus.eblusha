@@ -101,9 +101,17 @@ class CallViewModel(
                 kotlinx.coroutines.delay(500) // Small delay to ensure room is connected
                 
                 // Now safely enable camera and microphone
-                r.localParticipant?.let { participant ->
-                    participant.setCameraEnabled(isVideoCall)
-                    participant.setMicrophoneEnabled(true)
+                val participant = r.localParticipant
+                if (participant != null) {
+                    try {
+                        participant.setCameraEnabled(isVideoCall)
+                        participant.setMicrophoneEnabled(true)
+                    } catch (e: Exception) {
+                        android.util.Log.e("CallViewModel", "Error enabling camera/microphone", e)
+                        _uiState.value = CallUiState.Error("Не удалось включить камеру/микрофон: ${e.message}")
+                    }
+                } else {
+                    android.util.Log.w("CallViewModel", "localParticipant is null after connection")
                 }
             } catch (e: Exception) {
                 // Handle error - log it but don't crash
@@ -125,8 +133,16 @@ class CallViewModel(
         if (currentState is CallUiState.Connected) {
             viewModelScope.launch {
                 val newState = !currentState.isVideoEnabled
-                room?.localParticipant?.setCameraEnabled(newState)
-                _uiState.value = currentState.copy(isVideoEnabled = newState)
+                val participant = room?.localParticipant
+                if (participant != null) {
+                    try {
+                        participant.setCameraEnabled(newState)
+                        _uiState.value = currentState.copy(isVideoEnabled = newState)
+                    } catch (e: Exception) {
+                        android.util.Log.e("CallViewModel", "Error toggling video", e)
+                        _uiState.value = CallUiState.Error("Не удалось переключить видео: ${e.message}")
+                    }
+                }
             }
         }
     }
@@ -136,8 +152,16 @@ class CallViewModel(
         if (currentState is CallUiState.Connected) {
             viewModelScope.launch {
                 val newState = !currentState.isAudioEnabled
-                room?.localParticipant?.setMicrophoneEnabled(newState)
-                _uiState.value = currentState.copy(isAudioEnabled = newState)
+                val participant = room?.localParticipant
+                if (participant != null) {
+                    try {
+                        participant.setMicrophoneEnabled(newState)
+                        _uiState.value = currentState.copy(isAudioEnabled = newState)
+                    } catch (e: Exception) {
+                        android.util.Log.e("CallViewModel", "Error toggling audio", e)
+                        _uiState.value = CallUiState.Error("Не удалось переключить микрофон: ${e.message}")
+                    }
+                }
             }
         }
     }
