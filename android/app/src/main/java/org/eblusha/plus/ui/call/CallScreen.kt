@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -312,7 +313,10 @@ private fun CallParticipantTile(participant: CallParticipantUi) {
             } else {
                 ParticipantPlaceholder(participant)
             }
-            ParticipantInfoOverlay(participant)
+            ParticipantInfoOverlay(
+                participant = participant,
+                modifier = Modifier.align(Alignment.BottomStart)
+            )
             ParticipantMuteIndicator(
                 participant = participant,
                 modifier = Modifier
@@ -347,11 +351,13 @@ private fun ParticipantPlaceholder(participant: CallParticipantUi) {
 }
 
 @Composable
-private fun ParticipantInfoOverlay(participant: CallParticipantUi) {
+private fun ParticipantInfoOverlay(
+    participant: CallParticipantUi,
+    modifier: Modifier = Modifier,
+) {
     val label = if (participant.isLocal) "${participant.displayName} (Вы)" else participant.displayName
     Box(
-        modifier = Modifier
-            .align(Alignment.BottomStart)
+        modifier = modifier
             .fillMaxWidth()
             .background(
                 Brush.verticalGradient(
@@ -399,7 +405,7 @@ private fun ParticipantMuteIndicator(
             .background(bgColor),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, contentDescription = null, tint = tint)
+        Icon(imageVector = icon, contentDescription = null, tint = tint)
     }
 }
 
@@ -466,7 +472,12 @@ private fun CallControlButton(
             colors = ButtonDefaults.buttonColors(containerColor = containerColor),
             contentPadding = PaddingValues(0.dp)
         ) {
-            Icon(icon, contentDescription = label, tint = contentColor, modifier = Modifier.size(32.dp))
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = contentColor,
+                modifier = Modifier.size(32.dp)
+            )
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(
