@@ -54,27 +54,15 @@ fun CallRoute(
     onHangUp: () -> Unit,
 ) {
     val context = LocalContext.current.applicationContext // Use application context for LiveKit
-    val viewModel: CallViewModel = try {
-        viewModel(
-            factory = CallViewModelFactory(
-                context = context,
-                container = container,
-                conversationId = conversationId,
-                currentUser = currentUser,
-                isVideoCall = isVideoCall,
-            )
+    val viewModel: CallViewModel = viewModel(
+        factory = CallViewModelFactory(
+            context = context,
+            container = container,
+            conversationId = conversationId,
+            currentUser = currentUser,
+            isVideoCall = isVideoCall,
         )
-    } catch (e: Exception) {
-        android.util.Log.e("CallRoute", "Error creating CallViewModel", e)
-        // Show error state instead of crashing
-        CallScreen(
-            state = CallUiState.Error("Не удалось инициализировать звонок: ${e.message}"),
-            onHangUp = onHangUp,
-            onToggleVideo = {},
-            onToggleAudio = {},
-        )
-        return
-    }
+    )
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     CallScreen(
