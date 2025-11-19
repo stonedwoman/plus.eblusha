@@ -1,4 +1,4 @@
-package org.eblusha.plus
+                                                                                                                                                                                                                                package org.eblusha.plus
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -43,6 +43,7 @@ import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.feature.chats.ConversationPreview
 import org.eblusha.plus.ui.chats.ChatsRoute
 import org.eblusha.plus.ui.chatdetail.ChatRoute
+import org.eblusha.plus.ui.call.CallRoute
 import org.eblusha.plus.ui.theme.EblushaPlusTheme
 import org.eblusha.plus.feature.session.SessionUiState
 import org.eblusha.plus.feature.session.SessionUser
@@ -106,6 +107,17 @@ private fun MessengerNavHost(
     onLogout: () -> Unit,
 ) {
     val navController = rememberNavController()
+    
+    // Handle incoming calls
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        container.realtimeService.events.collect { event ->
+            if (event is org.eblusha.plus.data.realtime.RealtimeEvent.CallIncoming) {
+                navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", event.video)
+                navController.navigate("call/${event.conversationId}")
+            }
+        }
+    }
+    
     NavHost(
         navController = navController,
         startDestination = "chats",
@@ -130,7 +142,22 @@ private fun MessengerNavHost(
                 conversationId = conversationId,
                 currentUser = user,
                 conversation = preview,
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onCallClick = { isVideo ->
+                    navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", isVideo)
+                    navController.navigate("call/$conversationId")
+                }
+            )
+        }
+        composable("call/{conversationId}") { backStackEntry ->
+            val conversationId = backStackEntry.arguments?.getString("conversationId") ?: return@composable
+            val isVideo = backStackEntry.savedStateHandle.get<Boolean>("callIsVideo") ?: false
+            CallRoute(
+                container = container,
+                conversationId = conversationId,
+                currentUser = user,
+                isVideoCall = isVideo,
+                onHangUp = { navController.popBackStack() }
             )
         }
     }
