@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.data.api.auth.AuthApi
+import org.eblusha.plus.data.realtime.ConnectionState
+import org.eblusha.plus.data.realtime.RealtimeEvent
+import org.eblusha.plus.data.realtime.RealtimeService
 import org.eblusha.plus.data.api.auth.LoginRequest
 import org.eblusha.plus.data.api.status.StatusApi
 import org.eblusha.plus.data.api.status.StatusUser
@@ -35,6 +38,7 @@ class SessionViewModel(
     private val sessionStore: SessionStore,
     private val statusApi: StatusApi,
     private val authApi: AuthApi,
+    private val realtimeService: RealtimeService,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<SessionUiState>(SessionUiState.Loading)
@@ -42,6 +46,25 @@ class SessionViewModel(
 
     init {
         observeSession()
+        observeRealtime()
+    }
+
+    private fun observeRealtime() {
+        viewModelScope.launch {
+            realtimeService.connectionState.collect { state ->
+                if (state is ConnectionState.Disconnected && uiState.value is SessionUiState.LoggedIn) {
+                    // Можно подсвечивать UI (для MVP просто логика)
+                }
+            }
+        }
+        viewModelScope.launch {
+            realtimeService.events.collect { event ->
+                when (event) {
+                    is RealtimeEvent.PresenceUpdate -> { /* TODO propagate to UI */ }
+                    else -> Unit
+                }
+            }
+        }
     }
 
     private fun observeSession() {
@@ -92,7 +115,9 @@ class SessionViewModel(
             val response = statusApi.getMe()
             val user = response.user
             if (user != null) {
-                SessionUiState.LoggedIn(user.toSessionUser())
+                val sessionUser = user.toSessionUser()
+                realtimeService.requestCallStatuses(listOf()) // placeholder
+                SessionUiState.LoggedIn(sessionUser)
             } else {
                 SessionUiState.Error("Профиль пустой — авторизуйтесь заново.")
             }
@@ -121,6 +146,7 @@ class SessionViewModelFactory(
                 sessionStore = container.sessionStore,
                 statusApi = container.statusApi,
                 authApi = container.authApi,
+                realtimeService = container.realtimeService,
             ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")

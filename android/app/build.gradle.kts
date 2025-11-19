@@ -98,6 +98,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.android.material)
+    implementation(libs.socket.io)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
