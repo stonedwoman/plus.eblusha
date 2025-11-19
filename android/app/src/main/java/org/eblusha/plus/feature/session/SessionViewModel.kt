@@ -91,6 +91,8 @@ class SessionViewModel(
             try {
                 val response = authApi.login(LoginRequest(username.trim(), password))
                 sessionStore.setAccessToken(response.accessToken)
+                // Save credentials for automatic re-login
+                sessionStore.setCredentials(username.trim(), password)
             } catch (error: Throwable) {
                 _uiState.value = SessionUiState.Error(error.message ?: "Не удалось войти")
             }

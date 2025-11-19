@@ -19,12 +19,19 @@ import org.eblusha.plus.data.session.SessionStore
  */
 class AppContainer(context: Context) {
     val accessTokenProvider = InMemoryAccessTokenProvider()
-    val networkModule = NetworkModule(accessTokenProvider)
     val sessionStore = SessionStore(context, accessTokenProvider)
+    
+    // Create initial network module without refresh interceptor
+    private val initialNetworkModule = NetworkModule(accessTokenProvider)
+    val authApi: AuthApi = initialNetworkModule.create()
+    
+    // Create network module with refresh interceptor after authApi is ready
+    // Note: We pass authApi from initialNetworkModule to avoid circular dependency
+    val networkModule = NetworkModule(accessTokenProvider, sessionStore, authApi)
+    
     val statusApi: StatusApi = networkModule.create()
     val conversationsApi: ConversationsApi = networkModule.create()
     val messagesApi: MessagesApi = networkModule.create()
-    val authApi: AuthApi = networkModule.create()
     val liveKitApi: LiveKitApi = networkModule.create()
     val liveKitRepository = LiveKitRepository(liveKitApi)
     val realtimeService = RealtimeService(AppConfig, sessionStore.accessTokenFlow)
