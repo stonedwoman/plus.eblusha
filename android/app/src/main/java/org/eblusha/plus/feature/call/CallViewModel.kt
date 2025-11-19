@@ -18,6 +18,7 @@ import org.eblusha.plus.feature.session.SessionUser
 import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.Track
+import io.livekit.android.room.track.RemoteTrackPublication
 import io.livekit.android.room.track.VideoTrack
 import io.livekit.android.room.participant.Participant
 import io.livekit.android.room.participant.RemoteParticipant
@@ -109,6 +110,7 @@ class CallViewModel(
                 // Create Room instance
                 android.util.Log.d("CallViewModel", "Creating Room instance...")
                 room = LiveKit.create(context)
+                room?.autoSubscribe = true
                 android.util.Log.d("CallViewModel", "Room created: ${room != null}")
                 
                 setupRoomObservers()
@@ -149,6 +151,7 @@ class CallViewModel(
                 when (event) {
                     is RoomEvent.Connected -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.Connected")
+                        r.remoteParticipants.values.forEach { subscribeToRemoteTracks(it) }
                         enableLocalTracks()
                         refreshParticipants()
                     }
@@ -164,11 +167,16 @@ class CallViewModel(
                     }
                     is RoomEvent.ParticipantConnected -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.ParticipantConnected: ${event.participant.identity}")
+                        subscribeToRemoteTracks(event.participant)
                         refreshParticipants()
                     }
                     is RoomEvent.ParticipantDisconnected -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.ParticipantDisconnected: ${event.participant.identity}")
                         refreshParticipants()
+                    }
+                    is RoomEvent.TrackPublished -> {
+                        android.util.Log.d("CallViewModel", "RoomEvent.TrackPublished: ${event.participant.identity}")
+                        subscribeToRemoteTracks(event.participant)
                     }
                     is RoomEvent.TrackSubscribed -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.TrackSubscribed: ${event.track.sid}")
@@ -238,6 +246,24 @@ class CallViewModel(
             if (stillNoRemote && hadRemoteParticipants && !seenMultipleRemoteParticipants) {
                 android.util.Log.d("CallViewModel", "Auto hanging up after remote left")
                 performHangUp()
+            }
+        }
+    }
+
+    private fun subscribeToRemoteTracks(participant: Participant) {
+        val remoteParticipant = participant as? RemoteParticipant ?: return
+        remoteParticipant.trackPublications.values.forEach { publication ->
+            val remotePublication = publication as? RemoteTrackPublication ?: return@forEach
+            if (remotePublication.kind == Track.Kind.VIDEO) {
+                try {
+                    android.util.Log.d(
+                        "CallViewModel",
+                        "Subscribing to video track for participant=${remoteParticipant.identity}, publication=${remotePublication.sid}"
+                    )
+                    remotePublication.setSubscribed(true)
+                } catch (e: Exception) {
+                    android.util.Log.w("CallViewModel", "Failed to subscribe to track ${remotePublication.sid}", e)
+                }
             }
         }
     }
