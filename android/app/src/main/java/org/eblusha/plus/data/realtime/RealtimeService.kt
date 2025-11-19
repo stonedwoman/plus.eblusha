@@ -266,6 +266,18 @@ class RealtimeService(
                 )
             }
         }
+
+        socket.on("message:new") { args ->
+            args.firstOrNull()?.toJsonObject()?.let { json ->
+                _events.tryEmit(
+                    RealtimeEvent.MessageNew(
+                        conversationId = json.optString("conversationId"),
+                        messageId = json.optString("messageId"),
+                        senderId = json.optString("senderId")
+                    )
+                )
+            }
+        }
     }
 
     private fun Any?.toJsonObject(): JSONObject? = when (this) {
@@ -298,6 +310,11 @@ sealed interface RealtimeEvent {
         val participants: List<String> = emptyList(),
     ) : RealtimeEvent
     data class CallStatusBulk(val statuses: Map<String, CallStatus>) : RealtimeEvent
+    data class MessageNew(
+        val conversationId: String,
+        val messageId: String,
+        val senderId: String,
+    ) : RealtimeEvent
     data class SecretChatOffer(val conversationId: String, val fromUserId: String, val fromName: String, val deviceId: String?) : RealtimeEvent
     data class SecretChatAccepted(val conversationId: String, val peerDeviceId: String) : RealtimeEvent
 }

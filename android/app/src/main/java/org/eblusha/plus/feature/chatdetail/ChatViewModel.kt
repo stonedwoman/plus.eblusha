@@ -13,7 +13,11 @@ import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.data.api.messages.MessageDto
 import org.eblusha.plus.data.api.messages.MessagesApi
 import org.eblusha.plus.data.api.messages.SendMessageRequest
+import org.eblusha.plus.data.realtime.RealtimeEvent
+import org.eblusha.plus.data.realtime.RealtimeService
 import org.eblusha.plus.feature.session.SessionUser
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 
 sealed interface ChatUiState {
     data object Loading : ChatUiState
@@ -35,6 +39,7 @@ class ChatViewModel(
     private val conversationId: String,
     private val messagesApi: MessagesApi,
     private val currentUser: SessionUser,
+    private val realtimeService: RealtimeService,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ChatUiState>(ChatUiState.Loading)
@@ -44,6 +49,29 @@ class ChatViewModel(
 
     init {
         refresh()
+        observeRealtimeMessages()
+        // Join conversation room to receive real-time updates
+        realtimeService.joinConversation(conversationId)
+    }
+    
+    private fun observeRealtimeMessages() {
+        viewModelScope.launch {
+            realtimeService.events
+                .onEach { event ->
+                    if (event is RealtimeEvent.MessageNew && event.conversationId == conversationId) {
+                        // Refresh messages when new message arrives
+                        android.util.Log.d("ChatViewModel", "New message received: ${event.messageId}")
+                        refresh()
+                    }
+                }
+                .launchIn(viewModelScope)
+        }
+    }
+    
+    override fun onCleared() {
+        super.onCleared()
+        // Leave conversation room when ViewModel is cleared
+        realtimeService.leaveConversation(conversationId)
     }
 
     fun refresh() {
@@ -62,11 +90,16 @@ class ChatViewModel(
         if (content.isBlank()) return
         viewModelScope.launch {
             try {
-                val body = SendMessageRequest(conversationId = conversationId, content = content.trim())
+                val body = SendMessageRequest(
+                    conversationId = conversationId,
+                    type = "TEXT",
+                    content = content.trim()
+                )
                 val sent = messagesApi.sendMessage(body).message
                 val current = (_state.value as? ChatUiState.Loaded)?.messages.orEmpty()
                 _state.value = ChatUiState.Loaded(listOf(sent.toChatMessage()) + current)
             } catch (e: Throwable) {
+                android.util.Log.e("ChatViewModel", "Error sending message", e)
                 _state.value = ChatUiState.Error(e.message ?: "Не удалось отправить сообщение")
             }
         }
@@ -100,7 +133,8 @@ class ChatViewModelFactory(
             return ChatViewModel(
                 conversationId = conversationId,
                 messagesApi = container.messagesApi,
-                currentUser = currentUser
+                currentUser = currentUser,
+                realtimeService = container.realtimeService
             ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel ${modelClass.simpleName}")
