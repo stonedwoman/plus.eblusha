@@ -36,9 +36,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.feature.chats.ConversationPreview
 import org.eblusha.plus.ui.chats.ChatsRoute
+import org.eblusha.plus.ui.chatdetail.ChatRoute
 import org.eblusha.plus.ui.theme.EblushaPlusTheme
 import org.eblusha.plus.feature.session.SessionUiState
 import org.eblusha.plus.feature.session.SessionUser
@@ -79,7 +83,6 @@ private fun SessionScreen(
     onLogin: (String, String) -> Unit,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
-    onConversationClick: (ConversationPreview) -> Unit = {},
 ) {
     Box(
         modifier = Modifier
@@ -91,11 +94,40 @@ private fun SessionScreen(
             SessionUiState.Loading -> CircularProgressIndicator()
             SessionUiState.LoggedOut -> LoggedOutContent(onLogin, onSubmitToken)
             is SessionUiState.Error -> ErrorContent(state.message, onRefresh, onLogout)
-            is SessionUiState.LoggedIn -> ChatsRoute(
+            is SessionUiState.LoggedIn -> MessengerNavHost(container, state.user, onLogout)
+        }
+    }
+}
+
+@Composable
+private fun MessengerNavHost(
+    container: AppContainer,
+    user: SessionUser,
+    onLogout: () -> Unit,
+) {
+    val navController = rememberNavController()
+    NavHost(
+        navController = navController,
+        startDestination = "chats",
+        modifier = Modifier.fillMaxSize()
+    ) {
+        composable("chats") {
+            ChatsRoute(
                 container = container,
-                currentUser = state.user,
+                currentUser = user,
                 onLogout = onLogout,
-                onConversationClick = onConversationClick
+                onConversationClick = { conversation ->
+                    navController.navigate("chat/${conversation.id}")
+                }
+            )
+        }
+        composable("chat/{conversationId}") { backStackEntry ->
+            val conversationId = backStackEntry.arguments?.getString("conversationId") ?: return@composable
+            ChatRoute(
+                container = container,
+                conversationId = conversationId,
+                currentUser = user,
+                onBack = { navController.popBackStack() }
             )
         }
     }
@@ -116,12 +148,12 @@ private fun LoggedOutContent(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text(
+            Text(
             text = "Добро пожаловать!",
-            style = MaterialTheme.typography.headlineMedium,
-            textAlign = TextAlign.Center
-        )
-        Text(
+                style = MaterialTheme.typography.headlineMedium,
+                textAlign = TextAlign.Center
+            )
+            Text(
             text = "Войдите по логину и паролю, чтобы загрузить ваши чаты.",
             modifier = Modifier.padding(top = 12.dp),
             textAlign = TextAlign.Center
@@ -201,12 +233,12 @@ private fun ErrorContent(
         Text(
             text = message,
             modifier = Modifier.padding(top = 8.dp),
-            textAlign = TextAlign.Center
-        )
+                textAlign = TextAlign.Center
+            )
         Spacer(modifier = Modifier.height(16.dp))
         Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) {
             Text("Повторить")
-        }
+            }
         TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
             Text("Очистить токен")
         }
