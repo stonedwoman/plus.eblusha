@@ -216,7 +216,7 @@ class RealtimeService(
                 val map = mutableMapOf<String, RealtimeEvent.CallStatus>()
                 val iterator = statuses.keys()
                 while (iterator.hasNext()) {
-                    val key = iterator.next()
+                    val key = iterator.next() as? String ?: continue
                     val value = statuses.optJSONObject(key) ?: continue
                     val convId = value.optString("conversationId").takeIf { it.isNotBlank() } ?: key
                     map[convId] = RealtimeEvent.CallStatus(
