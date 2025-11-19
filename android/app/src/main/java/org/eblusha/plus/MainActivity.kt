@@ -32,6 +32,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,6 +51,7 @@ import org.eblusha.plus.feature.chats.ConversationPreview
 import org.eblusha.plus.ui.chats.ChatsRoute
 import org.eblusha.plus.ui.chatdetail.ChatRoute
 import org.eblusha.plus.ui.call.CallRoute
+import org.eblusha.plus.ui.call.IncomingCallScreen
 import org.eblusha.plus.ui.theme.EblushaPlusTheme
 import org.eblusha.plus.feature.session.SessionUiState
 import org.eblusha.plus.feature.session.SessionUser
@@ -137,24 +139,14 @@ private fun MessengerNavHost(
 ) {
     val navController = rememberNavController()
     
-    // Handle incoming calls
+    // Handle incoming calls - show incoming call screen
+    var incomingCall by remember { mutableStateOf<org.eblusha.plus.data.realtime.RealtimeEvent.CallIncoming?>(null) }
+    
     androidx.compose.runtime.LaunchedEffect(Unit) {
         container.realtimeService.events.collect { event ->
             if (event is org.eblusha.plus.data.realtime.RealtimeEvent.CallIncoming) {
-                try {
-                    // Use the current back stack entry or create a new one
-                    val currentEntry = navController.currentBackStackEntry
-                    if (currentEntry != null) {
-                        currentEntry.savedStateHandle.set("callIsVideo", event.video)
-                    }
-                    // Navigate to call screen
-                    navController.navigate("call/${event.conversationId}") {
-                        // Prevent multiple navigations to the same call
-                        launchSingleTop = true
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e("MainActivity", "Error handling incoming call", e)
-                }
+                android.util.Log.d("MainActivity", "Incoming call: ${event.conversationId}, from: ${event.fromName}, video: ${event.video}")
+                incomingCall = event
             }
         }
     }
@@ -185,6 +177,10 @@ private fun MessengerNavHost(
                 conversation = preview,
                 onBack = { navController.popBackStack() },
                 onCallClick = { isVideo ->
+                    // Send call invitation
+                    android.util.Log.d("MainActivity", "Initiating call: conversationId=$conversationId, isVideo=$isVideo")
+                    container.realtimeService.inviteCall(conversationId, isVideo)
+                    // Navigate to call screen
                     navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", isVideo)
                     navController.navigate("call/$conversationId")
                 }
@@ -203,6 +199,31 @@ private fun MessengerNavHost(
                 currentUser = user,
                 isVideoCall = isVideo,
                 onHangUp = { navController.popBackStack() }
+            )
+        }
+    }
+    
+    // Show incoming call overlay
+    incomingCall?.let { call ->
+        Box(modifier = Modifier.fillMaxSize()) {
+            IncomingCallScreen(
+                callerName = call.fromName,
+                callerAvatarUrl = null, // TODO: Get avatar from conversation
+                isVideoCall = call.video,
+                onAccept = {
+                    android.util.Log.d("MainActivity", "Accepting call: ${call.conversationId}")
+                    container.realtimeService.acceptCall(call.conversationId, call.video)
+                    incomingCall = null
+                    navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", call.video)
+                    navController.navigate("call/${call.conversationId}") {
+                        launchSingleTop = true
+                    }
+                },
+                onDecline = {
+                    android.util.Log.d("MainActivity", "Declining call: ${call.conversationId}")
+                    container.realtimeService.declineCall(call.conversationId)
+                    incomingCall = null
+                }
             )
         }
     }
