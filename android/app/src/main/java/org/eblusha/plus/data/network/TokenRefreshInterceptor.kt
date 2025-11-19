@@ -23,9 +23,6 @@ class TokenRefreshInterceptor(
         if (response.code == 401 && !request.url.encodedPath.contains("/auth/login")) {
             android.util.Log.d("TokenRefreshInterceptor", "Got 401, attempting to refresh token")
             
-            // Закрываем только body, чтобы другие интерцепторы могли обработать response
-            response.body?.close()
-            
             // Пытаемся перелогиниться с сохраненными данными
             val refreshed = runBlocking {
                 try {
@@ -46,11 +43,16 @@ class TokenRefreshInterceptor(
                 }
             }
 
-            // Если токен обновлен, повторяем запрос
+            // Если токен обновлен, закрываем оригинальный response и повторяем запрос
             if (refreshed) {
                 android.util.Log.d("TokenRefreshInterceptor", "Retrying request with new token")
+                // Закрываем body оригинального response перед повторным запросом
+                response.body?.close()
                 val newRequest = request.newBuilder().build()
                 return chain.proceed(newRequest)
+            } else {
+                // Если не удалось обновить, закрываем body и возвращаем оригинальный response
+                response.body?.close()
             }
         }
 

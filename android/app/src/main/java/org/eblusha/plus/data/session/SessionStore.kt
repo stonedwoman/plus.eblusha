@@ -92,13 +92,22 @@ class SessionStore(
         val username = prefs[Keys.USERNAME]
         val encryptedPassword = prefs[Keys.PASSWORD]
         
-        // Decrypt password if present
+        // Decrypt password if present, or use as-is if it's in old format (not encrypted)
         val password = encryptedPassword?.let {
             try {
                 passwordEncryption.decrypt(it)
             } catch (e: Exception) {
-                android.util.Log.e("SessionStore", "Failed to decrypt password", e)
-                null
+                // If decryption fails, it might be an old unencrypted password
+                // Try to use it as-is for backward compatibility
+                android.util.Log.w("SessionStore", "Failed to decrypt password, trying as plain text (old format)", e)
+                // Only use as plain text if it doesn't look like base64 (contains non-base64 chars)
+                if (it.any { char -> !char.isLetterOrDigit() && char != '+' && char != '/' && char != '=' }) {
+                    // Looks like plain text, use as-is
+                    it
+                } else {
+                    // Looks like base64 but decryption failed, return null
+                    null
+                }
             }
         }
         
