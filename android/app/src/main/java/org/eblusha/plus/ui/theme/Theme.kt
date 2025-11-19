@@ -13,31 +13,33 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val LightColors = lightColorScheme(
-    primary = AccentOrange,
+    primary = Brand,
     onPrimary = Color.White,
-    secondary = AccentBlue,
-    onSecondary = Color.Black,
-    tertiary = AccentPink,
+    secondary = AccentIndigo,
+    onSecondary = Color.White,
+    tertiary = AccentSky,
     background = Color(0xFFF6F7FB),
     surface = Color.White,
     surfaceVariant = Color(0xFFE5E8F1),
     onSurface = Color(0xFF111827),
     onSurfaceVariant = Color(0xFF4B5563),
-    outline = Color(0xFFD1D5DB)
+    outline = Color(0xFFD1D5DB),
+    outlineVariant = Color(0xFFE2E4ED)
 )
 
 private val DarkColors = darkColorScheme(
-    primary = AccentOrange,
+    primary = Brand,
     onPrimary = Color.White,
-    secondary = AccentBlue,
-    onSecondary = Color.Black,
-    tertiary = AccentPink,
+    secondary = AccentIndigo,
+    onSecondary = Color.White,
+    tertiary = AccentSky,
     background = Midnight,
     surface = MidnightCard,
-    surfaceVariant = MidnightVariant,
-    onSurface = Color.White,
-    onSurfaceVariant = TextSecondary,
-    outline = TextSecondary.copy(alpha = 0.6f)
+    surfaceVariant = MidnightElevated,
+    onSurface = TextPrimary,
+    onSurfaceVariant = TextMuted,
+    outline = BorderSoft,
+    outlineVariant = BorderStrong
 )
 
 @Composable

@@ -1,5 +1,6 @@
 package org.eblusha.plus.ui.chatdetail
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -43,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -90,45 +93,57 @@ private fun ChatScreen(
 ) {
     val spacing = LocalSpacing.current
     Surface(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+        modifier = Modifier.fillMaxSize(),
+        color = Color.Transparent
     ) {
-        Column(modifier = Modifier.fillMaxSize().padding(spacing.lg)) {
-            ChatHeader(conversation = conversation, onBack = onBack)
-            Spacer(modifier = Modifier.height(spacing.md))
-            when (state) {
-                ChatUiState.Loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Загружаем переписку…")
-                }
-                is ChatUiState.Error -> Column(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(text = state.message, color = MaterialTheme.colorScheme.error)
-                    Spacer(Modifier.height(spacing.md))
-                    Button(onClick = onRetry) { Text("Повторить") }
-                }
-                is ChatUiState.Loaded -> {
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                        shape = RoundedCornerShape(24.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        tonalElevation = 2.dp,
-                        shadowElevation = 6.dp
-                    ) {
-                        MessageList(
-                            messages = state.messages,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(spacing.md)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.background,
+                            MaterialTheme.colorScheme.background.copy(alpha = 0.94f)
                         )
+                    )
+                )
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(spacing.lg)) {
+                ChatHeader(conversation = conversation, onBack = onBack)
+                Spacer(modifier = Modifier.height(spacing.md))
+                when (state) {
+                    ChatUiState.Loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Загружаем переписку…")
                     }
-                    Spacer(modifier = Modifier.height(spacing.md))
-                    Composer(onSend)
+                    is ChatUiState.Error -> Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(text = state.message, color = MaterialTheme.colorScheme.error)
+                        Spacer(Modifier.height(spacing.md))
+                        Button(onClick = onRetry) { Text("Повторить") }
+                    }
+                    is ChatUiState.Loaded -> {
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                            shape = RoundedCornerShape(24.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            tonalElevation = 2.dp,
+                            shadowElevation = 6.dp
+                        ) {
+                            MessageList(
+                                messages = state.messages,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(spacing.md)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(spacing.md))
+                        Composer(onSend)
+                    }
                 }
             }
         }
@@ -138,67 +153,85 @@ private fun ChatScreen(
 @Composable
 private fun ChatHeader(conversation: ConversationPreview?, onBack: () -> Unit) {
     val spacing = LocalSpacing.current
-    Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
+    val shape = RoundedCornerShape(26.dp)
+    val statusText = conversation?.presenceText ?: "Сообщения синхронизируются с вебом"
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        tonalElevation = 2.dp
+    ) {
+        Column(modifier = Modifier.padding(spacing.lg)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(spacing.md)
             ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-            }
-            Spacer(modifier = Modifier.width(spacing.md))
-            Avatar(
-                name = conversation?.title ?: "Чат",
-                imageUrl = conversation?.avatarUrl,
-                size = 56.dp
-            )
-            Spacer(modifier = Modifier.width(spacing.md))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = conversation?.title ?: "Чат",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                }
+                Avatar(
+                    name = conversation?.title ?: "Чат",
+                    imageUrl = conversation?.avatarUrl,
+                    size = 60.dp
                 )
-                Text(
-                    text = conversation?.presenceText ?: "сообщения синхронизируются с вебом",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = conversation?.title ?: "Чат",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-        }
-        Spacer(modifier = Modifier.height(spacing.md))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(spacing.sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant
+            Spacer(modifier = Modifier.height(spacing.md))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(spacing.sm)
             ) {
-                Text(
-                    text = "Секретный чат",
-                    modifier = Modifier.padding(horizontal = spacing.md, vertical = spacing.sm),
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            Spacer(modifier = Modifier.weight(1f))
-            TextButton(onClick = {}, shape = RoundedCornerShape(20.dp)) {
-                Icon(Icons.Default.Call, contentDescription = null)
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Звонок")
-            }
-            Button(
-                onClick = {},
-                shape = RoundedCornerShape(20.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-            ) {
-                Icon(Icons.Default.Videocam, contentDescription = null)
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Видео")
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    tonalElevation = 1.dp
+                ) {
+                    Text(
+                        text = "Секретный чат",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.sm)
+                    )
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                OutlinedButton(
+                    onClick = {},
+                    shape = RoundedCornerShape(22.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
+                ) {
+                    Icon(Icons.Default.Call, contentDescription = null)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Позвонить")
+                }
+                Button(
+                    onClick = {},
+                    shape = RoundedCornerShape(22.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(Icons.Default.Videocam, contentDescription = null)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Видео")
+                }
             }
         }
     }
@@ -273,56 +306,63 @@ private fun Composer(onSend: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
     val spacing = LocalSpacing.current
     val sendEnabled = text.isNotBlank()
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(32.dp))
-            .padding(horizontal = spacing.md, vertical = spacing.sm),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(spacing.sm)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(40.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        tonalElevation = 2.dp
     ) {
-        IconButton(
-            onClick = { /* TODO attachments */ },
+        Row(
             modifier = Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .fillMaxWidth()
+                .padding(horizontal = spacing.md, vertical = spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(spacing.sm)
         ) {
-            Icon(Icons.Default.AttachFile, contentDescription = "Вложить")
-        }
-        OutlinedTextField(
-            value = text,
-            onValueChange = { text = it },
-            modifier = Modifier.weight(1f),
-            placeholder = { Text("Напишите сообщение...") },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent,
-                disabledContainerColor = Color.Transparent,
-                focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-                focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                unfocusedTextColor = MaterialTheme.colorScheme.onSurface
-            )
-        )
-        IconButton(
-            onClick = {
-                onSend(text)
-                text = ""
-            },
-            enabled = sendEnabled,
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(
-                    if (sendEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+            IconButton(
+                onClick = { /* TODO attachments */ },
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Icon(Icons.Default.AttachFile, contentDescription = "Вложить")
+            }
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Напишите сообщение...") },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                    unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                 )
-        ) {
-            Icon(
-                Icons.Default.Send,
-                contentDescription = "Отправить",
-                tint = if (sendEnabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
             )
+            IconButton(
+                onClick = {
+                    onSend(text)
+                    text = ""
+                },
+                enabled = sendEnabled,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (sendEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+                    )
+            ) {
+                Icon(
+                    Icons.Default.Send,
+                    contentDescription = "Отправить",
+                    tint = if (sendEnabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
