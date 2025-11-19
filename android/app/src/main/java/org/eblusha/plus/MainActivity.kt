@@ -144,7 +144,8 @@ private fun MessengerNavHost(
     val navController = rememberNavController()
     
     // Handle incoming calls - show incoming call screen
-    var incomingCall by remember { mutableStateOf<RealtimeEvent.CallIncoming?>(null) }
+    data class IncomingCallUi(val event: RealtimeEvent.CallIncoming, val avatarUrl: String?)
+    var incomingCall by remember { mutableStateOf<IncomingCallUi?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
     
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -159,11 +160,11 @@ private fun MessengerNavHost(
                         callerName = event.fromName,
                         isVideo = event.video
                     )
-                    incomingCall = event
+                    incomingCall = IncomingCallUi(event, avatarUrl = null)
                 }
                 is RealtimeEvent.CallStatus -> {
                     // Stop service when call ends
-                    if (event.conversationId == incomingCall?.conversationId && !event.active) {
+                    if (event.conversationId == incomingCall?.event?.conversationId && !event.active) {
                         IncomingCallService.stop(context)
                         incomingCall = null
                     }
@@ -191,9 +192,28 @@ private fun MessengerNavHost(
                 val conversationId = intent.getStringExtra("conversation_id") ?: return@LaunchedEffect
                 val callerName = intent.getStringExtra("caller_name") ?: "Входящий звонок"
                 val isVideo = intent.getBooleanExtra("is_video", false)
-                incomingCall = RealtimeEvent.CallIncoming(conversationId, "", callerName, isVideo)
+                incomingCall = IncomingCallUi(
+                    event = RealtimeEvent.CallIncoming(conversationId, "", callerName, isVideo),
+                    avatarUrl = null
+                )
             }
         }
+    }
+
+    // Load avatar for incoming call
+    LaunchedEffect(incomingCall?.event?.conversationId) {
+        val callUi = incomingCall ?: return@LaunchedEffect
+        val conversationId = callUi.event.conversationId
+        val fromUserId = callUi.event.fromUserId
+        val avatar = runCatching {
+            val response = container.conversationsApi.getConversations()
+            val convo = response.conversations.firstOrNull { it.conversation.id == conversationId }
+            val participantAvatar = convo?.conversation?.participants
+                ?.firstOrNull { it.user?.id == fromUserId }
+                ?.user?.avatarUrl
+            participantAvatar ?: convo?.conversation?.avatarUrl
+        }.getOrNull()
+        incomingCall = callUi.copy(avatarUrl = avatar)
     }
     
     NavHost(
@@ -249,9 +269,11 @@ private fun MessengerNavHost(
     }
     
     // Show incoming call overlay
-    incomingCall?.let { call ->
+    incomingCall?.let { callUi ->
+        val call = callUi.event
         IncomingCallScreen(
             call = call,
+            avatarUrl = callUi.avatarUrl,
             onAccept = {
                 IncomingCallService.stop(context)
                 container.realtimeService.acceptCall(call.conversationId, call.video)
