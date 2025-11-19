@@ -34,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.eblusha.plus.core.di.AppContainer
@@ -52,8 +53,10 @@ fun CallRoute(
     isVideoCall: Boolean,
     onHangUp: () -> Unit,
 ) {
+    val context = LocalContext.current
     val viewModel: CallViewModel = viewModel(
         factory = CallViewModelFactory(
+            context = context,
             container = container,
             conversationId = conversationId,
             currentUser = currentUser,
@@ -119,7 +122,7 @@ private fun CallScreen(
                         .padding(spacing.lg),
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // Video area placeholder
+                    // Video area
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -127,12 +130,21 @@ private fun CallScreen(
                             .background(Color(0xFF1A1A1A)),
                         contentAlignment = Alignment.Center
                     ) {
-                        // TODO: Add LiveKit video tracks here
-                        Text(
-                            text = "Видео будет здесь",
-                            color = Color.White,
-                            textAlign = TextAlign.Center
-                        )
+                        if (state.remoteVideoTracks.isEmpty()) {
+                            Text(
+                                text = if (state.isVideoEnabled) "Ожидание видео..." else "Видео выключено",
+                                color = Color.White,
+                                textAlign = TextAlign.Center
+                            )
+                        } else {
+                            // TODO: Render remote video tracks using VideoView
+                            // For now, show count
+                            Text(
+                                text = "Видео потоков: ${state.remoteVideoTracks.size}",
+                                color = Color.White,
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
 
                     // Controls
