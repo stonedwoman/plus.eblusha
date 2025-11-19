@@ -10,7 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import io.livekit.android.room.track.VideoTrack
-import io.livekit.android.video.VideoView
+import io.livekit.android.render.VideoView
 
 @Composable
 fun LiveKitVideoView(
