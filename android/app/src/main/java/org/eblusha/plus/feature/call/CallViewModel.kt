@@ -414,14 +414,18 @@ class CallViewModel(
 
     fun hangUp() {
         viewModelScope.launch {
-            cleanup()
-            _uiState.value = CallUiState.Idle
+            performHangUp()
         }
     }
 
     private fun cleanup() {
         room?.disconnect()
         room = null
+    }
+
+    private suspend fun performHangUp() {
+        cleanup()
+        _uiState.value = CallUiState.Idle
     }
 
     override fun onCleared() {
