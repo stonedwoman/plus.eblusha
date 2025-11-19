@@ -168,18 +168,13 @@ private fun MessengerNavHost(
             }
             val isVideo = backStackEntry.savedStateHandle.get<Boolean>("callIsVideo") ?: false
             android.util.Log.d("MainActivity", "Navigating to call: conversationId=$conversationId, isVideo=$isVideo")
-            try {
-                CallRoute(
-                    container = container,
-                    conversationId = conversationId,
-                    currentUser = user,
-                    isVideoCall = isVideo,
-                    onHangUp = { navController.popBackStack() }
-                )
-            } catch (e: Exception) {
-                android.util.Log.e("MainActivity", "Error in CallRoute", e)
-                throw e
-            }
+            CallRoute(
+                container = container,
+                conversationId = conversationId,
+                currentUser = user,
+                isVideoCall = isVideo,
+                onHangUp = { navController.popBackStack() }
+            )
         }
     }
 }
