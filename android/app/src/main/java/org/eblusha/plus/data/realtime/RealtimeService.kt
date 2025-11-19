@@ -218,9 +218,9 @@ class RealtimeService(
                 while (iterator.hasNext()) {
                     val key = iterator.next()
                     val value = statuses.optJSONObject(key) ?: continue
-                    val conversationId = value.optString("conversationId").takeIf { it.isNotBlank() } ?: key
-                    map[key] = RealtimeEvent.CallStatus(
-                        conversationId = conversationId,
+                    val convId = value.optString("conversationId").takeIf { it.isNotBlank() } ?: key
+                    map[convId] = RealtimeEvent.CallStatus(
+                        conversationId = convId,
                         active = value.optBoolean("active", false),
                         startedAt = value.optLongOrNull("startedAt"),
                         elapsedMs = value.optLongOrNull("elapsedMs"),
