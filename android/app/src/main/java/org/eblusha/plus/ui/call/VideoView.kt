@@ -10,7 +10,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import io.livekit.android.room.track.VideoTrack
-import io.livekit.android.render.VideoView
+import io.livekit.android.render.VideoRenderer
+import android.widget.FrameLayout
 
 @Composable
 fun LiveKitVideoView(
@@ -21,10 +22,10 @@ fun LiveKitVideoView(
     
     AndroidView(
         factory = { ctx ->
-            VideoView(ctx).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
+            VideoRenderer(ctx).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
                 )
             }
         },
