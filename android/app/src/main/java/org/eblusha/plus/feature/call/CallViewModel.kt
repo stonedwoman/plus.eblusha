@@ -42,11 +42,10 @@ class CallViewModel(
         viewModelScope.launch {
             _uiState.value = CallUiState.Connecting
             try {
-                val roomName = "conv-$conversationId"
                 val tokenResponse = liveKitRepository.fetchToken(
-                    room = roomName,
+                    conversationId = conversationId,
                     participantName = currentUser.displayName ?: currentUser.username,
-                    participantMetadata = mapOf(
+                    metadata = mapOf(
                         "app" to "eblusha",
                         "userId" to currentUser.id,
                         "displayName" to (currentUser.displayName ?: currentUser.username),
