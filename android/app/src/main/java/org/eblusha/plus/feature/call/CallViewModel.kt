@@ -63,6 +63,8 @@ class CallViewModel(
     val uiState: StateFlow<CallUiState> = _uiState
 
     private var room: Room? = null
+    private var hadRemoteParticipants = false
+    private var seenMultipleRemoteParticipants = false
 
     init {
         android.util.Log.d("CallViewModel", "Initializing CallViewModel for conversation: $conversationId, video: $isVideoCall")
@@ -97,6 +99,9 @@ class CallViewModel(
                     )
                 )
                 android.util.Log.d("CallViewModel", "Token received, URL: ${tokenResponse.url}")
+
+                hadRemoteParticipants = false
+                seenMultipleRemoteParticipants = false
 
                 // Create Room instance
                 android.util.Log.d("CallViewModel", "Creating Room instance...")
@@ -193,7 +198,9 @@ class CallViewModel(
     private fun refreshParticipants() {
         val currentState = _uiState.value
         if (currentState is CallUiState.Connected) {
-            _uiState.value = currentState.copy(participants = buildParticipantsState())
+            val participants = buildParticipantsState()
+            handleAutoHangup(participants)
+            _uiState.value = currentState.copy(participants = participants)
         }
     }
 
@@ -209,6 +216,26 @@ class CallViewModel(
         return participants
     }
 
+    private fun handleAutoHangup(participants: List<CallParticipantUi>) {
+        val remoteCount = participants.count { !it.isLocal }
+        if (remoteCount > 1) {
+            seenMultipleRemoteParticipants = true
+        }
+        if (remoteCount > 0) {
+            hadRemoteParticipants = true
+        }
+        val shouldAutoHang = remoteCount == 0 &&
+            hadRemoteParticipants &&
+            !seenMultipleRemoteParticipants
+        if (shouldAutoHang) {
+            hadRemoteParticipants = false
+            seenMultipleRemoteParticipants = false
+            viewModelScope.launch {
+                performHangUp()
+            }
+        }
+    }
+
     private fun LocalParticipant.toCallParticipantUi(isLocal: Boolean): CallParticipantUi =
         toCallParticipantUiInternal(isLocal)
 
@@ -218,22 +245,34 @@ class CallViewModel(
     private fun Participant.toCallParticipantUiInternal(isLocal: Boolean): CallParticipantUi {
         val metadata = parseParticipantMetadata(this.metadata)
         val resolvedName = metadata.displayName
-            ?: name
-            ?: identity?.value
-            ?: if (isLocal) "Вы" else "Участник"
-        val track = getTrackPublication(Track.Source.CAMERA)?.track as? VideoTrack
+            ?: if (isLocal) {
+                currentUser.displayName ?: currentUser.username
+            } else {
+                name ?: identity?.value
+            }
+            ?: if (isLocal) "Я" else "Участник"
+        val avatar = metadata.avatarUrl
+            ?: if (isLocal) currentUser.avatarUrl else null
+        val track = findPrimaryVideoTrack()
         val identifier = sid.value.ifBlank { identity?.value ?: resolvedName }
         return CallParticipantUi(
             id = identifier,
             displayName = resolvedName,
             initials = computeInitials(resolvedName),
-            avatarUrl = metadata.avatarUrl,
+            avatarUrl = avatar,
             videoTrack = track,
             isLocal = isLocal,
             isMuted = !isMicrophoneEnabled,
             isSpeaking = isSpeaking,
             hasVideo = isCameraEnabled && track != null,
         )
+    }
+
+    private fun Participant.findPrimaryVideoTrack(): VideoTrack? {
+        val cameraTrack = getTrackPublication(Track.Source.CAMERA)?.track as? VideoTrack
+        if (cameraTrack != null) return cameraTrack
+        val fallback = trackPublications.values.firstOrNull { it.kind == Track.Kind.VIDEO }
+        return fallback?.track as? VideoTrack
     }
 
     private fun computeInitials(name: String): String {
