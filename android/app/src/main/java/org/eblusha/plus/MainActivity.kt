@@ -162,15 +162,24 @@ private fun MessengerNavHost(
             )
         }
         composable("call/{conversationId}") { backStackEntry ->
-            val conversationId = backStackEntry.arguments?.getString("conversationId") ?: return@composable
+            val conversationId = backStackEntry.arguments?.getString("conversationId") ?: run {
+                android.util.Log.e("MainActivity", "conversationId is null in call route")
+                return@composable
+            }
             val isVideo = backStackEntry.savedStateHandle.get<Boolean>("callIsVideo") ?: false
-            CallRoute(
-                container = container,
-                conversationId = conversationId,
-                currentUser = user,
-                isVideoCall = isVideo,
-                onHangUp = { navController.popBackStack() }
-            )
+            android.util.Log.d("MainActivity", "Navigating to call: conversationId=$conversationId, isVideo=$isVideo")
+            try {
+                CallRoute(
+                    container = container,
+                    conversationId = conversationId,
+                    currentUser = user,
+                    isVideoCall = isVideo,
+                    onHangUp = { navController.popBackStack() }
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Error in CallRoute", e)
+                throw e
+            }
         }
     }
 }

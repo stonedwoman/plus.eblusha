@@ -44,19 +44,28 @@ class CallViewModel(
     private val remoteTracks = mutableListOf<RemoteVideoTrack>()
 
     init {
+        android.util.Log.d("CallViewModel", "Initializing CallViewModel for conversation: $conversationId, video: $isVideoCall")
         // Initialize LiveKit
         LiveKit.loggingLevel = LoggingLevel.DEBUG
         // Don't connect immediately - wait for ViewModel to be fully initialized
         viewModelScope.launch {
-            kotlinx.coroutines.delay(100) // Small delay to ensure ViewModel is ready
-            connect()
+            try {
+                kotlinx.coroutines.delay(100) // Small delay to ensure ViewModel is ready
+                android.util.Log.d("CallViewModel", "Starting connection...")
+                connect()
+            } catch (e: Exception) {
+                android.util.Log.e("CallViewModel", "Error in init", e)
+                _uiState.value = CallUiState.Error("Ошибка инициализации: ${e.message}")
+            }
         }
     }
 
     private fun connect() {
         viewModelScope.launch {
+            android.util.Log.d("CallViewModel", "connect() called")
             _uiState.value = CallUiState.Connecting
             try {
+                android.util.Log.d("CallViewModel", "Fetching token...")
                 val tokenResponse = liveKitRepository.fetchToken(
                     conversationId = conversationId,
                     participantName = currentUser.displayName ?: currentUser.username,
@@ -66,22 +75,28 @@ class CallViewModel(
                         "displayName" to (currentUser.displayName ?: currentUser.username),
                     )
                 )
+                android.util.Log.d("CallViewModel", "Token received, URL: ${tokenResponse.url}")
 
                 // Create Room instance
+                android.util.Log.d("CallViewModel", "Creating Room instance...")
                 room = LiveKit.create(context)
+                android.util.Log.d("CallViewModel", "Room created: ${room != null}")
                 
                 // Subscribe to room events before connecting
                 setupRoomObservers()
                 
                 // Connect to room - wait for connection to complete
+                android.util.Log.d("CallViewModel", "Connecting to room...")
                 room?.connect(
                     url = tokenResponse.url,
                     token = tokenResponse.token
                 )
+                android.util.Log.d("CallViewModel", "Connect call completed")
                 
                 // Wait a bit for room to be fully connected before accessing localParticipant
                 // The actual enabling will happen in the Connected event handler
                 // For now, just update state
+                android.util.Log.d("CallViewModel", "Updating state to Connected")
                 _uiState.value = CallUiState.Connected(
                     conversationId = conversationId,
                     isVideoEnabled = isVideoCall,
@@ -89,6 +104,7 @@ class CallViewModel(
                     remoteVideoTracks = remoteTracks.toList(),
                 )
             } catch (error: Throwable) {
+                android.util.Log.e("CallViewModel", "Error in connect()", error)
                 _uiState.value = CallUiState.Error(error.message ?: "Не удалось подключиться к звонку")
                 cleanup()
             }
