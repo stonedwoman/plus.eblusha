@@ -1,5 +1,6 @@
 package org.eblusha.plus.ui.call
 
+import android.graphics.Color
 import android.view.ViewGroup
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -33,32 +34,41 @@ fun LiveKitVideoView(
                 init(eglBase.eglBaseContext, null)
                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
                 setEnableHardwareScaler(true)
+                setZOrderMediaOverlay(true)
+                setBackgroundColor(Color.TRANSPARENT)
                 rendererRef.value = this
+                tag = VideoRendererHolder(eglBase = eglBase, currentTrack = null)
             }
         },
         modifier = modifier,
         update = { view ->
             view.setMirror(mirror)
-            val previousTrack = view.tag as? VideoTrack
+            val holder = view.tag as? VideoRendererHolder
+            val previousTrack = holder?.currentTrack
             if (previousTrack != track) {
                 previousTrack?.removeRenderer(view)
-                view.tag = null
                 track?.addRenderer(view)
-                view.tag = track
+                holder?.currentTrack = track
             }
         }
     )
 
-    DisposableEffect(track) {
+    DisposableEffect(Unit) {
         onDispose {
             rendererRef.value?.let { renderer ->
-                val taggedTrack = renderer.tag as? VideoTrack
-                taggedTrack?.removeRenderer(renderer)
-                renderer.tag = null
+                val holder = renderer.tag as? VideoRendererHolder
+                holder?.currentTrack?.removeRenderer(renderer)
+                holder?.currentTrack = null
+                holder?.eglBase?.release()
                 renderer.release()
             }
-            eglBase.release()
+            rendererRef.value = null
         }
     }
 }
+
+private data class VideoRendererHolder(
+    val eglBase: EglBase,
+    var currentTrack: VideoTrack?
+)
 

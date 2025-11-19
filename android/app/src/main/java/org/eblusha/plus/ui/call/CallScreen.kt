@@ -193,6 +193,8 @@ private fun CallConnectedOverlay(
     onToggleAudio: () -> Unit,
 ) {
     val spacing = LocalSpacing.current
+    val remoteParticipants = state.participants.filterNot { it.isLocal }
+    val localParticipant = state.participants.firstOrNull { it.isLocal }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -220,12 +222,42 @@ private fun CallConnectedOverlay(
                 verticalArrangement = Arrangement.spacedBy(spacing.lg)
             ) {
                 CallHeader(state.participants)
-                CallParticipantsGrid(
-                    participants = state.participants,
+                Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                )
+                        .clip(RoundedCornerShape(32.dp))
+                        .background(Color(0xFF050A12))
+                ) {
+                    if (remoteParticipants.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Ждём подключение других участников…",
+                                color = Color.White.copy(alpha = 0.8f),
+                                style = MaterialTheme.typography.bodyLarge,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else {
+                        CallParticipantsGrid(
+                            participants = remoteParticipants,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp)
+                        )
+                    }
+                    localParticipant?.let {
+                        LocalParticipantPreview(
+                            participant = it,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(16.dp)
+                        )
+                    }
+                }
                 CallControlsBar(
                     isAudioEnabled = state.isAudioEnabled,
                     isVideoEnabled = state.isVideoEnabled,
@@ -302,6 +334,32 @@ private fun CallParticipantsGrid(
             items(participants, key = { it.id }) { participant ->
                 CallParticipantTile(participant)
             }
+        }
+    }
+}
+
+@Composable
+private fun LocalParticipantPreview(
+    participant: CallParticipantUi,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .width(140.dp)
+            .height(210.dp),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFF0A101A),
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
+    ) {
+        if (participant.videoTrack != null) {
+            LiveKitVideoView(
+                track = participant.videoTrack,
+                modifier = Modifier.fillMaxSize(),
+                mirror = true
+            )
+        } else {
+            ParticipantPlaceholder(participant)
         }
     }
 }
@@ -440,41 +498,49 @@ private fun CallControlsBar(
         tonalElevation = 4.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp, vertical = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(spacing.lg, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(spacing.md),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            CallControlButton(
-                onClick = onToggleAudio,
-                icon = if (isAudioEnabled) Icons.Default.Mic else Icons.Default.MicOff,
-                label = if (isAudioEnabled) "Микрофон включён" else "Микрофон выключен",
-                containerColor = if (isAudioEnabled) Color(0xFF1F513B) else Color(0xFF3B1F21),
-                contentColor = if (isAudioEnabled) Color.White else Color(0xFFFF8585)
-            )
-            CallControlButton(
-                onClick = onToggleVideo,
-                icon = if (isVideoEnabled) Icons.Default.Videocam else Icons.Default.VideocamOff,
-                label = if (isVideoEnabled) "Камера включена" else "Камера выключена",
-                containerColor = if (isVideoEnabled) Color(0xFF1C3453) else Color(0xFF41212F),
-                contentColor = if (isVideoEnabled) Color.White else Color(0xFFFF8FAB)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CallControlButton(
+                    onClick = onToggleAudio,
+                    icon = if (isAudioEnabled) Icons.Default.Mic else Icons.Default.MicOff,
+                    label = if (isAudioEnabled) "Микрофон включён" else "Микрофон выключен",
+                    containerColor = if (isAudioEnabled) Color(0xFF1F513B) else Color(0xFF3B1F21),
+                    contentColor = if (isAudioEnabled) Color.White else Color(0xFFFF8585)
+                )
+                CallControlButton(
+                    onClick = onToggleVideo,
+                    icon = if (isVideoEnabled) Icons.Default.Videocam else Icons.Default.VideocamOff,
+                    label = if (isVideoEnabled) "Камера включена" else "Камера выключена",
+                    containerColor = if (isVideoEnabled) Color(0xFF1C3453) else Color(0xFF41212F),
+                    contentColor = if (isVideoEnabled) Color.White else Color(0xFFFF8FAB)
+                )
+            }
             Button(
                 onClick = onHangUp,
                 shape = RoundedCornerShape(50),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48)),
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.CallEnd,
                     contentDescription = "Выйти",
-                    tint = Color.White
+                    tint = Color.White,
+                    modifier = Modifier.padding(end = 8.dp)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Выйти",
+                    text = "Выйти из звонка",
                     color = Color.White,
                     style = MaterialTheme.typography.labelLarge
                 )
