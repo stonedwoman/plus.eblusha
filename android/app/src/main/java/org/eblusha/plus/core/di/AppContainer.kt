@@ -27,6 +27,6 @@ class AppContainer(context: Context) {
     val authApi: AuthApi = networkModule.create()
     val liveKitApi: LiveKitApi = networkModule.create()
     val liveKitRepository = LiveKitRepository(liveKitApi)
-    val realtimeService = RealtimeService(AppConfig, accessTokenProvider)
+    val realtimeService = RealtimeService(AppConfig, sessionStore.accessTokenFlow)
 }
 
