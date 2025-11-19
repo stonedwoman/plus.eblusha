@@ -43,12 +43,15 @@ class NetworkModule(
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .addInterceptor(AuthTokenInterceptor(tokenProvider))
-            .addInterceptor(loggingInterceptor)
         
-        // Add token refresh interceptor if sessionStore and authApi are provided
+        // Add token refresh interceptor BEFORE logging interceptor
+        // so logging happens first and can read the response body
         if (sessionStore != null && authApi != null) {
             builder.addInterceptor(TokenRefreshInterceptor(sessionStore, authApi))
         }
+        
+        // Add logging interceptor last so it can log the response before TokenRefreshInterceptor closes it
+        builder.addInterceptor(loggingInterceptor)
         
         builder.build()
     }
