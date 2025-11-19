@@ -174,16 +174,28 @@ class CallViewModel(
                         refreshParticipants()
                     }
                     is RoomEvent.TrackPublished -> {
-                        android.util.Log.d("CallViewModel", "RoomEvent.TrackPublished: ${event.participant.identity}")
-                        subscribeToRemoteTracks(event.participant)
+                        val publication = event.publication
+                        val participantId = event.participant.identity?.value ?: "unknown"
+                        android.util.Log.d("CallViewModel", "RoomEvent.TrackPublished: participant=$participantId, kind=${publication.kind}, sid=${publication.sid}")
+                        // Immediately subscribe to newly published track (like web version does)
+                        val remotePublication = publication as? RemoteTrackPublication
+                        if (remotePublication != null && remotePublication.track == null) {
+                            try {
+                                android.util.Log.d("CallViewModel", "Subscribing to newly published ${publication.kind} track: ${publication.sid}")
+                                remotePublication.setSubscribed(true)
+                            } catch (e: Exception) {
+                                android.util.Log.w("CallViewModel", "Failed to subscribe to newly published track ${publication.sid}", e)
+                            }
+                        }
+                        // Also refresh to show the new track publication
+                        refreshParticipants()
                     }
                     is RoomEvent.TrackSubscribed -> {
                         val trackKind = event.track.kind
                         val participantId = event.participant.identity?.value ?: "unknown"
                         android.util.Log.d("CallViewModel", "RoomEvent.TrackSubscribed: track=${event.track.sid}, kind=$trackKind, participant=$participantId")
-                        if (trackKind == Track.Kind.VIDEO) {
-                            android.util.Log.d("CallViewModel", "Video track subscribed, refreshing participants")
-                        }
+                        // Track is now available after subscription - refresh UI immediately
+                        // This is similar to how VideoConference updates in web version
                         refreshParticipants()
                     }
                     is RoomEvent.TrackUnsubscribed -> {
@@ -270,24 +282,26 @@ class CallViewModel(
     private fun subscribeToRemoteTracks(participant: Participant) {
         val remoteParticipant = participant as? RemoteParticipant ?: return
         android.util.Log.d("CallViewModel", "subscribeToRemoteTracks for participant=${remoteParticipant.identity}, publications=${remoteParticipant.trackPublications.size}")
+        
+        // Subscribe to all tracks (like VideoConference does in web version)
+        // This ensures we get both video and audio tracks
         remoteParticipant.trackPublications.values.forEach { publication ->
             val remotePublication = publication as? RemoteTrackPublication ?: return@forEach
             android.util.Log.d("CallViewModel", "Checking publication: kind=${remotePublication.kind}, sid=${remotePublication.sid}, track=${remotePublication.track != null}")
-            if (remotePublication.kind == Track.Kind.VIDEO) {
-                // If track is null, try to subscribe
-                if (remotePublication.track == null) {
-                    try {
-                        android.util.Log.d(
-                            "CallViewModel",
-                            "Subscribing to video track for participant=${remoteParticipant.identity}, publication=${remotePublication.sid}"
-                        )
-                        remotePublication.setSubscribed(true)
-                    } catch (e: Exception) {
-                        android.util.Log.w("CallViewModel", "Failed to subscribe to track ${remotePublication.sid}", e)
-                    }
-                } else {
-                    android.util.Log.d("CallViewModel", "Video track already available: ${remotePublication.sid}")
+            
+            // Subscribe to all tracks, not just video (web version subscribes to everything)
+            if (remotePublication.track == null) {
+                try {
+                    android.util.Log.d(
+                        "CallViewModel",
+                        "Subscribing to ${remotePublication.kind} track for participant=${remoteParticipant.identity}, publication=${remotePublication.sid}"
+                    )
+                    remotePublication.setSubscribed(true)
+                } catch (e: Exception) {
+                    android.util.Log.w("CallViewModel", "Failed to subscribe to track ${remotePublication.sid}", e)
                 }
+            } else {
+                android.util.Log.d("CallViewModel", "${remotePublication.kind} track already available: ${remotePublication.sid}")
             }
         }
     }
