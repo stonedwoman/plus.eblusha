@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -295,6 +296,7 @@ private fun CallParticipantsGrid(
 @Composable
 private fun CallParticipantTile(participant: CallParticipantUi) {
     val borderColor = if (participant.isSpeaking) Color(0xFF5EEAD4) else Color.Transparent
+    val hasVideo = participant.videoTrack != null
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -304,7 +306,7 @@ private fun CallParticipantTile(participant: CallParticipantUi) {
         border = if (borderColor == Color.Transparent) null else BorderStroke(2.dp, borderColor)
     ) {
         Box {
-            if (participant.videoTrack != null && participant.hasVideo) {
+            if (hasVideo) {
                 LiveKitVideoView(
                     track = participant.videoTrack,
                     modifier = Modifier.fillMaxSize(),
@@ -356,6 +358,7 @@ private fun ParticipantInfoOverlay(
     modifier: Modifier = Modifier,
 ) {
     val label = if (participant.isLocal) "${participant.displayName} (Вы)" else participant.displayName
+    val hasVideo = participant.videoTrack != null
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -377,8 +380,8 @@ private fun ParticipantInfoOverlay(
             )
             Text(
                 text = when {
-                    participant.hasVideo && participant.isSpeaking -> "Говорит"
-                    participant.hasVideo -> "В эфире"
+                    hasVideo && participant.isSpeaking -> "Говорит"
+                    hasVideo -> "В эфире"
                     else -> "Видео выключено"
                 },
                 color = Color.White.copy(alpha = 0.8f),
@@ -445,13 +448,24 @@ private fun CallControlsBar(
                 containerColor = if (isVideoEnabled) Color(0xFF1C3453) else Color(0xFF41212F),
                 contentColor = if (isVideoEnabled) Color.White else Color(0xFFFF8FAB)
             )
-            CallControlButton(
+            Button(
                 onClick = onHangUp,
-                icon = Icons.Default.CallEnd,
-                label = "Завершить",
-                containerColor = Color(0xFFB42318),
-                contentColor = Color.White
-            )
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48)),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CallEnd,
+                    contentDescription = "Выйти",
+                    tint = Color.White
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Выйти",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
         }
     }
 }

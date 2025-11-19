@@ -264,7 +264,7 @@ class CallViewModel(
             isLocal = isLocal,
             isMuted = !isMicrophoneEnabled,
             isSpeaking = isSpeaking,
-            hasVideo = isCameraEnabled && track != null,
+            hasVideo = track != null,
         )
     }
 

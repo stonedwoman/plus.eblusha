@@ -42,16 +42,19 @@ fun LiveKitVideoView(
             val previousTrack = view.tag as? VideoTrack
             if (previousTrack != track) {
                 previousTrack?.removeRenderer(view)
+                view.tag = null
                 track?.addRenderer(view)
                 view.tag = track
             }
         }
     )
 
-    DisposableEffect(Unit) {
+    DisposableEffect(track) {
         onDispose {
             rendererRef.value?.let { renderer ->
-                (renderer.tag as? VideoTrack)?.removeRenderer(renderer)
+                val taggedTrack = renderer.tag as? VideoTrack
+                taggedTrack?.removeRenderer(renderer)
+                renderer.tag = null
                 renderer.release()
             }
             eglBase.release()

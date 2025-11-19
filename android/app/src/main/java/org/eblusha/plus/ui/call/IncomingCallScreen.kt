@@ -35,6 +35,7 @@ import org.eblusha.plus.ui.theme.LocalSpacing
 @Composable
 fun IncomingCallScreen(
     call: org.eblusha.plus.data.realtime.RealtimeEvent.CallIncoming,
+    avatarUrl: String?,
     onAccept: () -> Unit,
     onDecline: () -> Unit,
     onDismiss: () -> Unit,
@@ -60,8 +61,8 @@ fun IncomingCallScreen(
             ) {
                 Avatar(
                     name = call.fromName,
-                    imageUrl = null, // TODO: Get avatar from conversation
-                    size = 120.dp
+                    imageUrl = avatarUrl,
+                    size = 160.dp
                 )
                 Text(
                     text = call.fromName,
