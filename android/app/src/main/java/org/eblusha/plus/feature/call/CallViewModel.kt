@@ -18,6 +18,7 @@ import io.livekit.android.room.track.RemoteVideoTrack
 import io.livekit.android.util.LoggingLevel
 import io.livekit.android.room.track.Track
 import io.livekit.android.room.participant.RemoteParticipant
+import io.livekit.android.room.RoomListener
 
 sealed interface CallUiState {
     data object Idle : CallUiState
@@ -37,7 +38,7 @@ class CallViewModel(
     private val conversationId: String,
     private val currentUser: SessionUser,
     private val isVideoCall: Boolean,
-) : ViewModel() {
+) : ViewModel(), RoomListener {
 
     private val _uiState = MutableStateFlow<CallUiState>(CallUiState.Idle)
     val uiState: StateFlow<CallUiState> = _uiState
@@ -68,19 +69,15 @@ class CallViewModel(
                 )
 
                 // Create and connect to room
-                room = LiveKit.create(context)
+                val liveKit = LiveKit.create(context)
+                room = liveKit.createRoom()
+                room?.listener = this
                 
-                // Connect to room - try simple connect first
+                // Connect to room - connect() is a suspend function
                 try {
-                    // TODO: Check correct connect() API signature
-                    // For now, mark as connected after token fetch
-                    // Actual connection will be implemented once we verify the API
-                    _uiState.value = CallUiState.Connected(
-                        conversationId = conversationId,
-                        isVideoEnabled = isVideoCall,
-                        isAudioEnabled = true,
-                        remoteVideoTracks = remoteTracks.toList(),
-                    )
+                    room?.connect(tokenResponse.url, tokenResponse.token)
+                    // Connection successful - onConnected() will be called
+                    // State will be updated in onConnected() callback
                 } catch (error: Throwable) {
                     _uiState.value = CallUiState.Error(error.message ?: "Не удалось подключиться к комнате")
                 }
@@ -90,10 +87,75 @@ class CallViewModel(
         }
     }
 
-    private fun setupRoomListeners() {
-        // TODO: Set up event listeners using Flow or other mechanism
-        // For now, we'll handle events through Room state
-        // The Room object should provide ways to observe participants and tracks
+    // RoomListener implementation
+    override fun onConnected(room: Room) {
+        viewModelScope.launch {
+            publishTracks()
+            _uiState.value = CallUiState.Connected(
+                conversationId = conversationId,
+                isVideoEnabled = isVideoCall,
+                isAudioEnabled = true,
+                remoteVideoTracks = remoteTracks.toList(),
+            )
+        }
+    }
+    
+    override fun onDisconnected(room: Room, error: Exception?) {
+        viewModelScope.launch {
+            if (error != null) {
+                _uiState.value = CallUiState.Error(error.message ?: "Соединение разорвано")
+            } else {
+                _uiState.value = CallUiState.Idle
+            }
+        }
+    }
+    
+    override fun onParticipantConnected(room: Room, participant: RemoteParticipant) {
+        viewModelScope.launch {
+            // Handle new participant
+        }
+    }
+    
+    override fun onParticipantDisconnected(room: Room, participant: RemoteParticipant) {
+        viewModelScope.launch {
+            // Remove tracks from disconnected participant
+            participant.videoTrackPublications.forEach { publication ->
+                publication.track?.let { track ->
+                    if (track is RemoteVideoTrack) {
+                        remoteTracks.remove(track)
+                    }
+                }
+            }
+            updateRemoteTracks()
+        }
+    }
+    
+    override fun onTrackSubscribed(
+        room: Room,
+        track: Track,
+        publication: io.livekit.android.room.participant.TrackPublication,
+        participant: RemoteParticipant
+    ) {
+        viewModelScope.launch {
+            if (track is RemoteVideoTrack) {
+                remoteTracks.add(track)
+                updateRemoteTracks()
+            }
+        }
+    }
+    
+    override fun onTrackUnsubscribed(
+        room: Room,
+        track: Track,
+        publication: io.livekit.android.room.participant.TrackPublication,
+        participant: RemoteParticipant
+    ) {
+        viewModelScope.launch {
+            if (track is RemoteVideoTrack) {
+                remoteTracks.remove(track)
+                updateRemoteTracks()
+            }
+        }
     }
 
     private suspend fun publishTracks() {
