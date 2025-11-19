@@ -5,6 +5,7 @@ import io.socket.client.Socket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -13,8 +14,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlin.text.Charsets
 import org.eblusha.plus.core.config.AppConfig
-import org.eblusha.plus.data.network.InMemoryAccessTokenProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -22,12 +23,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class RealtimeService(
     private val appConfig: AppConfig,
-    private val tokenProvider: InMemoryAccessTokenProvider,
+    private val tokenFlow: Flow<String?>,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val _connectionState = MutableStateFlow(ConnectionState.Disconnected)
+    private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected())
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
     private val _events = MutableSharedFlow<RealtimeEvent>(extraBufferCapacity = 64)
@@ -35,10 +36,11 @@ class RealtimeService(
 
     private var socket: Socket? = null
     private val connecting = AtomicBoolean(false)
+    private var currentToken: String? = null
 
     init {
         scope.launch {
-            tokenProvider.token.collectLatest { token ->
+            tokenFlow.collectLatest { token ->
                 if (token.isNullOrBlank()) {
                     disconnectInternal()
                 } else {
@@ -125,17 +127,11 @@ class RealtimeService(
     private fun connectInternal(token: String) {
         if (connecting.get()) return
         val current = socket
-        if (current != null && current.connected() && current.io()?.reconnection()) {
-            // refresh auth
-            current.io().auth = mapOf("token" to token)
-            _connectionState.tryEmit(ConnectionState.Connected)
-            return
-        }
-
         connecting.set(true)
         scope.launch {
             try {
                 disconnectInternal()
+                currentToken = token
                 val opts = IO.Options.builder()
                     .setReconnection(true)
                     .setForceNew(true)
@@ -143,7 +139,6 @@ class RealtimeService(
                     .build()
                 val encodedToken = URLEncoder.encode(token, Charsets.UTF_8.name())
                 opts.query = "token=$encodedToken"
-                opts.auth = mapOf("token" to token)
                 val newSocket = IO.socket(appConfig.socketBaseUrl, opts)
                 socket = newSocket
                 registerCallbacks(newSocket)
@@ -163,6 +158,7 @@ class RealtimeService(
             s.close()
         }
         socket = null
+        currentToken = null
         _connectionState.emit(ConnectionState.Disconnected())
     }
 
@@ -218,10 +214,13 @@ class RealtimeService(
         socket.on("call:status:bulk") { args ->
             args.firstOrNull()?.toJsonObject()?.optJSONObject("statuses")?.let { statuses ->
                 val map = mutableMapOf<String, RealtimeEvent.CallStatus>()
-                statuses.keys().forEach { key ->
-                    val value = statuses.optJSONObject(key) ?: return@forEach
+                val iterator = statuses.keys()
+                while (iterator.hasNext()) {
+                    val key = iterator.next()
+                    val value = statuses.optJSONObject(key) ?: continue
+                    val conversationId = value.optString("conversationId").takeIf { it.isNotBlank() } ?: key
                     map[key] = RealtimeEvent.CallStatus(
-                        conversationId = value.optString("conversationId", key),
+                        conversationId = conversationId,
                         active = value.optBoolean("active", false),
                         startedAt = value.optLongOrNull("startedAt"),
                         elapsedMs = value.optLongOrNull("elapsedMs"),
@@ -275,11 +274,11 @@ class RealtimeService(
         else -> null
     }
 
-    private fun JSONObject.optLongOrNull(key: String): Long? =
-        if (has(key) && !isNull(key)) optLong(key) else null
+private fun JSONObject.optLongOrNull(key: String): Long? =
+    if (has(key) && !isNull(key)) optLong(key) else null
 
-    private fun JSONArray.toStringList(): List<String> =
-        (0 until length()).mapNotNull { index -> optString(index, null) }
+private fun JSONArray.toStringList(): List<String> =
+    (0 until length()).mapNotNull { index -> optString(index, null) }
 }
 
 sealed interface ConnectionState {
