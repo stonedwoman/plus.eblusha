@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -116,7 +117,7 @@ private fun TopBar(onBack: () -> Unit) {
                 .height(32.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
                 .padding(4.dp)
-                .clickableNoRipple { onBack() }
+                .clickable { onBack() }
         )
         Column {
             Text("Чат", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
@@ -206,9 +207,4 @@ private fun Composer(onSend: (String) -> Unit) {
         }
     }
 }
-
-private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =
-    this.clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {
-        onClick()
-    }
 
