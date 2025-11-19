@@ -1,5 +1,6 @@
 package org.eblusha.plus.ui.chats
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
@@ -35,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
@@ -159,70 +162,81 @@ private fun ConversationItem(
     item: ConversationPreview,
     onClick: (ConversationPreview) -> Unit
 ) {
-    Card(
+    val shape = RoundedCornerShape(18.dp)
+    val spacing = LocalSpacing.current
+    val borderColor = if (item.unreadCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .shadow(elevation = 12.dp, shape = shape, clip = false)
+            .clip(shape)
             .clickable { onClick(item) },
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.5.dp, borderColor)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box {
-                    Avatar(
-                        name = item.title,
-                        imageUrl = item.avatarUrl,
-                        size = 52.dp
+        Row(
+            modifier = Modifier.padding(spacing.lg),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box {
+                Avatar(
+                    name = item.title,
+                    imageUrl = item.avatarUrl,
+                    size = 52.dp
+                )
+                if (item.isOnline) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .size(13.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.secondary)
+                            .border(
+                                width = 2.dp,
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = CircleShape
+                            )
                     )
-                    if (item.isOnline) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .size(12.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.secondary)
-                                .border(
-                                    width = 2.dp,
-                                    color = MaterialTheme.colorScheme.surface,
-                                    shape = CircleShape
-                                )
-                        )
-                    }
                 }
-                Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
+            }
+            Spacer(modifier = Modifier.width(spacing.md))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         text = item.title,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    item.presenceText?.let {
-                        Text(
-                            text = it,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    if (item.isGroup.not() && (item.presenceText ?: "").contains("секрет", ignoreCase = true)) {
+                        SecretBadge()
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
+                }
+                item.presenceText?.let {
                     Text(
-                        text = item.subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (item.unreadCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.height(spacing.xs))
+                Text(
+                    text = item.subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2
+                )
+            }
+            Spacer(modifier = Modifier.width(spacing.md))
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
+                item.lastMessageTime?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Spacer(modifier = Modifier.width(12.dp))
-                Column(horizontalAlignment = Alignment.End) {
-                    item.lastMessageTime?.let {
-                        Text(
-                            text = it,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    UnreadBadge(count = item.unreadCount)
-                }
+                UnreadBadge(count = item.unreadCount)
             }
         }
     }
@@ -259,8 +273,10 @@ private fun SearchStub() {
     val spacing = LocalSpacing.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outlineVariant),
+        tonalElevation = 2.dp
     ) {
         Row(
             modifier = Modifier
@@ -268,11 +284,11 @@ private fun SearchStub() {
                 .padding(horizontal = spacing.lg, vertical = spacing.sm),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
+            Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(modifier = Modifier.width(spacing.sm))
             Text(
                 text = "Поиск или начало нового чата",
-                color = MaterialTheme.colorScheme.outline
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -293,7 +309,10 @@ private fun SectionDivider(title: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(modifier = Modifier.width(spacing.sm))
-        Divider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.surfaceVariant)
+        Divider(
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.outlineVariant
+        )
     }
 }
 
@@ -329,10 +348,13 @@ private fun ActionCard(
     icon: ImageVector,
     tint: Color
 ) {
-    Card(
+    val shape = RoundedCornerShape(20.dp)
+    Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outlineVariant),
+        tonalElevation = 2.dp
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -341,14 +363,14 @@ private fun ActionCard(
         ) {
             Box(
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
-                    .background(tint.copy(alpha = 0.15f)),
+                    .background(tint.copy(alpha = 0.18f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(icon, contentDescription = null, tint = tint)
             }
-            Text(text = title, style = MaterialTheme.typography.titleMedium)
+            Text(text = title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
             Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -361,10 +383,13 @@ private fun ProfileCard(user: SessionUser) {
         "away" -> "Отошёл"
         else -> user.status ?: "Не в сети"
     }
-    Card(
+    val shape = RoundedCornerShape(22.dp)
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        shape = shape,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outlineVariant),
+        tonalElevation = 2.dp
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
@@ -398,6 +423,24 @@ private fun ProfileCard(user: SessionUser) {
                 Text(text = statusLabel, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelMedium)
             }
         }
+    }
+}
+
+@Composable
+private fun SecretBadge() {
+    Box(
+        modifier = Modifier
+            .size(18.dp)
+            .clip(CircleShape)
+            .background(Color(0x1A22C55E)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.Lock,
+            contentDescription = null,
+            tint = Color(0xFF22C55E),
+            modifier = Modifier.size(12.dp)
+        )
     }
 }
 
