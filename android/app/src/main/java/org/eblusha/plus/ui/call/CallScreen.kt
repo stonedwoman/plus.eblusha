@@ -38,8 +38,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.Manifest
@@ -65,25 +67,29 @@ fun CallRoute(
     val context = LocalContext.current
     val activity = context as? androidx.activity.ComponentActivity
     
-    // Check permissions
-    val audioPermission = remember {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    // Check permissions state
+    var audioPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        )
     }
-    val cameraPermission = remember {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    var cameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        )
     }
     
     // Request permissions
     val requestPermissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val audioGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
-        val cameraGranted = permissions[Manifest.permission.CAMERA] ?: false
-        android.util.Log.d("CallRoute", "Permissions result: audio=$audioGranted, camera=$cameraGranted")
-        if (!audioGranted) {
+        audioPermission = permissions[Manifest.permission.RECORD_AUDIO] ?: false
+        cameraPermission = permissions[Manifest.permission.CAMERA] ?: false
+        android.util.Log.d("CallRoute", "Permissions result: audio=$audioPermission, camera=$cameraPermission")
+        if (!audioPermission) {
             android.util.Log.w("CallRoute", "Audio permission denied")
         }
-        if (isVideoCall && !cameraGranted) {
+        if (isVideoCall && !cameraPermission) {
             android.util.Log.w("CallRoute", "Camera permission denied")
         }
     }
