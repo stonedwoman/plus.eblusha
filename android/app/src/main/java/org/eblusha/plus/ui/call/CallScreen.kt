@@ -38,6 +38,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,6 +53,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.ui.zIndex
+import org.eblusha.plus.ActiveCallSession
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.feature.call.CallParticipantUi
 import org.eblusha.plus.feature.call.CallUiState
@@ -63,44 +67,53 @@ import org.eblusha.plus.ui.call.LiveKitVideoView
 import androidx.compose.foundation.shape.RoundedCornerShape
 
 @Composable
-fun CallRoute(
+fun CallOverlayHost(
     container: AppContainer,
-    conversationId: String,
     currentUser: SessionUser,
-    isVideoCall: Boolean,
-    isGroup: Boolean = false,
-    onHangUp: () -> Unit,
+    session: ActiveCallSession,
+    onClose: () -> Unit,
 ) {
-    android.util.Log.d("CallRoute", "CallRoute called: conversationId=$conversationId, isVideoCall=$isVideoCall, isGroup=$isGroup")
     val context = LocalContext.current
-    val appContext = context.applicationContext // Use application context for LiveKit
-    android.util.Log.d("CallRoute", "Context obtained: ${appContext != null}")
+    val appContext = context.applicationContext
+    android.util.Log.d("CallOverlay", "Session=${session.conversationId}, video=${session.isVideo}, group=${session.isGroup}")
     val viewModel: CallViewModel = viewModel(
+        key = "call-${session.conversationId}",
         factory = CallViewModelFactory(
             context = appContext,
             container = container,
-            conversationId = conversationId,
+            conversationId = session.conversationId,
             currentUser = currentUser,
-            isVideoCall = isVideoCall,
-            isGroup = isGroup,
+            isVideoCall = session.isVideo,
+            isGroup = session.isGroup,
         )
     )
-    android.util.Log.d("CallRoute", "ViewModel created")
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    android.util.Log.d("CallRoute", "State collected: $state")
+    var hasLeftIdle by remember(session.conversationId) { mutableStateOf(false) }
 
-    // joinCallRoom/leaveCallRoom now handled in ViewModel (onConnected/cleanup)
-    // This matches web version where it's called in onConnected callback
+    LaunchedEffect(state) {
+        if (state !is CallUiState.Idle) {
+            hasLeftIdle = true
+        }
+        if (hasLeftIdle && state is CallUiState.Idle) {
+            onClose()
+        }
+    }
 
-    CallScreen(
-        state = state,
-        onHangUp = {
-            viewModel.hangUp()
-            onHangUp()
-        },
-        onToggleVideo = viewModel::toggleVideo,
-        onToggleAudio = viewModel::toggleAudio,
-    )
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(1f)
+    ) {
+        CallScreen(
+            state = state,
+            onHangUp = {
+                viewModel.hangUp()
+                onClose()
+            },
+            onToggleVideo = viewModel::toggleVideo,
+            onToggleAudio = viewModel::toggleAudio,
+        )
+    }
 }
 
 @Composable
