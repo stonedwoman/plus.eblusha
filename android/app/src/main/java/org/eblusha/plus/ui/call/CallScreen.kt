@@ -37,6 +37,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.feature.call.CallUiState
 import org.eblusha.plus.feature.call.CallViewModel
@@ -54,11 +62,52 @@ fun CallRoute(
     onHangUp: () -> Unit,
 ) {
     android.util.Log.d("CallRoute", "CallRoute called: conversationId=$conversationId, isVideoCall=$isVideoCall")
-    val context = LocalContext.current.applicationContext // Use application context for LiveKit
-    android.util.Log.d("CallRoute", "Context obtained: ${context != null}")
+    val context = LocalContext.current
+    val activity = context as? androidx.activity.ComponentActivity
+    
+    // Check permissions
+    val audioPermission = remember {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    }
+    val cameraPermission = remember {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    }
+    
+    // Request permissions
+    val requestPermissionsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val audioGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
+        val cameraGranted = permissions[Manifest.permission.CAMERA] ?: false
+        android.util.Log.d("CallRoute", "Permissions result: audio=$audioGranted, camera=$cameraGranted")
+        if (!audioGranted) {
+            android.util.Log.w("CallRoute", "Audio permission denied")
+        }
+        if (isVideoCall && !cameraGranted) {
+            android.util.Log.w("CallRoute", "Camera permission denied")
+        }
+    }
+    
+    // Request permissions if needed
+    LaunchedEffect(Unit) {
+        val permissionsToRequest = mutableListOf<String>()
+        if (!audioPermission) {
+            permissionsToRequest.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (isVideoCall && !cameraPermission) {
+            permissionsToRequest.add(Manifest.permission.CAMERA)
+        }
+        if (permissionsToRequest.isNotEmpty()) {
+            android.util.Log.d("CallRoute", "Requesting permissions: $permissionsToRequest")
+            requestPermissionsLauncher.launch(permissionsToRequest.toTypedArray())
+        }
+    }
+    
+    val appContext = context.applicationContext // Use application context for LiveKit
+    android.util.Log.d("CallRoute", "Context obtained: ${appContext != null}")
     val viewModel: CallViewModel = viewModel(
         factory = CallViewModelFactory(
-            context = context,
+            context = appContext,
             container = container,
             conversationId = conversationId,
             currentUser = currentUser,
