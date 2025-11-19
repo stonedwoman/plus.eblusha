@@ -110,7 +110,6 @@ class CallViewModel(
                 // Create Room instance
                 android.util.Log.d("CallViewModel", "Creating Room instance...")
                 room = LiveKit.create(context)
-                room?.autoSubscribe = true
                 android.util.Log.d("CallViewModel", "Room created: ${room != null}")
                 
                 setupRoomObservers()
