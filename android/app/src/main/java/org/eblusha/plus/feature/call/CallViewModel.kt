@@ -236,7 +236,7 @@ class CallViewModel(
                 android.util.Log.d("CallViewModel", "Remote participant: name=${ui.displayName}, hasVideo=${ui.hasVideo}, track=${ui.videoTrack != null}, identity=${remote.identity}, publications=${remote.trackPublications.size}")
                 remote.trackPublications.values.forEach { pub ->
                     val remotePub = pub as? RemoteTrackPublication
-                    android.util.Log.d("CallViewModel", "  Publication: kind=${pub.kind}, sid=${pub.sid}, subscribed=${remotePub?.isSubscribed}, track=${remotePub?.track != null}")
+                    android.util.Log.d("CallViewModel", "  Publication: kind=${pub.kind}, sid=${pub.sid}, track=${remotePub?.track != null}")
                 }
                 participants += ui
             }
@@ -272,9 +272,10 @@ class CallViewModel(
         android.util.Log.d("CallViewModel", "subscribeToRemoteTracks for participant=${remoteParticipant.identity}, publications=${remoteParticipant.trackPublications.size}")
         remoteParticipant.trackPublications.values.forEach { publication ->
             val remotePublication = publication as? RemoteTrackPublication ?: return@forEach
-            android.util.Log.d("CallViewModel", "Checking publication: kind=${remotePublication.kind}, sid=${remotePublication.sid}, subscribed=${remotePublication.isSubscribed}, track=${remotePublication.track != null}")
+            android.util.Log.d("CallViewModel", "Checking publication: kind=${remotePublication.kind}, sid=${remotePublication.sid}, track=${remotePublication.track != null}")
             if (remotePublication.kind == Track.Kind.VIDEO) {
-                if (!remotePublication.isSubscribed) {
+                // If track is null, try to subscribe
+                if (remotePublication.track == null) {
                     try {
                         android.util.Log.d(
                             "CallViewModel",
@@ -285,7 +286,7 @@ class CallViewModel(
                         android.util.Log.w("CallViewModel", "Failed to subscribe to track ${remotePublication.sid}", e)
                     }
                 } else {
-                    android.util.Log.d("CallViewModel", "Video track already subscribed: ${remotePublication.sid}, track=${remotePublication.track != null}")
+                    android.util.Log.d("CallViewModel", "Video track already available: ${remotePublication.sid}")
                 }
             }
         }
@@ -333,40 +334,27 @@ class CallViewModel(
             }
         }
         
-        // For remote participants, check trackPublications and ensure subscription
+        // For remote participants, check trackPublications
+        // Track is only available after subscription, so if track exists, we're subscribed
         if (this is RemoteParticipant) {
             trackPublications.values.forEach { publication ->
                 if (publication.kind == Track.Kind.VIDEO) {
                     val remotePublication = publication as? RemoteTrackPublication
                     if (remotePublication != null) {
-                        // Ensure we're subscribed
-                        if (!remotePublication.isSubscribed) {
-                            android.util.Log.d("CallViewModel", "Video track not subscribed yet: ${remotePublication.sid}, subscribing...")
-                            try {
-                                remotePublication.setSubscribed(true)
-                            } catch (e: Exception) {
-                                android.util.Log.w("CallViewModel", "Failed to subscribe to track ${remotePublication.sid}", e)
-                            }
-                            return null // Track not available yet
-                        }
-                        
                         val track = remotePublication.track as? VideoTrack
                         if (track != null) {
                             android.util.Log.d("CallViewModel", "Found remote video track: ${track.sid} for participant ${identity}")
                             return track
                         } else {
-                            android.util.Log.d("CallViewModel", "Video track subscribed but track is null: ${remotePublication.sid}")
+                            android.util.Log.d("CallViewModel", "Video track publication exists but track is null: ${remotePublication.sid}, may need subscription")
                         }
                     }
                 }
             }
         }
         
-        // Fallback: check all track publications
-        val fallback = trackPublications.values.firstOrNull { 
-            it.kind == Track.Kind.VIDEO && 
-            (it as? RemoteTrackPublication)?.isSubscribed == true
-        }
+        // Fallback: check all track publications for any video track
+        val fallback = trackPublications.values.firstOrNull { it.kind == Track.Kind.VIDEO }
         val fallbackTrack = fallback?.track as? VideoTrack
         if (fallbackTrack != null) {
             android.util.Log.d("CallViewModel", "Found fallback video track: ${fallbackTrack.sid}")
