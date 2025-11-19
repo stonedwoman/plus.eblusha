@@ -68,6 +68,7 @@ fun ChatRoute(
     currentUser: SessionUser,
     conversation: ConversationPreview?,
     onBack: () -> Unit,
+    onCallClick: (Boolean) -> Unit,
 ) {
     val viewModel: ChatViewModel = viewModel(
         factory = ChatViewModelFactory(container, conversationId, currentUser)
@@ -80,6 +81,7 @@ fun ChatRoute(
         onBack = onBack,
         onRetry = viewModel::refresh,
         onSend = viewModel::sendMessage,
+        onCallClick = onCallClick,
     )
 }
 
@@ -90,6 +92,7 @@ private fun ChatScreen(
     onBack: () -> Unit,
     onRetry: () -> Unit,
     onSend: (String) -> Unit,
+    onCallClick: (Boolean) -> Unit,
 ) {
     val spacing = LocalSpacing.current
     Surface(
@@ -108,8 +111,8 @@ private fun ChatScreen(
                     )
                 )
         ) {
-            Column(modifier = Modifier.fillMaxSize().padding(spacing.lg)) {
-                ChatHeader(conversation = conversation, onBack = onBack)
+                   Column(modifier = Modifier.fillMaxSize().padding(spacing.lg)) {
+                       ChatHeader(conversation = conversation, onBack = onBack, onCallClick = onCallClick)
                 Spacer(modifier = Modifier.height(spacing.md))
                 when (state) {
                     ChatUiState.Loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -151,7 +154,7 @@ private fun ChatScreen(
 }
 
 @Composable
-private fun ChatHeader(conversation: ConversationPreview?, onBack: () -> Unit) {
+private fun ChatHeader(conversation: ConversationPreview?, onBack: () -> Unit, onCallClick: (Boolean) -> Unit) {
     val spacing = LocalSpacing.current
     val shape = RoundedCornerShape(26.dp)
     val statusText = conversation?.presenceText ?: "Сообщения синхронизируются с вебом"
@@ -213,25 +216,25 @@ private fun ChatHeader(conversation: ConversationPreview?, onBack: () -> Unit) {
                     )
                 }
                 Spacer(modifier = Modifier.weight(1f))
-                OutlinedButton(
-                    onClick = {},
-                    shape = RoundedCornerShape(22.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
-                ) {
-                    Icon(Icons.Default.Call, contentDescription = null)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Позвонить")
-                }
-                Button(
-                    onClick = {},
-                    shape = RoundedCornerShape(22.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Icon(Icons.Default.Videocam, contentDescription = null)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Видео")
-                }
+                       OutlinedButton(
+                           onClick = { onCallClick(false) },
+                           shape = RoundedCornerShape(22.dp),
+                           border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                           colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
+                       ) {
+                           Icon(Icons.Default.Call, contentDescription = null)
+                           Spacer(modifier = Modifier.width(6.dp))
+                           Text("Позвонить")
+                       }
+                       Button(
+                           onClick = { onCallClick(true) },
+                           shape = RoundedCornerShape(22.dp),
+                           colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                       ) {
+                           Icon(Icons.Default.Videocam, contentDescription = null)
+                           Spacer(modifier = Modifier.width(6.dp))
+                           Text("Видео")
+                       }
             }
         }
     }

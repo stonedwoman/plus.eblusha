@@ -99,6 +99,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.android.material)
     implementation(libs.socket.io)
+    implementation(libs.livekit.android)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
