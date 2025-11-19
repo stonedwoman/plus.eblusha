@@ -44,6 +44,8 @@ import org.eblusha.plus.feature.call.CallViewModelFactory
 import org.eblusha.plus.feature.session.SessionUser
 import org.eblusha.plus.ui.components.Avatar
 import org.eblusha.plus.ui.theme.LocalSpacing
+import org.eblusha.plus.ui.call.LiveKitVideoView
+import androidx.compose.foundation.shape.RoundedCornerShape
 
 @Composable
 fun CallRoute(
@@ -132,23 +134,39 @@ private fun CallScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .background(Color(0xFF1A1A1A)),
+                            .background(Color.Black),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (state.remoteVideoTracks.isEmpty()) {
+                        // Remote video (main view)
+                        if (state.remoteVideoTracks.isNotEmpty()) {
+                            // Show first remote video track
+                            LiveKitVideoView(
+                                track = state.remoteVideoTracks.first(),
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            // Show placeholder when no remote video
                             Text(
                                 text = if (state.isVideoEnabled) "Ожидание видео..." else "Видео выключено",
                                 color = Color.White,
                                 textAlign = TextAlign.Center
                             )
-                        } else {
-                            // TODO: Render remote video tracks using VideoView
-                            // For now, show count
-                            Text(
-                                text = "Видео потоков: ${state.remoteVideoTracks.size}",
-                                color = Color.White,
-                                textAlign = TextAlign.Center
-                            )
+                        }
+                        
+                        // Local video (picture-in-picture in corner)
+                        if (state.localVideoTrack != null && state.isVideoEnabled) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(spacing.md)
+                                    .size(width = 120.dp, height = 160.dp)
+                                    .background(Color(0xFF1A1A1A), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            ) {
+                                LiveKitVideoView(
+                                    track = state.localVideoTrack,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
                     }
 
