@@ -12,10 +12,11 @@ import org.eblusha.plus.data.livekit.LiveKitRepository
 import org.eblusha.plus.feature.session.SessionUser
 import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
-import io.livekit.android.room.track.LocalAudioTrack
-import io.livekit.android.room.track.LocalVideoTrack
 import io.livekit.android.room.track.RemoteVideoTrack
+import io.livekit.android.room.participant.RemoteParticipant
 import io.livekit.android.util.LoggingLevel
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 
 sealed interface CallUiState {
     data object Idle : CallUiState
@@ -41,8 +42,6 @@ class CallViewModel(
     val uiState: StateFlow<CallUiState> = _uiState
 
     private var room: Room? = null
-    private var localAudioTrack: LocalAudioTrack? = null
-    private var localVideoTrack: LocalVideoTrack? = null
     private val remoteTracks = mutableListOf<RemoteVideoTrack>()
 
     init {
@@ -65,10 +64,23 @@ class CallViewModel(
                     )
                 )
 
-                // Create and connect to room
-                // TODO: Implement proper LiveKit Room connection once API is verified
-                // For now, mark as connected after token fetch
-                // The actual Room connection will be implemented when we have the correct API
+                // Create Room instance
+                room = LiveKit.create(context)
+                
+                // Subscribe to room events
+                setupRoomObservers()
+                
+                // Connect to room
+                room?.connect(
+                    url = tokenResponse.url,
+                    token = tokenResponse.token
+                )
+                
+                // Enable camera and microphone
+                room?.localParticipant?.setCameraEnabled(isVideoCall)
+                room?.localParticipant?.setMicrophoneEnabled(true)
+                
+                // Update state to connected
                 _uiState.value = CallUiState.Connected(
                     conversationId = conversationId,
                     isVideoEnabled = isVideoCall,
@@ -77,21 +89,55 @@ class CallViewModel(
                 )
             } catch (error: Throwable) {
                 _uiState.value = CallUiState.Error(error.message ?: "Не удалось подключиться к звонку")
+                cleanup()
             }
         }
     }
-
-    // TODO: Implement event listeners once correct API is found
-    // The LiveKit Android SDK API needs to be verified
-
-    private suspend fun publishTracks() {
+    
+    private fun setupRoomObservers() {
         val r = room ?: return
-        val localParticipant = r.localParticipant ?: return
         
-        // TODO: Publish tracks - need to check correct API
-        // For now, just mark as connected without tracks
-        // This will be implemented once we verify Room connection works
+        // Observe remote participants
+        r.remoteParticipants.flow
+            .onEach { participants ->
+                viewModelScope.launch {
+                    // Collect all remote video tracks
+                    remoteTracks.clear()
+                    participants.values.forEach { participant ->
+                        participant.videoTrackPublications.values.forEach { publication ->
+                            publication.track?.let { track ->
+                                if (track is RemoteVideoTrack) {
+                                    remoteTracks.add(track)
+                                }
+                            }
+                        }
+                    }
+                    updateRemoteTracks()
+                }
+            }
+            .launchIn(viewModelScope)
+        
+        // Observe connection state
+        r.connectionState.flow
+            .onEach { state ->
+                viewModelScope.launch {
+                    when (state) {
+                        is io.livekit.android.room.ConnectionState.Disconnected -> {
+                            _uiState.value = CallUiState.Error("Соединение разорвано")
+                            cleanup()
+                        }
+                        is io.livekit.android.room.ConnectionState.Reconnecting -> {
+                            // Keep current state but could show reconnecting indicator
+                        }
+                        else -> {
+                            // Connected or connecting - state already handled
+                        }
+                    }
+                }
+            }
+            .launchIn(viewModelScope)
     }
+
 
     private fun updateRemoteTracks() {
         val currentState = _uiState.value
@@ -103,18 +149,21 @@ class CallViewModel(
     fun toggleVideo() {
         val currentState = _uiState.value
         if (currentState is CallUiState.Connected) {
-            // TODO: Implement video toggle once track creation is fixed
-            _uiState.value = currentState.copy(isVideoEnabled = !currentState.isVideoEnabled)
+            viewModelScope.launch {
+                val newState = !currentState.isVideoEnabled
+                room?.localParticipant?.setCameraEnabled(newState)
+                _uiState.value = currentState.copy(isVideoEnabled = newState)
+            }
         }
     }
 
     fun toggleAudio() {
         val currentState = _uiState.value
         if (currentState is CallUiState.Connected) {
-            // TODO: Implement audio toggle once track creation is fixed
             viewModelScope.launch {
-                // room?.localParticipant?.setMicrophoneEnabled(!currentState.isAudioEnabled)
-                _uiState.value = currentState.copy(isAudioEnabled = !currentState.isAudioEnabled)
+                val newState = !currentState.isAudioEnabled
+                room?.localParticipant?.setMicrophoneEnabled(newState)
+                _uiState.value = currentState.copy(isAudioEnabled = newState)
             }
         }
     }
@@ -127,10 +176,6 @@ class CallViewModel(
     }
 
     private fun cleanup() {
-        localAudioTrack?.stop()
-        localVideoTrack?.stop()
-        localAudioTrack = null
-        localVideoTrack = null
         room?.disconnect()
         room = null
         remoteTracks.clear()
