@@ -1,6 +1,9 @@
 package org.eblusha.plus.feature.call
 
 import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -121,15 +124,15 @@ class CallViewModel(
                 kotlinx.coroutines.delay(500) // Small delay to ensure room is connected
                 
                 // Check permissions before enabling tracks
-                val hasAudioPermission = android.content.ContextCompat.checkSelfPermission(
+                val hasAudioPermission = ContextCompat.checkSelfPermission(
                     context,
-                    android.Manifest.permission.RECORD_AUDIO
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
                 
-                val hasCameraPermission = android.content.ContextCompat.checkSelfPermission(
+                val hasCameraPermission = ContextCompat.checkSelfPermission(
                     context,
-                    android.Manifest.permission.CAMERA
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
                 
                 android.util.Log.d("CallViewModel", "Permissions: audio=$hasAudioPermission, camera=$hasCameraPermission")
                 
