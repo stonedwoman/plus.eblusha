@@ -96,7 +96,9 @@ private fun ChatScreen(
                     Button(onClick = onRetry) { Text("Повторить") }
                 }
                 is ChatUiState.Loaded -> {
-                    MessageList(messages = state.messages)
+                    Box(modifier = Modifier.weight(1f)) {
+                        MessageList(messages = state.messages, modifier = Modifier.fillMaxSize())
+                    }
                     Composer(onSend)
                 }
             }
@@ -126,11 +128,9 @@ private fun TopBar(onBack: () -> Unit) {
 }
 
 @Composable
-private fun MessageList(messages: List<ChatMessage>) {
+private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifier) {
     LazyColumn(
-        modifier = Modifier
-            .weight(1f)
-            .fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         reverseLayout = true
     ) {
         items(messages, key = { it.id }) { message ->
