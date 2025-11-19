@@ -59,12 +59,42 @@ class ChatViewModel(
             realtimeService.events
                 .onEach { event ->
                     if (event is RealtimeEvent.MessageNew && event.conversationId == conversationId) {
-                        // Refresh messages when new message arrives
                         android.util.Log.d("ChatViewModel", "New message received: ${event.messageId}")
-                        refresh()
+                        // Load new message and add to list without full refresh
+                        addNewMessage(event.messageId)
                     }
                 }
                 .launchIn(viewModelScope)
+        }
+    }
+    
+    private fun addNewMessage(messageId: String) {
+        viewModelScope.launch {
+            val currentState = _state.value
+            if (currentState !is ChatUiState.Loaded) {
+                // If not loaded yet, just refresh
+                refresh()
+                return@launch
+            }
+            
+            // Check if message already exists
+            val existingMessage = currentState.messages.find { it.id == messageId }
+            if (existingMessage != null) {
+                android.util.Log.d("ChatViewModel", "Message $messageId already in list")
+                return@launch
+            }
+            
+            // Load all messages to get the new one (API doesn't have get by ID endpoint)
+            // But we'll do it in background without showing loading state
+            try {
+                val response = messagesApi.getMessages(conversationId)
+                val newMessages = response.messages.map { it.toChatMessage() }
+                _state.value = ChatUiState.Loaded(newMessages)
+            } catch (e: Throwable) {
+                android.util.Log.e("ChatViewModel", "Error loading new message", e)
+                // On error, just refresh
+                refresh()
+            }
         }
     }
     

@@ -34,11 +34,10 @@ import org.eblusha.plus.ui.theme.LocalSpacing
 
 @Composable
 fun IncomingCallScreen(
-    callerName: String,
-    callerAvatarUrl: String?,
-    isVideoCall: Boolean,
+    call: org.eblusha.plus.data.realtime.RealtimeEvent.CallIncoming,
     onAccept: () -> Unit,
     onDecline: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
     val spacing = LocalSpacing.current
     Surface(
@@ -60,18 +59,18 @@ fun IncomingCallScreen(
                 verticalArrangement = Arrangement.spacedBy(spacing.md)
             ) {
                 Avatar(
-                    name = callerName,
-                    imageUrl = callerAvatarUrl,
+                    name = call.fromName,
+                    imageUrl = null, // TODO: Get avatar from conversation
                     size = 120.dp
                 )
                 Text(
-                    text = callerName,
+                    text = call.fromName,
                     style = MaterialTheme.typography.headlineMedium,
                     color = Color.White,
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    text = if (isVideoCall) "Входящий видеозвонок" else "Входящий звонок",
+                    text = if (call.video) "Входящий видеозвонок" else "Входящий звонок",
                     style = MaterialTheme.typography.bodyLarge,
                     color = Color.White.copy(alpha = 0.7f),
                     textAlign = TextAlign.Center
@@ -112,7 +111,7 @@ fun IncomingCallScreen(
                     )
                 ) {
                     Icon(
-                        imageVector = if (isVideoCall) Icons.Default.Videocam else Icons.Default.Call,
+                        imageVector = if (call.video) Icons.Default.Videocam else Icons.Default.Call,
                         contentDescription = "Принять",
                         modifier = Modifier.size(40.dp)
                     )

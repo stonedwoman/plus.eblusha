@@ -59,6 +59,8 @@ import org.eblusha.plus.feature.session.SessionUiState
 import org.eblusha.plus.feature.session.SessionUser
 import org.eblusha.plus.feature.session.SessionViewModel
 import org.eblusha.plus.feature.session.SessionViewModelFactory
+import org.eblusha.plus.service.IncomingCallService
+import org.eblusha.plus.data.realtime.RealtimeEvent
 
 class MainActivity : ComponentActivity() {
     private val container: AppContainer by lazy { (application as EblushaApp).container }
@@ -142,13 +144,54 @@ private fun MessengerNavHost(
     val navController = rememberNavController()
     
     // Handle incoming calls - show incoming call screen
-    var incomingCall by remember { mutableStateOf<org.eblusha.plus.data.realtime.RealtimeEvent.CallIncoming?>(null) }
+    var incomingCall by remember { mutableStateOf<RealtimeEvent.CallIncoming?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
     
     androidx.compose.runtime.LaunchedEffect(Unit) {
         container.realtimeService.events.collect { event ->
-            if (event is org.eblusha.plus.data.realtime.RealtimeEvent.CallIncoming) {
-                android.util.Log.d("MainActivity", "Incoming call: ${event.conversationId}, from: ${event.fromName}, video: ${event.video}")
-                incomingCall = event
+            when (event) {
+                is RealtimeEvent.CallIncoming -> {
+                    android.util.Log.d("MainActivity", "Incoming call: ${event.conversationId}, from: ${event.fromName}, video: ${event.video}")
+                    // Start foreground service for native call experience
+                    IncomingCallService.start(
+                        context = context,
+                        conversationId = event.conversationId,
+                        callerName = event.fromName,
+                        isVideo = event.video
+                    )
+                    incomingCall = event
+                }
+                is RealtimeEvent.CallAccepted, is RealtimeEvent.CallDeclined, is RealtimeEvent.CallEnded -> {
+                    // Stop service when call is handled
+                    if (incomingCall?.conversationId == event.conversationId) {
+                        IncomingCallService.stop(context)
+                        incomingCall = null
+                    }
+                }
+                else -> {}
+            }
+        }
+    }
+    
+    // Handle intent actions
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        val intent = (context as? android.app.Activity)?.intent
+        when (intent?.getStringExtra("action")) {
+            "accept_call" -> {
+                val conversationId = intent.getStringExtra("conversation_id") ?: return@LaunchedEffect
+                val isVideo = intent.getBooleanExtra("is_video", false)
+                container.realtimeService.acceptCall(conversationId, isVideo)
+                navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", isVideo)
+                navController.navigate("call/$conversationId") {
+                    launchSingleTop = true
+                }
+                IncomingCallService.stop(context)
+            }
+            "incoming_call" -> {
+                val conversationId = intent.getStringExtra("conversation_id") ?: return@LaunchedEffect
+                val callerName = intent.getStringExtra("caller_name") ?: "Входящий звонок"
+                val isVideo = intent.getBooleanExtra("is_video", false)
+                incomingCall = RealtimeEvent.CallIncoming(conversationId, "", callerName, isVideo)
             }
         }
     }
@@ -207,12 +250,27 @@ private fun MessengerNavHost(
     
     // Show incoming call overlay
     incomingCall?.let { call ->
-        Box(modifier = Modifier.fillMaxSize()) {
-            IncomingCallScreen(
-                callerName = call.fromName,
-                callerAvatarUrl = null, // TODO: Get avatar from conversation
-                isVideoCall = call.video,
-                onAccept = {
+        IncomingCallScreen(
+            call = call,
+            onAccept = {
+                IncomingCallService.stop(context)
+                container.realtimeService.acceptCall(call.conversationId, call.video)
+                navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", call.video)
+                navController.navigate("call/${call.conversationId}") {
+                    launchSingleTop = true
+                }
+                incomingCall = null
+            },
+            onDecline = {
+                IncomingCallService.stop(context)
+                container.realtimeService.declineCall(call.conversationId)
+                incomingCall = null
+            },
+            onDismiss = {
+                incomingCall = null
+            }
+        )
+    }
                     android.util.Log.d("MainActivity", "Accepting call: ${call.conversationId}")
                     container.realtimeService.acceptCall(call.conversationId, call.video)
                     incomingCall = null
