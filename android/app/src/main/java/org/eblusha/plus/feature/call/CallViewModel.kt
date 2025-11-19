@@ -120,12 +120,38 @@ class CallViewModel(
                 // Use a delay to wait for room to be ready, then enable tracks
                 kotlinx.coroutines.delay(500) // Small delay to ensure room is connected
                 
+                // Check permissions before enabling tracks
+                val hasAudioPermission = android.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.RECORD_AUDIO
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                
+                val hasCameraPermission = android.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.CAMERA
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                
+                android.util.Log.d("CallViewModel", "Permissions: audio=$hasAudioPermission, camera=$hasCameraPermission")
+                
                 // Now safely enable camera and microphone
                 val participant = r.localParticipant
                 if (participant != null) {
                     try {
-                        participant.setCameraEnabled(isVideoCall)
-                        participant.setMicrophoneEnabled(true)
+                        // Only enable if we have permissions
+                        if (isVideoCall && hasCameraPermission) {
+                            android.util.Log.d("CallViewModel", "Enabling camera")
+                            participant.setCameraEnabled(true)
+                        } else if (isVideoCall) {
+                            android.util.Log.w("CallViewModel", "Camera permission not granted, skipping camera")
+                        }
+                        
+                        if (hasAudioPermission) {
+                            android.util.Log.d("CallViewModel", "Enabling microphone")
+                            participant.setMicrophoneEnabled(true)
+                        } else {
+                            android.util.Log.w("CallViewModel", "Audio permission not granted, skipping microphone")
+                            _uiState.value = CallUiState.Error("Необходимо разрешение на запись аудио для звонка")
+                        }
                     } catch (e: Exception) {
                         android.util.Log.e("CallViewModel", "Error enabling camera/microphone", e)
                         _uiState.value = CallUiState.Error("Не удалось включить камеру/микрофон: ${e.message}")
