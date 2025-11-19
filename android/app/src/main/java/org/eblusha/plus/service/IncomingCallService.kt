@@ -175,7 +175,7 @@ class IncomingCallService : Service() {
         )
         
         val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             putExtra("action", "incoming_call")
             putExtra("conversation_id", conversationId)
             putExtra("caller_name", callerName)
