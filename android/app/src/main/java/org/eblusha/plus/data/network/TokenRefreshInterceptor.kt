@@ -2,6 +2,7 @@ package org.eblusha.plus.data.network
 
 import okhttp3.Interceptor
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.eblusha.plus.data.api.auth.AuthApi
 import org.eblusha.plus.data.api.auth.LoginRequest
 import org.eblusha.plus.data.session.SessionStore
@@ -23,6 +24,11 @@ class TokenRefreshInterceptor(
         if (response.code == 401 && !request.url.encodedPath.contains("/auth/login")) {
             android.util.Log.d("TokenRefreshInterceptor", "Got 401, attempting to refresh token")
             
+            // Читаем body для логирования перед закрытием (если нужно)
+            val responseBody = response.body
+            val bodyString = responseBody?.string() // Consume body once
+            responseBody?.close()
+            
             // Пытаемся перелогиниться с сохраненными данными
             val refreshed = runBlocking {
                 try {
@@ -43,16 +49,17 @@ class TokenRefreshInterceptor(
                 }
             }
 
-            // Если токен обновлен, закрываем оригинальный response и повторяем запрос
+            // Если токен обновлен, повторяем запрос
             if (refreshed) {
                 android.util.Log.d("TokenRefreshInterceptor", "Retrying request with new token")
-                // Закрываем body оригинального response перед повторным запросом
-                response.body?.close()
                 val newRequest = request.newBuilder().build()
                 return chain.proceed(newRequest)
             } else {
-                // Если не удалось обновить, закрываем body и возвращаем оригинальный response
-                response.body?.close()
+                // Если не удалось обновить, возвращаем новый response с тем же body
+                val contentType = responseBody?.contentType()
+                return response.newBuilder()
+                    .body(bodyString?.toResponseBody(contentType))
+                    .build()
             }
         }
 
