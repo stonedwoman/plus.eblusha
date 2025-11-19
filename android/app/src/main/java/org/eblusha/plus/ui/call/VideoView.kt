@@ -6,12 +6,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import io.livekit.android.room.track.VideoTrack
-import livekit.org.webrtc.EglBase
-import livekit.org.webrtc.RendererCommon
-import livekit.org.webrtc.SurfaceViewRenderer
+import io.livekit.android.video.VideoView
 
 @Composable
 fun LiveKitVideoView(
@@ -19,45 +16,32 @@ fun LiveKitVideoView(
     modifier: Modifier = Modifier,
     mirror: Boolean = false,
 ) {
-    val context = LocalContext.current
-    val eglBase = remember { EglBase.create() }
-    val rendererRef = remember { mutableStateOf<SurfaceViewRenderer?>(null) }
+    val viewRef = remember { mutableStateOf<VideoView?>(null) }
 
     AndroidView(
-        factory = { ctx ->
-            SurfaceViewRenderer(ctx).apply {
+        factory = { context ->
+            VideoView(context).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
-                init(eglBase.eglBaseContext, null)
-                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
                 setEnableHardwareScaler(true)
-                rendererRef.value = this
+                setMirror(mirror)
+                viewRef.value = this
             }
         },
         modifier = modifier,
         update = { view ->
             view.setMirror(mirror)
-            val previousTrack = view.tag as? VideoTrack
-            if (previousTrack != track) {
-                previousTrack?.removeRenderer(view)
-                view.tag = null
-                track?.addRenderer(view)
-                view.tag = track
-            }
+            view.setVideoTrack(track)
         }
     )
 
-    DisposableEffect(track) {
+    DisposableEffect(Unit) {
         onDispose {
-            rendererRef.value?.let { renderer ->
-                val taggedTrack = renderer.tag as? VideoTrack
-                taggedTrack?.removeRenderer(renderer)
-                renderer.tag = null
-                renderer.release()
-            }
-            eglBase.release()
+            viewRef.value?.setVideoTrack(null)
+            viewRef.value?.release()
+            viewRef.value = null
         }
     }
 }

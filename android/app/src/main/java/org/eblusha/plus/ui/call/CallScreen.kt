@@ -461,24 +461,13 @@ private fun CallControlsBar(
                 containerColor = if (isVideoEnabled) Color(0xFF1C3453) else Color(0xFF41212F),
                 contentColor = if (isVideoEnabled) Color.White else Color(0xFFFF8FAB)
             )
-            Button(
+            CallControlButton(
                 onClick = onHangUp,
-                shape = RoundedCornerShape(50),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48)),
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CallEnd,
-                    contentDescription = "Выйти",
-                    tint = Color.White
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Выйти",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelLarge
-                )
-            }
+                icon = Icons.Default.CallEnd,
+                label = "Завершить",
+                containerColor = Color(0xFFE11D48),
+                contentColor = Color.White
+            )
         }
     }
 }
