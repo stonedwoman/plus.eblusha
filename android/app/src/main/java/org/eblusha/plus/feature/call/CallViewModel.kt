@@ -16,16 +16,16 @@ import org.eblusha.plus.data.livekit.LiveKitRepository
 import org.eblusha.plus.feature.session.SessionUser
 import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
-import io.livekit.android.room.track.RemoteVideoTrack
-import io.livekit.android.room.track.LocalVideoTrack
-import io.livekit.android.room.track.LocalTrackPublication
-import io.livekit.android.room.track.RemoteTrackPublication
 import io.livekit.android.room.track.Track
+import io.livekit.android.room.track.VideoTrack
+import io.livekit.android.room.participant.Participant
 import io.livekit.android.room.participant.RemoteParticipant
 import io.livekit.android.room.participant.LocalParticipant
 import io.livekit.android.util.LoggingLevel
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
+import org.json.JSONObject
+import java.util.Locale
 
 sealed interface CallUiState {
     data object Idle : CallUiState
@@ -34,11 +34,22 @@ sealed interface CallUiState {
         val conversationId: String,
         val isVideoEnabled: Boolean,
         val isAudioEnabled: Boolean,
-        val remoteVideoTracks: List<RemoteVideoTrack> = emptyList(),
-        val localVideoTrack: LocalVideoTrack? = null,
+        val participants: List<CallParticipantUi> = emptyList(),
     ) : CallUiState
     data class Error(val message: String) : CallUiState
 }
+
+data class CallParticipantUi(
+    val id: String,
+    val displayName: String,
+    val initials: String,
+    val avatarUrl: String?,
+    val videoTrack: VideoTrack?,
+    val isLocal: Boolean,
+    val isMuted: Boolean,
+    val isSpeaking: Boolean,
+    val hasVideo: Boolean,
+)
 
 class CallViewModel(
     private val context: Context,
@@ -52,8 +63,6 @@ class CallViewModel(
     val uiState: StateFlow<CallUiState> = _uiState
 
     private var room: Room? = null
-    private val remoteTracks = mutableListOf<RemoteVideoTrack>()
-    private var localVideoTrack: LocalVideoTrack? = null
 
     init {
         android.util.Log.d("CallViewModel", "Initializing CallViewModel for conversation: $conversationId, video: $isVideoCall")
@@ -104,17 +113,16 @@ class CallViewModel(
                 )
                 android.util.Log.d("CallViewModel", "Connect call completed")
                 
-                enableLocalTracks()
-                
-                // Initial state - will be updated in Connected event handler
+                // Initial state - will be updated as tracks load
                 android.util.Log.d("CallViewModel", "Updating state to Connected")
                 _uiState.value = CallUiState.Connected(
                     conversationId = conversationId,
                     isVideoEnabled = isVideoCall,
                     isAudioEnabled = true,
-                    remoteVideoTracks = remoteTracks.toList(),
-                    localVideoTrack = null,
+                    participants = buildParticipantsState(),
                 )
+
+                enableLocalTracks()
             } catch (error: Throwable) {
                 android.util.Log.e("CallViewModel", "Error in connect()", error)
                 _uiState.value = CallUiState.Error(error.message ?: "Не удалось подключиться к звонку")
@@ -134,6 +142,7 @@ class CallViewModel(
                     is RoomEvent.Connected -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.Connected")
                         enableLocalTracks()
+                        refreshParticipants()
                     }
                     is RoomEvent.Disconnected -> {
                         val reason = event.reason?.toString() ?: "Соединение разорвано"
@@ -147,33 +156,19 @@ class CallViewModel(
                     }
                     is RoomEvent.ParticipantConnected -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.ParticipantConnected: ${event.participant.identity}")
-                        collectParticipantTracks(event.participant)
+                        refreshParticipants()
                     }
                     is RoomEvent.ParticipantDisconnected -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.ParticipantDisconnected: ${event.participant.identity}")
-                        // Remove tracks from disconnected participant - tracks are automatically removed
-                        // Just update the UI
-                        updateRemoteTracks()
+                        refreshParticipants()
                     }
                     is RoomEvent.TrackSubscribed -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.TrackSubscribed: ${event.track.sid}")
-                        val track = event.track
-                        if (track is RemoteVideoTrack) {
-                            remoteTracks.add(track)
-                            updateRemoteTracks()
-                        } else {
-                            // Not a video track, ignore
-                        }
+                        refreshParticipants()
                     }
                     is RoomEvent.TrackUnsubscribed -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.TrackUnsubscribed: ${event.track.sid}")
-                        val track = event.track
-                        if (track is RemoteVideoTrack) {
-                            remoteTracks.remove(track)
-                            updateRemoteTracks()
-                        } else {
-                            // Not a video track, ignore
-                        }
+                        refreshParticipants()
                     }
                     else -> {
                         android.util.Log.d("CallViewModel", "Unhandled RoomEvent: $event")
@@ -186,51 +181,87 @@ class CallViewModel(
     private fun updateLocalVideoTrack(participant: LocalParticipant) {
         viewModelScope.launch {
             try {
-                // Get camera track from local participant
-                // videoTrackPublications is a Map<String, VideoTrackPublication>
-                val publications = participant.videoTrackPublications
-                val cameraPublication = publications
-                    .filterIsInstance<LocalTrackPublication>()
-                    .firstOrNull { publication ->
-                        publication.source == Track.Source.CAMERA
-                    }
-                localVideoTrack = cameraPublication?.track as? LocalVideoTrack
-                android.util.Log.d("CallViewModel", "Local video track: ${localVideoTrack != null}")
-                
-                val currentState = _uiState.value
-                if (currentState is CallUiState.Connected) {
-                    _uiState.value = currentState.copy(localVideoTrack = localVideoTrack)
-                } else {
-                    // If not connected yet, just store the track
-                }
+                val track = participant.getTrackPublication(Track.Source.CAMERA)?.track as? VideoTrack
+                android.util.Log.d("CallViewModel", "Local video track: ${track != null}")
+                refreshParticipants()
             } catch (e: Exception) {
                 android.util.Log.e("CallViewModel", "Error getting local video track", e)
             }
         }
     }
 
-
-    private fun updateRemoteTracks() {
+    private fun refreshParticipants() {
         val currentState = _uiState.value
         if (currentState is CallUiState.Connected) {
-            _uiState.value = currentState.copy(remoteVideoTracks = remoteTracks.toList())
+            _uiState.value = currentState.copy(participants = buildParticipantsState())
         }
     }
-    
-    private fun collectParticipantTracks(participant: RemoteParticipant) {
-        android.util.Log.d("CallViewModel", "Collecting tracks for participant: ${participant.identity}")
-        // videoTrackPublications is a Map<String, VideoTrackPublication>
-        val publications = participant.videoTrackPublications
-        publications
-            .filterIsInstance<RemoteTrackPublication>()
-            .forEach { publication ->
-                val track = publication.track
-                if (track is RemoteVideoTrack && !remoteTracks.contains(track)) {
-                    remoteTracks.add(track)
-                    android.util.Log.d("CallViewModel", "Added remote video track: ${track.sid}")
-                }
+
+    private fun buildParticipantsState(): List<CallParticipantUi> {
+        val currentRoom = room ?: return emptyList()
+        val participants = mutableListOf<CallParticipantUi>()
+        currentRoom.localParticipant?.let { participants += it.toCallParticipantUi(isLocal = true) }
+        currentRoom.remoteParticipants.values
+            .sortedBy { it.joinedAt ?: Long.MAX_VALUE }
+            .forEach { remote ->
+                participants += remote.toCallParticipantUi(isLocal = false)
             }
-        updateRemoteTracks()
+        return participants
+    }
+
+    private fun LocalParticipant.toCallParticipantUi(isLocal: Boolean): CallParticipantUi =
+        toCallParticipantUiInternal(isLocal)
+
+    private fun RemoteParticipant.toCallParticipantUi(isLocal: Boolean): CallParticipantUi =
+        toCallParticipantUiInternal(isLocal)
+
+    private fun Participant.toCallParticipantUiInternal(isLocal: Boolean): CallParticipantUi {
+        val metadata = parseParticipantMetadata(this.metadata)
+        val resolvedName = metadata.displayName
+            ?: name
+            ?: identity?.value
+            ?: if (isLocal) "Вы" else "Участник"
+        val track = getTrackPublication(Track.Source.CAMERA)?.track as? VideoTrack
+        val identifier = sid.value.ifBlank { identity?.value ?: resolvedName }
+        return CallParticipantUi(
+            id = identifier,
+            displayName = resolvedName,
+            initials = computeInitials(resolvedName),
+            avatarUrl = metadata.avatarUrl,
+            videoTrack = track,
+            isLocal = isLocal,
+            isMuted = !isMicrophoneEnabled,
+            isSpeaking = isSpeaking,
+            hasVideo = isCameraEnabled && track != null,
+        )
+    }
+
+    private fun computeInitials(name: String): String {
+        val parts = name.trim().split("\\s+".toRegex()).filter { it.isNotEmpty() }
+        if (parts.isEmpty()) return "?"
+        val initials = parts.take(2).map { it.first().toString().uppercase(Locale.getDefault()) }
+        return initials.joinToString("")
+    }
+
+    private data class ParticipantMetadata(
+        val displayName: String? = null,
+        val avatarUrl: String? = null,
+        val userId: String? = null,
+    )
+
+    private fun parseParticipantMetadata(raw: String?): ParticipantMetadata {
+        if (raw.isNullOrBlank()) return ParticipantMetadata()
+        return try {
+            val json = JSONObject(raw)
+            ParticipantMetadata(
+                displayName = json.optString("displayName").takeIf { it.isNotBlank() },
+                avatarUrl = json.optString("avatarUrl").takeIf { it.isNotBlank() },
+                userId = json.optString("userId").takeIf { it.isNotBlank() },
+            )
+        } catch (e: Exception) {
+            android.util.Log.w("CallViewModel", "Failed to parse participant metadata: $raw", e)
+            ParticipantMetadata()
+        }
     }
 
     private suspend fun enableLocalTracks() {
@@ -272,6 +303,7 @@ class CallViewModel(
                     updateLocalVideoTrack(participant)
                 } else if (isVideoCall) {
                     android.util.Log.w("CallViewModel", "Camera permission not granted, skipping camera")
+                    refreshParticipants()
                 }
 
                 // Update UI state based on actual enabled status
@@ -280,9 +312,9 @@ class CallViewModel(
                     _uiState.value = currentState.copy(
                         isVideoEnabled = isVideoCall && hasCameraPermission,
                         isAudioEnabled = hasAudioPermission,
-                        localVideoTrack = localVideoTrack
                     )
                 }
+                refreshParticipants()
 
             } catch (e: Exception) {
                 android.util.Log.e("CallViewModel", "Error enabling camera/microphone", e)
@@ -305,14 +337,13 @@ class CallViewModel(
                         if (newState) {
                             // Wait a bit for camera to initialize, then get track
                             kotlinx.coroutines.delay(500)
+                        }
+                        _uiState.value = currentState.copy(isVideoEnabled = newState)
+                        if (newState) {
                             updateLocalVideoTrack(participant)
                         } else {
-                            localVideoTrack = null
+                            refreshParticipants()
                         }
-                        _uiState.value = currentState.copy(
-                            isVideoEnabled = newState,
-                            localVideoTrack = localVideoTrack
-                        )
                     } catch (e: Exception) {
                         android.util.Log.e("CallViewModel", "Error toggling video", e)
                         _uiState.value = CallUiState.Error("Не удалось переключить видео: ${e.message}")
@@ -332,6 +363,7 @@ class CallViewModel(
                     try {
                         participant.setMicrophoneEnabled(newState)
                         _uiState.value = currentState.copy(isAudioEnabled = newState)
+                        refreshParticipants()
                     } catch (e: Exception) {
                         android.util.Log.e("CallViewModel", "Error toggling audio", e)
                         _uiState.value = CallUiState.Error("Не удалось переключить микрофон: ${e.message}")
@@ -349,10 +381,8 @@ class CallViewModel(
     }
 
     private fun cleanup() {
-        localVideoTrack = null
         room?.disconnect()
         room = null
-        remoteTracks.clear()
     }
 
     override fun onCleared() {
