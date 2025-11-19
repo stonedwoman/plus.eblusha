@@ -169,6 +169,36 @@ private fun MessengerNavHost(
                         incomingCall = null
                     }
                 }
+                is RealtimeEvent.CallAccepted -> {
+                    android.util.Log.d("MainActivity", "Call accepted: ${event.conversationId} by ${event.byUserId}")
+                    // For 1:1 calls, navigate to call screen when accepted
+                    // (web version opens CallOverlay on call:accepted)
+                    if (event.conversationId == incomingCall?.event?.conversationId) {
+                        IncomingCallService.stop(context)
+                        navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", event.video)
+                        navController.currentBackStackEntry?.savedStateHandle?.set("callIsGroup", false) // 1:1 calls
+                        navController.navigate("call/${event.conversationId}") {
+                            launchSingleTop = true
+                        }
+                        incomingCall = null
+                    }
+                }
+                is RealtimeEvent.CallDeclined -> {
+                    android.util.Log.d("MainActivity", "Call declined: ${event.conversationId} by ${event.byUserId}")
+                    // Stop service if this is our incoming call
+                    if (event.conversationId == incomingCall?.event?.conversationId) {
+                        IncomingCallService.stop(context)
+                        incomingCall = null
+                    }
+                }
+                is RealtimeEvent.CallEnded -> {
+                    android.util.Log.d("MainActivity", "Call ended: ${event.conversationId} by ${event.byUserId}")
+                    // Stop service if this is our incoming call
+                    if (event.conversationId == incomingCall?.event?.conversationId) {
+                        IncomingCallService.stop(context)
+                        incomingCall = null
+                    }
+                }
                 else -> {}
             }
         }
@@ -183,6 +213,7 @@ private fun MessengerNavHost(
                 val isVideo = intent.getBooleanExtra("is_video", false)
                 container.realtimeService.acceptCall(conversationId, isVideo)
                 navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", isVideo)
+                navController.currentBackStackEntry?.savedStateHandle?.set("callIsGroup", false) // Incoming calls are always 1:1
                 navController.navigate("call/$conversationId") {
                     launchSingleTop = true
                 }
@@ -247,6 +278,7 @@ private fun MessengerNavHost(
                     container.realtimeService.inviteCall(conversationId, isVideo)
                     // Navigate to call screen
                     navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", isVideo)
+                    navController.currentBackStackEntry?.savedStateHandle?.set("callIsGroup", preview?.isGroup ?: false)
                     navController.navigate("call/$conversationId")
                 }
             )
@@ -257,12 +289,14 @@ private fun MessengerNavHost(
                 return@composable
             }
             val isVideo = backStackEntry.savedStateHandle.get<Boolean>("callIsVideo") ?: false
-            android.util.Log.d("MainActivity", "Navigating to call: conversationId=$conversationId, isVideo=$isVideo")
+            val isGroup = backStackEntry.savedStateHandle.get<Boolean>("callIsGroup") ?: false
+            android.util.Log.d("MainActivity", "Navigating to call: conversationId=$conversationId, isVideo=$isVideo, isGroup=$isGroup")
             CallRoute(
                 container = container,
                 conversationId = conversationId,
                 currentUser = user,
                 isVideoCall = isVideo,
+                isGroup = isGroup,
                 onHangUp = { navController.popBackStack() }
             )
         }
@@ -278,6 +312,7 @@ private fun MessengerNavHost(
                 IncomingCallService.stop(context)
                 container.realtimeService.acceptCall(call.conversationId, call.video)
                 navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", call.video)
+                navController.currentBackStackEntry?.savedStateHandle?.set("callIsGroup", false) // Incoming calls are always 1:1
                 navController.navigate("call/${call.conversationId}") {
                     launchSingleTop = true
                 }

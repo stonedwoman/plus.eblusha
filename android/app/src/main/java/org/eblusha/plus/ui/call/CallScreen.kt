@@ -68,9 +68,10 @@ fun CallRoute(
     conversationId: String,
     currentUser: SessionUser,
     isVideoCall: Boolean,
+    isGroup: Boolean = false,
     onHangUp: () -> Unit,
 ) {
-    android.util.Log.d("CallRoute", "CallRoute called: conversationId=$conversationId, isVideoCall=$isVideoCall")
+    android.util.Log.d("CallRoute", "CallRoute called: conversationId=$conversationId, isVideoCall=$isVideoCall, isGroup=$isGroup")
     val context = LocalContext.current
     val appContext = context.applicationContext // Use application context for LiveKit
     android.util.Log.d("CallRoute", "Context obtained: ${appContext != null}")
@@ -81,26 +82,19 @@ fun CallRoute(
             conversationId = conversationId,
             currentUser = currentUser,
             isVideoCall = isVideoCall,
+            isGroup = isGroup,
         )
     )
     android.util.Log.d("CallRoute", "ViewModel created")
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     android.util.Log.d("CallRoute", "State collected: $state")
 
-    LaunchedEffect(conversationId) {
-        container.realtimeService.joinCallRoom(conversationId, isVideoCall)
-        container.realtimeService.requestCallStatuses(listOf(conversationId))
-    }
-    DisposableEffect(conversationId) {
-        onDispose {
-            container.realtimeService.leaveCallRoom(conversationId)
-        }
-    }
+    // joinCallRoom/leaveCallRoom now handled in ViewModel (onConnected/cleanup)
+    // This matches web version where it's called in onConnected callback
 
     CallScreen(
         state = state,
         onHangUp = {
-            container.realtimeService.leaveCallRoom(conversationId)
             viewModel.hangUp()
             onHangUp()
         },
