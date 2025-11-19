@@ -15,8 +15,10 @@ import io.livekit.android.room.Room
 import io.livekit.android.room.track.RemoteVideoTrack
 import io.livekit.android.room.participant.RemoteParticipant
 import io.livekit.android.util.LoggingLevel
+import io.livekit.android.events.RoomEvent
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.collect
 
 sealed interface CallUiState {
     data object Idle : CallUiState
@@ -67,7 +69,7 @@ class CallViewModel(
                 // Create Room instance
                 room = LiveKit.create(context)
                 
-                // Subscribe to room events
+                // Subscribe to room events before connecting
                 setupRoomObservers()
                 
                 // Connect to room
@@ -97,45 +99,70 @@ class CallViewModel(
     private fun setupRoomObservers() {
         val r = room ?: return
         
-        // Observe remote participants
-        r.remoteParticipants.flow
-            .onEach { participants ->
-                viewModelScope.launch {
-                    // Collect all remote video tracks
-                    remoteTracks.clear()
-                    participants.values.forEach { participant ->
-                        participant.videoTrackPublications.values.forEach { publication ->
+        // Observe room events
+        viewModelScope.launch {
+            r.events.collect { event ->
+                when (event) {
+                    is RoomEvent.TrackSubscribed -> {
+                        val track = event.track
+                        if (track is RemoteVideoTrack) {
+                            remoteTracks.add(track)
+                            updateRemoteTracks()
+                        }
+                    }
+                    is RoomEvent.TrackUnsubscribed -> {
+                        val track = event.track
+                        if (track is RemoteVideoTrack) {
+                            remoteTracks.remove(track)
+                            updateRemoteTracks()
+                        }
+                    }
+                    is RoomEvent.ParticipantConnected -> {
+                        // When a participant connects, collect their video tracks
+                        collectParticipantTracks(event.participant)
+                    }
+                    is RoomEvent.ParticipantDisconnected -> {
+                        // Remove tracks from disconnected participant
+                        event.participant.videoTrackPublications.values.forEach { publication ->
                             publication.track?.let { track ->
                                 if (track is RemoteVideoTrack) {
-                                    remoteTracks.add(track)
+                                    remoteTracks.remove(track)
                                 }
                             }
                         }
+                        updateRemoteTracks()
                     }
-                    updateRemoteTracks()
-                }
-            }
-            .launchIn(viewModelScope)
-        
-        // Observe connection state
-        r.connectionState.flow
-            .onEach { state ->
-                viewModelScope.launch {
-                    when (state) {
-                        is io.livekit.android.room.ConnectionState.Disconnected -> {
-                            _uiState.value = CallUiState.Error("Соединение разорвано")
-                            cleanup()
+                    is RoomEvent.Disconnected -> {
+                        _uiState.value = CallUiState.Error("Соединение разорвано")
+                        cleanup()
+                    }
+                    is RoomEvent.Reconnecting -> {
+                        // Could show reconnecting indicator, but keep current state
+                    }
+                    is RoomEvent.Connected -> {
+                        // Connection successful - state already updated in connect()
+                        // Collect tracks from existing participants
+                        r.remoteParticipants.values.forEach { participant ->
+                            collectParticipantTracks(participant)
                         }
-                        is io.livekit.android.room.ConnectionState.Reconnecting -> {
-                            // Keep current state but could show reconnecting indicator
-                        }
-                        else -> {
-                            // Connected or connecting - state already handled
-                        }
+                    }
+                    else -> {
+                        // Other events not handled
                     }
                 }
             }
-            .launchIn(viewModelScope)
+        }
+    }
+    
+    private fun collectParticipantTracks(participant: RemoteParticipant) {
+        participant.videoTrackPublications.values.forEach { publication ->
+            publication.track?.let { track ->
+                if (track is RemoteVideoTrack && !remoteTracks.contains(track)) {
+                    remoteTracks.add(track)
+                }
+            }
+        }
+        updateRemoteTracks()
     }
 
 
