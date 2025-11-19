@@ -1,4 +1,4 @@
-                                                                                                                                                                                                                                package org.eblusha.plus
+package org.eblusha.plus
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -52,15 +52,21 @@ import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.feature.chats.ConversationPreview
 import org.eblusha.plus.ui.chats.ChatsRoute
 import org.eblusha.plus.ui.chatdetail.ChatRoute
-import org.eblusha.plus.ui.call.CallRoute
 import org.eblusha.plus.ui.call.IncomingCallScreen
+import org.eblusha.plus.ui.call.CallOverlayHost
 import org.eblusha.plus.ui.theme.EblushaPlusTheme
 import org.eblusha.plus.feature.session.SessionUiState
 import org.eblusha.plus.feature.session.SessionUser
 import org.eblusha.plus.feature.session.SessionViewModel
 import org.eblusha.plus.feature.session.SessionViewModelFactory
-import org.eblusha.plus.service.IncomingCallService
 import org.eblusha.plus.data.realtime.RealtimeEvent
+import org.eblusha.plus.service.IncomingCallService
+
+data class ActiveCallSession(
+    val conversationId: String,
+    val isVideo: Boolean,
+    val isGroup: Boolean,
+)
 
 class MainActivity : ComponentActivity() {
     private val container: AppContainer by lazy { (application as EblushaApp).container }
@@ -97,13 +103,17 @@ class MainActivity : ComponentActivity() {
             val state by sessionViewModel.uiState.collectAsStateWithLifecycle()
             EblushaPlusTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    val (activeCall, setActiveCall) = remember { mutableStateOf<ActiveCallSession?>(null) }
                     SessionScreen(
                         container = container,
                         state = state,
                         onSubmitToken = sessionViewModel::submitToken,
                         onLogin = sessionViewModel::login,
                         onRefresh = sessionViewModel::refresh,
-                        onLogout = sessionViewModel::logout
+                        onLogout = sessionViewModel::logout,
+                        activeCall = activeCall,
+                        onStartCall = { session -> setActiveCall(session) },
+                        onEndCall = { setActiveCall(null) }
                     )
                 }
             }
@@ -119,7 +129,16 @@ private fun SessionScreen(
     onLogin: (String, String) -> Unit,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
+    activeCall: ActiveCallSession?,
+    onStartCall: (ActiveCallSession) -> Unit,
+    onEndCall: () -> Unit,
 ) {
+    val shouldCloseCall = state !is SessionUiState.LoggedIn && activeCall != null
+    LaunchedEffect(shouldCloseCall) {
+        if (shouldCloseCall) {
+            onEndCall()
+        }
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -130,7 +149,24 @@ private fun SessionScreen(
             SessionUiState.Loading -> CircularProgressIndicator()
             SessionUiState.LoggedOut -> LoggedOutContent(container, onLogin, onSubmitToken)
             is SessionUiState.Error -> ErrorContent(state.message, onRefresh, onLogout)
-            is SessionUiState.LoggedIn -> MessengerNavHost(container, state.user, onLogout)
+            is SessionUiState.LoggedIn -> {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    MessengerNavHost(
+                        container = container,
+                        user = state.user,
+                        onLogout = onLogout,
+                        onStartCall = onStartCall,
+                    )
+                    activeCall?.let { session ->
+                        CallOverlayHost(
+                            container = container,
+                            currentUser = state.user,
+                            session = session,
+                            onClose = onEndCall
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -140,6 +176,7 @@ private fun MessengerNavHost(
     container: AppContainer,
     user: SessionUser,
     onLogout: () -> Unit,
+    onStartCall: (ActiveCallSession) -> Unit,
 ) {
     val navController = rememberNavController()
     
@@ -171,15 +208,15 @@ private fun MessengerNavHost(
                 }
                 is RealtimeEvent.CallAccepted -> {
                     android.util.Log.d("MainActivity", "Call accepted: ${event.conversationId} by ${event.byUserId}")
-                    // For 1:1 calls, navigate to call screen when accepted
-                    // (web version opens CallOverlay on call:accepted)
                     if (event.conversationId == incomingCall?.event?.conversationId) {
                         IncomingCallService.stop(context)
-                        navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", event.video)
-                        navController.currentBackStackEntry?.savedStateHandle?.set("callIsGroup", false) // 1:1 calls
-                        navController.navigate("call/${event.conversationId}") {
-                            launchSingleTop = true
-                        }
+                        onStartCall(
+                            ActiveCallSession(
+                                conversationId = event.conversationId,
+                                isVideo = event.video,
+                                isGroup = false
+                            )
+                        )
                         incomingCall = null
                     }
                 }
@@ -212,11 +249,13 @@ private fun MessengerNavHost(
                 val conversationId = intent.getStringExtra("conversation_id") ?: return@LaunchedEffect
                 val isVideo = intent.getBooleanExtra("is_video", false)
                 container.realtimeService.acceptCall(conversationId, isVideo)
-                navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", isVideo)
-                navController.currentBackStackEntry?.savedStateHandle?.set("callIsGroup", false) // Incoming calls are always 1:1
-                navController.navigate("call/$conversationId") {
-                    launchSingleTop = true
-                }
+                onStartCall(
+                    ActiveCallSession(
+                        conversationId = conversationId,
+                        isVideo = isVideo,
+                        isGroup = false
+                    )
+                )
                 IncomingCallService.stop(context)
             }
             "incoming_call" -> {
@@ -276,28 +315,14 @@ private fun MessengerNavHost(
                     // Send call invitation
                     android.util.Log.d("MainActivity", "Initiating call: conversationId=$conversationId, isVideo=$isVideo")
                     container.realtimeService.inviteCall(conversationId, isVideo)
-                    // Navigate to call screen
-                    navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", isVideo)
-                    navController.currentBackStackEntry?.savedStateHandle?.set("callIsGroup", preview?.isGroup ?: false)
-                    navController.navigate("call/$conversationId")
+                            onStartCall(
+                                ActiveCallSession(
+                                    conversationId = conversationId,
+                                    isVideo = isVideo,
+                                    isGroup = preview?.isGroup == true
+                                )
+                            )
                 }
-            )
-        }
-        composable("call/{conversationId}") { backStackEntry ->
-            val conversationId = backStackEntry.arguments?.getString("conversationId") ?: run {
-                android.util.Log.e("MainActivity", "conversationId is null in call route")
-                return@composable
-            }
-            val isVideo = backStackEntry.savedStateHandle.get<Boolean>("callIsVideo") ?: false
-            val isGroup = backStackEntry.savedStateHandle.get<Boolean>("callIsGroup") ?: false
-            android.util.Log.d("MainActivity", "Navigating to call: conversationId=$conversationId, isVideo=$isVideo, isGroup=$isGroup")
-            CallRoute(
-                container = container,
-                conversationId = conversationId,
-                currentUser = user,
-                isVideoCall = isVideo,
-                isGroup = isGroup,
-                onHangUp = { navController.popBackStack() }
             )
         }
     }
@@ -311,11 +336,13 @@ private fun MessengerNavHost(
             onAccept = {
                 IncomingCallService.stop(context)
                 container.realtimeService.acceptCall(call.conversationId, call.video)
-                navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", call.video)
-                navController.currentBackStackEntry?.savedStateHandle?.set("callIsGroup", false) // Incoming calls are always 1:1
-                navController.navigate("call/${call.conversationId}") {
-                    launchSingleTop = true
-                }
+                onStartCall(
+                    ActiveCallSession(
+                        conversationId = call.conversationId,
+                        isVideo = call.video,
+                        isGroup = false
+                    )
+                )
                 incomingCall = null
             },
             onDecline = {

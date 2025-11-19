@@ -7,7 +7,7 @@
 3. Выберите ваше устройство/эмулятор в выпадающем списке
 4. В поле поиска введите теги для фильтрации:
    - `CallViewModel` - логи из ViewModel звонков
-   - `CallRoute` - логи из экрана звонка
+   - `CallOverlay` - логи из экрана звонка
    - `MainActivity` - логи из главной активности
    - Или просто `org.eblusha.plus` для всех логов приложения
 
@@ -20,7 +20,7 @@ adb logcat
 
 ### Фильтрация по тегам:
 ```bash
-adb logcat -s CallViewModel CallRoute MainActivity
+adb logcat -s CallViewModel CallOverlay MainActivity
 ```
 
 ### Только ошибки:
@@ -49,7 +49,7 @@ adb logcat -c && adb logcat
 
 Пример:
 ```bash
-adb logcat *:E CallViewModel:D CallRoute:D MainActivity:D
+adb logcat *:E CallViewModel:D CallOverlay:D MainActivity:D
 ```
 
 ## Что искать при краше:
@@ -64,7 +64,7 @@ adb logcat *:E CallViewModel:D CallRoute:D MainActivity:D
 
 ```bash
 # Показать только ошибки и наши теги
-adb logcat *:E CallViewModel:D CallRoute:D MainActivity:D
+adb logcat *:E CallViewModel:D CallOverlay:D MainActivity:D
 
 # Показать логи за последние 5 минут
 adb logcat -t "$(date -d '5 minutes ago' '+%m-%d %H:%M:%S.000')"
