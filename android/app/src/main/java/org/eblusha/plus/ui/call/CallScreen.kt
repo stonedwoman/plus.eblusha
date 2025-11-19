@@ -53,7 +53,9 @@ fun CallRoute(
     isVideoCall: Boolean,
     onHangUp: () -> Unit,
 ) {
+    android.util.Log.d("CallRoute", "CallRoute called: conversationId=$conversationId, isVideoCall=$isVideoCall")
     val context = LocalContext.current.applicationContext // Use application context for LiveKit
+    android.util.Log.d("CallRoute", "Context obtained: ${context != null}")
     val viewModel: CallViewModel = viewModel(
         factory = CallViewModelFactory(
             context = context,
@@ -63,7 +65,9 @@ fun CallRoute(
             isVideoCall = isVideoCall,
         )
     )
+    android.util.Log.d("CallRoute", "ViewModel created")
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    android.util.Log.d("CallRoute", "State collected: $state")
 
     CallScreen(
         state = state,
