@@ -100,8 +100,7 @@ class IncomingCallService : Service() {
             }
             ACTION_DECLINE -> {
                 stopRinging()
-                // Notify RealtimeService to decline
-                // This will be handled by MainActivity observing events
+                // Notify RealtimeService to decline - this will be handled by MainActivity
                 stopSelf()
             }
             else -> {
