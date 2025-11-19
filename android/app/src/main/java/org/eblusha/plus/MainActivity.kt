@@ -161,9 +161,9 @@ private fun MessengerNavHost(
                     )
                     incomingCall = event
                 }
-                is RealtimeEvent.CallAccepted, is RealtimeEvent.CallDeclined, is RealtimeEvent.CallEnded -> {
-                    // Stop service when call is handled
-                    if (incomingCall?.conversationId == event.conversationId) {
+                is RealtimeEvent.CallStatus -> {
+                    // Stop service when call ends
+                    if (event.conversationId == incomingCall?.conversationId && !event.active) {
                         IncomingCallService.stop(context)
                         incomingCall = null
                     }
@@ -270,22 +270,6 @@ private fun MessengerNavHost(
                 incomingCall = null
             }
         )
-    }
-                    android.util.Log.d("MainActivity", "Accepting call: ${call.conversationId}")
-                    container.realtimeService.acceptCall(call.conversationId, call.video)
-                    incomingCall = null
-                    navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", call.video)
-                    navController.navigate("call/${call.conversationId}") {
-                        launchSingleTop = true
-                    }
-                },
-                onDecline = {
-                    android.util.Log.d("MainActivity", "Declining call: ${call.conversationId}")
-                    container.realtimeService.declineCall(call.conversationId)
-                    incomingCall = null
-                }
-            )
-        }
     }
 }
 
