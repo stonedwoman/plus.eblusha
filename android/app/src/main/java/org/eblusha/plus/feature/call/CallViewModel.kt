@@ -9,7 +9,6 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import org.eblusha.plus.core.di.AppContainer
@@ -19,11 +18,14 @@ import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.RemoteVideoTrack
 import io.livekit.android.room.track.LocalVideoTrack
+import io.livekit.android.room.track.LocalTrackPublication
+import io.livekit.android.room.track.RemoteTrackPublication
 import io.livekit.android.room.track.Track
 import io.livekit.android.room.participant.RemoteParticipant
 import io.livekit.android.room.participant.LocalParticipant
 import io.livekit.android.util.LoggingLevel
 import io.livekit.android.events.RoomEvent
+import io.livekit.android.events.collect
 
 sealed interface CallUiState {
     data object Idle : CallUiState
@@ -92,7 +94,6 @@ class CallViewModel(
                 room = LiveKit.create(context)
                 android.util.Log.d("CallViewModel", "Room created: ${room != null}")
                 
-                // Subscribe to room events before connecting
                 setupRoomObservers()
                 
                 // Connect to room - wait for connection to complete
@@ -102,6 +103,8 @@ class CallViewModel(
                     token = tokenResponse.token
                 )
                 android.util.Log.d("CallViewModel", "Connect call completed")
+                
+                enableLocalTracks()
                 
                 // Initial state - will be updated in Connected event handler
                 android.util.Log.d("CallViewModel", "Updating state to Connected")
@@ -129,65 +132,8 @@ class CallViewModel(
                 android.util.Log.d("CallViewModel", "RoomEvent: $event")
                 when (event) {
                     is RoomEvent.Connected -> {
-                        android.util.Log.d("CallViewModel", "RoomEvent.Connected: Enabling tracks")
-                        // Delay to ensure localParticipant is fully initialized
-                        delay(1000)
-
-                        val participant = r.localParticipant
-                        if (participant != null) {
-                            val hasAudioPermission = ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.RECORD_AUDIO
-                            ) == PackageManager.PERMISSION_GRANTED
-
-                            val hasCameraPermission = ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.CAMERA
-                            ) == PackageManager.PERMISSION_GRANTED
-
-                            android.util.Log.d("CallViewModel", "Permissions in Connected: audio=$hasAudioPermission, camera=$hasCameraPermission")
-
-                            try {
-                                // Always try to enable microphone first
-                                if (hasAudioPermission) {
-                                    android.util.Log.d("CallViewModel", "Enabling microphone")
-                                    participant.setMicrophoneEnabled(true)
-                                    delay(200) // Small delay after enabling audio
-                                } else {
-                                    android.util.Log.w("CallViewModel", "Audio permission not granted, skipping microphone")
-                                    _uiState.value = CallUiState.Error("Необходимо разрешение на запись аудио для звонка")
-                                }
-
-                                // Then enable camera if it's a video call and we have permission
-                                if (isVideoCall && hasCameraPermission) {
-                                    android.util.Log.d("CallViewModel", "Enabling camera")
-                                    participant.setCameraEnabled(true)
-                                    // Get local video track after enabling camera
-                                    delay(500) // Wait for camera to initialize
-                                    updateLocalVideoTrack(participant)
-                                } else if (isVideoCall) {
-                                    android.util.Log.w("CallViewModel", "Camera permission not granted, skipping camera")
-                                }
-
-                                // Update UI state based on actual enabled status
-                                val currentState = _uiState.value
-                                if (currentState is CallUiState.Connected) {
-                                    _uiState.value = currentState.copy(
-                                        isVideoEnabled = isVideoCall && hasCameraPermission,
-                                        isAudioEnabled = hasAudioPermission,
-                                        localVideoTrack = localVideoTrack
-                                    )
-                                } else {
-                                    // State is not Connected, skip update
-                                }
-
-                            } catch (e: Exception) {
-                                android.util.Log.e("CallViewModel", "Error enabling camera/microphone in Connected event", e)
-                                _uiState.value = CallUiState.Error("Не удалось включить камеру/микрофон: ${e.message}")
-                            }
-                        } else {
-                            android.util.Log.w("CallViewModel", "localParticipant is null in Connected event")
-                        }
+                        android.util.Log.d("CallViewModel", "RoomEvent.Connected")
+                        enableLocalTracks()
                     }
                     is RoomEvent.Disconnected -> {
                         val reason = event.reason?.toString() ?: "Соединение разорвано"
@@ -243,9 +189,11 @@ class CallViewModel(
                 // Get camera track from local participant
                 // videoTrackPublications is a Map<String, VideoTrackPublication>
                 val publications = participant.videoTrackPublications
-                val cameraPublication = publications.values.firstOrNull { publication ->
-                    publication.source == Track.Source.CAMERA
-                }
+                val cameraPublication = publications
+                    .filterIsInstance<LocalTrackPublication>()
+                    .firstOrNull { publication ->
+                        publication.source == Track.Source.CAMERA
+                    }
                 localVideoTrack = cameraPublication?.track as? LocalVideoTrack
                 android.util.Log.d("CallViewModel", "Local video track: ${localVideoTrack != null}")
                 
@@ -273,14 +221,76 @@ class CallViewModel(
         android.util.Log.d("CallViewModel", "Collecting tracks for participant: ${participant.identity}")
         // videoTrackPublications is a Map<String, VideoTrackPublication>
         val publications = participant.videoTrackPublications
-        publications.values.forEach { publication ->
-            val track = publication.track
-            if (track is RemoteVideoTrack && !remoteTracks.contains(track)) {
-                remoteTracks.add(track)
-                android.util.Log.d("CallViewModel", "Added remote video track: ${track.sid}")
+        publications
+            .filterIsInstance<RemoteTrackPublication>()
+            .forEach { publication ->
+                val track = publication.track
+                if (track is RemoteVideoTrack && !remoteTracks.contains(track)) {
+                    remoteTracks.add(track)
+                    android.util.Log.d("CallViewModel", "Added remote video track: ${track.sid}")
+                }
             }
-        }
         updateRemoteTracks()
+    }
+
+    private suspend fun enableLocalTracks() {
+        val r = room ?: return
+        // Delay to ensure localParticipant is fully initialized
+        delay(1000)
+
+        val participant = r.localParticipant
+        if (participant != null) {
+            val hasAudioPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+
+            val hasCameraPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+
+            android.util.Log.d("CallViewModel", "Permissions: audio=$hasAudioPermission, camera=$hasCameraPermission")
+
+            try {
+                // Always try to enable microphone first
+                if (hasAudioPermission) {
+                    android.util.Log.d("CallViewModel", "Enabling microphone")
+                    participant.setMicrophoneEnabled(true)
+                    delay(200) // Small delay after enabling audio
+                } else {
+                    android.util.Log.w("CallViewModel", "Audio permission not granted, skipping microphone")
+                    _uiState.value = CallUiState.Error("Необходимо разрешение на запись аудио для звонка")
+                }
+
+                // Then enable camera if it's a video call and we have permission
+                if (isVideoCall && hasCameraPermission) {
+                    android.util.Log.d("CallViewModel", "Enabling camera")
+                    participant.setCameraEnabled(true)
+                    // Get local video track after enabling camera
+                    delay(500) // Wait for camera to initialize
+                    updateLocalVideoTrack(participant)
+                } else if (isVideoCall) {
+                    android.util.Log.w("CallViewModel", "Camera permission not granted, skipping camera")
+                }
+
+                // Update UI state based on actual enabled status
+                val currentState = _uiState.value
+                if (currentState is CallUiState.Connected) {
+                    _uiState.value = currentState.copy(
+                        isVideoEnabled = isVideoCall && hasCameraPermission,
+                        isAudioEnabled = hasAudioPermission,
+                        localVideoTrack = localVideoTrack
+                    )
+                }
+
+            } catch (e: Exception) {
+                android.util.Log.e("CallViewModel", "Error enabling camera/microphone", e)
+                _uiState.value = CallUiState.Error("Не удалось включить камеру/микрофон: ${e.message}")
+            }
+        } else {
+            android.util.Log.w("CallViewModel", "localParticipant is null")
+        }
     }
 
     fun toggleVideo() {
