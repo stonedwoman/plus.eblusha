@@ -2,6 +2,7 @@ package org.eblusha.plus.data.api.messages
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
@@ -34,7 +35,7 @@ data class MessageDto(
     val sender: Sender? = null,
     val senderId: String? = null,
     val createdAt: String? = null,
-    val metadata: Map<String, @Serializable(with = kotlinx.serialization.json.JsonElementSerializer::class) kotlinx.serialization.json.JsonElement>? = null
+    val metadata: Map<String, JsonElement>? = null
 )
 
 @Serializable
