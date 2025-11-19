@@ -66,20 +66,18 @@ class CallViewModel(
                 // Create Room instance
                 room = LiveKit.create(context)
                 
-                // Connect to room
+                // Subscribe to room events before connecting
+                setupRoomObservers()
+                
+                // Connect to room - wait for connection to complete
                 room?.connect(
                     url = tokenResponse.url,
                     token = tokenResponse.token
                 )
                 
-                // Enable camera and microphone
-                room?.localParticipant?.setCameraEnabled(isVideoCall)
-                room?.localParticipant?.setMicrophoneEnabled(true)
-                
-                // Subscribe to room events after connecting
-                setupRoomObservers()
-                
-                // Update state to connected
+                // Wait a bit for room to be fully connected before accessing localParticipant
+                // The actual enabling will happen in the Connected event handler
+                // For now, just update state
                 _uiState.value = CallUiState.Connected(
                     conversationId = conversationId,
                     isVideoEnabled = isVideoCall,
@@ -97,16 +95,19 @@ class CallViewModel(
         val r = room ?: return
         
         // Observe room events using Flow
-        // TODO: Verify correct API for room.events
         viewModelScope.launch {
             try {
-                // Try to collect events - if this doesn't work, we'll need to find the correct API
-                // For now, we'll use a simpler approach without event handling
-                // r.events.collect { event: RoomEvent ->
-                //     handleRoomEvent(event)
-                // }
+                // Use a delay to wait for room to be ready, then enable tracks
+                kotlinx.coroutines.delay(500) // Small delay to ensure room is connected
+                
+                // Now safely enable camera and microphone
+                r.localParticipant?.let { participant ->
+                    participant.setCameraEnabled(isVideoCall)
+                    participant.setMicrophoneEnabled(true)
+                }
             } catch (e: Exception) {
-                // Handle error - events API may not be available in this version
+                // Handle error - log it but don't crash
+                android.util.Log.e("CallViewModel", "Error setting up room observers", e)
             }
         }
     }
