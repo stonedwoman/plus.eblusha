@@ -19,6 +19,8 @@ import org.eblusha.plus.data.api.conversations.ConversationParticipant
 import org.eblusha.plus.data.api.conversations.ConversationsApi
 import org.eblusha.plus.data.api.conversations.MessageSnippet
 import org.eblusha.plus.data.api.conversations.ParticipantUser
+import org.eblusha.plus.data.realtime.RealtimeEvent
+import org.eblusha.plus.data.realtime.RealtimeService
 import org.eblusha.plus.feature.session.SessionUser
 
 sealed interface ChatsUiState {
@@ -42,6 +44,7 @@ data class ConversationPreview(
 
 class ChatsViewModel(
     private val conversationsApi: ConversationsApi,
+    private val realtimeService: RealtimeService,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<ChatsUiState>(ChatsUiState.Loading)
@@ -54,6 +57,7 @@ class ChatsViewModel(
         if (currentUser?.id == user.id) return
         currentUser = user
         refresh()
+        observeRealtime()
     }
 
     fun refresh() {
@@ -116,6 +120,34 @@ class ChatsViewModel(
         return user?.displayName ?: user?.username
     }
 
+    private fun observeRealtime() {
+        viewModelScope.launch {
+        realtimeService.events.collect { event ->
+            when (event) {
+                is RealtimeEvent.PresenceUpdate -> updatePresence(event.userId, event.status)
+                else -> Unit
+            }
+        }
+        }
+    }
+
+    private fun updatePresence(userId: String, status: String) {
+        val current = _uiState.value
+        if (current !is ChatsUiState.Success) return
+        val updated = current.items.map { preview ->
+            if (preview.isGroup) {
+                preview
+            } else {
+                val online = status.equals("ONLINE", ignoreCase = true)
+                preview.copy(
+                    isOnline = online,
+                    presenceText = if (online) "онлайн" else preview.presenceText
+                )
+            }
+        }
+        _uiState.value = ChatsUiState.Success(updated)
+    }
+
     private fun resolveAvatar(participants: List<ConversationParticipant>, currentUserId: String): String? {
         val peer = participants.firstOrNull { it.user?.id != currentUserId }
         return peer?.user?.avatarUrl
@@ -173,7 +205,8 @@ class ChatsViewModelFactory(
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(ChatsViewModel::class.java)) {
             return ChatsViewModel(
-                conversationsApi = container.conversationsApi
+                conversationsApi = container.conversationsApi,
+                realtimeService = container.realtimeService,
             ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
