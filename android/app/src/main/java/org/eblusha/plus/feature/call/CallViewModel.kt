@@ -46,7 +46,11 @@ class CallViewModel(
     init {
         // Initialize LiveKit
         LiveKit.loggingLevel = LoggingLevel.DEBUG
-        connect()
+        // Don't connect immediately - wait for ViewModel to be fully initialized
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(100) // Small delay to ensure ViewModel is ready
+            connect()
+        }
     }
 
     private fun connect() {

@@ -112,8 +112,20 @@ private fun MessengerNavHost(
     androidx.compose.runtime.LaunchedEffect(Unit) {
         container.realtimeService.events.collect { event ->
             if (event is org.eblusha.plus.data.realtime.RealtimeEvent.CallIncoming) {
-                navController.currentBackStackEntry?.savedStateHandle?.set("callIsVideo", event.video)
-                navController.navigate("call/${event.conversationId}")
+                try {
+                    // Use the current back stack entry or create a new one
+                    val currentEntry = navController.currentBackStackEntry
+                    if (currentEntry != null) {
+                        currentEntry.savedStateHandle.set("callIsVideo", event.video)
+                    }
+                    // Navigate to call screen
+                    navController.navigate("call/${event.conversationId}") {
+                        // Prevent multiple navigations to the same call
+                        launchSingleTop = true
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Error handling incoming call", e)
+                }
             }
         }
     }
