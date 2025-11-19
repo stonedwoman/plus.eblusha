@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -187,23 +186,29 @@ private fun MessageBubble(message: ChatMessage) {
 @Composable
 private fun Composer(onSend: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    val spacing = LocalSpacing.current
+    Column {
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("Сообщение...") }
         )
-        Spacer(modifier = Modifier.width(8.dp))
-        Button(
-            onClick = {
-                onSend(text)
-                text = ""
-            },
-            enabled = text.isNotBlank(),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+        Spacer(modifier = Modifier.height(spacing.sm))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
         ) {
-            Text("Отпр.")
+            Button(
+                onClick = {
+                    onSend(text)
+                    text = ""
+                },
+                enabled = text.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("Отпр.")
+            }
         }
     }
 }
