@@ -17,7 +17,6 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import org.eblusha.plus.MainActivity
-import org.eblusha.plus.R
 
 class IncomingCallService : Service() {
     
