@@ -37,8 +37,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -207,16 +205,14 @@ private fun MessengerNavHost(
         val callUi = incomingCall ?: return@LaunchedEffect
         val conversationId = callUi.event.conversationId
         val fromUserId = callUi.event.fromUserId
-        val avatar = withContext(Dispatchers.IO) {
-            runCatching {
-                val response = container.conversationsApi.getConversations()
-                val convo = response.conversations.firstOrNull { it.conversation.id == conversationId }
-                val participantAvatar = convo?.conversation?.participants
-                    ?.firstOrNull { it.user?.id == fromUserId }
-                    ?.user?.avatarUrl
-                participantAvatar ?: convo?.conversation?.avatarUrl
-            }.getOrNull()
-        }
+        val avatar = runCatching {
+            val response = container.conversationsApi.getConversations()
+            val convo = response.conversations.firstOrNull { it.conversation.id == conversationId }
+            val participantAvatar = convo?.conversation?.participants
+                ?.firstOrNull { it.user?.id == fromUserId }
+                ?.user?.avatarUrl
+            participantAvatar ?: convo?.conversation?.avatarUrl
+        }.getOrNull()
         incomingCall = callUi.copy(avatarUrl = avatar)
     }
     
