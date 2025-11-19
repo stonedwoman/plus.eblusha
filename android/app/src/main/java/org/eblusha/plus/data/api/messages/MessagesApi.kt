@@ -49,7 +49,18 @@ data class Sender(
 @Serializable
 data class SendMessageRequest(
     val conversationId: String,
-    val type: String = "TEXT",
-    val content: String,
+    @SerialName("type") val type: String,
+    @SerialName("content") val content: String? = null,
+    @SerialName("metadata") val metadata: Map<String, kotlinx.serialization.json.JsonElement>? = null,
+    @SerialName("replyToId") val replyToId: String? = null,
+    @SerialName("attachments") val attachments: List<MessageAttachment>? = null,
+)
+
+@Serializable
+data class MessageAttachment(
+    val url: String,
+    val type: String,
+    val size: Long? = null,
+    val metadata: Map<String, kotlinx.serialization.json.JsonElement>? = null,
 )
 
