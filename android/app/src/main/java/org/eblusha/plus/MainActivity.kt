@@ -117,16 +117,19 @@ private fun MessengerNavHost(
                 currentUser = user,
                 onLogout = onLogout,
                 onConversationClick = { conversation ->
+                    navController.currentBackStackEntry?.savedStateHandle?.set("selectedConversation", conversation)
                     navController.navigate("chat/${conversation.id}")
                 }
             )
         }
         composable("chat/{conversationId}") { backStackEntry ->
             val conversationId = backStackEntry.arguments?.getString("conversationId") ?: return@composable
+            val preview = navController.previousBackStackEntry?.savedStateHandle?.get<ConversationPreview>("selectedConversation")
             ChatRoute(
                 container = container,
                 conversationId = conversationId,
                 currentUser = user,
+                conversation = preview,
                 onBack = { navController.popBackStack() }
             )
         }

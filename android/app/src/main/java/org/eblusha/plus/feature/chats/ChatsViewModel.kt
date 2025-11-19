@@ -1,5 +1,6 @@
 package org.eblusha.plus.feature.chats
 
+import android.os.Parcelable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -7,6 +8,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.parcelize.Parcelize
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -25,15 +27,18 @@ sealed interface ChatsUiState {
     data class Error(val message: String) : ChatsUiState
 }
 
+@Parcelize
 data class ConversationPreview(
     val id: String,
     val title: String,
     val subtitle: String,
+    val presenceText: String?,
+    val isOnline: Boolean,
     val unreadCount: Int,
     val isGroup: Boolean,
     val lastMessageTime: String?,
     val avatarUrl: String?,
-)
+) : Parcelable
 
 class ChatsViewModel(
     private val conversationsApi: ConversationsApi,
@@ -76,10 +81,13 @@ class ChatsViewModel(
         val lastMessage = conversation.messages.firstOrNull()
         val subtitle = formatSubtitle(lastMessage)
         val unread = unreadCount
+        val presence = resolvePresence(conversation.participants, user.id)
         return ConversationPreview(
             id = conversation.id,
             title = title,
             subtitle = subtitle,
+            presenceText = presence?.second,
+            isOnline = presence?.first == true,
             unreadCount = unread,
             isGroup = conversation.isGroup,
             lastMessageTime = formatTime(conversation.lastMessageAt ?: lastMessage?.createdAt),
@@ -111,6 +119,34 @@ class ChatsViewModel(
     private fun resolveAvatar(participants: List<ConversationParticipant>, currentUserId: String): String? {
         val peer = participants.firstOrNull { it.user?.id != currentUserId }
         return peer?.user?.avatarUrl
+    }
+
+    private fun resolvePresence(participants: List<ConversationParticipant>, currentUserId: String): Pair<Boolean, String?>? {
+        val peer = participants.firstOrNull { it.user?.id != currentUserId }?.user ?: return null
+        val status = peer.status
+        val lastSeen = peer.lastSeenAt
+        val isOnline = status.equals("ONLINE", ignoreCase = true)
+        val text = if (isOnline) {
+            "онлайн"
+        } else {
+            lastSeen?.let { "был(а) онлайн ${formatRelativeTime(it)}" }
+        }
+        return isOnline to text
+    }
+
+    private fun formatRelativeTime(timestamp: String): String {
+        return runCatching {
+            val instant = OffsetDateTime.parse(timestamp).atZoneSameInstant(ZoneId.systemDefault())
+            val now = ZonedDateTime.now()
+            val today = now.toLocalDate()
+            val date = instant.toLocalDate()
+            val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+            when {
+                date.isEqual(today) -> "сегодня в ${instant.toLocalTime().format(timeFormatter)}"
+                date.plusDays(1) == today -> "вчера в ${instant.toLocalTime().format(timeFormatter)}"
+                else -> instant.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"))
+            }
+        }.getOrDefault(timestamp)
     }
 
     private fun formatTime(timestamp: String?): String? {

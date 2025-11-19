@@ -42,6 +42,8 @@ data class ParticipantUser(
     val username: String,
     val displayName: String? = null,
     val avatarUrl: String? = null,
+    val status: String? = null,
+    @SerialName("lastSeenAt") val lastSeenAt: String? = null,
 )
 
 @Serializable

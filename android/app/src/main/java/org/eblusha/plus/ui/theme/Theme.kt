@@ -13,25 +13,31 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val LightColors = lightColorScheme(
-    primary = Plum2,
+    primary = AccentOrange,
     onPrimary = Color.White,
-    secondary = Accent,
-    tertiary = Sky,
-    background = Color.White,
+    secondary = AccentBlue,
+    onSecondary = Color.Black,
+    tertiary = AccentPink,
+    background = Color(0xFFF6F7FB),
     surface = Color.White,
-    surfaceVariant = Color(0xFFF1EFF8),
-    onSurface = Plum0
+    surfaceVariant = Color(0xFFE5E8F1),
+    onSurface = Color(0xFF111827),
+    onSurfaceVariant = Color(0xFF4B5563),
+    outline = Color(0xFFD1D5DB)
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Lilac,
-    onPrimary = Plum0,
-    secondary = Accent,
-    tertiary = Sky,
-    background = Plum0,
-    surface = Plum1,
-    surfaceVariant = Color(0xFF2E2A40),
-    onSurface = Color.White
+    primary = AccentOrange,
+    onPrimary = Color.White,
+    secondary = AccentBlue,
+    onSecondary = Color.Black,
+    tertiary = AccentPink,
+    background = Midnight,
+    surface = MidnightCard,
+    surfaceVariant = MidnightVariant,
+    onSurface = Color.White,
+    onSurfaceVariant = TextSecondary,
+    outline = TextSecondary.copy(alpha = 0.6f)
 )
 
 @Composable
@@ -50,10 +56,10 @@ fun EblushaPlusTheme(
     }
 
     CompositionLocalProvider(LocalSpacing provides Spacing()) {
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            content = content
+        )
     }
 }
