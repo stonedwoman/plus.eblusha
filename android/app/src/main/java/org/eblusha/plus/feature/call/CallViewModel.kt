@@ -7,6 +7,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -65,6 +66,7 @@ class CallViewModel(
     private var room: Room? = null
     private var hadRemoteParticipants = false
     private var seenMultipleRemoteParticipants = false
+    private var pendingHangJob: Job? = null
 
     init {
         android.util.Log.d("CallViewModel", "Initializing CallViewModel for conversation: $conversationId, video: $isVideoCall")
@@ -96,6 +98,7 @@ class CallViewModel(
                         "app" to "eblusha",
                         "userId" to currentUser.id,
                         "displayName" to (currentUser.displayName ?: currentUser.username),
+                        "avatarUrl" to (currentUser.avatarUrl ?: ""),
                     )
                 )
                 android.util.Log.d("CallViewModel", "Token received, URL: ${tokenResponse.url}")
@@ -222,15 +225,18 @@ class CallViewModel(
             seenMultipleRemoteParticipants = true
         }
         if (remoteCount > 0) {
+            pendingHangJob?.cancel()
+            pendingHangJob = null
             hadRemoteParticipants = true
+            return
         }
-        val shouldAutoHang = remoteCount == 0 &&
-            hadRemoteParticipants &&
-            !seenMultipleRemoteParticipants
-        if (shouldAutoHang) {
-            hadRemoteParticipants = false
-            seenMultipleRemoteParticipants = false
-            viewModelScope.launch {
+        if (!hadRemoteParticipants || seenMultipleRemoteParticipants) return
+        if (pendingHangJob?.isActive == true) return
+        pendingHangJob = viewModelScope.launch {
+            delay(5_000)
+            val stillNoRemote = room?.remoteParticipants?.isEmpty() ?: true
+            if (stillNoRemote && hadRemoteParticipants && !seenMultipleRemoteParticipants) {
+                android.util.Log.d("CallViewModel", "Auto hanging up after remote left")
                 performHangUp()
             }
         }
@@ -419,6 +425,8 @@ class CallViewModel(
     }
 
     private fun cleanup() {
+        pendingHangJob?.cancel()
+        pendingHangJob = null
         room?.disconnect()
         room = null
     }
