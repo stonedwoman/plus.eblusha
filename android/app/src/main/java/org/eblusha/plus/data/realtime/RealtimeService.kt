@@ -231,6 +231,40 @@ class RealtimeService(
             }
         }
 
+        socket.on("call:accepted") { args ->
+            args.firstOrNull()?.toJsonObject()?.let { json ->
+                val byObj = json.optJSONObject("by")
+                val event = RealtimeEvent.CallAccepted(
+                    conversationId = json.optString("conversationId"),
+                    byUserId = byObj?.optString("id").orEmpty(),
+                    video = json.optBoolean("video", false)
+                )
+                _events.tryEmit(event)
+            }
+        }
+
+        socket.on("call:declined") { args ->
+            args.firstOrNull()?.toJsonObject()?.let { json ->
+                val byObj = json.optJSONObject("by")
+                val event = RealtimeEvent.CallDeclined(
+                    conversationId = json.optString("conversationId"),
+                    byUserId = byObj?.optString("id").orEmpty()
+                )
+                _events.tryEmit(event)
+            }
+        }
+
+        socket.on("call:ended") { args ->
+            args.firstOrNull()?.toJsonObject()?.let { json ->
+                val byObj = json.optJSONObject("by")
+                val event = RealtimeEvent.CallEnded(
+                    conversationId = json.optString("conversationId"),
+                    byUserId = byObj?.optString("id").orEmpty()
+                )
+                _events.tryEmit(event)
+            }
+        }
+
         socket.on("conversation:typing") { args ->
             args.firstOrNull()?.toJsonObject()?.let { json ->
                 val event = RealtimeEvent.Typing(
@@ -310,6 +344,19 @@ sealed interface RealtimeEvent {
         val participants: List<String> = emptyList(),
     ) : RealtimeEvent
     data class CallStatusBulk(val statuses: Map<String, CallStatus>) : RealtimeEvent
+    data class CallAccepted(
+        val conversationId: String,
+        val byUserId: String,
+        val video: Boolean,
+    ) : RealtimeEvent
+    data class CallDeclined(
+        val conversationId: String,
+        val byUserId: String,
+    ) : RealtimeEvent
+    data class CallEnded(
+        val conversationId: String,
+        val byUserId: String,
+    ) : RealtimeEvent
     data class MessageNew(
         val conversationId: String,
         val messageId: String,

@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.data.livekit.LiveKitRepository
+import org.eblusha.plus.data.realtime.RealtimeService
 import org.eblusha.plus.feature.session.SessionUser
 import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
@@ -56,9 +57,11 @@ data class CallParticipantUi(
 class CallViewModel(
     private val context: Context,
     private val liveKitRepository: LiveKitRepository,
+    private val realtimeService: RealtimeService,
     private val conversationId: String,
     private val currentUser: SessionUser,
     private val isVideoCall: Boolean,
+    private val isGroup: Boolean = false,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<CallUiState>(CallUiState.Idle)
@@ -150,6 +153,12 @@ class CallViewModel(
                 when (event) {
                     is RoomEvent.Connected -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.Connected")
+                        // For groups, join call room on server (like web version does in onConnected)
+                        if (isGroup) {
+                            android.util.Log.d("CallViewModel", "Group call: joining call room on server")
+                            realtimeService.joinCallRoom(conversationId, isVideoCall)
+                            realtimeService.requestCallStatuses(listOf(conversationId))
+                        }
                         r.remoteParticipants.values.forEach { subscribeToRemoteTracks(it) }
                         enableLocalTracks()
                         refreshParticipants()
@@ -522,6 +531,11 @@ class CallViewModel(
     private fun cleanup() {
         pendingHangJob?.cancel()
         pendingHangJob = null
+        // For groups, leave call room on server (like web version does in handleClose)
+        if (isGroup) {
+            realtimeService.leaveCallRoom(conversationId)
+            realtimeService.requestCallStatuses(listOf(conversationId))
+        }
         room?.disconnect()
         room = null
     }
@@ -543,6 +557,7 @@ class CallViewModelFactory(
     private val conversationId: String,
     private val currentUser: SessionUser,
     private val isVideoCall: Boolean,
+    private val isGroup: Boolean = false,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -550,9 +565,11 @@ class CallViewModelFactory(
             return CallViewModel(
                 context = context,
                 liveKitRepository = container.liveKitRepository,
+                realtimeService = container.realtimeService,
                 conversationId = conversationId,
                 currentUser = currentUser,
                 isVideoCall = isVideoCall,
+                isGroup = isGroup,
             ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
