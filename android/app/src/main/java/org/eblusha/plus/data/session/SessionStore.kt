@@ -17,11 +17,13 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.IOException
+import org.eblusha.plus.data.security.PasswordEncryption
 
 class SessionStore(
     context: Context,
     private val tokenProvider: InMemoryAccessTokenProvider,
 ) {
+    private val passwordEncryption = PasswordEncryption(context)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -73,13 +75,34 @@ class SessionStore(
     suspend fun setCredentials(username: String, password: String) {
         dataStore.edit { prefs ->
             prefs[Keys.USERNAME] = username
-            prefs[Keys.PASSWORD] = password
+            // Encrypt password before storing
+            val encryptedPassword = try {
+                passwordEncryption.encrypt(password)
+            } catch (e: Exception) {
+                android.util.Log.e("SessionStore", "Failed to encrypt password", e)
+                // Fallback: don't save password if encryption fails
+                return@edit
+            }
+            prefs[Keys.PASSWORD] = encryptedPassword
         }
     }
     
     suspend fun getCredentials(): Pair<String?, String?> {
         val prefs = dataStore.data.firstOrNull() ?: return null to null
-        return prefs[Keys.USERNAME] to prefs[Keys.PASSWORD]
+        val username = prefs[Keys.USERNAME]
+        val encryptedPassword = prefs[Keys.PASSWORD]
+        
+        // Decrypt password if present
+        val password = encryptedPassword?.let {
+            try {
+                passwordEncryption.decrypt(it)
+            } catch (e: Exception) {
+                android.util.Log.e("SessionStore", "Failed to decrypt password", e)
+                null
+            }
+        }
+        
+        return username to password
     }
     
     val usernameFlow: Flow<String?> = dataStore.data
