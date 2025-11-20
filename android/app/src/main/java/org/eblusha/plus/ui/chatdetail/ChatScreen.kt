@@ -24,6 +24,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
@@ -51,6 +53,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import org.eblusha.plus.ActiveCallSession
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.feature.chatdetail.ChatMessage
 import org.eblusha.plus.feature.chatdetail.ChatUiState
@@ -60,6 +63,7 @@ import org.eblusha.plus.feature.chats.ConversationPreview
 import org.eblusha.plus.feature.session.SessionUser
 import org.eblusha.plus.ui.components.Avatar
 import org.eblusha.plus.ui.theme.LocalSpacing
+import org.eblusha.plus.ui.theme.Spacing
 
 @Composable
 fun ChatRoute(
@@ -67,6 +71,10 @@ fun ChatRoute(
     conversationId: String,
     currentUser: SessionUser,
     conversation: ConversationPreview?,
+    activeCall: ActiveCallSession?,
+    isCallMinimized: Boolean,
+    onMinimizeChange: (Boolean) -> Unit,
+    onHangUp: () -> Unit,
     onBack: () -> Unit,
     onCallClick: (Boolean) -> Unit,
 ) {
@@ -78,6 +86,10 @@ fun ChatRoute(
     ChatScreen(
         state = state,
         conversation = conversation,
+        activeCall = activeCall,
+        isCallMinimized = isCallMinimized,
+        onMinimizeChange = onMinimizeChange,
+        onHangUp = onHangUp,
         onBack = onBack,
         onRetry = viewModel::refresh,
         onSend = viewModel::sendMessage,
@@ -89,6 +101,10 @@ fun ChatRoute(
 private fun ChatScreen(
     state: ChatUiState,
     conversation: ConversationPreview?,
+    activeCall: ActiveCallSession?,
+    isCallMinimized: Boolean,
+    onMinimizeChange: (Boolean) -> Unit,
+    onHangUp: () -> Unit,
     onBack: () -> Unit,
     onRetry: () -> Unit,
     onSend: (String) -> Unit,
@@ -111,8 +127,20 @@ private fun ChatScreen(
                     )
                 )
         ) {
-                   Column(modifier = Modifier.fillMaxSize().padding(spacing.lg)) {
-                       ChatHeader(conversation = conversation, onBack = onBack, onCallClick = onCallClick)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(spacing.lg)
+            ) {
+                ChatHeader(
+                    conversation = conversation,
+                    activeCall = activeCall,
+                    isCallMinimized = isCallMinimized,
+                    onBack = onBack,
+                    onCallClick = onCallClick,
+                    onMinimizeChange = onMinimizeChange,
+                    onHangUp = onHangUp,
+                )
                 Spacer(modifier = Modifier.height(spacing.md))
                 when (state) {
                     ChatUiState.Loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -154,7 +182,15 @@ private fun ChatScreen(
 }
 
 @Composable
-private fun ChatHeader(conversation: ConversationPreview?, onBack: () -> Unit, onCallClick: (Boolean) -> Unit) {
+private fun ChatHeader(
+    conversation: ConversationPreview?,
+    activeCall: ActiveCallSession?,
+    isCallMinimized: Boolean,
+    onBack: () -> Unit,
+    onCallClick: (Boolean) -> Unit,
+    onMinimizeChange: (Boolean) -> Unit,
+    onHangUp: () -> Unit,
+) {
     val spacing = LocalSpacing.current
     val shape = RoundedCornerShape(26.dp)
     val statusText = conversation?.presenceText ?: "Сообщения синхронизируются с вебом"
@@ -198,43 +234,88 @@ private fun ChatHeader(conversation: ConversationPreview?, onBack: () -> Unit, o
                 }
             }
             Spacer(modifier = Modifier.height(spacing.md))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(spacing.sm)
+            CallActionRow(
+                isCurrentCall = activeCall?.conversationId == conversation?.id,
+                activeCall = activeCall,
+                isCallMinimized = isCallMinimized,
+                onCallClick = onCallClick,
+                onMinimizeChange = onMinimizeChange,
+                onHangUp = onHangUp,
+                spacing = spacing
+            )
+        }
+    }
+}
+
+@Composable
+private fun CallActionRow(
+    isCurrentCall: Boolean,
+    activeCall: ActiveCallSession?,
+    isCallMinimized: Boolean,
+    onCallClick: (Boolean) -> Unit,
+    onMinimizeChange: (Boolean) -> Unit,
+    onHangUp: () -> Unit,
+    spacing: Spacing,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(spacing.sm)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            tonalElevation = 1.dp
+        ) {
+            Text(
+                text = "Секретный чат",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.sm)
+            )
+        }
+        Spacer(modifier = Modifier.weight(1f))
+        if (!isCurrentCall || activeCall == null) {
+            OutlinedButton(
+                onClick = { onCallClick(false) },
+                shape = RoundedCornerShape(22.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
             ) {
-                Surface(
-                    shape = RoundedCornerShape(999.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    tonalElevation = 1.dp
+                Icon(Icons.Default.Call, contentDescription = null)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Позвонить")
+            }
+            Button(
+                onClick = { onCallClick(true) },
+                shape = RoundedCornerShape(22.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Icon(Icons.Default.Videocam, contentDescription = null)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Видео")
+            }
+        } else {
+            if (isCallMinimized) {
+                OutlinedButton(
+                    onClick = { onMinimizeChange(false) },
+                    shape = RoundedCornerShape(22.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
                 ) {
-                    Text(
-                        text = "Секретный чат",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.sm)
-                    )
+                    Icon(Icons.Default.ExpandLess, contentDescription = null)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Развернуть")
                 }
-                Spacer(modifier = Modifier.weight(1f))
-                       OutlinedButton(
-                           onClick = { onCallClick(false) },
-                           shape = RoundedCornerShape(22.dp),
-                           border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                           colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
-                       ) {
-                           Icon(Icons.Default.Call, contentDescription = null)
-                           Spacer(modifier = Modifier.width(6.dp))
-                           Text("Позвонить")
-                       }
-                       Button(
-                           onClick = { onCallClick(true) },
-                           shape = RoundedCornerShape(22.dp),
-                           colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                       ) {
-                           Icon(Icons.Default.Videocam, contentDescription = null)
-                           Spacer(modifier = Modifier.width(6.dp))
-                           Text("Видео")
-                       }
+            }
+            Button(
+                onClick = onHangUp,
+                shape = RoundedCornerShape(22.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Icon(Icons.Default.CallEnd, contentDescription = null)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Сбросить")
             }
         }
     }

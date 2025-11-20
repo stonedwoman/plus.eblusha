@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Videocam
@@ -50,11 +51,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.zIndex
 import org.eblusha.plus.ActiveCallSession
+import org.eblusha.plus.CallOverlayHandle
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.feature.call.CallParticipantUi
 import org.eblusha.plus.feature.call.CallUiState
@@ -71,6 +74,9 @@ fun CallOverlayHost(
     container: AppContainer,
     currentUser: SessionUser,
     session: ActiveCallSession,
+    isVisible: Boolean,
+    onRequestMinimize: () -> Unit,
+    onHandleReady: (CallOverlayHandle?) -> Unit,
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -90,6 +96,16 @@ fun CallOverlayHost(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var hasLeftIdle by remember(session.conversationId) { mutableStateOf(false) }
 
+    DisposableEffect(viewModel) {
+        val handle = CallOverlayHandle {
+            viewModel.hangUp()
+        }
+        onHandleReady(handle)
+        onDispose {
+            onHandleReady(null)
+        }
+    }
+
     LaunchedEffect(state) {
         if (state !is CallUiState.Idle) {
             hasLeftIdle = true
@@ -99,20 +115,22 @@ fun CallOverlayHost(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .zIndex(1f)
-    ) {
-        CallScreen(
-            state = state,
-            onHangUp = {
-                viewModel.hangUp()
-                onClose()
-            },
-            onToggleVideo = viewModel::toggleVideo,
-            onToggleAudio = viewModel::toggleAudio,
-        )
+    if (isVisible) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(1f)
+        ) {
+            CallScreen(
+                state = state,
+                onHangUp = {
+                    viewModel.hangUp()
+                },
+                onToggleVideo = viewModel::toggleVideo,
+                onToggleAudio = viewModel::toggleAudio,
+                onMinimize = onRequestMinimize,
+            )
+        }
     }
 }
 
@@ -122,11 +140,20 @@ private fun CallScreen(
     onHangUp: () -> Unit,
     onToggleVideo: () -> Unit,
     onToggleAudio: () -> Unit,
+    onMinimize: () -> Unit,
 ) {
     val spacing = LocalSpacing.current
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = Color.Black
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xCC0A0C10),
+                        Color(0xF00A0C10)
+                    )
+                )
+            )
     ) {
         when (state) {
             CallUiState.Idle -> {
@@ -161,6 +188,7 @@ private fun CallScreen(
                     onHangUp = onHangUp,
                     onToggleVideo = onToggleVideo,
                     onToggleAudio = onToggleAudio,
+                    onMinimize = onMinimize,
                 )
             }
             is CallUiState.Error -> {
@@ -198,27 +226,28 @@ private fun CallConnectedOverlay(
     onHangUp: () -> Unit,
     onToggleVideo: () -> Unit,
     onToggleAudio: () -> Unit,
+    onMinimize: () -> Unit,
 ) {
     val spacing = LocalSpacing.current
-    Box(
+    val remoteParticipants = state.participants.filterNot { it.isLocal }
+    val localParticipant = state.participants.firstOrNull { it.isLocal }
+    val configuration = LocalConfiguration.current
+    val isCompact = configuration.screenWidthDp < 720
+
+    Surface(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(Color(0xFF05070B), Color(0xFF0F1927))
-                )
-            )
-            .padding(16.dp)
+            .padding(if (isCompact) 0.dp else 16.dp),
+        color = Color.Transparent
     ) {
         Surface(
             modifier = Modifier
-                .align(Alignment.Center)
-                .fillMaxWidth()
-                .heightIn(min = 360.dp, max = 760.dp),
-            shape = RoundedCornerShape(32.dp),
+                .fillMaxSize()
+                .padding(if (isCompact) 0.dp else 16.dp),
+            shape = if (isCompact) RoundedCornerShape(0.dp) else RoundedCornerShape(32.dp),
             color = Color(0xFF0F141F),
             tonalElevation = 6.dp,
-            shadowElevation = 12.dp
+            shadowElevation = if (isCompact) 0.dp else 12.dp
         ) {
             Column(
                 modifier = Modifier
@@ -227,18 +256,49 @@ private fun CallConnectedOverlay(
                 verticalArrangement = Arrangement.spacedBy(spacing.lg)
             ) {
                 CallHeader(state.participants)
-                CallParticipantsGrid(
-                    participants = state.participants,
+                Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                )
+                        .clip(RoundedCornerShape(32.dp))
+                        .background(Color(0xFF050A12))
+                ) {
+                    if (remoteParticipants.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Ждём подключение других участников…",
+                                color = Color.White.copy(alpha = 0.8f),
+                                style = MaterialTheme.typography.bodyLarge,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else {
+                        CallParticipantsGrid(
+                            participants = remoteParticipants,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp)
+                        )
+                    }
+                    localParticipant?.let {
+                        LocalParticipantPreview(
+                            participant = it,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(16.dp)
+                        )
+                    }
+                }
                 CallControlsBar(
                     isAudioEnabled = state.isAudioEnabled,
                     isVideoEnabled = state.isVideoEnabled,
                     onToggleAudio = onToggleAudio,
                     onToggleVideo = onToggleVideo,
-                    onHangUp = onHangUp
+                    onHangUp = onHangUp,
+                    onMinimize = onMinimize,
                 )
             }
         }
@@ -439,6 +499,7 @@ private fun CallControlsBar(
     onToggleAudio: () -> Unit,
     onToggleVideo: () -> Unit,
     onHangUp: () -> Unit,
+    onMinimize: () -> Unit,
 ) {
     val spacing = LocalSpacing.current
     Surface(
@@ -467,6 +528,13 @@ private fun CallControlsBar(
                 label = if (isVideoEnabled) "Камера включена" else "Камера выключена",
                 containerColor = if (isVideoEnabled) Color(0xFF1C3453) else Color(0xFF41212F),
                 contentColor = if (isVideoEnabled) Color.White else Color(0xFFFF8FAB)
+            )
+            CallControlButton(
+                onClick = onMinimize,
+                icon = Icons.Default.ExpandMore,
+                label = "Свернуть",
+                containerColor = Color(0xFF1C1F2A),
+                contentColor = Color.White
             )
             CallControlButton(
                 onClick = onHangUp,
