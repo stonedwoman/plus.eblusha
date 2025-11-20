@@ -41,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -405,6 +406,32 @@ private fun CallParticipantTile(participant: CallParticipantUi) {
                     .align(Alignment.TopEnd)
                     .padding(12.dp)
             )
+        }
+    }
+}
+
+@Composable
+private fun LocalParticipantPreview(
+    participant: CallParticipantUi,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .width(140.dp)
+            .height(210.dp),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFF0A101A),
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
+    ) {
+        if (participant.videoTrack != null) {
+            LiveKitVideoView(
+                track = participant.videoTrack,
+                modifier = Modifier.fillMaxSize(),
+                mirror = true
+            )
+        } else {
+            ParticipantPlaceholder(participant)
         }
     }
 }
