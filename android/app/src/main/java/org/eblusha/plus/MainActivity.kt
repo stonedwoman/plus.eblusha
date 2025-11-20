@@ -68,6 +68,12 @@ data class ActiveCallSession(
     val isGroup: Boolean,
 )
 
+class CallOverlayHandle internal constructor(
+    private val hangUpAction: () -> Unit,
+) {
+    fun hangUp() = hangUpAction()
+}
+
 class MainActivity : ComponentActivity() {
     private val container: AppContainer by lazy { (application as EblushaApp).container }
     private val sessionViewModel: SessionViewModel by viewModels {
@@ -101,9 +107,11 @@ class MainActivity : ComponentActivity() {
         
         setContent {
             val state by sessionViewModel.uiState.collectAsStateWithLifecycle()
+            val activeCallState = remember { mutableStateOf<ActiveCallSession?>(null) }
+            val isCallMinimizedState = rememberSaveable { mutableStateOf(false) }
+            val callHandleState = remember { mutableStateOf<CallOverlayHandle?>(null) }
             EblushaPlusTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    val (activeCall, setActiveCall) = remember { mutableStateOf<ActiveCallSession?>(null) }
                     SessionScreen(
                         container = container,
                         state = state,
@@ -111,9 +119,20 @@ class MainActivity : ComponentActivity() {
                         onLogin = sessionViewModel::login,
                         onRefresh = sessionViewModel::refresh,
                         onLogout = sessionViewModel::logout,
-                        activeCall = activeCall,
-                        onStartCall = { session -> setActiveCall(session) },
-                        onEndCall = { setActiveCall(null) }
+                        activeCall = activeCallState.value,
+                        isCallMinimized = isCallMinimizedState.value,
+                        callHandle = callHandleState.value,
+                        onStartCall = { session ->
+                            activeCallState.value = session
+                            isCallMinimizedState.value = false
+                        },
+                        onCallSessionEnded = {
+                            activeCallState.value = null
+                            isCallMinimizedState.value = false
+                            callHandleState.value = null
+                        },
+                        onMinimizeChange = { minimized -> isCallMinimizedState.value = minimized },
+                        onHandleChange = { handle -> callHandleState.value = handle }
                     )
                 }
             }
@@ -130,13 +149,17 @@ private fun SessionScreen(
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
     activeCall: ActiveCallSession?,
+    isCallMinimized: Boolean,
+    callHandle: CallOverlayHandle?,
     onStartCall: (ActiveCallSession) -> Unit,
-    onEndCall: () -> Unit,
+    onCallSessionEnded: () -> Unit,
+    onMinimizeChange: (Boolean) -> Unit,
+    onHandleChange: (CallOverlayHandle?) -> Unit,
 ) {
     val shouldCloseCall = state !is SessionUiState.LoggedIn && activeCall != null
     LaunchedEffect(shouldCloseCall) {
         if (shouldCloseCall) {
-            onEndCall()
+            onCallSessionEnded()
         }
     }
     Box(
@@ -155,14 +178,21 @@ private fun SessionScreen(
                         container = container,
                         user = state.user,
                         onLogout = onLogout,
+                        activeCall = activeCall,
+                        isCallMinimized = isCallMinimized,
+                        callHandle = callHandle,
                         onStartCall = onStartCall,
+                        onMinimizeChange = onMinimizeChange,
                     )
                     activeCall?.let { session ->
                         CallOverlayHost(
                             container = container,
                             currentUser = state.user,
                             session = session,
-                            onClose = onEndCall
+                            isVisible = !isCallMinimized,
+                            onRequestMinimize = { onMinimizeChange(true) },
+                            onHandleReady = onHandleChange,
+                            onClose = onCallSessionEnded
                         )
                     }
                 }
@@ -176,7 +206,11 @@ private fun MessengerNavHost(
     container: AppContainer,
     user: SessionUser,
     onLogout: () -> Unit,
+    activeCall: ActiveCallSession?,
+    isCallMinimized: Boolean,
+    callHandle: CallOverlayHandle?,
     onStartCall: (ActiveCallSession) -> Unit,
+    onMinimizeChange: (Boolean) -> Unit,
 ) {
     val navController = rememberNavController()
     
@@ -310,6 +344,10 @@ private fun MessengerNavHost(
                 conversationId = conversationId,
                 currentUser = user,
                 conversation = preview,
+                        activeCall = activeCall,
+                        isCallMinimized = isCallMinimized,
+                        onMinimizeChange = onMinimizeChange,
+                        onHangUp = { callHandle?.hangUp() },
                 onBack = { navController.popBackStack() },
                 onCallClick = { isVideo ->
                     // Send call invitation
