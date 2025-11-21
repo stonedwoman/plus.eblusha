@@ -116,6 +116,7 @@ private fun ChatScreen(
     onCallClick: (Boolean) -> Unit,
 ) {
     val spacing = LocalSpacing.current
+    android.util.Log.d("ChatScreen", "Rendering ChatScreen, state=${state::class.simpleName}")
     Box(
         modifier = Modifier
             .fillMaxSize()

@@ -432,6 +432,7 @@ private fun MessengerNavHost(
                     .width(screenWidth),
                 color = MaterialTheme.colorScheme.background
             ) {
+                android.util.Log.d("MainActivity", "Chat panel rendering, selectedConversation=${selectedConversation?.id}")
                 selectedConversation?.let { conversation ->
                     ChatRoute(
                         container = container,
