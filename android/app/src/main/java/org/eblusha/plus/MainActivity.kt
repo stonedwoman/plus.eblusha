@@ -369,6 +369,7 @@ private fun MessengerNavHost(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
             .pointerInput(screenWidthPx) {
                 detectHorizontalDragGestures(
                     onDragStart = { isDragging = true },
@@ -401,7 +402,8 @@ private fun MessengerNavHost(
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .offset { IntOffset(x = (animatedOffset * screenWidthPx).roundToInt(), y = 0) },
+                .offset { IntOffset(x = (animatedOffset * screenWidthPx).roundToInt(), y = 0) }
+                .background(MaterialTheme.colorScheme.background),
             horizontalArrangement = Arrangement.Start
         ) {
             // Conversations list panel
