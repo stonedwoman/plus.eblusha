@@ -1,6 +1,7 @@
 package org.eblusha.plus.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -29,6 +30,7 @@ fun Avatar(
     modifier: Modifier = Modifier,
     size: Dp = 48.dp,
     backgroundColor: Color? = null,
+    presence: String? = null,
 ) {
     val context = LocalContext.current
     val initials = remember(name) {
@@ -37,36 +39,61 @@ fun Avatar(
     }
     val tint = remember(name) { avatarColors[(name.hashCode().absoluteValue) % avatarColors.size] }
 
-    Surface(
-        modifier = modifier
-            .size(size)
-            .clip(CircleShape),
-        color = Color.Transparent
-    ) {
-        if (!imageUrl.isNullOrBlank()) {
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(imageUrl)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = name,
-                modifier = Modifier
-                    .background(backgroundColor ?: MaterialTheme.colorScheme.surfaceVariant, CircleShape)
-                    .clip(CircleShape)
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .background(backgroundColor ?: tint, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = initials,
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+    Box(modifier = modifier.size(size)) {
+        Surface(
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape),
+            color = Color.Transparent
+        ) {
+            if (!imageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(imageUrl)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = name,
+                    modifier = Modifier
+                        .background(backgroundColor ?: MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                        .clip(CircleShape)
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .background(backgroundColor ?: tint, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = initials,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     )
+                }
+            }
+        }
+        // Presence indicator
+        presence?.let {
+            val presenceColor = when (it.uppercase()) {
+                "ONLINE" -> Color(0xFF22C55E)
+                "AWAY" -> Color(0xFFF59E0B)
+                "IN_CALL" -> Color(0xFFEF4444)
+                else -> null
+            }
+            presenceColor?.let { color ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(color)
+                        .border(
+                            width = 2.dp,
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = CircleShape
+                        )
                 )
             }
         }
