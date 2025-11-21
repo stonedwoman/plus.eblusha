@@ -432,6 +432,17 @@ private fun MessengerNavHost(
                     .width(screenWidth),
                 color = MaterialTheme.colorScheme.background
             ) {
+                // Debug: always show test content to verify visibility
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.TopStart
+                ) {
+                    Text(
+                        text = "TEST PANEL VISIBLE",
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
                 android.util.Log.d("MainActivity", "Chat panel rendering, selectedConversation=${selectedConversation?.id}")
                 selectedConversation?.let { conversation ->
                     ChatRoute(
