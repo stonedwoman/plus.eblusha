@@ -254,6 +254,11 @@ private fun MessengerNavHost(
         label = "slider_offset"
     )
     
+    // Debug logging
+    androidx.compose.runtime.LaunchedEffect(selectedConversation, animatedOffset) {
+        android.util.Log.d("MainActivity", "Slider state: selectedConversation=${selectedConversation?.id}, animatedOffset=$animatedOffset, targetOffset=$targetOffset, isDragging=$isDragging")
+    }
+    
     // Handle incoming calls - show incoming call screen
     data class IncomingCallUi(val event: RealtimeEvent.CallIncoming, val avatarUrl: String?)
     var incomingCall by remember { mutableStateOf<IncomingCallUi?>(null) }
