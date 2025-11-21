@@ -366,7 +366,7 @@ private fun MessengerNavHost(
         incomingCall = callUi.copy(avatarUrl = avatar)
     }
     
-    // Mobile slider layout
+    // Mobile slider layout - use Box with two overlapping panels
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -400,88 +400,79 @@ private fun MessengerNavHost(
                 )
             }
     ) {
-        // Slider inner container
-        Row(
+        // Conversations list panel
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .offset { IntOffset(x = (animatedOffset * screenWidthPx).roundToInt(), y = 0) }
-                .background(MaterialTheme.colorScheme.background),
-            horizontalArrangement = Arrangement.Start
         ) {
-            // Conversations list panel
+            ChatsRoute(
+                container = container,
+                currentUser = user,
+                onLogout = onLogout,
+                onConversationClick = { conversation ->
+                    selectedConversation = conversation
+                    sliderOffset = -1f
+                }
+            )
+        }
+        
+        // Chat detail panel - positioned to the right, slides in from right
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .offset { IntOffset(x = ((animatedOffset + 1f) * screenWidthPx).roundToInt(), y = 0) },
+            color = MaterialTheme.colorScheme.background
+        ) {
+            // Debug: always show test content to verify visibility
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .width(screenWidth)
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.TopStart
             ) {
-                ChatsRoute(
-                    container = container,
-                    currentUser = user,
-                    onLogout = onLogout,
-                    onConversationClick = { conversation ->
-                        selectedConversation = conversation
-                        sliderOffset = -1f
-                    }
+                Text(
+                    text = "TEST PANEL VISIBLE",
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(16.dp)
                 )
             }
-            
-            // Chat detail panel - always render to avoid black screen
-            Surface(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .width(screenWidth),
-                color = MaterialTheme.colorScheme.background
-            ) {
-                // Debug: always show test content to verify visibility
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.TopStart
-                ) {
-                    Text(
-                        text = "TEST PANEL VISIBLE",
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(16.dp)
-                    )
-                }
-                android.util.Log.d("MainActivity", "Chat panel rendering, selectedConversation=${selectedConversation?.id}")
-                selectedConversation?.let { conversation ->
-                    ChatRoute(
-                        container = container,
-                        conversationId = conversation.id,
-                        currentUser = user,
-                        conversation = conversation,
-                        activeCall = activeCall,
-                        isCallMinimized = isCallMinimized,
-                        onMinimizeChange = onMinimizeChange,
-                        onHangUp = { callHandle?.hangUp() },
-                        onBack = {
-                            android.util.Log.d("MainActivity", "Back pressed, clearing selectedConversation")
-                            selectedConversation = null
-                            sliderOffset = 0f
-                        },
-                        onCallClick = { isVideo ->
-                            android.util.Log.d("MainActivity", "Initiating call: conversationId=${conversation.id}, isVideo=$isVideo")
-                            container.realtimeService.inviteCall(conversation.id, isVideo)
-                            onStartCall(
-                                ActiveCallSession(
-                                    conversationId = conversation.id,
-                                    isVideo = isVideo,
-                                    isGroup = conversation.isGroup
-                                )
+            android.util.Log.d("MainActivity", "Chat panel rendering, selectedConversation=${selectedConversation?.id}")
+            selectedConversation?.let { conversation ->
+                ChatRoute(
+                    container = container,
+                    conversationId = conversation.id,
+                    currentUser = user,
+                    conversation = conversation,
+                    activeCall = activeCall,
+                    isCallMinimized = isCallMinimized,
+                    onMinimizeChange = onMinimizeChange,
+                    onHangUp = { callHandle?.hangUp() },
+                    onBack = {
+                        android.util.Log.d("MainActivity", "Back pressed, clearing selectedConversation")
+                        selectedConversation = null
+                        sliderOffset = 0f
+                    },
+                    onCallClick = { isVideo ->
+                        android.util.Log.d("MainActivity", "Initiating call: conversationId=${conversation.id}, isVideo=$isVideo")
+                        container.realtimeService.inviteCall(conversation.id, isVideo)
+                        onStartCall(
+                            ActiveCallSession(
+                                conversationId = conversation.id,
+                                isVideo = isVideo,
+                                isGroup = conversation.isGroup
                             )
-                        }
-                    )
-                } ?: run {
-                    // Show placeholder when no conversation selected
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Выберите беседу",
-                            color = MaterialTheme.colorScheme.onBackground
                         )
                     }
+                )
+            } ?: run {
+                // Show placeholder when no conversation selected
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Выберите беседу",
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
                 }
             }
         }
