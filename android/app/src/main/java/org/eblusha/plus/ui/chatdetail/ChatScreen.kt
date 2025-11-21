@@ -111,22 +111,11 @@ private fun ChatScreen(
     onCallClick: (Boolean) -> Unit,
 ) {
     val spacing = LocalSpacing.current
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = Color.Transparent
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.background,
-                            MaterialTheme.colorScheme.background.copy(alpha = 0.94f)
-                        )
-                    )
-                )
-        ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -177,7 +166,6 @@ private fun ChatScreen(
                     }
                 }
             }
-        }
     }
 }
 
