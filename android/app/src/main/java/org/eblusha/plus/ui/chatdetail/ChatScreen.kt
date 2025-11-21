@@ -37,9 +37,15 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,9 +89,16 @@ fun ChatRoute(
         factory = ChatViewModelFactory(container, conversationId, currentUser)
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
     
     androidx.compose.runtime.LaunchedEffect(state) {
         android.util.Log.d("ChatRoute", "ChatUiState changed: ${state::class.simpleName}")
+    }
+    
+    LaunchedEffect(Unit) {
+        viewModel.sendError.collectLatest { errorMessage ->
+            snackbarHostState.showSnackbar(errorMessage)
+        }
     }
 
     ChatScreen(
@@ -99,6 +112,7 @@ fun ChatRoute(
         onRetry = viewModel::refresh,
         onSend = viewModel::sendMessage,
         onCallClick = onCallClick,
+        snackbarHostState = snackbarHostState,
     )
 }
 
@@ -114,6 +128,7 @@ private fun ChatScreen(
     onRetry: () -> Unit,
     onSend: (String) -> Unit,
     onCallClick: (Boolean) -> Unit,
+    snackbarHostState: SnackbarHostState,
 ) {
     val spacing = LocalSpacing.current
     android.util.Log.d("ChatScreen", "Rendering ChatScreen, state=${state::class.simpleName}")
@@ -121,46 +136,52 @@ private fun ChatScreen(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 4.dp, vertical = 2.dp)
-        ) {
-                ChatHeader(
-                    conversation = conversation,
-                    activeCall = activeCall,
-                    isCallMinimized = isCallMinimized,
-                    onBack = onBack,
-                    onCallClick = onCallClick,
-                    onMinimizeChange = onMinimizeChange,
-                    onHangUp = onHangUp,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                when (state) {
-                    ChatUiState.Loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("Загружаем переписку…")
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
+            ) {
+                    ChatHeader(
+                        conversation = conversation,
+                        activeCall = activeCall,
+                        isCallMinimized = isCallMinimized,
+                        onBack = onBack,
+                        onCallClick = onCallClick,
+                        onMinimizeChange = onMinimizeChange,
+                        onHangUp = onHangUp,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    when (state) {
+                        ChatUiState.Loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("Загружаем переписку…")
+                        }
+                        is ChatUiState.Error -> Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(text = state.message, color = MaterialTheme.colorScheme.error)
+                            Spacer(Modifier.height(spacing.md))
+                            Button(onClick = onRetry) { Text("Повторить") }
+                        }
+                        is ChatUiState.Loaded -> {
+                            MessageList(
+                                messages = state.messages,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Composer(onSend)
+                        }
                     }
-                    is ChatUiState.Error -> Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(text = state.message, color = MaterialTheme.colorScheme.error)
-                        Spacer(Modifier.height(spacing.md))
-                        Button(onClick = onRetry) { Text("Повторить") }
-                    }
-                    is ChatUiState.Loaded -> {
-                        MessageList(
-                            messages = state.messages,
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth()
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Composer(onSend)
-                    }
-                }
             }
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
     }
 }
 

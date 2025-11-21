@@ -8,6 +8,8 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.data.api.messages.MessageDto
@@ -18,6 +20,7 @@ import org.eblusha.plus.data.realtime.RealtimeService
 import org.eblusha.plus.feature.session.SessionUser
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import retrofit2.HttpException
 
 sealed interface ChatUiState {
     data object Loading : ChatUiState
@@ -44,6 +47,9 @@ class ChatViewModel(
 
     private val _state = MutableStateFlow<ChatUiState>(ChatUiState.Loading)
     val state: StateFlow<ChatUiState> = _state
+
+    private val _sendError = MutableSharedFlow<String>()
+    val sendError = _sendError.asSharedFlow()
 
     private val formatter = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT)
 
@@ -130,7 +136,23 @@ class ChatViewModel(
                 _state.value = ChatUiState.Loaded(listOf(sent.toChatMessage()) + current)
             } catch (e: Throwable) {
                 android.util.Log.e("ChatViewModel", "Error sending message", e)
-                _state.value = ChatUiState.Error(e.message ?: "Не удалось отправить сообщение")
+                val errorMessage = when {
+                    e is HttpException && e.code() == 409 -> {
+                        val responseBody = e.response()?.errorBody()?.string()
+                        if (responseBody?.contains("Secret conversation is not active", ignoreCase = true) == true) {
+                            "Секретный чат не активирован. Активируйте его на другом устройстве."
+                        } else {
+                            "Не удалось отправить сообщение (конфликт)"
+                        }
+                    }
+                    e is HttpException -> {
+                        "Не удалось отправить сообщение (ошибка ${e.code()})"
+                    }
+                    else -> {
+                        e.message ?: "Не удалось отправить сообщение"
+                    }
+                }
+                _sendError.emit(errorMessage)
             }
         }
     }
