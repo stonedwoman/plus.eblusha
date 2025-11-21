@@ -107,7 +107,7 @@ fun ChatsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 8.dp)
         ) {
             // Centered header
             BrandHeaderCentered()
@@ -142,7 +142,7 @@ fun ChatsScreen(
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
-                            contentPadding = PaddingValues(vertical = 10.dp)
+                            contentPadding = PaddingValues(vertical = 4.dp)
                         ) {
                             if (state.items.isEmpty()) {
                                 item {
@@ -201,14 +201,14 @@ private fun ConversationItem(
         tonalElevation = if (item.unreadCount > 0) 4.dp else 2.dp
     ) {
         Row(
-            modifier = Modifier.padding(10.dp),
+            modifier = Modifier.padding(8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Avatar(
                 name = item.title,
                 imageUrl = item.avatarUrl,
-                size = 40.dp,
+                size = 36.dp,
                 presence = if (item.isOnline) "ONLINE" else null
             )
             Column(modifier = Modifier.weight(1f)) {
@@ -279,19 +279,19 @@ private fun ConvFooter(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = spacing.md),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(vertical = spacing.sm),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // Divider
         Divider(
             color = MaterialTheme.colorScheme.outlineVariant,
-            modifier = Modifier.padding(vertical = 8.dp)
+            modifier = Modifier.padding(vertical = 4.dp)
         )
         
         // Actions row
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             ActionCard(
                 modifier = Modifier.weight(1f),
@@ -331,18 +331,18 @@ private fun ActionCard(
         tonalElevation = 2.dp
     ) {
         Row(
-            modifier = Modifier.padding(10.dp),
+            modifier = Modifier.padding(8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
                     .background(iconBackgroundColor),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
             }
             Column {
                 Text(
@@ -378,14 +378,14 @@ private fun ProfileCardFooter(user: SessionUser) {
         tonalElevation = 2.dp
     ) {
         Row(
-            modifier = Modifier.padding(10.dp),
+            modifier = Modifier.padding(8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Avatar(
                 name = user.displayName ?: user.username,
                 imageUrl = user.avatarUrl,
-                size = 40.dp,
+                size = 36.dp,
                 presence = statusValue
             )
             Column(modifier = Modifier.weight(1f)) {
