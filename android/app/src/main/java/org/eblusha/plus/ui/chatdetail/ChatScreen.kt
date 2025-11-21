@@ -124,7 +124,7 @@ private fun ChatScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .padding(horizontal = 4.dp, vertical = 2.dp)
         ) {
                 ChatHeader(
                     conversation = conversation,
@@ -184,7 +184,7 @@ private fun ChatHeader(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         tonalElevation = 2.dp
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -309,8 +309,8 @@ private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifi
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
         reverseLayout = true,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-        contentPadding = PaddingValues(vertical = 4.dp)
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        contentPadding = PaddingValues(vertical = 2.dp)
     ) {
         items(messages, key = { it.id }) { message ->
             MessageBubble(message)
@@ -320,34 +320,16 @@ private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifi
 
 @Composable
 private fun MessageBubble(message: ChatMessage) {
-    Row(
+    val isSystemMessage = message.type.uppercase() != "TEXT"
+    
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp),
-        horizontalArrangement = if (message.isMine) Arrangement.End else Arrangement.Start,
-        verticalAlignment = Alignment.Top
+            .padding(horizontal = 0.dp)
     ) {
-        if (!message.isMine) {
-            Avatar(name = message.senderName ?: "?", imageUrl = message.senderAvatar, size = 28.dp)
-            Spacer(modifier = Modifier.width(6.dp))
-        }
-        Column(
-            modifier = Modifier.widthIn(max = 280.dp)
-        ) {
-            message.senderName?.let {
-                if (!message.isMine) {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                }
-            }
-            Row(
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
+        if (isSystemMessage) {
+            // System messages (call logs, etc.) - simple text, no avatar, no sender name
+            Column {
                 Text(
                     text = message.content ?: "[${message.type.lowercase()}]",
                     style = MaterialTheme.typography.bodyMedium,
@@ -357,8 +339,52 @@ private fun MessageBubble(message: ChatMessage) {
                     Text(
                         it,
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp)
                     )
+                }
+            }
+        } else {
+            // Regular text messages
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = if (message.isMine) Arrangement.End else Arrangement.Start,
+                verticalAlignment = Alignment.Top
+            ) {
+                if (!message.isMine) {
+                    Avatar(name = message.senderName ?: "?", imageUrl = message.senderAvatar, size = 28.dp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Column(
+                    modifier = Modifier.widthIn(max = 280.dp)
+                ) {
+                    message.senderName?.let {
+                        if (!message.isMine) {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 2.dp)
+                            )
+                        }
+                    }
+                    Row(
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = message.content ?: "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        message.createdAt?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
         }
