@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -410,6 +411,7 @@ private fun MessengerNavHost(
                 modifier = Modifier
                     .fillMaxSize()
                     .width(screenWidth)
+                    .background(MaterialTheme.colorScheme.background)
             ) {
                 selectedConversation?.let { conversation ->
                     ChatRoute(
