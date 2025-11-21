@@ -10,14 +10,20 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.core.content.ContextCompat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -39,15 +45,20 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.flow.firstOrNull
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import kotlin.math.roundToInt
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.feature.chats.ConversationPreview
 import org.eblusha.plus.ui.chats.ChatsRoute
@@ -212,7 +223,26 @@ private fun MessengerNavHost(
     onStartCall: (ActiveCallSession) -> Unit,
     onMinimizeChange: (Boolean) -> Unit,
 ) {
-    val navController = rememberNavController()
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val screenWidth = configuration.screenWidthDp.dp
+    val screenWidthPx = with(density) { screenWidth.toPx() }
+    
+    // Mobile slider state
+    var selectedConversation by rememberSaveable { mutableStateOf<ConversationPreview?>(null) }
+    var sliderOffset by remember { mutableStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
+    
+    // Calculate current panel (0 = list, 1 = chat)
+    val currentPanel = if (selectedConversation != null) 1 else 0
+    val targetOffset = if (currentPanel == 1) -1f else 0f
+    
+    // Animate to target offset when not dragging
+    val animatedOffset by animateFloatAsState(
+        targetValue = if (isDragging) sliderOffset else targetOffset,
+        animationSpec = tween(durationMillis = 300),
+        label = "slider_offset"
+    )
     
     // Handle incoming calls - show incoming call screen
     data class IncomingCallUi(val event: RealtimeEvent.CallIncoming, val avatarUrl: String?)
@@ -320,48 +350,95 @@ private fun MessengerNavHost(
         incomingCall = callUi.copy(avatarUrl = avatar)
     }
     
-    NavHost(
-        navController = navController,
-        startDestination = "chats",
-        modifier = Modifier.fillMaxSize()
+    // Mobile slider layout
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragStart = { isDragging = true },
+                    onDragEnd = {
+                        isDragging = false
+                        // Snap to nearest panel
+                        val threshold = 0.5f
+                        if (sliderOffset < -threshold) {
+                            // Snap to chat panel - ensure conversation is selected
+                            sliderOffset = -1f
+                            if (selectedConversation == null) {
+                                // If no conversation selected, snap back to list
+                                sliderOffset = 0f
+                            }
+                        } else {
+                            // Snap to list panel
+                            sliderOffset = 0f
+                            selectedConversation = null
+                        }
+                    },
+                    onDrag = { change, dragAmount ->
+                        val newOffset = (sliderOffset + dragAmount / this.size.width).coerceIn(-1f, 0f)
+                        sliderOffset = newOffset
+                        change.consume()
+                    }
+                )
+            }
     ) {
-        composable("chats") {
-            ChatsRoute(
-                container = container,
-                currentUser = user,
-                onLogout = onLogout,
-                onConversationClick = { conversation ->
-                    navController.currentBackStackEntry?.savedStateHandle?.set("selectedConversation", conversation)
-                    navController.navigate("chat/${conversation.id}")
-                }
-            )
-        }
-        composable("chat/{conversationId}") { backStackEntry ->
-            val conversationId = backStackEntry.arguments?.getString("conversationId") ?: return@composable
-            val preview = navController.previousBackStackEntry?.savedStateHandle?.get<ConversationPreview>("selectedConversation")
-            ChatRoute(
-                container = container,
-                conversationId = conversationId,
-                currentUser = user,
-                conversation = preview,
+        // Slider inner container
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .offset { IntOffset(x = (animatedOffset * screenWidthPx).roundToInt(), y = 0) }
+        ) {
+            // Conversations list panel
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .width(screenWidth)
+            ) {
+                ChatsRoute(
+                    container = container,
+                    currentUser = user,
+                    onLogout = onLogout,
+                    onConversationClick = { conversation ->
+                        selectedConversation = conversation
+                        sliderOffset = -1f
+                    }
+                )
+            }
+            
+            // Chat detail panel
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .width(screenWidth)
+            ) {
+                selectedConversation?.let { conversation ->
+                    ChatRoute(
+                        container = container,
+                        conversationId = conversation.id,
+                        currentUser = user,
+                        conversation = conversation,
                         activeCall = activeCall,
                         isCallMinimized = isCallMinimized,
                         onMinimizeChange = onMinimizeChange,
                         onHangUp = { callHandle?.hangUp() },
-                onBack = { navController.popBackStack() },
-                onCallClick = { isVideo ->
-                    // Send call invitation
-                    android.util.Log.d("MainActivity", "Initiating call: conversationId=$conversationId, isVideo=$isVideo")
-                    container.realtimeService.inviteCall(conversationId, isVideo)
+                        onBack = {
+                            selectedConversation = null
+                            sliderOffset = 0f
+                        },
+                        onCallClick = { isVideo ->
+                            android.util.Log.d("MainActivity", "Initiating call: conversationId=${conversation.id}, isVideo=$isVideo")
+                            container.realtimeService.inviteCall(conversation.id, isVideo)
                             onStartCall(
                                 ActiveCallSession(
-                                    conversationId = conversationId,
+                                    conversationId = conversation.id,
                                     isVideo = isVideo,
-                                    isGroup = preview?.isGroup == true
+                                    isGroup = conversation.isGroup
                                 )
                             )
+                        }
+                    )
                 }
-            )
+            }
         }
     }
     
