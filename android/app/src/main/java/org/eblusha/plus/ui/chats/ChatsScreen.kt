@@ -303,7 +303,7 @@ private fun ConvFooter(
             ActionCard(
                 modifier = Modifier.weight(1f),
                 title = "Контакты",
-                subtitle = "Список контактов",
+                subtitle = "Добавить друзей",
                 icon = Icons.Default.Person,
                 iconBackgroundColor = Color(0xFF6366F1)
             )
