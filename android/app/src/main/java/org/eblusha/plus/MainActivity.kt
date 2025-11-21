@@ -354,7 +354,7 @@ private fun MessengerNavHost(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(Unit) {
+            .pointerInput(screenWidthPx) {
                 detectHorizontalDragGestures(
                     onDragStart = { isDragging = true },
                     onDragEnd = {
@@ -374,8 +374,8 @@ private fun MessengerNavHost(
                             selectedConversation = null
                         }
                     },
-                    onDrag = { change, dragAmount ->
-                        val newOffset = (sliderOffset + dragAmount / this.size.width).coerceIn(-1f, 0f)
+                    onHorizontalDrag = { change, dragAmount ->
+                        val newOffset = (sliderOffset + dragAmount / screenWidthPx).coerceIn(-1f, 0f)
                         sliderOffset = newOffset
                         change.consume()
                     }
