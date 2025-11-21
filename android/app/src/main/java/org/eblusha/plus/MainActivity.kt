@@ -421,15 +421,14 @@ private fun MessengerNavHost(
                 )
             }
             
-            // Chat detail panel
+            // Chat detail panel - always render to avoid black screen
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .width(screenWidth)
                     .background(MaterialTheme.colorScheme.background)
             ) {
-                if (selectedConversation != null) {
-                    val conversation = selectedConversation!!
+                selectedConversation?.let { conversation ->
                     ChatRoute(
                         container = container,
                         conversationId = conversation.id,
@@ -440,6 +439,7 @@ private fun MessengerNavHost(
                         onMinimizeChange = onMinimizeChange,
                         onHangUp = { callHandle?.hangUp() },
                         onBack = {
+                            android.util.Log.d("MainActivity", "Back pressed, clearing selectedConversation")
                             selectedConversation = null
                             sliderOffset = 0f
                         },
@@ -455,6 +455,17 @@ private fun MessengerNavHost(
                             )
                         }
                     )
+                } ?: run {
+                    // Show placeholder when no conversation selected
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Выберите беседу",
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
                 }
             }
         }
