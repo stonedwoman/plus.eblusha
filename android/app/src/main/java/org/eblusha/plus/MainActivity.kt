@@ -238,6 +238,15 @@ private fun MessengerNavHost(
     val currentPanel = if (selectedConversation != null) 1 else 0
     val targetOffset = if (currentPanel == 1) -1f else 0f
     
+    // Sync sliderOffset with selectedConversation
+    androidx.compose.runtime.LaunchedEffect(selectedConversation) {
+        if (selectedConversation != null && !isDragging) {
+            sliderOffset = -1f
+        } else if (selectedConversation == null && !isDragging) {
+            sliderOffset = 0f
+        }
+    }
+    
     // Animate to target offset when not dragging
     val animatedOffset by animateFloatAsState(
         targetValue = if (isDragging) sliderOffset else targetOffset,
