@@ -46,6 +46,7 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.flow.firstOrNull
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -370,6 +371,7 @@ private fun MessengerNavHost(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .clipToBounds()
             .pointerInput(screenWidthPx) {
                 detectHorizontalDragGestures(
                     onDragStart = { isDragging = true },
