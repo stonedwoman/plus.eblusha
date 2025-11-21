@@ -23,7 +23,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
@@ -104,44 +103,66 @@ fun ChatsScreen(
             ),
         color = Color.Transparent
     ) {
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = spacing.lg, vertical = spacing.lg),
-            verticalArrangement = Arrangement.spacedBy(spacing.md)
+                .padding(horizontal = 16.dp)
         ) {
-            item { BrandHeader(onLogout = onLogout) }
-            item { SearchStub() }
-            item { SectionDivider("Беседы") }
-            when (state) {
-                ChatsUiState.Loading -> item {
-                    Text(
-                        text = "Загружаем чаты…",
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.padding(top = spacing.md)
-                    )
-                }
-                is ChatsUiState.Error -> item {
-                    ErrorState(message = state.message, onRetry = onRefresh)
-                }
-                is ChatsUiState.Success -> {
-                    if (state.items.isEmpty()) {
-                        item {
+            // Centered header
+            BrandHeaderCentered()
+            
+            // Conversations list
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                when (state) {
+                    ChatsUiState.Loading -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
                             Text(
-                                text = "Чатов пока нет — начните новый диалог с десктопа.",
-                                style = MaterialTheme.typography.bodyLarge,
-                                modifier = Modifier.padding(top = spacing.xl)
+                                text = "Загружаем чаты…",
+                                style = MaterialTheme.typography.bodyLarge
                             )
                         }
-                    } else {
-                        items(state.items, key = { it.id }) { conversation ->
-                            ConversationItem(conversation, onConversationClick)
+                    }
+                    is ChatsUiState.Error -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            ErrorState(message = state.message, onRetry = onRefresh)
+                        }
+                    }
+                    is ChatsUiState.Success -> {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(vertical = 10.dp)
+                        ) {
+                            if (state.items.isEmpty()) {
+                                item {
+                                    Text(
+                                        text = "Чатов пока нет — начните новый диалог с десктопа.",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        modifier = Modifier.padding(top = spacing.xl)
+                                    )
+                                }
+                            } else {
+                                items(state.items, key = { it.id }) { conversation ->
+                                    ConversationItem(conversation, onConversationClick)
+                                }
+                            }
                         }
                     }
                 }
             }
-            item { QuickActionsRow() }
-            item { ProfileCard(user = user) }
+            
+            // Footer with actions and profile
+            ConvFooter(user = user, onLogout = onLogout)
         }
     }
 }
@@ -162,50 +183,41 @@ private fun ConversationItem(
     item: ConversationPreview,
     onClick: (ConversationPreview) -> Unit
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(12.dp)
     val spacing = LocalSpacing.current
-    val borderColor = if (item.unreadCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    val borderColor = if (item.unreadCount > 0) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.outlineVariant
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(elevation = 12.dp, shape = shape, clip = false)
-            .clip(shape)
             .clickable { onClick(item) },
         shape = shape,
         color = MaterialTheme.colorScheme.surfaceVariant,
-        border = BorderStroke(1.5.dp, borderColor)
+        border = BorderStroke(1.5.dp, borderColor),
+        tonalElevation = if (item.unreadCount > 0) 4.dp else 2.dp
     ) {
         Row(
-            modifier = Modifier.padding(spacing.lg),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Box {
-                Avatar(
-                    name = item.title,
-                    imageUrl = item.avatarUrl,
-                    size = 52.dp
-                )
-                if (item.isOnline) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .size(13.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.secondary)
-                            .border(
-                                width = 2.dp,
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                                shape = CircleShape
-                            )
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(spacing.md))
+            Avatar(
+                name = item.title,
+                imageUrl = item.avatarUrl,
+                size = 40.dp,
+                presence = if (item.isOnline) "ONLINE" else null
+            )
             Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     Text(
                         text = item.title,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     if (item.isGroup.not() && (item.presenceText ?: "").contains("секрет", ignoreCase = true)) {
@@ -215,128 +227,88 @@ private fun ConversationItem(
                 item.presenceText?.let {
                     Text(
                         text = it,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (item.unreadCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (item.unreadCount > 0) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
-                Spacer(modifier = Modifier.height(spacing.xs))
-                Text(
-                    text = item.subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2
-                )
-            }
-            Spacer(modifier = Modifier.width(spacing.md))
-            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
-                item.lastMessageTime?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                UnreadBadge(count = item.unreadCount)
             }
         }
     }
 }
 
 @Composable
-private fun BrandHeader(onLogout: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Column {
-                val title = buildAnnotatedString {
-                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) { append("Е") }
-                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onBackground)) { append("Блуша") }
-                }
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold)
-                )
-                Text(
-                    text = "Здесь мы общаемся",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            TextButton(onClick = onLogout) {
-                Text("Выйти")
-            }
-        }
-    }
-}
-
-@Composable
-private fun SearchStub() {
-    val spacing = LocalSpacing.current
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outlineVariant),
-        tonalElevation = 2.dp
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = spacing.lg, vertical = spacing.sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(modifier = Modifier.width(spacing.sm))
-            Text(
-                text = "Поиск или начало нового чата",
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-@Composable
-private fun SectionDivider(title: String) {
-    val spacing = LocalSpacing.current
-    Row(
+private fun BrandHeaderCentered() {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = spacing.sm),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(vertical = spacing.lg),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        val title = buildAnnotatedString {
+            append("Е")
+            withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) { append("Б") }
+            append("луша")
+        }
         Text(
             text = title,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onBackground
         )
-        Spacer(modifier = Modifier.width(spacing.sm))
-        Divider(
-            modifier = Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.outlineVariant
+        Text(
+            text = "Здесь мы общаемся",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp)
         )
     }
 }
 
+
 @Composable
-private fun QuickActionsRow() {
+private fun ConvFooter(
+    user: SessionUser,
+    onLogout: () -> Unit
+) {
     val spacing = LocalSpacing.current
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(spacing.md)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = spacing.md),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        ActionCard(
-            modifier = Modifier.weight(1f),
-            title = "Беседа",
-            subtitle = "Групповой чат",
-            icon = Icons.Default.Add,
-            tint = MaterialTheme.colorScheme.secondary
+        // Divider
+        Divider(
+            color = MaterialTheme.colorScheme.outlineVariant,
+            modifier = Modifier.padding(vertical = 8.dp)
         )
-        ActionCard(
-            modifier = Modifier.weight(1f),
-            title = "Контакты",
-            subtitle = "Список контактов",
-            icon = Icons.Default.Person,
-            tint = MaterialTheme.colorScheme.primary
-        )
+        
+        // Actions row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ActionCard(
+                modifier = Modifier.weight(1f),
+                title = "Беседа",
+                subtitle = "Групповой чат",
+                icon = Icons.Default.Add,
+                iconBackgroundColor = Color(0xFF10B981)
+            )
+            ActionCard(
+                modifier = Modifier.weight(1f),
+                title = "Контакты",
+                subtitle = "Список контактов",
+                icon = Icons.Default.Person,
+                iconBackgroundColor = Color(0xFF6366F1)
+            )
+        }
+        
+        // Profile card
+        ProfileCardFooter(user = user)
     }
 }
 
@@ -346,81 +318,85 @@ private fun ActionCard(
     title: String,
     subtitle: String,
     icon: ImageVector,
-    tint: Color
+    iconBackgroundColor: Color
 ) {
-    val shape = RoundedCornerShape(20.dp)
+    val shape = RoundedCornerShape(12.dp)
     Surface(
-        modifier = modifier,
+        modifier = modifier.clickable { /* TODO: Handle click */ },
         shape = shape,
         color = MaterialTheme.colorScheme.surfaceVariant,
-        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outlineVariant),
+        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outlineVariant),
         tonalElevation = 2.dp
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            horizontalAlignment = Alignment.Start,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(40.dp)
                     .clip(CircleShape)
-                    .background(tint.copy(alpha = 0.18f)),
+                    .background(iconBackgroundColor),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, contentDescription = null, tint = tint)
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
             }
-            Text(text = title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-            Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF6B7280)
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ProfileCard(user: SessionUser) {
-    val statusLabel = when (user.status?.lowercase()) {
-        "online" -> "Онлайн"
-        "away" -> "Отошёл"
-        else -> user.status ?: "Не в сети"
+private fun ProfileCardFooter(user: SessionUser) {
+    val shape = RoundedCornerShape(12.dp)
+    val statusValue = when (user.status?.uppercase()) {
+        "ONLINE" -> "ONLINE"
+        "AWAY" -> "AWAY"
+        else -> "OFFLINE"
     }
-    val shape = RoundedCornerShape(22.dp)
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { /* TODO: Handle click */ },
         shape = shape,
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outlineVariant),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outlineVariant),
         tonalElevation = 2.dp
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Avatar(
                 name = user.displayName ?: user.username,
                 imageUrl = user.avatarUrl,
-                size = 56.dp
+                size = 40.dp,
+                presence = statusValue
             )
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = user.displayName ?: user.username, style = MaterialTheme.typography.titleMedium)
-                user.status?.let {
-                    Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                user.eblid?.let {
-                    Text(text = "EBLID: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (user.status.equals("online", true)) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline
-                        )
+                Text(
+                    text = user.displayName ?: user.username,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(text = statusLabel, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelMedium)
+                Text(
+                    text = "EBLID: ${user.eblid ?: "— — — —"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
