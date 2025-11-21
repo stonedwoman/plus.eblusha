@@ -117,16 +117,15 @@ private fun ChatScreen(
 ) {
     val spacing = LocalSpacing.current
     android.util.Log.d("ChatScreen", "Rendering ChatScreen, state=${state::class.simpleName}")
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
     ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(spacing.lg)
-            ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(spacing.lg)
+        ) {
                 ChatHeader(
                     conversation = conversation,
                     activeCall = activeCall,
