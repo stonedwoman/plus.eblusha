@@ -422,11 +422,11 @@ private fun MessengerNavHost(
             }
             
             // Chat detail panel - always render to avoid black screen
-            Box(
+            Surface(
                 modifier = Modifier
                     .fillMaxSize()
-                    .width(screenWidth)
-                    .background(MaterialTheme.colorScheme.background)
+                    .width(screenWidth),
+                color = MaterialTheme.colorScheme.background
             ) {
                 selectedConversation?.let { conversation ->
                     ChatRoute(
