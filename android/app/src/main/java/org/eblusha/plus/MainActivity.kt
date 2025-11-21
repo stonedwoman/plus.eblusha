@@ -396,7 +396,8 @@ private fun MessengerNavHost(
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .offset { IntOffset(x = (animatedOffset * screenWidthPx).roundToInt(), y = 0) }
+                .offset { IntOffset(x = (animatedOffset * screenWidthPx).roundToInt(), y = 0) },
+            horizontalArrangement = Arrangement.Start
         ) {
             // Conversations list panel
             Box(
@@ -422,7 +423,8 @@ private fun MessengerNavHost(
                     .width(screenWidth)
                     .background(MaterialTheme.colorScheme.background)
             ) {
-                selectedConversation?.let { conversation ->
+                if (selectedConversation != null) {
+                    val conversation = selectedConversation!!
                     ChatRoute(
                         container = container,
                         conversationId = conversation.id,
