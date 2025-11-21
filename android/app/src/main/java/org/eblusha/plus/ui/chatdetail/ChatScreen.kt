@@ -124,7 +124,7 @@ private fun ChatScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(spacing.lg)
+                .padding(horizontal = 8.dp, vertical = 4.dp)
         ) {
                 ChatHeader(
                     conversation = conversation,
@@ -135,7 +135,7 @@ private fun ChatScreen(
                     onMinimizeChange = onMinimizeChange,
                     onHangUp = onHangUp,
                 )
-                Spacer(modifier = Modifier.height(spacing.md))
+                Spacer(modifier = Modifier.height(4.dp))
                 when (state) {
                     ChatUiState.Loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("Загружаем переписку…")
@@ -150,23 +150,13 @@ private fun ChatScreen(
                         Button(onClick = onRetry) { Text("Повторить") }
                     }
                     is ChatUiState.Loaded -> {
-                        Surface(
+                        MessageList(
+                            messages = state.messages,
                             modifier = Modifier
                                 .weight(1f)
-                                .fillMaxWidth(),
-                            shape = RoundedCornerShape(24.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            tonalElevation = 2.dp,
-                            shadowElevation = 6.dp
-                        ) {
-                            MessageList(
-                                messages = state.messages,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(spacing.md)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(spacing.md))
+                                .fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
                         Composer(onSend)
                     }
                 }
@@ -194,10 +184,10 @@ private fun ChatHeader(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         tonalElevation = 2.dp
     ) {
-        Column(modifier = Modifier.padding(spacing.lg)) {
+        Column(modifier = Modifier.padding(8.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(spacing.md)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 IconButton(
                     onClick = onBack,
@@ -226,7 +216,7 @@ private fun ChatHeader(
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(spacing.md))
+            Spacer(modifier = Modifier.height(4.dp))
             CallActionRow(
                 isCurrentCall = activeCall?.conversationId == conversation?.id,
                 activeCall = activeCall,
@@ -316,12 +306,11 @@ private fun CallActionRow(
 
 @Composable
 private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifier) {
-    val spacing = LocalSpacing.current
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
         reverseLayout = true,
-        verticalArrangement = Arrangement.spacedBy(spacing.sm),
-        contentPadding = PaddingValues(vertical = spacing.sm)
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        contentPadding = PaddingValues(vertical = 4.dp)
     ) {
         items(messages, key = { it.id }) { message ->
             MessageBubble(message)
@@ -331,48 +320,46 @@ private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifi
 
 @Composable
 private fun MessageBubble(message: ChatMessage) {
-    val spacing = LocalSpacing.current
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp),
         horizontalArrangement = if (message.isMine) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Top
     ) {
         if (!message.isMine) {
-            Avatar(name = message.senderName ?: "?", imageUrl = message.senderAvatar, size = 32.dp)
-            Spacer(modifier = Modifier.width(spacing.sm))
-        }
-        val bubbleShape = if (message.isMine) {
-            RoundedCornerShape(topStart = 20.dp, topEnd = 4.dp, bottomEnd = 20.dp, bottomStart = 20.dp)
-        } else {
-            RoundedCornerShape(topStart = 4.dp, topEnd = 20.dp, bottomEnd = 20.dp, bottomStart = 20.dp)
+            Avatar(name = message.senderName ?: "?", imageUrl = message.senderAvatar, size = 28.dp)
+            Spacer(modifier = Modifier.width(6.dp))
         }
         Column(
-            modifier = Modifier
-                .background(
-                    if (message.isMine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    bubbleShape
-                )
-                .padding(spacing.md)
-                .widthIn(max = 280.dp)
+            modifier = Modifier.widthIn(max = 280.dp)
         ) {
             message.senderName?.let {
                 if (!message.isMine) {
-                    Text(it, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 2.dp)
+                    )
                 }
             }
-            Text(
-                message.content ?: "[${message.type.lowercase()}]",
-                color = if (message.isMine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-            )
-            message.createdAt?.let {
-                Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 Text(
-                    it,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.align(Alignment.End)
+                    text = message.content ?: "[${message.type.lowercase()}]",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
                 )
+                message.createdAt?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
@@ -393,9 +380,9 @@ private fun Composer(onSend: (String) -> Unit) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = spacing.md, vertical = spacing.sm),
+                .padding(horizontal = 4.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(spacing.sm)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             IconButton(
                 onClick = { /* TODO attachments */ },
