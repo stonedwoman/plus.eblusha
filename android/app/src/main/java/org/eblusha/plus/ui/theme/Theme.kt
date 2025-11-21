@@ -58,10 +58,10 @@ fun EblushaPlusTheme(
     }
 
     CompositionLocalProvider(LocalSpacing provides Spacing()) {
-        MaterialTheme(
-            colorScheme = colorScheme,
-            typography = Typography,
-            content = content
-        )
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = Typography,
+        content = content
+    )
     }
 }
