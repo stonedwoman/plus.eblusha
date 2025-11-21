@@ -78,10 +78,15 @@ fun ChatRoute(
     onBack: () -> Unit,
     onCallClick: (Boolean) -> Unit,
 ) {
+    android.util.Log.d("ChatRoute", "Rendering ChatRoute for conversationId=$conversationId")
     val viewModel: ChatViewModel = viewModel(
         factory = ChatViewModelFactory(container, conversationId, currentUser)
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
+    
+    androidx.compose.runtime.LaunchedEffect(state) {
+        android.util.Log.d("ChatRoute", "ChatUiState changed: ${state::class.simpleName}")
+    }
 
     ChatScreen(
         state = state,
