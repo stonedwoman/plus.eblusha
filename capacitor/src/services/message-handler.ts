@@ -34,6 +34,7 @@ export class MessageHandler {
    * Инициализация обработчиков сообщений
    */
   initialize(): () => void {
+    console.log('[MessageHandler] 🚀 Initializing message handlers...')
     const unsubscribers: Array<() => void> = []
 
     // message:new - новое сообщение в беседе
@@ -134,7 +135,9 @@ export class MessageHandler {
     unsubscribers.push(unsubscribeReceipts)
 
     // Возвращаем функцию для отписки
+    console.log('[MessageHandler] ✅ All handlers subscribed, total:', unsubscribers.length)
     return () => {
+      console.log('[MessageHandler] Unsubscribing all handlers')
       unsubscribers.forEach((unsub) => unsub())
       // Очищаем таймеры
       this.typingTimers.forEach((timer) => clearTimeout(timer))

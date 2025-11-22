@@ -12,20 +12,27 @@ import { Capacitor } from '@capacitor/core'
 
 // Инициализируем сервис уведомлений при загрузке (только на нативной платформе)
 if (typeof window !== 'undefined' && Capacitor.isNativePlatform()) {
-  console.log('[Capacitor] Native platform detected, initializing services...')
+  console.log('[Capacitor] ✅ Native platform detected, initializing services...')
   const notificationService = getNotificationService()
-  notificationService.initialize().catch((error) => {
-    console.error('[Capacitor] Failed to initialize notification service:', error)
+  notificationService.initialize().then(() => {
+    console.log('[Capacitor] ✅ Notification service initialized')
+  }).catch((error) => {
+    console.error('[Capacitor] ❌ Failed to initialize notification service:', error)
   })
+} else {
+  console.log('[Capacitor] Web platform detected')
 }
 
 // Экспортируем функции для использования в веб-приложении
 export function initializeSocketConnection(wsUrl: string, accessToken: string): void {
+  console.log('[Capacitor] initializeSocketConnection called, isNative:', Capacitor.isNativePlatform())
   if (!Capacitor.isNativePlatform()) {
     console.warn('[Capacitor] initializeSocketConnection called on web platform')
     return
   }
+  console.log('[Capacitor] Creating SocketService with URL:', wsUrl)
   const socketService = getSocketService(wsUrl)
+  console.log('[Capacitor] Connecting socket with token length:', accessToken?.length || 0)
   socketService.connect(accessToken)
 }
 
@@ -40,12 +47,16 @@ export function initializeMessageHandlers(callbacks: {
     senderName?: string
   } | null>
 }): () => void {
+  console.log('[Capacitor] initializeMessageHandlers called, isNative:', Capacitor.isNativePlatform())
   if (!Capacitor.isNativePlatform()) {
     console.warn('[Capacitor] initializeMessageHandlers called on web platform')
     return () => {}
   }
+  console.log('[Capacitor] Creating MessageHandler')
   const messageHandler = new MessageHandler(callbacks)
-  return messageHandler.initialize()
+  const unsubscribe = messageHandler.initialize()
+  console.log('[Capacitor] ✅ MessageHandler initialized')
+  return unsubscribe
 }
 
 export function initializeCallHandlers(callbacks: {
