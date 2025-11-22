@@ -255,9 +255,11 @@ function AppRoot() {
           ;(window as any).handleIncomingCallDecline = (conversationId: string) => {
             declineCall(conversationId)
           }
+          }).catch((error) => {
+            console.error('[Native] Failed to initialize native services:', error)
           })
         }
-    }
+      }
   }, [session, isCheckingAuth])
 
   useEffect(() => {
