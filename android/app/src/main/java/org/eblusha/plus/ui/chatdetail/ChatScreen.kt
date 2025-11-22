@@ -431,20 +431,34 @@ private fun MessageBubble(message: ChatMessage) {
                             verticalAlignment = Alignment.Bottom,
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                    ) {
-                        Text(
-                            text = message.content ?: "",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        message.createdAt?.let {
+                        ) {
                             Text(
-                                it,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = message.content ?: "",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (message.isMine) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
                             )
+                            message.createdAt?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (message.isMine) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    },
+                                    modifier = Modifier.padding(start = 6.dp)
+                                )
+                            }
                         }
                     }
+                }
+                if (message.isMine) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Avatar(name = message.senderName ?: "?", imageUrl = message.senderAvatar, size = 32.dp)
                 }
             }
         }
