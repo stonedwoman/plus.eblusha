@@ -138,12 +138,9 @@ class ChatViewModel(
                 android.util.Log.e("ChatViewModel", "Error sending message", e)
                 val errorMessage = when {
                     e is HttpException && e.code() == 409 -> {
-                        val responseBody = e.response()?.errorBody()?.string()
-                        if (responseBody?.contains("Secret conversation is not active", ignoreCase = true) == true) {
-                            "Секретный чат не активирован. Активируйте его на другом устройстве."
-                        } else {
-                            "Не удалось отправить сообщение (конфликт)"
-                        }
+                        // TODO: Check if conversation is secret before showing secret-specific message
+                        // For now, show generic error message since secret chat functionality is not implemented yet
+                        "Не удалось отправить сообщение"
                     }
                     e is HttpException -> {
                         "Не удалось отправить сообщение (ошибка ${e.code()})"
