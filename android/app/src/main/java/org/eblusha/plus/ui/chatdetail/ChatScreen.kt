@@ -20,7 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.lazy.animateScrollToItem
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -345,7 +345,12 @@ private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifi
     // Auto-scroll to bottom (first item in reverse layout) when messages change
     androidx.compose.runtime.LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(0)
+            delay(100) // Small delay to ensure layout is ready
+            try {
+                listState.scrollToItem(0)
+            } catch (e: Exception) {
+                // Ignore if scroll fails (e.g., item not yet laid out)
+            }
         }
     }
     
