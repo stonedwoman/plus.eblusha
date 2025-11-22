@@ -136,9 +136,23 @@ class ChatViewModel(
                 _state.value = ChatUiState.Loaded(listOf(sent.toChatMessage()) + current)
             } catch (e: Throwable) {
                 android.util.Log.e("ChatViewModel", "Error sending message", e)
+                if (e is HttpException) {
+                    val responseBody = try {
+                        e.response()?.errorBody()?.string()
+                    } catch (ex: Exception) {
+                        null
+                    }
+                    android.util.Log.e("ChatViewModel", "HTTP ${e.code()} error body: $responseBody")
+                }
                 val errorMessage = when {
                     e is HttpException && e.code() == 409 -> {
-                        // TODO: Check if conversation is secret before showing secret-specific message
+                        // Log the error body to understand what the server is returning
+                        val responseBody = try {
+                            e.response()?.errorBody()?.string()
+                        } catch (ex: Exception) {
+                            null
+                        }
+                        android.util.Log.e("ChatViewModel", "409 Conflict - response body: $responseBody")
                         // For now, show generic error message since secret chat functionality is not implemented yet
                         "Не удалось отправить сообщение"
                     }
