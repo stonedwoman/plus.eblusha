@@ -28,12 +28,33 @@ if (isNative) {
     socketService.connect(accessToken)
   }
 
-  export function initializeMessageHandlers(callbacks: Parameters<typeof MessageHandler.prototype.initialize>[0] extends () => void ? never : any): () => void {
+  export function initializeMessageHandlers(callbacks: {
+    onMessageReceived?: (payload: any) => void
+    onConversationUpdated?: (conversationId: string) => void
+    onTypingUpdate?: (conversationId: string, userId: string, typing: boolean) => void
+    isConversationActive?: (conversationId: string) => boolean
+    getConversationInfo?: (conversationId: string) => Promise<{
+      title?: string
+      avatarUrl?: string
+      senderName?: string
+    } | null>
+  }): () => void {
     const messageHandler = new MessageHandler(callbacks)
     return messageHandler.initialize()
   }
 
-  export function initializeCallHandlers(callbacks: Parameters<typeof CallHandler.prototype.initialize>[0] extends () => void ? never : any): () => void {
+  export function initializeCallHandlers(callbacks: {
+    onIncomingCall?: (payload: any) => void
+    onCallAccepted?: (payload: any) => void
+    onCallDeclined?: (payload: any) => void
+    onCallEnded?: (payload: any) => void
+    onCallStatusUpdate?: (conversationId: string, status: any) => void
+    getConversationInfo?: (conversationId: string) => Promise<{
+      title?: string
+      avatarUrl?: string
+      isGroup?: boolean
+    } | null>
+  }): () => void {
     const callHandler = new CallHandler(callbacks)
     return callHandler.initialize()
   }
