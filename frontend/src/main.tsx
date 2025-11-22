@@ -183,7 +183,7 @@ function AppRoot() {
         console.log('[Main] Capacitor found, isNative:', Capacitor.isNativePlatform())
         if (Capacitor.isNativePlatform()) {
           console.log('[Main] ✅ Initializing native services for Android...')
-          import('../../capacitor/src').then((module) => {
+          import('../capacitor').then((module) => {
             console.log('[Main] ✅ Capacitor module loaded:', Object.keys(module))
             const { initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken } = module
             // Для Capacitor используем URL из конфигурации или ru.eblusha.org
@@ -315,7 +315,7 @@ function AppRoot() {
               if (typeof (window as any).Capacitor !== 'undefined') {
                 const Capacitor = (window as any).Capacitor
                 if (Capacitor.isNativePlatform()) {
-                  import('../../capacitor/src').then(({ updateSocketToken }) => {
+                  import('../capacitor').then(({ updateSocketToken }) => {
                     updateSocketToken(response.data.accessToken)
                   }).catch(() => {})
                 }
