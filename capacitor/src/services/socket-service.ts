@@ -52,6 +52,9 @@ export class SocketService {
 
     this.accessToken = token
 
+    console.log('[SocketService] Connecting to:', this.wsUrl)
+    console.log('[SocketService] Token length:', token?.length || 0)
+
     this.socket = io(this.wsUrl, {
       autoConnect: false,
       transports: ['websocket', 'polling'], // WebSocket + долгие опросы как запасной вариант
@@ -61,6 +64,7 @@ export class SocketService {
 
     this.setupEventHandlers()
     this.socket.connect()
+    console.log('[SocketService] Connection initiated')
   }
 
   /**
@@ -101,16 +105,17 @@ export class SocketService {
     if (!this.socket) return
 
     this.socket.on('connect', () => {
-      console.log('[SocketService] Connected')
+      console.log('[SocketService] ✅ Connected successfully')
       this.reconnectAttempts = 0
     })
 
     this.socket.on('disconnect', (reason) => {
-      console.log('[SocketService] Disconnected:', reason)
+      console.log('[SocketService] ❌ Disconnected:', reason)
     })
 
     this.socket.on('connect_error', (error) => {
-      console.error('[SocketService] Connection error:', error)
+      console.error('[SocketService] ❌ Connection error:', error)
+      console.error('[SocketService] Error message:', error.message)
       this.reconnectAttempts++
       if (this.reconnectAttempts >= this.maxReconnectAttempts) {
         console.error('[SocketService] Max reconnect attempts reached')

@@ -38,7 +38,7 @@ export class MessageHandler {
 
     // message:new - новое сообщение в беседе
     const unsubscribeNew = this.socketService.onMessageNew(async (payload) => {
-      console.log('[MessageHandler] message:new:', payload)
+      console.log('[MessageHandler] 📨 message:new:', payload)
 
       const isActive = this.callbacks.isConversationActive?.(payload.conversationId) ?? false
 
@@ -54,7 +54,7 @@ export class MessageHandler {
 
     // message:notify - уведомление о новом сообщении
     const unsubscribeNotify = this.socketService.onMessageNotify(async (payload) => {
-      console.log('[MessageHandler] message:notify:', payload)
+      console.log('[MessageHandler] 🔔 message:notify:', payload)
 
       const isActive = this.callbacks.isConversationActive?.(payload.conversationId) ?? false
 

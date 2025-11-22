@@ -45,7 +45,7 @@ export class CallHandler {
 
     // call:incoming - входящий звонок (1:1)
     const unsubscribeIncoming = this.socketService.onCallIncoming(async (payload) => {
-      console.log('[CallHandler] call:incoming:', payload)
+      console.log('[CallHandler] 📞 call:incoming:', payload)
 
       this.activeIncomingCalls.set(payload.conversationId, payload)
 
