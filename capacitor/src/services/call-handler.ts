@@ -31,7 +31,7 @@ export class CallHandler {
   private callbacks: CallHandlerCallbacks
   private activeIncomingCalls = new Map<string, CallIncomingPayload>() // conversationId -> call data
   private callNotificationIds = new Map<string, number>() // conversationId -> notificationId
-  private autoDeclineTimers = new Map<string, NodeJS.Timeout>() // conversationId -> timer
+  private autoDeclineTimers = new Map<string, ReturnType<typeof setTimeout>>() // conversationId -> timer
 
   constructor(callbacks: CallHandlerCallbacks) {
     this.callbacks = callbacks
