@@ -17,7 +17,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.animateScrollToItem
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -203,16 +206,13 @@ private fun ChatHeader(
     onHangUp: () -> Unit,
 ) {
     val spacing = LocalSpacing.current
-    val shape = RoundedCornerShape(26.dp)
     val statusText = conversation?.presenceText ?: "Сообщения синхронизируются с вебом"
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = shape,
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        tonalElevation = 2.dp
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
-        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -340,11 +340,21 @@ private fun CallActionRow(
 
 @Composable
 private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifier) {
+    val listState = rememberLazyListState()
+    
+    // Auto-scroll to bottom (first item in reverse layout) when messages change
+    androidx.compose.runtime.LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(0)
+        }
+    }
+    
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxWidth(),
         reverseLayout = true,
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-        contentPadding = PaddingValues(vertical = 2.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(vertical = 8.dp, horizontal = 8.dp)
     ) {
         items(messages, key = { it.id }) { message ->
             MessageBubble(message)
@@ -362,35 +372,31 @@ private fun MessageBubble(message: ChatMessage) {
             .padding(horizontal = 0.dp)
     ) {
         if (isSystemMessage) {
-            // System messages (call logs, etc.) - simple text, no avatar, no sender name
-            Column {
+            // System messages (call logs, etc.) - centered, simple text
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
                 Text(
                     text = message.content ?: "[${message.type.lowercase()}]",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                message.createdAt?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 2.dp)
-                    )
-                }
             }
         } else {
-            // Regular text messages
+            // Regular text messages with bubbles
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = if (message.isMine) Arrangement.End else Arrangement.Start,
                 verticalAlignment = Alignment.Top
             ) {
                 if (!message.isMine) {
-                    Avatar(name = message.senderName ?: "?", imageUrl = message.senderAvatar, size = 28.dp)
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Avatar(name = message.senderName ?: "?", imageUrl = message.senderAvatar, size = 32.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
                 }
                 Column(
-                    modifier = Modifier.widthIn(max = 280.dp)
+                    modifier = Modifier.widthIn(max = 280.dp),
+                    horizontalAlignment = if (message.isMine) Alignment.End else Alignment.Start
                 ) {
                     message.senderName?.let {
                         if (!message.isMine) {
@@ -398,13 +404,28 @@ private fun MessageBubble(message: ChatMessage) {
                                 it,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(bottom = 2.dp)
+                                modifier = Modifier.padding(bottom = 4.dp, start = 4.dp)
                             )
                         }
                     }
-                    Row(
-                        verticalAlignment = Alignment.Bottom,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Surface(
+                        shape = RoundedCornerShape(
+                            topStart = 16.dp,
+                            topEnd = 16.dp,
+                            bottomStart = if (message.isMine) 4.dp else 16.dp,
+                            bottomEnd = if (message.isMine) 16.dp else 4.dp
+                        ),
+                        color = if (message.isMine) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        },
+                        tonalElevation = 1.dp
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
                     ) {
                         Text(
                             text = message.content ?: "",
