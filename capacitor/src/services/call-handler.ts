@@ -1,6 +1,8 @@
 import { getSocketService } from './socket-service'
 import { getNotificationService } from './notification-service'
 import { App } from '@capacitor/app'
+import { Capacitor } from '@capacitor/core'
+import IncomingCall from '../plugins/incoming-call-plugin'
 import type {
   CallIncomingPayload,
   CallAcceptedPayload,
@@ -173,12 +175,22 @@ export class CallHandler {
    * Открыть нативный экран входящего звонка
    */
   private async openIncomingCallScreen(payload: CallIncomingPayload): Promise<void> {
-    // Это будет реализовано в нативном Android коде
-    // Используем Capacitor plugin для вызова нативной Activity
-    console.log('[CallHandler] Opening incoming call screen for:', payload.conversationId)
+    if (!Capacitor.isNativePlatform()) {
+      return
+    }
 
-    // TODO: Реализовать через Capacitor plugin
-    // Например: IncomingCallPlugin.show(payload)
+    try {
+      const conversationInfo = await this.callbacks.getConversationInfo?.(payload.conversationId)
+      
+      await IncomingCall.showIncomingCall({
+        conversationId: payload.conversationId,
+        callerName: payload.from.name || conversationInfo?.title || 'Неизвестный',
+        isVideo: payload.video,
+        avatarUrl: conversationInfo?.avatarUrl,
+      })
+    } catch (error) {
+      console.error('[CallHandler] Error opening incoming call screen:', error)
+    }
   }
 
   /**
@@ -195,8 +207,14 @@ export class CallHandler {
     // Удаляем из активных звонков
     this.activeIncomingCalls.delete(conversationId)
 
-    // TODO: Закрыть нативный экран через Capacitor plugin
-    console.log('[CallHandler] Closing incoming call screen for:', conversationId)
+    // Закрываем нативный экран
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await IncomingCall.closeIncomingCall()
+      } catch (error) {
+        console.error('[CallHandler] Error closing incoming call screen:', error)
+      }
+    }
   }
 
   /**

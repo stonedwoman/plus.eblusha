@@ -7,9 +7,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import './utils/i18n'
 import { router } from './router'
 import { useAppStore } from './domain/store/appStore'
-import { connectSocket } from './utils/socket'
+import { connectSocket, acceptCall, declineCall } from './utils/socket'
 import { api } from './utils/api'
 import { ensureDeviceBootstrap } from './domain/device/deviceManager'
+import { Capacitor } from '@capacitor/core'
 
 const queryClient = new QueryClient()
 
@@ -178,6 +179,85 @@ function AppRoot() {
   useEffect(() => {
     if (!isCheckingAuth && session) {
       connectSocket()
+      
+      // Инициализация нативных сервисов для Android
+      if (Capacitor.isNativePlatform()) {
+        import('../capacitor/src').then(({ initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken }) => {
+          const wsUrl = window.location.origin
+          initializeSocketConnection(wsUrl, session.accessToken)
+          
+          // Инициализация обработчиков сообщений
+          initializeMessageHandlers({
+            onMessageReceived: (payload) => {
+              // Сообщение получено - будет обработано в ChatsPage
+              console.log('[Native] Message received:', payload)
+            },
+            onConversationUpdated: (conversationId) => {
+              // Беседа обновлена - инвалидируем кэш
+              queryClient.invalidateQueries(['conversations'])
+            },
+            onTypingUpdate: (conversationId, userId, typing) => {
+              // Индикатор печати - будет обработан в ChatsPage
+              console.log('[Native] Typing update:', conversationId, userId, typing)
+            },
+            isConversationActive: (conversationId) => {
+              // Проверка активной беседы - будет реализовано через глобальное состояние
+              return false
+            },
+            getConversationInfo: async (conversationId) => {
+              const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
+              const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
+              return {
+                title: conv?.conversation?.title,
+                avatarUrl: conv?.conversation?.avatarUrl,
+                senderName: conv?.sender?.displayName,
+              }
+            },
+          })
+          
+          // Инициализация обработчиков звонков
+          initializeCallHandlers({
+            onIncomingCall: (payload) => {
+              // Входящий звонок - нативный экран уже открыт
+              console.log('[Native] Incoming call:', payload)
+            },
+            onCallAccepted: (payload) => {
+              // Звонок принят - будет обработано в ChatsPage
+              console.log('[Native] Call accepted:', payload)
+            },
+            onCallDeclined: (payload) => {
+              console.log('[Native] Call declined:', payload)
+            },
+            onCallEnded: (payload) => {
+              console.log('[Native] Call ended:', payload)
+            },
+            onCallStatusUpdate: (conversationId, status) => {
+              // Обновление статуса звонка - будет обработано в ChatsPage
+              console.log('[Native] Call status update:', conversationId, status)
+            },
+            getConversationInfo: async (conversationId) => {
+              const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
+              const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
+              return {
+                title: conv?.conversation?.title,
+                avatarUrl: conv?.conversation?.avatarUrl,
+                isGroup: conv?.conversation?.isGroup,
+              }
+            },
+          })
+          
+          // Глобальные обработчики для нативного экрана звонка
+          ;(window as any).handleIncomingCallAnswer = (conversationId: string, withVideo: boolean) => {
+            acceptCall(conversationId, withVideo)
+          }
+          
+          ;(window as any).handleIncomingCallDecline = (conversationId: string) => {
+            declineCall(conversationId)
+          }
+        }).catch((error) => {
+          console.error('[Native] Failed to initialize native services:', error)
+        })
+      }
     }
   }, [session, isCheckingAuth])
 
@@ -214,6 +294,12 @@ function AppRoot() {
                 ...updated,
                 accessToken: response.data.accessToken,
               })
+              // Обновляем токен в нативных сервисах
+              if (Capacitor.isNativePlatform()) {
+                import('../capacitor/src').then(({ updateSocketToken }) => {
+                  updateSocketToken(response.data.accessToken)
+                }).catch(() => {})
+              }
               // Успешно обновили - перепланируем следующую проверку
               scheduleNext()
             }
