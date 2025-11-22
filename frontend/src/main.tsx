@@ -108,6 +108,8 @@ function AppRoot() {
   const session = useAppStore((state) => state.session)
   const hydrated = useAppStore((state) => state.hydrated)
   const [isCheckingAuth, setIsCheckingAuth] = useState(true)
+  
+  console.log('[AppRoot] Component rendered, session:', !!session, 'hydrated:', hydrated, 'isCheckingAuth:', isCheckingAuth)
 
   // Инициализация высоты viewport при монтировании приложения
   useEffect(() => {
@@ -166,19 +168,27 @@ function AppRoot() {
     };
   }, []);
 
-  // Инициализация стора из localStorage и проверка авторизации
-  useEffect(() => {
-    // Синхронно гидрируем токены перед любыми guard'ами
-    useAppStore.getState().initFromStorage()
-    validateStoredSession().finally(() => {
-      setIsCheckingAuth(false)
-    })
-  }, [])
+          // Инициализация стора из localStorage и проверка авторизации
+          useEffect(() => {
+            console.log('[AppRoot] Initializing store from storage...')
+            // Синхронно гидрируем токены перед любыми guard'ами
+            useAppStore.getState().initFromStorage()
+            console.log('[AppRoot] Store initialized, validating session...')
+            validateStoredSession().then((valid) => {
+              console.log('[AppRoot] Session validation result:', valid)
+              setIsCheckingAuth(false)
+            }).catch((error) => {
+              console.error('[AppRoot] Session validation error:', error)
+              setIsCheckingAuth(false)
+            })
+          }, [])
 
   useEffect(() => {
+    console.log('[Main] useEffect triggered, isCheckingAuth:', isCheckingAuth, 'session:', !!session)
     if (!isCheckingAuth && session) {
-      console.log('[Main] Session available, checking platform...')
+      console.log('[Main] ✅ Session available, checking platform...')
       console.log('[Main] window.Capacitor:', typeof (window as any).Capacitor)
+      console.log('[Main] window.Capacitor object:', (window as any).Capacitor)
       
       // Инициализация нативных сервисов для Android
       if (typeof (window as any).Capacitor !== 'undefined') {
