@@ -24,7 +24,7 @@ export class MessageHandler {
   private socketService = getSocketService()
   private notificationService = getNotificationService()
   private callbacks: MessageHandlerCallbacks
-  private typingTimers = new Map<string, NodeJS.Timeout>()
+  private typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(callbacks: MessageHandlerCallbacks) {
     this.callbacks = callbacks

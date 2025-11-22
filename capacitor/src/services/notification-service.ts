@@ -169,7 +169,6 @@ export class NotificationService {
           id: notificationId,
           sound: 'ring.mp3', // Рингтон
           ongoing: true, // Постоянное уведомление (нельзя смахнуть)
-          priority: 2, // Высокий приоритет
           extra: {
             conversationId,
             callType: isVideo ? 'video' : 'audio',
