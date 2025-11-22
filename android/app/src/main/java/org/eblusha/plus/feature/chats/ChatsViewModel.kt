@@ -38,6 +38,8 @@ data class ConversationPreview(
     val isOnline: Boolean,
     val unreadCount: Int,
     val isGroup: Boolean,
+    val isSecret: Boolean = false,
+    val secretStatus: String? = null,
     val lastMessageTime: String?,
     val avatarUrl: String?,
 ) : Parcelable
@@ -94,6 +96,8 @@ class ChatsViewModel(
             isOnline = presence?.first == true,
             unreadCount = unread,
             isGroup = conversation.isGroup,
+            isSecret = conversation.isSecret,
+            secretStatus = conversation.secretStatus,
             lastMessageTime = formatTime(conversation.lastMessageAt ?: lastMessage?.createdAt),
             avatarUrl = conversation.avatarUrl ?: resolveAvatar(conversation.participants, user.id)
         )
