@@ -177,14 +177,21 @@ function AppRoot() {
 
   useEffect(() => {
     if (!isCheckingAuth && session) {
+      console.log('[Main] Session available, checking platform...')
+      console.log('[Main] window.Capacitor:', typeof (window as any).Capacitor)
+      
       // Инициализация нативных сервисов для Android
       if (typeof (window as any).Capacitor !== 'undefined') {
         const Capacitor = (window as any).Capacitor
-        console.log('[Main] Capacitor found, isNative:', Capacitor.isNativePlatform())
-        if (Capacitor.isNativePlatform()) {
+        const isNative = Capacitor.isNativePlatform()
+        console.log('[Main] Capacitor found, isNative:', isNative)
+        console.log('[Main] Capacitor platform:', Capacitor.getPlatform())
+        
+        if (isNative) {
           console.log('[Main] ✅ Initializing native services for Android...')
           import('./capacitor').then((module) => {
-            console.log('[Main] ✅ Capacitor module loaded:', Object.keys(module))
+            console.log('[Main] ✅ Capacitor module loaded successfully!')
+            console.log('[Main] Module exports:', Object.keys(module))
             const { initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken } = module
             // Для Capacitor используем URL из конфигурации или ru.eblusha.org
             const wsUrl = 'https://ru.eblusha.org'
@@ -267,12 +274,12 @@ function AppRoot() {
           })
         } else {
           // Веб-платформа - используем обычный socket
-          console.log('[Main] Web platform, using web socket')
+          console.log('[Main] ⚠️ Web platform detected, using web socket')
           connectSocket()
         }
       } else {
         // Capacitor не загружен - используем веб socket
-        console.log('[Main] Capacitor not available, using web socket')
+        console.log('[Main] ⚠️ Capacitor not available, using web socket')
         connectSocket()
       }
     }
