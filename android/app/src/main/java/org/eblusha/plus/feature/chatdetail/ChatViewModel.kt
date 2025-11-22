@@ -129,8 +129,12 @@ class ChatViewModel(
                 val body = SendMessageRequest(
                     conversationId = conversationId,
                     type = "TEXT",
-                    content = content.trim()
+                    content = content.trim(),
+                    metadata = null, // Explicitly set to null for non-secret chats
+                    replyToId = null,
+                    attachments = null
                 )
+                android.util.Log.d("ChatViewModel", "Sending message: conversationId=$conversationId, type=TEXT, content=${content.take(50)}...")
                 val sent = messagesApi.sendMessage(body).message
                 val current = (_state.value as? ChatUiState.Loaded)?.messages.orEmpty()
                 _state.value = ChatUiState.Loaded(listOf(sent.toChatMessage()) + current)
