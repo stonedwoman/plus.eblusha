@@ -245,7 +245,8 @@ private fun ChatHeader(
                 onCallClick = onCallClick,
                 onMinimizeChange = onMinimizeChange,
                 onHangUp = onHangUp,
-                spacing = spacing
+                spacing = spacing,
+                isSecret = false // TODO: Add isSecret field to ConversationPreview
             )
         }
     }
@@ -260,25 +261,30 @@ private fun CallActionRow(
     onMinimizeChange: (Boolean) -> Unit,
     onHangUp: () -> Unit,
     spacing: Spacing,
+    isSecret: Boolean = false,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(spacing.sm)
     ) {
-        Surface(
-            shape = RoundedCornerShape(999.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            tonalElevation = 1.dp
-        ) {
-            Text(
-                text = "Секретный чат",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.sm)
-            )
+        if (isSecret) {
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                tonalElevation = 1.dp
+            ) {
+                Text(
+                    text = "Секретный чат",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.sm)
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f))
+        } else {
+            Spacer(modifier = Modifier.weight(1f))
         }
-        Spacer(modifier = Modifier.weight(1f))
         if (!isCurrentCall || activeCall == null) {
             OutlinedButton(
                 onClick = { onCallClick(false) },
@@ -297,7 +303,7 @@ private fun CallActionRow(
             ) {
                 Icon(Icons.Default.Videocam, contentDescription = null)
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Видео")
+                Text("Звонок с видео")
             }
         } else {
             if (isCallMinimized) {
