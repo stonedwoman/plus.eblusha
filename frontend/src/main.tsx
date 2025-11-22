@@ -437,13 +437,21 @@ function AppRoot() {
   )
 }
 
-ReactDOM.createRoot(document.getElementById('app')!).render(
-  <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <AppRoot />
-    </QueryClientProvider>
-  </React.StrictMode>,
-)
+console.log('[Main] Creating React root...')
+const rootElement = document.getElementById('app')
+if (!rootElement) {
+  console.error('[Main] ❌ Root element not found!')
+} else {
+  console.log('[Main] Root element found, rendering...')
+  ReactDOM.createRoot(rootElement).render(
+    <React.StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <AppRoot />
+      </QueryClientProvider>
+    </React.StrictMode>,
+  )
+  console.log('[Main] ✅ React app rendered')
+}
 
 
 
