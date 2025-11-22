@@ -189,72 +189,72 @@ function AppRoot() {
           
           // Инициализация обработчиков сообщений
           initializeMessageHandlers({
-            onMessageReceived: (payload: any) => {
-              // Сообщение получено - будет обработано в ChatsPage
-              console.log('[Native] Message received:', payload)
-            },
-            onConversationUpdated: (conversationId: string) => {
-              // Беседа обновлена - инвалидируем кэш
-              queryClient.invalidateQueries({ queryKey: ['conversations'] })
-            },
-            onTypingUpdate: (conversationId: string, userId: string, typing: boolean) => {
-              // Индикатор печати - будет обработан в ChatsPage
-              console.log('[Native] Typing update:', conversationId, userId, typing)
-            },
-            isConversationActive: (conversationId: string) => {
-              // Проверка активной беседы - будет реализовано через глобальное состояние
-              return false
-            },
-            getConversationInfo: async (conversationId: string) => {
-              const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
-              const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
-              return {
-                title: conv?.conversation?.title,
-                avatarUrl: conv?.conversation?.avatarUrl,
-                senderName: conv?.sender?.displayName,
-              }
-            },
-          })
-          
-          // Инициализация обработчиков звонков
-          initializeCallHandlers({
-            onIncomingCall: (payload: any) => {
-              // Входящий звонок - нативный экран уже открыт
-              console.log('[Native] Incoming call:', payload)
-            },
-            onCallAccepted: (payload: any) => {
-              // Звонок принят - будет обработано в ChatsPage
-              console.log('[Native] Call accepted:', payload)
-            },
-            onCallDeclined: (payload: any) => {
-              console.log('[Native] Call declined:', payload)
-            },
-            onCallEnded: (payload: any) => {
-              console.log('[Native] Call ended:', payload)
-            },
-            onCallStatusUpdate: (conversationId: string, status: any) => {
-              // Обновление статуса звонка - будет обработано в ChatsPage
-              console.log('[Native] Call status update:', conversationId, status)
-            },
-            getConversationInfo: async (conversationId: string) => {
-              const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
-              const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
-              return {
-                title: conv?.conversation?.title,
-                avatarUrl: conv?.conversation?.avatarUrl,
-                isGroup: conv?.conversation?.isGroup,
-              }
-            },
-          })
-          
-          // Глобальные обработчики для нативного экрана звонка
-          ;(window as any).handleIncomingCallAnswer = (conversationId: string, withVideo: boolean) => {
-            acceptCall(conversationId, withVideo)
-          }
-          
-          ;(window as any).handleIncomingCallDecline = (conversationId: string) => {
-            declineCall(conversationId)
-          }
+              onMessageReceived: (payload: any) => {
+                // Сообщение получено - будет обработано в ChatsPage
+                console.log('[Native] Message received:', payload)
+              },
+              onConversationUpdated: (conversationId: string) => {
+                // Беседа обновлена - инвалидируем кэш
+                queryClient.invalidateQueries({ queryKey: ['conversations'] })
+              },
+              onTypingUpdate: (conversationId: string, userId: string, typing: boolean) => {
+                // Индикатор печати - будет обработан в ChatsPage
+                console.log('[Native] Typing update:', conversationId, userId, typing)
+              },
+              isConversationActive: (conversationId: string) => {
+                // Проверка активной беседы - будет реализовано через глобальное состояние
+                return false
+              },
+              getConversationInfo: async (conversationId: string) => {
+                const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
+                const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
+                return {
+                  title: conv?.conversation?.title,
+                  avatarUrl: conv?.conversation?.avatarUrl,
+                  senderName: conv?.sender?.displayName,
+                }
+              },
+            })
+            
+            // Инициализация обработчиков звонков
+            initializeCallHandlers({
+              onIncomingCall: (payload: any) => {
+                // Входящий звонок - нативный экран уже открыт
+                console.log('[Native] Incoming call:', payload)
+              },
+              onCallAccepted: (payload: any) => {
+                // Звонок принят - будет обработано в ChatsPage
+                console.log('[Native] Call accepted:', payload)
+              },
+              onCallDeclined: (payload: any) => {
+                console.log('[Native] Call declined:', payload)
+              },
+              onCallEnded: (payload: any) => {
+                console.log('[Native] Call ended:', payload)
+              },
+              onCallStatusUpdate: (conversationId: string, status: any) => {
+                // Обновление статуса звонка - будет обработано в ChatsPage
+                console.log('[Native] Call status update:', conversationId, status)
+              },
+              getConversationInfo: async (conversationId: string) => {
+                const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
+                const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
+                return {
+                  title: conv?.conversation?.title,
+                  avatarUrl: conv?.conversation?.avatarUrl,
+                  isGroup: conv?.conversation?.isGroup,
+                }
+              },
+            })
+            
+            // Глобальные обработчики для нативного экрана звонка
+            ;(window as any).handleIncomingCallAnswer = (conversationId: string, withVideo: boolean) => {
+              acceptCall(conversationId, withVideo)
+            }
+            
+            ;(window as any).handleIncomingCallDecline = (conversationId: string) => {
+              declineCall(conversationId)
+            }
           }).catch((error) => {
             console.error('[Native] Failed to initialize native services:', error)
           })
