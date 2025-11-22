@@ -260,6 +260,7 @@ function AppRoot() {
           })
         }
       }
+    }
   }, [session, isCheckingAuth])
 
   useEffect(() => {
