@@ -20,14 +20,20 @@ export class NotificationService {
    * Инициализация сервиса уведомлений
    */
   async initialize(): Promise<void> {
+    console.log('[NotificationService] 🚀 Initializing notification service...')
     // Запрашиваем разрешение на уведомления
     const permission = await LocalNotifications.checkPermissions()
+    console.log('[NotificationService] Current permission:', permission.display)
     if (permission.display !== 'granted') {
+      console.log('[NotificationService] Requesting notification permission...')
       const result = await LocalNotifications.requestPermissions()
+      console.log('[NotificationService] Permission result:', result.display)
       if (result.display !== 'granted') {
-        console.warn('[NotificationService] Notification permission not granted')
+        console.warn('[NotificationService] ❌ Notification permission not granted')
+        return
       }
     }
+    console.log('[NotificationService] ✅ Notification permission granted')
 
     // Обработчик клика по уведомлению
     LocalNotifications.addListener('localNotificationActionPerformed', (notification) => {
@@ -56,11 +62,21 @@ export class NotificationService {
     senderName?: string,
     avatarUrl?: string
   ): Promise<void> {
+    console.log('[NotificationService] 📨 showMessageNotification called:', {
+      conversationId: payload.conversationId,
+      messageId: payload.messageId,
+      senderId: payload.senderId,
+      messageText,
+      senderName,
+    })
+    
     // Проверяем, активно ли приложение
     const appState = await App.getState()
+    console.log('[NotificationService] App state:', appState.isActive ? 'active' : 'background')
     if (appState.isActive) {
       // Приложение активно - не показываем уведомление
       // (сообщение уже видно на экране)
+      console.log('[NotificationService] App is active, skipping notification')
       return
     }
 
@@ -85,37 +101,49 @@ export class NotificationService {
     const title = senderName || 'Новое сообщение'
     const body = messageText || 'У вас новое сообщение'
 
-    await LocalNotifications.schedule({
-      notifications: [
-        {
-          title,
-          body,
-          id: notificationId,
-          sound: 'notify.mp3', // Звук уведомления
-          attachments: avatarUrl
-            ? [
-                {
-                  id: 'avatar',
-                  url: avatarUrl,
-                },
-              ]
-            : undefined,
-          extra: {
-            conversationId,
-            messageId: payload.messageId,
-            senderId: payload.senderId,
-            avatarUrl,
-          } as NotificationData,
-          actionTypeId: 'MESSAGE',
-          // Группировка уведомлений по беседе
-          group: `conversation_${conversationId}`,
-          groupSummary: false,
-        },
-      ],
+    console.log('[NotificationService] 📤 Scheduling notification:', {
+      notificationId,
+      title,
+      body,
+      conversationId,
     })
-
-    this.notificationIds.add(notificationId)
-    this.conversationNotifications.set(conversationId, notificationId)
+    
+    try {
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            title,
+            body,
+            id: notificationId,
+            sound: 'notify.mp3', // Звук уведомления
+            attachments: avatarUrl
+              ? [
+                  {
+                    id: 'avatar',
+                    url: avatarUrl,
+                  },
+                ]
+              : undefined,
+            extra: {
+              conversationId,
+              messageId: payload.messageId,
+              senderId: payload.senderId,
+              avatarUrl,
+            } as NotificationData,
+            actionTypeId: 'MESSAGE',
+            // Группировка уведомлений по беседе
+            group: `conversation_${conversationId}`,
+            groupSummary: false,
+          },
+        ],
+      })
+      
+      console.log('[NotificationService] ✅ Notification scheduled successfully')
+      this.notificationIds.add(notificationId)
+      this.conversationNotifications.set(conversationId, notificationId)
+    } catch (error) {
+      console.error('[NotificationService] ❌ Error scheduling notification:', error)
+    }
   }
 
   /**
