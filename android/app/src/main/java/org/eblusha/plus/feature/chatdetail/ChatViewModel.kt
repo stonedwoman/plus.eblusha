@@ -136,25 +136,20 @@ class ChatViewModel(
                 _state.value = ChatUiState.Loaded(listOf(sent.toChatMessage()) + current)
             } catch (e: Throwable) {
                 android.util.Log.e("ChatViewModel", "Error sending message", e)
-                if (e is HttpException) {
-                    val responseBody = try {
-                        e.response()?.errorBody()?.string()
-                    } catch (ex: Exception) {
-                        null
-                    }
-                    android.util.Log.e("ChatViewModel", "HTTP ${e.code()} error body: $responseBody")
-                }
                 val errorMessage = when {
                     e is HttpException && e.code() == 409 -> {
-                        // Log the error body to understand what the server is returning
                         val responseBody = try {
                             e.response()?.errorBody()?.string()
                         } catch (ex: Exception) {
                             null
                         }
-                        android.util.Log.e("ChatViewModel", "409 Conflict - response body: $responseBody")
-                        // For now, show generic error message since secret chat functionality is not implemented yet
-                        "Не удалось отправить сообщение"
+                        android.util.Log.e("ChatViewModel", "HTTP 409 error body: $responseBody")
+                        
+                        // Check if this is specifically a secret chat error
+                        // For now, since secret chat functionality is not implemented on Android,
+                        // we'll show a generic error message for all 409 errors
+                        // TODO: Once secret chat is implemented, check conversation.isSecret and show specific message
+                        "Не удалось отправить сообщение. Возможно, требуется активация секретного чата."
                     }
                     e is HttpException -> {
                         "Не удалось отправить сообщение (ошибка ${e.code()})"
