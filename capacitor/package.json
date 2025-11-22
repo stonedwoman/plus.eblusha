@@ -1,0 +1,28 @@
+{
+  "name": "eblusha-plus-capacitor",
+  "version": "1.0.0",
+  "description": "Eblusha Plus Android App with Capacitor",
+  "main": "index.js",
+  "scripts": {
+    "build:frontend": "cd ../frontend && npm run build",
+    "sync": "npm run build:frontend && npx cap sync",
+    "sync:android": "npm run build:frontend && npx cap sync android",
+    "open:android": "npx cap open android",
+    "copy": "npx cap copy",
+    "update": "npx cap update",
+    "dev": "npm run build:frontend && npx cap sync android && npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/app": "^6.0.0",
+    "@capacitor/haptics": "^6.0.0",
+    "@capacitor/keyboard": "^6.0.0",
+    "@capacitor/status-bar": "^6.0.0",
+    "@capacitor/splash-screen": "^6.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0"
+  }
+}
+
