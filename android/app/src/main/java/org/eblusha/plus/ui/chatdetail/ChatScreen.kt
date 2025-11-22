@@ -253,7 +253,7 @@ private fun ChatHeader(
                 onMinimizeChange = onMinimizeChange,
                 onHangUp = onHangUp,
                 spacing = spacing,
-                isSecret = false // TODO: Add isSecret field to ConversationPreview
+                isSecret = conversation?.isSecret == true
             )
         }
     }
