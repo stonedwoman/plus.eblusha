@@ -25,6 +25,8 @@ data class Conversation(
     val id: String,
     val title: String? = null,
     val isGroup: Boolean = false,
+    @SerialName("isSecret") val isSecret: Boolean = false,
+    @SerialName("secretStatus") val secretStatus: String? = null,
     val lastMessageAt: String? = null,
     val avatarUrl: String? = null,
     val messages: List<MessageSnippet> = emptyList(),

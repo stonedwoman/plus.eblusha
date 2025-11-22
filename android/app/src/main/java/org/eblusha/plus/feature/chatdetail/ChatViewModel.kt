@@ -122,10 +122,13 @@ class ChatViewModel(
         }
     }
 
-    fun sendMessage(content: String) {
+    fun sendMessage(content: String, isSecret: Boolean = false) {
         if (content.isBlank()) return
         viewModelScope.launch {
             try {
+                if (isSecret) {
+                    android.util.Log.w("ChatViewModel", "Attempting to send message to secret chat without encryption - this will likely fail")
+                }
                 val body = SendMessageRequest(
                     conversationId = conversationId,
                     type = "TEXT",
@@ -134,7 +137,7 @@ class ChatViewModel(
                     replyToId = null,
                     attachments = null
                 )
-                android.util.Log.d("ChatViewModel", "Sending message: conversationId=$conversationId, type=TEXT, content=${content.take(50)}...")
+                android.util.Log.d("ChatViewModel", "Sending message: conversationId=$conversationId, isSecret=$isSecret, type=TEXT, content=${content.take(50)}...")
                 val sent = messagesApi.sendMessage(body).message
                 val current = (_state.value as? ChatUiState.Loaded)?.messages.orEmpty()
                 _state.value = ChatUiState.Loaded(listOf(sent.toChatMessage()) + current)

@@ -100,6 +100,13 @@ fun ChatRoute(
             snackbarHostState.showSnackbar(errorMessage)
         }
     }
+    
+    // Log conversation secret status
+    androidx.compose.runtime.LaunchedEffect(conversation) {
+        if (conversation != null) {
+            android.util.Log.d("ChatRoute", "Conversation secret status: isSecret=${conversation.isSecret}, secretStatus=${conversation.secretStatus}")
+        }
+    }
 
     ChatScreen(
         state = state,
@@ -110,7 +117,7 @@ fun ChatRoute(
         onHangUp = onHangUp,
         onBack = onBack,
         onRetry = viewModel::refresh,
-        onSend = viewModel::sendMessage,
+        onSend = { content -> viewModel.sendMessage(content, isSecret = conversation?.isSecret == true) },
         onCallClick = onCallClick,
         snackbarHostState = snackbarHostState,
     )
