@@ -10,7 +10,6 @@ import { useAppStore } from './domain/store/appStore'
 import { connectSocket, acceptCall, declineCall } from './utils/socket'
 import { api } from './utils/api'
 import { ensureDeviceBootstrap } from './domain/device/deviceManager'
-import { Capacitor } from '@capacitor/core'
 
 const queryClient = new QueryClient()
 
@@ -181,30 +180,32 @@ function AppRoot() {
       connectSocket()
       
       // Инициализация нативных сервисов для Android
-      if (Capacitor.isNativePlatform()) {
-        import('../capacitor/src').then(({ initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken }) => {
+      if (typeof (window as any).Capacitor !== 'undefined') {
+        const Capacitor = (window as any).Capacitor
+        if (Capacitor.isNativePlatform()) {
+          import('../capacitor/src').then(({ initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken }) => {
           const wsUrl = window.location.origin
           initializeSocketConnection(wsUrl, session.accessToken)
           
           // Инициализация обработчиков сообщений
           initializeMessageHandlers({
-            onMessageReceived: (payload) => {
+            onMessageReceived: (payload: any) => {
               // Сообщение получено - будет обработано в ChatsPage
               console.log('[Native] Message received:', payload)
             },
-            onConversationUpdated: (conversationId) => {
+            onConversationUpdated: (conversationId: string) => {
               // Беседа обновлена - инвалидируем кэш
-              queryClient.invalidateQueries(['conversations'])
+              queryClient.invalidateQueries({ queryKey: ['conversations'] })
             },
-            onTypingUpdate: (conversationId, userId, typing) => {
+            onTypingUpdate: (conversationId: string, userId: string, typing: boolean) => {
               // Индикатор печати - будет обработан в ChatsPage
               console.log('[Native] Typing update:', conversationId, userId, typing)
             },
-            isConversationActive: (conversationId) => {
+            isConversationActive: (conversationId: string) => {
               // Проверка активной беседы - будет реализовано через глобальное состояние
               return false
             },
-            getConversationInfo: async (conversationId) => {
+            getConversationInfo: async (conversationId: string) => {
               const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
               const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
               return {
@@ -217,25 +218,25 @@ function AppRoot() {
           
           // Инициализация обработчиков звонков
           initializeCallHandlers({
-            onIncomingCall: (payload) => {
+            onIncomingCall: (payload: any) => {
               // Входящий звонок - нативный экран уже открыт
               console.log('[Native] Incoming call:', payload)
             },
-            onCallAccepted: (payload) => {
+            onCallAccepted: (payload: any) => {
               // Звонок принят - будет обработано в ChatsPage
               console.log('[Native] Call accepted:', payload)
             },
-            onCallDeclined: (payload) => {
+            onCallDeclined: (payload: any) => {
               console.log('[Native] Call declined:', payload)
             },
-            onCallEnded: (payload) => {
+            onCallEnded: (payload: any) => {
               console.log('[Native] Call ended:', payload)
             },
-            onCallStatusUpdate: (conversationId, status) => {
+            onCallStatusUpdate: (conversationId: string, status: any) => {
               // Обновление статуса звонка - будет обработано в ChatsPage
               console.log('[Native] Call status update:', conversationId, status)
             },
-            getConversationInfo: async (conversationId) => {
+            getConversationInfo: async (conversationId: string) => {
               const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
               const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
               return {
@@ -254,10 +255,8 @@ function AppRoot() {
           ;(window as any).handleIncomingCallDecline = (conversationId: string) => {
             declineCall(conversationId)
           }
-        }).catch((error) => {
-          console.error('[Native] Failed to initialize native services:', error)
-        })
-      }
+          })
+        }
     }
   }, [session, isCheckingAuth])
 
@@ -295,10 +294,13 @@ function AppRoot() {
                 accessToken: response.data.accessToken,
               })
               // Обновляем токен в нативных сервисах
-              if (Capacitor.isNativePlatform()) {
-                import('../capacitor/src').then(({ updateSocketToken }) => {
-                  updateSocketToken(response.data.accessToken)
-                }).catch(() => {})
+              if (typeof (window as any).Capacitor !== 'undefined') {
+                const Capacitor = (window as any).Capacitor
+                if (Capacitor.isNativePlatform()) {
+                  import('../capacitor/src').then(({ updateSocketToken }) => {
+                    updateSocketToken(response.data.accessToken)
+                  }).catch(() => {})
+                }
               }
               // Успешно обновили - перепланируем следующую проверку
               scheduleNext()
