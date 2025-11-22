@@ -10,6 +10,28 @@ import { useAppStore } from './domain/store/appStore'
 import { connectSocket, acceptCall, declineCall } from './utils/socket'
 import { api } from './utils/api'
 import { ensureDeviceBootstrap } from './domain/device/deviceManager'
+import { Capacitor } from '@capacitor/core' // Import Capacitor
+
+// Глобальное логирование для отладки
+if (typeof window !== 'undefined') {
+  const originalLog = console.log
+  console.log = (...args: any[]) => {
+    originalLog(...args)
+    // Также отправляем в Capacitor для видимости в logcat
+    if (typeof (window as any).Capacitor !== 'undefined') {
+      try {
+        (window as any).Capacitor.Plugins?.Console?.log?.({
+          level: 'info',
+          message: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')
+        })
+      } catch (e) {
+        // Игнорируем ошибки
+      }
+    }
+  }
+  
+  console.log('[Main] Script loaded, Capacitor available:', typeof (window as any).Capacitor !== 'undefined')
+}
 
 const queryClient = new QueryClient()
 
