@@ -184,11 +184,11 @@ function AppRoot() {
         const Capacitor = (window as any).Capacitor
         if (Capacitor.isNativePlatform()) {
           import('../capacitor/src').then(({ initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken }) => {
-          const wsUrl = window.location.origin
-          initializeSocketConnection(wsUrl, session.accessToken)
-          
-          // Инициализация обработчиков сообщений
-          initializeMessageHandlers({
+            const wsUrl = window.location.origin
+            initializeSocketConnection(wsUrl, session.accessToken)
+            
+            // Инициализация обработчиков сообщений
+            initializeMessageHandlers({
               onMessageReceived: (payload: any) => {
                 // Сообщение получено - будет обработано в ChatsPage
                 console.log('[Native] Message received:', payload)
