@@ -180,9 +180,12 @@ function AppRoot() {
       // Инициализация нативных сервисов для Android
       if (typeof (window as any).Capacitor !== 'undefined') {
         const Capacitor = (window as any).Capacitor
+        console.log('[Main] Capacitor found, isNative:', Capacitor.isNativePlatform())
         if (Capacitor.isNativePlatform()) {
-          console.log('[Main] Initializing native services for Android...')
-          import('../../capacitor/src').then(({ initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken }) => {
+          console.log('[Main] ✅ Initializing native services for Android...')
+          import('../../capacitor/src').then((module) => {
+            console.log('[Main] ✅ Capacitor module loaded:', Object.keys(module))
+            const { initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken } = module
             // Для Capacitor используем URL из конфигурации или ru.eblusha.org
             const wsUrl = 'https://ru.eblusha.org'
             console.log('[Main] Connecting native Socket.IO to:', wsUrl)
@@ -256,9 +259,11 @@ function AppRoot() {
             ;(window as any).handleIncomingCallDecline = (conversationId: string) => {
               declineCall(conversationId)
             }
+            console.log('[Main] ✅ All native services initialized')
           }).catch((error) => {
-            console.error('[Main] Failed to initialize native services:', error)
-            console.error('[Main] Error details:', error)
+            console.error('[Main] ❌ Failed to initialize native services:', error)
+            console.error('[Main] Error stack:', error.stack)
+            console.error('[Main] Error message:', error.message)
           })
         } else {
           // Веб-платформа - используем обычный socket
