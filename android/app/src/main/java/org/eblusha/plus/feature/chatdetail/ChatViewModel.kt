@@ -150,13 +150,15 @@ class ChatViewModel(
                         } catch (ex: Exception) {
                             null
                         }
-                        android.util.Log.e("ChatViewModel", "HTTP 409 error body: $responseBody")
+                        android.util.Log.e("ChatViewModel", "HTTP 409 error body: $responseBody, isSecret=$isSecret")
                         
-                        // Check if this is specifically a secret chat error
-                        // For now, since secret chat functionality is not implemented on Android,
-                        // we'll show a generic error message for all 409 errors
-                        // TODO: Once secret chat is implemented, check conversation.isSecret and show specific message
-                        "Не удалось отправить сообщение. Возможно, требуется активация секретного чата."
+                        // Show secret chat message only if this is actually a secret chat
+                        // For regular chats, show generic error
+                        if (isSecret && responseBody?.contains("Secret conversation is not active", ignoreCase = true) == true) {
+                            "Секретный чат не активирован. Активируйте его на другом устройстве."
+                        } else {
+                            "Не удалось отправить сообщение"
+                        }
                     }
                     e is HttpException -> {
                         "Не удалось отправить сообщение (ошибка ${e.code()})"
