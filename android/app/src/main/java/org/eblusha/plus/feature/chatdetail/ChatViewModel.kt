@@ -132,10 +132,8 @@ class ChatViewModel(
                 val body = SendMessageRequest(
                     conversationId = conversationId,
                     type = "TEXT",
-                    content = content.trim(),
-                    metadata = null, // Explicitly set to null for non-secret chats
-                    replyToId = null,
-                    attachments = null
+                    content = content.trim()
+                    // metadata, replyToId, attachments are omitted (null) and won't be included in JSON
                 )
                 android.util.Log.d("ChatViewModel", "Sending message: conversationId=$conversationId, isSecret=$isSecret, type=TEXT, content=${content.take(50)}...")
                 val sent = messagesApi.sendMessage(body).message
