@@ -75,7 +75,7 @@ export class CallHandler {
       }
 
       // Закрываем экран входящего звонка
-      this.closeIncomingCallScreen(payload.conversationId)
+      void this.closeIncomingCallScreen(payload.conversationId)
 
       // Открываем экран звонка (LiveKit)
       this.callbacks.onCallAccepted?.(payload)
@@ -94,7 +94,7 @@ export class CallHandler {
       }
 
       // Закрываем экран входящего звонка
-      this.closeIncomingCallScreen(payload.conversationId)
+      void this.closeIncomingCallScreen(payload.conversationId)
 
       this.callbacks.onCallDeclined?.(payload)
     })
@@ -112,7 +112,7 @@ export class CallHandler {
       }
 
       // Закрываем экран входящего звонка
-      this.closeIncomingCallScreen(payload.conversationId)
+      void this.closeIncomingCallScreen(payload.conversationId)
 
       this.callbacks.onCallEnded?.(payload)
     })
@@ -196,7 +196,7 @@ export class CallHandler {
   /**
    * Закрыть экран входящего звонка
    */
-  private closeIncomingCallScreen(conversationId: string): void {
+  private async closeIncomingCallScreen(conversationId: string): Promise<void> {
     // Отменяем уведомление
     const notificationId = this.callNotificationIds.get(conversationId)
     if (notificationId) {

@@ -176,21 +176,6 @@ export class NotificationService {
             avatarUrl,
           },
           actionTypeId: 'INCOMING_CALL',
-          // Кнопки действий (будут обработаны в нативном коде)
-          actions: [
-            {
-              id: 'answer',
-              title: 'Ответить',
-            },
-            {
-              id: 'answer_video',
-              title: 'С видео',
-            },
-            {
-              id: 'decline',
-              title: 'Отклонить',
-            },
-          ],
         },
       ],
     })
