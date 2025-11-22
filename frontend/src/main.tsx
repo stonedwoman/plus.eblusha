@@ -177,14 +177,15 @@ function AppRoot() {
 
   useEffect(() => {
     if (!isCheckingAuth && session) {
-      connectSocket()
-      
       // Инициализация нативных сервисов для Android
       if (typeof (window as any).Capacitor !== 'undefined') {
         const Capacitor = (window as any).Capacitor
         if (Capacitor.isNativePlatform()) {
+          console.log('[Main] Initializing native services for Android...')
           import('../../capacitor/src').then(({ initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken }) => {
-            const wsUrl = window.location.origin
+            // Для Capacitor используем URL из конфигурации или ru.eblusha.org
+            const wsUrl = 'https://ru.eblusha.org'
+            console.log('[Main] Connecting native Socket.IO to:', wsUrl)
             initializeSocketConnection(wsUrl, session.accessToken)
             
             // Инициализация обработчиков сообщений
@@ -256,9 +257,18 @@ function AppRoot() {
               declineCall(conversationId)
             }
           }).catch((error) => {
-            console.error('[Native] Failed to initialize native services:', error)
+            console.error('[Main] Failed to initialize native services:', error)
+            console.error('[Main] Error details:', error)
           })
+        } else {
+          // Веб-платформа - используем обычный socket
+          console.log('[Main] Web platform, using web socket')
+          connectSocket()
         }
+      } else {
+        // Capacitor не загружен - используем веб socket
+        console.log('[Main] Capacitor not available, using web socket')
+        connectSocket()
       }
     }
   }, [session, isCheckingAuth])
