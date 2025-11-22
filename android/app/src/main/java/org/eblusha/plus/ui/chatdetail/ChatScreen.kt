@@ -255,7 +255,6 @@ private fun ChatHeader(
                 spacing = spacing,
                 isSecret = conversation?.isSecret == true
             )
-        }
     }
 }
 
