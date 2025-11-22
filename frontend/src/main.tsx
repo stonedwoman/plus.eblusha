@@ -183,7 +183,7 @@ function AppRoot() {
       if (typeof (window as any).Capacitor !== 'undefined') {
         const Capacitor = (window as any).Capacitor
         if (Capacitor.isNativePlatform()) {
-          import('../capacitor/src').then(({ initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken }) => {
+          import('../../capacitor/src').then(({ initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken }) => {
             const wsUrl = window.location.origin
             initializeSocketConnection(wsUrl, session.accessToken)
             
@@ -300,7 +300,7 @@ function AppRoot() {
               if (typeof (window as any).Capacitor !== 'undefined') {
                 const Capacitor = (window as any).Capacitor
                 if (Capacitor.isNativePlatform()) {
-                  import('../capacitor/src').then(({ updateSocketToken }) => {
+                  import('../../capacitor/src').then(({ updateSocketToken }) => {
                     updateSocketToken(response.data.accessToken)
                   }).catch(() => {})
                 }
