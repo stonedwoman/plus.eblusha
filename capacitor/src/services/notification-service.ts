@@ -1,5 +1,7 @@
 import { LocalNotifications } from '@capacitor/local-notifications'
 import { App } from '@capacitor/app'
+import { Capacitor } from '@capacitor/core'
+import MessageNotification from '../plugins/message-notification-plugin'
 import type { MessageNotifyPayload, MessageNewPayload } from '../types/socket-events'
 
 export interface NotificationData {
@@ -12,9 +14,16 @@ export interface NotificationData {
   avatarUrl?: string
 }
 
+type NotificationKind = 'message-plugin' | 'message-local' | 'call'
+
 export class NotificationService {
   private notificationIds = new Set<number>()
+  private notificationSources = new Map<number, NotificationKind>()
   private conversationNotifications = new Map<string, number>() // conversationId -> notificationId
+  private isAppActive = true
+  private isDocumentVisible = typeof document === 'undefined' ? true : !document.hidden
+  private useMessagePlugin = false
+  private appStateWarningLogged = false
 
   /**
    * Инициализация сервиса уведомлений
@@ -35,12 +44,60 @@ export class NotificationService {
     }
     console.log('[NotificationService] ✅ Notification permission granted')
 
+    const platform = typeof Capacitor.getPlatform === 'function' ? Capacitor.getPlatform() : 'web'
+    const isNativePlatform =
+      typeof Capacitor.isNativePlatform === 'function' ? Capacitor.isNativePlatform() : platform !== 'web'
+    const pluginAvailable =
+      typeof Capacitor.isPluginAvailable === 'function' ? Capacitor.isPluginAvailable('MessageNotification') : false
+
+    this.useMessagePlugin = isNativePlatform && pluginAvailable
+    console.log('[NotificationService] MessageNotification plugin available:', this.useMessagePlugin)
+
+    if (platform === 'android') {
+      await this.configureChannels()
+    }
+
+    try {
+      const initialState = await App.getState()
+      this.isAppActive = initialState.isActive
+      console.log('[NotificationService] Initial app state:', initialState.isActive ? 'active' : 'background')
+    } catch (error) {
+      console.warn('[NotificationService] Failed to read initial app state, using default "active" state', error)
+    }
+
+    if (typeof document !== 'undefined') {
+      this.isDocumentVisible = !document.hidden
+      document.addEventListener('visibilitychange', () => {
+        this.isDocumentVisible = !document.hidden
+        console.log(
+          '[NotificationService] Document visibility changed:',
+          this.isDocumentVisible ? 'visible' : 'hidden'
+        )
+        if (this.isDocumentVisible && this.isAppActive) {
+          this.onAppBecameActive()
+        }
+      })
+    }
+
     // Обработчик открытия приложения по уведомлению
     App.addListener('appStateChange', (state) => {
+      this.isAppActive = state.isActive
+      console.log('[NotificationService] appStateChange event:', state.isActive ? 'active' : 'background')
       if (state.isActive) {
         // Приложение стало активным - можно обновить UI
         this.onAppBecameActive()
       }
+    })
+
+    App.addListener('pause', () => {
+      this.isAppActive = false
+      console.log('[NotificationService] pause event received, marking app as background')
+    })
+
+    App.addListener('resume', () => {
+      this.isAppActive = true
+      console.log('[NotificationService] resume event received, marking app as active')
+      this.onAppBecameActive()
     })
 
     // Обработчик клика по уведомлению
@@ -72,9 +129,12 @@ export class NotificationService {
     })
     
     // Проверяем, активно ли приложение
-    const appState = await App.getState()
-    console.log('[NotificationService] App state:', appState.isActive ? 'active' : 'background')
-    if (appState.isActive) {
+    const inForeground = await this.isInForeground()
+    console.log('[NotificationService] Foreground status:', inForeground ? 'active' : 'background', {
+      appActive: this.isAppActive,
+      documentVisible: this.isDocumentVisible,
+    })
+    if (inForeground) {
       // Приложение активно - не показываем уведомление
       // (сообщение уже видно на экране)
       console.log('[NotificationService] App is active, skipping notification')
@@ -159,6 +219,7 @@ export class NotificationService {
           title: `Входящий ${callType}`,
           body: `${callerName} звонит вам`,
           id: notificationId,
+          channelId: 'calls',
           sound: 'ring.mp3', // Рингтон
           ongoing: true, // Постоянное уведомление (нельзя смахнуть)
           extra: {
@@ -173,6 +234,7 @@ export class NotificationService {
     })
 
     this.notificationIds.add(notificationId)
+    this.notificationSources.set(notificationId, 'call')
     return notificationId
   }
 
@@ -182,6 +244,7 @@ export class NotificationService {
   async cancelCallNotification(notificationId: number): Promise<void> {
     await LocalNotifications.cancel({ notifications: [{ id: notificationId }] })
     this.notificationIds.delete(notificationId)
+    this.notificationSources.delete(notificationId)
   }
 
   /**
@@ -190,8 +253,9 @@ export class NotificationService {
   async cancelConversationNotifications(conversationId: string): Promise<void> {
     const notificationId = this.conversationNotifications.get(conversationId)
     if (notificationId) {
-      await LocalNotifications.cancel({ notifications: [{ id: notificationId }] })
+      await this.cancelMessageNotifications([notificationId])
       this.notificationIds.delete(notificationId)
+      this.notificationSources.delete(notificationId)
       this.conversationNotifications.delete(conversationId)
     }
   }
@@ -200,13 +264,28 @@ export class NotificationService {
    * Очистить все уведомления
    */
   async clearAll(): Promise<void> {
-    const ids = Array.from(this.notificationIds)
-    if (ids.length > 0) {
-      await LocalNotifications.cancel({ 
-        notifications: ids.map(id => ({ id }))
+    const messageIds: number[] = []
+    const callIds: number[] = []
+
+    for (const id of this.notificationIds) {
+      const kind = this.notificationSources.get(id)
+      if (kind === 'call') {
+        callIds.push(id)
+      } else {
+        messageIds.push(id)
+      }
+    }
+
+    await this.cancelMessageNotifications(messageIds)
+
+    if (callIds.length > 0) {
+      await LocalNotifications.cancel({
+        notifications: callIds.map((id) => ({ id })),
       })
     }
+
     this.notificationIds.clear()
+    this.notificationSources.clear()
     this.conversationNotifications.clear()
   }
 
@@ -239,32 +318,171 @@ export class NotificationService {
     avatarUrl?: string
   }): Promise<void> {
     try {
-      // Используем стандартный LocalNotifications вместо кастомного плагина
-      await LocalNotifications.schedule({
-        notifications: [
-          {
-            title: options.title,
-            body: options.body,
-            id: options.id,
-            sound: undefined, // Без звука для сообщений
-            ongoing: false,
-            autoCancel: true,
-            extra: {
-              conversationId: options.conversationId,
-              messageId: options.messageId,
-              senderId: options.senderId,
-              avatarUrl: options.avatarUrl,
-            },
-            actionTypeId: 'MESSAGE',
-          },
-        ],
-      })
+      const delivery = await this.scheduleMessageNotification(options)
       this.notificationIds.add(options.id)
+      this.notificationSources.set(options.id, delivery === 'plugin' ? 'message-plugin' : 'message-local')
       this.conversationNotifications.set(options.conversationId, options.id)
-      console.log('[NotificationService] ✅ Native notification shown via LocalNotifications')
+      console.log(
+        '[NotificationService] ✅ Native notification shown via',
+        delivery === 'plugin' ? 'MessageNotification plugin' : 'LocalNotifications'
+      )
     } catch (error) {
       console.error('[NotificationService] ❌ Failed to show native notification:', error)
     }
+  }
+
+  private async scheduleMessageNotification(options: {
+    id: number
+    conversationId: string
+    title: string
+    body: string
+    avatarUrl?: string
+    senderId?: string
+    messageId?: string
+  }): Promise<'plugin' | 'local'> {
+    if (this.useMessagePlugin) {
+      try {
+        await MessageNotification.show({
+          id: options.id,
+          conversationId: options.conversationId,
+          senderName: options.title,
+          messageText: options.body,
+          avatarUrl: options.avatarUrl,
+        })
+        return 'plugin'
+      } catch (error) {
+        console.warn(
+          '[NotificationService] ⚠️ MessageNotification plugin failed, falling back to LocalNotifications',
+          error
+        )
+        this.useMessagePlugin = false
+      }
+    }
+
+    await this.scheduleViaLocalNotifications(options)
+    return 'local'
+  }
+
+  private async scheduleViaLocalNotifications(options: {
+    id: number
+    conversationId: string
+    title: string
+    body: string
+    avatarUrl?: string
+    senderId?: string
+    messageId?: string
+  }): Promise<void> {
+    await LocalNotifications.schedule({
+      notifications: [
+        {
+          title: options.title,
+          body: options.body,
+          largeBody: options.body.length > 120 ? options.body : undefined,
+          id: options.id,
+          channelId: 'messages',
+          sound: undefined, // Без звука для сообщений
+          ongoing: false,
+          autoCancel: true,
+          extra: {
+            conversationId: options.conversationId,
+            messageId: options.messageId,
+            senderId: options.senderId,
+            avatarUrl: options.avatarUrl,
+          },
+          actionTypeId: 'MESSAGE',
+        },
+      ],
+    })
+  }
+
+  private async configureChannels(): Promise<void> {
+    const platform = typeof Capacitor.getPlatform === 'function' ? Capacitor.getPlatform() : 'web'
+    if (platform !== 'android') {
+      return
+    }
+
+    try {
+      await LocalNotifications.createChannel({
+        id: 'messages',
+        name: 'Сообщения',
+        description: 'Уведомления о новых сообщениях',
+        importance: 4,
+        visibility: 1,
+        lights: true,
+        vibration: true,
+      })
+
+      await LocalNotifications.createChannel({
+        id: 'calls',
+        name: 'Звонки',
+        description: 'Входящие звонки',
+        importance: 5,
+        visibility: 1,
+        sound: 'ring.mp3',
+        vibration: true,
+      })
+
+      console.log('[NotificationService] ✅ Notification channels configured')
+    } catch (error) {
+      console.warn('[NotificationService] ⚠️ Failed to configure notification channels', error)
+    }
+  }
+
+  private async cancelMessageNotifications(ids: number[]): Promise<void> {
+    if (ids.length === 0) {
+      return
+    }
+
+    const pluginIds: number[] = []
+    const localIds: number[] = []
+
+    ids.forEach((id) => {
+      const kind = this.notificationSources.get(id)
+      if (kind === 'message-plugin') {
+        pluginIds.push(id)
+      } else {
+        localIds.push(id)
+      }
+    })
+
+    if (pluginIds.length > 0) {
+      try {
+        await MessageNotification.cancel({ ids: pluginIds })
+      } catch (error) {
+        console.warn('[NotificationService] ⚠️ Failed to cancel plugin notifications', error)
+      }
+    }
+
+    if (localIds.length > 0) {
+      await LocalNotifications.cancel({
+        notifications: localIds.map((id) => ({ id })),
+      })
+    }
+  }
+
+  private async isInForeground(): Promise<boolean> {
+    let appIsActive = this.isAppActive
+
+    try {
+      const state = await App.getState()
+      appIsActive = state.isActive
+      this.isAppActive = state.isActive
+      this.appStateWarningLogged = false
+    } catch (error) {
+      if (!this.appStateWarningLogged) {
+        console.warn(
+          '[NotificationService] ⚠️ Failed to get current App state, falling back to cached value',
+          error
+        )
+        this.appStateWarningLogged = true
+      }
+    }
+
+    if (typeof document !== 'undefined') {
+      this.isDocumentVisible = !document.hidden
+    }
+
+    return appIsActive && this.isDocumentVisible
   }
 }
 
