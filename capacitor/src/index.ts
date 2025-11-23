@@ -34,6 +34,45 @@ export function initializeSocketConnection(wsUrl: string, accessToken: string): 
   const socketService = getSocketService(wsUrl)
   console.log('[Capacitor] Connecting socket with token length:', accessToken?.length || 0)
   socketService.connect(accessToken)
+
+  // Обработка событий жизненного цикла приложения
+  setupAppLifecycleHandlers(socketService)
+}
+
+/**
+ * Настройка обработчиков событий жизненного цикла приложения
+ */
+function setupAppLifecycleHandlers(socketService: ReturnType<typeof getSocketService>): void {
+  // Обработка паузы приложения
+  App.addListener('appStateChange', (state) => {
+    console.log('[Capacitor] App state changed:', state.isActive ? 'active' : 'background')
+    
+    if (state.isActive) {
+      // Приложение стало активным - проверяем соединение и переподключаемся при необходимости
+      console.log('[Capacitor] App resumed, checking socket connection...')
+      if (!socketService.isConnected()) {
+        console.log('[Capacitor] Socket not connected, attempting to reconnect...')
+        socketService.reconnect()
+      } else {
+        console.log('[Capacitor] Socket already connected')
+      }
+    } else {
+      // Приложение ушло в фон - соединение будет поддерживаться, но может быть приостановлено системой
+      console.log('[Capacitor] App paused, socket connection will be maintained')
+    }
+  })
+
+  // Дополнительная обработка события resume для надежности
+  App.addListener('resume', () => {
+    console.log('[Capacitor] App resumed event received')
+    // Небольшая задержка перед проверкой соединения, чтобы дать время системе восстановить сеть
+    setTimeout(() => {
+      if (!socketService.isConnected()) {
+        console.log('[Capacitor] Socket not connected after resume, reconnecting...')
+        socketService.reconnect()
+      }
+    }, 1000)
+  })
 }
 
 export function initializeMessageHandlers(callbacks: {

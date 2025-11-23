@@ -35,7 +35,8 @@ export class SocketService {
   private wsUrl: string
   private accessToken: string | null = null
   private reconnectAttempts = 0
-  private maxReconnectAttempts = 5
+  private maxReconnectAttempts = 10
+  private isManuallyDisconnected = false
 
   constructor(wsUrl: string) {
     this.wsUrl = wsUrl
@@ -50,7 +51,15 @@ export class SocketService {
       return
     }
 
+    // Если сокет существует, но не подключен, пересоздаем его
+    if (this.socket && !this.socket.connected) {
+      console.log('[SocketService] Reconnecting existing socket...')
+      this.socket.disconnect()
+      this.socket = null
+    }
+
     this.accessToken = token
+    this.isManuallyDisconnected = false
 
     console.log('[SocketService] Connecting to:', this.wsUrl)
     console.log('[SocketService] Token length:', token?.length || 0)
@@ -60,6 +69,16 @@ export class SocketService {
       transports: ['websocket', 'polling'], // WebSocket + долгие опросы как запасной вариант
       auth: { token },
       query: { token }, // Дублируем токен в query для совместимости
+      // Настройки переподключения для мобильных приложений
+      reconnection: true,
+      reconnectionAttempts: this.maxReconnectAttempts,
+      reconnectionDelay: 1000, // Начальная задержка 1 секунда
+      reconnectionDelayMax: 10000, // Максимальная задержка 10 секунд
+      randomizationFactor: 0.5, // Добавляем случайность для избежания thundering herd
+      timeout: 20000, // Таймаут подключения 20 секунд
+      // Увеличиваем интервалы ping/pong для мобильных устройств
+      pingTimeout: 60000, // 60 секунд для ping timeout (увеличено для фонового режима)
+      pingInterval: 25000, // Ping каждые 25 секунд
     })
 
     this.setupEventHandlers()
@@ -71,12 +90,36 @@ export class SocketService {
    * Отключение от Socket.IO
    */
   disconnect(): void {
+    this.isManuallyDisconnected = true
     if (this.socket) {
       this.socket.disconnect()
       this.socket = null
     }
     this.accessToken = null
     this.reconnectAttempts = 0
+  }
+
+  /**
+   * Переподключение (используется при возобновлении приложения)
+   */
+  reconnect(): void {
+    if (!this.accessToken) {
+      console.warn('[SocketService] Cannot reconnect: no access token')
+      return
+    }
+    if (this.socket?.connected) {
+      console.log('[SocketService] Already connected, skipping reconnect')
+      return
+    }
+    console.log('[SocketService] Manual reconnect requested')
+    this.isManuallyDisconnected = false
+    if (this.socket) {
+      // Если сокет существует, но не подключен, пытаемся переподключиться
+      this.socket.connect()
+    } else {
+      // Если сокета нет, создаем новое подключение
+      this.connect(this.accessToken)
+    }
   }
 
   /**
@@ -111,24 +154,52 @@ export class SocketService {
 
     this.socket.on('disconnect', (reason) => {
       console.log('[SocketService] ❌ Disconnected:', reason)
+      
+      // Если это не ручное отключение и не из-за ошибки сервера, пытаемся переподключиться
+      if (!this.isManuallyDisconnected && reason !== 'io server disconnect') {
+        console.log('[SocketService] Will attempt to reconnect...')
+      }
     })
 
     this.socket.on('connect_error', (error) => {
       console.error('[SocketService] ❌ Connection error:', error)
       console.error('[SocketService] Error message:', error.message)
-      this.reconnectAttempts++
-      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-        console.error('[SocketService] Max reconnect attempts reached')
+      
+      // Не увеличиваем счетчик, если это ручное отключение
+      if (!this.isManuallyDisconnected) {
+        this.reconnectAttempts++
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+          console.error('[SocketService] Max reconnect attempts reached')
+          // Не останавливаем переподключение полностью, но логируем
+        }
       }
     })
 
+    // Обработка успешного переподключения
+    this.socket.io.on('reconnect', (attemptNumber) => {
+      console.log(`[SocketService] ✅ Reconnected after ${attemptNumber} attempts`)
+      this.reconnectAttempts = 0
+    })
+
     // Обновляем токен при попытках реконнекта
-    this.socket.io.on('reconnect_attempt', () => {
+    this.socket.io.on('reconnect_attempt', (attemptNumber) => {
+      console.log(`[SocketService] 🔄 Reconnect attempt ${attemptNumber}/${this.maxReconnectAttempts}`)
       if (this.accessToken) {
         this.socket!.auth = { token: this.accessToken }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ;(this.socket!.io.opts as any).query = { token: this.accessToken }
       }
+    })
+
+    // Обработка ошибки переподключения
+    this.socket.io.on('reconnect_error', (error) => {
+      console.error('[SocketService] ❌ Reconnect error:', error)
+    })
+
+    // Обработка окончания попыток переподключения
+    this.socket.io.on('reconnect_failed', () => {
+      console.error('[SocketService] ❌ Reconnect failed after all attempts')
+      // Можно попробовать переподключиться вручную позже
     })
   }
 
