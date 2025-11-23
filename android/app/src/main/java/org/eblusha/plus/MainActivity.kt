@@ -74,6 +74,7 @@ import org.eblusha.plus.feature.session.SessionViewModel
 import org.eblusha.plus.feature.session.SessionViewModelFactory
 import org.eblusha.plus.data.realtime.RealtimeEvent
 import org.eblusha.plus.service.IncomingCallService
+import org.eblusha.plus.service.BackgroundConnectionService
 
 data class ActiveCallSession(
     val conversationId: String,
@@ -104,6 +105,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Запускаем фоновый сервис для поддержания соединения
+        BackgroundConnectionService.start(this)
         
         // Request permissions on first launch
         val permissionsToRequest = mutableListOf<String>()
@@ -149,6 +153,15 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        // Останавливаем фоновый сервис только при полном уничтожении Activity
+        // (не при повороте экрана)
+        if (isFinishing) {
+            BackgroundConnectionService.stop(this)
         }
     }
 }

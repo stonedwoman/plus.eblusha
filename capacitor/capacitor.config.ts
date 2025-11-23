@@ -25,6 +25,8 @@ const config: CapacitorConfig = {
       keystoreAliasPassword: undefined,
       releaseType: 'AAB', // или 'APK'
     },
+    // Настройки для работы в фоне
+    webContentsDebuggingEnabled: false,
   },
   plugins: {
     SplashScreen: {
