@@ -107,7 +107,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         // Запускаем фоновый сервис для поддержания соединения
-        BackgroundConnectionService.start(this)
+        android.util.Log.d("MainActivity", "Starting BackgroundConnectionService...")
+        try {
+            BackgroundConnectionService.start(this)
+            android.util.Log.d("MainActivity", "✅ BackgroundConnectionService started successfully")
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "❌ Failed to start BackgroundConnectionService", e)
+        }
         
         // Request permissions on first launch
         val permissionsToRequest = mutableListOf<String>()

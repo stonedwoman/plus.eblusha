@@ -23,11 +23,18 @@ class BackgroundConnectionService : Service() {
         private const val NOTIFICATION_ID = 1002
         
         fun start(context: Context) {
+            android.util.Log.d("BackgroundConnectionService", "start() called")
             val intent = Intent(context, BackgroundConnectionService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                    android.util.Log.d("BackgroundConnectionService", "startForegroundService() called")
+                } else {
+                    context.startService(intent)
+                    android.util.Log.d("BackgroundConnectionService", "startService() called")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("BackgroundConnectionService", "Failed to start service", e)
             }
         }
         
@@ -38,11 +45,14 @@ class BackgroundConnectionService : Service() {
     
     override fun onCreate() {
         super.onCreate()
+        android.util.Log.d("BackgroundConnectionService", "onCreate() called")
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
+        android.util.Log.d("BackgroundConnectionService", "✅ Service started in foreground")
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        android.util.Log.d("BackgroundConnectionService", "onStartCommand() called, returning START_STICKY")
         // Сервис должен оставаться активным
         return START_STICKY
     }
