@@ -228,7 +228,9 @@ function AppRoot() {
             // Для Capacitor используем URL из конфигурации или ru.eblusha.org
             const wsUrl = 'https://ru.eblusha.org'
             console.log('[Main] Connecting native Socket.IO to:', wsUrl)
-            initializeSocketConnection(wsUrl, session.accessToken)
+            initializeSocketConnection(wsUrl, session.accessToken).catch((error) => {
+              console.error('[Main] Failed to initialize socket connection:', error)
+            })
             
             // Инициализация обработчиков сообщений
             initializeMessageHandlers({

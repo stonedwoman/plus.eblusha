@@ -27,7 +27,7 @@ if (typeof window !== 'undefined' && Capacitor.isNativePlatform()) {
 }
 
 // Экспортируем функции для использования в веб-приложении
-export function initializeSocketConnection(wsUrl: string, accessToken: string): void {
+export async function initializeSocketConnection(wsUrl: string, accessToken: string): Promise<void> {
   console.log('[Capacitor] initializeSocketConnection called, isNative:', Capacitor.isNativePlatform())
   if (!Capacitor.isNativePlatform()) {
     console.warn('[Capacitor] initializeSocketConnection called on web platform')
@@ -38,8 +38,8 @@ export function initializeSocketConnection(wsUrl: string, accessToken: string): 
   console.log('[Capacitor] Connecting socket with token length:', accessToken?.length || 0)
   socketService.connect(accessToken)
 
-  // Обработка событий жизненного цикла приложения
-  setupAppLifecycleHandlers(socketService)
+  // Обработка событий жизненного цикла приложения - регистрируем асинхронно
+  await setupAppLifecycleHandlers(socketService)
 }
 
 // Хранилище для обработчиков жизненного цикла
@@ -48,76 +48,71 @@ let lifecycleHandlers: Array<{ remove: () => Promise<void> }> = []
 /**
  * Настройка обработчиков событий жизненного цикла приложения
  */
-function setupAppLifecycleHandlers(socketService: ReturnType<typeof getSocketService>): void {
+async function setupAppLifecycleHandlers(socketService: ReturnType<typeof getSocketService>): Promise<void> {
   console.log('[Capacitor] Setting up app lifecycle handlers...')
   
   // Очищаем старые обработчики, если они есть
   lifecycleHandlers.forEach(handler => handler.remove().catch(() => {}))
   lifecycleHandlers = []
   
-  // Обработчик appStateChange - регистрируем и сохраняем сразу
-  App.addListener('appStateChange', (state) => {
-    console.log('[Capacitor] 🔄 App state changed:', state.isActive ? 'active' : 'background')
-    
-    if (state.isActive) {
-      // Приложение стало активным - проверяем соединение и переподключаемся при необходимости
-      console.log('[Capacitor] ✅ App resumed, checking socket connection...')
+  try {
+    // Обработчик appStateChange - регистрируем синхронно с await
+    const appStateChangeListener = await App.addListener('appStateChange', (state) => {
+      console.log('[Capacitor] 🔄 App state changed:', state.isActive ? 'active' : 'background')
+      
+      if (state.isActive) {
+        // Приложение стало активным - проверяем соединение и переподключаемся при необходимости
+        console.log('[Capacitor] ✅ App resumed, checking socket connection...')
+        // Небольшая задержка перед проверкой соединения, чтобы дать время системе восстановить сеть
+        setTimeout(() => {
+          const isConnected = socketService.isConnected()
+          console.log('[Capacitor] Socket connection status:', isConnected)
+          if (!isConnected) {
+            console.log('[Capacitor] 🔌 Socket not connected, attempting to reconnect...')
+            socketService.reconnect()
+          } else {
+            console.log('[Capacitor] ✅ Socket already connected')
+          }
+        }, 1500)
+      } else {
+        // Приложение ушло в фон - соединение должно продолжать работать
+        console.log('[Capacitor] ⏸️ App paused, maintaining socket connection in background')
+        // Socket.IO должен продолжать работать в фоне благодаря настройкам pingTimeout/pingInterval
+      }
+    })
+    lifecycleHandlers.push(appStateChangeListener)
+    console.log('[Capacitor] ✅ appStateChange listener registered and saved')
+
+    // Дополнительная обработка события resume для надежности
+    const resumeListener = await App.addListener('resume', () => {
+      console.log('[Capacitor] 🔄 App resumed event received')
       // Небольшая задержка перед проверкой соединения, чтобы дать время системе восстановить сеть
       setTimeout(() => {
         const isConnected = socketService.isConnected()
-        console.log('[Capacitor] Socket connection status:', isConnected)
+        console.log('[Capacitor] Socket connection status after resume:', isConnected)
         if (!isConnected) {
-          console.log('[Capacitor] 🔌 Socket not connected, attempting to reconnect...')
+          console.log('[Capacitor] 🔌 Socket not connected after resume, reconnecting...')
           socketService.reconnect()
         } else {
-          console.log('[Capacitor] ✅ Socket already connected')
+          console.log('[Capacitor] ✅ Socket still connected after resume')
         }
       }, 1500)
-    } else {
-      // Приложение ушло в фон - соединение должно продолжать работать
-      console.log('[Capacitor] ⏸️ App paused, maintaining socket connection in background')
-      // Socket.IO должен продолжать работать в фоне благодаря настройкам pingTimeout/pingInterval
-    }
-  }).then((listener) => {
-    lifecycleHandlers.push(listener)
-    console.log('[Capacitor] ✅ appStateChange listener registered, handler saved')
-  }).catch((error) => {
-    console.error('[Capacitor] ❌ Failed to register appStateChange listener:', error)
-  })
+    })
+    lifecycleHandlers.push(resumeListener)
+    console.log('[Capacitor] ✅ resume listener registered and saved')
 
-  // Дополнительная обработка события resume для надежности
-  App.addListener('resume', () => {
-    console.log('[Capacitor] 🔄 App resumed event received')
-    // Небольшая задержка перед проверкой соединения, чтобы дать время системе восстановить сеть
-    setTimeout(() => {
-      const isConnected = socketService.isConnected()
-      console.log('[Capacitor] Socket connection status after resume:', isConnected)
-      if (!isConnected) {
-        console.log('[Capacitor] 🔌 Socket not connected after resume, reconnecting...')
-        socketService.reconnect()
-      } else {
-        console.log('[Capacitor] ✅ Socket still connected after resume')
-      }
-    }, 1500)
-  }).then((listener) => {
-    lifecycleHandlers.push(listener)
-    console.log('[Capacitor] ✅ resume listener registered, handler saved')
-  }).catch((error) => {
-    console.error('[Capacitor] ❌ Failed to register resume listener:', error)
-  })
+    // Также обрабатываем событие pause для логирования
+    const pauseListener = await App.addListener('pause', () => {
+      console.log('[Capacitor] ⏸️ App paused event received - maintaining background connection')
+      // Socket.IO продолжит работать в фоне благодаря настройкам
+    })
+    lifecycleHandlers.push(pauseListener)
+    console.log('[Capacitor] ✅ pause listener registered and saved')
 
-  // Также обрабатываем событие pause для логирования
-  App.addListener('pause', () => {
-    console.log('[Capacitor] ⏸️ App paused event received - maintaining background connection')
-    // Socket.IO продолжит работать в фоне благодаря настройкам
-  }).then((listener) => {
-    lifecycleHandlers.push(listener)
-    console.log('[Capacitor] ✅ pause listener registered, handler saved')
-  }).catch((error) => {
-    console.error('[Capacitor] ❌ Failed to register pause listener:', error)
-  })
-
-  console.log('[Capacitor] ✅ All app lifecycle handlers registration initiated (3 listeners)')
+    console.log('[Capacitor] ✅ All app lifecycle handlers registered successfully (3 listeners)')
+  } catch (error) {
+    console.error('[Capacitor] ❌ Failed to register app lifecycle handlers:', error)
+  }
 }
 
 export function initializeMessageHandlers(callbacks: {
