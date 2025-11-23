@@ -125,18 +125,26 @@ export class NotificationService {
     
     // Проверяем доступность плагина перед использованием
     const isAvailable = Capacitor.isPluginAvailable('LocalNotifications')
-    console.log('[NotificationService] Plugin available check:', isAvailable)
-    console.log('[NotificationService] Capacitor plugins:', (Capacitor as any).Plugins)
+    const plugins = (Capacitor as any).Plugins || {}
+    const hasPlugin = 'LocalNotifications' in plugins
     
-    if (!isAvailable) {
+    console.log('[NotificationService] Plugin available check (isPluginAvailable):', isAvailable)
+    console.log('[NotificationService] Plugin available check (in Plugins):', hasPlugin)
+    console.log('[NotificationService] Available plugins:', Object.keys(plugins))
+    console.log('[NotificationService] LocalNotifications plugin object:', plugins.LocalNotifications)
+    
+    if (!isAvailable && !hasPlugin) {
       console.error('[NotificationService] ❌ LocalNotifications plugin is not available')
-      console.error('[NotificationService] Available plugins:', Object.keys((Capacitor as any).Plugins || {}))
+      console.error('[NotificationService] Platform:', Capacitor.getPlatform())
+      console.error('[NotificationService] Is native:', Capacitor.isNativePlatform())
       return
     }
     
     try {
       console.log('[NotificationService] Attempting to schedule notification...')
-      await LocalNotifications.schedule({
+      // Пробуем использовать плагин напрямую через Capacitor.Plugins
+      const LocalNotificationsPlugin = plugins.LocalNotifications || LocalNotifications
+      await LocalNotificationsPlugin.schedule({
         notifications: [
           {
             title,
