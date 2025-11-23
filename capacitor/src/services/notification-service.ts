@@ -1,7 +1,6 @@
 import { LocalNotifications } from '@capacitor/local-notifications'
 import { App } from '@capacitor/app'
 import type { MessageNotifyPayload, MessageNewPayload } from '../types/socket-events'
-import MessageNotification from '../plugins/message-notification-plugin'
 
 export interface NotificationData {
   id: string
@@ -41,6 +40,16 @@ export class NotificationService {
       if (state.isActive) {
         // Приложение стало активным - можно обновить UI
         this.onAppBecameActive()
+      }
+    })
+
+    // Обработчик клика по уведомлению
+    LocalNotifications.addListener('localNotificationActionPerformed', (notification) => {
+      const extra = notification.notification.extra as any
+      if (extra?.conversationId) {
+        console.log('[NotificationService] Notification clicked, opening conversation:', extra.conversationId)
+        // Открываем беседу через intent (будет обработано в MainActivity)
+        // Это будет сделано через нативный код или через App plugin
       }
     })
   }
@@ -171,7 +180,7 @@ export class NotificationService {
    * Отменить уведомление о звонке
    */
   async cancelCallNotification(notificationId: number): Promise<void> {
-    await MessageNotification.cancel({ ids: [notificationId] })
+    await LocalNotifications.cancel({ notifications: [{ id: notificationId }] })
     this.notificationIds.delete(notificationId)
   }
 
@@ -181,7 +190,7 @@ export class NotificationService {
   async cancelConversationNotifications(conversationId: string): Promise<void> {
     const notificationId = this.conversationNotifications.get(conversationId)
     if (notificationId) {
-      await MessageNotification.cancel({ ids: [notificationId] })
+      await LocalNotifications.cancel({ notifications: [{ id: notificationId }] })
       this.notificationIds.delete(notificationId)
       this.conversationNotifications.delete(conversationId)
     }
@@ -193,7 +202,9 @@ export class NotificationService {
   async clearAll(): Promise<void> {
     const ids = Array.from(this.notificationIds)
     if (ids.length > 0) {
-      await MessageNotification.cancel({ ids })
+      await LocalNotifications.cancel({ 
+        notifications: ids.map(id => ({ id }))
+      })
     }
     this.notificationIds.clear()
     this.conversationNotifications.clear()
@@ -228,16 +239,29 @@ export class NotificationService {
     avatarUrl?: string
   }): Promise<void> {
     try {
-      await MessageNotification.show({
-        id: options.id,
-        conversationId: options.conversationId,
-        senderName: options.title,
-        messageText: options.body,
-        avatarUrl: options.avatarUrl,
+      // Используем стандартный LocalNotifications вместо кастомного плагина
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            title: options.title,
+            body: options.body,
+            id: options.id,
+            sound: undefined, // Без звука для сообщений
+            ongoing: false,
+            autoCancel: true,
+            extra: {
+              conversationId: options.conversationId,
+              messageId: options.messageId,
+              senderId: options.senderId,
+              avatarUrl: options.avatarUrl,
+            },
+            actionTypeId: 'MESSAGE',
+          },
+        ],
       })
       this.notificationIds.add(options.id)
       this.conversationNotifications.set(options.conversationId, options.id)
-      console.log('[NotificationService] ✅ Native notification shown')
+      console.log('[NotificationService] ✅ Native notification shown via LocalNotifications')
     } catch (error) {
       console.error('[NotificationService] ❌ Failed to show native notification:', error)
     }
