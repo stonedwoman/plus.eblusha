@@ -13,10 +13,14 @@ export interface MessageHandlerCallbacks {
   onConversationUpdated?: (conversationId: string) => void
   onTypingUpdate?: (conversationId: string, userId: string, typing: boolean) => void
   isConversationActive?: (conversationId: string) => boolean
-  getConversationInfo?: (conversationId: string) => Promise<{
+  getConversationInfo?: (
+    conversationId: string,
+    context?: { senderId?: string; messageId?: string }
+  ) => Promise<{
     title?: string
     avatarUrl?: string
     senderName?: string
+    messageText?: string
   } | null>
 }
 
@@ -151,30 +155,22 @@ export class MessageHandler {
   private async handleMessageNotification(payload: MessageNotifyPayload | MessageNewPayload): Promise<void> {
     try {
       // Получаем информацию о беседе и отправителе
-      const conversationInfo = await this.callbacks.getConversationInfo?.(payload.conversationId)
+      const conversationInfo = await this.callbacks.getConversationInfo?.(payload.conversationId, {
+        senderId: payload.senderId,
+        messageId: payload.messageId,
+      })
 
       // Формируем текст сообщения
-      let messageText = 'Новое сообщение'
-      if (payload.message) {
-        if (payload.message.content) {
-          messageText = payload.message.content
-        } else if (payload.message.attachments?.length) {
-          const attachment = payload.message.attachments[0]
-          if (attachment.type === 'IMAGE') {
-            messageText = '📷 Фото'
-          } else {
-            messageText = '📎 Файл'
-          }
-        }
+      let messageText = this.getMessagePreview(payload)
+      if (!messageText) {
+        messageText = conversationInfo?.messageText || 'Новое сообщение'
       }
+      const senderName =
+        conversationInfo?.senderName || conversationInfo?.title || 'Новое сообщение'
+      const avatarUrl = conversationInfo?.avatarUrl
 
       // Показываем уведомление
-      await this.notificationService.showMessageNotification(
-        payload,
-        messageText,
-        conversationInfo?.senderName || conversationInfo?.title,
-        conversationInfo?.avatarUrl
-      )
+      await this.notificationService.showMessageNotification(payload, messageText, senderName, avatarUrl)
     } catch (error) {
       console.error('[MessageHandler] Error handling message notification:', error)
     }
@@ -185,6 +181,22 @@ export class MessageHandler {
    */
   sendTyping(conversationId: string, typing: boolean): void {
     this.socketService.emitConversationTyping({ conversationId, typing })
+  }
+
+  private getMessagePreview(payload: MessageNotifyPayload | MessageNewPayload): string | null {
+    if (payload.message) {
+      if (payload.message.content) {
+        return payload.message.content
+      }
+      if (payload.message.attachments?.length) {
+        const attachment = payload.message.attachments[0]
+        if (attachment.type === 'IMAGE') {
+          return '📷 Фото'
+        }
+        return '📎 Вложение'
+      }
+    }
+    return null
   }
 }
 

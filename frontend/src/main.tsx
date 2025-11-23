@@ -248,13 +248,58 @@ function AppRoot() {
                 // Проверка активной беседы - будет реализовано через глобальное состояние
                 return false
               },
-              getConversationInfo: async (conversationId: string) => {
-                const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
-                const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
+              getConversationInfo: async (conversationId: string, context?: { senderId?: string; messageId?: string }) => {
+                const ensureConversations = async () => {
+                  const response = await api.get('/conversations')
+                  queryClient.setQueryData(['conversations'], response.data.conversations)
+                  return response.data.conversations as any[]
+                }
+
+                let conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
+                if (!conversations) {
+                  conversations = await ensureConversations()
+                } else {
+                  ensureConversations().catch(() => {})
+                }
+
+                const row = conversations?.find((c: any) => c.conversation?.id === conversationId)
+                const conversation = row?.conversation
+                const participants = conversation?.participants || []
+                const currentUserId = useAppStore.getState().session?.user?.id
+
+                const senderParticipant = context?.senderId
+                  ? participants.find((p: any) => p.user.id === context.senderId)
+                  : undefined
+                const counterpart =
+                  !conversation?.isGroup && currentUserId
+                    ? participants.find((p: any) => p.user.id !== currentUserId)
+                    : undefined
+
+                const senderName =
+                  senderParticipant?.user?.displayName ||
+                  senderParticipant?.user?.username ||
+                  counterpart?.user?.displayName ||
+                  counterpart?.user?.username ||
+                  conversation?.title ||
+                  'Новое сообщение'
+
+                const avatarUrl =
+                  senderParticipant?.user?.avatarUrl ||
+                  counterpart?.user?.avatarUrl ||
+                  conversation?.avatarUrl ||
+                  null
+
+                let messageText: string | undefined
+                const latestMessage = conversation?.messages?.[0]
+                if (latestMessage && (!context?.messageId || latestMessage.id === context.messageId)) {
+                  messageText = latestMessage.content ?? undefined
+                }
+
                 return {
-                  title: conv?.conversation?.title,
-                  avatarUrl: conv?.conversation?.avatarUrl,
-                  senderName: conv?.sender?.displayName,
+                  title: conversation?.title,
+                  avatarUrl: avatarUrl ?? undefined,
+                  senderName,
+                  messageText,
                 }
               },
             })
