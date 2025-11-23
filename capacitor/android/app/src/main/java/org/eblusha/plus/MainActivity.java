@@ -8,8 +8,6 @@ import java.util.ArrayList;
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        
         // Явная регистрация плагина LocalNotifications через init()
         // Это гарантирует, что плагин будет зарегистрирован даже если автоматическая регистрация не сработает
         try {
@@ -18,7 +16,7 @@ public class MainActivity extends BridgeActivity {
             plugins.add(pluginClass);
             this.init(savedInstanceState, plugins);
         } catch (ClassNotFoundException e) {
-            // Если класс не найден, просто используем стандартную инициализацию
+            // Если класс не найден, используем стандартную инициализацию
             super.onCreate(savedInstanceState);
         }
     }
