@@ -70,3 +70,4 @@ cd /opt/eblusha-plus/capacitor/android
 2. Проверьте: `adb devices`
 3. Перезапустите adb: `adb kill-server && adb start-server`
 
+

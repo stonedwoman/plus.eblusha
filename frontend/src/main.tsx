@@ -190,20 +190,20 @@ function AppRoot() {
     };
   }, []);
 
-          // Инициализация стора из localStorage и проверка авторизации
-          useEffect(() => {
+  // Инициализация стора из localStorage и проверка авторизации
+  useEffect(() => {
             console.log('[AppRoot] Initializing store from storage...')
-            // Синхронно гидрируем токены перед любыми guard'ами
-            useAppStore.getState().initFromStorage()
+    // Синхронно гидрируем токены перед любыми guard'ами
+    useAppStore.getState().initFromStorage()
             console.log('[AppRoot] Store initialized, validating session...')
             validateStoredSession().then((valid) => {
               console.log('[AppRoot] Session validation result:', valid)
               setIsCheckingAuth(false)
             }).catch((error) => {
               console.error('[AppRoot] Session validation error:', error)
-              setIsCheckingAuth(false)
-            })
-          }, [])
+      setIsCheckingAuth(false)
+    })
+  }, [])
 
   useEffect(() => {
     console.log('[Main] useEffect triggered, isCheckingAuth:', isCheckingAuth, 'session:', !!session)
@@ -312,7 +312,7 @@ function AppRoot() {
       } else {
         // Capacitor не загружен - используем веб socket
         console.log('[Main] ⚠️ Capacitor not available, using web socket')
-        connectSocket()
+      connectSocket()
       }
     }
   }, [session, isCheckingAuth])
@@ -466,12 +466,12 @@ if (!rootElement) {
 } else {
   console.log('[Main] Root element found, rendering...')
   ReactDOM.createRoot(rootElement).render(
-    <React.StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <AppRoot />
-      </QueryClientProvider>
-    </React.StrictMode>,
-  )
+  <React.StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <AppRoot />
+    </QueryClientProvider>
+  </React.StrictMode>,
+)
   console.log('[Main] ✅ React app rendered')
 }
 

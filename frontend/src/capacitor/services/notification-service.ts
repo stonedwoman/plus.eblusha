@@ -1,5 +1,6 @@
 import { LocalNotifications } from '@capacitor/local-notifications'
 import { App } from '@capacitor/app'
+import { Capacitor } from '@capacitor/core'
 import type { MessageNotifyPayload, MessageNewPayload } from '../types/socket-events'
 
 export interface NotificationData {
@@ -21,19 +22,33 @@ export class NotificationService {
    */
   async initialize(): Promise<void> {
     console.log('[NotificationService] 🚀 Initializing notification service...')
-    // Запрашиваем разрешение на уведомления
-    const permission = await LocalNotifications.checkPermissions()
-    console.log('[NotificationService] Current permission:', permission.display)
-    if (permission.display !== 'granted') {
-      console.log('[NotificationService] Requesting notification permission...')
-      const result = await LocalNotifications.requestPermissions()
-      console.log('[NotificationService] Permission result:', result.display)
-      if (result.display !== 'granted') {
-        console.warn('[NotificationService] ❌ Notification permission not granted')
-        return
-      }
+    console.log('[NotificationService] Platform:', Capacitor.getPlatform())
+    console.log('[NotificationService] Is native:', Capacitor.isNativePlatform())
+    
+    // Проверяем доступность плагина
+    if (!Capacitor.isPluginAvailable('LocalNotifications')) {
+      console.error('[NotificationService] ❌ LocalNotifications plugin is not available on this platform')
+      return
     }
-    console.log('[NotificationService] ✅ Notification permission granted')
+    
+    try {
+      // Запрашиваем разрешение на уведомления
+      const permission = await LocalNotifications.checkPermissions()
+      console.log('[NotificationService] Current permission:', permission.display)
+      if (permission.display !== 'granted') {
+        console.log('[NotificationService] Requesting notification permission...')
+        const result = await LocalNotifications.requestPermissions()
+        console.log('[NotificationService] Permission result:', result.display)
+        if (result.display !== 'granted') {
+          console.warn('[NotificationService] ❌ Notification permission not granted')
+          return
+        }
+      }
+      console.log('[NotificationService] ✅ Notification permission granted')
+    } catch (error) {
+      console.error('[NotificationService] ❌ Error initializing notifications:', error)
+      return
+    }
 
     // Обработчик клика по уведомлению
     LocalNotifications.addListener('localNotificationActionPerformed', (notification) => {
@@ -107,6 +122,12 @@ export class NotificationService {
       body,
       conversationId,
     })
+    
+    // Проверяем доступность плагина перед использованием
+    if (!Capacitor.isPluginAvailable('LocalNotifications')) {
+      console.error('[NotificationService] ❌ LocalNotifications plugin is not available')
+      return
+    }
     
     try {
       await LocalNotifications.schedule({
