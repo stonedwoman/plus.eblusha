@@ -26,6 +26,11 @@ class MessageNotificationPlugin : Plugin() {
         private const val NOTIFICATION_ID_BASE = 2000
     }
     
+    override fun load() {
+        super.load()
+        android.util.Log.d("MessageNotificationPlugin", "✅ Plugin loaded successfully")
+    }
+    
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -45,12 +50,14 @@ class MessageNotificationPlugin : Plugin() {
     
     @PluginMethod
     fun show(call: PluginCall) {
+        android.util.Log.d("MessageNotificationPlugin", "show() called with call: ${call.data}")
         val id = call.getInt("id") ?: return call.reject("id is required")
         val conversationId = call.getString("conversationId") ?: return call.reject("conversationId is required")
         val senderName = call.getString("senderName") ?: return call.reject("senderName is required")
         val messageText = call.getString("messageText") ?: return call.reject("messageText is required")
         val avatarUrl = call.getString("avatarUrl")
         
+        android.util.Log.d("MessageNotificationPlugin", "Showing notification: id=$id, conversationId=$conversationId, senderName=$senderName")
         createNotificationChannel()
         
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -89,7 +96,9 @@ class MessageNotificationPlugin : Plugin() {
         
         val notification = notificationBuilder.build()
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(NOTIFICATION_ID_BASE + id, notification)
+        val notificationId = NOTIFICATION_ID_BASE + id
+        notificationManager.notify(notificationId, notification)
+        android.util.Log.d("MessageNotificationPlugin", "✅ Notification shown with ID: $notificationId")
         
         call.resolve()
     }
