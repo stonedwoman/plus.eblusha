@@ -366,6 +366,23 @@ private fun MessengerNavHost(
                     avatarUrl = null
                 )
             }
+            "open_conversation" -> {
+                val conversationId = intent.getStringExtra("conversation_id") ?: return@LaunchedEffect
+                // Создаем минимальный ConversationPreview для открытия беседы
+                // ChatRoute загрузит полную информацию
+                selectedConversation = ConversationPreview(
+                    id = conversationId,
+                    title = null, // Будет загружено в ChatRoute
+                    lastMessage = null,
+                    lastMessageAt = null,
+                    unreadCount = 0,
+                    avatarUrl = null,
+                    isGroup = false,
+                    isSecret = false,
+                    participants = emptyList()
+                )
+                sliderOffset = -1f
+            }
         }
     }
 
