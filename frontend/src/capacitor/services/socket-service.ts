@@ -77,9 +77,19 @@ export class SocketService {
       randomizationFactor: 0.5, // Добавляем случайность для избежания thundering herd
       timeout: 20000, // Таймаут подключения 20 секунд
       // Увеличиваем интервалы ping/pong для мобильных устройств
-      pingTimeout: 60000, // 60 секунд для ping timeout (увеличено для фонового режима)
-      pingInterval: 25000, // Ping каждые 25 секунд
-    })
+      // В Socket.IO v4 эти опции находятся в опциях менеджера
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    
+    // Настраиваем ping/pong интервалы через менеджер после создания
+    if (this.socket.io) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const manager = this.socket.io as any
+      if (manager.opts) {
+        manager.opts.pingTimeout = 60000 // 60 секунд для ping timeout (увеличено для фонового режима)
+        manager.opts.pingInterval = 25000 // Ping каждые 25 секунд
+      }
+    }
 
     this.setupEventHandlers()
     this.socket.connect()
