@@ -37,15 +37,19 @@ export async function initializeSocketConnection(wsUrl: string, accessToken: str
   const socketService = getSocketService(wsUrl)
   console.log('[Capacitor] Connecting socket with token length:', accessToken?.length || 0)
   socketService.connect(accessToken)
+  console.log('[Capacitor] socketService.connect() called, now setting up lifecycle handlers')
 
   // Обработка событий жизненного цикла приложения - регистрируем асинхронно
   console.log('[Capacitor] About to call setupAppLifecycleHandlers...')
   try {
+    console.log('[Capacitor] Calling setupAppLifecycleHandlers now...')
     await setupAppLifecycleHandlers(socketService)
     console.log('[Capacitor] ✅ setupAppLifecycleHandlers completed successfully')
   } catch (error) {
     console.error('[Capacitor] ❌ setupAppLifecycleHandlers failed:', error)
+    console.error('[Capacitor] Error stack:', error instanceof Error ? error.stack : String(error))
   }
+  console.log('[Capacitor] initializeSocketConnection finished')
 }
 
 // Хранилище для обработчиков жизненного цикла
