@@ -248,21 +248,31 @@ function AppRoot() {
                 // Проверка активной беседы - будет реализовано через глобальное состояние
                 return false
               },
-              getConversationInfo: async (conversationId: string, context?: { senderId?: string; messageId?: string }) => {
-                const ensureConversations = async () => {
+              getConversationInfo: async (
+                conversationId: string,
+                context?: { senderId?: string; messageId?: string }
+              ) => {
+                const fetchConversations = async () => {
                   const response = await api.get('/conversations')
                   queryClient.setQueryData(['conversations'], response.data.conversations)
                   return response.data.conversations as any[]
                 }
 
+                const findConversation = (list?: any[]) =>
+                  list?.find((c: any) => c.conversation?.id === conversationId)
+
                 let conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
-                if (!conversations) {
-                  conversations = await ensureConversations()
+                let row = findConversation(conversations)
+
+                if (!row) {
+                  conversations = await fetchConversations()
+                  row = findConversation(conversations)
                 } else {
-                  ensureConversations().catch(() => {})
+                  fetchConversations().catch((error) => {
+                    console.warn('[Native] Failed to refresh conversations list', error)
+                  })
                 }
 
-                const row = conversations?.find((c: any) => c.conversation?.id === conversationId)
                 const conversation = row?.conversation
                 const participants = conversation?.participants || []
                 const currentUserId = useAppStore.getState().session?.user?.id
@@ -270,6 +280,7 @@ function AppRoot() {
                 const senderParticipant = context?.senderId
                   ? participants.find((p: any) => p.user.id === context.senderId)
                   : undefined
+
                 const counterpart =
                   !conversation?.isGroup && currentUserId
                     ? participants.find((p: any) => p.user.id !== currentUserId)
@@ -287,17 +298,17 @@ function AppRoot() {
                   senderParticipant?.user?.avatarUrl ||
                   counterpart?.user?.avatarUrl ||
                   conversation?.avatarUrl ||
-                  null
+                  undefined
 
                 let messageText: string | undefined
                 const latestMessage = conversation?.messages?.[0]
-                if (latestMessage && (!context?.messageId || latestMessage.id === context.messageId)) {
-                  messageText = latestMessage.content ?? undefined
+                if (latestMessage?.content) {
+                  messageText = latestMessage.content
                 }
 
                 return {
                   title: conversation?.title,
-                  avatarUrl: avatarUrl ?? undefined,
+                  avatarUrl,
                   senderName,
                   messageText,
                 }
