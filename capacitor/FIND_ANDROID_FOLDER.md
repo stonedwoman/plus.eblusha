@@ -73,3 +73,4 @@ npx cap add android
 
 Это создаст папку android заново.
 
+
