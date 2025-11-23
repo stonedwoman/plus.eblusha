@@ -13,14 +13,17 @@ import { Capacitor } from '@capacitor/core'
 // Инициализируем сервис уведомлений при загрузке (только на нативной платформе)
 if (typeof window !== 'undefined' && Capacitor.isNativePlatform()) {
   console.log('[Capacitor] ✅ Native platform detected, initializing services...')
+  console.log('[Capacitor] Platform:', Capacitor.getPlatform())
+  console.log('[Capacitor] Plugins:', (Capacitor as any).Plugins ? Object.keys((Capacitor as any).Plugins) : 'not loaded')
   const notificationService = getNotificationService()
   notificationService.initialize().then(() => {
-    console.log('[Capacitor] ✅ Notification service initialized')
+    console.log('[Capacitor] ✅ Notification service initialized successfully')
   }).catch((error) => {
     console.error('[Capacitor] ❌ Failed to initialize notification service:', error)
+    console.error('[Capacitor] Error stack:', error?.stack)
   })
 } else {
-  console.log('[Capacitor] Web platform detected')
+  console.log('[Capacitor] Web platform detected, skipping native initialization')
 }
 
 // Экспортируем функции для использования в веб-приложении
