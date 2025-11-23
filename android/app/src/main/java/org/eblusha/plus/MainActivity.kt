@@ -372,14 +372,16 @@ private fun MessengerNavHost(
                 // ChatRoute загрузит полную информацию
                 selectedConversation = ConversationPreview(
                     id = conversationId,
-                    title = null, // Будет загружено в ChatRoute
-                    lastMessage = null,
-                    lastMessageAt = null,
+                    title = "", // Будет загружено в ChatRoute
+                    subtitle = "",
+                    presenceText = null,
+                    isOnline = false,
                     unreadCount = 0,
-                    avatarUrl = null,
                     isGroup = false,
                     isSecret = false,
-                    participants = emptyList()
+                    secretStatus = null,
+                    lastMessageTime = null,
+                    avatarUrl = null
                 )
                 sliderOffset = -1f
             }
