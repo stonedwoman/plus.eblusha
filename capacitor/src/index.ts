@@ -39,14 +39,21 @@ export function initializeSocketConnection(wsUrl: string, accessToken: string): 
   setupAppLifecycleHandlers(socketService)
 }
 
+// Хранилище для обработчиков жизненного цикла
+let lifecycleHandlers: Array<{ remove: () => Promise<void> }> = []
+
 /**
  * Настройка обработчиков событий жизненного цикла приложения
  */
 function setupAppLifecycleHandlers(socketService: ReturnType<typeof getSocketService>): void {
   console.log('[Capacitor] Setting up app lifecycle handlers...')
   
-  // Обработка паузы приложения
-  App.addListener('appStateChange', (state) => {
+  // Очищаем старые обработчики, если они есть
+  lifecycleHandlers.forEach(handler => handler.remove().catch(() => {}))
+  lifecycleHandlers = []
+  
+  // Обработка паузы приложения - регистрируем синхронно
+  const appStateChangePromise = App.addListener('appStateChange', (state) => {
     console.log('[Capacitor] 🔄 App state changed:', state.isActive ? 'active' : 'background')
     
     if (state.isActive) {
@@ -64,17 +71,21 @@ function setupAppLifecycleHandlers(socketService: ReturnType<typeof getSocketSer
         }
       }, 1500)
     } else {
-      // Приложение ушло в фон - соединение будет поддерживаться, но может быть приостановлено системой
-      console.log('[Capacitor] ⏸️ App paused, socket connection will be maintained')
+      // Приложение ушло в фон - соединение должно продолжать работать
+      console.log('[Capacitor] ⏸️ App paused, maintaining socket connection in background')
+      // Socket.IO должен продолжать работать в фоне благодаря настройкам pingTimeout/pingInterval
     }
-  }).then((listener) => {
+  })
+  
+  appStateChangePromise.then((listener) => {
+    lifecycleHandlers.push(listener)
     console.log('[Capacitor] ✅ appStateChange listener registered')
   }).catch((error) => {
     console.error('[Capacitor] ❌ Failed to register appStateChange listener:', error)
   })
 
   // Дополнительная обработка события resume для надежности
-  App.addListener('resume', () => {
+  const resumePromise = App.addListener('resume', () => {
     console.log('[Capacitor] 🔄 App resumed event received')
     // Небольшая задержка перед проверкой соединения, чтобы дать время системе восстановить сеть
     setTimeout(() => {
@@ -87,22 +98,29 @@ function setupAppLifecycleHandlers(socketService: ReturnType<typeof getSocketSer
         console.log('[Capacitor] ✅ Socket still connected after resume')
       }
     }, 1500)
-  }).then((listener) => {
+  })
+  
+  resumePromise.then((listener) => {
+    lifecycleHandlers.push(listener)
     console.log('[Capacitor] ✅ resume listener registered')
   }).catch((error) => {
     console.error('[Capacitor] ❌ Failed to register resume listener:', error)
   })
 
   // Также обрабатываем событие pause для логирования
-  App.addListener('pause', () => {
-    console.log('[Capacitor] ⏸️ App paused event received')
-  }).then((listener) => {
+  const pausePromise = App.addListener('pause', () => {
+    console.log('[Capacitor] ⏸️ App paused event received - maintaining background connection')
+    // Socket.IO продолжит работать в фоне благодаря настройкам
+  })
+  
+  pausePromise.then((listener) => {
+    lifecycleHandlers.push(listener)
     console.log('[Capacitor] ✅ pause listener registered')
   }).catch((error) => {
     console.error('[Capacitor] ❌ Failed to register pause listener:', error)
   })
 
-  console.log('[Capacitor] ✅ All app lifecycle handlers registered')
+  console.log('[Capacitor] ✅ All app lifecycle handlers registration initiated')
 }
 
 export function initializeMessageHandlers(callbacks: {
