@@ -24,6 +24,7 @@ export class NotificationService {
   private isDocumentVisible = typeof document === 'undefined' ? true : !document.hidden
   private useMessagePlugin = false
   private appStateWarningLogged = false
+  private hasInitialAppState = false
 
   /**
    * Инициализация сервиса уведомлений
@@ -60,8 +61,10 @@ export class NotificationService {
     try {
       const initialState = await App.getState()
       this.isAppActive = initialState.isActive
+      this.hasInitialAppState = true
       console.log('[NotificationService] Initial app state:', initialState.isActive ? 'active' : 'background')
     } catch (error) {
+      this.hasInitialAppState = true
       console.warn('[NotificationService] Failed to read initial app state, using default "active" state', error)
     }
 
@@ -82,6 +85,7 @@ export class NotificationService {
     // Обработчик открытия приложения по уведомлению
     App.addListener('appStateChange', (state) => {
       this.isAppActive = state.isActive
+      this.hasInitialAppState = true
       console.log('[NotificationService] appStateChange event:', state.isActive ? 'active' : 'background')
       if (state.isActive) {
         // Приложение стало активным - можно обновить UI
@@ -91,11 +95,13 @@ export class NotificationService {
 
     App.addListener('pause', () => {
       this.isAppActive = false
+      this.hasInitialAppState = true
       console.log('[NotificationService] pause event received, marking app as background')
     })
 
     App.addListener('resume', () => {
       this.isAppActive = true
+      this.hasInitialAppState = true
       console.log('[NotificationService] resume event received, marking app as active')
       this.onAppBecameActive()
     })
@@ -130,10 +136,14 @@ export class NotificationService {
     
     // Проверяем, активно ли приложение
     const inForeground = await this.isInForeground()
-    console.log('[NotificationService] Foreground status:', inForeground ? 'active' : 'background', {
-      appActive: this.isAppActive,
-      documentVisible: this.isDocumentVisible,
-    })
+    console.log(
+      '[NotificationService] Foreground status:',
+      inForeground ? 'active' : 'background',
+      JSON.stringify({
+        appActive: this.isAppActive,
+        documentVisible: this.isDocumentVisible,
+      })
+    )
     if (inForeground) {
       // Приложение активно - не показываем уведомление
       // (сообщение уже видно на экране)
@@ -461,20 +471,21 @@ export class NotificationService {
   }
 
   private async isInForeground(): Promise<boolean> {
-    let appIsActive = this.isAppActive
-
-    try {
-      const state = await App.getState()
-      appIsActive = state.isActive
-      this.isAppActive = state.isActive
-      this.appStateWarningLogged = false
-    } catch (error) {
-      if (!this.appStateWarningLogged) {
-        console.warn(
-          '[NotificationService] ⚠️ Failed to get current App state, falling back to cached value',
-          error
-        )
-        this.appStateWarningLogged = true
+    if (!this.hasInitialAppState) {
+      try {
+        const state = await App.getState()
+        this.isAppActive = state.isActive
+        this.hasInitialAppState = true
+        this.appStateWarningLogged = false
+      } catch (error) {
+        if (!this.appStateWarningLogged) {
+          console.warn(
+            '[NotificationService] ⚠️ Failed to get current App state, falling back to cached value',
+            error
+          )
+          this.appStateWarningLogged = true
+        }
+        this.hasInitialAppState = true
       }
     }
 
@@ -482,7 +493,7 @@ export class NotificationService {
       this.isDocumentVisible = !document.hidden
     }
 
-    return appIsActive && this.isDocumentVisible
+    return this.isAppActive && this.isDocumentVisible
   }
 }
 
