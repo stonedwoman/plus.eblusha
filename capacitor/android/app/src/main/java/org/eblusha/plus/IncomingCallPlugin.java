@@ -1,7 +1,6 @@
 package org.eblusha.plus;
 
 import android.Manifest;
-import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
@@ -23,7 +22,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 @CapacitorPlugin(name = "IncomingCall")
 public class IncomingCallPlugin extends Plugin {
 
-    private static final int REQUEST_CODE_MANAGE_OWN_CALLS = 1002;
+    private static final int REQUEST_CODE_NOTIFICATIONS = 1002;
 
     @PluginMethod
     public void showIncomingCall(PluginCall call) {
@@ -43,11 +42,7 @@ public class IncomingCallPlugin extends Plugin {
             return;
         }
 
-        if (!ensureCallPermissions(true)) {
-            call.reject("MANAGE_OWN_CALLS permission is required");
-            return;
-        }
-
+        ensureNotificationPermission(false);
         IncomingCallService.start(context, conversationId, callerName, isVideo, avatarUrl);
         call.resolve();
     }
@@ -64,7 +59,7 @@ public class IncomingCallPlugin extends Plugin {
 
     @PluginMethod
     public void ensurePermissions(PluginCall call) {
-        boolean granted = ensureCallPermissions(true);
+        boolean granted = ensureNotificationPermission(true);
         JSObject result = new JSObject();
         result.put("granted", granted);
         call.resolve(result);
@@ -78,8 +73,8 @@ public class IncomingCallPlugin extends Plugin {
         call.resolve(result);
     }
 
-    private boolean ensureCallPermissions(boolean requestIfMissing) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+    private boolean ensureNotificationPermission(boolean requestIfMissing) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             return true;
         }
         Context context = getContext();
@@ -87,20 +82,18 @@ public class IncomingCallPlugin extends Plugin {
             return false;
         }
         boolean granted =
-            ContextCompat.checkSelfPermission(context, Manifest.permission.MANAGE_OWN_CALLS)
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
                 == PackageManager.PERMISSION_GRANTED;
-        if (granted) {
-            return true;
+        if (granted || !requestIfMissing) {
+            return granted;
         }
-        if (requestIfMissing) {
-            Activity activity = getActivity();
-            if (activity != null) {
-                ActivityCompat.requestPermissions(
-                    activity,
-                    new String[]{Manifest.permission.MANAGE_OWN_CALLS},
-                    REQUEST_CODE_MANAGE_OWN_CALLS
-                );
-            }
+        Activity activity = getActivity();
+        if (activity != null) {
+            ActivityCompat.requestPermissions(
+                activity,
+                new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                REQUEST_CODE_NOTIFICATIONS
+            );
         }
         return false;
     }
@@ -126,8 +119,3 @@ public class IncomingCallPlugin extends Plugin {
         return false;
     }
 }
-
-
-
-
-
