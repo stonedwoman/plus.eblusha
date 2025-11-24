@@ -28,7 +28,8 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onResume() {
+    @Override
+    public void onResume() {
         super.onResume();
         if (pendingCallIntent != null) {
             processCallIntent(pendingCallIntent);
