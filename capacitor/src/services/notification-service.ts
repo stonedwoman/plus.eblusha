@@ -151,24 +151,14 @@ export class NotificationService {
       return
     }
 
-    const notificationId = Date.now() % 2147483647 // Максимальный ID для Android
     const conversationId = payload.conversationId
+    const notificationId = Date.now() % 2147483647 // Максимальный ID для Android
 
-    // Если уже есть уведомление для этой беседы, обновляем его
     const existingId = this.conversationNotifications.get(conversationId)
     if (existingId) {
-      // Обновляем существующее уведомление (группировка)
-      await this.updateConversationNotification(
-        existingId,
-        conversationId,
-        messageText || 'Новое сообщение',
-        senderName || 'Кто-то',
-        avatarUrl
-      )
-      return
+      await this.cancelMessageNotifications([existingId])
     }
 
-    // Создаем новое уведомление
     const title = senderName || 'Новое сообщение'
     const body = messageText || 'У вас новое сообщение'
 
@@ -186,27 +176,6 @@ export class NotificationService {
       messageId: payload.messageId,
       title,
       body,
-      avatarUrl,
-    })
-  }
-
-  /**
-   * Обновить уведомление беседы (для группировки)
-   */
-  private async updateConversationNotification(
-    notificationId: number,
-    conversationId: string,
-    latestMessage: string,
-    senderName: string,
-    avatarUrl?: string
-  ): Promise<void> {
-    await this.pushNativeNotification({
-      id: notificationId,
-      conversationId,
-      senderId: undefined,
-      messageId: undefined,
-      title: senderName,
-      body: latestMessage,
       avatarUrl,
     })
   }

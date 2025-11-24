@@ -3,14 +3,21 @@ package org.eblusha.plus;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.Button;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.TextView;
 import androidx.annotation.Nullable;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.Plugin;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Нативный экран входящего звонка
@@ -28,6 +35,7 @@ public class IncomingCallActivity extends BridgeActivity {
     private String avatarUrl;
 
     private static volatile IncomingCallActivity currentInstance;
+    private final ExecutorService avatarExecutor = Executors.newSingleThreadExecutor();
 
     public static void dismissCurrent() {
         IncomingCallActivity instance = currentInstance;
@@ -84,9 +92,9 @@ public class IncomingCallActivity extends BridgeActivity {
         TextView callerNameView = findViewById(R.id.caller_name);
         TextView callTypeView = findViewById(R.id.call_type);
         ImageView avatarView = findViewById(R.id.caller_avatar);
-        Button answerButton = findViewById(R.id.btn_answer);
-        Button answerVideoButton = findViewById(R.id.btn_answer_video);
-        Button declineButton = findViewById(R.id.btn_decline);
+        ImageButton answerButton = findViewById(R.id.btn_answer);
+        ImageButton answerVideoButton = findViewById(R.id.btn_answer_video);
+        ImageButton declineButton = findViewById(R.id.btn_decline);
 
         if (callerNameView != null) {
             callerNameView.setText(callerName != null ? callerName : "Входящий звонок");
@@ -96,7 +104,7 @@ public class IncomingCallActivity extends BridgeActivity {
             callTypeView.setText(isVideo ? "Видеозвонок" : "Аудиозвонок");
         }
 
-        // TODO: Загрузить аватар из avatarUrl
+        loadAvatarAsync(avatarView);
 
         // Кнопка "Ответить" (аудио)
         if (answerButton != null) {
@@ -184,8 +192,43 @@ public class IncomingCallActivity extends BridgeActivity {
 
     @Override
     public void onDestroy() {
+        avatarExecutor.shutdownNow();
         currentInstance = null;
         super.onDestroy();
+    }
+
+    private void loadAvatarAsync(ImageView target) {
+        if (avatarUrl == null || avatarUrl.isEmpty()) {
+            return;
+        }
+        avatarExecutor.execute(() -> {
+            Bitmap bitmap = downloadBitmap(avatarUrl);
+            if (bitmap != null) {
+                runOnUiThread(() -> target.setImageBitmap(bitmap));
+            }
+        });
+    }
+
+    private Bitmap downloadBitmap(String urlString) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(urlString);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(4000);
+            connection.setReadTimeout(4000);
+            connection.connect();
+            if (connection.getResponseCode() >= 200 && connection.getResponseCode() < 300) {
+                try (InputStream stream = connection.getInputStream()) {
+                    return BitmapFactory.decodeStream(stream);
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+        return null;
     }
 }
 

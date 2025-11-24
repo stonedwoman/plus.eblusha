@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Еблуша Plus</string>
+    <string name="title_activity_main">Еблуша Plus</string>
+    <string name="package_name">org.eblusha.plus</string>
+    <string name="custom_url_scheme">org.eblusha.plus</string>
+    <string name="answer_call">Ответить</string>
+    <string name="answer_with_video">Ответить с видео</string>
+    <string name="decline_call">Отклонить</string>
+</resources>
