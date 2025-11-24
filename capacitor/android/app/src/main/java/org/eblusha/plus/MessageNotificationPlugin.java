@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Build;
+import android.webkit.CookieManager;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -180,6 +181,13 @@ public class MessageNotificationPlugin extends Plugin {
         try {
             URL url = new URL(avatarUrl);
             connection = (HttpURLConnection) url.openConnection();
+            CookieManager cookieManager = CookieManager.getInstance();
+            if (cookieManager != null) {
+                String cookies = cookieManager.getCookie(avatarUrl);
+                if (cookies != null && !cookies.isEmpty()) {
+                    connection.setRequestProperty("Cookie", cookies);
+                }
+            }
             connection.setConnectTimeout(4000);
             connection.setReadTimeout(4000);
             connection.connect();
