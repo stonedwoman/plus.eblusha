@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@capacitor/cli": "^7.4.4",
     "@types/cookie-parser": "^1.4.10",
     "@types/morgan": "^1.9.10",
     "typescript": "~5.9.3",
