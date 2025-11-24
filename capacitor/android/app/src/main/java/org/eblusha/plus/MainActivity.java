@@ -9,5 +9,12 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(MessageNotificationPlugin.class);
         registerPlugin(IncomingCallPlugin.class);
         super.onCreate(savedInstanceState);
+        BackgroundConnectionService.start(this);
+    }
+
+    @Override
+    protected void onDestroy() {
+        BackgroundConnectionService.stop(this);
+        super.onDestroy();
     }
 }
