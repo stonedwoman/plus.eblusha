@@ -1,7 +1,6 @@
 package org.eblusha.plus;
 
-import android.app.Activity;
-import com.getcapacitor.JSObject;
+import android.content.Context;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
@@ -22,25 +21,20 @@ public class IncomingCallPlugin extends Plugin {
             return;
         }
 
-        Activity activity = getActivity();
-        if (activity == null) {
-            call.reject("Activity is null");
+        // Открываем нативный экран входящего звонка
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context is null");
             return;
         }
-
-        // Открываем нативный экран входящего звонка
-        IncomingCallActivity.show(activity, conversationId, callerName, isVideo, avatarUrl);
+        IncomingCallActivity.show(context, conversationId, callerName, isVideo, avatarUrl);
         
         call.resolve();
     }
 
     @PluginMethod
     public void closeIncomingCall(PluginCall call) {
-        // Закрываем Activity если она открыта
-        Activity activity = getActivity();
-        if (activity instanceof IncomingCallActivity) {
-            activity.finish();
-        }
+        IncomingCallActivity.dismissCurrent();
         call.resolve();
     }
 }

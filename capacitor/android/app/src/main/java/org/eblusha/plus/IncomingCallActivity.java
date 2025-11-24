@@ -1,6 +1,6 @@
 package org.eblusha.plus;
 
-import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.view.View;
@@ -27,8 +27,18 @@ public class IncomingCallActivity extends BridgeActivity {
     private boolean isVideo;
     private String avatarUrl;
 
+    private static volatile IncomingCallActivity currentInstance;
+
+    public static void dismissCurrent() {
+        IncomingCallActivity instance = currentInstance;
+        if (instance != null) {
+            instance.runOnUiThread(instance::finish);
+        }
+    }
+
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
+        currentInstance = this;
         super.onCreate(savedInstanceState);
 
         // Получаем данные из Intent
@@ -153,9 +163,9 @@ public class IncomingCallActivity extends BridgeActivity {
     /**
      * Статический метод для открытия экрана входящего звонка
      */
-    public static void show(Activity activity, String conversationId, String callerName, 
+    public static void show(Context context, String conversationId, String callerName,
                            boolean isVideo, @Nullable String avatarUrl) {
-        Intent intent = new Intent(activity, IncomingCallActivity.class);
+        Intent intent = new Intent(context, IncomingCallActivity.class);
         intent.putExtra(EXTRA_CONVERSATION_ID, conversationId);
         intent.putExtra(EXTRA_CALLER_NAME, callerName);
         intent.putExtra(EXTRA_IS_VIDEO, isVideo);
@@ -163,13 +173,19 @@ public class IncomingCallActivity extends BridgeActivity {
             intent.putExtra(EXTRA_AVATAR_URL, avatarUrl);
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        activity.startActivity(intent);
+        context.startActivity(intent);
     }
 
     @Override
     public void onBackPressed() {
         // Блокируем кнопку "Назад" - можно только ответить или отклонить
         declineCall();
+    }
+
+    @Override
+    protected void onDestroy() {
+        currentInstance = null;
+        super.onDestroy();
     }
 }
 
