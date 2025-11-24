@@ -1,6 +1,5 @@
 package org.eblusha.plus;
 
-import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -8,14 +7,20 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
+import android.media.AudioAttributes;
+import android.media.MediaPlayer;
+import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
+import android.provider.Settings;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
-import androidx.core.content.ContextCompat;
 
 public class IncomingCallService extends Service {
 
@@ -32,6 +37,15 @@ public class IncomingCallService extends Service {
     private static final String EXTRA_CALLER_NAME = "caller_name";
     private static final String EXTRA_IS_VIDEO = "is_video";
     private static final String EXTRA_AVATAR_URL = "avatar_url";
+
+    private MediaPlayer mediaPlayer;
+    private Vibrator vibrator;
+    private PowerManager.WakeLock wakeLock;
+
+    private String activeConversationId;
+    private boolean activeIsVideo;
+    private String activeCallerName;
+    private String activeAvatarUrl;
 
     public static void start(
         Context context,
@@ -64,6 +78,7 @@ public class IncomingCallService extends Service {
     public void onCreate() {
         super.onCreate();
         createChannel();
+        initVibrator();
     }
 
     @Override
@@ -75,6 +90,7 @@ public class IncomingCallService extends Service {
 
         String action = intent.getAction();
         if (ACTION_STOP_CALL.equals(action)) {
+            stopAlerting();
             IncomingCallActivity.dismissCurrent();
             stopForeground(true);
             stopSelf();
@@ -85,22 +101,124 @@ public class IncomingCallService extends Service {
             return START_NOT_STICKY;
         }
 
-        if (!hasCallPermissions()) {
-            Log.w(TAG, "Missing MANAGE_OWN_CALLS permission, stopping service");
-            stopSelf();
-            return START_NOT_STICKY;
-        }
+        activeConversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID);
+        activeCallerName = intent.getStringExtra(EXTRA_CALLER_NAME);
+        activeIsVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false);
+        activeAvatarUrl = intent.getStringExtra(EXTRA_AVATAR_URL);
 
-        String conversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID);
-        String callerName = intent.getStringExtra(EXTRA_CALLER_NAME);
-        boolean isVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false);
-        String avatarUrl = intent.getStringExtra(EXTRA_AVATAR_URL);
-
-        Notification notification = buildNotification(conversationId, callerName, isVideo, avatarUrl);
+        Notification notification = buildNotification(
+            activeConversationId,
+            activeCallerName,
+            activeIsVideo,
+            activeAvatarUrl
+        );
+        startAlerting();
         startForeground(NOTIFICATION_ID, notification);
-        launchFullScreenUi(conversationId, callerName, isVideo, avatarUrl);
+        launchFullScreenUi(activeConversationId, activeCallerName, activeIsVideo, activeAvatarUrl);
 
         return START_STICKY;
+    }
+
+    private void startAlerting() {
+        acquireWakeLock();
+        startRingtone();
+        startVibration();
+    }
+
+    private void stopAlerting() {
+        releaseWakeLock();
+        stopRingtone();
+        stopVibration();
+    }
+
+    private void startRingtone() {
+        try {
+            stopRingtone();
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setAudioAttributes(
+                new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            );
+            Uri ringtoneUri = Settings.System.DEFAULT_RINGTONE_URI;
+            mediaPlayer.setDataSource(this, ringtoneUri);
+            mediaPlayer.setLooping(true);
+            mediaPlayer.setVolume(1.0f, 1.0f);
+            mediaPlayer.prepare();
+            mediaPlayer.start();
+        } catch (Exception ex) {
+            Log.e(TAG, "Failed to start ringtone", ex);
+            stopRingtone();
+        }
+    }
+
+    private void stopRingtone() {
+        if (mediaPlayer != null) {
+            try {
+                mediaPlayer.stop();
+            } catch (Exception ignored) { }
+            mediaPlayer.reset();
+            mediaPlayer.release();
+            mediaPlayer = null;
+        }
+    }
+
+    private void initVibrator() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager vibratorManager =
+                (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+            if (vibratorManager != null) {
+                vibrator = vibratorManager.getDefaultVibrator();
+            }
+        } else {
+            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        }
+    }
+
+    private void startVibration() {
+        if (vibrator == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            long[] timings = new long[]{0, 1000, 500, 1000, 500, 1200};
+            int[] amplitudes = new int[]{0, 255, 0, 255, 0, 255};
+            VibrationEffect effect = VibrationEffect.createWaveform(timings, amplitudes, 0);
+            vibrator.vibrate(effect);
+        } else {
+            vibrator.vibrate(new long[]{0, 1000, 500, 1000}, 0);
+        }
+    }
+
+    private void stopVibration() {
+        if (vibrator != null) {
+            vibrator.cancel();
+        }
+    }
+
+    private void acquireWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            return;
+        }
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (powerManager == null) {
+            return;
+        }
+        wakeLock = powerManager.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                | PowerManager.ON_AFTER_RELEASE,
+            TAG + ":WakeLock"
+        );
+        wakeLock.setReferenceCounted(false);
+        wakeLock.acquire(60_000L);
+    }
+
+    private void releaseWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
+        wakeLock = null;
     }
 
     private void launchFullScreenUi(
@@ -147,6 +265,7 @@ public class IncomingCallService extends Service {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .setAutoCancel(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .build();
     }
@@ -163,6 +282,13 @@ public class IncomingCallService extends Service {
                         NotificationManager.IMPORTANCE_HIGH
                     );
                     channel.setDescription("Уведомления о входящих звонках");
+                    channel.setLockscreenVisibility(NotificationCompat.VISIBILITY_PUBLIC);
+                    AudioAttributes attrs = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build();
+                    channel.setSound(Settings.System.DEFAULT_RINGTONE_URI, attrs);
+                    channel.enableVibration(true);
                     manager.createNotificationChannel(channel);
                 }
             }
@@ -175,12 +301,10 @@ public class IncomingCallService extends Service {
         return null;
     }
 
-    private boolean hasCallPermissions() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            return true;
-        }
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.MANAGE_OWN_CALLS)
-            == PackageManager.PERMISSION_GRANTED;
+    @Override
+    public void onDestroy() {
+        stopAlerting();
+        super.onDestroy();
     }
 }
 

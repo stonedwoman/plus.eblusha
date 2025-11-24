@@ -1,0 +1,1 @@
+class s{async show(e){console.log("[MessageNotificationWeb] show",e)}async cancel(e){console.log("[MessageNotificationWeb] cancel",e)}async clear(){console.log("[MessageNotificationWeb] clear")}}export{s as MessageNotificationWeb};

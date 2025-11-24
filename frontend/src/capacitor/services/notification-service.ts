@@ -440,22 +440,20 @@ export class NotificationService {
   }
 
   private async isInForeground(): Promise<boolean> {
-    if (!this.hasInitialAppState) {
-      try {
-        const state = await App.getState()
-        this.isAppActive = state.isActive
-        this.hasInitialAppState = true
-        this.appStateWarningLogged = false
-      } catch (error) {
-        if (!this.appStateWarningLogged) {
-          console.warn(
-            '[NotificationService] ⚠️ Failed to get current App state, falling back to cached value',
-            error
-          )
-          this.appStateWarningLogged = true
-        }
-        this.hasInitialAppState = true
+    try {
+      const state = await App.getState()
+      this.isAppActive = state.isActive
+      this.hasInitialAppState = true
+      this.appStateWarningLogged = false
+    } catch (error) {
+      if (!this.appStateWarningLogged) {
+        console.warn(
+          '[NotificationService] ⚠️ Failed to get current App state, falling back to cached value',
+          error
+        )
+        this.appStateWarningLogged = true
       }
+      this.hasInitialAppState = true
     }
 
     if (typeof document !== 'undefined') {

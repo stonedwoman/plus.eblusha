@@ -32,9 +32,19 @@ export class CallHandler {
   private activeIncomingCalls = new Map<string, CallIncomingPayload>() // conversationId -> call data
   private callNotificationIds = new Map<string, number>() // conversationId -> notificationId
   private autoDeclineTimers = new Map<string, ReturnType<typeof setTimeout>>() // conversationId -> timer
+  private readonly useNativeIncomingCallUi: boolean
 
   constructor(callbacks: CallHandlerCallbacks) {
     this.callbacks = callbacks
+    const isNative =
+      typeof Capacitor.isNativePlatform === 'function'
+        ? Capacitor.isNativePlatform()
+        : Capacitor.getPlatform() !== 'web'
+    const hasPlugin =
+      typeof Capacitor.isPluginAvailable === 'function'
+        ? Capacitor.isPluginAvailable('IncomingCall')
+        : false
+    this.useNativeIncomingCallUi = isNative && hasPlugin
   }
 
   /**
@@ -60,7 +70,7 @@ export class CallHandler {
 
       this.activeIncomingCalls.set(payload.conversationId, payload)
 
-      // Показываем нативный экран входящего звонка
+      // Показываем входящий звонок (нативный UI или fallback-уведомление)
       await this.handleIncomingCall(payload)
 
       // Автоматический decline через 25 секунд
@@ -163,20 +173,23 @@ export class CallHandler {
     try {
       // Получаем информацию о беседе
       const conversationInfo = await this.callbacks.getConversationInfo?.(payload.conversationId)
+      const callerName = payload.from.name || conversationInfo?.title || 'Неизвестный'
+      const avatarUrl = conversationInfo?.avatarUrl
 
-      // Показываем уведомление о входящем звонке (с full-screen intent)
-      const notificationId = await this.notificationService.showIncomingCallNotification(
-        payload.conversationId,
-        payload.from.name || conversationInfo?.title || 'Неизвестный',
-        payload.video,
-        conversationInfo?.avatarUrl
-      )
+      let nativeUiShown = false
+      if (this.useNativeIncomingCallUi) {
+        nativeUiShown = await this.openIncomingCallScreen(payload, callerName, avatarUrl)
+      }
 
-      this.callNotificationIds.set(payload.conversationId, notificationId)
-
-      // Открываем нативный экран входящего звонка
-      // Это будет сделано через Capacitor plugin или напрямую через нативный код
-      await this.openIncomingCallScreen(payload)
+      if (!nativeUiShown) {
+        const notificationId = await this.notificationService.showIncomingCallNotification(
+          payload.conversationId,
+          callerName,
+          payload.video,
+          avatarUrl
+        )
+        this.callNotificationIds.set(payload.conversationId, notificationId)
+      }
     } catch (error) {
       console.error('[CallHandler] Error handling incoming call:', error)
     }
@@ -185,22 +198,26 @@ export class CallHandler {
   /**
    * Открыть нативный экран входящего звонка
    */
-  private async openIncomingCallScreen(payload: CallIncomingPayload): Promise<void> {
-    if (!Capacitor.isNativePlatform()) {
-      return
+  private async openIncomingCallScreen(
+    payload: CallIncomingPayload,
+    callerName?: string,
+    avatarUrl?: string
+  ): Promise<boolean> {
+    if (!this.useNativeIncomingCallUi) {
+      return false
     }
 
     try {
-      const conversationInfo = await this.callbacks.getConversationInfo?.(payload.conversationId)
-      
       await IncomingCall.showIncomingCall({
         conversationId: payload.conversationId,
-        callerName: payload.from.name || conversationInfo?.title || 'Неизвестный',
+        callerName: callerName || payload.from.name || 'Неизвестный',
         isVideo: payload.video,
-        avatarUrl: conversationInfo?.avatarUrl,
+        avatarUrl,
       })
+      return true
     } catch (error) {
       console.error('[CallHandler] Error opening incoming call screen:', error)
+      return false
     }
   }
 
