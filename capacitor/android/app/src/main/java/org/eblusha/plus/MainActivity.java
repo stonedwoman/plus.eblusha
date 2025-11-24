@@ -28,7 +28,6 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    @Override
     public void onResume() {
         super.onResume();
         if (pendingCallIntent != null) {
