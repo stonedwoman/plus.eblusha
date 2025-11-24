@@ -8,6 +8,7 @@ export interface IncomingCallPlugin {
     avatarUrl?: string
   }): Promise<void>
   closeIncomingCall(): Promise<void>
+  ensurePermissions(): Promise<{ granted: boolean }>
 }
 
 const IncomingCall = registerPlugin<IncomingCallPlugin>('IncomingCall', {
