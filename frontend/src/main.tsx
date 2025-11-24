@@ -385,6 +385,26 @@ function AppRoot() {
               },
             })
             
+            const flushNativeCallActions = () => {
+              const queue = (window as any).__pendingCallActions
+              if (!Array.isArray(queue) || queue.length === 0) {
+                return
+              }
+              while (queue.length > 0) {
+                const action = queue.shift()
+                if (!action || !action.conversationId) {
+                  continue
+                }
+                if (action.action === 'accept') {
+                  acceptCall(action.conversationId, !!action.withVideo)
+                } else if (action.action === 'decline') {
+                  declineCall(action.conversationId)
+                }
+              }
+            }
+
+            ;(window as any).__flushNativeCallActions = flushNativeCallActions
+
             // Глобальные обработчики для нативного экрана звонка
             ;(window as any).handleIncomingCallAnswer = (conversationId: string, withVideo: boolean) => {
               acceptCall(conversationId, withVideo)
@@ -393,6 +413,8 @@ function AppRoot() {
             ;(window as any).handleIncomingCallDecline = (conversationId: string) => {
               declineCall(conversationId)
             }
+
+            flushNativeCallActions()
             console.log('[Main] ✅ All native services initialized')
           }).catch((error) => {
             console.error('[Main] ❌ Failed to initialize native services:', error)

@@ -2,17 +2,16 @@ package org.eblusha.plus;
 
 import android.content.Context;
 import android.content.Intent;
-import android.os.Bundle;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.os.Bundle;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.TextView;
 import androidx.annotation.Nullable;
-import com.getcapacitor.BridgeActivity;
-import com.getcapacitor.Plugin;
+import androidx.appcompat.app.AppCompatActivity;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -23,7 +22,7 @@ import java.util.concurrent.Executors;
  * Нативный экран входящего звонка
  * Открывается как full-screen Activity при получении call:incoming события
  */
-public class IncomingCallActivity extends BridgeActivity {
+public class IncomingCallActivity extends AppCompatActivity {
     private static final String EXTRA_CONVERSATION_ID = "conversation_id";
     private static final String EXTRA_CALLER_NAME = "caller_name";
     private static final String EXTRA_IS_VIDEO = "is_video";
@@ -134,37 +133,26 @@ public class IncomingCallActivity extends BridgeActivity {
 
     private void answerCall(boolean withVideo) {
         // Отправляем событие в JavaScript через Capacitor
-        try {
-            if (bridge != null && bridge.getWebView() != null) {
-                String js = String.format(
-                    "if (window.handleIncomingCallAnswer) { window.handleIncomingCallAnswer('%s', %s); }",
-                    conversationId, withVideo
-                );
-                bridge.getWebView().evaluateJavascript(js, null);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        // Закрываем Activity
+        IncomingCallService.accept(
+            this,
+            conversationId,
+            callerName != null ? callerName : "Входящий звонок",
+            isVideo,
+            avatarUrl,
+            withVideo
+        );
         finish();
     }
 
     private void declineCall() {
         // Отправляем событие в JavaScript
-        try {
-            if (bridge != null && bridge.getWebView() != null) {
-                String js = String.format(
-                    "if (window.handleIncomingCallDecline) { window.handleIncomingCallDecline('%s'); }",
-                    conversationId
-                );
-                bridge.getWebView().evaluateJavascript(js, null);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        // Закрываем Activity
+        IncomingCallService.decline(
+            this,
+            conversationId,
+            callerName != null ? callerName : "Входящий звонок",
+            isVideo,
+            avatarUrl
+        );
         finish();
     }
 

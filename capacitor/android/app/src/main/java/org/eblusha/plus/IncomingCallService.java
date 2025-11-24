@@ -32,11 +32,14 @@ public class IncomingCallService extends Service {
 
     private static final String ACTION_START_CALL = "org.eblusha.plus.action.START_CALL";
     private static final String ACTION_STOP_CALL = "org.eblusha.plus.action.STOP_CALL";
+    private static final String ACTION_ACCEPT_CALL = "org.eblusha.plus.action.ACCEPT_CALL";
+    private static final String ACTION_DECLINE_CALL = "org.eblusha.plus.action.DECLINE_CALL";
 
     private static final String EXTRA_CONVERSATION_ID = "conversation_id";
     private static final String EXTRA_CALLER_NAME = "caller_name";
     private static final String EXTRA_IS_VIDEO = "is_video";
     private static final String EXTRA_AVATAR_URL = "avatar_url";
+    private static final String EXTRA_ACCEPT_WITH_VIDEO = "accept_with_video";
 
     private MediaPlayer mediaPlayer;
     private Vibrator vibrator;
@@ -74,6 +77,48 @@ public class IncomingCallService extends Service {
         context.startService(intent);
     }
 
+    public static void accept(
+        Context context,
+        String conversationId,
+        String callerName,
+        boolean isVideo,
+        @Nullable String avatarUrl,
+        boolean withVideo
+    ) {
+        Intent intent = new Intent(context, IncomingCallService.class);
+        intent.setAction(ACTION_ACCEPT_CALL);
+        intent.putExtra(EXTRA_CONVERSATION_ID, conversationId);
+        intent.putExtra(EXTRA_CALLER_NAME, callerName);
+        intent.putExtra(EXTRA_IS_VIDEO, isVideo);
+        intent.putExtra(EXTRA_AVATAR_URL, avatarUrl);
+        intent.putExtra(EXTRA_ACCEPT_WITH_VIDEO, withVideo);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
+    }
+
+    public static void decline(
+        Context context,
+        String conversationId,
+        String callerName,
+        boolean isVideo,
+        @Nullable String avatarUrl
+    ) {
+        Intent intent = new Intent(context, IncomingCallService.class);
+        intent.setAction(ACTION_DECLINE_CALL);
+        intent.putExtra(EXTRA_CONVERSATION_ID, conversationId);
+        intent.putExtra(EXTRA_CALLER_NAME, callerName);
+        intent.putExtra(EXTRA_IS_VIDEO, isVideo);
+        intent.putExtra(EXTRA_AVATAR_URL, avatarUrl);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -97,14 +142,24 @@ public class IncomingCallService extends Service {
             return START_NOT_STICKY;
         }
 
+        if (ACTION_ACCEPT_CALL.equals(action)) {
+            updateActiveCallInfo(intent);
+            boolean withVideo = intent.getBooleanExtra(EXTRA_ACCEPT_WITH_VIDEO, activeIsVideo);
+            handleAccept(withVideo);
+            return START_NOT_STICKY;
+        }
+
+        if (ACTION_DECLINE_CALL.equals(action)) {
+            updateActiveCallInfo(intent);
+            handleDecline();
+            return START_NOT_STICKY;
+        }
+
         if (!ACTION_START_CALL.equals(action)) {
             return START_NOT_STICKY;
         }
 
-        activeConversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID);
-        activeCallerName = intent.getStringExtra(EXTRA_CALLER_NAME);
-        activeIsVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false);
-        activeAvatarUrl = intent.getStringExtra(EXTRA_AVATAR_URL);
+        updateActiveCallInfo(intent);
 
         Notification notification = buildNotification(
             activeConversationId,
@@ -257,6 +312,20 @@ public class IncomingCallService extends Service {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
+        PendingIntent acceptIntent = PendingIntent.getService(
+            this,
+            1,
+            buildActionIntent(ACTION_ACCEPT_CALL, true),
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        PendingIntent declineIntent = PendingIntent.getService(
+            this,
+            2,
+            buildActionIntent(ACTION_DECLINE_CALL, false),
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
         return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(isVideo ? "Входящий видеозвонок" : "Входящий звонок")
             .setContentText(callerName != null ? callerName : "Неизвестный абонент")
@@ -265,9 +334,22 @@ public class IncomingCallService extends Service {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .setAutoCancel(false)
+            .addAction(android.R.drawable.sym_action_call, "Принять", acceptIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отклонить", declineIntent)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .build();
+    }
+
+    private Intent buildActionIntent(String action, boolean withVideo) {
+        Intent intent = new Intent(this, IncomingCallService.class);
+        intent.setAction(action);
+        intent.putExtra(EXTRA_CONVERSATION_ID, activeConversationId);
+        intent.putExtra(EXTRA_CALLER_NAME, activeCallerName);
+        intent.putExtra(EXTRA_IS_VIDEO, activeIsVideo);
+        intent.putExtra(EXTRA_AVATAR_URL, activeAvatarUrl);
+        intent.putExtra(EXTRA_ACCEPT_WITH_VIDEO, withVideo);
+        return intent;
     }
 
     private void createChannel() {
@@ -305,6 +387,59 @@ public class IncomingCallService extends Service {
     public void onDestroy() {
         stopAlerting();
         super.onDestroy();
+    }
+
+    private void updateActiveCallInfo(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        if (intent.hasExtra(EXTRA_CONVERSATION_ID)) {
+            activeConversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID);
+        }
+        if (intent.hasExtra(EXTRA_CALLER_NAME)) {
+            activeCallerName = intent.getStringExtra(EXTRA_CALLER_NAME);
+        }
+        if (intent.hasExtra(EXTRA_IS_VIDEO)) {
+            activeIsVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false);
+        }
+        if (intent.hasExtra(EXTRA_AVATAR_URL)) {
+            activeAvatarUrl = intent.getStringExtra(EXTRA_AVATAR_URL);
+        }
+    }
+
+    private void handleAccept(boolean withVideo) {
+        stopAlerting();
+        stopForeground(true);
+        IncomingCallActivity.dismissCurrent();
+        launchMainForAction("accept", withVideo);
+        stopSelf();
+    }
+
+    private void handleDecline() {
+        stopAlerting();
+        stopForeground(true);
+        IncomingCallActivity.dismissCurrent();
+        launchMainForAction("decline", false);
+        stopSelf();
+    }
+
+    private void launchMainForAction(String action, boolean withVideo) {
+        if (activeConversationId == null) {
+            return;
+        }
+        Intent mainIntent = new Intent(this, MainActivity.class);
+        mainIntent.setFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+        );
+        mainIntent.putExtra("call_action", action);
+        mainIntent.putExtra(EXTRA_CONVERSATION_ID, activeConversationId);
+        mainIntent.putExtra(EXTRA_IS_VIDEO, activeIsVideo);
+        mainIntent.putExtra(EXTRA_CALLER_NAME, activeCallerName);
+        mainIntent.putExtra(EXTRA_AVATAR_URL, activeAvatarUrl);
+        mainIntent.putExtra(EXTRA_ACCEPT_WITH_VIDEO, withVideo);
+        startActivity(mainIntent);
     }
 }
 
