@@ -13,7 +13,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onDestroy() {
+    public void onDestroy() {
         BackgroundConnectionService.stop(this);
         super.onDestroy();
     }
