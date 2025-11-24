@@ -183,7 +183,7 @@ public class IncomingCallActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onDestroy() {
+    public void onDestroy() {
         currentInstance = null;
         super.onDestroy();
     }
