@@ -41,6 +41,12 @@ export class CallHandler {
    * Инициализация обработчиков звонков
    */
   initialize(): () => void {
+    if (Capacitor.isNativePlatform() && typeof IncomingCall.ensurePermissions === 'function') {
+      IncomingCall.ensurePermissions().catch((error) => {
+        console.warn('[CallHandler] Failed to ensure call permissions', error)
+      })
+    }
+
     const unsubscribers: Array<() => void> = []
 
     // call:incoming - входящий звонок (1:1)

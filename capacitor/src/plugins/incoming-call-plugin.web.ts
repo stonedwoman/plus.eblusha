@@ -11,6 +11,11 @@ export class IncomingCallWeb extends WebPlugin implements IncomingCallPlugin {
     // На веб-платформе ничего не делаем
     console.log('[IncomingCallWeb] closeIncomingCall called on web platform')
   }
+
+  async ensurePermissions(): Promise<{ granted: boolean }> {
+    console.log('[IncomingCallWeb] ensurePermissions called on web platform')
+    return { granted: true }
+  }
 }
 
 

@@ -225,6 +225,97 @@ function AppRoot() {
             console.log('[Main] ✅ Capacitor module loaded successfully!')
             console.log('[Main] Module exports:', Object.keys(module))
             const { initializeSocketConnection, initializeMessageHandlers, initializeCallHandlers, updateSocketToken } = module
+
+            const resolveAvatarUrl = (url?: string | null): string | undefined => {
+              if (!url) return undefined
+              if (/^https?:\/\//i.test(url)) {
+                return url
+              }
+              const originFallback = typeof window !== 'undefined' ? window.location.origin : 'https://ru.eblusha.org'
+              const base = api.defaults.baseURL ? new URL(api.defaults.baseURL, originFallback).origin : originFallback
+              const normalizedPath = url.startsWith('/') ? url.slice(1) : url
+              return `${base.replace(/\/$/, '')}/${normalizedPath}`
+            }
+
+            const conversationsKey = ['conversations']
+
+            const fetchConversations = async () => {
+              const response = await api.get('/conversations')
+              queryClient.setQueryData(conversationsKey, response.data.conversations)
+              return response.data.conversations as any[]
+            }
+
+            const findConversationRow = (conversationId: string, list?: any[]) =>
+              list?.find((c: any) => c.conversation?.id === conversationId)
+
+            const getConversationRow = async (conversationId: string) => {
+              let conversations = queryClient.getQueryData(conversationsKey) as any[] | undefined
+              let row = findConversationRow(conversationId, conversations)
+
+              if (!row) {
+                conversations = await fetchConversations()
+                row = findConversationRow(conversationId, conversations)
+              } else {
+                fetchConversations().catch((error) => {
+                  console.warn('[Native] Failed to refresh conversations list', error)
+                })
+              }
+
+              return row
+            }
+
+            const buildConversationInfo = async (
+              conversationId: string,
+              context?: { senderId?: string }
+            ) => {
+              const row = await getConversationRow(conversationId)
+              const conversation = row?.conversation
+              if (!conversation) {
+                return null
+              }
+
+              const participants = conversation.participants || []
+              const currentUserId = useAppStore.getState().session?.user?.id
+
+              const senderParticipant = context?.senderId
+                ? participants.find((p: any) => p.user.id === context.senderId)
+                : undefined
+
+              const counterpart =
+                !conversation.isGroup && currentUserId
+                  ? participants.find((p: any) => p.user.id !== currentUserId)
+                  : undefined
+
+              const senderName =
+                senderParticipant?.user?.displayName ||
+                senderParticipant?.user?.username ||
+                counterpart?.user?.displayName ||
+                counterpart?.user?.username ||
+                conversation.title ||
+                'Новое сообщение'
+
+              const avatarCandidate =
+                senderParticipant?.user?.avatarUrl ||
+                counterpart?.user?.avatarUrl ||
+                conversation.avatarUrl ||
+                undefined
+
+              const avatarUrl = resolveAvatarUrl(avatarCandidate)
+
+              let messageText: string | undefined
+              const latestMessage = conversation?.messages?.[0]
+              if (latestMessage?.content) {
+                messageText = latestMessage.content
+              }
+
+              return {
+                title: conversation.title,
+                avatarUrl,
+                senderName,
+                messageText,
+                isGroup: !!conversation.isGroup,
+              }
+            }
             // Для Capacitor используем URL из конфигурации или ru.eblusha.org
             const wsUrl = 'https://ru.eblusha.org'
             console.log('[Main] Connecting native Socket.IO to:', wsUrl)
@@ -258,66 +349,7 @@ function AppRoot() {
                 conversationId: string,
                 context?: { senderId?: string; messageId?: string }
               ) => {
-                const fetchConversations = async () => {
-                  const response = await api.get('/conversations')
-                  queryClient.setQueryData(['conversations'], response.data.conversations)
-                  return response.data.conversations as any[]
-                }
-
-                const findConversation = (list?: any[]) =>
-                  list?.find((c: any) => c.conversation?.id === conversationId)
-
-                let conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
-                let row = findConversation(conversations)
-
-                if (!row) {
-                  conversations = await fetchConversations()
-                  row = findConversation(conversations)
-                } else {
-                  fetchConversations().catch((error) => {
-                    console.warn('[Native] Failed to refresh conversations list', error)
-                  })
-                }
-
-                const conversation = row?.conversation
-                const participants = conversation?.participants || []
-                const currentUserId = useAppStore.getState().session?.user?.id
-
-                const senderParticipant = context?.senderId
-                  ? participants.find((p: any) => p.user.id === context.senderId)
-                  : undefined
-
-                const counterpart =
-                  !conversation?.isGroup && currentUserId
-                    ? participants.find((p: any) => p.user.id !== currentUserId)
-                    : undefined
-
-                const senderName =
-                  senderParticipant?.user?.displayName ||
-                  senderParticipant?.user?.username ||
-                  counterpart?.user?.displayName ||
-                  counterpart?.user?.username ||
-                  conversation?.title ||
-                  'Новое сообщение'
-
-                const avatarUrl =
-                  senderParticipant?.user?.avatarUrl ||
-                  counterpart?.user?.avatarUrl ||
-                  conversation?.avatarUrl ||
-                  undefined
-
-                let messageText: string | undefined
-                const latestMessage = conversation?.messages?.[0]
-                if (latestMessage?.content) {
-                  messageText = latestMessage.content
-                }
-
-                return {
-                  title: conversation?.title,
-                  avatarUrl,
-                  senderName,
-                  messageText,
-                }
+                return buildConversationInfo(conversationId, { senderId: context?.senderId })
               },
             })
             
@@ -342,13 +374,14 @@ function AppRoot() {
                 console.log('[Native] Call status update:', conversationId, status)
               },
               getConversationInfo: async (conversationId: string) => {
-                const conversations = queryClient.getQueryData(['conversations']) as any[] | undefined
-                const conv = conversations?.find((c: any) => c.conversation?.id === conversationId)
-                return {
-                  title: conv?.conversation?.title,
-                  avatarUrl: conv?.conversation?.avatarUrl,
-                  isGroup: conv?.conversation?.isGroup,
-                }
+                const info = await buildConversationInfo(conversationId)
+                return info
+                  ? {
+                      title: info.title,
+                      avatarUrl: info.avatarUrl,
+                      isGroup: info.isGroup,
+                    }
+                  : null
               },
             })
             
