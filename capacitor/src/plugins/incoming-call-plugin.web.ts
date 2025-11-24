@@ -16,6 +16,11 @@ export class IncomingCallWeb extends WebPlugin implements IncomingCallPlugin {
     console.log('[IncomingCallWeb] ensurePermissions called on web platform')
     return { granted: true }
   }
+
+  async ensureBackgroundExecution(): Promise<{ granted: boolean }> {
+    console.log('[IncomingCallWeb] ensureBackgroundExecution called on web platform')
+    return { granted: true }
+  }
 }
 
 

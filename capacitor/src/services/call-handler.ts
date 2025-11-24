@@ -45,6 +45,11 @@ export class CallHandler {
       IncomingCall.ensurePermissions().catch((error) => {
         console.warn('[CallHandler] Failed to ensure call permissions', error)
       })
+      if (typeof IncomingCall.ensureBackgroundExecution === 'function') {
+        IncomingCall.ensureBackgroundExecution().catch((error) => {
+          console.warn('[CallHandler] Failed to ensure background execution permission', error)
+        })
+      }
     }
 
     const unsubscribers: Array<() => void> = []
