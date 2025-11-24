@@ -27,13 +27,17 @@ public class IncomingCallPlugin extends Plugin {
             call.reject("Context is null");
             return;
         }
-        IncomingCallActivity.show(context, conversationId, callerName, isVideo, avatarUrl);
-        
+
+        IncomingCallService.start(context, conversationId, callerName, isVideo, avatarUrl);
         call.resolve();
     }
 
     @PluginMethod
     public void closeIncomingCall(PluginCall call) {
+        Context context = getContext();
+        if (context != null) {
+            IncomingCallService.stop(context);
+        }
         IncomingCallActivity.dismissCurrent();
         call.resolve();
     }
