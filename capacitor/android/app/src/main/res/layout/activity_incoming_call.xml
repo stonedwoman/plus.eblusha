@@ -1,25 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout 
-    xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#0b0b0f"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
     android:padding="24dp">
 
-    <!-- Аватар звонящего -->
     <ImageView
         android:id="@+id/caller_avatar"
         android:layout_width="120dp"
         android:layout_height="120dp"
         android:layout_marginTop="80dp"
-        android:scaleType="centerCrop"
         android:background="#333333"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        android:scaleType="centerCrop" />
 
-    <!-- Имя звонящего -->
     <TextView
         android:id="@+id/caller_name"
         android:layout_width="wrap_content"
@@ -28,12 +23,8 @@
         android:text="Имя звонящего"
         android:textColor="#ffffff"
         android:textSize="24sp"
-        android:textStyle="bold"
-        app:layout_constraintTop_toBottomOf="@id/caller_avatar"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        android:textStyle="bold" />
 
-    <!-- Тип звонка -->
     <TextView
         android:id="@+id/call_type"
         android:layout_width="wrap_content"
@@ -41,52 +32,42 @@
         android:layout_marginTop="8dp"
         android:text="Входящий звонок"
         android:textColor="#888888"
-        android:textSize="16sp"
-        app:layout_constraintTop_toBottomOf="@id/caller_name"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        android:textSize="16sp" />
 
-    <!-- Кнопки действий -->
     <LinearLayout
         android:id="@+id/buttons_container"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="80dp"
-        android:orientation="horizontal"
         android:gravity="center"
-        android:paddingHorizontal="16dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp">
 
-        <!-- Кнопка "Ответить" -->
         <Button
             android:id="@+id/btn_answer"
             android:layout_width="0dp"
             android:layout_height="56dp"
-            android:layout_weight="1"
             android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:backgroundTint="#4CAF50"
             android:text="Ответить"
             android:textColor="#ffffff"
-            android:backgroundTint="#4CAF50"
             android:textSize="16sp"
             android:textStyle="bold" />
 
-        <!-- Кнопка "Ответить с видео" -->
         <Button
             android:id="@+id/btn_answer_video"
             android:layout_width="0dp"
             android:layout_height="56dp"
-            android:layout_weight="1"
             android:layout_marginStart="8dp"
             android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:backgroundTint="#2196F3"
             android:text="С видео"
             android:textColor="#ffffff"
-            android:backgroundTint="#2196F3"
             android:textSize="16sp"
             android:textStyle="bold" />
 
-        <!-- Кнопка "Отклонить" -->
         <Button
             android:id="@+id/btn_decline"
             android:layout_width="56dp"
@@ -98,5 +79,5 @@
             android:textSize="24sp" />
     </LinearLayout>
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+</LinearLayout>
 
