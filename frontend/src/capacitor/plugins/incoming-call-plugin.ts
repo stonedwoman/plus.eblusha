@@ -9,6 +9,7 @@ export interface IncomingCallPlugin {
   }): Promise<void>
   closeIncomingCall(): Promise<void>
   ensurePermissions(): Promise<{ granted: boolean }>
+  ensureBackgroundExecution(): Promise<{ granted: boolean }>
 }
 
 const IncomingCall = registerPlugin<IncomingCallPlugin>('IncomingCall', {

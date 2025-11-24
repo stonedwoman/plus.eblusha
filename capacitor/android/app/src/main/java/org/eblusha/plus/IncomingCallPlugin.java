@@ -1,10 +1,15 @@
 package org.eblusha.plus;
 
 import android.Manifest;
+import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
+import android.os.PowerManager;
+import android.provider.Settings;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -65,6 +70,14 @@ public class IncomingCallPlugin extends Plugin {
         call.resolve(result);
     }
 
+    @PluginMethod
+    public void ensureBackgroundExecution(PluginCall call) {
+        boolean granted = ensureBatteryOptimizationExemption(true);
+        JSObject result = new JSObject();
+        result.put("granted", granted);
+        call.resolve(result);
+    }
+
     private boolean ensureCallPermissions(boolean requestIfMissing) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             return true;
@@ -88,6 +101,27 @@ public class IncomingCallPlugin extends Plugin {
                     REQUEST_CODE_MANAGE_OWN_CALLS
                 );
             }
+        }
+        return false;
+    }
+
+    private boolean ensureBatteryOptimizationExemption(boolean requestIfMissing) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true;
+        }
+        Context context = getContext();
+        if (context == null) {
+            return false;
+        }
+        PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+        if (pm != null && pm.isIgnoringBatteryOptimizations(context.getPackageName())) {
+            return true;
+        }
+        if (requestIfMissing) {
+            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            intent.setData(Uri.parse("package:" + context.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
         }
         return false;
     }
