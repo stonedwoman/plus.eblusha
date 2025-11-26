@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
@@ -11,6 +11,27 @@ import { Avatar } from '../components/Avatar'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
+import { ensureMediaPermissions } from '../../utils/media'
+
+const LAST_ACTIVE_CONVERSATION_KEY = 'eblusha:last-active-conversation'
+const MIN_OUTGOING_CALL_DURATION_MS = 30_000
+
+type PendingAttachment = {
+  url: string
+  type: 'IMAGE' | 'FILE'
+  width?: number
+  height?: number
+  progress?: number
+  __pending?: boolean
+}
+
+type PendingMessage = {
+  id: string
+  createdAt: number
+  senderId: string
+  attachments: PendingAttachment[]
+  content?: string
+}
 
 export default function ChatsPage() {
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -20,9 +41,6 @@ export default function ChatsPage() {
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const attachInputRef = useRef<HTMLInputElement | null>(null)
-  const ringCtxRef = useRef<AudioContext | null>(null)
-  const ringOscRef = useRef<OscillatorNode | null>(null)
-  const ringGainRef = useRef<GainNode | null>(null)
   const ringTimerRef = useRef<number | null>(null)
   const ringingConvIdRef = useRef<string | null>(null)
   const ringAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -69,6 +87,8 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const nodesByMessageId = useRef<Map<string, HTMLElement>>(new Map())
   const nearBottomRef = useRef<boolean>(true)
   const userStickyScrollRef = useRef<boolean>(false)
+  const lastRenderedMessagesRef = useRef(0)
+  const lastScrollConvRef = useRef<string | null>(null)
   const batchToRead = useRef<Set<string>>(new Set())
   const batchTimer = useRef<number | null>(null)
   const scrollPinTimerRef = useRef<number | null>(null)
@@ -125,7 +145,8 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const [attachUploading, setAttachUploading] = useState(false)
   const [attachProgress, setAttachProgress] = useState(0)
   const [attachDragOver, setAttachDragOver] = useState(false)
-  const [pendingByConv, setPendingByConv] = useState<Record<string, Array<{ id: string; createdAt: number; senderId: string; attachments: Array<{ url: string; type: 'IMAGE' | 'FILE'; width?: number; height?: number; progress?: number; __pending?: boolean }> }>>>({})
+  const [callPermissionError, setCallPermissionError] = useState<string | null>(null)
+  const [pendingByConv, setPendingByConv] = useState<Record<string, PendingMessage[]>>({})
   const [clipboardImage, setClipboardImage] = useState<{ file: File; preview: string } | null>(null)
   const [e2eeVersion, setE2eeVersion] = useState(0)
 const activeConversationIdRef = useRef<string | null>(null)
@@ -152,6 +173,10 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
   const me = useAppStore((s) => s.session?.user)
   const callStore = useCallStore()
   const client = useQueryClient()
+  const activePendingMessages = useMemo<PendingMessage[]>(() => {
+    if (!activeId) return []
+    return pendingByConv[activeId] || []
+  }, [activeId, pendingByConv])
   const lightboxTimerRef = useRef<number | null>(null)
   const attachInputOverlayRef = useRef<HTMLDivElement | null>(null)
   const [activeCalls, setActiveCalls] = useState<Record<string, { startedAt: number | null; endedAt?: number | null; active: boolean; participants?: string[]; elapsedMs?: number }>>({})
@@ -159,10 +184,141 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
   const callConvIdRef = useRef<string | null>(null)
   useEffect(() => { callConvIdRef.current = callConvId }, [callConvId])
   const inviterByConvRef = useRef<Record<string, string>>({})
+  const minCallDurationUntilRef = useRef<Record<string, number>>({})
+  const pendingCallAutoCloseTimersRef = useRef<Record<string, number>>({})
+  useEffect(() => {
+    return () => {
+      if (typeof window === 'undefined') return
+      Object.values(pendingCallAutoCloseTimersRef.current).forEach((id) => {
+        if (typeof id === 'number') {
+          window.clearTimeout(id)
+        }
+      })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const getConversationFromCache = useCallback((conversationId: string | null | undefined) => {
+    if (!conversationId) return null
+    const rows = client.getQueryData(['conversations']) as any[] | undefined
+    if (!Array.isArray(rows)) return null
+    const row = rows.find((r: any) => r?.conversation?.id === conversationId)
+    return row?.conversation ?? null
+  }, [client])
+  const isOneToOneConversation = useCallback((conversationId: string | null | undefined) => {
+    const conv = getConversationFromCache(conversationId)
+    if (!conv) return false
+    const participantsCount = conv.participants?.length ?? 0
+    return !conv.isGroup && participantsCount <= 2
+  }, [getConversationFromCache])
+  const clearMinCallDurationGuard = useCallback((conversationId: string | null | undefined) => {
+    if (!conversationId) return
+    const timerId = pendingCallAutoCloseTimersRef.current[conversationId]
+    if (typeof timerId === 'number' && typeof window !== 'undefined') {
+      window.clearTimeout(timerId)
+      delete pendingCallAutoCloseTimersRef.current[conversationId]
+    }
+    delete minCallDurationUntilRef.current[conversationId]
+  }, [])
+  const beginOutgoingCallGuard = useCallback((conversationId: string | null | undefined) => {
+    if (!conversationId) return
+    if (!isOneToOneConversation(conversationId)) return
+    minCallDurationUntilRef.current[conversationId] = Date.now() + MIN_OUTGOING_CALL_DURATION_MS
+  }, [isOneToOneConversation])
+  const scheduleAfterMinCallDuration = useCallback((conversationId: string | null | undefined, action: () => void) => {
+    if (!conversationId) {
+      action()
+      return
+    }
+    const deadline = minCallDurationUntilRef.current[conversationId]
+    if (!deadline) {
+      action()
+      return
+    }
+    const now = Date.now()
+    if (now >= deadline) {
+      clearMinCallDurationGuard(conversationId)
+      action()
+      return
+    }
+    const remaining = deadline - now
+    const existing = pendingCallAutoCloseTimersRef.current[conversationId]
+    if (typeof existing === 'number' && typeof window !== 'undefined') {
+      window.clearTimeout(existing)
+    }
+    if (typeof window === 'undefined') {
+      action()
+      return
+    }
+    pendingCallAutoCloseTimersRef.current[conversationId] = window.setTimeout(() => {
+      delete pendingCallAutoCloseTimersRef.current[conversationId]
+      clearMinCallDurationGuard(conversationId)
+      action()
+    }, remaining)
+  }, [clearMinCallDurationGuard])
+  const describeMediaPermissionError = useCallback((needsVideo: boolean, error: unknown) => {
+    const target = needsVideo ? 'камере и микрофону' : 'микрофону'
+    const name = typeof error === 'object' && error && 'name' in error ? String((error as { name?: string }).name) : ''
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      return `Браузер запретил доступ к ${target}. Разрешите его в адресной строке и попробуйте снова.`
+    }
+    if (name === 'NotFoundError') {
+      return needsVideo
+        ? 'Браузер не нашёл камеру или микрофон. Подключите устройство и попробуйте ещё раз.'
+        : 'Браузер не нашёл микрофон. Подключите устройство и попробуйте ещё раз.'
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      return 'Камера или микрофон уже используются другим приложением или вкладкой.'
+    }
+    return `Не удалось получить доступ к ${target}. Проверьте настройки браузера и попробуйте снова.`
+  }, [])
+  const requireMediaAccess = useCallback(async (needsVideo: boolean) => {
+    try {
+      const result = await ensureMediaPermissions({ audio: true, video: needsVideo })
+      if (!result.ok) {
+        setCallPermissionError(describeMediaPermissionError(needsVideo, result.error))
+        return false
+      }
+      setCallPermissionError(null)
+      return true
+    } catch (error) {
+      setCallPermissionError(describeMediaPermissionError(needsVideo, error))
+      return false
+    }
+  }, [describeMediaPermissionError])
+  const acceptIncomingCall = useCallback(async (withVideo: boolean) => {
+    const incoming = callStore.incoming
+    if (!incoming) return
+    if (!(await requireMediaAccess(withVideo))) return
+    const convId = incoming.conversationId
+    beginOutgoingCallGuard(convId)
+    acceptCall(convId, withVideo)
+    callStore.startOutgoing(convId, withVideo)
+    setActiveCalls((prev) => {
+      const current = prev[convId]
+      const myId = me?.id
+      if (!current?.active) {
+        return { ...prev, [convId]: { startedAt: Date.now(), active: true, participants: myId ? [myId] : [] } }
+      }
+      if (myId && current.participants && !current.participants.includes(myId)) {
+        return { ...prev, [convId]: { ...current, participants: [...current.participants, myId] } }
+      }
+      return prev
+    })
+    setCallConvId(convId)
+    setMinimizedCallConvId((prev) => (prev === convId ? null : prev))
+    callStore.setIncoming(null)
+    stopRingtone()
+  }, [beginOutgoingCallGuard, callStore, me?.id, requireMediaAccess])
   useEffect(() => {
     const id = window.setInterval(() => setTimerTick((t) => (t + 1) % 1000000), 1000)
     return () => window.clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    if (!callPermissionError) return
+    if (typeof window === 'undefined') return
+    const timer = window.setTimeout(() => setCallPermissionError(null), 9000)
+    return () => window.clearTimeout(timer)
+  }, [callPermissionError])
 
   useEffect(() => {
     const update = () => {
@@ -186,6 +342,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     if (activeId) setMobileView('conversation')
     else setMobileView('list')
   }, [isMobile, activeId])
+
 
   // Initialize/subscribe to server call status for group calls
   useEffect(() => {
@@ -611,6 +768,30 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     },
   })
 
+  useEffect(() => {
+    if (!activeId) return
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(LAST_ACTIVE_CONVERSATION_KEY, activeId)
+    } catch {}
+  }, [activeId])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (activeId) return
+    const rows = conversationsQuery.data
+    if (!rows || rows.length === 0) return
+    if (isMobileRef.current && mobileView !== 'conversation') return
+    try {
+      const stored = window.localStorage.getItem(LAST_ACTIVE_CONVERSATION_KEY)
+      if (!stored) return
+      const exists = rows.some((row: any) => row?.conversation?.id === stored)
+      if (exists) {
+        selectConversation(stored)
+      }
+    } catch {}
+  }, [activeId, conversationsQuery.data, mobileView])
+
   const closeNewGroupModal = () => {
     setNewGroupOpen(false)
     setGroupTitle('')
@@ -826,25 +1007,6 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     }
     return null
   }, [activeConversation, conversationsQuery.data, me?.id, pendingSecretOffers])
-
-  // Проверка: если звонок не активен, но callConvId установлен, сбросить его
-  useEffect(() => {
-    if (callConvId && activeId) {
-      // Для групп не закрываем оверлей по временному inactive статусу
-      try {
-        const conv = (conversationsQuery.data || []).find((r: any) => r.conversation.id === activeId)?.conversation
-        const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
-        if (isGroup) return
-      } catch {}
-      const entry = activeCalls[activeId]
-      // Для 1:1 закрываем оверлей, если звонок не активен или завершен
-      if (entry && (!entry.active || entry.endedAt) && callConvId === activeId) {
-        setCallConvId(null)
-        setMinimizedCallConvId(null)
-        callStore.endCall()
-      }
-    }
-  }, [callConvId, activeId, activeCalls, timerTick, conversationsQuery.data]) // Добавляем зависимости для корректной проверки типа беседы
 
   const usersById = useMemo(() => {
     const map: Record<string, any> = {}
@@ -1136,13 +1298,14 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
       ringingConvIdRef.current = conversationId
       callStore.startIncoming({ conversationId, from, video })
       // start ringtone from file
-      let started = false
       try {
         ringAudioRef.current = new Audio('/ring.mp3')
         ringAudioRef.current.loop = true
         ringAudioRef.current.volume = 0.9
-        ringAudioRef.current.play().then(() => { started = true }).catch(() => {})
-      } catch {}
+        void ringAudioRef.current.play().catch(() => {})
+      } catch (err) {
+        console.error('Error starting ringtone:', err)
+      }
       // auto-decline after 25s
       ringTimerRef.current = window.setTimeout(() => {
         declineCall(conversationId)
@@ -1151,6 +1314,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
       }, 25000)
     })
     onCallAccepted(({ conversationId }) => {
+      clearMinCallDurationGuard(conversationId)
       // Для всех типов звонков (1:1 и группы) устанавливаем activeCalls вручную
       // Это обеспечивает единообразное поведение: звонок становится активным сразу
           setActiveCalls((prev) => {
@@ -1166,28 +1330,32 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
       stopRingtone()
     })
     onCallDeclined(({ conversationId }) => {
-      // Обновляем состояние звонка - устанавливаем как неактивный
-      setActiveCalls((prev) => {
-        const current = prev[conversationId]
-        if (current) {
-          // Если звонок был активен, помечаем как завершенный
-          if (current.active) {
-            return { ...prev, [conversationId]: { ...current, active: false, endedAt: Date.now() } }
+      const finalize = () => {
+        setActiveCalls((prev) => {
+          const current = prev[conversationId]
+          if (current) {
+            if (current.active) {
+              return { ...prev, [conversationId]: { ...current, active: false, endedAt: Date.now() } }
+            }
+            const { [conversationId]: _omit, ...rest } = prev
+            return rest
           }
-          // Если звонок не был активен (только начался), удаляем запись
-          const { [conversationId]: _omit, ...rest } = prev
-          return rest
+          return prev
+        })
+        if (callConvIdRef.current === conversationId) {
+          setCallConvId((prev) => (prev === conversationId ? null : prev))
+          setMinimizedCallConvId((prev) => (prev === conversationId ? null : prev))
+          callStore.endCall()
         }
-        return prev
-      })
-      // Сбрасываем callConvId только если это текущий активный звонок
-      if (callConvId === conversationId) {
-      setCallConvId(null)
-        setMinimizedCallConvId(null)
-        callStore.endCall()
+        callStore.setIncoming(null)
+        stopRingtone()
+        clearMinCallDurationGuard(conversationId)
       }
-      callStore.setIncoming(null)
-      stopRingtone()
+      if (isOneToOneConversation(conversationId)) {
+        scheduleAfterMinCallDuration(conversationId, finalize)
+      } else {
+        finalize()
+      }
     })
     onCallEnded(({ conversationId }) => {
       // Игнорируем для групповых звонков — статус придет отдельным событием call:status
@@ -1197,23 +1365,29 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
         const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
         if (isGroup) return
       } catch {}
-      // Для 1:1 звонков обновляем состояние
-      setActiveCalls((prev) => {
-        const current = prev[conversationId]
-        if (current?.active) {
-          return { ...prev, [conversationId]: { ...current, active: false, endedAt: Date.now() } }
+      const finalize = () => {
+        setActiveCalls((prev) => {
+          const current = prev[conversationId]
+          if (current?.active) {
+            return { ...prev, [conversationId]: { ...current, active: false, endedAt: Date.now() } }
+          }
+          const { [conversationId]: _omit, ...rest } = prev
+          return rest
+        })
+        if (callConvIdRef.current === conversationId) {
+          setCallConvId((prev) => (prev === conversationId ? null : prev))
+          setMinimizedCallConvId((prev) => (prev === conversationId ? null : prev))
+          callStore.endCall()
         }
-        const { [conversationId]: _omit, ...rest } = prev
-        return rest
-      })
-      // Сбрасываем callConvId только если это текущий активный звонок
-      if (callConvId === conversationId) {
-        setCallConvId(null)
-        setMinimizedCallConvId(null)
-        callStore.endCall()
+        callStore.setIncoming(null)
+        stopRingtone()
+        clearMinCallDurationGuard(conversationId)
       }
-      callStore.setIncoming(null)
-      stopRingtone()
+      if (isOneToOneConversation(conversationId)) {
+        scheduleAfterMinCallDuration(conversationId, finalize)
+      } else {
+        finalize()
+      }
     })
     onReceiptsUpdate(({ conversationId }) => {
       client.invalidateQueries({ queryKey: ['messages', conversationId] })
@@ -1227,18 +1401,21 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
         notifyAudioRef.current.volume = 0.9
       }
       const unlock = async () => {
-        if (!notifyAudioRef.current || notifyUnlockedRef.current) return
         try {
-          notifyAudioRef.current.volume = 0
-          await notifyAudioRef.current.play()
-          notifyAudioRef.current.pause()
-          notifyAudioRef.current.currentTime = 0
-          notifyAudioRef.current.volume = 0.9
-          notifyUnlockedRef.current = true
+          if (notifyAudioRef.current && !notifyUnlockedRef.current) {
+            notifyAudioRef.current.volume = 0
+            await notifyAudioRef.current.play()
+            notifyAudioRef.current.pause()
+            notifyAudioRef.current.currentTime = 0
+            notifyAudioRef.current.volume = 0.9
+            notifyUnlockedRef.current = true
+          }
+        } catch {}
+        if (notifyUnlockedRef.current) {
           window.removeEventListener('click', unlock)
           window.removeEventListener('keydown', unlock)
           window.removeEventListener('touchstart', unlock)
-        } catch {}
+        }
       }
       window.addEventListener('click', unlock)
       window.addEventListener('keydown', unlock)
@@ -1604,11 +1781,6 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
         try { ringAudioRef.current.pause(); ringAudioRef.current.currentTime = 0 } catch {}
         ringAudioRef.current = null
       }
-      ringOscRef.current?.stop()
-      ringOscRef.current?.disconnect()
-      ringGainRef.current?.disconnect()
-      ringOscRef.current = null
-      ringGainRef.current = null
       ringingConvIdRef.current = null
     } catch {}
   }
@@ -1728,6 +1900,41 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     socket.on('message:notify', handler)
     return () => { socket.off('message:notify', handler) }
   }, [activeId, me?.id, messagesQuery, isSecretBlockedForDevice])
+
+  // Auto-stick to bottom when new messages render (but respect manual scroll)
+  useLayoutEffect(() => {
+    if (!activeId) {
+      lastScrollConvRef.current = null
+      lastRenderedMessagesRef.current = 0
+      return
+    }
+    if (lastScrollConvRef.current !== activeId) {
+      lastScrollConvRef.current = activeId
+      lastRenderedMessagesRef.current = 0
+    }
+    const renderedCount = (displayedMessages?.length ?? 0) + activePendingMessages.length
+    const prevCount = lastRenderedMessagesRef.current
+    lastRenderedMessagesRef.current = renderedCount
+    if (!messagesRef.current) return
+    if (renderedCount === 0 || renderedCount <= prevCount) return
+    const fullList = [
+      ...(displayedMessages || []),
+      ...activePendingMessages,
+    ]
+    const lastMessage = fullList[fullList.length - 1]
+    const isMine = lastMessage?.senderId && me?.id ? lastMessage.senderId === me.id : false
+    const shouldStick = isMine || !userStickyScrollRef.current || nearBottomRef.current
+    if (!shouldStick) return
+    requestAnimationFrame(() => {
+      const el = messagesRef.current
+      if (!el) return
+      el.scrollTop = el.scrollHeight
+      nearBottomRef.current = true
+      if (isMine) {
+        userStickyScrollRef.current = false
+      }
+    })
+  }, [activeId, activePendingMessages, displayedMessages, me?.id])
 
   // notifications disabled
 
@@ -2808,26 +3015,14 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
               </div>,
               document.body,
             )}
-          {activeId && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                width: isMobile ? '100%' : 'auto',
-                padding: isMobile ? '0 8px' : '0',
-                justifyContent: isMobile ? 'center' : 'flex-end',
-                marginLeft: isMobile ? 0 : 'auto',
-              }}
-            >
-              {(() => {
+          {activeId && (() => {
                 const callEntry = activeCalls[activeId]
-                // isActive - звонок активен (независимо от того, присоединены ли мы)
                 const isActive = callEntry?.active
-                const isMinimized = minimizedCallConvId === activeId
                 const isGroup = activeConversation?.isGroup || (activeConversation?.participants.length ?? 0) > 2
-                const isJoined = callConvId === activeId // Проверяем, присоединены ли мы к звонку
-                
+                const isParticipating = isActive && callStore.activeConvId === activeId
+                const isOverlayOpen = callConvId === activeId
+                const isMinimized = minimizedCallConvId === activeId && isOverlayOpen
+                const shouldShowExpand = isParticipating && (!isOverlayOpen || isMinimized)
                 const buttonBaseStyle = {
                   display: 'flex' as const,
                   alignItems: 'center' as const,
@@ -2843,9 +3038,21 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                   boxSizing: 'border-box' as const
                 }
 
-                const handleStartCall = () => {
+                const headerStyle = {
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  width: isMobile ? '100%' : 'auto',
+                  padding: isMobile ? '0 8px' : '0',
+                  justifyContent: isMobile ? 'center' : 'flex-end',
+                  marginLeft: isMobile ? 0 : 'auto',
+                }
+
+                const handleStartCall = async () => {
                   if (!activeId) return
+                  if (!(await requireMediaAccess(false))) return
                   try {
+                    beginOutgoingCallGuard(activeId)
                     inviteCall(activeId, false)
                     callStore.startOutgoing(activeId, false)
                     setActiveCalls((prev) => {
@@ -2866,9 +3073,11 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                   }
                 }
 
-                const handleStartVideoCall = () => {
+                const handleStartVideoCall = async () => {
                   if (!activeId) return
+                  if (!(await requireMediaAccess(true))) return
                   try {
+                    beginOutgoingCallGuard(activeId)
                     inviteCall(activeId, true)
                     callStore.startOutgoing(activeId, true)
                     setActiveCalls((prev) => {
@@ -2888,134 +3097,170 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                     console.error('Error starting call:', err)
                   }
                 }
-                if (isActive) {
-                  // Если звонок активен, но мы не присоединены - показываем "подключиться"
-                  // Это работает для всех типов звонков (1:1 и группы)
-                  if (!isJoined) {
-                    // Звонок активен, но мы не присоединены - показываем "подключиться"
+
+                const handleExpandCall = () => {
+                  if (!activeId) return
+                  setCallConvId(activeId)
+                  setMinimizedCallConvId(null)
+                }
+
+                const renderCallControls = () => {
+                  if (isActive) {
+                    if (!isParticipating) {
+                      return (
+                        <>
+                          <button 
+                            className="btn btn-secondary" 
+                            onClick={() => {
+                              setCallConvId(activeId!)
+                              setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                              callStore.startOutgoing(activeId!, false)
+                              const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
+                              if (isGroupCall) {
+                                try { joinCallRoom(activeId!, false) } catch {}
+                              }
+                            }}
+                            style={buttonBaseStyle}
+                          >
+                            <Phone size={isMobile ? 16 : 18} />
+                            {isMobile ? 'Подключиться' : ' Подключиться'}
+                          </button>
+                          <button 
+                            className="btn btn-primary" 
+                            onClick={() => {
+                              setCallConvId(activeId!)
+                              setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                              callStore.startOutgoing(activeId!, true)
+                              const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
+                              if (isGroupCall) {
+                                try { joinCallRoom(activeId!, true) } catch {}
+                              }
+                            }}
+                            style={buttonBaseStyle}
+                          >
+                            <Video size={isMobile ? 16 : 18} />
+                            {isMobile ? 'Подключиться с видео' : ' Подключиться с видео'}
+                          </button>
+                        </>
+                      )
+                    }
+
                     return (
                       <>
+                        {shouldShowExpand ? (
+                          <button 
+                            className="btn btn-secondary"
+                            onClick={handleExpandCall}
+                            style={buttonBaseStyle}
+                          >
+                            <Maximize2 size={isMobile ? 16 : 18} />
+                            {isMobile ? 'Развернуть' : ' Развернуть'}
+                          </button>
+                        ) : (
+                          !isMobile && <div style={{ flex: 1 }} />
+                        )}
                         <button 
-                          className="btn btn-secondary" 
+                          className="btn"
                           onClick={() => {
-                            setCallConvId(activeId!)
-                            setMinimizedCallConvId((prev) => prev === activeId ? null : prev)
-                            callStore.startOutgoing(activeId!, false)
-                            const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
-                            if (isGroupCall) {
-                              try { joinCallRoom(activeId!, false) } catch {}
+                            const count = activeConversation?.participants?.length ?? 0
+                            const isDialog = count <= 2
+                            const isGroupCall = activeConversation?.isGroup || (count > 2)
+                            if (isDialog && callConvId) {
+                              endCall(callConvId)
+                              setActiveCalls((prev) => {
+                                const current = prev[callConvId]
+                                if (current?.active) {
+                                  return { ...prev, [callConvId]: { ...current, active: false, endedAt: Date.now() } }
+                                }
+                                return prev
+                              })
+                            } else if (isGroupCall && callConvId) {
+                              try { leaveCallRoom(callConvId) } catch {}
+                              setActiveCalls((prev) => {
+                                const current = prev[callConvId]
+                                if (!current) return prev
+                                if (!current.participants) return prev
+                                const myId = me?.id
+                                if (!myId) return prev
+                                if (!current.participants.includes(myId)) return prev
+                                return { ...prev, [callConvId]: { ...current, participants: current.participants.filter((id: string) => id !== myId) } }
+                              })
                             }
+                            setCallConvId(null)
+                            setMinimizedCallConvId(null)
+                            callStore.endCall()
+                            stopRingtone()
                           }}
-                          style={buttonBaseStyle}
-                        >
-                          <Phone size={isMobile ? 16 : 18} />
-                          {isMobile ? 'Подключиться' : ' Подключиться'}
-                    </button>
-                        <button 
-                          className="btn btn-primary" 
-                          onClick={() => {
-                            setCallConvId(activeId!)
-                            setMinimizedCallConvId((prev) => prev === activeId ? null : prev)
-                            callStore.startOutgoing(activeId!, true)
-                            const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
-                            if (isGroupCall) {
-                              try { joinCallRoom(activeId!, true) } catch {}
-                            }
+                          style={{ 
+                            ...buttonBaseStyle,
+                            background: '#ef4444',
+                            color: '#fff'
                           }}
-                          style={buttonBaseStyle}
                         >
-                          <Video size={isMobile ? 16 : 18} />
-                          {isMobile ? 'Подключиться с видео' : ' Подключиться с видео'}
+                          <PhoneOff size={isMobile ? 16 : 18} />
+                          {isMobile ? 'Сбросить' : ' Сбросить'}
                         </button>
                       </>
                     )
                   }
-                  
-                  // Мы присоединены к звонку - показываем "развернуть" (если минимизирован) и "сбросить"
+
                   return (
                     <>
-                      {isMinimized ? (
-                        <button 
-                          className="btn btn-secondary"
-                          onClick={() => {
-                            setMinimizedCallConvId(null)
-                          }}
-                          style={buttonBaseStyle}
-                        >
-                          <Maximize2 size={isMobile ? 16 : 18} />
-                          {isMobile ? 'Развернуть' : ' Развернуть'}
-                        </button>
-                      ) : (
-                        !isMobile && <div style={{ flex: 1 }} />
-                      )}
                       <button 
-                        className="btn"
-                        onClick={() => {
-                          const count = activeConversation?.participants?.length ?? 0
-                          const isDialog = count <= 2
-                          const isGroupCall = activeConversation?.isGroup || (count > 2)
-                          if (isDialog && callConvId) {
-                            endCall(callConvId)
-                            setActiveCalls((prev) => {
-                              const current = prev[callConvId]
-                              if (current?.active) {
-                                return { ...prev, [callConvId]: { ...current, active: false, endedAt: Date.now() } }
-                              }
-                              return prev
-                            })
-                          } else if (isGroupCall && callConvId) {
-                            try { leaveCallRoom(callConvId) } catch {}
-                            setActiveCalls((prev) => {
-                              const current = prev[callConvId]
-                              if (!current) return prev
-                              if (!current.participants) return prev
-                              const myId = me?.id
-                              if (!myId) return prev
-                              if (!current.participants.includes(myId)) return prev
-                              return { ...prev, [callConvId]: { ...current, participants: current.participants.filter((id: string) => id !== myId) } }
-                            })
-                          }
-                          setCallConvId(null)
-                          setMinimizedCallConvId(null)
-                          callStore.endCall()
-                          stopRingtone()
-                        }}
-                        style={{ 
-                          ...buttonBaseStyle,
-                          background: '#ef4444',
-                          color: '#fff'
-                        }}
+                        className="btn btn-secondary" 
+                        onClick={() => { void handleStartCall() }}
+                        style={buttonBaseStyle}
                       >
-                        <PhoneOff size={isMobile ? 16 : 18} />
-                        {isMobile ? 'Сбросить' : ' Сбросить'}
+                        <Phone size={isMobile ? 16 : 18} />
+                        {isMobile ? 'Начать звонок' : ' Начать звонок'}
+                      </button>
+                      <button 
+                        className="btn btn-primary" 
+                        onClick={() => { void handleStartVideoCall() }}
+                        style={buttonBaseStyle}
+                      >
+                        <Video size={isMobile ? 16 : 18} />
+                        {isMobile ? 'Начать с видео' : ' Начать с видео'}
                       </button>
                     </>
                   )
                 }
-                
+
                 return (
                   <>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={handleStartCall}
-                      style={buttonBaseStyle}
-                    >
-                      <Phone size={isMobile ? 16 : 18} />
-                      {isMobile ? 'Начать звонок' : ' Начать звонок'}
-                    </button>
-                    <button
-                      className="btn btn-primary"
-                      onClick={handleStartVideoCall}
-                      style={buttonBaseStyle}
-                    >
-                      <Video size={isMobile ? 16 : 18} />
-                      {isMobile ? 'Начать с видео' : ' Начать с видео'}
-                    </button>
+                    <div style={headerStyle}>
+                      {renderCallControls()}
+                    </div>
+                    {callPermissionError && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          padding: '8px 12px',
+                          borderRadius: 10,
+                          border: '1px solid var(--surface-border)',
+                          background: 'rgba(239,68,68,0.08)',
+                          color: '#fca5a5',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          fontSize: 13,
+                          maxWidth: isMobile ? '100%' : 420,
+                          width: isMobile ? '100%' : 'auto',
+                        }}
+                      >
+                        <span style={{ flex: 1 }}>{callPermissionError}</span>
+                        <button
+                          type="button"
+                          onClick={() => setCallPermissionError(null)}
+                          style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', padding: 4 }}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    )}
                   </>
                 )
-              })()}
-            </div>
-          )}
+          })()}
         </header>
         {!activeConversation?.isSecret && pendingSecretContext && (
           <div
@@ -3104,7 +3349,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                 const list = (displayedMessages ? [...displayedMessages] : []).
                   filter((m: any) => !m.deletedAt).
                   sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
-                const pending = pendingByConv[activeId!] || []
+                const pending = activePendingMessages
                 const fullList = [...(list || []), ...pending]
                 if (!fullList) return null
                 return fullList.map((m: any, i: number) => {
@@ -3589,35 +3834,40 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                   setMinimizedCallConvId(callConvId)
                 }
               }}
-              onClose={() => {
-            const count = activeConversation?.participants?.length ?? 0
-            const isDialog = count <= 2
-            const isGroup = activeConversation?.isGroup || (count > 2)
-            
-            // Для всех типов звонков завершаем звонок при закрытии
-            if (callConvId) {
-              // Для 1:1 звонков вызываем endCall на сервере
-              if (isDialog) {
-                endCall(callConvId)
-              }
-              // Для всех типов устанавливаем endedAt при закрытии
-              setActiveCalls((prev) => {
-                const current = prev[callConvId]
-                if (!current) return prev
-                if (isGroup) {
-                  const participants = (current.participants || []).filter((id: string) => id !== me?.id)
-                  return { ...prev, [callConvId]: { ...current, participants } }
+              onClose={(options) => {
+                if (!callConvId) return
+                const convId = callConvId
+                const finalize = () => {
+                  const conv = getConversationFromCache(convId)
+                  const participantsCount = conv?.participants?.length ?? 0
+                  const isGroupConv = !!(conv?.isGroup || participantsCount > 2)
+                  const isDialog = !isGroupConv
+                  if (isDialog) {
+                    endCall(convId)
+                  }
+                  setActiveCalls((prev) => {
+                    const current = prev[convId]
+                    if (!current) return prev
+                    if (isGroupConv) {
+                      const participants = (current.participants || []).filter((id: string) => id !== me?.id)
+                      return { ...prev, [convId]: { ...current, participants } }
+                    }
+                    if (current.active) {
+                      return { ...prev, [convId]: { ...current, active: false, endedAt: Date.now() } }
+                    }
+                    return prev
+                  })
+                  setCallConvId((prev) => (prev === convId ? null : prev))
+                  setMinimizedCallConvId((prev) => (prev === convId ? null : prev))
+                  callStore.endCall()
+                  stopRingtone()
                 }
-                if (current.active) {
-                  return { ...prev, [callConvId]: { ...current, active: false, endedAt: Date.now() } }
+                if (!options?.manual && isOneToOneConversation(convId)) {
+                  scheduleAfterMinCallDuration(convId, finalize)
+                } else {
+                  clearMinCallDurationGuard(convId)
+                  finalize()
                 }
-                return prev
-              })
-            }
-            setCallConvId(null)
-            setMinimizedCallConvId(null)
-            callStore.endCall()
-            stopRingtone()
               }}
               initialVideo={callStore.initialVideo}
               initialAudio={callStore.initialAudio}
@@ -3647,43 +3897,11 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-primary" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => {
-                    const convId = callStore.incoming!.conversationId
-                    acceptCall(convId, false)
-                    callStore.startOutgoing(convId, false)
-                    setCallConvId(convId)
-                    setMinimizedCallConvId((prev) => prev === convId ? null : prev) // Сбрасываем минимизацию для нового звонка
-                    // Для 1:1 звонков устанавливаем activeCalls при принятии
-                    setActiveCalls((prev) => {
-                      const current = prev[convId]
-                      if (!current?.active) {
-                        return { ...prev, [convId]: { startedAt: Date.now(), active: true, participants: [me?.id || ''].filter(Boolean) } }
-                      }
-                      return prev
-                    })
-                    callStore.setIncoming(null)
-                    stopRingtone()
-                  }}>
+                  <button className="btn btn-primary" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCall(false) }}>
                     <Phone size={18} />
                     <span>Ответить</span>
                   </button>
-                  <button className="btn" style={{ background: 'var(--brand)', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => {
-                    const convId = callStore.incoming!.conversationId
-                    acceptCall(convId, true)
-                    callStore.startOutgoing(convId, true)
-                    setCallConvId(convId)
-                    setMinimizedCallConvId((prev) => prev === convId ? null : prev) // Сбрасываем минимизацию для нового звонка
-                    // Для 1:1 звонков устанавливаем activeCalls при принятии
-                    setActiveCalls((prev) => {
-                      const current = prev[convId]
-                      if (!current?.active) {
-                        return { ...prev, [convId]: { startedAt: Date.now(), active: true, participants: [me?.id || ''].filter(Boolean) } }
-                      }
-                      return prev
-                    })
-                    callStore.setIncoming(null)
-                    stopRingtone()
-                  }}>
+                  <button className="btn" style={{ background: 'var(--brand)', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCall(true) }}>
                     <Video size={18} />
                     <span>Ответить с видео</span>
                   </button>
@@ -3694,6 +3912,11 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                     <span>Отмена</span>
                   </button>
                 </div>
+                {callPermissionError && (
+                  <div style={{ marginTop: 12, fontSize: 13, color: '#fca5a5', textAlign: 'center', lineHeight: 1.4 }}>
+                    {callPermissionError}
+                  </div>
+                )}
               </div>
             </div>
           </div>, document.body)

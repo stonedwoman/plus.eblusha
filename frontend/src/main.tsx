@@ -8,7 +8,7 @@ import './utils/i18n'
 import { router } from './router'
 import { useAppStore } from './domain/store/appStore'
 import { connectSocket, acceptCall, declineCall } from './utils/socket'
-import { api } from './utils/api'
+import { api, forceRefreshSession } from './utils/api'
 import { ensureDeviceBootstrap } from './domain/device/deviceManager'
 import { Capacitor } from '@capacitor/core' // Import Capacitor
 
@@ -70,6 +70,7 @@ async function validateStoredSession(): Promise<boolean> {
               avatarUrl: userResponse.data.user.avatarUrl,
             },
             accessToken: response.data.accessToken,
+            refreshToken: response.data.refreshToken ?? undefined,
           })
           return true
         }
@@ -101,8 +102,8 @@ async function validateStoredSession(): Promise<boolean> {
   } catch (error) {
     // Если access токен невалиден, пытаемся обновить через refresh
     try {
-      const refreshResponse = await api.post('/auth/refresh')
-      if (refreshResponse.data?.accessToken) {
+      const refreshed = await forceRefreshSession()
+      if (refreshed) {
         const userResponse = await api.get('/status/me')
         if (userResponse.data?.user) {
           useAppStore.getState().setSession({
@@ -112,7 +113,8 @@ async function validateStoredSession(): Promise<boolean> {
               displayName: userResponse.data.user.displayName,
               avatarUrl: userResponse.data.user.avatarUrl,
             },
-            accessToken: refreshResponse.data.accessToken,
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken ?? undefined,
           })
           return true
         }
@@ -459,26 +461,17 @@ function AppRoot() {
       // Обновляем заранее за 3 минуты до истечения, либо по принуждению
       if (force || (timeLeft !== null && timeLeft < 3 * 60 * 1000)) {
         try {
-          const response = await api.post('/auth/refresh')
-          if (response.data?.accessToken) {
-            const updated = useAppStore.getState().session
-            if (updated) {
-              useAppStore.getState().setSession({
-                ...updated,
-                accessToken: response.data.accessToken,
-              })
-              // Обновляем токен в нативных сервисах
-              if (typeof (window as any).Capacitor !== 'undefined') {
-                const Capacitor = (window as any).Capacitor
-                if (Capacitor.isNativePlatform()) {
-                  import('./capacitor').then(({ updateSocketToken }) => {
-                    updateSocketToken(response.data.accessToken)
-                  }).catch(() => {})
-                }
+          const refreshed = await forceRefreshSession()
+          if (refreshed) {
+            if (typeof (window as any).Capacitor !== 'undefined') {
+              const Capacitor = (window as any).Capacitor
+              if (Capacitor.isNativePlatform()) {
+                import('./capacitor').then(({ updateSocketToken }) => {
+                  updateSocketToken(refreshed.accessToken)
+                }).catch(() => {})
               }
-              // Успешно обновили - перепланируем следующую проверку
-              scheduleNext()
             }
+            scheduleNext()
           }
         } catch (error) {
           // Если refresh не удался - проверяем, может быть это просто временная ошибка

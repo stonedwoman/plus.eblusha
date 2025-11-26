@@ -1,3 +1,4 @@
+import axios from 'axios'
 import nacl from 'tweetnacl'
 import { api } from '../../utils/api'
 
@@ -60,7 +61,11 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
           storedInfo.platform = desiredPlatform
         }
       } catch (metadataError) {
-        console.warn('Device metadata sync failed:', metadataError)
+        if (axios.isAxiosError(metadataError) && metadataError.response?.status === 409) {
+          console.debug('[deviceManager] Device metadata already up to date')
+        } else {
+          console.warn('Device metadata sync failed:', metadataError)
+        }
       }
       return {
         deviceId: storedInfo.deviceId,
@@ -84,7 +89,15 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
         prekeys: prekeys.map((pk) => ({ keyId: pk.keyId, publicKey: pk.publicKey })),
       }
 
-      await api.post('/devices/register', payload)
+      try {
+        await api.post('/devices/register', payload)
+      } catch (registerError) {
+        if (axios.isAxiosError(registerError) && registerError.response?.status === 409) {
+          console.debug('[deviceManager] Device already registered, reusing local keys')
+        } else {
+          throw registerError
+        }
+      }
 
       saveDeviceInfo({
         deviceId,

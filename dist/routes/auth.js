@@ -101,6 +101,7 @@ router.post("/login", async (req, res) => {
         path: env_1.default.COOKIE_PATH || "/api",
         domain: env_1.default.COOKIE_DOMAIN || undefined,
     });
+    const includeRefresh = req.get("x-native-client") === "1";
     res.json({
         accessToken,
         user: {
@@ -108,6 +109,7 @@ router.post("/login", async (req, res) => {
             username: user.username,
             displayName: user.displayName,
         },
+        ...(includeRefresh ? { refreshToken: refreshTokenValue } : {}),
     });
 });
 router.post("/refresh", async (req, res) => {
@@ -154,7 +156,11 @@ router.post("/refresh", async (req, res) => {
             path: env_1.default.COOKIE_PATH || "/api",
             domain: env_1.default.COOKIE_DOMAIN || undefined,
         });
-        res.json({ accessToken });
+        const includeRefresh = req.get("x-native-client") === "1";
+        res.json({
+            accessToken,
+            ...(includeRefresh ? { refreshToken: refreshTokenValue } : {}),
+        });
     }
     catch (error) {
         res.clearCookie("refreshToken", {
