@@ -115,7 +115,12 @@ public class BackgroundConnectionService extends Service {
             scheduleKeepAlive();
             android.util.Log.d("BackgroundConnectionService", "Keep-alive scheduled");
             try {
-                registerReceiver(tokenUpdateReceiver, new IntentFilter("org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED"));
+                IntentFilter filter = new IntentFilter("org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED");
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(tokenUpdateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+                } else {
+                    registerReceiver(tokenUpdateReceiver, filter);
+                }
                 android.util.Log.d("BackgroundConnectionService", "Token update receiver registered");
             } catch (Exception e) {
                 android.util.Log.e("BackgroundConnectionService", "Failed to register token receiver", e);
