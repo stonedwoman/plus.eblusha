@@ -44,6 +44,7 @@ export default function ChatsPage() {
   const ringTimerRef = useRef<number | null>(null)
   const ringingConvIdRef = useRef<string | null>(null)
   const ringAudioRef = useRef<HTMLAudioElement | null>(null)
+  const ringUnlockedRef = useRef<boolean>(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   // notify sound
   const notifyAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -1308,10 +1309,13 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
       callStore.startIncoming({ conversationId, from, video })
       // start ringtone from file
       try {
-        ringAudioRef.current = new Audio('/ring.mp3')
-        ringAudioRef.current.loop = true
-        ringAudioRef.current.volume = 0.9
-        void ringAudioRef.current.play().catch(() => {})
+        const audio = ensureRingAudio()
+        if (audio) {
+          audio.currentTime = 0
+          audio.loop = true
+          audio.volume = 0.9
+          void audio.play().catch(() => {})
+        }
       } catch (err) {
         console.error('Error starting ringtone:', err)
       }
@@ -1419,8 +1423,20 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
             notifyAudioRef.current.volume = 0.9
             notifyUnlockedRef.current = true
           }
+          if (!ringUnlockedRef.current) {
+            const ringAudio = ensureRingAudio()
+            if (ringAudio) {
+              const prevVolume = ringAudio.volume
+              ringAudio.volume = 0
+              await ringAudio.play().catch(() => {})
+              ringAudio.pause()
+              ringAudio.currentTime = 0
+              ringAudio.volume = prevVolume
+              ringUnlockedRef.current = true
+            }
+          }
         } catch {}
-        if (notifyUnlockedRef.current) {
+        if (notifyUnlockedRef.current && ringUnlockedRef.current) {
           window.removeEventListener('click', unlock)
           window.removeEventListener('keydown', unlock)
           window.removeEventListener('touchstart', unlock)
@@ -1782,13 +1798,27 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     }
   }, [groupAvatarPreviewUrl, groupCrop.scale, groupCrop.x, groupCrop.y])
 
+  const ensureRingAudio = useCallback(() => {
+    if (typeof window === 'undefined') return null
+    if (!ringAudioRef.current) {
+      const audio = new Audio('/ring.mp3')
+      audio.preload = 'auto'
+      audio.loop = true
+      audio.volume = 0.9
+      ringAudioRef.current = audio
+    }
+    return ringAudioRef.current
+  }, [])
+
   function stopRingtone() {
     try {
       ringTimerRef.current && clearTimeout(ringTimerRef.current)
       ringTimerRef.current = null
       if (ringAudioRef.current) {
-        try { ringAudioRef.current.pause(); ringAudioRef.current.currentTime = 0 } catch {}
-        ringAudioRef.current = null
+        try {
+          ringAudioRef.current.pause()
+          ringAudioRef.current.currentTime = 0
+        } catch {}
       }
       ringingConvIdRef.current = null
     } catch {}
