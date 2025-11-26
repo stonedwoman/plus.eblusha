@@ -28,11 +28,16 @@ public class NativeSocketPlugin extends Plugin {
     @PluginMethod
     public void updateToken(PluginCall call) {
         String token = call.getString("token", null);
+        android.util.Log.d("NativeSocketPlugin", "updateToken() called, token length: " + (token != null ? token.length() : 0));
+        if (TextUtils.isEmpty(token)) {
+            android.util.Log.w("NativeSocketPlugin", "Token is empty or null");
+        }
         saveToken(token);
         notifyServiceAboutToken(token);
         JSObject result = new JSObject();
         result.put("success", true);
         call.resolve(result);
+        android.util.Log.d("NativeSocketPlugin", "✅ updateToken() completed");
     }
 
     @PluginMethod
@@ -84,21 +89,37 @@ public class NativeSocketPlugin extends Plugin {
     }
 
     private void saveToken(String token) {
-        SharedPreferences prefs = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Context context = getContext();
+        if (context == null) {
+            android.util.Log.e("NativeSocketPlugin", "Context is null, cannot save token");
+            return;
+        }
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         if (TextUtils.isEmpty(token)) {
+            android.util.Log.d("NativeSocketPlugin", "Removing token from SharedPreferences");
             prefs.edit().remove(KEY_TOKEN).apply();
         } else {
-            prefs.edit().putString(KEY_TOKEN, token).apply();
+            android.util.Log.d("NativeSocketPlugin", "Saving token to SharedPreferences, length: " + token.length());
+            boolean saved = prefs.edit().putString(KEY_TOKEN, token).commit(); // Используем commit() для синхронного сохранения
+            android.util.Log.d("NativeSocketPlugin", "Token saved: " + saved);
+            // Проверяем, что токен действительно сохранился
+            String savedToken = prefs.getString(KEY_TOKEN, "");
+            android.util.Log.d("NativeSocketPlugin", "Verification: saved token length: " + savedToken.length());
         }
     }
 
     private void notifyServiceAboutToken(String token) {
         Context context = getContext();
-        if (context == null) return;
+        if (context == null) {
+            android.util.Log.e("NativeSocketPlugin", "Context is null, cannot notify service");
+            return;
+        }
+        android.util.Log.d("NativeSocketPlugin", "Sending token update broadcast to service");
         Intent intent = new Intent(ACTION_TOKEN_UPDATED);
         intent.putExtra("token", token);
         intent.setPackage(context.getPackageName());
         context.sendBroadcast(intent);
+        android.util.Log.d("NativeSocketPlugin", "✅ Token update broadcast sent");
     }
 
     @NonNull

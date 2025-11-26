@@ -68,11 +68,17 @@ public class BackgroundConnectionService extends Service {
     private final BroadcastReceiver tokenUpdateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent == null || intent.getAction() == null) return;
+            if (intent == null || intent.getAction() == null) {
+                android.util.Log.w("BackgroundConnectionService", "Token update receiver: intent or action is null");
+                return;
+            }
+            android.util.Log.d("BackgroundConnectionService", "Broadcast received, action: " + intent.getAction());
             if ("org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED".equals(intent.getAction())) {
                 String token = intent.getStringExtra("token");
-                android.util.Log.d("BackgroundConnectionService", "Token update broadcast received");
+                android.util.Log.d("BackgroundConnectionService", "✅ Token update broadcast received, token length: " + (token != null ? token.length() : 0));
                 updateSocketToken(token);
+            } else {
+                android.util.Log.d("BackgroundConnectionService", "Ignoring broadcast with action: " + intent.getAction());
             }
         }
     };
@@ -222,7 +228,15 @@ public class BackgroundConnectionService extends Service {
     }
 
     private void checkNativeSocketConnection() {
+        // Периодически проверяем, не появился ли токен в SharedPreferences
         if (TextUtils.isEmpty(currentToken)) {
+            String storedToken = NativeSocketPlugin.getStoredToken(this);
+            if (!TextUtils.isEmpty(storedToken)) {
+                android.util.Log.d("BackgroundConnectionService", "Token found in SharedPreferences, updating...");
+                currentToken = storedToken;
+                connectNativeSocket(currentToken);
+                return;
+            }
             android.util.Log.d("BackgroundConnectionService", "No token available for socket connection");
             return;
         }
@@ -315,14 +329,21 @@ public class BackgroundConnectionService extends Service {
     }
 
     private void updateSocketToken(String token) {
+        android.util.Log.d("BackgroundConnectionService", "updateSocketToken() called, token length: " + (token != null ? token.length() : 0));
         if (TextUtils.isEmpty(token)) {
+            android.util.Log.w("BackgroundConnectionService", "Token is empty, disconnecting socket");
             currentToken = "";
             disconnectNativeSocket();
             return;
         }
-        if (token.equals(currentToken) && nativeSocket != null && nativeSocket.connected()) {
+        boolean isSameToken = token.equals(currentToken);
+        boolean isConnected = nativeSocket != null && nativeSocket.connected();
+        android.util.Log.d("BackgroundConnectionService", "Token comparison: isSame=" + isSameToken + ", isConnected=" + isConnected);
+        if (isSameToken && isConnected) {
+            android.util.Log.d("BackgroundConnectionService", "Token unchanged and socket connected, skipping reconnect");
             return;
         }
+        android.util.Log.d("BackgroundConnectionService", "Updating token and connecting socket...");
         currentToken = token;
         connectNativeSocket(token);
     }
