@@ -223,8 +223,13 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     if (!isOneToOneConversation(conversationId)) return
     minCallDurationUntilRef.current[conversationId] = Date.now() + MIN_OUTGOING_CALL_DURATION_MS
   }, [isOneToOneConversation])
-  const scheduleAfterMinCallDuration = useCallback((conversationId: string | null | undefined, action: () => void) => {
+  const scheduleAfterMinCallDuration = useCallback((conversationId: string | null | undefined, action: () => void, options?: { force?: boolean }) => {
     if (!conversationId) {
+      action()
+      return
+    }
+    if (options?.force) {
+      clearMinCallDurationGuard(conversationId)
       action()
       return
     }
@@ -1356,7 +1361,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
         clearMinCallDurationGuard(conversationId)
       }
       if (isOneToOneConversation(conversationId)) {
-        scheduleAfterMinCallDuration(conversationId, finalize)
+        scheduleAfterMinCallDuration(conversationId, finalize, { force: true })
       } else {
         finalize()
       }
@@ -1388,7 +1393,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
         clearMinCallDurationGuard(conversationId)
       }
       if (isOneToOneConversation(conversationId)) {
-        scheduleAfterMinCallDuration(conversationId, finalize)
+        scheduleAfterMinCallDuration(conversationId, finalize, { force: true })
       } else {
         finalize()
       }
