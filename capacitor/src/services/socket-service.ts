@@ -151,6 +151,28 @@ export class SocketService {
     return this.socket?.connected ?? false
   }
 
+  ensureConnected(): void {
+    if (!this.accessToken) {
+      console.warn('[SocketService] Cannot ensure connection: no access token')
+      return
+    }
+    if (!this.socket) {
+      console.log('[SocketService] ensureConnected -> socket missing, connecting…')
+      this.connect(this.accessToken)
+      return
+    }
+    if (this.socket.connected) {
+      return
+    }
+    const isConnecting = (this.socket as any)?.active ?? false
+    if (isConnecting) {
+      console.log('[SocketService] ensureConnected -> already connecting')
+      return
+    }
+    console.log('[SocketService] ensureConnected -> reconnecting')
+    this.reconnect()
+  }
+
   /**
    * Настройка обработчиков событий подключения
    */
