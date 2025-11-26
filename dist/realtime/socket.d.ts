@@ -156,6 +156,9 @@ type ClientToServerEvents = {
     "secret:chat:decline": (payload: {
         conversationId: string;
     }) => void;
+    "presence:focus": (payload: {
+        focused: boolean;
+    }) => void;
 };
 type InterServerEvents = Record<string, never>;
 type SocketData = {

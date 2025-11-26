@@ -1,0 +1,3 @@
+-- AlterEnum
+ALTER TYPE "UserStatus" ADD VALUE IF NOT EXISTS 'BACKGROUND';
+

@@ -410,6 +410,13 @@ export class SocketService {
     }
     this.socket.emit('conversation:join', conversationId)
   }
+
+  emitPresenceFocus(focused: boolean): void {
+    if (!this.socket?.connected) {
+      return
+    }
+    this.socket.emit('presence:focus', { focused })
+  }
 }
 
 // Singleton instance

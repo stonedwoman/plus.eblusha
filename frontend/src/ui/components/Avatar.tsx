@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 
-type Props = { name: string; size?: number; id?: string; presence?: 'ONLINE' | 'AWAY' | 'OFFLINE' | 'IN_CALL'; avatarUrl?: string | null }
+type Props = { name: string; size?: number; id?: string; presence?: 'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | 'IN_CALL'; avatarUrl?: string | null }
 
 function colorFromId(id: string) {
   let hash = 0
@@ -38,6 +38,20 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
       return avatarUrl
     }
   }, [avatarUrl, isEmoji])
+  const presenceColor = useMemo(() => {
+    if (!presence) return null
+    switch (presence) {
+      case 'ONLINE':
+      case 'IN_CALL':
+        return '#22c55e'
+      case 'BACKGROUND':
+        return '#facc15'
+      case 'AWAY':
+        return '#f59e0b'
+      default:
+        return '#9ca3af'
+    }
+  }, [presence])
   
   // Reset error state when avatarUrl changes
   useEffect(() => {
@@ -72,7 +86,7 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
       ) : (
         initial
       )}
-      {presence && (
+      {presenceColor && (
         <span
           style={{
             position: 'absolute',
@@ -82,7 +96,7 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
             height: Math.max(8, Math.floor(size * 0.28)),
             borderRadius: '50%',
             boxShadow: '0 0 0 2px var(--surface-200)',
-            background: presence === 'ONLINE' ? '#22c55e' : presence === 'AWAY' ? '#f59e0b' : presence === 'IN_CALL' ? '#22c55e' : '#9ca3af',
+            background: presenceColor,
           }}
         />
       )}

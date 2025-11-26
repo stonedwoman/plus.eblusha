@@ -69,6 +69,7 @@ async function setupAppLifecycleHandlers(socketService: ReturnType<typeof getSoc
     // Обработчик appStateChange - регистрируем синхронно с await
     const appStateChangeListener = await App.addListener('appStateChange', (state) => {
       console.log('[Capacitor] 🔄 App state changed:', state.isActive ? 'active' : 'background')
+      socketService.emitPresenceFocus(state.isActive)
       
       if (state.isActive) {
         // Приложение стало активным - проверяем соединение и переподключаемся при необходимости
@@ -96,6 +97,7 @@ async function setupAppLifecycleHandlers(socketService: ReturnType<typeof getSoc
     // Дополнительная обработка события resume для надежности
     const resumeListener = await App.addListener('resume', () => {
       console.log('[Capacitor] 🔄 App resumed event received')
+      socketService.emitPresenceFocus(true)
       // Небольшая задержка перед проверкой соединения, чтобы дать время системе восстановить сеть
       setTimeout(() => {
         const isConnected = socketService.isConnected()
@@ -114,6 +116,7 @@ async function setupAppLifecycleHandlers(socketService: ReturnType<typeof getSoc
     // Также обрабатываем событие pause для логирования
     const pauseListener = await App.addListener('pause', () => {
       console.log('[Capacitor] ⏸️ App paused event received - maintaining background connection')
+      socketService.emitPresenceFocus(false)
       // Socket.IO продолжит работать в фоне благодаря настройкам
     })
     lifecycleHandlers.push(pauseListener)

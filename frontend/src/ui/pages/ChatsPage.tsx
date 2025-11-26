@@ -163,7 +163,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
   })
   const [pingMs, setPingMs] = useState<number | null>(null)
   const [isSocketOnline, setIsSocketOnline] = useState<boolean>(() => socket.connected)
-  const [myPresence, setMyPresence] = useState<'ONLINE' | 'AWAY' | 'OFFLINE' | null>(null)
+  const [myPresence, setMyPresence] = useState<'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | null>(null)
   const [loadedImages, setLoadedImages] = useState<Record<string, boolean>>({})
   const [imageDimensions, setImageDimensions] = useState<Record<string, { width: number; height: number }>>({})
   const [endSecretModalOpen, setEndSecretModalOpen] = useState(false)
@@ -1068,9 +1068,9 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                         ...cp.user,
                         status: p.status,
                         lastSeenAt:
-                          p.status === 'ONLINE'
+                          p.status === 'ONLINE' || p.status === 'BACKGROUND' || p.status === 'OFFLINE'
                             ? new Date().toISOString()
-                            : (p.status === 'OFFLINE' ? new Date().toISOString() : cp.user.lastSeenAt),
+                            : cp.user.lastSeenAt,
                       },
                     }
                   : cp
@@ -1127,7 +1127,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
       if (!me?.id) return
       if (payload.userId === me.id) {
         const v = (payload.status || '').toUpperCase()
-        if (v === 'ONLINE' || v === 'AWAY' || v === 'OFFLINE') setMyPresence(v)
+        if (v === 'ONLINE' || v === 'AWAY' || v === 'BACKGROUND' || v === 'OFFLINE') setMyPresence(v)
       }
     }
     onPresenceUpdate(handler)
@@ -1137,7 +1137,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
   // Initialize own presence from meInfo endpoint when available
   useEffect(() => {
     const v = ((meInfoQuery.data as any)?.status || '').toString().toUpperCase()
-    if (v === 'ONLINE' || v === 'AWAY' || v === 'OFFLINE') setMyPresence(v)
+    if (v === 'ONLINE' || v === 'AWAY' || v === 'BACKGROUND' || v === 'OFFLINE') setMyPresence(v)
   }, [meInfoQuery.data])
 
   // Lightbox keyboard controls
@@ -2398,6 +2398,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     const status = u.status as string | undefined
     const last = u.lastSeenAt ? new Date(u.lastSeenAt) : null
     if (status === 'ONLINE') return 'ОНЛАЙН'
+    if (status === 'BACKGROUND') return 'В ФОНЕ'
     if (!last) return 'оффлайн'
     const now = new Date()
     const diffMs = now.getTime() - last.getTime()
@@ -2608,7 +2609,11 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
               const directStatus = myPresence ?? (meInfoQuery.data as any)?.status
               const fallbackStatus = isSocketOnline ? 'ONLINE' : 'OFFLINE'
               const normalized = (directStatus ?? fallbackStatus ?? 'OFFLINE').toString().toUpperCase()
-              const presenceValue = (['ONLINE', 'AWAY', 'OFFLINE'].includes(normalized) ? normalized : fallbackStatus) as 'ONLINE' | 'AWAY' | 'OFFLINE'
+              const allowedPresence = ['ONLINE', 'AWAY', 'BACKGROUND', 'OFFLINE'] as const
+              type KnownPresence = (typeof allowedPresence)[number]
+              const normalizedPresence = normalized as KnownPresence
+              const fallbackPresence = fallbackStatus as KnownPresence
+              const presenceValue: KnownPresence = allowedPresence.includes(normalizedPresence) ? normalizedPresence : fallbackPresence
               const avatarUrl = (meInfoQuery.data as any)?.avatarUrl ?? me?.avatarUrl ?? undefined
               return (
                 <Avatar
@@ -2886,7 +2891,9 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                                 return <span>Завершен {dateStr} в {timeStr}</span>
                               })()
                             ) : (
-                              peer ? (peer.status === 'ONLINE' ? 'ОНЛАЙН' : formatPresence(peer)) : ''
+                              peer
+                                ? (peer.status === 'ONLINE' ? 'ОНЛАЙН' : peer.status === 'BACKGROUND' ? 'В ФОНЕ' : formatPresence(peer))
+                                : ''
                             )}
                           </div>
                         </div>
@@ -5256,7 +5263,9 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                       />
                       <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
-                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{u.status === 'ONLINE' ? 'ОНЛАЙН' : formatPresence(u)}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                          {u.status === 'ONLINE' ? 'ОНЛАЙН' : u.status === 'BACKGROUND' ? 'В ФОНЕ' : formatPresence(u)}
+                        </div>
                       </div>
                       <div style={{ width: 18, height: 18, borderRadius: 4, border: '2px solid var(--surface-border)', background: checked ? 'var(--brand-600)' : 'transparent' }} />
                     </div>

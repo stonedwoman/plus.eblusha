@@ -567,13 +567,25 @@ private fun MessengerNavHost(
         IncomingCallScreen(
             call = call,
             avatarUrl = callUi.avatarUrl,
-            onAccept = {
+            onAcceptAudio = {
                 IncomingCallService.stop(context)
-                container.realtimeService.acceptCall(call.conversationId, call.video)
+                container.realtimeService.acceptCall(call.conversationId, false)
                 onStartCall(
                     ActiveCallSession(
                         conversationId = call.conversationId,
-                        isVideo = call.video,
+                        isVideo = false,
+                        isGroup = false
+                    )
+                )
+                incomingCall = null
+            },
+            onAcceptVideo = {
+                IncomingCallService.stop(context)
+                container.realtimeService.acceptCall(call.conversationId, true)
+                onStartCall(
+                    ActiveCallSession(
+                        conversationId = call.conversationId,
+                        isVideo = true,
                         isGroup = false
                     )
                 )

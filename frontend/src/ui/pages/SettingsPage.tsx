@@ -32,6 +32,7 @@ export default function SettingsPage() {
   }
 
   const user = meQuery.data
+  const normalizedStatus = user?.status === 'BACKGROUND' ? 'ONLINE' : (user?.status ?? 'ONLINE')
 
   return (
     <div className="settings-page">
@@ -43,7 +44,7 @@ export default function SettingsPage() {
         </label>
         <label>
           Статус
-          <select name="status" defaultValue={user?.status ?? 'ONLINE'}>
+          <select name="status" defaultValue={normalizedStatus}>
             <option value="ONLINE">Онлайн</option>
             <option value="AWAY">Отошел</option>
             <option value="DND">Не беспокоить</option>

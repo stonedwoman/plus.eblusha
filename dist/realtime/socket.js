@@ -15,6 +15,70 @@ const callState = new Map();
 // Track active group calls: conversationId -> { startedAt: number, participants: Set<string> }
 const activeGroupCalls = new Map();
 let statusInterval = null;
+const socketFocusByUser = new Map();
+const persistedPresenceByUser = new Map();
+const presenceUpdateQueue = new Map();
+function setSocketFocus(userId, socketId, focused) {
+    const current = socketFocusByUser.get(userId) ?? new Map();
+    current.set(socketId, focused);
+    socketFocusByUser.set(userId, current);
+}
+function removeSocketFocus(userId, socketId) {
+    const current = socketFocusByUser.get(userId);
+    if (!current)
+        return;
+    current.delete(socketId);
+    if (current.size === 0) {
+        socketFocusByUser.delete(userId);
+    }
+}
+function computePresenceStatus(userId) {
+    const entries = socketFocusByUser.get(userId);
+    if (!entries || entries.size === 0)
+        return "OFFLINE";
+    const hasFocused = Array.from(entries.values()).some(Boolean);
+    return hasFocused ? "ONLINE" : "BACKGROUND";
+}
+async function persistPresence(io, userId, status) {
+    const previous = persistedPresenceByUser.get(userId);
+    if (previous === status) {
+        return;
+    }
+    if (status === "OFFLINE") {
+        persistedPresenceByUser.delete(userId);
+    }
+    else {
+        persistedPresenceByUser.set(userId, status);
+    }
+    const data = { status };
+    data.lastSeenAt = new Date();
+    try {
+        await prisma_1.default.user.update({
+            where: { id: userId },
+            data,
+        });
+    }
+    catch (error) {
+        logger_1.default.warn({ error, userId, status }, "Failed to persist presence state");
+        return;
+    }
+    io.emit("presence:update", { userId, status });
+}
+function recomputePresence(io, userId) {
+    const previousTask = presenceUpdateQueue.get(userId) ?? Promise.resolve();
+    const nextTask = previousTask
+        .catch(() => { })
+        .then(async () => {
+        const status = computePresenceStatus(userId);
+        await persistPresence(io, userId, status);
+    });
+    presenceUpdateQueue.set(userId, nextTask);
+    return nextTask.finally(() => {
+        if (presenceUpdateQueue.get(userId) === nextTask) {
+            presenceUpdateQueue.delete(userId);
+        }
+    });
+}
 function initSocket(server) {
     const io = new socket_io_1.Server(server, {
         cors: {
@@ -86,10 +150,6 @@ function initSocket(server) {
             }
             const payload = (0, jwt_1.verifyAccessToken)(token);
             socket.data.userId = payload.sub;
-            await prisma_1.default.user.update({
-                where: { id: payload.sub },
-                data: { status: "ONLINE", lastSeenAt: new Date() },
-            });
             next();
         }
         catch (error) {
@@ -102,7 +162,12 @@ function initSocket(server) {
         logger_1.default.info({ userId }, "Socket connected");
         // Join personal room to receive direct events
         socket.join(userId);
-        io.emit("presence:update", { userId, status: "ONLINE" });
+        setSocketFocus(userId, socket.id, true);
+        void recomputePresence(io, userId);
+        socket.on("presence:focus", ({ focused }) => {
+            setSocketFocus(userId, socket.id, !!focused);
+            void recomputePresence(io, userId);
+        });
         socket.on("conversation:join", async (conversationId) => {
             const membership = await prisma_1.default.conversationParticipant.findFirst({
                 where: { userId, conversationId },
@@ -683,22 +748,15 @@ function initSocket(server) {
                     broadcastCallStatus(conversationId);
                 }
             }
-            // Проверяем, есть ли еще активные соединения для этого пользователя
-            // На момент disconnecting сокет еще находится в комнате userId,
-            // поэтому проверяем, есть ли там другие сокеты кроме текущего
-            const userRoom = io.sockets.adapter.rooms.get(userId);
-            const hasOtherConnections = userRoom && userRoom.size > 1;
-            // Устанавливаем OFFLINE только если нет других активных соединений
-            if (!hasOtherConnections) {
-                await prisma_1.default.user.update({
-                    where: { id: userId },
-                    data: { status: "OFFLINE", lastSeenAt: new Date() },
-                });
-                io.emit("presence:update", { userId, status: "OFFLINE" });
+            removeSocketFocus(userId, socket.id);
+            const remainingConnections = socketFocusByUser.get(userId)?.size ?? 0;
+            await recomputePresence(io, userId);
+            if (remainingConnections === 0) {
                 logger_1.default.info({ userId }, "User status set to OFFLINE (no active connections)");
             }
             else {
-                logger_1.default.info({ userId, activeConnections: userRoom.size - 1 }, "User still has active connections, status remains ONLINE");
+                const aggregatedStatus = computePresenceStatus(userId);
+                logger_1.default.info({ userId, activeConnections: remainingConnections, aggregatedStatus }, "User still has active connections, status recomputed");
             }
         });
         socket.on("disconnect", (reason) => {
