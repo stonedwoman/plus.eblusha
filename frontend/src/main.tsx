@@ -368,9 +368,30 @@ function AppRoot() {
                 isGroup: !!conversation.isGroup,
               }
             }
+            // Запрос игнорирования оптимизации батареи для работы в фоне
+            import('./capacitor/plugins/native-socket-plugin').then((module) => {
+              const NativeSocket = module.NativeSocket || module.default
+              if (NativeSocket && typeof NativeSocket.requestBatteryOptimizationExemption === 'function') {
+                NativeSocket.requestBatteryOptimizationExemption().catch((error: any) => {
+                  console.warn('[Main] Failed to request battery optimization exemption:', error)
+                })
+              }
+              // Обновляем токен в нативном сервисе
+              if (NativeSocket && typeof NativeSocket.updateToken === 'function') {
+                NativeSocket.updateToken({ token: session.accessToken }).then(() => {
+                  console.log('[Main] ✅ Native socket token updated')
+                }).catch((error: any) => {
+                  console.warn('[Main] Failed to update native socket token:', error)
+                })
+              }
+            }).catch((error) => {
+              console.warn('[Main] NativeSocket plugin not available:', error)
+            })
+            
             // Для Capacitor используем URL из конфигурации или ru.eblusha.org
             const wsUrl = 'https://ru.eblusha.org'
             console.log('[Main] Connecting native Socket.IO to:', wsUrl)
+            
             initializeSocketConnection(wsUrl, session.accessToken)
               .then(() => {
                 console.log('[Main] ✅ Socket connection initialized successfully')

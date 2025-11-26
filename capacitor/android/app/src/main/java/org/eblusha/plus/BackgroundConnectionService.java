@@ -45,6 +45,7 @@ public class BackgroundConnectionService extends Service {
         @Override
         public void run() {
             sendKeepAliveBroadcast();
+            checkNativeSocketConnection();
             keepAliveHandler.postDelayed(this, KEEP_ALIVE_INTERVAL_MS);
         }
     };
@@ -191,6 +192,16 @@ public class BackgroundConnectionService extends Service {
         sendBroadcast(intent);
     }
 
+    private void checkNativeSocketConnection() {
+        if (TextUtils.isEmpty(currentToken)) {
+            return;
+        }
+        if (nativeSocket == null || !nativeSocket.connected()) {
+            android.util.Log.w("BackgroundConnectionService", "Native socket disconnected, reconnecting...");
+            connectNativeSocket(currentToken);
+        }
+    }
+
     private void acquireLocks() {
         try {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
@@ -272,9 +283,35 @@ public class BackgroundConnectionService extends Service {
                 android.util.Log.e("BackgroundConnectionService", "Failed to create socket instance");
                 return;
             }
-            nativeSocket.on(Socket.EVENT_CONNECT, args -> android.util.Log.d("BackgroundConnectionService", "Native socket connected"));
-            nativeSocket.on(Socket.EVENT_DISCONNECT, args -> android.util.Log.w("BackgroundConnectionService", "Native socket disconnected: " + (args != null && args.length > 0 ? args[0] : "")));
-            nativeSocket.on(Socket.EVENT_CONNECT_ERROR, args -> android.util.Log.e("BackgroundConnectionService", "Native socket connect error: " + (args != null && args.length > 0 ? args[0] : "")));
+            nativeSocket.on(Socket.EVENT_CONNECT, args -> {
+                android.util.Log.d("BackgroundConnectionService", "Native socket connected");
+            });
+            nativeSocket.on(Socket.EVENT_DISCONNECT, args -> {
+                String reason = args != null && args.length > 0 ? String.valueOf(args[0]) : "unknown";
+                android.util.Log.w("BackgroundConnectionService", "Native socket disconnected: " + reason);
+                // Автоматически переподключаемся, если это не ручное отключение
+                if (!"io client disconnect".equals(reason) && !TextUtils.isEmpty(currentToken)) {
+                    android.util.Log.d("BackgroundConnectionService", "Scheduling reconnect...");
+                    keepAliveHandler.postDelayed(() -> {
+                        if (!TextUtils.isEmpty(currentToken) && (nativeSocket == null || !nativeSocket.connected())) {
+                            connectNativeSocket(currentToken);
+                        }
+                    }, 2000);
+                }
+            });
+            nativeSocket.on(Socket.EVENT_CONNECT_ERROR, args -> {
+                String error = args != null && args.length > 0 ? String.valueOf(args[0]) : "unknown";
+                android.util.Log.e("BackgroundConnectionService", "Native socket connect error: " + error);
+                // Переподключаемся через некоторое время
+                if (!TextUtils.isEmpty(currentToken)) {
+                    keepAliveHandler.postDelayed(() -> {
+                        if (!TextUtils.isEmpty(currentToken) && (nativeSocket == null || !nativeSocket.connected())) {
+                            android.util.Log.d("BackgroundConnectionService", "Retrying connection after error...");
+                            connectNativeSocket(currentToken);
+                        }
+                    }, 5000);
+                }
+            });
             nativeSocket.on("message:notify", this::handleMessageNotify);
             nativeSocket.on("call:incoming", this::handleCallIncoming);
             nativeSocket.on("call:declined", this::handleCallEnded);
