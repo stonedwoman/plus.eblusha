@@ -41,10 +41,50 @@ public class MainActivity extends BridgeActivity {
             android.util.Log.e("MainActivity", "Failed to register plugins", e);
         }
         super.onCreate(savedInstanceState);
+        
+        // Сохраняем токен из SharedPreferences, если он есть, перед запуском сервиса
+        String storedToken = NativeSocketPlugin.getStoredToken(this);
+        if (storedToken != null && !storedToken.isEmpty()) {
+            android.util.Log.d("MainActivity", "Found stored token, length: " + storedToken.length());
+            // Отправляем broadcast, чтобы сервис получил токен
+            Intent tokenIntent = new Intent("org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED");
+            tokenIntent.putExtra("token", storedToken);
+            tokenIntent.setPackage(getPackageName());
+            sendBroadcast(tokenIntent);
+            android.util.Log.d("MainActivity", "Sent stored token to service");
+        } else {
+            android.util.Log.d("MainActivity", "No stored token found");
+        }
+        
         try {
             BackgroundConnectionService.start(this);
         } catch (Exception e) {
             android.util.Log.e("MainActivity", "Failed to start BackgroundConnectionService", e);
+        }
+        
+        // Добавляем код, который будет выполняться после загрузки WebView и сохранит токен из localStorage
+        if (bridge != null && bridge.getWebView() != null) {
+            bridge.getWebView().post(() -> {
+                String js = "(function() {" +
+                    "try {" +
+                    "  const storage = window.localStorage;" +
+                    "  const sessionStr = storage.getItem('app-store');" +
+                    "  if (sessionStr) {" +
+                    "    const session = JSON.parse(sessionStr);" +
+                    "    const token = session?.session?.accessToken;" +
+                    "    if (token && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
+                    "      console.log('[MainActivity] Found token in localStorage, saving to native...');" +
+                    "      window.Capacitor.Plugins.NativeSocket.updateToken({ token: token }).then(() => {" +
+                    "        console.log('[MainActivity] ✅ Token saved from localStorage');" +
+                    "      }).catch((e) => {" +
+                    "        console.error('[MainActivity] ❌ Failed to save token from localStorage:', e);" +
+                    "      });" +
+                    "    }" +
+                    "  }" +
+                    "} catch(e) { console.error('[MainActivity] Error reading localStorage:', e); }" +
+                    "})();";
+                bridge.getWebView().evaluateJavascript(js, null);
+            });
         }
         try {
             IntentFilter keepAliveFilter = new IntentFilter(BackgroundConnectionService.ACTION_KEEP_ALIVE);

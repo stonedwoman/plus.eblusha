@@ -208,6 +208,44 @@ function AppRoot() {
     })
   }, [])
 
+  // Сохранение токена в нативный сервис сразу после загрузки (для Android)
+  useEffect(() => {
+    if (!hydrated || isCheckingAuth) return
+    
+    const currentSession = useAppStore.getState().session
+    if (!currentSession?.accessToken) return
+    
+    if (typeof (window as any).Capacitor !== 'undefined') {
+      const Capacitor = (window as any).Capacitor
+      if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
+        console.log('[AppRoot] Saving token to native service immediately, length:', currentSession.accessToken.length)
+        // Пытаемся использовать плагин напрямую, если он доступен
+        const NativeSocket = Capacitor.Plugins?.NativeSocket
+        if (NativeSocket && typeof NativeSocket.updateToken === 'function') {
+          NativeSocket.updateToken({ token: currentSession.accessToken }).then(() => {
+            console.log('[AppRoot] ✅ Token saved to native service immediately')
+          }).catch((error: any) => {
+            console.error('[AppRoot] ❌ Failed to save token immediately:', error)
+          })
+        } else {
+          // Если плагин еще не загружен, пробуем через динамический импорт
+          import('./capacitor/plugins/native-socket-plugin').then((module) => {
+            const NativeSocket = module.NativeSocket || module.default
+            if (NativeSocket && typeof NativeSocket.updateToken === 'function') {
+              NativeSocket.updateToken({ token: currentSession.accessToken }).then(() => {
+                console.log('[AppRoot] ✅ Token saved to native service (via import)')
+              }).catch((error: any) => {
+                console.error('[AppRoot] ❌ Failed to save token (via import):', error)
+              })
+            }
+          }).catch((error) => {
+            console.warn('[AppRoot] Failed to import NativeSocket plugin:', error)
+          })
+        }
+      }
+    }
+  }, [hydrated, isCheckingAuth])
+
   useEffect(() => {
     console.log('[Main] useEffect triggered, isCheckingAuth:', isCheckingAuth, 'session:', !!session)
     if (!isCheckingAuth && session) {
@@ -224,6 +262,28 @@ function AppRoot() {
         
         if (isNative) {
           console.log('[Main] ✅ Initializing native services for Android...')
+          
+          // Синхронно сохраняем токен сразу, до асинхронного импорта
+          if (session?.accessToken) {
+            console.log('[Main] Saving token synchronously, length:', session.accessToken.length)
+            // Используем прямой вызов через Capacitor, если плагин уже зарегистрирован
+            try {
+              const NativeSocket = (Capacitor as any).Plugins?.NativeSocket
+              if (NativeSocket && typeof NativeSocket.updateToken === 'function') {
+                console.log('[Main] Calling NativeSocket.updateToken() synchronously')
+                NativeSocket.updateToken({ token: session.accessToken }).then(() => {
+                  console.log('[Main] ✅ Token saved synchronously')
+                }).catch((error: any) => {
+                  console.error('[Main] ❌ Failed to save token synchronously:', error)
+                })
+              } else {
+                console.warn('[Main] NativeSocket plugin not available yet, will try async')
+              }
+            } catch (error) {
+              console.warn('[Main] Failed to access NativeSocket plugin:', error)
+            }
+          }
+          
           import('./capacitor').then((module) => {
             console.log('[Main] ✅ Capacitor module loaded successfully!')
             console.log('[Main] Module exports:', Object.keys(module))
