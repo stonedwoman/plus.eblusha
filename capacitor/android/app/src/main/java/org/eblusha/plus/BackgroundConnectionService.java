@@ -36,16 +36,32 @@ public class BackgroundConnectionService extends Service {
     private static final String CHANNEL_ID = "background_connection_channel";
     private static final String MESSAGE_CHANNEL_ID = "eblusha_messages";
     private static final int NOTIFICATION_ID = 2001;
-    private static final long KEEP_ALIVE_INTERVAL_MS = 30_000L;
+    private static final long KEEP_ALIVE_INTERVAL_MS = 15_000L; // Уменьшено до 15 секунд для более частых проверок
+    private static final long NOTIFICATION_UPDATE_INTERVAL_MS = 30_000L; // Обновляем уведомление каждые 30 секунд
     private static final String SOCKET_URL = "https://ru.eblusha.org";
     public static final String ACTION_KEEP_ALIVE = "org.eblusha.plus.ACTION_KEEP_ALIVE";
 
     private final Handler keepAliveHandler = new Handler(Looper.getMainLooper());
+    private long lastNotificationUpdate = 0;
     private final Runnable keepAliveRunnable = new Runnable() {
         @Override
         public void run() {
-            sendKeepAliveBroadcast();
-            checkNativeSocketConnection();
+            try {
+                sendKeepAliveBroadcast();
+                checkNativeSocketConnection();
+                
+                // Периодически обновляем уведомление, чтобы система знала, что сервис активен
+                long now = System.currentTimeMillis();
+                if (now - lastNotificationUpdate > NOTIFICATION_UPDATE_INTERVAL_MS) {
+                    updateForegroundNotification();
+                    lastNotificationUpdate = now;
+                }
+                
+                // Проверяем и восстанавливаем wakelock, если он был освобожден
+                ensureLocksHeld();
+            } catch (Exception e) {
+                android.util.Log.e("BackgroundConnectionService", "Error in keep-alive runnable", e);
+            }
             keepAliveHandler.postDelayed(this, KEEP_ALIVE_INTERVAL_MS);
         }
     };
@@ -82,20 +98,27 @@ public class BackgroundConnectionService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        android.util.Log.d("BackgroundConnectionService", "onCreate() called");
         try {
             createForegroundChannel();
             createMessageChannel();
             startForeground(NOTIFICATION_ID, createNotification());
+            android.util.Log.d("BackgroundConnectionService", "Foreground service started");
             acquireLocks();
+            android.util.Log.d("BackgroundConnectionService", "Locks acquired");
             scheduleKeepAlive();
+            android.util.Log.d("BackgroundConnectionService", "Keep-alive scheduled");
             try {
                 registerReceiver(tokenUpdateReceiver, new IntentFilter("org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED"));
+                android.util.Log.d("BackgroundConnectionService", "Token update receiver registered");
             } catch (Exception e) {
                 android.util.Log.e("BackgroundConnectionService", "Failed to register token receiver", e);
             }
             try {
                 currentToken = NativeSocketPlugin.getStoredToken(this);
+                android.util.Log.d("BackgroundConnectionService", "Stored token length: " + (currentToken != null ? currentToken.length() : 0));
                 if (!TextUtils.isEmpty(currentToken)) {
+                    android.util.Log.d("BackgroundConnectionService", "Connecting native socket with stored token...");
                     connectNativeSocket(currentToken);
                 } else {
                     android.util.Log.d("BackgroundConnectionService", "No stored token yet; waiting for update");
@@ -103,13 +126,19 @@ public class BackgroundConnectionService extends Service {
             } catch (Exception e) {
                 android.util.Log.e("BackgroundConnectionService", "Failed to load token or connect socket", e);
             }
+            android.util.Log.d("BackgroundConnectionService", "✅ onCreate() completed successfully");
         } catch (Exception e) {
-            android.util.Log.e("BackgroundConnectionService", "Fatal error in onCreate", e);
+            android.util.Log.e("BackgroundConnectionService", "❌ Fatal error in onCreate", e);
         }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        android.util.Log.d("BackgroundConnectionService", "onStartCommand called, startId=" + startId + ", flags=" + flags);
+        // Проверяем соединение при каждом вызове onStartCommand
+        if (!TextUtils.isEmpty(currentToken)) {
+            checkNativeSocketConnection();
+        }
         return START_STICKY;
     }
 
@@ -194,11 +223,50 @@ public class BackgroundConnectionService extends Service {
 
     private void checkNativeSocketConnection() {
         if (TextUtils.isEmpty(currentToken)) {
+            android.util.Log.d("BackgroundConnectionService", "No token available for socket connection");
             return;
         }
-        if (nativeSocket == null || !nativeSocket.connected()) {
-            android.util.Log.w("BackgroundConnectionService", "Native socket disconnected, reconnecting...");
+        boolean wasConnected = nativeSocket != null && nativeSocket.connected();
+        if (!wasConnected) {
+            android.util.Log.w("BackgroundConnectionService", "Native socket disconnected (wasConnected=" + wasConnected + "), reconnecting...");
             connectNativeSocket(currentToken);
+        } else {
+            android.util.Log.d("BackgroundConnectionService", "Native socket is connected");
+        }
+    }
+
+    private void updateForegroundNotification() {
+        try {
+            Notification notification = createNotification();
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                manager.notify(NOTIFICATION_ID, notification);
+                android.util.Log.d("BackgroundConnectionService", "Foreground notification updated");
+            }
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Failed to update foreground notification", e);
+        }
+    }
+
+    private void ensureLocksHeld() {
+        try {
+            if (wakeLock == null || !wakeLock.isHeld()) {
+                android.util.Log.w("BackgroundConnectionService", "WakeLock was released, re-acquiring...");
+                releaseLocks();
+                acquireLocks();
+            }
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Failed to ensure WakeLock", e);
+        }
+        
+        try {
+            if (wifiLock == null || !wifiLock.isHeld()) {
+                android.util.Log.w("BackgroundConnectionService", "WifiLock was released, re-acquiring...");
+                releaseLocks();
+                acquireLocks();
+            }
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Failed to ensure WifiLock", e);
         }
     }
 
@@ -264,6 +332,7 @@ public class BackgroundConnectionService extends Service {
             android.util.Log.w("BackgroundConnectionService", "Token empty, cannot connect native socket");
             return;
         }
+        android.util.Log.d("BackgroundConnectionService", "🔄 connectNativeSocket() called, token length: " + token.length());
         disconnectNativeSocket();
         try {
             IO.Options options = new IO.Options();
@@ -278,36 +347,50 @@ public class BackgroundConnectionService extends Service {
             auth.put("token", token);
             options.auth = auth;
 
+            android.util.Log.d("BackgroundConnectionService", "Creating socket instance for URL: " + SOCKET_URL);
             nativeSocket = IO.socket(SOCKET_URL, options);
             if (nativeSocket == null) {
                 android.util.Log.e("BackgroundConnectionService", "Failed to create socket instance");
                 return;
             }
+            android.util.Log.d("BackgroundConnectionService", "Socket instance created, setting up event handlers...");
             nativeSocket.on(Socket.EVENT_CONNECT, args -> {
-                android.util.Log.d("BackgroundConnectionService", "Native socket connected");
+                android.util.Log.d("BackgroundConnectionService", "✅ Native socket connected successfully");
+                // Обновляем уведомление при успешном подключении
+                updateForegroundNotification();
             });
             nativeSocket.on(Socket.EVENT_DISCONNECT, args -> {
                 String reason = args != null && args.length > 0 ? String.valueOf(args[0]) : "unknown";
-                android.util.Log.w("BackgroundConnectionService", "Native socket disconnected: " + reason);
+                android.util.Log.w("BackgroundConnectionService", "❌ Native socket disconnected: " + reason);
                 // Автоматически переподключаемся, если это не ручное отключение
                 if (!"io client disconnect".equals(reason) && !TextUtils.isEmpty(currentToken)) {
-                    android.util.Log.d("BackgroundConnectionService", "Scheduling reconnect...");
+                    android.util.Log.d("BackgroundConnectionService", "🔄 Scheduling reconnect in 2 seconds...");
                     keepAliveHandler.postDelayed(() -> {
-                        if (!TextUtils.isEmpty(currentToken) && (nativeSocket == null || !nativeSocket.connected())) {
-                            connectNativeSocket(currentToken);
+                        if (!TextUtils.isEmpty(currentToken)) {
+                            boolean isConnected = nativeSocket != null && nativeSocket.connected();
+                            android.util.Log.d("BackgroundConnectionService", "Reconnect check: isConnected=" + isConnected);
+                            if (!isConnected) {
+                                android.util.Log.d("BackgroundConnectionService", "🔄 Executing reconnect...");
+                                connectNativeSocket(currentToken);
+                            }
                         }
                     }, 2000);
                 }
             });
             nativeSocket.on(Socket.EVENT_CONNECT_ERROR, args -> {
                 String error = args != null && args.length > 0 ? String.valueOf(args[0]) : "unknown";
-                android.util.Log.e("BackgroundConnectionService", "Native socket connect error: " + error);
+                android.util.Log.e("BackgroundConnectionService", "❌ Native socket connect error: " + error);
                 // Переподключаемся через некоторое время
                 if (!TextUtils.isEmpty(currentToken)) {
+                    android.util.Log.d("BackgroundConnectionService", "🔄 Scheduling retry in 5 seconds...");
                     keepAliveHandler.postDelayed(() -> {
-                        if (!TextUtils.isEmpty(currentToken) && (nativeSocket == null || !nativeSocket.connected())) {
-                            android.util.Log.d("BackgroundConnectionService", "Retrying connection after error...");
-                            connectNativeSocket(currentToken);
+                        if (!TextUtils.isEmpty(currentToken)) {
+                            boolean isConnected = nativeSocket != null && nativeSocket.connected();
+                            android.util.Log.d("BackgroundConnectionService", "Retry check: isConnected=" + isConnected);
+                            if (!isConnected) {
+                                android.util.Log.d("BackgroundConnectionService", "🔄 Executing retry...");
+                                connectNativeSocket(currentToken);
+                            }
                         }
                     }, 5000);
                 }
@@ -316,12 +399,14 @@ public class BackgroundConnectionService extends Service {
             nativeSocket.on("call:incoming", this::handleCallIncoming);
             nativeSocket.on("call:declined", this::handleCallEnded);
             nativeSocket.on("call:ended", this::handleCallEnded);
+            android.util.Log.d("BackgroundConnectionService", "Event handlers registered, calling connect()...");
             nativeSocket.connect();
-            android.util.Log.d("BackgroundConnectionService", "Native socket connection initiated");
+            android.util.Log.d("BackgroundConnectionService", "✅ Native socket connect() called, connection initiated");
         } catch (URISyntaxException e) {
-            android.util.Log.e("BackgroundConnectionService", "Failed to connect native socket: URI syntax error", e);
+            android.util.Log.e("BackgroundConnectionService", "❌ Failed to connect native socket: URI syntax error", e);
         } catch (Exception e) {
-            android.util.Log.e("BackgroundConnectionService", "Failed to connect native socket: unexpected error", e);
+            android.util.Log.e("BackgroundConnectionService", "❌ Failed to connect native socket: unexpected error", e);
+            e.printStackTrace();
         }
     }
 
