@@ -3874,8 +3874,8 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                 }
               }}
               onClose={(options) => {
-                if (!callConvId) return
-                const convId = callConvId
+                const convId = callConvId ?? callConvIdRef.current
+                if (!convId) return
                 const finalize = () => {
                   const conv = getConversationFromCache(convId)
                   const participantsCount = conv?.participants?.length ?? 0
