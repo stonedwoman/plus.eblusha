@@ -377,12 +377,16 @@ function AppRoot() {
                 })
               }
               // Обновляем токен в нативном сервисе
+              console.log('[Main] Checking NativeSocket plugin availability...')
               if (NativeSocket && typeof NativeSocket.updateToken === 'function') {
+                console.log('[Main] Calling NativeSocket.updateToken() with token length:', session.accessToken?.length || 0)
                 NativeSocket.updateToken({ token: session.accessToken }).then(() => {
-                  console.log('[Main] ✅ Native socket token updated')
+                  console.log('[Main] ✅ Native socket token updated successfully')
                 }).catch((error: any) => {
-                  console.warn('[Main] Failed to update native socket token:', error)
+                  console.error('[Main] ❌ Failed to update native socket token:', error)
                 })
+              } else {
+                console.warn('[Main] NativeSocket.updateToken is not available')
               }
             }).catch((error) => {
               console.warn('[Main] NativeSocket plugin not available:', error)
@@ -559,9 +563,26 @@ function AppRoot() {
       return
     }
     const token = session?.accessToken ?? ''
-    NativeSocket.updateToken({ token }).catch((error) => {
-      console.warn('[Main] Failed to update native socket token', error)
-    })
+    console.log('[Main] useEffect: session token changed, length:', token.length)
+    if (token) {
+      import('./capacitor/plugins/native-socket-plugin').then((module) => {
+        const NativeSocket = module.NativeSocket || module.default
+        if (NativeSocket && typeof NativeSocket.updateToken === 'function') {
+          console.log('[Main] useEffect: Calling NativeSocket.updateToken()')
+          NativeSocket.updateToken({ token }).then(() => {
+            console.log('[Main] ✅ useEffect: Native socket token updated')
+          }).catch((error: any) => {
+            console.error('[Main] ❌ useEffect: Failed to update native socket token:', error)
+          })
+        } else {
+          console.warn('[Main] useEffect: NativeSocket.updateToken is not available')
+        }
+      }).catch((error) => {
+        console.error('[Main] ❌ useEffect: Failed to import NativeSocket plugin:', error)
+      })
+    } else {
+      console.warn('[Main] useEffect: Token is empty, skipping update')
+    }
   }, [session?.accessToken])
 
   // Автоматическое обновление токена по его exp и при возврате в приложение
