@@ -11,6 +11,7 @@ import { connectSocket, acceptCall, declineCall } from './utils/socket'
 import { api, forceRefreshSession } from './utils/api'
 import { ensureDeviceBootstrap } from './domain/device/deviceManager'
 import { Capacitor } from '@capacitor/core' // Import Capacitor
+import NativeSocket from './capacitor/plugins/native-socket-plugin'
 
 // Глобальное логирование для отладки
 if (typeof window !== 'undefined') {
@@ -531,6 +532,16 @@ function AppRoot() {
       void ensureDeviceBootstrap()
     }
   }, [session, isCheckingAuth])
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) {
+      return
+    }
+    const token = session?.accessToken ?? ''
+    NativeSocket.updateToken({ token }).catch((error) => {
+      console.warn('[Main] Failed to update native socket token', error)
+    })
+  }, [session?.accessToken])
 
   // Автоматическое обновление токена по его exp и при возврате в приложение
   useEffect(() => {
