@@ -86,6 +86,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const me = useAppStore((s) => s.session?.user)
 
   const closingRef = useRef(false)
+  const manualCloseRef = useRef(false)
   const myAvatar = useMemo(() => me?.avatarUrl ?? null, [me?.avatarUrl])
   const handleClose = useCallback((options?: { manual?: boolean }) => {
     // Позволяем повторные вызовы, чтобы не зависать в состоянии закрытия.
@@ -93,6 +94,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     // даже если первый вызов был прерван.
     if (!closingRef.current) {
       closingRef.current = true
+    }
+    if (options?.manual) {
+      manualCloseRef.current = true
     }
     if (conversationId && isGroup) {
       try {
@@ -106,7 +110,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         console.error('Error requesting call status update:', err)
       }
     }
-    onClose(options)
+    const effectiveOptions = manualCloseRef.current ? { ...(options ?? {}), manual: true } : options
+    onClose(effectiveOptions)
   }, [conversationId, isGroup, onClose])
   const videoContainCss = `
     /* Force videos to fit tile without cropping on all layouts */
@@ -162,7 +167,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   }, [open])
 
   useEffect(() => {
-    if (!open) closingRef.current = false
+    if (!open) {
+      closingRef.current = false
+      manualCloseRef.current = false
+    }
   }, [open])
 
   // track desktop/resize
@@ -378,10 +386,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup)
             const hadConnection = wasConnected
             setWasConnected(false)
+            const manual = reason === 1 || manualCloseRef.current
             if (hadConnection) {
-              handleClose({ manual: false })
+              handleClose({ manual })
             } else if (!isGroup) {
-              handleClose({ manual: false })
+              handleClose({ manual })
             }
           }}
         >
