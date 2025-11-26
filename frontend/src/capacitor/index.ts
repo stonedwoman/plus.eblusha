@@ -39,6 +39,14 @@ export async function initializeSocketConnection(wsUrl: string, accessToken: str
   socketService.connect(accessToken)
   console.log('[Capacitor] socketService.connect() called, now setting up lifecycle handlers')
 
+  const keepAliveListener = () => {
+    console.log('[Capacitor] 📡 Keep-alive signal received from native service')
+    socketService.ensureConnected()
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('eblushaKeepAlive', keepAliveListener as EventListener)
+  }
+
   // Обработка событий жизненного цикла приложения - регистрируем асинхронно
   console.log('[Capacitor] About to call setupAppLifecycleHandlers...')
   try {
@@ -50,6 +58,14 @@ export async function initializeSocketConnection(wsUrl: string, accessToken: str
     console.error('[Capacitor] Error stack:', error instanceof Error ? error.stack : String(error))
   }
   console.log('[Capacitor] initializeSocketConnection finished')
+
+  lifecycleHandlers.push({
+    remove: async () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('eblushaKeepAlive', keepAliveListener as EventListener)
+      }
+    },
+  })
 }
 
 // Хранилище для обработчиков жизненного цикла

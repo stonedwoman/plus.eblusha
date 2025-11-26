@@ -1,6 +1,10 @@
 package org.eblusha.plus;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
 
@@ -10,6 +14,22 @@ public class MainActivity extends BridgeActivity {
     private static final String EXTRA_ACCEPT_WITH_VIDEO = "accept_with_video";
 
     private Intent pendingCallIntent;
+    private final BroadcastReceiver keepAliveReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null || intent.getAction() == null) {
+                return;
+            }
+            if (BackgroundConnectionService.ACTION_KEEP_ALIVE.equals(intent.getAction())) {
+                if (bridge != null && bridge.getWebView() != null) {
+                    bridge.getWebView()
+                        .post(() -> bridge
+                            .getWebView()
+                            .evaluateJavascript("window.dispatchEvent(new Event('eblushaKeepAlive'));", null));
+                }
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -17,6 +37,12 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(IncomingCallPlugin.class);
         super.onCreate(savedInstanceState);
         BackgroundConnectionService.start(this);
+        IntentFilter keepAliveFilter = new IntentFilter(BackgroundConnectionService.ACTION_KEEP_ALIVE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(keepAliveReceiver, keepAliveFilter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(keepAliveReceiver, keepAliveFilter);
+        }
         processCallIntent(getIntent());
     }
 
@@ -38,6 +64,10 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onDestroy() {
         BackgroundConnectionService.stop(this);
+        try {
+            unregisterReceiver(keepAliveReceiver);
+        } catch (IllegalArgumentException ignored) {
+        }
         super.onDestroy();
     }
 
