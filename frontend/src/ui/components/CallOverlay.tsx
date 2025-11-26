@@ -54,7 +54,7 @@ if (typeof window !== 'undefined' && typeof navigator !== 'undefined' && navigat
   window.__eblushaEnumeratePatched = true
 }
 import { createPortal } from 'react-dom'
-import { LiveKitRoom, VideoConference, useParticipants, useRoomContext } from '@livekit/components-react'
+import { LiveKitRoom, VideoConference } from '@livekit/components-react'
 import '@livekit/components-styles'
 import { api } from '../../utils/api'
 import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../utils/socket'
@@ -64,7 +64,7 @@ import { Minimize2 } from 'lucide-react'
 type Props = {
   open: boolean
   conversationId: string | null
-  onClose: () => void
+  onClose: (options?: { manual?: boolean }) => void
   onMinimize?: () => void
   minimized?: boolean
   initialVideo?: boolean
@@ -74,87 +74,6 @@ type Props = {
   avatarsById?: Record<string, string | null>
   localUserId?: string | null
   isGroup?: boolean
-}
-
-// Компонент для отслеживания участников и автоматического завершения звонка при отключении собеседника
-function CallParticipantsTracker({ conversationId, isGroup, onPeerDisconnected }: { conversationId: string; isGroup: boolean; onPeerDisconnected: () => void }) {
-  const room = useRoomContext()
-  const participants = useParticipants()
-  const me = useAppStore((s) => s.session?.user)
-  const wasConnectedRef = useRef(false)
-  const hadOtherParticipantsRef = useRef(false)
-  
-  useEffect(() => {
-    if (!room || !me) return
-    
-    const handleConnected = () => {
-      wasConnectedRef.current = true
-      hadOtherParticipantsRef.current = false
-    }
-    
-    const handleDisconnected = () => {
-      wasConnectedRef.current = false
-      hadOtherParticipantsRef.current = false
-    }
-    
-    room.on('connected', handleConnected)
-    room.on('disconnected', handleDisconnected)
-    
-    return () => {
-      room.off('connected', handleConnected)
-      room.off('disconnected', handleDisconnected)
-    }
-  }, [room, me])
-  
-  // Отслеживаем количество участников (исключая себя)
-  useEffect(() => {
-    if (!room || !wasConnectedRef.current || !me) return
-    
-    // Получаем локального участника
-    const localParticipant = room.localParticipant
-    if (!localParticipant) return
-    
-    // Фильтруем участников, исключая себя (локального участника)
-    const otherParticipants = participants.filter(p => {
-      // Проверяем, является ли участник локальным
-      if (p.identity === localParticipant.identity || p.sid === localParticipant.sid) {
-        return false
-      }
-      // Дополнительная проверка по metadata
-      try {
-        const metadata = p.metadata ? JSON.parse(p.metadata) : {}
-        return metadata.userId !== me.id
-      } catch {
-        return true
-      }
-    })
-    
-    // Запоминаем, что был другой участник
-    if (otherParticipants.length > 0) {
-      hadOtherParticipantsRef.current = true
-    }
-    
-    // Логика завершения звонка зависит от типа:
-    // - Для 1:1 звонков: завершаем, когда остается только мы (1 участник)
-    // - Для групповых звонков: завершаем только когда остается 0 участников (все вышли)
-    if (otherParticipants.length === 0 && participants.length > 0 && room.state === 'connected' && hadOtherParticipantsRef.current) {
-      if (isGroup) {
-        // Для групп: завершаем только когда остается 0 участников (все вышли)
-        // Если остался только один участник (мы), это нормально - не завершаем
-        // Звонок завершится только когда последний участник выйдет
-        // (это обрабатывается через onClose, когда пользователь нажимает "Сбросить")
-      } else {
-        // Для 1:1 звонков: завершаем, когда остается только мы (1 участник)
-        if (participants.length === 1) {
-          console.log('[CallOverlay] Peer disconnected in 1:1 call, ending call')
-          hadOtherParticipantsRef.current = false // Сбрасываем флаг, чтобы не вызывать повторно
-          onPeerDisconnected()
-        }
-      }
-    }
-  }, [participants, room, me, isGroup, onPeerDisconnected])
-  
-  return null
 }
 
 export function CallOverlay({ open, conversationId, onClose, onMinimize, minimized = false, initialVideo = false, initialAudio = true, peerAvatarUrl = null, avatarsByName = {}, avatarsById = {}, localUserId = null, isGroup = false }: Props) {
@@ -168,7 +87,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
 
   const closingRef = useRef(false)
   const myAvatar = useMemo(() => me?.avatarUrl ?? null, [me?.avatarUrl])
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback((options?: { manual?: boolean }) => {
     // Позволяем повторные вызовы, чтобы не зависать в состоянии закрытия.
     // Дополнительные вызовы idempotent, но обеспечивают выход из оверлея,
     // даже если первый вызов был прерван.
@@ -187,7 +106,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         console.error('Error requesting call status update:', err)
       }
     }
-    onClose()
+    onClose(options)
   }, [conversationId, isGroup, onClose])
   const videoContainCss = `
     /* Force videos to fit tile without cropping on all layouts */
@@ -308,7 +227,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             if (!(leaveBtn as any).__ebLeaveBound) {
               const handler = () => {
                 // Даем LiveKit завершить обработку клика и только затем синхронизируем наш стейт
-                setTimeout(() => handleClose(), 0)
+                setTimeout(() => handleClose({ manual: true }), 0)
               }
               leaveBtn.addEventListener('click', handler)
               ;(leaveBtn as any).__ebLeaveBound = handler
@@ -460,19 +379,12 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             const hadConnection = wasConnected
             setWasConnected(false)
             if (hadConnection) {
-              handleClose()
+              handleClose({ manual: false })
             } else if (!isGroup) {
-              handleClose()
+              handleClose({ manual: false })
             }
           }}
         >
-          <CallParticipantsTracker 
-            conversationId={conversationId}
-            isGroup={isGroup}
-            onPeerDisconnected={() => {
-              handleClose()
-            }}
-          />
           <div style={{ width: '100%', height: '100%' }}>
             <VideoConference />
           </div>

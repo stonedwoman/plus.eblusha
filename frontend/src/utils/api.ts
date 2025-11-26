@@ -1,5 +1,6 @@
 import axios, { AxiosError, AxiosHeaders } from 'axios'
 import { useAppStore, type SessionState } from '../domain/store/appStore'
+import { isNativePlatform } from './platform'
 
 // Определяем базовый URL для API: из переменной окружения, либо умный fallback
 let baseURL: string | undefined = (import.meta as any).env?.VITE_API_URL
@@ -24,11 +25,27 @@ const refreshClient = axios.create({
   withCredentials: true,
 })
 
+const isNativeClient = isNativePlatform()
+if (isNativeClient) {
+  api.defaults.headers.common = api.defaults.headers.common || {}
+  refreshClient.defaults.headers.common = refreshClient.defaults.headers.common || {}
+  api.defaults.headers.common['X-Native-Client'] = '1'
+  refreshClient.defaults.headers.common['X-Native-Client'] = '1'
+}
+
 let refreshPromise: Promise<SessionState | null> | null = null
 
 function isAuthEndpoint(url?: string) {
   if (!url) return false
   return /\/auth\/(login|register|refresh|logout)/.test(url)
+}
+
+function buildRefreshRequestBody() {
+  const token = useAppStore.getState().session?.refreshToken
+  if (token) {
+    return { refreshToken: token }
+  }
+  return undefined
 }
 
 async function refreshTokens(): Promise<SessionState | null> {
@@ -42,14 +59,16 @@ async function refreshTokens(): Promise<SessionState | null> {
   }
 
   // Refresh token is now in httpOnly cookie, so we don't need to send it in body
+  const payload = buildRefreshRequestBody()
   refreshPromise = refreshClient
-    .post('/auth/refresh')
+    .post('/auth/refresh', payload)
     .then((response) => {
       const latestSession = useAppStore.getState().session
       if (!latestSession) return null
       const updatedSession: SessionState = {
         ...latestSession,
         accessToken: response.data.accessToken,
+        refreshToken: response.data.refreshToken ?? latestSession.refreshToken,
       }
       useAppStore.getState().setSession(updatedSession)
       return updatedSession
@@ -116,4 +135,8 @@ api.interceptors.response.use(
     }
   },
 )
+
+export function forceRefreshSession() {
+  return refreshTokens()
+}
 

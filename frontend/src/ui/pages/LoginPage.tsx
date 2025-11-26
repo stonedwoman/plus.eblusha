@@ -16,11 +16,10 @@ export default function LoginPage() {
       return response.data
     },
     onSuccess: (data) => {
-      // Persist synchronously before hard navigation
-      // refreshToken is now stored in httpOnly cookie, not in response
       setSession({
         user: data.user,
         accessToken: data.accessToken,
+        refreshToken: data.refreshToken ?? undefined,
       })
       // Force new document so iOS Safari drops autofill/passkey context
       const redirectTo = (location.state as { from?: Location })?.from?.pathname ?? '/'
