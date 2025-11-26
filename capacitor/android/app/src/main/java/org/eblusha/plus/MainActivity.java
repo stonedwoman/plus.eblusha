@@ -35,6 +35,7 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(MessageNotificationPlugin.class);
         registerPlugin(IncomingCallPlugin.class);
+        registerPlugin(NativeSocketPlugin.class);
         super.onCreate(savedInstanceState);
         BackgroundConnectionService.start(this);
         IntentFilter keepAliveFilter = new IntentFilter(BackgroundConnectionService.ACTION_KEEP_ALIVE);
