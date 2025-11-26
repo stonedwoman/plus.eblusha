@@ -23,6 +23,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 public class IncomingCallPlugin extends Plugin {
 
     private static final int REQUEST_CODE_NOTIFICATIONS = 1002;
+    private static final int REQUEST_CODE_AUDIO_VIDEO = 1003;
 
     @PluginMethod
     public void showIncomingCall(PluginCall call) {
@@ -43,6 +44,7 @@ public class IncomingCallPlugin extends Plugin {
         }
 
         ensureNotificationPermission(false);
+        ensureAudioVideoPermissions(false);
         IncomingCallService.start(context, conversationId, callerName, isVideo, avatarUrl);
         call.resolve();
     }
@@ -59,7 +61,9 @@ public class IncomingCallPlugin extends Plugin {
 
     @PluginMethod
     public void ensurePermissions(PluginCall call) {
-        boolean granted = ensureNotificationPermission(true);
+        boolean notificationGranted = ensureNotificationPermission(true);
+        boolean mediaGranted = ensureAudioVideoPermissions(true);
+        boolean granted = notificationGranted && mediaGranted;
         JSObject result = new JSObject();
         result.put("granted", granted);
         call.resolve(result);
@@ -95,6 +99,35 @@ public class IncomingCallPlugin extends Plugin {
                 REQUEST_CODE_NOTIFICATIONS
             );
         }
+        return false;
+    }
+
+    private boolean ensureAudioVideoPermissions(boolean requestIfMissing) {
+        Context context = getContext();
+        if (context == null) {
+            return false;
+        }
+
+        boolean audioGranted =
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+        boolean cameraGranted =
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED;
+
+        if ((audioGranted && cameraGranted) || !requestIfMissing) {
+            return audioGranted && cameraGranted;
+        }
+
+        Activity activity = getActivity();
+        if (activity != null) {
+            ActivityCompat.requestPermissions(
+                activity,
+                new String[] { Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA },
+                REQUEST_CODE_AUDIO_VIDEO
+            );
+        }
+
         return false;
     }
 
