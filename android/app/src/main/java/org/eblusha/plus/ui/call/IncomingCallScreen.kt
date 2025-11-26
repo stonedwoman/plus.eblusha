@@ -27,7 +27,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import org.eblusha.plus.ui.components.Avatar
 import org.eblusha.plus.ui.theme.LocalSpacing
@@ -36,7 +38,8 @@ import org.eblusha.plus.ui.theme.LocalSpacing
 fun IncomingCallScreen(
     call: org.eblusha.plus.data.realtime.RealtimeEvent.CallIncoming,
     avatarUrl: String?,
-    onAccept: () -> Unit,
+    onAcceptAudio: () -> Unit,
+    onAcceptVideo: () -> Unit,
     onDecline: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -82,45 +85,74 @@ fun IncomingCallScreen(
             
             // Action buttons
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = spacing.lg),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Decline button
-                Button(
-                    onClick = onDecline,
-                    shape = CircleShape,
-                    modifier = Modifier.size(64.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CallEnd,
-                        contentDescription = "Отклонить",
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-                
-                // Accept button
-                Button(
-                    onClick = onAccept,
-                    shape = CircleShape,
-                    modifier = Modifier.size(80.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    )
-                ) {
-                    Icon(
-                        imageVector = if (call.video) Icons.Default.Videocam else Icons.Default.Call,
-                        contentDescription = "Принять",
-                        modifier = Modifier.size(40.dp)
-                    )
-                }
+                IncomingCallActionButton(
+                    icon = Icons.Default.CallEnd,
+                    label = "Отбой",
+                    containerColor = MaterialTheme.colorScheme.error,
+                    iconTint = Color.White,
+                    size = 68.dp,
+                    onClick = onDecline
+                )
+                IncomingCallActionButton(
+                    icon = Icons.Default.Call,
+                    label = "Принять",
+                    containerColor = Color(0xFF0F9D58),
+                    iconTint = Color.White,
+                    size = 80.dp,
+                    onClick = onAcceptAudio
+                )
+                IncomingCallActionButton(
+                    icon = Icons.Default.Videocam,
+                    label = "С видео",
+                    containerColor = Color(0xFF1A73E8),
+                    iconTint = Color.White,
+                    size = 80.dp,
+                    onClick = onAcceptVideo
+                )
             }
             
             Spacer(modifier = Modifier.height(spacing.xl))
         }
+    }
+}
+
+@Composable
+private fun IncomingCallActionButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    containerColor: Color,
+    iconTint: Color,
+    size: androidx.compose.ui.unit.Dp,
+    onClick: () -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Button(
+            onClick = onClick,
+            shape = CircleShape,
+            modifier = Modifier.size(size),
+            colors = ButtonDefaults.buttonColors(containerColor = containerColor),
+            contentPadding = PaddingValues(0.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                modifier = Modifier.size(size * 0.45f),
+                tint = iconTint
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
     }
 }
 

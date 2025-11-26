@@ -47,6 +47,7 @@ type ClientToServerEvents = {
   "secret:chat:offer": (payload: { conversationId: string }) => void;
   "secret:chat:accept": (payload: { conversationId: string; deviceId: string }) => void;
   "secret:chat:decline": (payload: { conversationId: string }) => void;
+  "presence:focus": (payload: { focused: boolean }) => void;
 };
 
 type InterServerEvents = Record<string, never>;
@@ -58,6 +59,74 @@ const callState: Map<string, { inviterId: string; accepted: boolean; video: bool
 // Track active group calls: conversationId -> { startedAt: number, participants: Set<string> }
 const activeGroupCalls: Map<string, { startedAt: number; participants: Set<string> }> = new Map();
 let statusInterval: NodeJS.Timeout | null = null;
+
+type PresenceStatus = "ONLINE" | "OFFLINE" | "BACKGROUND";
+
+const socketFocusByUser: Map<string, Map<string, boolean>> = new Map();
+const persistedPresenceByUser: Map<string, PresenceStatus> = new Map();
+const presenceUpdateQueue: Map<string, Promise<void>> = new Map();
+
+function setSocketFocus(userId: string, socketId: string, focused: boolean) {
+  const current = socketFocusByUser.get(userId) ?? new Map<string, boolean>();
+  current.set(socketId, focused);
+  socketFocusByUser.set(userId, current);
+}
+
+function removeSocketFocus(userId: string, socketId: string) {
+  const current = socketFocusByUser.get(userId);
+  if (!current) return;
+  current.delete(socketId);
+  if (current.size === 0) {
+    socketFocusByUser.delete(userId);
+  }
+}
+
+function computePresenceStatus(userId: string): PresenceStatus {
+  const entries = socketFocusByUser.get(userId);
+  if (!entries || entries.size === 0) return "OFFLINE";
+  const hasFocused = Array.from(entries.values()).some(Boolean);
+  return hasFocused ? "ONLINE" : "BACKGROUND";
+}
+
+async function persistPresence(io: Server, userId: string, status: PresenceStatus) {
+  const previous = persistedPresenceByUser.get(userId);
+  if (previous === status) {
+    return;
+  }
+  if (status === "OFFLINE") {
+    persistedPresenceByUser.delete(userId);
+  } else {
+    persistedPresenceByUser.set(userId, status);
+  }
+  const data: { status: PresenceStatus; lastSeenAt?: Date } = { status };
+  data.lastSeenAt = new Date();
+  try {
+    await prisma.user.update({
+      where: { id: userId },
+      data,
+    });
+  } catch (error) {
+    logger.warn({ error, userId, status }, "Failed to persist presence state");
+    return;
+  }
+  io.emit("presence:update", { userId, status });
+}
+
+function recomputePresence(io: Server, userId: string): Promise<void> {
+  const previousTask = presenceUpdateQueue.get(userId) ?? Promise.resolve();
+  const nextTask = previousTask
+    .catch(() => {})
+    .then(async () => {
+      const status = computePresenceStatus(userId);
+      await persistPresence(io, userId, status);
+    });
+  presenceUpdateQueue.set(userId, nextTask);
+  return nextTask.finally(() => {
+    if (presenceUpdateQueue.get(userId) === nextTask) {
+      presenceUpdateQueue.delete(userId);
+    }
+  });
+}
 
 export function initSocket(
   server: HttpServer
@@ -138,12 +207,6 @@ export function initSocket(
 
       const payload = verifyAccessToken<{ sub: string }>(token);
       socket.data.userId = payload.sub;
-
-      await prisma.user.update({
-        where: { id: payload.sub },
-        data: { status: "ONLINE", lastSeenAt: new Date() },
-      });
-
       next();
     } catch (error) {
       logger.warn({ error }, "Socket auth failed");
@@ -156,7 +219,13 @@ export function initSocket(
     logger.info({ userId }, "Socket connected");
     // Join personal room to receive direct events
     socket.join(userId);
-    io.emit("presence:update", { userId, status: "ONLINE" });
+    setSocketFocus(userId, socket.id, true);
+    void recomputePresence(io, userId);
+
+    socket.on("presence:focus", ({ focused }) => {
+      setSocketFocus(userId, socket.id, !!focused);
+      void recomputePresence(io, userId);
+    });
 
     socket.on("conversation:join", async (conversationId) => {
       const membership = await prisma.conversationParticipant.findFirst({
@@ -763,22 +832,14 @@ export function initSocket(
         }
       }
       
-      // Проверяем, есть ли еще активные соединения для этого пользователя
-      // На момент disconnecting сокет еще находится в комнате userId,
-      // поэтому проверяем, есть ли там другие сокеты кроме текущего
-      const userRoom = io.sockets.adapter.rooms.get(userId);
-      const hasOtherConnections = userRoom && userRoom.size > 1;
-      
-      // Устанавливаем OFFLINE только если нет других активных соединений
-      if (!hasOtherConnections) {
-        await prisma.user.update({
-          where: { id: userId },
-          data: { status: "OFFLINE", lastSeenAt: new Date() },
-        });
-        io.emit("presence:update", { userId, status: "OFFLINE" });
+      removeSocketFocus(userId, socket.id);
+      const remainingConnections = socketFocusByUser.get(userId)?.size ?? 0;
+      await recomputePresence(io, userId);
+      if (remainingConnections === 0) {
         logger.info({ userId }, "User status set to OFFLINE (no active connections)");
       } else {
-        logger.info({ userId, activeConnections: userRoom.size - 1 }, "User still has active connections, status remains ONLINE");
+        const aggregatedStatus = computePresenceStatus(userId);
+        logger.info({ userId, activeConnections: remainingConnections, aggregatedStatus }, "User still has active connections, status recomputed");
       }
     });
     

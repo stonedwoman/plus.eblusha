@@ -199,6 +199,7 @@ enum UserStatus {
   OFFLINE
   AWAY
   DND
+  BACKGROUND
 }
 
 enum ContactStatus {

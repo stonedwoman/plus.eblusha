@@ -58,7 +58,7 @@ export interface ConversationMemberRemovedPayload {
 
 export interface PresenceUpdatePayload {
   userId: string
-  status: 'ONLINE' | 'OFFLINE' | 'AWAY'
+  status: 'ONLINE' | 'OFFLINE' | 'AWAY' | 'BACKGROUND'
 }
 
 export interface ContactRequestPayload {
