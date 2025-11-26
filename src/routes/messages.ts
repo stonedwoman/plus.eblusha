@@ -11,6 +11,52 @@ type AuthedRequest = Request & { user?: { id: string } };
 
 router.use(authenticate);
 
+const previewParamsSchema = z.object({ messageId: z.string().cuid() });
+
+router.get("/:messageId/preview", async (req, res) => {
+  const parsedParams = previewParamsSchema.safeParse(req.params);
+  if (!parsedParams.success) {
+    res.status(400).json({ message: "Invalid message id" });
+    return;
+  }
+
+  const { messageId } = parsedParams.data;
+  const userId = (req as AuthedRequest).user!.id;
+
+  const message = await prisma.message.findUnique({
+    where: { id: messageId },
+    select: {
+      id: true,
+      content: true,
+      conversationId: true,
+      senderId: true,
+      createdAt: true,
+      attachments: {
+        select: {
+          id: true,
+          type: true,
+        },
+      },
+    },
+  });
+
+  if (!message) {
+    res.status(404).json({ message: "Message not found" });
+    return;
+  }
+
+  const participantCount = await prisma.conversationParticipant.count({
+    where: { conversationId: message.conversationId, userId },
+  });
+
+  if (participantCount === 0) {
+    res.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  res.json({ message });
+});
+
 const updateStatusSchema = z.object({
   messageIds: z.array(z.string().cuid()).min(1),
   status: z.enum(["DELIVERED", "READ", "SEEN"]),
