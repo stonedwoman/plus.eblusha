@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -63,29 +65,61 @@ public class MainActivity extends BridgeActivity {
         }
         
         // Добавляем код, который будет выполняться после загрузки WebView и сохранит токен из localStorage
-        if (bridge != null && bridge.getWebView() != null) {
-            bridge.getWebView().post(() -> {
-                String js = "(function() {" +
-                    "try {" +
-                    "  const storage = window.localStorage;" +
-                    "  const sessionStr = storage.getItem('app-store');" +
-                    "  if (sessionStr) {" +
-                    "    const session = JSON.parse(sessionStr);" +
-                    "    const token = session?.session?.accessToken;" +
-                    "    if (token && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
-                    "      console.log('[MainActivity] Found token in localStorage, saving to native...');" +
-                    "      window.Capacitor.Plugins.NativeSocket.updateToken({ token: token }).then(() => {" +
-                    "        console.log('[MainActivity] ✅ Token saved from localStorage');" +
-                    "      }).catch((e) => {" +
-                    "        console.error('[MainActivity] ❌ Failed to save token from localStorage:', e);" +
-                    "      });" +
-                    "    }" +
-                    "  }" +
-                    "} catch(e) { console.error('[MainActivity] Error reading localStorage:', e); }" +
-                    "})();";
-                bridge.getWebView().evaluateJavascript(js, null);
-            });
-        }
+        // Используем задержку, чтобы WebView успел загрузиться
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override
+            public void run() {
+            if (bridge != null && bridge.getWebView() != null) {
+                android.util.Log.d("MainActivity", "Executing JavaScript to save token from localStorage...");
+                bridge.getWebView().post(() -> {
+                    String js = "(function() {" +
+                        "try {" +
+                        "  console.log('[MainActivity JS] Checking localStorage for token...');" +
+                        "  const storage = window.localStorage;" +
+                        "  const sessionStr = storage.getItem('app-store');" +
+                        "  console.log('[MainActivity JS] localStorage item length:', sessionStr ? sessionStr.length : 0);" +
+                        "  if (sessionStr) {" +
+                        "    const session = JSON.parse(sessionStr);" +
+                        "    const token = session?.session?.accessToken;" +
+                        "    console.log('[MainActivity JS] Token found, length:', token ? token.length : 0);" +
+                        "    if (token) {" +
+                        "      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
+                        "        console.log('[MainActivity JS] NativeSocket plugin available, saving token...');" +
+                        "        window.Capacitor.Plugins.NativeSocket.updateToken({ token: token }).then(() => {" +
+                        "          console.log('[MainActivity JS] ✅ Token saved from localStorage');" +
+                        "        }).catch((e) => {" +
+                        "          console.error('[MainActivity JS] ❌ Failed to save token from localStorage:', e);" +
+                        "        });" +
+                        "      } else {" +
+                        "        console.warn('[MainActivity JS] NativeSocket plugin not available yet');" +
+                        "        // Retry after a delay" +
+                        "        setTimeout(function() {" +
+                        "          if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
+                        "            window.Capacitor.Plugins.NativeSocket.updateToken({ token: token }).then(() => {" +
+                        "              console.log('[MainActivity JS] ✅ Token saved from localStorage (retry)');" +
+                        "            }).catch((e) => {" +
+                        "              console.error('[MainActivity JS] ❌ Failed to save token (retry):', e);" +
+                        "            });" +
+                        "          }" +
+                        "        }, 2000);" +
+                        "      }" +
+                        "    } else {" +
+                        "      console.warn('[MainActivity JS] No token found in session');" +
+                        "    }" +
+                        "  } else {" +
+                        "    console.warn('[MainActivity JS] No app-store in localStorage');" +
+                        "  }" +
+                        "} catch(e) { console.error('[MainActivity JS] Error reading localStorage:', e); }" +
+                        "})();";
+                    bridge.getWebView().evaluateJavascript(js, (result) -> {
+                        android.util.Log.d("MainActivity", "JavaScript execution result: " + result);
+                    });
+                });
+            } else {
+                    android.util.Log.w("MainActivity", "Bridge or WebView not available, cannot execute token save script");
+            }
+            }
+        }, 2000); // Задержка 2 секунды для загрузки WebView
         try {
             IntentFilter keepAliveFilter = new IntentFilter(BackgroundConnectionService.ACTION_KEEP_ALIVE);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
