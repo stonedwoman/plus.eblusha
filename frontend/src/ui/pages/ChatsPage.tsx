@@ -172,6 +172,26 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
   const [secretActionLoading, setSecretActionLoading] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const me = useAppStore((s) => s.session?.user)
+  const storedUserIdRef = useRef<string | null>(null)
+  if (storedUserIdRef.current === null && typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('eb_user')
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed.id === 'string') {
+          storedUserIdRef.current = parsed.id
+        }
+      }
+    } catch {
+      storedUserIdRef.current = null
+    }
+  }
+  useEffect(() => {
+    if (me?.id) {
+      storedUserIdRef.current = me.id
+    }
+  }, [me?.id])
+  const currentUserId = me?.id ?? storedUserIdRef.current ?? null
   const callStore = useCallStore()
   const client = useQueryClient()
   const activePendingMessages = useMemo<PendingMessage[]>(() => {
@@ -2455,7 +2475,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
           }).map((row: any) => {
             const c = row.conversation
             const othersArr = c.participants
-              .filter((p: any) => p.user.id !== me?.id)
+              .filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
               .map((p: any) => p.user)
             const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
             const title = c.title ?? fallbackName
@@ -2690,7 +2710,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
             )}
             {activeConversation ? (
               (() => {
-                const othersArr = activeConversation.participants.filter((p: any) => p.user.id !== me?.id).map((p: any) => p.user)
+                const othersArr = activeConversation.participants.filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true)).map((p: any) => p.user)
                 const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
                 const title = activeConversation.title ?? fallbackName
                 const isGroup = activeConversation.isGroup || activeConversation.participants.length > 2
@@ -3437,7 +3457,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                   const showSpacer = leftAlignAll
                   const createdAt = m.createdAt ? new Date(m.createdAt) : null
                   const timeLabel = createdAt ? createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
-                  const otherIds: string[] = (activeConversation?.participants || []).map((p: any) => p.user.id).filter((id: string) => id !== me?.id)
+                  const otherIds: string[] = (activeConversation?.participants || []).map((p: any) => p.user.id).filter((id: string) => (currentUserId ? id !== currentUserId : true))
                   const receipts = (m.receipts || []) as Array<any>
                   const readByAny = isMe && otherIds.some((uid) => receipts.some((r) => r.userId === uid && (r.status === 'READ' || r.status === 'SEEN')))
                   const ticks = isMe ? (readByAny ? '✓' : '') : ''
@@ -3843,7 +3863,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
               peerAvatarUrl={(() => {
             const parts = activeConversation?.participants || []
             if (parts.length === 2) {
-              const peer = parts.find((p: any) => p.user.id !== me?.id)?.user
+            const peer = parts.find((p: any) => (currentUserId ? p.user.id !== currentUserId : true))?.user
               return peer?.avatarUrl ?? null
             }
             return null
@@ -3895,7 +3915,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                     const current = prev[convId]
                     if (!current) return prev
                     if (isGroupConv) {
-                      const participants = (current.participants || []).filter((id: string) => id !== me?.id)
+                      const participants = (current.participants || []).filter((id: string) => (currentUserId ? id !== currentUserId : true))
                       return { ...prev, [convId]: { ...current, participants } }
                     }
                     if (current.active) {
@@ -5173,7 +5193,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
           <div style={{ maxHeight: 320, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
             {(conversationsQuery.data || []).map((row: any) => {
               const c = row.conversation
-              const othersArr = c.participants.filter((p: any) => p.user.id !== me?.id).map((p: any) => p.user)
+              const othersArr = c.participants.filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true)).map((p: any) => p.user)
               const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
               const title = c.title ?? fallbackName
               return (
