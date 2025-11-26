@@ -241,6 +241,29 @@ function AppRoot() {
 
             const conversationsKey = ['conversations']
 
+            type MessagePreview = {
+              id: string
+              content?: string | null
+              attachments?: Array<{ id: string; type: string }>
+            }
+
+            const fetchMessagePreview = async (messageId: string): Promise<MessagePreview | null> => {
+              try {
+                const response = await api.get(`/messages/${messageId}/preview`)
+                return response.data.message as MessagePreview
+              } catch (error) {
+                console.warn('[Native] Failed to fetch message preview', messageId, error)
+                return null
+              }
+            }
+
+            const getAttachmentPreviewText = (type?: string | null): string => {
+              if (type === 'IMAGE') {
+                return '📷 Фото'
+              }
+              return '📎 Вложение'
+            }
+
             const fetchConversations = async () => {
               const response = await api.get('/conversations')
               queryClient.setQueryData(conversationsKey, response.data.conversations)
@@ -250,13 +273,25 @@ function AppRoot() {
             const findConversationRow = (conversationId: string, list?: any[]) =>
               list?.find((c: any) => c.conversation?.id === conversationId)
 
-            const getConversationRow = async (conversationId: string) => {
+            const getConversationRow = async (
+              conversationId: string,
+              options?: { forceRefresh?: boolean }
+            ) => {
               let conversations = queryClient.getQueryData(conversationsKey) as any[] | undefined
               let row = findConversationRow(conversationId, conversations)
 
-              if (!row) {
-                conversations = await fetchConversations()
-                row = findConversationRow(conversationId, conversations)
+              const needsFreshData = options?.forceRefresh || !row
+
+              if (needsFreshData) {
+                try {
+                  conversations = await fetchConversations()
+                  const refreshed = findConversationRow(conversationId, conversations)
+                  if (refreshed) {
+                    row = refreshed
+                  }
+                } catch (error) {
+                  console.warn('[Native] Failed to fetch fresh conversations list', error)
+                }
               } else {
                 fetchConversations().catch((error) => {
                   console.warn('[Native] Failed to refresh conversations list', error)
@@ -268,9 +303,9 @@ function AppRoot() {
 
             const buildConversationInfo = async (
               conversationId: string,
-              context?: { senderId?: string }
+              context?: { senderId?: string; messageId?: string }
             ) => {
-              const row = await getConversationRow(conversationId)
+              const row = await getConversationRow(conversationId, { forceRefresh: !!context?.messageId })
               const conversation = row?.conversation
               if (!conversation) {
                 return null
@@ -305,9 +340,23 @@ function AppRoot() {
               const avatarUrl = resolveAvatarUrl(avatarCandidate)
 
               let messageText: string | undefined
-              const latestMessage = conversation?.messages?.[0]
-              if (latestMessage?.content) {
-                messageText = latestMessage.content
+
+              if (context?.messageId) {
+                const preview = await fetchMessagePreview(context.messageId)
+                if (preview?.content) {
+                  messageText = preview.content
+                } else if (preview?.attachments?.length) {
+                  messageText = getAttachmentPreviewText(preview.attachments[0]?.type)
+                }
+              }
+
+              if (!messageText) {
+                const latestMessage = conversation?.messages?.[0]
+                if (latestMessage?.content) {
+                  messageText = latestMessage.content
+                } else if (latestMessage?.attachments?.length) {
+                  messageText = getAttachmentPreviewText(latestMessage.attachments[0]?.type)
+                }
               }
 
               return {
@@ -347,11 +396,11 @@ function AppRoot() {
                 // Проверка активной беседы - будет реализовано через глобальное состояние
                 return false
               },
-              getConversationInfo: async (
-                conversationId: string,
-                context?: { senderId?: string; messageId?: string }
-              ) => {
-                return buildConversationInfo(conversationId, { senderId: context?.senderId })
+              getConversationInfo: async (conversationId: string, context?: { senderId?: string; messageId?: string }) => {
+                return buildConversationInfo(conversationId, {
+                  senderId: context?.senderId,
+                  messageId: context?.messageId,
+                })
               },
             })
             
