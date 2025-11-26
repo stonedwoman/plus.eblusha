@@ -1,0 +1,1 @@
+import{j as t}from"./vendor-query-D8-W16Rz.js";import{O as r}from"./index-R_ngyLch.js";import"./vendor-react-DyfnzrEv.js";import"./vendor-socket-CA1CrNgP.js";import"./vendor-crypto-C7xP7Q7Y.js";function s(){return t.jsx("main",{className:"content",style:{height:"calc(var(--vh, 1vh) * 100)"},children:t.jsx(r,{})})}export{s as default};
