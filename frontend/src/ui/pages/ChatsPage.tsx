@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted } from '../../utils/socket'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, LogOut, Lock } from 'lucide-react'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, LogOut, Lock, Unlock } from 'lucide-react'
 const CallOverlay = lazy(() => import('../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
 import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
@@ -2516,7 +2516,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                 <div>
                   <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span>{title}</span>
-                    {isSecret && (
+                    {!isGroup && isSecret && (
                       <span
                         style={{
                           display: 'inline-flex',
@@ -2862,18 +2862,20 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                   (() => {
                     const peer: any = othersArr[0]
                     return (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <Avatar
-                          name={peer?.displayName ?? peer?.username ?? 'D'}
-                          id={peer?.id ?? activeConversation.id}
-                          avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
-                          presence={(callEntry?.active ? 'IN_CALL' : (peer?.status ?? 'OFFLINE'))}
-                          size={60}
-                        />
+                      <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                        <div style={{ marginRight: 10 }}>
+                          <Avatar
+                            name={peer?.displayName ?? peer?.username ?? 'D'}
+                            id={peer?.id ?? activeConversation.id}
+                            avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
+                            presence={(callEntry?.active ? 'IN_CALL' : (peer?.status ?? 'OFFLINE'))}
+                            size={60}
+                          />
+                        </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
                             <span>{title}</span>
-                            {isSecret && (
+                            {othersArr.length === 1 && (
                               <span
                                 style={{
                                   display: 'inline-flex',
@@ -2882,10 +2884,10 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                                   width: 20,
                                   height: 20,
                                   borderRadius: 999,
-                                  background: 'rgba(34,197,94,0.12)',
+                                  background: isSecret ? 'rgba(34,197,94,0.12)' : 'rgba(249,115,22,0.15)',
                                 }}
                               >
-                                <Lock size={14} color="#22c55e" />
+                                {isSecret ? <Lock size={14} color="#22c55e" /> : <Unlock size={14} color="#f97316" />}
                               </span>
                             )}
                           </div>
@@ -2917,9 +2919,8 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                             )}
                           </div>
                         </div>
-                        {peer?.id && (
+                        {othersArr.length === 1 && (
                           <button
-                            className={isSecret ? 'btn btn-primary' : isMobile ? 'btn btn-secondary' : 'btn btn-icon btn-ghost'}
                             title={isSecret ? endSecretTitle : 'Начать секретный чат'}
                             disabled={!isSecret && secretRequestLoading}
                             onClick={async () => {
@@ -2927,48 +2928,40 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                                 setEndSecretModalOpen(true)
                                 return
                               }
-                              await initiateSecretChat(peer.id)
+                              if (peer?.id) {
+                                await initiateSecretChat(peer.id)
+                              }
                             }}
-                            style={
-                              isSecret
-                                ? {
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    gap: 6,
-                                    padding: isMobile ? '8px 14px' : '10px 18px',
-                                    height: isMobile ? 42 : 44,
-                                    borderRadius: 999,
-                                    background: '#ef4444',
-                                    borderColor: '#ef4444',
-                                    color: '#fff',
-                                    fontSize: isMobile ? 14 : 15,
-                                    fontWeight: 600,
-                                    // На мобильных прижимаем кнопку к правому краю шапки
-                                    ...(isMobile ? { marginLeft: 'auto', alignSelf: 'flex-end' } : {}),
-                                  }
-                                : isMobile
-                                  ? {
-                                      padding: '8px 12px',
-                                      height: 42,
-                                      borderRadius: 999,
-                                      fontSize: 14,
-                                      fontWeight: 500,
-                                      whiteSpace: 'nowrap',
-                                    }
-                                  : undefined
-                            }
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: isMobile ? 42 : 44,
+                              height: isMobile ? 42 : 44,
+                              minWidth: isMobile ? 42 : 44,
+                              padding: 0,
+                              margin: 0,
+                              borderRadius: 999,
+                              background: isSecret ? '#ef4444' : 'transparent',
+                              border: isSecret ? '1px solid #ef4444' : '1px solid var(--surface-border)',
+                              color: isSecret ? '#fff' : 'var(--text-primary)',
+                              cursor: 'pointer',
+                              fontSize: 0,
+                              lineHeight: 0,
+                              fontFamily: 'inherit',
+                              fontWeight: 'normal',
+                              textTransform: 'none',
+                              letterSpacing: 0,
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'clip',
+                              marginLeft: 'auto',
+                          alignSelf: 'center',
+                            }}
                           >
-                            {isSecret ? (
-                              <span style={{ fontWeight: 600 }}>{endSecretLabel}</span>
-                            ) : isMobile ? (
-                              <>
-                                <Lock size={16} />
-                                <span style={{ marginLeft: 6 }}>Секретный чат</span>
-                              </>
-                            ) : (
-                              <Lock size={18} />
-                            )}
+                            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 0, lineHeight: 0 }}>
+                          {isSecret ? <Lock size={isMobile ? 20 : 22} /> : <Unlock size={isMobile ? 20 : 22} />}
+                            </span>
                           </button>
                         )}
                       </div>
