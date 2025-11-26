@@ -1294,6 +1294,10 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
           return
         }
         if (isAlreadyInThisCall) return
+        if (from?.id && me?.id && from.id === me.id) {
+          // This is our own outgoing call, do not treat as incoming
+          return
+        }
       } catch {}
       ringingConvIdRef.current = conversationId
       callStore.startIncoming({ conversationId, from, video })
