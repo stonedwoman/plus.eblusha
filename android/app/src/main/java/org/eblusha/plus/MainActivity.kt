@@ -2,6 +2,7 @@ package org.eblusha.plus
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -93,6 +94,7 @@ class MainActivity : ComponentActivity() {
     private val sessionViewModel: SessionViewModel by viewModels {
         SessionViewModelFactory(container)
     }
+    private var backgroundServiceStarted = false
     
     // Request permissions on app startup
     private val requestPermissionsLauncher = registerForActivityResult(
@@ -100,20 +102,24 @@ class MainActivity : ComponentActivity() {
     ) { permissions ->
         val audioGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
         val cameraGranted = permissions[Manifest.permission.CAMERA] ?: false
-        android.util.Log.d("MainActivity", "Permissions result: audio=$audioGranted, camera=$cameraGranted")
+        val notificationsGranted = permissions[Manifest.permission.POST_NOTIFICATIONS]
+            ?: hasNotificationPermission()
+        android.util.Log.d(
+            "MainActivity",
+            "Permissions result: audio=$audioGranted, camera=$cameraGranted, notifications=$notificationsGranted"
+        )
+        if (notificationsGranted) {
+            ensureBackgroundConnectionServiceRunning()
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            android.util.Log.w(
+                "MainActivity",
+                "Notification permission denied; background service will not start"
+            )
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // Запускаем фоновый сервис для поддержания соединения
-        android.util.Log.d("MainActivity", "Starting BackgroundConnectionService...")
-        try {
-            BackgroundConnectionService.start(this)
-            android.util.Log.d("MainActivity", "✅ BackgroundConnectionService started successfully")
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "❌ Failed to start BackgroundConnectionService", e)
-        }
         
         // Request permissions on first launch
         val permissionsToRequest = mutableListOf<String>()
@@ -123,6 +129,21 @@ class MainActivity : ComponentActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             permissionsToRequest.add(Manifest.permission.CAMERA)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        
+        if (hasNotificationPermission()) {
+            ensureBackgroundConnectionServiceRunning()
+        } else {
+            android.util.Log.d(
+                "MainActivity",
+                "Notification permission missing; waiting for grant before starting BackgroundConnectionService"
+            )
+        }
+        
         if (permissionsToRequest.isNotEmpty()) {
             android.util.Log.d("MainActivity", "Requesting permissions on startup: $permissionsToRequest")
             requestPermissionsLauncher.launch(permissionsToRequest.toTypedArray())
@@ -168,6 +189,42 @@ class MainActivity : ComponentActivity() {
         // (не при повороте экрана)
         if (isFinishing) {
             BackgroundConnectionService.stop(this)
+        }
+    }
+
+    private fun hasNotificationPermission(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+    }
+    
+    private fun ensureBackgroundConnectionServiceRunning() {
+        if (backgroundServiceStarted) {
+            return
+        }
+        if (!hasNotificationPermission()) {
+            android.util.Log.d(
+                "MainActivity",
+                "Cannot start BackgroundConnectionService without notification permission"
+            )
+            return
+        }
+        android.util.Log.d("MainActivity", "Starting BackgroundConnectionService...")
+        try {
+            BackgroundConnectionService.start(this)
+            backgroundServiceStarted = true
+            android.util.Log.d(
+                "MainActivity",
+                "✅ BackgroundConnectionService started successfully"
+            )
+        } catch (e: Exception) {
+            android.util.Log.e(
+                "MainActivity",
+                "❌ Failed to start BackgroundConnectionService",
+                e
+            )
         }
     }
 }
