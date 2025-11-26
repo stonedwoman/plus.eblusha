@@ -6,10 +6,10 @@ import logger from "../config/logger";
 
 type ServerToClientEvents = {
   "presence:update": (payload: { userId: string; status: string }) => void;
-  "message:new": (payload: { conversationId: string; messageId: string; senderId: string }) => void;
+  "message:new": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "receipts:update": (payload: { conversationId: string; messageIds: string[] }) => void;
   "message:update": (payload: { conversationId: string; messageId: string; reason: string }) => void;
-  "message:notify": (payload: { conversationId: string; messageId: string; senderId: string }) => void;
+  "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "contacts:removed": (payload: { contactId: string }) => void;
   "profile:update": (payload: { userId: string; avatarUrl?: string | null; displayName?: string | null }) => void;
   "conversation:typing": (payload: {
@@ -388,7 +388,7 @@ export function initSocket(
       const startedAt = Date.now();
       callState.set(conversationId, { inviterId: userId, accepted: false, video, startedAt });
 
-      if (isGroup) {
+        if (isGroup) {
         const callInfo = activeGroupCalls.get(conversationId);
         if (!callInfo) {
           activeGroupCalls.set(conversationId, { startedAt, participants: new Set<string>() });
@@ -414,12 +414,25 @@ export function initSocket(
             },
           });
           // Отправляем событие о новом сообщении всем участникам беседы через комнату
-          io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
+          io.to(conversationId).emit("message:new", {
+            conversationId,
+            messageId: msg.id,
+            senderId: userId,
+            message: msg,
+          });
           // Также отправляем message:notify для каждого участника отдельно (кроме отправителя)
           for (const rid of recipients) {
-            io.to(rid).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+            io.to(rid).emit("message:notify", {
+              conversationId,
+              messageId: msg.id,
+              senderId: userId,
+              message: msg,
+            });
           }
-          logger.info({ conversationId, userId, video, messageId: msg.id, isGroup, participantsCount: conv.participants.length }, "Call started message created in call:invite");
+          logger.info(
+            { conversationId, userId, video, messageId: msg.id, isGroup, participantsCount: conv.participants.length },
+            "Call started message created in call:invite",
+          );
         } catch (error) {
           logger.error({ error, conversationId, userId, video, isGroup }, "Failed to create call started message in call:invite");
         }
@@ -494,9 +507,19 @@ export function initSocket(
               metadata: { ended: true, video: !!st?.video, duration: elapsedMs } as any,
             },
           });
-          io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId });
+          io.to(conversationId).emit("message:new", {
+            conversationId,
+            messageId: msg.id,
+            senderId,
+            message: msg,
+          });
           for (const rid of recipients) {
-            io.to(rid).emit("message:notify", { conversationId, messageId: msg.id, senderId });
+            io.to(rid).emit("message:notify", {
+              conversationId,
+              messageId: msg.id,
+              senderId,
+              message: msg,
+            });
           }
         } catch (error) {
           logger.warn({ error }, "Failed to create group decline end message");
@@ -521,7 +544,12 @@ export function initSocket(
           });
           // Mark as read for inviter only
           await prisma.messageReceipt.create({ data: { messageId: msg.id, userId: st.inviterId, status: "READ" } });
-          io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: st.inviterId });
+          io.to(conversationId).emit("message:new", {
+            conversationId,
+            messageId: msg.id,
+            senderId: st.inviterId,
+            message: msg,
+          });
         } catch (error) {
           logger.warn({ error }, "Failed to create missed call message");
         }
@@ -569,9 +597,19 @@ export function initSocket(
               metadata: { ended: true, video: !!st?.video, duration: elapsedMs } as any,
             },
           });
-          io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
+          io.to(conversationId).emit("message:new", {
+            conversationId,
+            messageId: msg.id,
+            senderId: userId,
+            message: msg,
+          });
           for (const rid of recipients) {
-            io.to(rid).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+            io.to(rid).emit("message:notify", {
+              conversationId,
+              messageId: msg.id,
+              senderId: userId,
+              message: msg,
+            });
           }
         } catch (error) {
           logger.warn({ conversationId, error }, "Failed to create group call end message");
@@ -600,7 +638,12 @@ export function initSocket(
             },
           });
           await prisma.messageReceipt.create({ data: { messageId: msg.id, userId: st.inviterId, status: "READ" } });
-          io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: st.inviterId });
+          io.to(conversationId).emit("message:new", {
+            conversationId,
+            messageId: msg.id,
+            senderId: st.inviterId,
+            message: msg,
+          });
         } catch {}
       } else if (st && st.accepted) {
         // Завершенный активный звонок - создаем сообщение о завершении
@@ -617,9 +660,19 @@ export function initSocket(
               metadata: { ended: true, video: !!st.video, duration: elapsedMs } as any,
             },
           });
-          io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
+          io.to(conversationId).emit("message:new", {
+            conversationId,
+            messageId: msg.id,
+            senderId: userId,
+            message: msg,
+          });
           for (const rid of recipients) {
-            io.to(rid).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+            io.to(rid).emit("message:notify", {
+              conversationId,
+              messageId: msg.id,
+              senderId: userId,
+              message: msg,
+            });
           }
         } catch (error) {
           logger.warn({ error }, "Failed to create call ended message");

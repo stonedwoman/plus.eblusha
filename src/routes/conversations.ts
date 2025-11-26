@@ -674,11 +674,31 @@ router.post("/send", async (req, res) => {
   });
 
   const io = getIO();
-  io?.to(conversationId).emit("message:new", { conversationId, messageId: message.id, senderId: userId });
+  io?.to(conversationId).emit("message:new", {
+    conversationId,
+    messageId: message.id,
+    senderId: userId,
+    message,
+  });
+
   // Immediate notify event for tiles/unread without waiting for queries
-  const recipients = (await prisma.conversation.findUnique({ where: { id: conversationId }, include: { participants: true } }))?.participants.map((p) => p.userId) ?? [];
+  const recipients =
+    (
+      await prisma.conversation.findUnique({
+        where: { id: conversationId },
+        include: { participants: true },
+      })
+    )?.participants.map((p) => p.userId) ?? [];
+
   for (const rid of recipients) {
-    if (rid !== userId) io?.to(rid).emit("message:notify", { conversationId, messageId: message.id, senderId: userId });
+    if (rid !== userId) {
+      io?.to(rid).emit("message:notify", {
+        conversationId,
+        messageId: message.id,
+        senderId: userId,
+        message,
+      });
+    }
   }
 
   res.status(201).json({ message });
