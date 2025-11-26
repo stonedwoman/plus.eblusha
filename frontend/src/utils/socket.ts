@@ -1,5 +1,6 @@
 import { io } from 'socket.io-client'
 import { useAppStore } from '../domain/store/appStore'
+import { Capacitor } from '@capacitor/core'
 
 function computeWsUrl() {
   const envUrl = (import.meta as any).env?.VITE_WS_URL as string | undefined
@@ -36,6 +37,11 @@ if (typeof window !== 'undefined') {
 }
 
 export function connectSocket() {
+  // На Android используем только нативный сокет, JS сокет отключен
+  if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
+    console.log('[Socket] Skipping JS socket connection on Android (using native socket)')
+    return
+  }
   const token = useAppStore.getState().session?.accessToken
   if (!token) return
   socket.auth = { token }
@@ -47,15 +53,17 @@ export function connectSocket() {
   }
 }
 
-// Обновляем токен при попытках реконнекта
-socket.io.on('reconnect_attempt', () => {
-  const token = useAppStore.getState().session?.accessToken
-  if (token) {
-    socket.auth = { token }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(socket.io.opts as any).query = { token }
-  }
-})
+// Обновляем токен при попытках реконнекта (только для веб-платформы)
+if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== 'android') {
+  socket.io.on('reconnect_attempt', () => {
+    const token = useAppStore.getState().session?.accessToken
+    if (token) {
+      socket.auth = { token }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(socket.io.opts as any).query = { token }
+    }
+  })
+}
 
 socket.on('disconnect', () => {
   console.log('socket disconnected')
