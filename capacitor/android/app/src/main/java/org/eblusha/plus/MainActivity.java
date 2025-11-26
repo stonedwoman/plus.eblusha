@@ -33,16 +33,28 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        registerPlugin(MessageNotificationPlugin.class);
-        registerPlugin(IncomingCallPlugin.class);
-        registerPlugin(NativeSocketPlugin.class);
+        try {
+            registerPlugin(MessageNotificationPlugin.class);
+            registerPlugin(IncomingCallPlugin.class);
+            registerPlugin(NativeSocketPlugin.class);
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "Failed to register plugins", e);
+        }
         super.onCreate(savedInstanceState);
-        BackgroundConnectionService.start(this);
-        IntentFilter keepAliveFilter = new IntentFilter(BackgroundConnectionService.ACTION_KEEP_ALIVE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(keepAliveReceiver, keepAliveFilter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(keepAliveReceiver, keepAliveFilter);
+        try {
+            BackgroundConnectionService.start(this);
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "Failed to start BackgroundConnectionService", e);
+        }
+        try {
+            IntentFilter keepAliveFilter = new IntentFilter(BackgroundConnectionService.ACTION_KEEP_ALIVE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(keepAliveReceiver, keepAliveFilter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(keepAliveReceiver, keepAliveFilter);
+            }
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "Failed to register keep-alive receiver", e);
         }
         processCallIntent(getIntent());
     }

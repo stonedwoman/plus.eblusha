@@ -81,17 +81,29 @@ public class BackgroundConnectionService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        createForegroundChannel();
-        createMessageChannel();
-        startForeground(NOTIFICATION_ID, createNotification());
-        acquireLocks();
-        scheduleKeepAlive();
-        registerReceiver(tokenUpdateReceiver, new IntentFilter("org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED"));
-        currentToken = NativeSocketPlugin.getStoredToken(this);
-        if (!TextUtils.isEmpty(currentToken)) {
-            connectNativeSocket(currentToken);
-        } else {
-            android.util.Log.d("BackgroundConnectionService", "No stored token yet; waiting for update");
+        try {
+            createForegroundChannel();
+            createMessageChannel();
+            startForeground(NOTIFICATION_ID, createNotification());
+            acquireLocks();
+            scheduleKeepAlive();
+            try {
+                registerReceiver(tokenUpdateReceiver, new IntentFilter("org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED"));
+            } catch (Exception e) {
+                android.util.Log.e("BackgroundConnectionService", "Failed to register token receiver", e);
+            }
+            try {
+                currentToken = NativeSocketPlugin.getStoredToken(this);
+                if (!TextUtils.isEmpty(currentToken)) {
+                    connectNativeSocket(currentToken);
+                } else {
+                    android.util.Log.d("BackgroundConnectionService", "No stored token yet; waiting for update");
+                }
+            } catch (Exception e) {
+                android.util.Log.e("BackgroundConnectionService", "Failed to load token or connect socket", e);
+            }
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Fatal error in onCreate", e);
         }
     }
 
@@ -256,6 +268,10 @@ public class BackgroundConnectionService extends Service {
             options.auth = auth;
 
             nativeSocket = IO.socket(SOCKET_URL, options);
+            if (nativeSocket == null) {
+                android.util.Log.e("BackgroundConnectionService", "Failed to create socket instance");
+                return;
+            }
             nativeSocket.on(Socket.EVENT_CONNECT, args -> android.util.Log.d("BackgroundConnectionService", "Native socket connected"));
             nativeSocket.on(Socket.EVENT_DISCONNECT, args -> android.util.Log.w("BackgroundConnectionService", "Native socket disconnected: " + (args != null && args.length > 0 ? args[0] : "")));
             nativeSocket.on(Socket.EVENT_CONNECT_ERROR, args -> android.util.Log.e("BackgroundConnectionService", "Native socket connect error: " + (args != null && args.length > 0 ? args[0] : "")));
@@ -264,8 +280,11 @@ public class BackgroundConnectionService extends Service {
             nativeSocket.on("call:declined", this::handleCallEnded);
             nativeSocket.on("call:ended", this::handleCallEnded);
             nativeSocket.connect();
+            android.util.Log.d("BackgroundConnectionService", "Native socket connection initiated");
         } catch (URISyntaxException e) {
-            android.util.Log.e("BackgroundConnectionService", "Failed to connect native socket", e);
+            android.util.Log.e("BackgroundConnectionService", "Failed to connect native socket: URI syntax error", e);
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Failed to connect native socket: unexpected error", e);
         }
     }
 
@@ -279,27 +298,39 @@ public class BackgroundConnectionService extends Service {
     }
 
     private void handleMessageNotify(Object... args) {
-        if (args == null || args.length == 0 || !(args[0] instanceof JSONObject)) return;
-        JSONObject payload = (JSONObject) args[0];
-        String conversationId = payload.optString("conversationId", "");
-        String messageId = payload.optString("messageId", "");
-        JSONObject message = payload.optJSONObject("message");
-        String preview = extractMessagePreview(message);
-        showMessageNotification(conversationId, messageId, preview);
+        try {
+            if (args == null || args.length == 0 || !(args[0] instanceof JSONObject)) return;
+            JSONObject payload = (JSONObject) args[0];
+            String conversationId = payload.optString("conversationId", "");
+            String messageId = payload.optString("messageId", "");
+            JSONObject message = payload.optJSONObject("message");
+            String preview = extractMessagePreview(message);
+            showMessageNotification(conversationId, messageId, preview);
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Error handling message:notify", e);
+        }
     }
 
     private void handleCallIncoming(Object... args) {
-        if (args == null || args.length == 0 || !(args[0] instanceof JSONObject)) return;
-        JSONObject payload = (JSONObject) args[0];
-        String conversationId = payload.optString("conversationId", "");
-        JSONObject from = payload.optJSONObject("from");
-        String callerName = from != null ? from.optString("name", "Входящий звонок") : "Входящий звонок";
-        boolean isVideo = payload.optBoolean("video", false);
-        IncomingCallService.start(getApplicationContext(), conversationId, callerName, isVideo, null);
+        try {
+            if (args == null || args.length == 0 || !(args[0] instanceof JSONObject)) return;
+            JSONObject payload = (JSONObject) args[0];
+            String conversationId = payload.optString("conversationId", "");
+            JSONObject from = payload.optJSONObject("from");
+            String callerName = from != null ? from.optString("name", "Входящий звонок") : "Входящий звонок";
+            boolean isVideo = payload.optBoolean("video", false);
+            IncomingCallService.start(getApplicationContext(), conversationId, callerName, isVideo, null);
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Error handling call:incoming", e);
+        }
     }
 
     private void handleCallEnded(Object... args) {
-        IncomingCallService.stop(getApplicationContext());
+        try {
+            IncomingCallService.stop(getApplicationContext());
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Error handling call ended", e);
+        }
     }
 
     private String extractMessagePreview(JSONObject message) {
@@ -323,32 +354,44 @@ public class BackgroundConnectionService extends Service {
     }
 
     private void showMessageNotification(String conversationId, String messageId, String body) {
-        Context context = getApplicationContext();
-        NotificationManagerCompat manager = NotificationManagerCompat.from(context);
+        try {
+            Context context = getApplicationContext();
+            if (context == null) {
+                android.util.Log.e("BackgroundConnectionService", "Cannot show notification: context is null");
+                return;
+            }
+            NotificationManagerCompat manager = NotificationManagerCompat.from(context);
+            if (manager == null) {
+                android.util.Log.e("BackgroundConnectionService", "Cannot show notification: NotificationManagerCompat is null");
+                return;
+            }
 
-        Intent intent = new Intent(context, MainActivity.class)
-            .setAction("open_conversation")
-            .putExtra("conversation_id", conversationId)
-            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pendingIntent = PendingIntent.getActivity(
-            context,
-            (conversationId + messageId).hashCode(),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
+            Intent intent = new Intent(context, MainActivity.class)
+                .setAction("open_conversation")
+                .putExtra("conversation_id", conversationId)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            PendingIntent pendingIntent = PendingIntent.getActivity(
+                context,
+                (conversationId + messageId).hashCode(),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+            );
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, MESSAGE_CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Новое сообщение")
-            .setContentText(body)
-            .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setAutoCancel(true)
-            .setContentIntent(pendingIntent);
+            NotificationCompat.Builder builder = new NotificationCompat.Builder(context, MESSAGE_CHANNEL_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("Новое сообщение")
+                .setContentText(body)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent);
 
-        int notificationId = (conversationId + messageId).hashCode();
-        manager.notify(notificationId, builder.build());
+            int notificationId = (conversationId + messageId).hashCode();
+            manager.notify(notificationId, builder.build());
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Failed to show message notification", e);
+        }
     }
 }
 
