@@ -283,8 +283,23 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         if (!nameEl || !placeholder) return
         // identity lookup preferred (must compute before using as a fallback for name)
         const idAttrEl = tile.getAttribute('data-lk-participant-identity') ? tile : (tile.querySelector('[data-lk-participant-identity]') as HTMLElement | null)
-        const identity = idAttrEl ? (idAttrEl.getAttribute('data-lk-participant-identity') || '').trim() : ''
+        let identity = idAttrEl ? (idAttrEl.getAttribute('data-lk-participant-identity') || '').trim() : ''
+        const metadataAttr = tile.getAttribute('data-lk-participant-metadata') || (tile.dataset ? tile.dataset.lkParticipantMetadata : '') || ''
+        let participantMeta: Record<string, any> | null = null
+        if (metadataAttr) {
+          try {
+            participantMeta = JSON.parse(metadataAttr)
+          } catch {
+            participantMeta = null
+          }
+        }
+        if (!identity && participantMeta?.userId) {
+          identity = String(participantMeta.userId)
+        }
         let name = (nameEl.textContent || nameEl.getAttribute('data-lk-participant-name') || '').trim()
+        if (!name && participantMeta?.displayName) {
+          name = String(participantMeta.displayName).trim()
+        }
         if (!name) {
           const meta = tile.querySelector('.lk-participant-metadata') as HTMLElement | null
           if (meta?.textContent?.trim()) name = meta.textContent.trim()
@@ -296,8 +311,14 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         const url = key ? byNameRef[key] : null
         const myUrl = myAvatarRef
         // fallback: если это локальная плитка (есть значок self/микрофона с подсказкой), подставим мой аватар
-        const hasLocalAttr = tile.hasAttribute('data-lk-local-participant') || tile.hasAttribute('data-lk-local') || tile.classList.contains('lk-local-participant')
-        const isLocal = !!(hasLocalAttr || tile.querySelector('.lk-local-indicator') || /\b(you|вы)\b/i.test(name) || (identity && localIdRef && identity === localIdRef))
+        const identityMatchesLocal = !!(identity && localIdRef && identity === localIdRef)
+        const attrSuggestsLocal =
+          !identityMatchesLocal &&
+          !identity &&
+          (tile.getAttribute('data-lk-local-participant') !== null ||
+            tile.getAttribute('data-lk-local') !== null ||
+            tile.dataset.lkLocalParticipant === 'true')
+        const isLocal = identityMatchesLocal || attrSuggestsLocal
         let finalUrl = idUrl ?? url ?? (isLocal ? (myUrl || (localIdRef ? byIdRef[localIdRef] ?? null : null)) : null)
         const fallbackUrl = buildLetterDataUrl(name || identity || 'U', identity || name || 'U')
         // Remove default svg completely and any background
