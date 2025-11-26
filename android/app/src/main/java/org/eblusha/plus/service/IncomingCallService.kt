@@ -16,6 +16,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
+import org.eblusha.plus.EblushaApp
 import org.eblusha.plus.MainActivity
 
 class IncomingCallService : Service() {
@@ -23,6 +24,7 @@ class IncomingCallService : Service() {
     private var mediaPlayer: MediaPlayer? = null
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private val appContainer by lazy { (application as? EblushaApp)?.container }
     
     companion object {
         private const val CHANNEL_ID = "incoming_call_channel"
@@ -100,7 +102,19 @@ class IncomingCallService : Service() {
             }
             ACTION_DECLINE -> {
                 stopRinging()
-                // Notify RealtimeService to decline - this will be handled by MainActivity
+                val container = appContainer
+                if (container != null) {
+                    runCatching {
+                        container.realtimeService.declineCall(conversationId)
+                    }.onFailure {
+                        android.util.Log.e("IncomingCallService", "Failed to send decline event", it)
+                    }
+                } else {
+                    android.util.Log.w(
+                        "IncomingCallService",
+                        "Realtime container unavailable, decline event not sent"
+                    )
+                }
                 stopSelf()
             }
             else -> {
