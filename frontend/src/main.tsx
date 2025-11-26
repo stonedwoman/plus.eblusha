@@ -456,13 +456,54 @@ function AppRoot() {
 
             ;(window as any).__flushNativeCallActions = flushNativeCallActions
 
+            const invokeNativeCallOverlayBridge = (
+              action: 'accept' | 'decline',
+              conversationId: string,
+              withVideo?: boolean
+            ): boolean => {
+              const bridge = (window as any).__nativeCallOverlayBridge
+              if (!bridge) {
+                return false
+              }
+              const handler = action === 'accept' ? bridge.accept : bridge.decline
+              if (typeof handler !== 'function') {
+                return false
+              }
+              try {
+                const result =
+                  action === 'accept'
+                    ? handler(conversationId, withVideo ?? false)
+                    : handler(conversationId)
+                if (
+                  result &&
+                  (typeof result === 'object' || typeof result === 'function') &&
+                  typeof (result as Promise<unknown>).then === 'function'
+                ) {
+                  ;(result as Promise<unknown>).catch((error: unknown) => {
+                    console.warn('[Main] Native call overlay bridge error:', error)
+                  })
+                  return true
+                }
+                return !!result
+              } catch (error) {
+                console.warn('[Main] Native call overlay bridge error:', error)
+                return false
+              }
+            }
+
             // Глобальные обработчики для нативного экрана звонка
             ;(window as any).handleIncomingCallAnswer = (conversationId: string, withVideo: boolean) => {
-              acceptCall(conversationId, withVideo)
+              const handled = invokeNativeCallOverlayBridge('accept', conversationId, withVideo)
+              if (!handled) {
+                acceptCall(conversationId, withVideo)
+              }
             }
             
             ;(window as any).handleIncomingCallDecline = (conversationId: string) => {
-              declineCall(conversationId)
+              const handled = invokeNativeCallOverlayBridge('decline', conversationId)
+              if (!handled) {
+                declineCall(conversationId)
+              }
             }
 
             flushNativeCallActions()

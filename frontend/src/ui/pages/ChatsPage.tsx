@@ -13,6 +13,15 @@ import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '.
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { ensureMediaPermissions } from '../../utils/media'
 
+declare global {
+  interface Window {
+    __nativeCallOverlayBridge?: {
+      accept?: (conversationId: string, withVideo: boolean) => Promise<boolean> | boolean
+      decline?: (conversationId: string) => Promise<boolean> | boolean
+    }
+  }
+}
+
 const LAST_ACTIVE_CONVERSATION_KEY = 'eblusha:last-active-conversation'
 const MIN_OUTGOING_CALL_DURATION_MS = 30_000
 
@@ -334,6 +343,42 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     callStore.setIncoming(null)
     stopRingtone()
   }, [beginOutgoingCallGuard, callStore, me?.id, requireMediaAccess])
+
+  const declineIncomingCall = useCallback(() => {
+    const incoming = callStore.incoming
+    if (!incoming) return
+    declineCall(incoming.conversationId)
+    callStore.setIncoming(null)
+    stopRingtone()
+  }, [callStore])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    const bridge = {
+      accept: async (conversationId: string, withVideo: boolean) => {
+        if (callStore.incoming?.conversationId !== conversationId) {
+          return false
+        }
+        await acceptIncomingCall(withVideo)
+        return true
+      },
+      decline: (conversationId: string) => {
+        if (callStore.incoming?.conversationId !== conversationId) {
+          return false
+        }
+        declineIncomingCall()
+        return true
+      },
+    }
+    window.__nativeCallOverlayBridge = bridge
+    return () => {
+      if (window.__nativeCallOverlayBridge === bridge) {
+        delete window.__nativeCallOverlayBridge
+      }
+    }
+  }, [callStore.incoming?.conversationId, acceptIncomingCall, declineIncomingCall])
   useEffect(() => {
     const id = window.setInterval(() => setTimerTick((t) => (t + 1) % 1000000), 1000)
     return () => window.clearInterval(id)
@@ -3966,7 +4011,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                   </button>
                 </div>
                 <div style={{ display: 'flex' }}>
-                  <button className="btn" style={{ background: '#ef4444', color: '#fff', width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { declineCall(callStore.incoming!.conversationId); callStore.setIncoming(null); stopRingtone() }}>
+                  <button className="btn" style={{ background: '#ef4444', color: '#fff', width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { declineIncomingCall() }}>
                     <PhoneOff size={18} />
                     <span>Отмена</span>
                   </button>
