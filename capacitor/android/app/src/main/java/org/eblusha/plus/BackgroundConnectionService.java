@@ -569,7 +569,7 @@ public class BackgroundConnectionService extends Service {
         try {
             JSONObject payload = new JSONObject();
             payload.put("refreshToken", refreshToken);
-            RequestBody body = RequestBody.create(payload.toString(), JSON_MEDIA_TYPE);
+            RequestBody body = RequestBody.create(JSON_MEDIA_TYPE, payload.toString());
             Request request = new Request.Builder()
                 .url(API_BASE_URL + "/auth/refresh")
                 .header("Content-Type", "application/json")
