@@ -26,6 +26,7 @@ import java.net.URISyntaxException;
 import java.util.HashMap;
 import java.util.Map;
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
@@ -82,11 +83,24 @@ public class BackgroundConnectionService extends Service {
             }
         }
     };
+    private final BroadcastReceiver presenceFocusReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null || intent.getAction() == null) return;
+            if ("org.eblusha.plus.ACTION_SOCKET_PRESENCE_FOCUS".equals(intent.getAction())) {
+                boolean focused = intent.getBooleanExtra("focused", false);
+                android.util.Log.d("BackgroundConnectionService", "Presence focus broadcast received: focused=" + focused);
+                appHasFocus = focused;
+                sendPresenceFocus(focused);
+            }
+        }
+    };
 
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
     private Socket nativeSocket;
     private String currentToken = "";
+    private boolean appHasFocus = false;
 
     public static void start(Context context) {
         Intent intent = new Intent(context, BackgroundConnectionService.class);
@@ -115,15 +129,26 @@ public class BackgroundConnectionService extends Service {
             scheduleKeepAlive();
             android.util.Log.d("BackgroundConnectionService", "Keep-alive scheduled");
             try {
-                IntentFilter filter = new IntentFilter("org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED");
+                IntentFilter tokenFilter = new IntentFilter("org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED");
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    registerReceiver(tokenUpdateReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+                    registerReceiver(tokenUpdateReceiver, tokenFilter, Context.RECEIVER_NOT_EXPORTED);
                 } else {
-                    registerReceiver(tokenUpdateReceiver, filter);
+                    registerReceiver(tokenUpdateReceiver, tokenFilter);
                 }
                 android.util.Log.d("BackgroundConnectionService", "Token update receiver registered");
             } catch (Exception e) {
                 android.util.Log.e("BackgroundConnectionService", "Failed to register token receiver", e);
+            }
+            try {
+                IntentFilter focusFilter = new IntentFilter("org.eblusha.plus.ACTION_SOCKET_PRESENCE_FOCUS");
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(presenceFocusReceiver, focusFilter, Context.RECEIVER_NOT_EXPORTED);
+                } else {
+                    registerReceiver(presenceFocusReceiver, focusFilter);
+                }
+                android.util.Log.d("BackgroundConnectionService", "Presence focus receiver registered");
+            } catch (Exception e) {
+                android.util.Log.e("BackgroundConnectionService", "Failed to register presence focus receiver", e);
             }
             try {
                 currentToken = NativeSocketPlugin.getStoredToken(this);
@@ -159,6 +184,9 @@ public class BackgroundConnectionService extends Service {
         releaseLocks();
         try {
             unregisterReceiver(tokenUpdateReceiver);
+        } catch (IllegalArgumentException ignored) {}
+        try {
+            unregisterReceiver(presenceFocusReceiver);
         } catch (IllegalArgumentException ignored) {}
         disconnectNativeSocket();
         stopForeground(true);
@@ -390,7 +418,7 @@ public class BackgroundConnectionService extends Service {
             android.util.Log.d("BackgroundConnectionService", "Socket instance created, setting up event handlers...");
             nativeSocket.on(Socket.EVENT_CONNECT, args -> {
                 android.util.Log.d("BackgroundConnectionService", "✅ Native socket connected successfully");
-                // Обновляем уведомление при успешном подключении
+                sendPresenceFocus(appHasFocus);
                 updateForegroundNotification();
             });
             nativeSocket.on(Socket.EVENT_DISCONNECT, args -> {
@@ -486,6 +514,21 @@ public class BackgroundConnectionService extends Service {
             IncomingCallService.stop(getApplicationContext());
         } catch (Exception e) {
             android.util.Log.e("BackgroundConnectionService", "Error handling call ended", e);
+        }
+    }
+
+    private void sendPresenceFocus(boolean focused) {
+        if (nativeSocket == null || !nativeSocket.connected()) {
+            android.util.Log.d("BackgroundConnectionService", "Cannot emit presence focus, socket not connected");
+            return;
+        }
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("focused", focused);
+            nativeSocket.emit("presence:focus", payload);
+            android.util.Log.d("BackgroundConnectionService", "Emitted presence focus: " + focused);
+        } catch (JSONException e) {
+            android.util.Log.e("BackgroundConnectionService", "Failed to emit presence focus", e);
         }
     }
 
