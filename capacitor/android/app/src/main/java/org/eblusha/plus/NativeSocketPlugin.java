@@ -22,6 +22,7 @@ public class NativeSocketPlugin extends Plugin {
 
     private static final String PREFS = "eblusha_native_socket";
     private static final String KEY_TOKEN = "access_token";
+    private static final String KEY_REFRESH_TOKEN = "refresh_token";
     private static final String ACTION_TOKEN_UPDATED = "org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED";
     private static final String ACTION_PRESENCE_FOCUS = "org.eblusha.plus.ACTION_SOCKET_PRESENCE_FOCUS";
     private static final int REQUEST_IGNORE_BATTERY_OPTIMIZATIONS = 1004;
@@ -29,11 +30,17 @@ public class NativeSocketPlugin extends Plugin {
     @PluginMethod
     public void updateToken(PluginCall call) {
         String token = call.getString("token", null);
+        String refreshToken = call.getString("refreshToken", null);
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context is null");
+            return;
+        }
         android.util.Log.d("NativeSocketPlugin", "updateToken() called, token length: " + (token != null ? token.length() : 0));
         if (TextUtils.isEmpty(token)) {
             android.util.Log.w("NativeSocketPlugin", "Token is empty or null");
         }
-        saveToken(token);
+        storeTokens(context, token, refreshToken);
         notifyServiceAboutToken(token);
         JSObject result = new JSObject();
         result.put("success", true);
@@ -107,24 +114,27 @@ public class NativeSocketPlugin extends Plugin {
         }
     }
 
-    private void saveToken(String token) {
-        Context context = getContext();
+    static void storeTokens(Context context, String accessToken, String refreshToken) {
         if (context == null) {
-            android.util.Log.e("NativeSocketPlugin", "Context is null, cannot save token");
+            android.util.Log.e("NativeSocketPlugin", "Context is null, cannot store tokens");
             return;
         }
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        if (TextUtils.isEmpty(token)) {
-            android.util.Log.d("NativeSocketPlugin", "Removing token from SharedPreferences");
-            prefs.edit().remove(KEY_TOKEN).apply();
+        SharedPreferences.Editor editor = prefs.edit();
+        if (TextUtils.isEmpty(accessToken)) {
+            android.util.Log.d("NativeSocketPlugin", "Removing access token from SharedPreferences");
+            editor.remove(KEY_TOKEN);
         } else {
-            android.util.Log.d("NativeSocketPlugin", "Saving token to SharedPreferences, length: " + token.length());
-            boolean saved = prefs.edit().putString(KEY_TOKEN, token).commit(); // Используем commit() для синхронного сохранения
-            android.util.Log.d("NativeSocketPlugin", "Token saved: " + saved);
-            // Проверяем, что токен действительно сохранился
-            String savedToken = prefs.getString(KEY_TOKEN, "");
-            android.util.Log.d("NativeSocketPlugin", "Verification: saved token length: " + savedToken.length());
+            android.util.Log.d("NativeSocketPlugin", "Saving access token to SharedPreferences, length: " + accessToken.length());
+            editor.putString(KEY_TOKEN, accessToken);
         }
+        if (TextUtils.isEmpty(refreshToken)) {
+            editor.remove(KEY_REFRESH_TOKEN);
+        } else {
+            android.util.Log.d("NativeSocketPlugin", "Saving refresh token to SharedPreferences, length: " + refreshToken.length());
+            editor.putString(KEY_REFRESH_TOKEN, refreshToken);
+        }
+        editor.apply();
     }
 
     private void notifyServiceAboutToken(String token) {
@@ -145,6 +155,12 @@ public class NativeSocketPlugin extends Plugin {
     static String getStoredToken(Context context) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         return prefs.getString(KEY_TOKEN, "");
+    }
+
+    @NonNull
+    static String getStoredRefreshToken(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return prefs.getString(KEY_REFRESH_TOKEN, "");
     }
 }
 
