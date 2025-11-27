@@ -237,12 +237,20 @@ public class BackgroundConnectionService extends Service {
         if (TextUtils.isEmpty(currentToken)) {
             String storedToken = NativeSocketPlugin.getStoredToken(this);
             if (!TextUtils.isEmpty(storedToken)) {
-                android.util.Log.d("BackgroundConnectionService", "Token found in SharedPreferences, updating...");
+                android.util.Log.d("BackgroundConnectionService", "✅ Token found in SharedPreferences (length: " + storedToken.length() + "), connecting socket...");
                 currentToken = storedToken;
                 connectNativeSocket(currentToken);
                 return;
             }
-            android.util.Log.d("BackgroundConnectionService", "No token available for socket connection");
+            android.util.Log.d("BackgroundConnectionService", "No token available for socket connection (checked SharedPreferences)");
+            return;
+        }
+        // Также проверяем, не обновился ли токен в SharedPreferences
+        String storedToken = NativeSocketPlugin.getStoredToken(this);
+        if (!TextUtils.isEmpty(storedToken) && !storedToken.equals(currentToken)) {
+            android.util.Log.d("BackgroundConnectionService", "Token updated in SharedPreferences, reconnecting...");
+            currentToken = storedToken;
+            connectNativeSocket(currentToken);
             return;
         }
         boolean wasConnected = nativeSocket != null && nativeSocket.connected();

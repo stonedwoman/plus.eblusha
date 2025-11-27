@@ -76,38 +76,35 @@ public class MainActivity extends BridgeActivity {
                         "try {" +
                         "  console.log('[MainActivity JS] Checking localStorage for token...');" +
                         "  const storage = window.localStorage;" +
-                        "  const sessionStr = storage.getItem('app-store');" +
-                        "  console.log('[MainActivity JS] localStorage item length:', sessionStr ? sessionStr.length : 0);" +
-                        "  if (sessionStr) {" +
-                        "    const session = JSON.parse(sessionStr);" +
-                        "    const token = session?.session?.accessToken;" +
-                        "    console.log('[MainActivity JS] Token found, length:', token ? token.length : 0);" +
-                        "    if (token) {" +
-                        "      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
-                        "        console.log('[MainActivity JS] NativeSocket plugin available, saving token...');" +
-                        "        window.Capacitor.Plugins.NativeSocket.updateToken({ token: token }).then(() => {" +
-                        "          console.log('[MainActivity JS] ✅ Token saved from localStorage');" +
-                        "        }).catch((e) => {" +
-                        "          console.error('[MainActivity JS] ❌ Failed to save token from localStorage:', e);" +
-                        "        });" +
-                        "      } else {" +
-                        "        console.warn('[MainActivity JS] NativeSocket plugin not available yet');" +
-                        "        // Retry after a delay" +
-                        "        setTimeout(function() {" +
-                        "          if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
-                        "            window.Capacitor.Plugins.NativeSocket.updateToken({ token: token }).then(() => {" +
+                        "  // Токен хранится в ключе 'eb_access'" +
+                        "  const token = storage.getItem('eb_access');" +
+                        "  console.log('[MainActivity JS] Token found, length:', token ? token.length : 0);" +
+                        "  if (token && token.length > 0) {" +
+                        "    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
+                        "      console.log('[MainActivity JS] NativeSocket plugin available, saving token...');" +
+                        "      window.Capacitor.Plugins.NativeSocket.updateToken({ token: token }).then(() => {" +
+                        "        console.log('[MainActivity JS] ✅ Token saved from localStorage');" +
+                        "      }).catch((e) => {" +
+                        "        console.error('[MainActivity JS] ❌ Failed to save token from localStorage:', e);" +
+                        "      });" +
+                        "    } else {" +
+                        "      console.warn('[MainActivity JS] NativeSocket plugin not available yet');" +
+                        "      // Retry after a delay" +
+                        "      setTimeout(function() {" +
+                        "        if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
+                        "          const retryToken = storage.getItem('eb_access');" +
+                        "          if (retryToken) {" +
+                        "            window.Capacitor.Plugins.NativeSocket.updateToken({ token: retryToken }).then(() => {" +
                         "              console.log('[MainActivity JS] ✅ Token saved from localStorage (retry)');" +
                         "            }).catch((e) => {" +
                         "              console.error('[MainActivity JS] ❌ Failed to save token (retry):', e);" +
                         "            });" +
                         "          }" +
-                        "        }, 2000);" +
-                        "      }" +
-                        "    } else {" +
-                        "      console.warn('[MainActivity JS] No token found in session');" +
+                        "        }" +
+                        "      }, 2000);" +
                         "    }" +
                         "  } else {" +
-                        "    console.warn('[MainActivity JS] No app-store in localStorage');" +
+                        "    console.warn('[MainActivity JS] No token found in localStorage (eb_access)');" +
                         "  }" +
                         "} catch(e) { console.error('[MainActivity JS] Error reading localStorage:', e); }" +
                         "})();";
