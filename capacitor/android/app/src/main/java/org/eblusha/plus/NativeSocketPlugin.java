@@ -23,6 +23,7 @@ public class NativeSocketPlugin extends Plugin {
     private static final String PREFS = "eblusha_native_socket";
     private static final String KEY_TOKEN = "access_token";
     private static final String ACTION_TOKEN_UPDATED = "org.eblusha.plus.ACTION_SOCKET_TOKEN_UPDATED";
+    private static final String ACTION_PRESENCE_FOCUS = "org.eblusha.plus.ACTION_SOCKET_PRESENCE_FOCUS";
     private static final int REQUEST_IGNORE_BATTERY_OPTIMIZATIONS = 1004;
 
     @PluginMethod
@@ -38,6 +39,24 @@ public class NativeSocketPlugin extends Plugin {
         result.put("success", true);
         call.resolve(result);
         android.util.Log.d("NativeSocketPlugin", "✅ updateToken() completed");
+    }
+
+    @PluginMethod
+    public void setPresenceFocus(PluginCall call) {
+        boolean focused = call.getBoolean("focused", false);
+        android.util.Log.d("NativeSocketPlugin", "setPresenceFocus() called, focused=" + focused);
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context is null");
+            return;
+        }
+        Intent intent = new Intent(ACTION_PRESENCE_FOCUS);
+        intent.putExtra("focused", focused);
+        intent.setPackage(context.getPackageName());
+        context.sendBroadcast(intent);
+        JSObject result = new JSObject();
+        result.put("focused", focused);
+        call.resolve(result);
     }
 
     @PluginMethod
