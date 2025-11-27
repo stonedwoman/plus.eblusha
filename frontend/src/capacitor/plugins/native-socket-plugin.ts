@@ -1,7 +1,7 @@
 import { registerPlugin } from '@capacitor/core'
 
 export interface NativeSocketPlugin {
-  updateToken(options: { token: string }): Promise<{ success: boolean }>
+  updateToken(options: { token: string; refreshToken?: string | null }): Promise<{ success: boolean }>
   requestBatteryOptimizationExemption(): Promise<{ granted: boolean; message?: string }>
   setPresenceFocus(options: { focused: boolean }): Promise<{ focused: boolean }>
 }

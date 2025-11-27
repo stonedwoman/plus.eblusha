@@ -25,6 +25,13 @@ import io.socket.client.Socket;
 import java.net.URISyntaxException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -37,9 +44,12 @@ public class BackgroundConnectionService extends Service {
     private static final String CHANNEL_ID = "background_connection_channel";
     private static final String MESSAGE_CHANNEL_ID = "eblusha_messages";
     private static final int NOTIFICATION_ID = 2001;
-    private static final long KEEP_ALIVE_INTERVAL_MS = 15_000L; // Уменьшено до 15 секунд для более частых проверок
-    private static final long NOTIFICATION_UPDATE_INTERVAL_MS = 30_000L; // Обновляем уведомление каждые 30 секунд
+    private static final long KEEP_ALIVE_INTERVAL_MS = 15_000L;
+    private static final long NOTIFICATION_UPDATE_INTERVAL_MS = 30_000L;
+    private static final long TOKEN_REFRESH_BACKOFF_MS = 30_000L;
     private static final String SOCKET_URL = "https://ru.eblusha.org";
+    private static final String API_BASE_URL = "https://ru.eblusha.org/api";
+    private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
     public static final String ACTION_KEEP_ALIVE = "org.eblusha.plus.ACTION_KEEP_ALIVE";
 
     private final Handler keepAliveHandler = new Handler(Looper.getMainLooper());
@@ -101,6 +111,10 @@ public class BackgroundConnectionService extends Service {
     private Socket nativeSocket;
     private String currentToken = "";
     private boolean appHasFocus = false;
+    private boolean isRefreshingToken = false;
+    private long lastRefreshAttempt = 0L;
+    private final OkHttpClient httpClient = new OkHttpClient();
+    private final ExecutorService refreshExecutor = Executors.newSingleThreadExecutor();
 
     public static void start(Context context) {
         Intent intent = new Intent(context, BackgroundConnectionService.class);
@@ -188,6 +202,7 @@ public class BackgroundConnectionService extends Service {
         try {
             unregisterReceiver(presenceFocusReceiver);
         } catch (IllegalArgumentException ignored) {}
+        refreshExecutor.shutdownNow();
         disconnectNativeSocket();
         stopForeground(true);
         super.onDestroy();
@@ -456,6 +471,9 @@ public class BackgroundConnectionService extends Service {
                         }
                     }, 5000);
                 }
+                if (isUnauthorizedMessage(error)) {
+                    attemptTokenRefresh();
+                }
             });
             nativeSocket.on("message:notify", this::handleMessageNotify);
             nativeSocket.on("call:incoming", this::handleCallIncoming);
@@ -515,6 +533,71 @@ public class BackgroundConnectionService extends Service {
         } catch (Exception e) {
             android.util.Log.e("BackgroundConnectionService", "Error handling call ended", e);
         }
+    }
+
+    private void attemptTokenRefresh() {
+        if (isRefreshingToken) {
+            android.util.Log.d("BackgroundConnectionService", "Token refresh already in progress, skipping");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastRefreshAttempt < TOKEN_REFRESH_BACKOFF_MS) {
+            android.util.Log.d("BackgroundConnectionService", "Token refresh backoff active");
+            return;
+        }
+        final String refreshToken = NativeSocketPlugin.getStoredRefreshToken(this);
+        if (TextUtils.isEmpty(refreshToken)) {
+            android.util.Log.w("BackgroundConnectionService", "No refresh token available, cannot refresh access token");
+            return;
+        }
+        isRefreshingToken = true;
+        lastRefreshAttempt = now;
+        refreshExecutor.execute(() -> {
+            try {
+                if (refreshAccessToken(refreshToken)) {
+                    android.util.Log.d("BackgroundConnectionService", "Access token refreshed successfully");
+                } else {
+                    android.util.Log.e("BackgroundConnectionService", "Failed to refresh access token");
+                }
+            } finally {
+                isRefreshingToken = false;
+            }
+        });
+    }
+
+    private boolean refreshAccessToken(String refreshToken) {
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("refreshToken", refreshToken);
+            RequestBody body = RequestBody.create(payload.toString(), JSON_MEDIA_TYPE);
+            Request request = new Request.Builder()
+                .url(API_BASE_URL + "/auth/refresh")
+                .header("Content-Type", "application/json")
+                .header("X-Native-Client", "1")
+                .post(body)
+                .build();
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    android.util.Log.e("BackgroundConnectionService", "Refresh token request failed: " + response.code());
+                    return false;
+                }
+                String responseBody = response.body() != null ? response.body().string() : "";
+                JSONObject json = new JSONObject(responseBody);
+                String newAccessToken = json.optString("accessToken", null);
+                String newRefreshToken = json.optString("refreshToken", null);
+                if (TextUtils.isEmpty(newAccessToken)) {
+                    android.util.Log.e("BackgroundConnectionService", "Refresh response missing access token");
+                    return false;
+                }
+                NativeSocketPlugin.storeTokens(this, newAccessToken, TextUtils.isEmpty(newRefreshToken) ? refreshToken : newRefreshToken);
+                currentToken = newAccessToken;
+                connectNativeSocket(newAccessToken);
+                return true;
+            }
+        } catch (Exception e) {
+            android.util.Log.e("BackgroundConnectionService", "Failed to refresh access token", e);
+        }
+        return false;
     }
 
     private void sendPresenceFocus(boolean focused) {
@@ -591,6 +674,10 @@ public class BackgroundConnectionService extends Service {
         } catch (Exception e) {
             android.util.Log.e("BackgroundConnectionService", "Failed to show message notification", e);
         }
+    }
+
+    private boolean isUnauthorizedMessage(String message) {
+        return message != null && message.contains("Unauthorized");
     }
 }
 
