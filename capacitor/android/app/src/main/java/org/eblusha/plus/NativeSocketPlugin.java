@@ -128,11 +128,13 @@ public class NativeSocketPlugin extends Plugin {
             android.util.Log.d("NativeSocketPlugin", "Saving access token to SharedPreferences, length: " + accessToken.length());
             editor.putString(KEY_TOKEN, accessToken);
         }
-        if (TextUtils.isEmpty(refreshToken)) {
-            editor.remove(KEY_REFRESH_TOKEN);
-        } else {
-            android.util.Log.d("NativeSocketPlugin", "Saving refresh token to SharedPreferences, length: " + refreshToken.length());
-            editor.putString(KEY_REFRESH_TOKEN, refreshToken);
+        if (refreshToken != null) {
+            if (TextUtils.isEmpty(refreshToken)) {
+                editor.remove(KEY_REFRESH_TOKEN);
+            } else {
+                android.util.Log.d("NativeSocketPlugin", "Saving refresh token to SharedPreferences, length: " + refreshToken.length());
+                editor.putString(KEY_REFRESH_TOKEN, refreshToken);
+            }
         }
         editor.apply();
     }

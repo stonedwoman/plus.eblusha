@@ -118,7 +118,7 @@ router.post("/login", async (req, res) => {
     domain: env.COOKIE_DOMAIN || undefined,
   });
 
-  const includeRefresh = req.get("x-native-client") === "1";
+  const includeRefresh = req.get("x-native-client") === "1" || true;
   res.json({
     accessToken,
     user: {
@@ -181,7 +181,7 @@ router.post("/refresh", async (req, res) => {
       domain: env.COOKIE_DOMAIN || undefined,
     });
 
-    const includeRefresh = req.get("x-native-client") === "1";
+    const includeRefresh = req.get("x-native-client") === "1" || true;
     res.json({
       accessToken,
       ...(includeRefresh ? { refreshToken: refreshTokenValue } : {}),
