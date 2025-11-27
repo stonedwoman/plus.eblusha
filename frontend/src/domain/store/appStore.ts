@@ -1,4 +1,36 @@
 import { create } from 'zustand'
+import { Capacitor } from '@capacitor/core'
+
+type NativeSocketPlugin = {
+  updateToken: (options: { token: string }) => Promise<{ success: boolean }>
+}
+
+let nativeSocketPromise: Promise<NativeSocketPlugin | null> | null = null
+
+const getNativeSocket = async (): Promise<NativeSocketPlugin | null> => {
+  if (typeof window === 'undefined') return null
+  if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== 'android') return null
+  if (!nativeSocketPromise) {
+    nativeSocketPromise = import('../../capacitor/plugins/native-socket-plugin')
+      .then((module) => module.NativeSocket || module.default || null)
+      .catch((error) => {
+        console.warn('[AppStore] Failed to load NativeSocket plugin', error)
+        return null
+      })
+  }
+  return nativeSocketPromise
+}
+
+const notifyNativeSocket = async (token: string) => {
+  const plugin = await getNativeSocket()
+  if (!plugin || typeof plugin.updateToken !== 'function') return
+  try {
+    await plugin.updateToken({ token })
+    console.log('[AppStore] ✅ Native socket token updated via store')
+  } catch (error) {
+    console.warn('[AppStore] ❌ Failed to update native socket token via store', error)
+  }
+}
 
 export interface UserProfile {
   id: string
@@ -37,10 +69,12 @@ export const useAppStore = create<AppState>((set) => ({
         } else {
           localStorage.removeItem(REFRESH_KEY)
         }
+        notifyNativeSocket(session.accessToken).catch(() => {})
       } else {
         localStorage.removeItem(ACCESS_KEY)
         localStorage.removeItem(USER_KEY)
         localStorage.removeItem(REFRESH_KEY)
+        notifyNativeSocket('').catch(() => {})
       }
     } catch {}
     set({ session })
@@ -60,11 +94,14 @@ export const useAppStore = create<AppState>((set) => ({
           },
           hydrated: true,
         })
+        notifyNativeSocket(access).catch(() => {})
       } else {
         set({ hydrated: true })
+        notifyNativeSocket('').catch(() => {})
       }
     } catch {
       set({ hydrated: true })
+      notifyNativeSocket('').catch(() => {})
     }
   },
 }))
