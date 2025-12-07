@@ -12,7 +12,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "docker:db": "docker compose up -d postgres",
-    "smoke": "ts-node test/local-smoke.ts"
+    "smoke": "ts-node test/local-smoke.ts",
+    "migrate:uploads": "ts-node src/scripts/migrateUploads.ts"
   },
   "keywords": [],
   "author": "",
@@ -22,10 +23,12 @@
     "node": ">=18.18.0"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.946.0",
     "@prisma/client": "^6.18.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/morgan": "^1.9.10",
     "@types/multer": "^2.0.0",
+    "aws-cli-js": "^2.2.3",
     "axios": "^1.12.2",
     "bcrypt": "^6.0.0",
     "compression": "^1.8.1",

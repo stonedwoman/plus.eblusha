@@ -1,5 +1,6 @@
 import http from "http";
 import path from "path";
+import fs from "fs";
 import express from "express";
 import app from "./app";
 import env from "./config/env";
@@ -10,6 +11,9 @@ const port = env.PORT;
 
 // static serving for uploads with permissive cross-origin headers for images
 const uploadsPath = path.join(process.cwd(), 'uploads')
+if (!fs.existsSync(uploadsPath)) {
+  fs.mkdirSync(uploadsPath, { recursive: true })
+}
 const staticOptions = {
   dotfiles: 'deny',
   etag: true,
