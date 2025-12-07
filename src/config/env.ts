@@ -27,6 +27,15 @@ const envSchema = z.object({
   REDIS_URL: z.string().url().optional(),
   // Default TTL for secret messages on the server (in seconds)
   SECRET_MESSAGE_TTL_SECONDS: z.coerce.number().default(3600),
+  STORAGE_S3_ENDPOINT: z.string().url(),
+  STORAGE_S3_REGION: z.string(),
+  STORAGE_S3_BUCKET: z.string(),
+  STORAGE_S3_ACCESS_KEY: z.string(),
+  STORAGE_S3_SECRET_KEY: z.string(),
+  STORAGE_S3_FORCE_PATH_STYLE: z.coerce.boolean().default(true),
+  STORAGE_PUBLIC_BASE_URL: z.string().url(),
+  STORAGE_PREFIX: z.string().default("uploads"),
+  STORAGE_S3_ACL: z.string().optional(),
 });
 
 const env = envSchema.parse(process.env);

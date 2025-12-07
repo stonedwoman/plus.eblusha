@@ -30,7 +30,25 @@ JWT_REFRESH_EXPIRES_IN=30d
 LIVEKIT_URL=https://example.livekit.cloud
 LIVEKIT_API_KEY=lk_api_key
 LIVEKIT_API_SECRET=lk_api_secret
+STORAGE_S3_ENDPOINT=https://hel1.your-objectstorage.com
+STORAGE_S3_REGION=us-east-1
+STORAGE_S3_BUCKET=eblusha-uploads
+STORAGE_S3_ACCESS_KEY=<access-key>
+STORAGE_S3_SECRET_KEY=<secret-key>
+STORAGE_PUBLIC_BASE_URL=https://eblusha-uploads.hel1.your-objectstorage.com
+STORAGE_PREFIX=uploads
+STORAGE_S3_FORCE_PATH_STYLE=true
+STORAGE_S3_ACL=public-read
 ```
+
+`STORAGE_*` переменные настраивают S3-совместимое хранилище (Hetzner, MinIO и т.д.). `STORAGE_PUBLIC_BASE_URL` должен указывать на публичный хост бакета, а `STORAGE_S3_ACL` можно убрать, если доступ выдаётся политикой самого бакета. В Hetzner endpoint содержит локацию (`hel1`, `fsn1` и т.д.), но `STORAGE_S3_REGION` всё равно нужно ставить в значение, которое они показывают для API-подписей (сейчас это `us-east-1`).
+
+## Миграция старых файлов в Object Storage
+
+1. Убедись, что все `STORAGE_*` переменные заполнены и бакет уже создан.
+2. Останови бэкенд, чтобы не шёл новый upload в локальную папку.
+3. Выполни `npm run migrate:uploads` — скрипт загрузит файлы из `uploads/` в бакет и обновит ссылки в базе.  
+   Добавь флаг `--keep-local`, если нужно оставить копию файлов, а `--skip-upload`, если ты уже залил их через `mc`/`s3cmd` и хочешь лишь обновить БД.
 
 Генерация секрета:
 
