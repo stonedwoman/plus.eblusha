@@ -195,6 +195,34 @@ class E2EEManager {
     }
   }
 
+  async encryptBinary(
+    conversation: ConversationRef,
+    data: Uint8Array,
+  ): Promise<{ cipher: Uint8Array; nonce: string }> {
+    const session = await this.ensureSession(conversation);
+    if (!session) {
+      throw new Error("E2EE session is not ready");
+    }
+    const key = base64ToBytes(session.key);
+    const nonce = nacl.randomBytes(24);
+    const cipher = nacl.secretbox(data, nonce, key);
+    return { cipher, nonce: bytesToBase64(nonce) };
+  }
+
+  decryptBinary(
+    conversationId: string,
+    cipher: Uint8Array,
+    nonceBase64: string,
+  ): Uint8Array | null {
+    const session = this.sessions[conversationId];
+    if (!session) {
+      throw new Error("E2EE session is not ready");
+    }
+    const key = base64ToBytes(session.key);
+    const nonce = base64ToBytes(nonceBase64);
+    return nacl.secretbox.open(cipher, nonce, key);
+  }
+
   private async createInitiatorSession(
     conversation: ConversationRef,
     localDeviceId: string,

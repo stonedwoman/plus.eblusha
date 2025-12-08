@@ -124,28 +124,35 @@ router.post("/", upload.single("file"), async (req: Request, res) => {
   const key = objectPrefix ? `${objectPrefix}/${uniqueName}` : uniqueName;
 
   try {
-    if (s3Client && s3Config) {
-      const command = new PutObjectCommand({
-        Bucket: s3Config.bucket,
-        Key: key,
-        Body: file.buffer,
-        ContentType: file.mimetype || "application/octet-stream",
-        ACL: resolveObjectAcl(env.STORAGE_S3_ACL),
-        ServerSideEncryption: resolveServerSideEncryption(env.STORAGE_S3_SSE),
+    if (!s3Client || !s3Config) {
+      logger.error("S3 storage is not configured. File uploads require S3 configuration.");
+      res.status(500).json({ 
+        message: "File storage is not configured. Please configure S3 storage." 
       });
-      await s3Client.send(command);
-      const url = `${s3Config.publicBaseUrl}/${encodeKeyForUrl(key)}`;
-      res.json({ url, path: key });
       return;
     }
 
-    const localPath = path.join(uploadsDir, key);
-    await fsPromises.mkdir(path.dirname(localPath), { recursive: true });
-    await fsPromises.writeFile(localPath, file.buffer);
-    const relativeUrl = `/api/uploads/${encodeKeyForUrl(key)}`;
-    res.json({ url: relativeUrl, path: key });
+    // All uploads go to S3 - no local fallback
+    // Hetzner Object Storage may not support ACL/SSE parameters
+    // Use them only if explicitly needed for other providers
+    const putObjectParams: any = {
+      Bucket: s3Config.bucket,
+      Key: key,
+      Body: file.buffer,
+      ContentType: file.mimetype || "application/octet-stream",
+    };
+    // Note: Hetzner Object Storage doesn't support ACL/SSE in PutObject
+    // Uncomment if needed for AWS S3 or other providers:
+    // const acl = resolveObjectAcl(env.STORAGE_S3_ACL);
+    // if (acl) putObjectParams.ACL = acl;
+    // const sse = resolveServerSideEncryption(env.STORAGE_S3_SSE);
+    // if (sse) putObjectParams.ServerSideEncryption = sse;
+    const command = new PutObjectCommand(putObjectParams);
+    await s3Client.send(command);
+    const url = `${s3Config.publicBaseUrl}/${encodeKeyForUrl(key)}`;
+    res.json({ url, path: key });
   } catch (error) {
-    logger.error({ err: error }, "Failed to upload file");
+    logger.error({ err: error }, "Failed to upload file to S3");
     res.status(500).json({ message: "Upload failed" });
   }
 });

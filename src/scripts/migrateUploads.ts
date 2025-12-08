@@ -101,6 +101,10 @@ const guessContentType = (fileName: string) => {
       return "audio/mpeg";
     case ".wav":
       return "audio/wav";
+    case ".webm":
+      return "audio/webm";
+    case ".ogg":
+      return "audio/ogg";
     case ".pdf":
       return "application/pdf";
     case ".txt":
@@ -121,6 +125,7 @@ const buildOrConditions = (field: string, fileName: string) =>
 
 const migrateFile = async (fileName: string) => {
   const filePath = path.join(uploadsDir, fileName);
+  // Preserve directory structure in S3 key
   const key = objectPrefix ? `${objectPrefix}/${fileName}` : fileName;
   const contentType = guessContentType(fileName);
   const body = fs.createReadStream(filePath);
@@ -128,14 +133,17 @@ const migrateFile = async (fileName: string) => {
   if (!skipUpload) {
     if (!s3Client) throw new Error("S3 client not initialized");
     try {
+      // Hetzner Object Storage may not support ACL/SSE parameters
+      // Try without them first, add back if needed for other providers
       await s3Client.send(
         new PutObjectCommand({
           Bucket: env.STORAGE_S3_BUCKET!,
           Key: key,
           Body: body,
           ContentType: contentType,
-          ACL: resolvedAcl,
-          ServerSideEncryption: resolveServerSideEncryption(env.STORAGE_S3_SSE),
+          // ACL and SSE disabled for Hetzner compatibility
+          // ACL: resolvedAcl,
+          // ServerSideEncryption: resolveServerSideEncryption(env.STORAGE_S3_SSE),
         }),
       );
     } finally {
@@ -201,26 +209,42 @@ const exists = async (target: string) => {
 const isMigratableFile = (entry: Dirent) =>
   entry.isFile() && !entry.name.startsWith(".");
 
+const getAllFiles = async (dir: string, baseDir: string = dir): Promise<string[]> => {
+  const files: string[] = [];
+  const entries = await fsPromises.readdir(dir, { withFileTypes: true });
+  
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const subFiles = await getAllFiles(fullPath, baseDir);
+      files.push(...subFiles);
+    } else if (entry.isFile() && !entry.name.startsWith(".")) {
+      const relativePath = path.relative(baseDir, fullPath);
+      files.push(relativePath);
+    }
+  }
+  
+  return files;
+};
+
 const main = async () => {
   if (!fs.existsSync(uploadsDir)) {
     console.log("No uploads directory, nothing to migrate.");
     return;
   }
 
-  const entries = await fsPromises.readdir(uploadsDir, { withFileTypes: true });
+  const files = await getAllFiles(uploadsDir);
   let processed = 0;
-  for (const entry of entries) {
-    if (!isMigratableFile(entry)) {
-      continue;
-    }
+  
+  for (const fileName of files) {
     try {
-      const summary = await migrateFile(entry.name);
+      const summary = await migrateFile(fileName);
       processed += 1;
       console.log(
-        `✓ ${entry.name} -> ${summary.url} (attachments=${summary.attachments}, userAvatars=${summary.userAvatars}, conversationAvatars=${summary.conversationAvatars})`,
+        `✓ ${fileName} -> ${summary.url} (attachments=${summary.attachments}, userAvatars=${summary.userAvatars}, conversationAvatars=${summary.conversationAvatars})`,
       );
     } catch (error) {
-      console.error(`✗ Failed to migrate ${entry.name}`, error);
+      console.error(`✗ Failed to migrate ${fileName}`, error);
     }
   }
 

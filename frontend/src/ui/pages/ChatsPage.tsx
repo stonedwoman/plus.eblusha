@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted } from '../../utils/socket'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, LogOut, Lock, Unlock } from 'lucide-react'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, LogOut, Lock, Unlock, MoreVertical, Mic, Square } from 'lucide-react'
 const CallOverlay = lazy(() => import('../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
 import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
@@ -13,6 +13,7 @@ import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { ensureMediaPermissions } from '../../utils/media'
+import { VoiceRecorder } from '../../utils/voiceRecorder'
 
 declare global {
   interface Window {
@@ -26,6 +27,107 @@ declare global {
 const LAST_ACTIVE_CONVERSATION_KEY = 'eblusha:last-active-conversation'
 const MIN_OUTGOING_CALL_DURATION_MS = 30_000
 const MAX_PENDING_IMAGES = 10
+
+function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }) {
+  const [playing, setPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    const updateTime = () => setCurrentTime(audio.currentTime)
+    const handleEnded = () => {
+      setPlaying(false)
+      setCurrentTime(0)
+    }
+    const handlePlay = () => setPlaying(true)
+    const handlePause = () => setPlaying(false)
+
+    audio.addEventListener('timeupdate', updateTime)
+    audio.addEventListener('ended', handleEnded)
+    audio.addEventListener('play', handlePlay)
+    audio.addEventListener('pause', handlePause)
+
+    return () => {
+      audio.removeEventListener('timeupdate', updateTime)
+      audio.removeEventListener('ended', handleEnded)
+      audio.removeEventListener('play', handlePlay)
+      audio.removeEventListener('pause', handlePause)
+    }
+  }, [])
+
+  const togglePlay = () => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    if (playing) {
+      audio.pause()
+    } else {
+      audio.play().catch((err) => {
+        console.error('Failed to play audio:', err)
+      })
+    }
+  }
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)' }}>
+      <audio ref={audioRef} src={url} preload="metadata" />
+      <button
+        type="button"
+        onClick={togglePlay}
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: '50%',
+          border: 'none',
+          background: 'var(--brand)',
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          flexShrink: 0,
+        }}
+        aria-label={playing ? 'Пауза' : 'Воспроизвести'}
+      >
+        {playing ? (
+          <Square size={16} fill="currentColor" />
+        ) : (
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M5 3l8 5-8 5V3z" />
+          </svg>
+        )}
+      </button>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <div style={{ flex: 1, height: 4, background: 'var(--surface-border)', borderRadius: 2, overflow: 'hidden' }}>
+            <div
+              style={{
+                width: `${progress}%`,
+                height: '100%',
+                background: 'var(--brand)',
+                transition: 'width 0.1s linear',
+              }}
+            />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+            {formatTime(currentTime)} / {formatTime(duration)}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 type PendingAttachment = {
   url: string
@@ -83,6 +185,8 @@ export default function ChatsPage() {
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; messageId: string | null }>(() => ({ open: false, x: 0, y: 0, messageId: null }))
   const [convMenu, setConvMenu] = useState<{ open: boolean; x: number; y: number; conversationId: string | null }>(() => ({ open: false, x: 0, y: 0, conversationId: null }))
   const convMenuRef = useRef<HTMLDivElement | null>(null)
+  const [headerMenu, setHeaderMenu] = useState<{ open: boolean; anchor: HTMLElement | null }>(() => ({ open: false, anchor: null }))
+  const headerMenuRef = useRef<HTMLDivElement | null>(null)
   const convScrollRef = useRef<HTMLDivElement | null>(null)
   const [groupAvatarEditor, setGroupAvatarEditor] = useState(false)
   const [reactionBar, setReactionBar] = useState<{ open: boolean; x: number; y: number; messageId: string | null }>(() => ({ open: false, x: 0, y: 0, messageId: null }))
@@ -180,6 +284,9 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const [pendingImages, setPendingImages] = useState<PendingComposerImage[]>([])
   const [editingImageId, setEditingImageId] = useState<string | null>(null)
   const [e2eeVersion, setE2eeVersion] = useState(0)
+  const voiceRecorderRef = useRef<VoiceRecorder | null>(null)
+  const [voiceRecording, setVoiceRecording] = useState(false)
+  const [voiceDuration, setVoiceDuration] = useState(0)
 const activeConversationIdRef = useRef<string | null>(null)
 useEffect(() => { activeConversationIdRef.current = activeId }, [activeId])
 const pendingImagesRef = useRef<PendingComposerImage[]>([])
@@ -624,6 +731,31 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     }
   }, [convMenu.open, convMenu.x, convMenu.y])
 
+  useEffect(() => {
+    if (!headerMenu.open || !headerMenu.anchor) return
+    const menu = headerMenuRef.current
+    if (!menu) return
+    const anchorRect = headerMenu.anchor.getBoundingClientRect()
+    const vw = window.innerWidth
+    const vh = (window as any).visualViewport ? (window as any).visualViewport.height : window.innerHeight
+    menu.style.display = 'flex'
+    const rect = menu.getBoundingClientRect()
+    let left = anchorRect.right - rect.width
+    let top = anchorRect.bottom + 8
+    if (left < 8) left = 8
+    if (left + rect.width > vw - 8) left = vw - rect.width - 8
+    if (top + rect.height > vh - 8) top = anchorRect.top - rect.height - 8
+    if (top < 8) top = 8
+    menu.style.left = `${left}px`
+    menu.style.top = `${top}px`
+  }, [headerMenu.open, headerMenu.anchor])
+
+  useEffect(() => {
+    if (!activeId) {
+      setHeaderMenu({ open: false, anchor: null })
+    }
+  }, [activeId])
+
   function selectConversation(id: string) {
     setActiveId((prev) => {
       try {
@@ -753,7 +885,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
 
   async function sendMessageToConversation(
     conversation: any | null | undefined,
-    payload: { type: string; content?: string; metadata?: Record<string, any>; replyToId?: string },
+    payload: { type: string; content?: string | null; metadata?: Record<string, any>; replyToId?: string; attachments?: Array<any> },
   ) {
     if (!conversation) return
     if (conversation.isSecret) {
@@ -1585,6 +1717,14 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         }
         return prev
       })
+      // Устанавливаем callStore.activeConvId для показа кнопок управления звонком
+      // Это нужно для того, чтобы isParticipating был true и показывались кнопки "Развернуть" и "Сбросить"
+      if (callStore.activeConvId !== conversationId) {
+        // Определяем, есть ли информация о видео в активных звонках или используем false по умолчанию
+        // Для 1:1 звонков можно использовать информацию из callStore, если она есть
+        const hasVideo = false // Можно улучшить, если будет доступна информация о типе звонка
+        callStore.startOutgoing(conversationId, hasVideo)
+      }
       // Открываем оверлей для всех, кто принял звонок (и для создателя, и для присоединившихся)
         setCallConvId(conversationId)
       setMinimizedCallConvId((prev) => prev === conversationId ? null : prev) // Сбрасываем минимизацию для нового звонка
@@ -1626,6 +1766,10 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
         if (isGroup) return
       } catch {}
+      // Если звонок минимизирован, не завершаем его - он все еще активен, просто оверлей скрыт
+      if (minimizedCallConvId === conversationId) {
+        return
+      }
       const finalize = () => {
         setActiveCalls((prev) => {
           const current = prev[conversationId]
@@ -2650,6 +2794,171 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     })
   }
 
+  const startVoiceRecording = async () => {
+    if (!activeId) return
+    if (voiceRecording) return
+
+    try {
+      const permissionResult = await ensureMediaPermissions({ audio: true })
+      if (!permissionResult.ok) {
+        alert('Необходимо разрешение на использование микрофона для записи голосовых сообщений')
+        return
+      }
+
+      const recorder = new VoiceRecorder({
+        onStateChange: (state) => {
+          setVoiceRecording(state === 'recording')
+        },
+        onDurationUpdate: (duration) => {
+          setVoiceDuration(duration)
+        },
+        onError: (error) => {
+          console.error('Voice recording error:', error)
+          alert('Ошибка записи голосового сообщения')
+          stopVoiceRecording()
+        },
+      })
+
+      voiceRecorderRef.current = recorder
+      await recorder.start()
+    } catch (error) {
+      console.error('Failed to start voice recording:', error)
+      alert('Не удалось начать запись голосового сообщения')
+    }
+  }
+
+  const stopVoiceRecording = () => {
+    if (!voiceRecorderRef.current) return
+    const recorder = voiceRecorderRef.current
+    const duration = recorder.getDuration()
+    const audioBlob = recorder.stop()
+    voiceRecorderRef.current = null
+    setVoiceRecording(false)
+    setVoiceDuration(0)
+
+    if (audioBlob && activeId) {
+      sendVoiceMessage(audioBlob, duration)
+    }
+  }
+
+  const cancelVoiceRecording = () => {
+    if (voiceRecorderRef.current) {
+      voiceRecorderRef.current.cancel()
+      voiceRecorderRef.current = null
+    }
+    setVoiceRecording(false)
+    setVoiceDuration(0)
+  }
+
+  const sendVoiceMessage = async (audioBlob: Blob, duration: number) => {
+    if (!activeId) return
+    const isSecretConversation = !!activeConversation?.isSecret
+
+    if (isSecretConversation) {
+      if (conversationSecretInactive) {
+        alert('Секретный чат больше не активен, отправка голосовых сообщений отключена.')
+        return
+      }
+      if (!conversationSecretSessionReady) {
+        alert('Секретный чат ещё не готов к голосовым сообщениям, подождите установления защищённой сессии.')
+        return
+      }
+    }
+
+    setAttachUploading(true)
+    setAttachProgress(0)
+
+    try {
+      // Create a File from Blob
+      const audioFile = new File([audioBlob], 'voice-message.webm', { type: audioBlob.type || 'audio/webm' })
+      
+      let uploadBlob: Blob | File = audioFile
+      let encryptedMeta: Record<string, any> | undefined
+
+      if (isSecretConversation && activeConversation) {
+        const buffer = new Uint8Array(await audioFile.arrayBuffer())
+        const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
+        uploadBlob = new Blob([encrypted.cipher], { type: 'application/octet-stream' })
+        encryptedMeta = {
+          kind: 'ciphertext',
+          version: 1,
+          algorithm: 'xsalsa20_poly1305',
+          nonce: encrypted.nonce,
+          originalName: audioFile.name,
+          originalType: audioFile.type,
+          originalSize: audioFile.size,
+        }
+      }
+
+      const form = new FormData()
+      form.append('file', uploadBlob, isSecretConversation ? `${audioFile.name}.enc` : audioFile.name)
+
+      const url = await new Promise<string>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', '/api/upload')
+        try {
+          const token = useAppStore.getState().session?.accessToken
+          if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+        } catch {}
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100)
+            setAttachProgress(percent)
+          }
+        }
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4) {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const resp = JSON.parse(xhr.responseText)
+                resolve(resp.url)
+              } catch (err) {
+                reject(err)
+              }
+            } else {
+              reject(new Error('upload failed'))
+            }
+          }
+        }
+        xhr.send(form)
+      })
+
+      const attachment = {
+        url,
+        type: 'AUDIO' as const,
+        size: audioFile.size,
+        ...(encryptedMeta ? { metadata: { e2ee: encryptedMeta } } : {}),
+      }
+
+      // Send directly (like uploadAndSendAttachments does for attachments)
+      await api.post('/conversations/send', {
+        conversationId: activeId,
+        type: 'AUDIO',
+        metadata: { duration },
+        attachments: [attachment],
+        replyToId: replyTo?.id,
+      })
+
+      setReplyTo(null)
+      client.invalidateQueries({ queryKey: ['messages', activeId] })
+    } catch (error) {
+      console.error('Failed to send voice message', error)
+      alert('Не удалось отправить голосовое сообщение')
+    } finally {
+      setAttachUploading(false)
+      setAttachProgress(0)
+    }
+  }
+
+  // Cleanup voice recorder on unmount
+  useEffect(() => {
+    return () => {
+      if (voiceRecorderRef.current) {
+        voiceRecorderRef.current.cleanup()
+      }
+    }
+  }, [])
+
   // ping to eblusha.org (approximate)
   useEffect(() => {
     let timer: number | null = null
@@ -2940,7 +3249,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               if (!activeId) return {}
               const callEntry = activeCalls[activeId]
               const isActive = callEntry?.active
-              if (isActive) {
+              const isMinimized = minimizedCallConvId === activeId
+              // Подсвечиваем шапку если звонок активен ИЛИ минимизирован (для всех типов звонков)
+              if (isActive || isMinimized) {
                 return {
                   background: 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)',
                   borderBottom: '2px solid var(--brand)',
@@ -2990,8 +3301,31 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       />
                     </div>
                     <div style={{ flex: 1, minWidth: 0, order: isMobile ? 1 : 2 }}>
-                      <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
-                        {title}
+                      <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}>
+                        <span>{title}</span>
+                        {isMobile && (
+                          <button
+                            className="btn btn-icon btn-ghost"
+                            title="Меню"
+                            onClick={(e) => {
+                              setHeaderMenu({ open: true, anchor: e.currentTarget })
+                            }}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: 42,
+                              height: 42,
+                              minWidth: 42,
+                              padding: 0,
+                              margin: 0,
+                              borderRadius: 999,
+                              flexShrink: 0,
+                            }}
+                          >
+                            <MoreVertical size={20} />
+                          </button>
+                        )}
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         {isActive ? (
@@ -3071,53 +3405,6 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         )}
                       </div>
                     </div>
-                    <button
-                      className={isMobile ? 'btn btn-secondary' : 'btn btn-icon btn-ghost'}
-                      title="Добавить участников"
-                      onClick={() => {
-                        setAddParticipantsSelectedIds([])
-                        setAddParticipantsMode('friends')
-                        setAddParticipantsEblDigits(['', '', '', ''])
-                        setAddParticipantsFoundUser(null)
-                        setAddParticipantsSearchError(null)
-                        setAddParticipantsSearching(false)
-                        setAddParticipantsModal(true)
-                      }}
-                      style={
-                        isMobile
-                          ? {
-                              padding: '8px 16px',
-                              height: 42,
-                              borderRadius: 999,
-                              fontSize: 14,
-                              fontWeight: 500,
-                              whiteSpace: 'nowrap',
-                              flexShrink: 0,
-                              marginLeft: 'auto',
-                              order: 2,
-                            }
-                          : {
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              width: 60,
-                              height: 60,
-                              minWidth: 60,
-                              minHeight: 60,
-                              borderRadius: 999,
-                              order: 1,
-                            }
-                      }
-                    >
-                      {isMobile ? (
-                        <>
-                          <UserPlus size={16} />
-                          <span style={{ marginLeft: 6 }}>Добавить</span>
-                        </>
-                      ) : (
-                        <UserPlus size={20} />
-                      )}
-                    </button>
                   </>
                 ) : (
                   (() => {
@@ -3134,32 +3421,42 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           />
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
                             <span>{title}</span>
-                            {othersArr.length === 1 && (
-                              <span
+                            {isMobile && (
+                              <button
+                                className="btn btn-icon btn-ghost"
+                                title="Меню"
+                                onClick={(e) => {
+                                  setHeaderMenu({ open: true, anchor: e.currentTarget })
+                                }}
                                 style={{
                                   display: 'inline-flex',
                                   alignItems: 'center',
                                   justifyContent: 'center',
-                                  width: 20,
-                                  height: 20,
+                                  width: 42,
+                                  height: 42,
+                                  minWidth: 42,
+                                  padding: 0,
+                                  margin: 0,
                                   borderRadius: 999,
-                                  background: isSecret ? 'rgba(34,197,94,0.12)' : 'rgba(249,115,22,0.15)',
+                                  flexShrink: 0,
                                 }}
                               >
-                                {isSecret ? <Lock size={14} color="#22c55e" /> : <Unlock size={14} color="#f97316" />}
-                              </span>
+                                <MoreVertical size={20} />
+                              </button>
                             )}
                           </div>
                           <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                            {callEntry?.active ? (
-                              (() => {
+                            {(() => {
+                              const isMinimized = minimizedCallConvId === activeId
+                              // Если звонок минимизирован или активен, показываем продолжительность
+                              if ((callEntry?.active || isMinimized) && callEntry) {
                                 const elapsedMs = callEntry.startedAt ? (Date.now() - callEntry.startedAt) : (typeof callEntry.elapsedMs === 'number' ? callEntry.elapsedMs : 0)
                                 return <span>{formatDuration(elapsedMs)}</span>
-                              })()
-                            ) : callEntry && callEntry.endedAt ? (
-                              (() => {
+                              }
+                              // Если звонок завершен (и не минимизирован), показываем время завершения
+                              if (callEntry && callEntry.endedAt && !isMinimized) {
                                 const endedAt = callEntry.endedAt
                                 const now = Date.now()
                                 const diffMs = now - endedAt
@@ -3172,59 +3469,14 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                 const dateStr = endedDate.toLocaleDateString()
                                 const timeStr = endedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                                 return <span>Завершен {dateStr} в {timeStr}</span>
-                              })()
-                            ) : (
-                              peer
+                              }
+                              // Иначе показываем статус пользователя
+                              return peer
                                 ? (peer.status === 'ONLINE' ? 'ОНЛАЙН' : peer.status === 'BACKGROUND' ? 'В ФОНЕ' : formatPresence(peer))
                                 : ''
-                            )}
+                            })()}
                           </div>
                         </div>
-                        {othersArr.length === 1 && (
-                          <button
-                            title={isSecret ? endSecretTitle : 'Начать секретный чат'}
-                            disabled={!isSecret && secretRequestLoading}
-                            onClick={async () => {
-                              if (isSecret) {
-                                setEndSecretModalOpen(true)
-                                return
-                              }
-                              if (peer?.id) {
-                                await initiateSecretChat(peer.id)
-                              }
-                            }}
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              width: isMobile ? 42 : 44,
-                              height: isMobile ? 42 : 44,
-                              minWidth: isMobile ? 42 : 44,
-                              padding: 0,
-                              margin: 0,
-                              borderRadius: 999,
-                              background: isSecret ? '#ef4444' : 'transparent',
-                              border: isSecret ? '1px solid #ef4444' : '1px solid var(--surface-border)',
-                              color: isSecret ? '#fff' : 'var(--text-primary)',
-                              cursor: 'pointer',
-                              fontSize: 0,
-                              lineHeight: 0,
-                              fontFamily: 'inherit',
-                              fontWeight: 'normal',
-                              textTransform: 'none',
-                              letterSpacing: 0,
-                              whiteSpace: 'nowrap',
-                              overflow: 'hidden',
-                              textOverflow: 'clip',
-                              marginLeft: 'auto',
-                          alignSelf: 'center',
-                            }}
-                          >
-                            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 0, lineHeight: 0 }}>
-                          {isSecret ? <Lock size={isMobile ? 20 : 22} /> : <Unlock size={isMobile ? 20 : 22} />}
-                            </span>
-                          </button>
-                        )}
                       </div>
                     )
                   })()
@@ -3339,10 +3591,25 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 const callEntry = activeCalls[activeId]
                 const isActive = callEntry?.active
                 const isGroup = activeConversation?.isGroup || (activeConversation?.participants.length ?? 0) > 2
-                const isParticipating = isActive && callStore.activeConvId === activeId
-                const isOverlayOpen = callConvId === activeId
-                const isMinimized = minimizedCallConvId === activeId && isOverlayOpen
-                const shouldShowExpand = isParticipating && (!isOverlayOpen || isMinimized)
+                const isMinimized = minimizedCallConvId === activeId
+                // Оверлей открыт, только если callConvId установлен И не минимизирован
+                const isOverlayOpen = callConvId === activeId && !isMinimized
+                // Участие в звонке
+                const myId = me?.id
+                // Для групповых: звонок активен И есть в participants
+                const isParticipatingInGroup = isGroup && isActive && myId && callEntry?.participants?.includes(myId)
+                // Для 1:1: участвуем если минимизирован, или callConvId установлен (означает что начали/приняли звонок),
+                // или есть активный звонок в store, или звонок активен и есть связь
+                const isParticipatingInDialog = !isGroup && (
+                  isMinimized || // Если минимизирован - точно участвуем
+                  callConvId === activeId || // Если оверлей был открыт/открыт - участвуем
+                  callStore.activeConvId === activeId || // Если есть активный звонок в store - участвуем
+                  (isActive && (callStore.activeConvId === activeId || callConvId === activeId)) // Звонок активен и есть связь
+                )
+                const isParticipating = isParticipatingInGroup || isParticipatingInDialog
+                // Показываем кнопку "Развернуть" если участвуем и оверлей не открыт (минимизирован или не развернут)
+                // Кнопки управления показываются постоянно, пока пользователь участвует в звонке
+                const shouldShowExpand = isParticipating && !isOverlayOpen
                 const buttonBaseStyle = {
                   display: 'flex' as const,
                   alignItems: 'center' as const,
@@ -3366,6 +3633,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   padding: isMobile ? '0 8px' : '0',
                   justifyContent: isMobile ? 'center' : 'flex-end',
                   marginLeft: isMobile ? 0 : 'auto',
+                }
+                
+                const menuButtonStyle = {
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: isMobile ? 42 : 44,
+                  height: isMobile ? 42 : 44,
+                  minWidth: isMobile ? 42 : 44,
+                  padding: 0,
+                  margin: 0,
+                  borderRadius: 999,
                 }
 
                 const handleStartCall = async () => {
@@ -3425,19 +3704,25 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 }
 
                 const renderCallControls = () => {
-                  if (isActive) {
+                  // Если звонок активен ИЛИ минимизирован (минимизированный звонок все еще активен, просто скрыт)
+                  if (isActive || isMinimized) {
                     if (!isParticipating) {
                       return (
                         <>
                           <button 
                             className="btn btn-secondary" 
                             onClick={() => {
-                              setCallConvId(activeId!)
-                              setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
-                              callStore.startOutgoing(activeId!, false)
                               const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
                               if (isGroupCall) {
+                                setCallConvId(activeId!)
+                                setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                                callStore.startOutgoing(activeId!, false)
                                 try { joinCallRoom(activeId!, false) } catch {}
+                              } else {
+                                // Для 1:1 звонков устанавливаем callConvId и callStore.activeConvId для показа кнопок управления
+                                setCallConvId(activeId!)
+                                setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                                callStore.startOutgoing(activeId!, false)
                               }
                             }}
                             style={buttonBaseStyle}
@@ -3448,12 +3733,17 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           <button 
                             className="btn btn-primary" 
                             onClick={() => {
-                              setCallConvId(activeId!)
-                              setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
-                              callStore.startOutgoing(activeId!, true)
                               const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
                               if (isGroupCall) {
+                                setCallConvId(activeId!)
+                                setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                                callStore.startOutgoing(activeId!, true)
                                 try { joinCallRoom(activeId!, true) } catch {}
+                              } else {
+                                // Для 1:1 звонков устанавливаем callConvId и callStore.activeConvId для показа кнопок управления
+                                setCallConvId(activeId!)
+                                setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                                callStore.startOutgoing(activeId!, true)
                               }
                             }}
                             style={buttonBaseStyle}
@@ -3461,13 +3751,26 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             <Video size={isMobile ? 16 : 18} />
                             {isMobile ? 'Подключиться с видео' : ' Подключиться с видео'}
                           </button>
+                          {!isMobile && (
+                            <button
+                              className="btn btn-icon btn-ghost"
+                              title="Меню"
+                              onClick={(e) => {
+                                setHeaderMenu({ open: true, anchor: e.currentTarget })
+                              }}
+                              style={menuButtonStyle}
+                            >
+                              <MoreVertical size={22} />
+                            </button>
+                          )}
                         </>
                       )
                     }
 
                     return (
                       <>
-                        {shouldShowExpand ? (
+                        {/* Показываем кнопку "Развернуть" если оверлей не открыт (минимизирован или не развернут) */}
+                        {!isOverlayOpen && (
                           <button 
                             className="btn btn-secondary"
                             onClick={handleExpandCall}
@@ -3476,9 +3779,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             <Maximize2 size={isMobile ? 16 : 18} />
                             {isMobile ? 'Развернуть' : ' Развернуть'}
                           </button>
-                        ) : (
-                          !isMobile && <div style={{ flex: 1 }} />
                         )}
+                        {/* Кнопка "Сбросить" показывается всегда, пока пользователь участвует в звонке */}
                         <button 
                           className="btn"
                           onClick={() => {
@@ -3520,6 +3822,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           <PhoneOff size={isMobile ? 16 : 18} />
                           {isMobile ? 'Сбросить' : ' Сбросить'}
                         </button>
+                        {!isMobile && (
+                          <button
+                            className="btn btn-icon btn-ghost"
+                            title="Меню"
+                            onClick={(e) => {
+                              setHeaderMenu({ open: true, anchor: e.currentTarget })
+                            }}
+                            style={menuButtonStyle}
+                          >
+                            <MoreVertical size={22} />
+                          </button>
+                        )}
                       </>
                     )
                   }
@@ -3532,7 +3846,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         style={buttonBaseStyle}
                       >
                         <Phone size={isMobile ? 16 : 18} />
-                        {isMobile ? 'Начать звонок' : ' Начать звонок'}
+                        {isMobile ? ' Начать звонок' : ' Звонок'}
                       </button>
                       <button 
                         className="btn btn-primary" 
@@ -3540,8 +3854,20 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         style={buttonBaseStyle}
                       >
                         <Video size={isMobile ? 16 : 18} />
-                        {isMobile ? 'Начать с видео' : ' Начать с видео'}
+                        {isMobile ? ' Начать с видео' : ' Видео'}
                       </button>
+                      {!isMobile && (
+                        <button
+                          className="btn btn-icon btn-ghost"
+                          title="Меню"
+                          onClick={(e) => {
+                            setHeaderMenu({ open: true, anchor: e.currentTarget })
+                          }}
+                          style={menuButtonStyle}
+                        >
+                          <MoreVertical size={22} />
+                        </button>
+                      )}
                     </>
                   )
                 }
@@ -3783,7 +4109,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           for (const r of m.reactions) grouped[r.emoji] = (grouped[r.emoji] || 0) + 1
                           return (
                             <div style={{ position: 'absolute', bottom: -18, right: isMe ? 8 : undefined, left: !isMe ? 8 : undefined, display: 'flex', gap: 6, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', borderRadius: 12, padding: '2px 6px', zIndex: 5, pointerEvents: 'auto' }}>
-                              {Object.entries(grouped).map(([emo, cnt]) => <span key={emo} style={{ fontSize: 12, color: '#ffc46b' }}>{emo}{cnt>1?` ${cnt}`:''}</span>)}
+                              {Object.entries(grouped).map(([emo, cnt], idx) => <span key={emo} className="reaction-emoji" style={{ fontSize: 12, color: '#ffc46b', display: 'inline-block', animation: `reactionBounce 0.6s ease ${idx * 0.1}s`, cursor: 'pointer' }}>{emo}{cnt>1?` ${cnt}`:''}</span>)}
                             </div>
                           )
                         })()}
@@ -3818,6 +4144,26 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             const decryptError = needsDecrypt && decryptState?.status === 'error'
                             const fileLabel =
                               metadata?.e2ee?.originalName || att.url?.split('/').pop() || 'вложение'
+                            if (att.type === 'AUDIO') {
+                              const duration = m.metadata?.duration || 0
+                              const audioUrl = resolvedUrl || att.url
+                              return (
+                                <div key={`${att.url}-${idx}`} style={{ marginTop: 8, minWidth: 200, maxWidth: 300 }}>
+                                  {decryptPending ? (
+                                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
+                                      <div style={{ width: 16, height: 16, border: '2px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                                      <span style={{ fontSize: 13 }}>Расшифровка аудио...</span>
+                                    </div>
+                                  ) : decryptError ? (
+                                    <div style={{ color: '#f87171', fontSize: 12 }}>Не удалось расшифровать аудио</div>
+                                  ) : audioUrl ? (
+                                    <VoiceMessagePlayer url={audioUrl} duration={duration} />
+                                  ) : (
+                                    <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Голосовое сообщение</div>
+                                  )}
+                                </div>
+                              )
+                            }
                             if (att.type === 'IMAGE') {
                               const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
                               const isMobile = vw <= 768
@@ -4136,6 +4482,34 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               }
               e.target.value = ''
             }} />
+            {voiceRecording ? (
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
+                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#ef4444', animation: 'pulse 1.5s ease-in-out infinite' }} />
+                  <div style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>
+                    {Math.floor(voiceDuration / 60)}:{(voiceDuration % 60).toString().padStart(2, '0')}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={cancelVoiceRecording}
+                  style={{ flexShrink: 0 }}
+                  aria-label="Отменить запись"
+                >
+                  <X size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={stopVoiceRecording}
+                  style={{ flexShrink: 0 }}
+                  aria-label="Отправить голосовое сообщение"
+                >
+                  <Square size={16} fill="currentColor" />
+                </button>
+              </div>
+            ) : (
             <form autoComplete="off" onSubmit={async (e) => {
                     e.preventDefault()
               if (!activeId) return
@@ -4190,10 +4564,21 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 ref={inputRef}
                 style={{ flex: 1, minWidth: 0, padding: '12px 16px', borderRadius: 8, border: '1px solid var(--surface-border)', background: 'var(--surface-100)', color: 'var(--text-primary)', fontSize: 16 }}
               />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={startVoiceRecording}
+                style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: isMobile ? 0 : 6, whiteSpace: 'nowrap' }}
+                aria-label="Записать голосовое сообщение"
+              >
+                <Mic size={16} />
+                {!isMobile && <span>Голос</span>}
+              </button>
               <button type="submit" className="btn btn-primary" style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
                 Отправить
               </button>
             </form>
+            )}
             {attachUploading && (
               <div style={{ height: 6, background: 'var(--surface-100)', borderRadius: 3, overflow: 'hidden', marginTop: 10 }}>
                 <div style={{ width: `${attachProgress}%`, height: '100%', background: 'var(--brand)', transition: 'width 0.2s ease' }} />
@@ -4246,12 +4631,32 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               })()}
               onMinimize={() => {
                 if (callConvId) {
-                  setMinimizedCallConvId(callConvId)
+                  // Сохраняем callConvId при минимизации - он должен оставаться установленным
+                  const convIdToMinimize = callConvId
+                  setMinimizedCallConvId(convIdToMinimize)
+                  // Убеждаемся, что callStore.activeConvId установлен при минимизации для 1:1 звонков
+                  const conv = getConversationFromCache(convIdToMinimize)
+                  const isGroupConv = !!(conv?.isGroup || (conv?.participants?.length ?? 0) > 2)
+                  if (!isGroupConv && callStore.activeConvId !== convIdToMinimize) {
+                    // Для 1:1 звонков устанавливаем activeConvId, если его нет
+                    callStore.startOutgoing(convIdToMinimize, callStore.initialVideo)
+                  }
+                  // Убеждаемся, что callConvId остается установленным (не сбрасываем его при минимизации)
+                  if (callConvId !== convIdToMinimize) {
+                    setCallConvId(convIdToMinimize)
+                  }
                 }
               }}
               onClose={(options) => {
                 const convId = callConvId ?? callConvIdRef.current
                 if (!convId) return
+                // Если оверлей минимизирован, НЕ закрываем его - минимизация не означает закрытие
+                // Минимизированный оверлей остается открытым (open=true), но визуально скрыт
+                if (minimizedCallConvId === convId) {
+                  // При минимизации оверлей НЕ должен закрываться - только визуально скрыт
+                  // Поэтому не вызываем finalize
+                  return
+                }
                 const finalize = () => {
                   const conv = getConversationFromCache(convId)
                   const participantsCount = conv?.participants?.length ?? 0
@@ -5484,7 +5889,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           onClick={(e) => e.stopPropagation()}
         >
           <div style={{ display: 'flex', gap: 6, padding: 6, borderBottom: '1px solid var(--surface-border)' }}>
-            {['👍','❤️','👎','🔥'].map((emo) => (
+            {['👍','❤️','👎','🔥','🤝','😆'].map((emo, idx) => (
               <button key={emo} onClick={async () => {
                 try {
                   const mid = contextMenu.messageId!
@@ -5496,7 +5901,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
                 } catch {}
                 setContextMenu({ open: false, x: 0, y: 0, messageId: null })
-              }} style={{ fontSize: 16, color: '#ffffff' }}>{emo}</button>
+              }} style={{ 
+                fontSize: 16, 
+                color: '#ffffff', 
+                cursor: 'pointer', 
+                transition: 'transform 0.2s ease', 
+                animation: `reactionPop 0.3s ease ${idx * 0.05}s both`
+              }} onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.2)' }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)' }}>{emo}</button>
             ))}
           </div>
           <button style={{ color: '#ffffff' }} onClick={() => {
@@ -5779,6 +6190,121 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 {isGroup ? 'Выйти из беседы' : 'Удалить беседу'}
               </button>
             )
+          })()}
+        </div>
+      </div>
+    )}
+    {headerMenu.open && headerMenu.anchor && activeConversation && (
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'transparent',
+          zIndex: 45,
+        }}
+        onClick={() => setHeaderMenu({ open: false, anchor: null })}
+      >
+        <div
+          ref={headerMenuRef}
+          className="msg-menu"
+          style={{ position: 'fixed' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {(() => {
+            const isGroup = activeConversation.isGroup || (activeConversation.participants?.length ?? 0) > 2
+            const isSecret = !!activeConversation.isSecret && !isGroup
+            const peer = !isGroup && activeConversation.participants?.find((p: any) => p.user.id !== currentUserId)?.user
+
+            if (isGroup) {
+              return (
+                <>
+                  <button
+                    onClick={() => {
+                      setAddParticipantsSelectedIds([])
+                      setAddParticipantsMode('friends')
+                      setAddParticipantsEblDigits(['', '', '', ''])
+                      setAddParticipantsFoundUser(null)
+                      setAddParticipantsSearchError(null)
+                      setAddParticipantsSearching(false)
+                      setAddParticipantsModal(true)
+                      setHeaderMenu({ open: false, anchor: null })
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                  >
+                    <UserPlus size={16} />
+                    Добавить участников
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!activeId) return
+                      try {
+                        await api.delete(`/conversations/${activeId}/participants/me`)
+                        client.invalidateQueries({ queryKey: ['conversations'] })
+                        setActiveId(null)
+                        if (isMobile) setMobileView('list')
+                      } catch (err) {
+                        console.error('Failed to leave conversation:', err)
+                      }
+                      setHeaderMenu({ open: false, anchor: null })
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ef4444' }}
+                  >
+                    <LogOut size={16} />
+                    Выйти из беседы
+                  </button>
+                </>
+              )
+            } else {
+              return (
+                <>
+                  {!isSecret ? (
+                    <button
+                      onClick={async () => {
+                        if (peer?.id) {
+                          await initiateSecretChat(peer.id)
+                        }
+                        setHeaderMenu({ open: false, anchor: null })
+                      }}
+                      disabled={secretRequestLoading}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                    >
+                      <Lock size={16} />
+                      Начать секретный чат
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setEndSecretModalOpen(true)
+                        setHeaderMenu({ open: false, anchor: null })
+                      }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                    >
+                      <Unlock size={16} />
+                      Завершить секретный чат
+                    </button>
+                  )}
+                  <button
+                    onClick={async () => {
+                      if (!activeId) return
+                      try {
+                        await api.delete(`/conversations/${activeId}`)
+                        client.invalidateQueries({ queryKey: ['conversations'] })
+                        client.removeQueries({ queryKey: ['messages', activeId] })
+                        setActiveId(null)
+                        if (isMobile) setMobileView('list')
+                      } catch (err) {
+                        console.error('Failed to delete conversation:', err)
+                      }
+                      setHeaderMenu({ open: false, anchor: null })
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ef4444' }}
+                  >
+                    <Trash2 size={16} />
+                    Удалить чат
+                  </button>
+                </>
+              )
+            }
           })()}
         </div>
       </div>
