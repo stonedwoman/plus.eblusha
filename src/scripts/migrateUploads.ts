@@ -6,6 +6,7 @@ import {
   S3Client,
   PutObjectCommand,
   type ObjectCannedACL,
+  ServerSideEncryption,
 } from "@aws-sdk/client-s3";
 import { PrismaClient } from "@prisma/client";
 import env from "../config/env";
@@ -18,21 +19,56 @@ const keepLocal = process.argv.includes("--keep-local");
 
 const skipUpload = process.argv.includes("--skip-upload");
 
+const missingS3Vars = [
+  "STORAGE_S3_ENDPOINT",
+  "STORAGE_S3_REGION",
+  "STORAGE_S3_BUCKET",
+  "STORAGE_S3_ACCESS_KEY",
+  "STORAGE_S3_SECRET_KEY",
+].filter((key) => !(env as Record<string, unknown>)[key]);
+
+if (!env.STORAGE_PUBLIC_BASE_URL) {
+  throw new Error("STORAGE_PUBLIC_BASE_URL must be defined to migrate uploads.");
+}
+
+if (!skipUpload && missingS3Vars.length > 0) {
+  throw new Error(
+    `Missing S3 configuration variables: ${missingS3Vars.join(", ")}.`,
+  );
+}
+
 const s3Client = skipUpload
   ? null
   : new S3Client({
-      region: env.STORAGE_S3_REGION,
-      endpoint: env.STORAGE_S3_ENDPOINT,
+      region: env.STORAGE_S3_REGION!,
+      endpoint: env.STORAGE_S3_ENDPOINT!,
       forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
       credentials: {
-        accessKeyId: env.STORAGE_S3_ACCESS_KEY,
-        secretAccessKey: env.STORAGE_S3_SECRET_KEY,
+        accessKeyId: env.STORAGE_S3_ACCESS_KEY!,
+        secretAccessKey: env.STORAGE_S3_SECRET_KEY!,
       },
     });
 
 const objectPrefix = env.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
 const publicBaseUrl = env.STORAGE_PUBLIC_BASE_URL.replace(/\/$/, "");
 const resolvedAcl = env.STORAGE_S3_ACL as ObjectCannedACL | undefined;
+
+const resolveServerSideEncryption = (
+  value: string | undefined
+): ServerSideEncryption | undefined => {
+  if (!value) return undefined;
+  const normalized = value.toUpperCase();
+  if (normalized === "AES256") {
+    return ServerSideEncryption.AES256;
+  }
+  if (normalized === "AWS:KMS" || normalized === "AWS_KMS") {
+    return ServerSideEncryption.aws_kms;
+  }
+  console.warn(
+    `Ignoring unsupported STORAGE_S3_SSE value: ${value}, falling back to no encryption`
+  );
+  return undefined;
+};
 
 const encodeKeyForUrl = (key: string) =>
   key
@@ -94,11 +130,12 @@ const migrateFile = async (fileName: string) => {
     try {
       await s3Client.send(
         new PutObjectCommand({
-          Bucket: env.STORAGE_S3_BUCKET,
+          Bucket: env.STORAGE_S3_BUCKET!,
           Key: key,
           Body: body,
           ContentType: contentType,
           ACL: resolvedAcl,
+          ServerSideEncryption: resolveServerSideEncryption(env.STORAGE_S3_SSE),
         }),
       );
     } finally {

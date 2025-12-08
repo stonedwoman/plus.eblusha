@@ -8,6 +8,7 @@ import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, Up
 const CallOverlay = lazy(() => import('../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
 import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
+import { ImageEditorModal } from '../components/ImageEditorModal'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
@@ -24,6 +25,7 @@ declare global {
 
 const LAST_ACTIVE_CONVERSATION_KEY = 'eblusha:last-active-conversation'
 const MIN_OUTGOING_CALL_DURATION_MS = 30_000
+const MAX_PENDING_IMAGES = 10
 
 type PendingAttachment = {
   url: string
@@ -32,6 +34,21 @@ type PendingAttachment = {
   height?: number
   progress?: number
   __pending?: boolean
+  metadata?: Record<string, any>
+}
+
+type AttachmentDecryptionEntry = {
+  status: 'pending' | 'ready' | 'error'
+  url?: string
+}
+
+type PendingComposerImage = {
+  id: string
+  file: File
+  previewUrl: string
+  edited: boolean
+  fileName: string
+  source: 'paste' | 'upload'
 }
 
 type PendingMessage = {
@@ -157,12 +174,77 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const [attachDragOver, setAttachDragOver] = useState(false)
   const [callPermissionError, setCallPermissionError] = useState<string | null>(null)
   const [pendingByConv, setPendingByConv] = useState<Record<string, PendingMessage[]>>({})
-  const [clipboardImage, setClipboardImage] = useState<{ file: File; preview: string } | null>(null)
+  const [attachmentDecryptMap, setAttachmentDecryptMap] = useState<Record<string, AttachmentDecryptionEntry>>({})
+  const attachmentDecryptUrlsRef = useRef<Set<string>>(new Set())
+  const attachmentDecryptInProgressRef = useRef<Set<string>>(new Set())
+  const [pendingImages, setPendingImages] = useState<PendingComposerImage[]>([])
+  const [editingImageId, setEditingImageId] = useState<string | null>(null)
   const [e2eeVersion, setE2eeVersion] = useState(0)
 const activeConversationIdRef = useRef<string | null>(null)
 useEffect(() => { activeConversationIdRef.current = activeId }, [activeId])
-const clipboardImageRef = useRef<{ file: File; preview: string } | null>(null)
-useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage])
+const pendingImagesRef = useRef<PendingComposerImage[]>([])
+useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
+  const releasePreviewUrl = useCallback((url: string | null | undefined) => {
+    if (!url) return
+    try {
+      URL.revokeObjectURL(url)
+    } catch {
+      // ignore revocation errors
+    }
+  }, [])
+  const clearPendingImages = useCallback(() => {
+    setEditingImageId(null)
+    setPendingImages((prev) => {
+      if (!prev.length) return prev
+      prev.forEach((img) => releasePreviewUrl(img.previewUrl))
+      return []
+    })
+  }, [releasePreviewUrl, setEditingImageId])
+  const addComposerImage = useCallback((file: File, source: 'paste' | 'upload') => {
+    if (!file || !file.type.startsWith('image/')) return
+    setPendingImages((prev) => {
+      if (prev.length >= MAX_PENDING_IMAGES) {
+        alert('Можно редактировать не более 10 изображений за раз.')
+        return prev
+      }
+      const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `img-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const previewUrl = URL.createObjectURL(file)
+      const entry: PendingComposerImage = {
+        id,
+        file,
+        previewUrl,
+        edited: false,
+        fileName: file.name || 'image.png',
+        source,
+      }
+      return [...prev, entry]
+    })
+  }, [])
+  const removeComposerImage = useCallback((id: string) => {
+    setPendingImages((prev) => {
+      const target = prev.find((img) => img.id === id)
+      if (target) releasePreviewUrl(target.previewUrl)
+      return prev.filter((img) => img.id !== id)
+    })
+    setEditingImageId((prev) => (prev === id ? null : prev))
+  }, [releasePreviewUrl, setEditingImageId])
+  const applyComposerImageEdit = useCallback((id: string, file: File, previewUrl: string) => {
+    setPendingImages((prev) =>
+      prev.map((img) => {
+        if (img.id !== id) return img
+        releasePreviewUrl(img.previewUrl)
+        return {
+          ...img,
+          file,
+          previewUrl,
+          edited: true,
+          fileName: file.name || img.fileName,
+        }
+      }),
+    )
+  }, [releasePreviewUrl])
   const devicesQuery = useQuery({
     queryKey: ['my-devices'],
     queryFn: async () => {
@@ -207,6 +289,10 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     if (!activeId) return []
     return pendingByConv[activeId] || []
   }, [activeId, pendingByConv])
+  const editingImage = useMemo(() => {
+    if (!editingImageId) return null
+    return pendingImages.find((img) => img.id === editingImageId) ?? null
+  }, [pendingImages, editingImageId])
   const lightboxTimerRef = useRef<number | null>(null)
   const attachInputOverlayRef = useRef<HTMLDivElement | null>(null)
   const [activeCalls, setActiveCalls] = useState<Record<string, { startedAt: number | null; endedAt?: number | null; active: boolean; participants?: string[]; elapsedMs?: number }>>({})
@@ -557,10 +643,8 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     if (isMobile) {
       setMobileView('conversation')
     }
-    // Очищаем изображение из буфера обмена при смене чата
-    if (clipboardImage) {
-      URL.revokeObjectURL(clipboardImage.preview)
-      setClipboardImage(null)
+    if (pendingImagesRef.current.length) {
+      clearPendingImages()
     }
   }
 
@@ -782,10 +866,8 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
       setActiveId(null)
       setShowJump(false)
     }
-    // Очищаем изображение из буфера обмена при закрытии чата
-    if (clipboardImage) {
-      URL.revokeObjectURL(clipboardImage.preview)
-      setClipboardImage(null)
+    if (pendingImagesRef.current.length) {
+      clearPendingImages()
     }
   }
 
@@ -926,6 +1008,21 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     return conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
   }, [conversationsQuery.data, activeId])
 
+  useEffect(() => {
+    return () => {
+      attachmentDecryptUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+      attachmentDecryptUrlsRef.current.clear()
+      attachmentDecryptInProgressRef.current.clear()
+    }
+  }, [])
+
+  useEffect(() => {
+      attachmentDecryptUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+      attachmentDecryptUrlsRef.current.clear()
+      attachmentDecryptInProgressRef.current.clear()
+      setAttachmentDecryptMap({})
+  }, [activeConversation?.id])
+
   const localDeviceId = useMemo(() => getStoredDeviceInfo()?.deviceId ?? null, [e2eeVersion])
   const myDevicesMap = useMemo(() => {
     const map: Record<string, { id: string; name?: string; platform?: string | null; userId: string }> = {}
@@ -1035,6 +1132,110 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
       })
       .map((msg: any) => e2eeManager.transformMessage(activeConversation.id, msg))
   }, [messagesQuery.data, activeConversation?.id, activeConversation?.isSecret, e2eeVersion])
+
+  const decryptAttachment = useCallback(
+    (att: any) => {
+      if (!activeConversation?.id) return
+      const meta = att?.metadata?.e2ee
+      if (!meta || meta.kind !== 'ciphertext' || !meta.nonce) return
+      
+      // Проверяем, что сессия готова
+      if (!e2eeManager.hasSession(activeConversation.id)) return
+      
+      // Проверяем, не запущен ли уже процесс расшифровки
+      if (attachmentDecryptInProgressRef.current.has(att.url)) return
+      
+      // Проверяем текущее состояние
+      const currentState = attachmentDecryptMap[att.url]
+      if (currentState?.status === 'ready') return
+      
+      // Помечаем как запущенный и устанавливаем состояние
+      attachmentDecryptInProgressRef.current.add(att.url)
+      setAttachmentDecryptMap((prev) => ({
+        ...prev,
+        [att.url]: { status: 'pending' },
+      }))
+      
+      ;(async () => {
+        try {
+          const response = await fetch(att.url, { credentials: 'omit' })
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+          }
+          const cipher = new Uint8Array(await response.arrayBuffer())
+          
+          const plain = e2eeManager.decryptBinary(activeConversation.id, cipher, meta.nonce)
+          if (!plain) {
+            throw new Error('Failed to decrypt attachment: decryptBinary returned null')
+          }
+          
+          const blob = new Blob([plain], {
+            type:
+              meta.originalType ||
+              att.metadata?.mime ||
+              att.metadata?.contentType ||
+              'application/octet-stream',
+          })
+          const objectUrl = URL.createObjectURL(blob)
+          attachmentDecryptUrlsRef.current.add(objectUrl)
+          attachmentDecryptInProgressRef.current.delete(att.url)
+          setAttachmentDecryptMap((prev) => ({
+            ...prev,
+            [att.url]: { status: 'ready', url: objectUrl },
+          }))
+        } catch (error: any) {
+          attachmentDecryptInProgressRef.current.delete(att.url)
+          setAttachmentDecryptMap((prev) => {
+            const next = { ...prev }
+            if (error?.message?.includes('E2EE session is not ready')) {
+              // Если сессия не готова, удаляем из map, чтобы попробовать позже
+              delete next[att.url]
+            } else {
+              next[att.url] = { status: 'error' }
+            }
+            return next
+          })
+        }
+      })()
+    },
+    [activeConversation?.id, attachmentDecryptMap],
+  )
+
+  const resolveAttachmentUrl = useCallback(
+    (att: any) => {
+      if (!att) return null
+      if (!activeConversation?.isSecret) return att.url
+      const meta = att.metadata?.e2ee
+      if (!meta || meta.kind !== 'ciphertext') {
+        return att.url
+      }
+      const entry = attachmentDecryptMap[att.url]
+      if (entry?.status === 'ready' && entry.url) {
+        return entry.url
+      }
+      return null
+    },
+    [attachmentDecryptMap, activeConversation?.isSecret],
+  )
+
+  useEffect(() => {
+    if (!activeConversation?.isSecret) return
+    if (!conversationSecretSessionReady) return
+    const attachments = (displayedMessages || []).flatMap(
+      (msg: any) => msg.attachments || [],
+    )
+    attachments.forEach((att) => {
+      if (att?.metadata?.e2ee?.kind === 'ciphertext') {
+        decryptAttachment(att)
+      }
+    })
+  }, [
+    displayedMessages,
+    activeConversation?.id,
+    activeConversation?.isSecret,
+    conversationSecretSessionReady,
+    decryptAttachment,
+  ])
 
   useEffect(() => {
     const pendingIds = new Set(
@@ -1249,26 +1450,11 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     
     const handlePaste = async (e: ClipboardEvent) => {
       const target = e.target as HTMLElement
-      // Если фокус в поле ввода, не обрабатываем здесь (обработчик на input сам обработает)
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
         return
       }
-      
       const items = e.clipboardData?.items
       if (!items) return
-      
-      // Проверяем, есть ли изображение в буфере обмена
-      let hasImage = false
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.indexOf('image') !== -1) {
-          hasImage = true
-          break
-        }
-      }
-      
-      if (!hasImage) return
-      
-      // Обрабатываем изображения, когда фокус не в поле ввода
       for (let i = 0; i < items.length; i++) {
         const item = items[i]
         if (item.type.indexOf('image') !== -1) {
@@ -1276,8 +1462,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
           e.stopPropagation()
           const file = item.getAsFile()
           if (file) {
-            const preview = URL.createObjectURL(file)
-            setClipboardImage({ file, preview })
+            addComposerImage(file, 'paste')
           }
           break
         }
@@ -1288,7 +1473,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
     return () => {
       window.removeEventListener('paste', handlePaste, true)
     }
-  }, [activeId])
+  }, [activeId, addComposerImage])
 
   useEffect(() => {
     conversationsQuery.refetch()
@@ -1322,10 +1507,8 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
       if (isDeletingActive) {
         setActiveId((prev) => (prev === convId ? null : prev))
         setShowJump(false)
-        const clip = clipboardImageRef.current
-        if (clip) {
-          URL.revokeObjectURL(clip.preview)
-          setClipboardImage(null)
+        if (pendingImagesRef.current.length) {
+          clearPendingImages()
         }
         if (isMobileRef.current) {
           setMobileView('list')
@@ -2330,16 +2513,23 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
 
   async function uploadAndSendAttachments(files: File[], textContent: string = '', replyToId?: string) {
     if (!activeId || files.length === 0) return
-    if (activeConversation?.isSecret) {
-      alert('Вложения в секретных беседах пока недоступны. Эта функция появится позже.')
-      return
+    const isSecretConversation = !!activeConversation?.isSecret
+    if (isSecretConversation) {
+      if (conversationSecretInactive) {
+        alert('Секретный чат больше не активен, отправка вложений отключена.')
+        return
+      }
+      if (!conversationSecretSessionReady) {
+        alert('Секретный чат ещё не готов к вложениям, подождите установления защищённой сессии.')
+        return
+      }
     }
     setAttachUploading(true)
     setAttachProgress(0)
     try {
       // Build optimistic pending entry
       const pid = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`
-      const pendingAttachments: Array<{ url: string; type: 'IMAGE' | 'FILE'; width?: number; height?: number; progress?: number; __pending?: boolean }> = []
+      const pendingAttachments: PendingAttachment[] = []
       const totalSize = files.reduce((s, f) => s + f.size, 0)
       // Precompute dimensions for images
       for (const f of files) {
@@ -2359,12 +2549,29 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
         ],
       }))
 
-      const uploaded: Array<{ url: string; type: 'IMAGE' | 'FILE'; metadata?: { width?: number; height?: number } }> = []
+      const uploaded: Array<{ url: string; type: 'IMAGE' | 'FILE'; metadata?: Record<string, any> }> = []
       let done = 0
       for (let i = 0; i < files.length; i++) {
         const f = files[i]
         const pendingAtt = pendingAttachments[i]
-        const form = new FormData(); form.append('file', f)
+        let uploadBlob: Blob | File = f
+        let encryptedMeta: Record<string, any> | undefined
+        if (isSecretConversation && activeConversation) {
+          const buffer = new Uint8Array(await f.arrayBuffer())
+          const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
+          uploadBlob = new Blob([encrypted.cipher], { type: 'application/octet-stream' })
+          encryptedMeta = {
+            kind: 'ciphertext',
+            version: 1,
+            algorithm: 'xsalsa20_poly1305',
+            nonce: encrypted.nonce,
+            originalName: f.name,
+            originalType: f.type,
+            originalSize: f.size,
+          }
+        }
+        const form = new FormData()
+        form.append('file', uploadBlob, isSecretConversation ? `${f.name || 'file'}.enc` : f.name)
         const url = await new Promise<string>((resolve, reject) => {
           const xhr = new XMLHttpRequest()
           xhr.open('POST', '/api/upload')
@@ -2395,17 +2602,24 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
           }
           xhr.send(form)
         })
-        const uploadItem: { url: string; type: 'IMAGE' | 'FILE'; metadata?: { width?: number; height?: number } } = { 
-          url, 
-          type: f.type.startsWith('image/') ? 'IMAGE' : 'FILE' 
+        const uploadItem: { url: string; type: 'IMAGE' | 'FILE'; metadata?: Record<string, any> } = { 
+          url,
+          type: f.type.startsWith('image/') ? 'IMAGE' : 'FILE',
         }
-        // Добавляем размеры в metadata для изображений
+        const metadataPayload: Record<string, any> = {}
         if (pendingAtt && pendingAtt.type === 'IMAGE' && pendingAtt.width && pendingAtt.height) {
-          uploadItem.metadata = { width: pendingAtt.width, height: pendingAtt.height }
+          metadataPayload.width = pendingAtt.width
+          metadataPayload.height = pendingAtt.height
+        }
+        if (encryptedMeta) {
+          metadataPayload.e2ee = encryptedMeta
+        }
+        if (Object.keys(metadataPayload).length > 0) {
+          uploadItem.metadata = metadataPayload
         }
         uploaded.push(uploadItem)
         done += f.size
-        setAttachProgress(Math.round((done / (files.reduce((s, x) => s + x.size, 0))) * 100))
+        setAttachProgress(Math.round((done / totalSize) * 100))
       }
       // Send as FILE message if there is no text and only attachments
       const msgType = uploaded.every((u) => u.type === 'IMAGE') ? 'IMAGE' : 'FILE'
@@ -2421,7 +2635,9 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
         return { ...prev, [activeId!]: filtered }
       })
       client.invalidateQueries({ queryKey: ['messages', activeId] })
-    } catch {}
+    } catch (error) {
+      console.error('Failed to upload attachments', error)
+    }
     setAttachUploading(false)
   }
 
@@ -3512,7 +3728,14 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                     const el = nodesByMessageId.current.get(qid)
                     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
                   }
-                  const imagesInThread = fullList.filter((x: any) => (x.attachments || []).some((a: any) => a.type === 'IMAGE')).flatMap((x: any) => x.attachments.filter((a: any) => a.type === 'IMAGE').map((a: any) => a.url))
+                  const imagesInThread = fullList
+                    .filter((x: any) => (x.attachments || []).some((a: any) => a.type === 'IMAGE'))
+                    .flatMap((x: any) =>
+                      x.attachments
+                        .filter((a: any) => a.type === 'IMAGE')
+                        .map((a: any) => resolveAttachmentUrl(a))
+                        .filter((u: string | null): u is string => !!u),
+                    )
                   const openLightbox = (url: string) => {
                     const index = imagesInThread.findIndex((u: string) => u === url)
                     setLightbox({ open: true, index: index >= 0 ? index : 0, items: imagesInThread })
@@ -3584,6 +3807,17 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                         <>
                           <div style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>{m.content}</div>
                           {(m.attachments || []).map((att: any, idx: number) => {
+                            const metadata = att.metadata ?? {}
+                            const resolvedUrl = resolveAttachmentUrl(att)
+                            const needsDecrypt = Boolean(
+                              activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext',
+                            )
+                            const decryptState = needsDecrypt ? attachmentDecryptMap[att.url] : undefined
+                            const decryptPending =
+                              needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
+                            const decryptError = needsDecrypt && decryptState?.status === 'error'
+                            const fileLabel =
+                              metadata?.e2ee?.originalName || att.url?.split('/').pop() || 'вложение'
                             if (att.type === 'IMAGE') {
                               const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
                               const isMobile = vw <= 768
@@ -3644,16 +3878,16 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                               
                               const placeholderKey = `${att.url || idx}`
                               const isLoaded = !!loadedImages[placeholderKey]
-                              const isPending = att.__pending || !isLoaded
+                              const showPending = att.__pending || decryptPending || !isLoaded
                               
                               return (
                                 <div key={`${att.url}-${idx}`} style={{ 
                                   maxWidth: '100%',
                                   maxHeight: targetH,
-                                  width: isPending ? Math.min(targetW, typeof window !== 'undefined' ? window.innerWidth - 100 : targetW) : 'fit-content',
-                                  height: isPending ? targetH : 'auto',
+                                  width: showPending ? Math.min(targetW, typeof window !== 'undefined' ? window.innerWidth - 100 : targetW) : 'fit-content',
+                                  height: showPending ? targetH : 'auto',
                                   minWidth: 0,
-                                  minHeight: isPending ? targetH : 0,
+                                  minHeight: showPending ? targetH : 0,
                                   marginTop: 8, 
                                   position: 'relative',
                                   borderRadius: 10,
@@ -3662,7 +3896,7 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                                   lineHeight: 0,
                                   boxSizing: 'border-box'
                                 }}>
-                                  {isPending && (
+                                  {showPending && (
                                   <div
                                     style={{
                                         position: 'absolute',
@@ -3687,7 +3921,11 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                                       animation: 'eb-shimmer 1.2s ease-in-out infinite',
                                         }}
                                       />
-                                      {typeof att.progress === 'number' && att.progress < 100 ? (
+                                      {decryptPending ? (
+                                        <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12 }}>
+                                          Расшифровка изображения...
+                                        </div>
+                                      ) : typeof att.progress === 'number' && att.progress < 100 ? (
                                         <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
                                           <div style={{ width: 40, height: 40, border: '3px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
                                           <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>{att.progress}%</div>
@@ -3697,47 +3935,56 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                                       )}
                                     </div>
                                   )}
-                                  <img
-                                    src={att.url}
-                                    alt="img"
-                                    style={{ 
-                                      maxWidth: '100%',
-                                      maxHeight: targetH,
-                                      width: 'auto',
-                                      height: 'auto',
-                                      objectFit: 'contain', 
-                                      borderRadius: 10, 
-                                      cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in', 
-                                      opacity: att.__pending ? 0.85 : 1, 
-                                      display: isLoaded ? 'block' : 'none',
-                                      position: 'relative',
-                                      zIndex: 0,
-                                      background: 'var(--surface-100)',
-                                      verticalAlign: 'top'
-                                    }}
-                                    onLoad={(e) => {
-                                      const img = e.target as HTMLImageElement
-                                      // Если размеры не были известны, сохраняем реальные размеры загруженного изображения
-                                      if ((!att.width && !att.metadata?.width) && img.naturalWidth && img.naturalHeight) {
-                                        setImageDimensions((prev) => ({
-                                          ...prev,
-                                          [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight }
-                                        }))
-                                      }
-                                      setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
-                                      if (messagesRef.current && nearBottomRef.current) {
-                                        const el = messagesRef.current
-                                        el.scrollTop = el.scrollHeight
-                                      }
-                                    }}
-                                    onError={(e) => {
-                                      // Hide broken image, keep placeholder visible
-                                      const target = e.target as HTMLImageElement
-                                      if (target) target.style.display = 'none'
-                                    }}
-                                    onClick={() => { if (!att.__pending) openLightbox(att.url) }}
-                                  />
-                                  {isLoaded && typeof att.progress === 'number' && att.progress < 100 && (
+                                  {decryptError && (
+                                    <div style={{ marginTop: 8, color: '#f87171', fontSize: 12 }}>
+                                      Не удалось расшифровать изображение
+                                    </div>
+                                  )}
+                                  {resolvedUrl && !decryptError && (
+                                    <img
+                                      src={resolvedUrl}
+                                      alt="img"
+                                      style={{ 
+                                        maxWidth: '100%',
+                                        maxHeight: targetH,
+                                        width: 'auto',
+                                        height: 'auto',
+                                        objectFit: 'contain', 
+                                        borderRadius: 10, 
+                                        cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in', 
+                                        opacity: att.__pending ? 0.85 : 1, 
+                                        display: isLoaded ? 'block' : 'none',
+                                        position: 'relative',
+                                        zIndex: 0,
+                                        background: 'var(--surface-100)',
+                                        verticalAlign: 'top'
+                                      }}
+                                      onLoad={(e) => {
+                                        const img = e.target as HTMLImageElement
+                                        if ((!att.width && !metadata?.width) && img.naturalWidth && img.naturalHeight) {
+                                          setImageDimensions((prev) => ({
+                                            ...prev,
+                                            [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight }
+                                          }))
+                                        }
+                                        setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
+                                        if (messagesRef.current && nearBottomRef.current) {
+                                          const el = messagesRef.current
+                                          el.scrollTop = el.scrollHeight
+                                        }
+                                      }}
+                                      onError={(e) => {
+                                        const target = e.target as HTMLImageElement
+                                        if (target) target.style.display = 'none'
+                                      }}
+                                      onClick={() => {
+                                        if (!att.__pending && !decryptPending && resolvedUrl) {
+                                          openLightbox(resolvedUrl)
+                                        }
+                                      }}
+                                    />
+                                  )}
+                                  {isLoaded && !decryptPending && typeof att.progress === 'number' && att.progress < 100 && (
                                     <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 6, background: 'rgba(0,0,0,0.15)', borderRadius: '0 0 10px 10px', overflow: 'hidden', zIndex: 3 }}>
                                       <div style={{ width: `${att.progress}%`, height: '100%', background: 'rgba(255,255,255,0.9)' }} />
                                     </div>
@@ -3747,10 +3994,23 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                             }
                             return (
                               <div key={`${att.url}-${idx}`} style={{ marginTop: 8 }}>
-                                {att.__pending ? (
-                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#6b7280' }}>Файл: {att.url}</div>
+                                {att.__pending || decryptPending ? (
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#6b7280' }}>
+                                    Файл: {fileLabel}
+                                    {decryptPending && ' (расшифровка...)'}
+                                  </div>
+                                ) : decryptError ? (
+                                  <div style={{ color: '#f87171', fontSize: 12 }}>Не удалось расшифровать файл</div>
                                 ) : (
-                                  <a href={att.url} target="_blank" rel="noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Файл: {att.url.split('/').pop()}</a>
+                                  <a
+                                    href={resolvedUrl || att.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    download={fileLabel}
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                                  >
+                                    Файл: {fileLabel}
+                                  </a>
                                 )}
                                 {typeof att.progress === 'number' && att.progress < 100 && (
                                   <div style={{ height: 6, background: '#e5e7eb', borderRadius: 6, overflow: 'hidden', marginTop: 6 }}>
@@ -3790,11 +4050,18 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
             style={{ flexShrink: 0 }}
             onDragOver={(e) => { e.preventDefault(); setAttachDragOver(true) }}
             onDragLeave={() => setAttachDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault(); setAttachDragOver(false)
-              const files = Array.from(e.dataTransfer.files || [])
-              uploadAndSendAttachments(files)
-            }}
+          onDrop={async (e) => {
+            e.preventDefault()
+            setAttachDragOver(false)
+            const files = Array.from(e.dataTransfer.files || [])
+            if (!files.length || !activeId) return
+            const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+            const otherFiles = files.filter((file) => !file.type.startsWith('image/'))
+            imageFiles.forEach((file) => addComposerImage(file, 'upload'))
+            if (otherFiles.length) {
+              await uploadAndSendAttachments(otherFiles)
+            }
+          }}
           >
             {activeConversation?.isSecret && (!secretSessionReady || secretInactive) ? (
               <div style={{ padding: 12, borderRadius: 8, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
@@ -3812,67 +4079,109 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                 </button>
               </div>
             )}
-            {clipboardImage && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, background: 'var(--surface-100)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
-                <img src={clipboardImage.preview} alt="Preview" style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 6 }} />
-                <div style={{ flex: 1, fontSize: 12, color: 'var(--text-muted)' }}>Изображение из буфера обмена</div>
-                <button className="btn btn-icon btn-ghost" onClick={() => {
-                  if (clipboardImage) URL.revokeObjectURL(clipboardImage.preview)
-                  setClipboardImage(null)
-                }} style={{ flexShrink: 0 }}>
-                  <X size={16} />
-                </button>
+            {pendingImages.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Изображения перед отправкой</div>
+                <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
+                  {pendingImages.map((img) => (
+                    <div key={img.id} style={{ position: 'relative', flexShrink: 0, width: 132, background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)', padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <button
+                        className="btn btn-icon btn-ghost"
+                        style={{ position: 'absolute', top: 4, right: 4 }}
+                        onClick={() => {
+                          if (editingImageId === img.id) setEditingImageId(null)
+                          removeComposerImage(img.id)
+                        }}
+                        aria-label="Удалить изображение"
+                      >
+                        <X size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingImageId(img.id)}
+                        style={{ border: 'none', padding: 0, borderRadius: 8, overflow: 'hidden', cursor: 'pointer', background: 'transparent' }}
+                        aria-label="Редактировать изображение"
+                      >
+                        <img src={img.previewUrl} alt={img.fileName} style={{ width: '100%', height: 90, objectFit: 'cover', display: 'block' }} />
+                      </button>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.fileName}</div>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() => setEditingImageId(img.id)}
+                          style={{ fontSize: 12, padding: '4px 6px', justifyContent: 'center' }}
+                        >
+                          Редактировать
+                        </button>
+                        {img.edited && (
+                          <div style={{ fontSize: 10, color: '#34d399', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                            Отредактировано
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             <input type="file" multiple style={{ display: 'none' }} ref={attachInputRef} onChange={async (e) => {
               const files = Array.from(e.target.files || [])
               if (!activeId || files.length === 0) return
-              await uploadAndSendAttachments(files)
+              const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+              const otherFiles = files.filter((file) => !file.type.startsWith('image/'))
+              imageFiles.forEach((file) => addComposerImage(file, 'upload'))
+              if (otherFiles.length) {
+                await uploadAndSendAttachments(otherFiles)
+              }
+              e.target.value = ''
             }} />
             <form autoComplete="off" onSubmit={async (e) => {
                     e.preventDefault()
               if (!activeId) return
                     const value = messageText.trim()
-              
-              // Если есть изображение из буфера обмена, отправляем его вместе с текстом (или без текста)
-              if (clipboardImage) {
-                const file = clipboardImage.file
-                const preview = clipboardImage.preview
-                URL.revokeObjectURL(preview)
-                setClipboardImage(null)
-                
-                // Отправляем изображение с текстом как подписью
-                await uploadAndSendAttachments([file], value || '', replyTo?.id)
+              if (pendingImages.length > 0) {
+                const imagesSnapshot = pendingImages.map((img) => ({ file: img.file, previewUrl: img.previewUrl }))
+                setPendingImages([])
+                setEditingImageId(null)
+                imagesSnapshot.forEach((entry) => releasePreviewUrl(entry.previewUrl))
+                await uploadAndSendAttachments(imagesSnapshot.map((entry) => entry.file), value || '', replyTo?.id)
                 setMessageText('')
                 setReplyTo(null)
               } else if (value) {
-                // Если нет изображения, но есть текст, отправляем только текст
                     await sendMessageToConversation(activeConversation, { type: 'TEXT', content: value, replyToId: replyTo?.id })
                     setMessageText('')
                     setReplyTo(null)
               }
-              
                     client.invalidateQueries({ queryKey: ['messages', activeId] })
                     setTimeout(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight }, 0)
             }} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => attachInputRef.current?.click()}
+                style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: isMobile ? 0 : 6, whiteSpace: 'nowrap' }}
+                aria-label="Прикрепить файлы"
+              >
+                <Paperclip size={16} />
+                {!isMobile && <span>Загрузить</span>}
+              </button>
               <input
                 type="text"
-                placeholder={clipboardImage ? "Добавьте подпись к изображению..." : "Напишите сообщение..."}
+                placeholder={pendingImages.length > 0 ? "Добавьте подпись к изображениям..." : "Напишите сообщение..."}
                 value={messageText}
                 onChange={(e) => setMessageText(e.target.value)}
-                onPaste={async (e) => {
+                onPaste={(e) => {
                   if (!activeId) return
                   const items = e.clipboardData?.items
                   if (!items) return
-                  
                   for (let i = 0; i < items.length; i++) {
                     const item = items[i]
                     if (item.type.indexOf('image') !== -1) {
                       e.preventDefault()
                       const file = item.getAsFile()
                       if (file) {
-                        const preview = URL.createObjectURL(file)
-                        setClipboardImage({ file, preview })
+                        addComposerImage(file, 'paste')
                       }
                       break
                     }
@@ -3881,7 +4190,9 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
                 ref={inputRef}
                 style={{ flex: 1, minWidth: 0, padding: '12px 16px', borderRadius: 8, border: '1px solid var(--surface-border)', background: 'var(--surface-100)', color: 'var(--text-primary)', fontSize: 16 }}
               />
-              <button type="button" className="btn btn-secondary" onClick={() => attachInputRef.current?.click()} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>{isMobile ? <Paperclip size={16} /> : 'Прикрепить'}</button>
+              <button type="submit" className="btn btn-primary" style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
+                Отправить
+              </button>
             </form>
             {attachUploading && (
               <div style={{ height: 6, background: 'var(--surface-100)', borderRadius: 3, overflow: 'hidden', marginTop: 10 }}>
@@ -3978,6 +4289,16 @@ useEffect(() => { clipboardImageRef.current = clipboardImage }, [clipboardImage]
             />
           )}
         </Suspense>
+        <ImageEditorModal
+          open={!!editingImage}
+          image={editingImage}
+          onClose={() => setEditingImageId(null)}
+          onApply={({ file, previewUrl }) => {
+            if (!editingImage) return
+            applyComposerImageEdit(editingImage.id, file, previewUrl)
+            setEditingImageId(null)
+          }}
+        />
         {callStore.incoming && createPortal(
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }}>
             <div style={{ background: 'var(--surface-200)', borderRadius: 16, border: '1px solid var(--surface-border)', padding: 24, width: 'min(92vw, 440px)', boxShadow: 'var(--shadow-sharp)', transform: 'translateY(-4vh)', color: 'var(--text-primary)' }}>
