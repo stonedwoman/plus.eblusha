@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted } from '../../utils/socket'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, LogOut, Lock, Unlock, MoreVertical, Mic, Square } from 'lucide-react'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square } from 'lucide-react'
 const CallOverlay = lazy(() => import('../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
 import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
@@ -14,6 +14,7 @@ import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '.
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { ensureMediaPermissions } from '../../utils/media'
 import { VoiceRecorder } from '../../utils/voiceRecorder'
+import { getWaveform } from '../../utils/audioWaveform'
 
 declare global {
   interface Window {
@@ -31,7 +32,31 @@ const MAX_PENDING_IMAGES = 10
 function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }) {
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
+  const [waveform, setWaveform] = useState<number[]>([])
+  const [loadingWaveform, setLoadingWaveform] = useState(true)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  // Генерируем waveform при загрузке
+  useEffect(() => {
+    let cancelled = false
+    setLoadingWaveform(true)
+    getWaveform(url, 60)
+      .then((data) => {
+        if (!cancelled) {
+          setWaveform(data)
+          setLoadingWaveform(false)
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load waveform:', err)
+        if (!cancelled) {
+          setLoadingWaveform(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [url])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -78,6 +103,7 @@ function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }
   }
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
+  const currentBarIndex = waveform.length > 0 ? Math.floor((currentTime / duration) * waveform.length) : 0
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)' }}>
@@ -109,18 +135,49 @@ function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }
         )}
       </button>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-          <div style={{ flex: 1, height: 4, background: 'var(--surface-border)', borderRadius: 2, overflow: 'hidden' }}>
-            <div
-              style={{
-                width: `${progress}%`,
-                height: '100%',
-                background: 'var(--brand)',
-                transition: 'width 0.1s linear',
-              }}
-            />
+        {loadingWaveform ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, height: 24 }}>
+            {Array(20).fill(0).map((_, i) => (
+              <div
+                key={i}
+                style={{
+                  width: 2,
+                  height: 12,
+                  background: 'var(--surface-border)',
+                  borderRadius: 1,
+                  animation: 'pulse 1.5s ease-in-out infinite',
+                  animationDelay: `${i * 0.1}s`,
+                }}
+              />
+            ))}
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+        ) : waveform.length > 0 ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2, height: 24, marginBottom: 4 }}>
+            {waveform.map((amplitude, index) => {
+              const isActive = index <= currentBarIndex
+              const height = Math.max(4, (amplitude / 100) * 20)
+              return (
+                <div
+                  key={index}
+                  style={{
+                    width: 2,
+                    height: `${height}px`,
+                    background: isActive ? 'var(--brand)' : 'var(--surface-border)',
+                    borderRadius: 1,
+                    transition: 'background 0.2s ease',
+                    alignSelf: 'flex-end',
+                  }}
+                />
+              )
+            })}
+          </div>
+        ) : (
+          <div style={{ height: 24, display: 'flex', alignItems: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+            Загрузка...
+          </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             {formatTime(currentTime)} / {formatTime(duration)}
           </div>
         </div>
@@ -165,6 +222,8 @@ export default function ChatsPage() {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [callConvId, setCallConvId] = useState<string | null>(null)
   const [minimizedCallConvId, setMinimizedCallConvId] = useState<string | null>(null)
+  const [outgoingCall, setOutgoingCall] = useState<{ conversationId: string; startedAt: number; video: boolean; minimized?: boolean } | null>(null)
+  const outgoingCallTimerRef = useRef<number | null>(null)
   const [messageText, setMessageText] = useState('')
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -417,8 +476,19 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           window.clearTimeout(id)
         }
       })
+      if (outgoingCallTimerRef.current) {
+        window.clearTimeout(outgoingCallTimerRef.current)
+      }
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Обновляем таймер дозвона каждую секунду
+  useEffect(() => {
+    if (!outgoingCall) return
+    const interval = setInterval(() => {
+      setOutgoingCall((prev) => prev ? { ...prev } : null) // Force re-render для обновления времени
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [outgoingCall])
   const getConversationFromCache = useCallback((conversationId: string | null | undefined) => {
     if (!conversationId) return null
     const rows = client.getQueryData(['conversations']) as any[] | undefined
@@ -888,12 +958,14 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     payload: { type: string; content?: string | null; metadata?: Record<string, any>; replyToId?: string; attachments?: Array<any> },
   ) {
     if (!conversation) return
+    // Normalize null content to undefined
+    const normalizedPayload = { ...payload, content: payload.content ?? undefined }
     if (conversation.isSecret) {
-      const encrypted = await e2eeManager.encryptPayload(conversation, payload)
+      const encrypted = await e2eeManager.encryptPayload(conversation, normalizedPayload)
       await api.post('/conversations/send', encrypted)
       return
     }
-    await api.post('/conversations/send', { conversationId: conversation.id, ...payload })
+    await api.post('/conversations/send', { conversationId: conversation.id, ...normalizedPayload })
   }
 
   const closeAddParticipantsModal = () => {
@@ -1301,7 +1373,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             throw new Error('Failed to decrypt attachment: decryptBinary returned null')
           }
           
-          const blob = new Blob([plain], {
+          const blob = new Blob([plain as BlobPart], {
             type:
               meta.originalType ||
               att.metadata?.mime ||
@@ -1708,6 +1780,17 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     })
     onCallAccepted(({ conversationId }) => {
       clearMinCallDurationGuard(conversationId)
+      // Закрываем экран дозвона, если он открыт
+      setOutgoingCall((prev) => {
+        if (prev?.conversationId === conversationId) {
+          if (outgoingCallTimerRef.current) {
+            window.clearTimeout(outgoingCallTimerRef.current)
+            outgoingCallTimerRef.current = null
+          }
+          return null
+        }
+        return prev
+      })
       // Для всех типов звонков (1:1 и группы) устанавливаем activeCalls вручную
       // Это обеспечивает единообразное поведение: звонок становится активным сразу
           setActiveCalls((prev) => {
@@ -1731,6 +1814,17 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       stopRingtone()
     })
     onCallDeclined(({ conversationId }) => {
+      // Закрываем экран дозвона, если он открыт
+      setOutgoingCall((prev) => {
+        if (prev?.conversationId === conversationId) {
+          if (outgoingCallTimerRef.current) {
+            window.clearTimeout(outgoingCallTimerRef.current)
+            outgoingCallTimerRef.current = null
+          }
+          return null
+        }
+        return prev
+      })
       const finalize = () => {
         setActiveCalls((prev) => {
           const current = prev[conversationId]
@@ -1770,7 +1864,32 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       if (minimizedCallConvId === conversationId) {
         return
       }
+      // Для 1:1 звонков проверяем, что звонок действительно неактивен перед закрытием
+      // Если callConvId установлен, это означает, что пользователь участвует в звонке
+      // В этом случае не закрываем, так как это может быть временное отключение
+      if (isOneToOneConversation(conversationId)) {
+        const currentCall = activeCalls[conversationId]
+        const isParticipating = callConvIdRef.current === conversationId || callStore.activeConvId === conversationId
+        // Если пользователь участвует в звонке, не закрываем при получении call:ended
+        // Это может быть временное отключение, звонок должен закрыться только когда
+        // оба участника явно отключились или один нажал "Leave"
+        if (isParticipating && currentCall?.active) {
+          console.log('[ChatsPage] Ignoring call:ended for active 1:1 call where user is participating', conversationId)
+          return
+        }
+      }
       const finalize = () => {
+        // Закрываем экран дозвона, если он открыт
+        setOutgoingCall((prev) => {
+          if (prev?.conversationId === conversationId) {
+            if (outgoingCallTimerRef.current) {
+              window.clearTimeout(outgoingCallTimerRef.current)
+              outgoingCallTimerRef.current = null
+            }
+            return null
+          }
+          return prev
+        })
         setActiveCalls((prev) => {
           const current = prev[conversationId]
           if (current?.active) {
@@ -2703,7 +2822,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         if (isSecretConversation && activeConversation) {
           const buffer = new Uint8Array(await f.arrayBuffer())
           const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
-          uploadBlob = new Blob([encrypted.cipher], { type: 'application/octet-stream' })
+          uploadBlob = new Blob([encrypted.cipher as BlobPart], { type: 'application/octet-stream' })
           encryptedMeta = {
             kind: 'ciphertext',
             version: 1,
@@ -2878,7 +2997,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       if (isSecretConversation && activeConversation) {
         const buffer = new Uint8Array(await audioFile.arrayBuffer())
         const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
-        uploadBlob = new Blob([encrypted.cipher], { type: 'application/octet-stream' })
+        uploadBlob = new Blob([encrypted.cipher as BlobPart], { type: 'application/octet-stream' })
         encryptedMeta = {
           kind: 'ciphertext',
           version: 1,
@@ -3665,8 +3784,41 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       }
                       return prev
                     })
-                    setCallConvId(activeId)
-                    setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                    // Проверяем, является ли беседа групповой
+                    const conv = conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
+                    const isGroup = conv?.isGroup || (conv?.participants?.length ?? 0) > 2
+                    if (isGroup) {
+                      // Для групповых бесед сразу открываем оверлей, без экрана дозвона
+                      setCallConvId(activeId)
+                      setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                    } else {
+                      // Для 1:1 бесед показываем экран дозвона
+                      const convId = activeId
+                      setOutgoingCall({ conversationId: convId, startedAt: Date.now(), video: false })
+                      // Автоматически закрываем через 30 секунд, если звонок не принят
+                      if (outgoingCallTimerRef.current) {
+                        window.clearTimeout(outgoingCallTimerRef.current)
+                      }
+                      outgoingCallTimerRef.current = window.setTimeout(() => {
+                        setOutgoingCall((prev) => {
+                          if (prev?.conversationId === convId) {
+                            endCall(convId)
+                            setActiveCalls((prevCalls) => {
+                              const current = prevCalls[convId]
+                              if (current?.active) {
+                                return { ...prevCalls, [convId]: { ...current, active: false, endedAt: Date.now() } }
+                              }
+                              const { [convId]: _omit, ...rest } = prevCalls
+                              return rest
+                            })
+                            callStore.endCall()
+                            return null
+                          }
+                          return prev
+                        })
+                        outgoingCallTimerRef.current = null
+                      }, 30000)
+                    }
                   } catch (err) {
                     console.error('Error starting call:', err)
                   }
@@ -3690,8 +3842,41 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       }
                       return prev
                     })
-                    setCallConvId(activeId)
-                    setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                    // Проверяем, является ли беседа групповой
+                    const conv = conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
+                    const isGroup = conv?.isGroup || (conv?.participants?.length ?? 0) > 2
+                    if (isGroup) {
+                      // Для групповых бесед сразу открываем оверлей, без экрана дозвона
+                      setCallConvId(activeId)
+                      setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
+                    } else {
+                      // Для 1:1 бесед показываем экран дозвона
+                      const convId = activeId
+                      setOutgoingCall({ conversationId: convId, startedAt: Date.now(), video: true })
+                      // Автоматически закрываем через 30 секунд, если звонок не принят
+                      if (outgoingCallTimerRef.current) {
+                        window.clearTimeout(outgoingCallTimerRef.current)
+                      }
+                      outgoingCallTimerRef.current = window.setTimeout(() => {
+                        setOutgoingCall((prev) => {
+                          if (prev?.conversationId === convId) {
+                            endCall(convId)
+                            setActiveCalls((prevCalls) => {
+                              const current = prevCalls[convId]
+                              if (current?.active) {
+                                return { ...prevCalls, [convId]: { ...current, active: false, endedAt: Date.now() } }
+                              }
+                              const { [convId]: _omit, ...rest } = prevCalls
+                              return rest
+                            })
+                            callStore.endCall()
+                            return null
+                          }
+                          return prev
+                        })
+                        outgoingCallTimerRef.current = null
+                      }, 30000)
+                    }
                   } catch (err) {
                     console.error('Error starting call:', err)
                   }
@@ -4595,7 +4780,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               conversationId={callConvId}
               minimized={minimizedCallConvId === callConvId}
               peerAvatarUrl={(() => {
-            const parts = activeConversation?.participants || []
+            // Используем conversation из callConvId, если звонок активен, иначе из activeConversation
+            const conv = callConvId ? (conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation) : activeConversation
+            const parts = conv?.participants || []
             if (parts.length === 2) {
             const peer = parts.find((p: any) => (currentUserId ? p.user.id !== currentUserId : true))?.user
               return peer?.avatarUrl ?? null
@@ -4603,7 +4790,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             return null
           })()}
               avatarsByName={(() => {
-            const parts = activeConversation?.participants || []
+            // Используем conversation из callConvId, если звонок активен, иначе из activeConversation
+            const conv = callConvId ? (conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation) : activeConversation
+            const parts = conv?.participants || []
             const map: Record<string, string | null> = {}
             for (const p of parts) {
               const u = p.user
@@ -4615,7 +4804,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             return map
           })()}
               avatarsById={(() => {
-            const parts = activeConversation?.participants || []
+            // Используем conversation из callConvId, если звонок активен, иначе из activeConversation
+            const conv = callConvId ? (conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation) : activeConversation
+            const parts = conv?.participants || []
             const map: Record<string, string | null> = {}
             for (const p of parts) {
               const u = p.user
@@ -4626,8 +4817,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           })()}
               localUserId={me?.id ?? null}
               isGroup={(() => {
-                const parts = activeConversation?.participants || []
-                return !!activeConversation?.isGroup
+                // Используем conversation из callConvId, если звонок активен, иначе из activeConversation
+                const conv = callConvId ? (conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation) : activeConversation
+                return !!conv?.isGroup
               })()}
               onMinimize={() => {
                 if (callConvId) {
@@ -4704,6 +4896,116 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             setEditingImageId(null)
           }}
         />
+        {outgoingCall && (() => {
+          const conv = conversationsQuery.data?.find((r: any) => r.conversation.id === outgoingCall.conversationId)?.conversation
+          const isGroup = conv?.isGroup || (conv?.participants?.length ?? 0) > 2
+          // Не показываем экран дозвона для групповых бесед
+          if (isGroup) {
+            return null
+          }
+          let displayName = 'Неизвестный'
+          let avatarUrl: string | undefined = undefined
+          let avatarId: string = outgoingCall.conversationId
+          if (isGroup) {
+            displayName = conv?.title ?? 'Группа'
+            avatarUrl = conv?.avatarUrl
+            avatarId = outgoingCall.conversationId
+          } else {
+            const otherParticipant = conv?.participants?.find((p: any) => p.user.id !== me?.id)?.user
+            if (otherParticipant) {
+              displayName = otherParticipant.displayName ?? otherParticipant.username ?? otherParticipant.id ?? 'Неизвестный'
+              avatarUrl = otherParticipant.avatarUrl
+              avatarId = otherParticipant.id
+            } else {
+              // Fallback: попробуем получить из contacts
+              const contact = contactsQuery.data?.find((c: any) => {
+                const convIds = c.conversationIds || []
+                return convIds.includes(outgoingCall.conversationId)
+              })
+              if (contact?.friend) {
+                displayName = contact.friend.displayName ?? contact.friend.username ?? contact.friend.id ?? 'Неизвестный'
+                avatarUrl = contact.friend.avatarUrl
+                avatarId = contact.friend.id
+              }
+            }
+          }
+          const elapsed = Math.floor((Date.now() - outgoingCall.startedAt) / 1000)
+          const minutes = Math.floor(elapsed / 60)
+          const seconds = elapsed % 60
+          const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`
+          return createPortal(
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }}>
+              <div style={{ background: 'var(--surface-200)', borderRadius: 16, border: '1px solid var(--surface-border)', padding: 24, width: 'min(92vw, 440px)', boxShadow: 'var(--shadow-sharp)', transform: 'translateY(-4vh)', color: 'var(--text-primary)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                  <div style={{ fontWeight: 700 }}>{outgoingCall.video ? 'Видеозвонок' : 'Звонок'}</div>
+                  {!outgoingCall.minimized && (
+                    <button
+                      className="btn btn-icon btn-ghost"
+                      onClick={() => {
+                        setOutgoingCall((prev) => prev ? { ...prev, minimized: true } : null)
+                      }}
+                      style={{ padding: 8 }}
+                    >
+                      <Minus size={18} />
+                    </button>
+                  )}
+                </div>
+                <div className="caller-tile" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: 'var(--surface-100)', border: '1px solid var(--surface-border)', borderRadius: 12, marginBottom: 16 }}>
+                  <Avatar
+                    name={displayName}
+                    id={avatarId}
+                    size={64}
+                    avatarUrl={avatarUrl}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 16 }}>{displayName}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>дозвон…</div>
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                    {timeStr}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn"
+                    style={{ background: '#ef4444', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }}
+                    onClick={() => {
+                      if (outgoingCallTimerRef.current) {
+                        window.clearTimeout(outgoingCallTimerRef.current)
+                        outgoingCallTimerRef.current = null
+                      }
+                      endCall(outgoingCall.conversationId)
+                      setOutgoingCall(null)
+                      setActiveCalls((prev) => {
+                        const current = prev[outgoingCall.conversationId]
+                        if (current?.active) {
+                          return { ...prev, [outgoingCall.conversationId]: { ...current, active: false, endedAt: Date.now() } }
+                        }
+                        const { [outgoingCall.conversationId]: _omit, ...rest } = prev
+                        return rest
+                      })
+                      callStore.endCall()
+                    }}
+                  >
+                    <PhoneOff size={18} />
+                    <span>Сбросить</span>
+                  </button>
+                  {outgoingCall.minimized && (
+                    <button
+                      className="btn btn-primary"
+                      style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }}
+                      onClick={() => {
+                        setOutgoingCall((prev) => prev ? { ...prev, minimized: false } : null)
+                      }}
+                    >
+                      <Maximize2 size={18} />
+                      <span>Развернуть</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>, document.body)
+        })()}
         {callStore.incoming && createPortal(
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }}>
             <div style={{ background: 'var(--surface-200)', borderRadius: 16, border: '1px solid var(--surface-border)', padding: 24, width: 'min(92vw, 440px)', boxShadow: 'var(--shadow-sharp)', transform: 'translateY(-4vh)', color: 'var(--text-primary)' }}>
