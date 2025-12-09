@@ -222,6 +222,55 @@ export function initSocket(
     setSocketFocus(userId, socket.id, true);
     void recomputePresence(io, userId);
 
+    // Проверяем активные звонки при подключении
+    // Если пользователю звонили, пока он был офлайн, отправляем событие входящего звонка
+    // Используем небольшую задержку, чтобы убедиться, что сокет полностью готов
+    setTimeout(() => {
+      void (async () => {
+        try {
+          // Получаем все беседы пользователя
+          const conversations = await prisma.conversation.findMany({
+            where: {
+              participants: {
+                some: { userId },
+              },
+            },
+            include: {
+              participants: true,
+            },
+          });
+
+          for (const conv of conversations) {
+            const callSt = callState.get(conv.id);
+            if (!callSt) continue;
+            
+            // Если звонок еще не принят и пользователь не является инициатором
+            if (!callSt.accepted && callSt.inviterId !== userId) {
+              const isGroup = !!conv.isGroup;
+              // Для 1:1 звонков отправляем событие входящего звонка
+              if (!isGroup) {
+                // Убеждаемся, что сокет присоединен к комнате беседы
+                socket.join(conv.id);
+                
+                const inviter = await prisma.user.findUnique({
+                  where: { id: callSt.inviterId },
+                  select: { displayName: true, username: true },
+                });
+                const name = inviter?.displayName ?? inviter?.username ?? "пользователь";
+                io.to(userId).emit("call:incoming", {
+                  conversationId: conv.id,
+                  from: { id: callSt.inviterId, name },
+                  video: callSt.video,
+                });
+              }
+            }
+          }
+        } catch (error) {
+          logger.error({ error, userId }, "Failed to check active calls on connection");
+        }
+      })();
+    }, 100);
+
     socket.on("presence:focus", ({ focused }) => {
       setSocketFocus(userId, socket.id, !!focused);
       void recomputePresence(io, userId);
@@ -441,8 +490,9 @@ export function initSocket(
       // Для 1:1 звонков отправляем событие входящего звонка получателям
       // Для групповых звонков это не нужно, так как они видят активный звонок через call:status
       if (!isGroup) {
-      for (const rid of recipients) {
-        io.to(rid).emit("call:incoming", { conversationId, from: { id: userId, name }, video });
+        const incomingPayload = { conversationId, from: { id: userId, name }, video };
+        for (const rid of recipients) {
+          io.to(rid).emit("call:incoming", incomingPayload);
         }
       }
 
@@ -460,9 +510,13 @@ export function initSocket(
       const recipients = conv.participants.map((p) => p.userId).filter((id) => id !== userId);
       const st = callState.get(conversationId);
       if (st) callState.set(conversationId, { ...st, accepted: true });
+      // Отправляем call:accepted получателям звонка
       for (const rid of recipients) {
         io.to(rid).emit("call:accepted", { conversationId, by: { id: userId }, video });
       }
+      // Также отправляем call:accepted самому пользователю на другие его устройства
+      // Это нужно, чтобы прекратить входящий звонок на других устройствах
+      socket.to(userId).emit("call:accepted", { conversationId, by: { id: userId }, video });
     });
 
     socket.on("call:decline", async ({ conversationId }) => {
