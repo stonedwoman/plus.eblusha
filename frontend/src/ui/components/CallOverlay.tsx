@@ -121,6 +121,15 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     .call-container .lk-video-tile video,
     .call-container .lk-stage video,
     .call-container .lk-grid-stage video { object-fit: contain !important; background: #000 !important; }
+    
+    /* Ensure placeholder stays circular and doesn't stretch */
+    .call-container .lk-participant-placeholder {
+      aspect-ratio: 1 !important;
+      border-radius: 50% !important;
+      margin: auto !important;
+      align-self: center !important;
+      flex-shrink: 0 !important;
+    }
   `
 
   useEffect(() => {
@@ -263,6 +272,23 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     const byIdRef = avatarsById || {}
     const localIdRef = localUserId || null
     const myAvatarRef = myAvatar || null
+    const peerAvatarRef = peerAvatarUrl || null
+    
+    // Логируем словари один раз при открытии оверлея с полным содержимым
+    const byIdEntries = Object.entries(byIdRef)
+    const byNameEntries = Object.entries(byNameRef)
+    console.log('[CallOverlay] Avatar maps initialized:', {
+      byId: byIdEntries.length,
+      byName: byNameEntries.length,
+      byIdEntries: byIdEntries.map(([id, url]) => ({ id, url: url ? 'present' : 'null' })), // Упрощенный вид для читаемости
+      byNameEntries: byNameEntries.map(([name, url]) => ({ name, url: url ? 'present' : 'null' })), // Упрощенный вид для читаемости
+      localIdRef: localIdRef || '(empty)',
+      myAvatar: myAvatarRef ? 'present' : 'missing',
+      peerAvatar: peerAvatarRef ? 'present' : 'missing',
+      // Полные словари для детальной проверки (раскомментировать при необходимости)
+      // byIdMap: byIdRef,
+      // byNameMap: byNameRef
+    })
     const colorFromId = (id: string) => {
       let hash = 0
       for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash)
@@ -282,8 +308,53 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         const placeholder = tile.querySelector('.lk-participant-placeholder') as HTMLElement | null
         if (!nameEl || !placeholder) return
         // identity lookup preferred (must compute before using as a fallback for name)
-        const idAttrEl = tile.getAttribute('data-lk-participant-identity') ? tile : (tile.querySelector('[data-lk-participant-identity]') as HTMLElement | null)
-        let identity = idAttrEl ? (idAttrEl.getAttribute('data-lk-participant-identity') || '').trim() : ''
+        // Проверяем несколько мест, где может быть identity
+        let identity = ''
+        
+        // Собираем все data-атрибуты для отладки
+        const allDataAttrs: Record<string, string> = {}
+        for (let i = 0; i < tile.attributes.length; i++) {
+          const attr = tile.attributes[i]
+          if (attr.name.startsWith('data-')) {
+            allDataAttrs[attr.name] = attr.value
+          }
+        }
+        
+        // 1. Проверяем data-lk-participant-identity на самом элементе
+        const idAttrOnTile = tile.getAttribute('data-lk-participant-identity')
+        if (idAttrOnTile) {
+          identity = idAttrOnTile.trim()
+        }
+        
+        // 2. Ищем в дочерних элементах
+        if (!identity) {
+          const idAttrEl = tile.querySelector('[data-lk-participant-identity]') as HTMLElement | null
+          if (idAttrEl) {
+            identity = (idAttrEl.getAttribute('data-lk-participant-identity') || '').trim()
+          }
+        }
+        
+        // 3. Проверяем dataset напрямую
+        if (!identity) {
+          const datasetId = (tile.dataset as any)?.lkParticipantIdentity || (tile as any).dataset?.lkParticipantIdentity
+          if (datasetId) {
+            identity = String(datasetId).trim()
+          }
+        }
+        
+        // 4. Проверяем другие возможные варианты атрибутов
+        if (!identity) {
+          const altAttrs = ['data-participant-identity', 'data-identity', 'data-participant-id', 'data-user-id']
+          for (const attrName of altAttrs) {
+            const val = tile.getAttribute(attrName)
+            if (val) {
+              identity = val.trim()
+              break
+            }
+          }
+        }
+        
+        // 5. Извлекаем метаданные
         const metadataAttr = tile.getAttribute('data-lk-participant-metadata') || (tile.dataset ? tile.dataset.lkParticipantMetadata : '') || ''
         let participantMeta: Record<string, any> | null = null
         if (metadataAttr) {
@@ -293,9 +364,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             participantMeta = null
           }
         }
-        if (!identity && participantMeta?.userId) {
-          identity = String(participantMeta.userId)
+        // 6. Извлекаем identity из метаданных (приоритет метаданных)
+        if (participantMeta?.userId) {
+          identity = String(participantMeta.userId).trim()
         }
+        
+        // 7. Если identity все еще пустой, логируем только один раз (не для каждого обновления)
+        // Логирование отключено для уменьшения шума, включаем только при необходимости
+        // if (!identity) {
+        //   console.log('[CallOverlay] Identity not found in tile, all data attributes:', allDataAttrs, 'metadata:', participantMeta, 'tile classes:', tile.className)
+        // }
         let name = (nameEl.textContent || nameEl.getAttribute('data-lk-participant-name') || '').trim()
         if (!name && participantMeta?.displayName) {
           name = String(participantMeta.displayName).trim()
@@ -305,22 +383,54 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           if (meta?.textContent?.trim()) name = meta.textContent.trim()
         }
         if (!name) name = identity || ''
+        
+        // Определяем локального участника СТРОГО: только если identity точно совпадает с localUserId
+        // Это критически важно, чтобы не показывать мой аватар для других участников
+        const identityMatchesLocal = !!(identity && localIdRef && identity === localIdRef)
+        const isLocal = identityMatchesLocal
+        
+        // Сначала пытаемся найти аватар по identity (самый надежный способ)
         const idUrl = identity ? (byIdRef[identity] ?? null) : null
-        // normalize and lookup case-insensitive
+        
+        // Затем по имени (case-insensitive)
         const key = Object.keys(byNameRef).find((k) => k.toLowerCase() === name.toLowerCase())
         const url = key ? byNameRef[key] : null
+        
+        // Используем мой аватар ТОЛЬКО если это точно локальный участник (identity совпадает)
+        // И только если не нашли аватар по identity или имени
         const myUrl = myAvatarRef
-        // fallback: если это локальная плитка (есть значок self/микрофона с подсказкой), подставим мой аватар
-        const identityMatchesLocal = !!(identity && localIdRef && identity === localIdRef)
-        const attrSuggestsLocal =
-          !identityMatchesLocal &&
-          !identity &&
-          (tile.getAttribute('data-lk-local-participant') !== null ||
-            tile.getAttribute('data-lk-local') !== null ||
-            tile.dataset.lkLocalParticipant === 'true')
-        const isLocal = identityMatchesLocal || attrSuggestsLocal
-        let finalUrl = idUrl ?? url ?? (isLocal ? (myUrl || (localIdRef ? byIdRef[localIdRef] ?? null : null)) : null)
+        // Если это не локальный участник и не нашли аватар, используем peerAvatarUrl как fallback
+        // (полезно для 1:1 звонков, когда передается peerAvatarUrl)
+        // Также используем peerAvatarUrl если имя найдено, но аватар не найден в словаре
+        const peerUrl = !isLocal ? peerAvatarRef : null
+        // Приоритет: idUrl > url > (для локального: myUrl) > (для нелокального: peerUrl)
+        let finalUrl = idUrl ?? url ?? (isLocal ? (myUrl || (localIdRef ? byIdRef[localIdRef] ?? null : null)) : peerUrl)
         const fallbackUrl = buildLetterDataUrl(name || identity || 'U', identity || name || 'U')
+        
+        // Логирование для отладки - всегда включено для диагностики проблемы
+        if (!finalUrl && (identity || name)) {
+          const nameKeys = Object.keys(byNameRef)
+          const nameMatch = name ? nameKeys.find(k => k.toLowerCase() === name.toLowerCase()) : null
+          console.log('[CallOverlay Avatar Debug] Avatar not found:', {
+            identity: identity || '(empty)',
+            name: name || '(empty)',
+            isLocal,
+            localIdRef: localIdRef || '(empty)',
+            idUrl: idUrl || '(not found)',
+            url: url || '(not found)',
+            peerUrl: peerUrl || '(not found)',
+            peerAvatarRef: peerAvatarRef || '(not set)',
+            finalUrl: finalUrl || '(using fallback)',
+            byIdEntries: Object.entries(byIdRef), // [id, avatarUrl] пары
+            byNameEntries: Object.entries(byNameRef), // [name, avatarUrl] пары
+            byIdHasIdentity: identity ? (identity in byIdRef) : false,
+            byNameHasName: !!nameMatch,
+            nameMatch: nameMatch || '(no match)',
+            allNameKeys: nameKeys, // Все ключи в словаре имен
+            participantMeta: participantMeta ? { userId: participantMeta.userId, displayName: participantMeta.displayName } : null
+          })
+        }
+        
         // Remove default svg completely and any background
         placeholder.querySelectorAll('svg').forEach((svg) => svg.remove())
         placeholder.querySelectorAll('svg').forEach((svg) => ((svg as SVGElement).style.display = 'none'))
@@ -330,17 +440,32 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           img = document.createElement('img')
           img.className = 'eb-ph'
           placeholder.appendChild(img)
+          // Обработчик ошибок загрузки - если аватар не загрузился, показываем fallback
+          img.onerror = () => {
+            if (img && img.src !== fallbackUrl) {
+              console.log('[CallOverlay] Avatar image failed to load, using fallback:', img.src)
+              img.src = fallbackUrl
+            }
+          }
         }
-        img.src = finalUrl || fallbackUrl
-        img.alt = name
-        // Ensure avatar never overflows tile bounds
-        img.style.width = 'auto'
-        img.style.height = 'auto'
-        img.style.maxWidth = '85%'
-        img.style.maxHeight = '85%'
-        img.style.objectFit = 'cover'
-        img.style.borderRadius = '50%'
-        img.style.display = 'block'
+        // Обновляем src только если он изменился, чтобы избежать лишних перезагрузок
+        if (img.src !== (finalUrl || fallbackUrl)) {
+          img.src = finalUrl || fallbackUrl
+        }
+        // Calculate size based on smaller dimension of tile to ensure circle
+        const tileRect = tile.getBoundingClientRect()
+        const tileMinDimension = Math.min(tileRect.width, tileRect.height)
+        // Use 95% of the smaller dimension for placeholder
+        const placeholderSize = Math.floor(tileMinDimension * 0.95)
+        
+        // Set placeholder size to ensure it's always circular
+        placeholder.style.width = `${placeholderSize}px`
+        placeholder.style.height = `${placeholderSize}px`
+        placeholder.style.maxWidth = `${placeholderSize}px`
+        placeholder.style.maxHeight = `${placeholderSize}px`
+        placeholder.style.minWidth = `${placeholderSize}px`
+        placeholder.style.minHeight = `${placeholderSize}px`
+        placeholder.style.flexShrink = '0'
         ;(placeholder.style as any).display = 'flex'
         placeholder.style.alignItems = 'center'
         placeholder.style.justifyContent = 'center'
@@ -349,13 +474,27 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         placeholder.style.color = 'transparent'
         placeholder.style.fontSize = '0'
         placeholder.style.overflow = 'hidden'
-        // keep placeholder circular if LiveKit tile uses round placeholders
-        try { (placeholder.style as any).borderRadius = '50%' } catch {}
+        placeholder.style.margin = 'auto'
+        // keep placeholder circular - always use smaller dimension
+        placeholder.style.borderRadius = '50%'
+        placeholder.style.aspectRatio = '1'
+        
+        img.alt = name
+        // Ensure avatar fills the placeholder and stays circular
+        img.style.aspectRatio = '1' // Ensure square shape
+        img.style.width = '100%'
+        img.style.height = '100%'
+        img.style.maxWidth = '100%'
+        img.style.maxHeight = '100%'
+        img.style.objectFit = 'cover'
+        img.style.borderRadius = '50%'
+        img.style.display = 'block'
         Array.from(placeholder.childNodes).forEach((n) => {
           if (n.nodeType === Node.TEXT_NODE) {
             (n as any).textContent = ''
           }
         })
+        
       })
     }
     const mo = new MutationObserver(apply)
@@ -404,14 +543,29 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             }
           }}
           onDisconnected={(reason) => {
-            console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup)
+            console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup, 'minimized:', minimized)
             const hadConnection = wasConnected
             setWasConnected(false)
             const manual = reason === 1 || manualCloseRef.current
-            if (hadConnection) {
-              handleClose({ manual })
-            } else if (!isGroup) {
-              handleClose({ manual })
+            // Если оверлей минимизирован, не закрываем его при отключении - это может быть временное отключение
+            if (minimized) {
+              return
+            }
+            // Для 1:1 звонков закрываем только при ручном закрытии (когда пользователь нажал "Leave")
+            // Для временных отключений полагаемся на события с сервера (call:ended)
+            if (isGroup) {
+              // Для групповых звонков закрываем при любом отключении, если было подключение
+              if (hadConnection) {
+                handleClose({ manual })
+              }
+            } else {
+              // Для 1:1 звонков закрываем только при явном ручном закрытии
+              // Временные отключения обрабатываются через call:ended событие с сервера
+              if (manual) {
+                handleClose({ manual: true })
+              }
+              // Если не было подключения и это не ручное закрытие, не закрываем
+              // (может быть ошибка подключения, но звонок еще активен на сервере)
             }
           }}
         >
