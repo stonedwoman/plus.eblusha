@@ -4393,18 +4393,77 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         onClick={(e) => {
                           if (!isMobile) return
                           const target = e.target as HTMLElement
-                          if (target.closest('a, button, input, textarea, img, video')) return
+                          if (target.closest('a, button, input, textarea, img, video, .reaction-emoji')) return
                           const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
                           if (selection && selection.toString()) return
                           openMenuAt(e.clientX, e.clientY)
                         }}
+                        onContextMenu={(e) => {
+                          const target = e.target as HTMLElement
+                          if (target.closest('.reaction-emoji')) {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            return
+                          }
+                          openMenuAt(e.clientX, e.clientY)
+                        }}
                       >
                         {(m.reactions && m.reactions.length > 0) && (() => {
-                          const grouped: Record<string, number> = {}
-                          for (const r of m.reactions) grouped[r.emoji] = (grouped[r.emoji] || 0) + 1
+                          const grouped: Record<string, { count: number; hasMine: boolean }> = {}
+                          for (const r of m.reactions) {
+                            if (!grouped[r.emoji]) {
+                              grouped[r.emoji] = { count: 0, hasMine: false }
+                            }
+                            grouped[r.emoji].count++
+                            if (r.userId === me?.id) {
+                              grouped[r.emoji].hasMine = true
+                            }
+                          }
                           return (
                             <div style={{ position: 'absolute', bottom: -18, right: isMe ? 8 : undefined, left: !isMe ? 8 : undefined, display: 'flex', gap: 6, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', borderRadius: 12, padding: '2px 6px', zIndex: 5, pointerEvents: 'auto' }}>
-                              {Object.entries(grouped).map(([emo, cnt], idx) => <span key={emo} className="reaction-emoji" style={{ fontSize: 12, color: '#ffc46b', display: 'inline-block', animation: `reactionBounce 0.6s ease ${idx * 0.1}s`, cursor: 'pointer' }}>{emo}{cnt>1?` ${cnt}`:''}</span>)}
+                              {Object.entries(grouped).map(([emo, data], idx) => {
+                                const isHeart = emo === '❤️'
+                                const color = isHeart ? '#ef4444' : '#ffc46b'
+                                return (
+                                  <button
+                                    key={emo}
+                                    type="button"
+                                    className="reaction-emoji"
+                                    onClick={async (e) => {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                      try {
+                                        if (data.hasMine) {
+                                          await api.post('/messages/unreact', { messageId: m.id, emoji: emo })
+                                        } else {
+                                          await api.post('/messages/react', { messageId: m.id, emoji: emo })
+                                        }
+                                        if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                                      } catch (err) {
+                                        console.error('Error toggling reaction:', err)
+                                      }
+                                    }}
+                                    onMouseDown={(e) => {
+                                      e.stopPropagation()
+                                    }}
+                                    style={{
+                                      fontSize: 12,
+                                      color: color,
+                                      display: 'inline-block',
+                                      animation: `reactionBounce 0.6s ease ${idx * 0.1}s`,
+                                      cursor: 'pointer',
+                                      opacity: data.hasMine ? 1 : 0.8,
+                                      background: 'transparent',
+                                      border: 'none',
+                                      padding: 0,
+                                      margin: 0,
+                                      font: 'inherit',
+                                    }}
+                                  >
+                                    {emo}{data.count > 1 ? ` ${data.count}` : ''}
+                                  </button>
+                                )
+                              })}
                             </div>
                           )
                         })()}
@@ -6304,26 +6363,30 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           onClick={(e) => e.stopPropagation()}
         >
           <div style={{ display: 'flex', gap: 6, padding: 6, borderBottom: '1px solid var(--surface-border)' }}>
-            {['👍','❤️','👎','🔥','🤝','😆'].map((emo, idx) => (
-              <button key={emo} onClick={async () => {
-                try {
-                  const mid = contextMenu.messageId!
-                  // toggle: если уже есть моя реакция этим эмодзи — удаляем
-                  const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
-                  const mine = (found?.reactions || []).some((r: any) => r.userId === me?.id && r.emoji === emo)
-                  if (mine) await api.post('/messages/unreact', { messageId: mid, emoji: emo })
-                  else await api.post('/messages/react', { messageId: mid, emoji: emo })
-                  if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
-                } catch {}
-                setContextMenu({ open: false, x: 0, y: 0, messageId: null })
-              }} style={{ 
-                fontSize: 16, 
-                color: '#ffffff', 
-                cursor: 'pointer', 
-                transition: 'transform 0.2s ease', 
-                animation: `reactionPop 0.3s ease ${idx * 0.05}s both`
-              }} onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.2)' }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)' }}>{emo}</button>
-            ))}
+            {['👍','❤️','👎','🔥','🤝','😆'].map((emo, idx) => {
+              const isHeart = emo === '❤️'
+              const color = isHeart ? '#ef4444' : '#ffffff'
+              return (
+                <button key={emo} onClick={async () => {
+                  try {
+                    const mid = contextMenu.messageId!
+                    // toggle: если уже есть моя реакция этим эмодзи — удаляем
+                    const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                    const mine = (found?.reactions || []).some((r: any) => r.userId === me?.id && r.emoji === emo)
+                    if (mine) await api.post('/messages/unreact', { messageId: mid, emoji: emo })
+                    else await api.post('/messages/react', { messageId: mid, emoji: emo })
+                    if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                  } catch {}
+                  setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                }} style={{ 
+                  fontSize: 16, 
+                  color: color, 
+                  cursor: 'pointer', 
+                  transition: 'transform 0.2s ease', 
+                  animation: `reactionPop 0.3s ease ${idx * 0.05}s both`
+                }} onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.2)' }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)' }}>{emo}</button>
+              )
+            })}
           </div>
           <button style={{ color: '#ffffff' }} onClick={() => {
             const mid = contextMenu.messageId!
