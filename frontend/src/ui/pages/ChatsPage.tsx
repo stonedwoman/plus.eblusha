@@ -236,6 +236,10 @@ export default function ChatsPage() {
   // notify sound
   const notifyAudioRef = useRef<HTMLAudioElement | null>(null)
   const notifyUnlockedRef = useRef<boolean>(false)
+  // dialing sound
+  const dialingAudioRef = useRef<HTMLAudioElement | null>(null)
+  // end call sound
+  const endCallAudioRef = useRef<HTMLAudioElement | null>(null)
   const [typing, setTyping] = useState(false)
   const [typingDots, setTypingDots] = useState(1)
   const [leftAlignAll, setLeftAlignAll] = useState(false)
@@ -479,6 +483,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       if (outgoingCallTimerRef.current) {
         window.clearTimeout(outgoingCallTimerRef.current)
       }
+      stopDialingSound()
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Обновляем таймер дозвона каждую секунду
@@ -1778,22 +1783,55 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         callStore.setIncoming(null)
       }, 25000)
     })
-    onCallAccepted(({ conversationId }) => {
+    onCallAccepted(({ conversationId, by }) => {
       clearMinCallDurationGuard(conversationId)
-      // Закрываем экран дозвона, если он открыт
+      
+      // Если звонок принят на другом устройстве (by.id === me.id), прекращаем все действия на этом устройстве
+      // и не открываем оверлей - звонок должен быть активен только на том устройстве, где его приняли
+      if (by?.id === me?.id) {
+        // Прекращаем входящий звонок для этой беседы, если он есть
+        const hasIncomingForThisConv = callStore.incoming?.conversationId === conversationId || ringingConvIdRef.current === conversationId
+        if (hasIncomingForThisConv) {
+          stopRingtone()
+          callStore.setIncoming(null)
+          if (ringTimerRef.current) {
+            window.clearTimeout(ringTimerRef.current)
+            ringTimerRef.current = null
+          }
+          ringingConvIdRef.current = null
+        }
+        // Закрываем экран дозвона, если он открыт (если пользователь звонил с этого устройства)
+        setOutgoingCall((prev) => {
+          if (prev?.conversationId === conversationId) {
+            if (outgoingCallTimerRef.current) {
+              window.clearTimeout(outgoingCallTimerRef.current)
+              outgoingCallTimerRef.current = null
+            }
+            stopDialingSound()
+            return null
+          }
+          return prev
+        })
+        // Не открываем оверлей на этом устройстве - звонок принят на другом
+        return
+      }
+      
+      // Закрываем экран дозвона, если он открыт (звонок принят на этом устройстве)
       setOutgoingCall((prev) => {
         if (prev?.conversationId === conversationId) {
           if (outgoingCallTimerRef.current) {
             window.clearTimeout(outgoingCallTimerRef.current)
             outgoingCallTimerRef.current = null
           }
+          stopDialingSound()
           return null
         }
         return prev
       })
+      
       // Для всех типов звонков (1:1 и группы) устанавливаем activeCalls вручную
       // Это обеспечивает единообразное поведение: звонок становится активным сразу
-          setActiveCalls((prev) => {
+      setActiveCalls((prev) => {
         const current = prev[conversationId]
         if (!current?.active) {
           return { ...prev, [conversationId]: { startedAt: Date.now(), active: true, participants: [me?.id || ''].filter(Boolean) } }
@@ -1808,8 +1846,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         const hasVideo = false // Можно улучшить, если будет доступна информация о типе звонка
         callStore.startOutgoing(conversationId, hasVideo)
       }
-      // Открываем оверлей для всех, кто принял звонок (и для создателя, и для присоединившихся)
-        setCallConvId(conversationId)
+      // Открываем оверлей только на устройстве, где звонок был принят
+      setCallConvId(conversationId)
       setMinimizedCallConvId((prev) => prev === conversationId ? null : prev) // Сбрасываем минимизацию для нового звонка
       stopRingtone()
     })
@@ -1821,6 +1859,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             window.clearTimeout(outgoingCallTimerRef.current)
             outgoingCallTimerRef.current = null
           }
+          stopDialingSound()
+          playEndCallSound()
           return null
         }
         return prev
@@ -1886,6 +1926,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               window.clearTimeout(outgoingCallTimerRef.current)
               outgoingCallTimerRef.current = null
             }
+            stopDialingSound()
             return null
           }
           return prev
@@ -2333,6 +2374,67 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       }
       ringingConvIdRef.current = null
     } catch {}
+  }
+
+  const ensureDialingAudio = useCallback(() => {
+    if (typeof window === 'undefined') return null
+    if (!dialingAudioRef.current) {
+      const audio = new Audio('/dialing.mp3')
+      audio.preload = 'auto'
+      audio.loop = true
+      audio.volume = 0.7
+      dialingAudioRef.current = audio
+    }
+    return dialingAudioRef.current
+  }, [])
+
+  function startDialingSound() {
+    try {
+      const audio = ensureDialingAudio()
+      if (audio) {
+        audio.currentTime = 0
+        audio.loop = true
+        audio.volume = 0.7
+        void audio.play().catch(() => {})
+      }
+    } catch (err) {
+      console.error('Error starting dialing sound:', err)
+    }
+  }
+
+  function stopDialingSound() {
+    try {
+      if (dialingAudioRef.current) {
+        try {
+          dialingAudioRef.current.pause()
+          dialingAudioRef.current.currentTime = 0
+        } catch {}
+      }
+    } catch {}
+  }
+
+  const ensureEndCallAudio = useCallback(() => {
+    if (typeof window === 'undefined') return null
+    if (!endCallAudioRef.current) {
+      const audio = new Audio('/notify.mp3')
+      audio.preload = 'auto'
+      audio.volume = 0.6
+      endCallAudioRef.current = audio
+    }
+    return endCallAudioRef.current
+  }, [])
+
+  function playEndCallSound() {
+    try {
+      const audio = ensureEndCallAudio()
+      if (audio) {
+        audio.currentTime = 0
+        audio.volume = 0.6
+        void audio.play().catch(() => {})
+      }
+    } catch (err) {
+      console.error('Error playing end call sound:', err)
+    }
   }
 
   // Join/leave rooms on active chat change
@@ -3795,6 +3897,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       // Для 1:1 бесед показываем экран дозвона
                       const convId = activeId
                       setOutgoingCall({ conversationId: convId, startedAt: Date.now(), video: false })
+                      // Запускаем звук дозвона
+                      startDialingSound()
                       // Автоматически закрываем через 30 секунд, если звонок не принят
                       if (outgoingCallTimerRef.current) {
                         window.clearTimeout(outgoingCallTimerRef.current)
@@ -3802,6 +3906,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       outgoingCallTimerRef.current = window.setTimeout(() => {
                         setOutgoingCall((prev) => {
                           if (prev?.conversationId === convId) {
+                            stopDialingSound()
+                            playEndCallSound()
                             endCall(convId)
                             setActiveCalls((prevCalls) => {
                               const current = prevCalls[convId]
@@ -3853,6 +3959,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       // Для 1:1 бесед показываем экран дозвона
                       const convId = activeId
                       setOutgoingCall({ conversationId: convId, startedAt: Date.now(), video: true })
+                      // Запускаем звук дозвона
+                      startDialingSound()
                       // Автоматически закрываем через 30 секунд, если звонок не принят
                       if (outgoingCallTimerRef.current) {
                         window.clearTimeout(outgoingCallTimerRef.current)
@@ -3860,6 +3968,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       outgoingCallTimerRef.current = window.setTimeout(() => {
                         setOutgoingCall((prev) => {
                           if (prev?.conversationId === convId) {
+                            stopDialingSound()
+                            playEndCallSound()
                             endCall(convId)
                             setActiveCalls((prevCalls) => {
                               const current = prevCalls[convId]
@@ -4974,6 +5084,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         window.clearTimeout(outgoingCallTimerRef.current)
                         outgoingCallTimerRef.current = null
                       }
+                      stopDialingSound()
+                      playEndCallSound()
                       endCall(outgoingCall.conversationId)
                       setOutgoingCall(null)
                       setActiveCalls((prev) => {
