@@ -10,6 +10,7 @@ type ServerToClientEvents = {
   "receipts:update": (payload: { conversationId: string; messageIds: string[] }) => void;
   "message:update": (payload: { conversationId: string; messageId: string; reason: string }) => void;
   "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
+  "message:reaction": (payload: { conversationId: string; messageId: string; senderId: string }) => void;
   "contacts:removed": (payload: { contactId: string }) => void;
   "profile:update": (payload: { userId: string; avatarUrl?: string | null; displayName?: string | null }) => void;
   "conversation:typing": (payload: {

@@ -139,9 +139,38 @@ router.post("/react", async (req, res) => {
     create: { messageId, userId, emoji },
   });
 
-  getIO()?.to(message.conversationId).emit("message:new", { conversationId: message.conversationId, messageId, senderId: userId });
+  getIO()?.to(message.conversationId).emit("message:reaction", { conversationId: message.conversationId, messageId, senderId: userId });
 
   res.json({ reaction });
+});
+
+router.post("/unreact", async (req, res) => {
+  const parsed = reactSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid reaction" });
+    return;
+  }
+
+  const { messageId, emoji } = parsed.data;
+  const userId = (req as AuthedRequest).user!.id;
+
+  const message = await prisma.message.findUnique({ where: { id: messageId } });
+  if (!message) {
+    res.status(404).json({ message: "Message not found" });
+    return;
+  }
+
+  await prisma.messageReaction.deleteMany({
+    where: {
+      messageId,
+      userId,
+      emoji,
+    },
+  });
+
+  getIO()?.to(message.conversationId).emit("message:reaction", { conversationId: message.conversationId, messageId, senderId: userId });
+
+  res.json({ success: true });
 });
 
 const deleteSchema = z.object({ messageId: z.string().cuid() });
