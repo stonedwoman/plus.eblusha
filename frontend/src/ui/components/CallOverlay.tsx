@@ -320,8 +320,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             </svg>`
           const desktopLabel = `
             <span style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 14px; font-family: inherit; font-weight: 500; line-height: 20px;">Свернуть</span>
               ${iconSvg}
-              <span style="font-size: 14px;">Свернуть</span>
             </span>`
           minimizeBtn.innerHTML = isDesktop ? desktopLabel : iconSvg
           // Выравниваем высоту под другие кнопки панели
@@ -330,7 +330,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           minimizeBtn.style.padding = '0 12px'
           minimizeBtn.style.display = 'flex'
           minimizeBtn.style.alignItems = 'center'
-          minimizeBtn.style.justifyContent = 'center'
+          minimizeBtn.style.justifyContent = 'flex-start'
+          minimizeBtn.style.fontFamily = 'inherit'
+          minimizeBtn.style.fontSize = '14px'
+          minimizeBtn.style.fontWeight = '500'
+          minimizeBtn.style.lineHeight = '20px'
           const handleMinimize = (evt: Event) => {
             evt.preventDefault()
             evt.stopPropagation()
@@ -344,10 +348,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           minimizeBtn.onmousedown = handleMinimize
           minimizeBtn.style.pointerEvents = 'auto'
           minimizeBtn.disabled = false
+          minimizeBtn.style.marginLeft = 'auto'
           // Перемещаем в конец панели, чтобы была справа
           if (minimizeBtn.parentElement === controlBar && controlBar.lastElementChild !== minimizeBtn) {
             controlBar.appendChild(minimizeBtn)
           }
+
+          // Все кнопки в панели — выравнивание контента влево, кроме того что margin-left авто у "Свернуть"
+          controlBar.querySelectorAll('button.lk-button').forEach((btn) => {
+            (btn as HTMLElement).style.justifyContent = 'flex-start'
+          })
         }
       }
     }
