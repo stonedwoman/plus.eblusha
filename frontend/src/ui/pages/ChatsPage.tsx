@@ -4904,13 +4904,23 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     client.invalidateQueries({ queryKey: ['messages', activeId] })
                     setTimeout(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight }, 0)
             }} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => attachInputRef.current?.click()}
-                style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: isMobile ? 0 : 6, whiteSpace: 'nowrap' }}
-                aria-label="Прикрепить файлы"
-              >
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => attachInputRef.current?.click()}
+              style={{
+                flexShrink: 0,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: isMobile ? 0 : 6,
+                whiteSpace: 'nowrap',
+                height: 46,
+                minHeight: 46,
+                padding: '0 12px',
+              }}
+              aria-label="Прикрепить файлы"
+            >
                 <Paperclip size={16} />
                 {!isMobile && <span>Загрузить</span>}
               </button>
@@ -4936,19 +4946,55 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   }
                 }}
                 ref={inputRef}
-                style={{ flex: 1, minWidth: 0, padding: '12px 16px', borderRadius: 8, border: '1px solid var(--surface-border)', background: 'var(--surface-100)', color: 'var(--text-primary)', fontSize: 16 }}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  padding: '12px 16px',
+                  borderRadius: 8,
+                  border: '1px solid var(--surface-border)',
+                  background: 'var(--surface-100)',
+                  color: 'var(--text-primary)',
+                  fontSize: 16,
+                  height: 46,
+                  minHeight: 46,
+                  lineHeight: '20px',
+                }}
               />
               <button
                 type="button"
                 className="btn btn-secondary"
                 onClick={startVoiceRecording}
-                style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: isMobile ? 0 : 6, whiteSpace: 'nowrap' }}
+                style={{
+                  flexShrink: 0,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: isMobile ? 0 : 6,
+                  whiteSpace: 'nowrap',
+                  height: 46,
+                  minHeight: 46,
+                  padding: '0 12px',
+                }}
                 aria-label="Записать голосовое сообщение"
               >
                 <Mic size={16} />
                 {!isMobile && <span>Голос</span>}
               </button>
-              <button type="submit" className="btn btn-primary" style={{ flexShrink: 0, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: isMobile ? 0 : 6, justifyContent: 'center' }}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                style={{
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: isMobile ? 0 : 6,
+                  height: 46,
+                  minHeight: 46,
+                  padding: '0 12px',
+                }}
+              >
                 <Send size={16} />
                 {!isMobile && <span>Отправить</span>}
               </button>
