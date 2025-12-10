@@ -6,6 +6,7 @@ import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted } from '../../utils/socket'
 import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square, Send } from 'lucide-react'
 const CallOverlay = lazy(() => import('../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
+const preloadCallOverlay = () => import('../components/CallOverlay')
 import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
 import { ImageEditorModal } from '../components/ImageEditorModal'
@@ -350,6 +351,11 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const voiceRecorderRef = useRef<VoiceRecorder | null>(null)
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceDuration, setVoiceDuration] = useState(0)
+
+  // Prefetch CallOverlay to avoid first-time render delay (bundle loading)
+  useEffect(() => {
+    preloadCallOverlay().catch(() => {})
+  }, [])
 const activeConversationIdRef = useRef<string | null>(null)
 useEffect(() => { activeConversationIdRef.current = activeId }, [activeId])
 const pendingImagesRef = useRef<PendingComposerImage[]>([])
@@ -1560,6 +1566,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return () => { socket.off('presence:update', handler as any) }
   }, [client])
 
+  // Track if socket was previously connected to detect actual reconnects
+  const wasConnectedRef = useRef(socket.connected)
   // Reflect socket connection status in UI (especially for mobile self-status)
   useEffect(() => {
     // iOS Safari: refresh viewport height and trigger re-render on focus to avoid stale layout/state
@@ -1574,18 +1582,30 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     window.addEventListener('focus', onFocus)
     const onConnect = () => {
       setIsSocketOnline(true)
-      try {
-        const list = (conversationsQuery.data || []).map((r: any) => r.conversation.id)
-        // re-join all conversation rooms after reconnect so we receive call:status broadcasts
-        for (const cid of list) { try { joinConversation(cid) } catch {} }
-        if (list.length > 0) requestCallStatuses(list)
-      } catch {}
+      const wasConnected = wasConnectedRef.current
+      wasConnectedRef.current = true
+      // Only re-join rooms if this is an actual reconnect (was previously connected, then disconnected, now reconnected)
+      // Skip if this is the initial connection (wasConnected is false and socket was never connected before)
+      if (wasConnected) {
+        try {
+          const list = (conversationsQuery.data || []).map((r: any) => r.conversation.id)
+          // re-join all conversation rooms after reconnect so we receive call:status broadcasts
+          for (const cid of list) { try { joinConversation(cid) } catch {} }
+          if (list.length > 0) requestCallStatuses(list)
+        } catch {}
+      }
     }
-    const onDisconnect = () => setIsSocketOnline(false)
+    const onDisconnect = () => {
+      setIsSocketOnline(false)
+      wasConnectedRef.current = false
+    }
     socket.on('connect', onConnect)
     socket.on('disconnect', onDisconnect)
     // initialize once in case it changed before
     setIsSocketOnline(socket.connected)
+    if (socket.connected) {
+      wasConnectedRef.current = true
+    }
     const onVis = () => { client.invalidateQueries({ queryKey: ['me-info'] }) }
     document.addEventListener('visibilitychange', onVis)
     return () => {

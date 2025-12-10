@@ -59,7 +59,6 @@ import '@livekit/components-styles'
 import { api } from '../../utils/api'
 import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../utils/socket'
 import { useAppStore } from '../../domain/store/appStore'
-import { Minimize2 } from 'lucide-react'
 
 type Props = {
   open: boolean
@@ -195,7 +194,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     const root = document.body
     if (!root) return
     const translate = () => {
-      const nodes = root.querySelectorAll('.call-container [aria-label], .call-container [title]')
+      // Собираем все элементы с aria/ title И кнопки LiveKit, чтобы русифицировать текст
+      const nodes = new Set<Element>()
+      document.querySelectorAll('.call-container [aria-label], .call-container [title]').forEach((el) => nodes.add(el))
+      document.querySelectorAll('.call-container .lk-control-bar button, .call-container button.lk-button').forEach((el) => nodes.add(el))
+
       nodes.forEach((el) => {
         const a = (el as HTMLElement).getAttribute('aria-label') || (el as HTMLElement).getAttribute('title') || ''
         let ru = ''
@@ -211,6 +214,32 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         if (ru) {
           ;(el as HTMLElement).setAttribute('aria-label', ru)
           ;(el as HTMLElement).setAttribute('title', ru)
+        }
+
+        // Русификация текстовых лейблов у кнопок: заменяем только текстовые узлы с точным совпадением
+        if ((el as HTMLElement).tagName === 'BUTTON') {
+          const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+          let node = walker.nextNode()
+          while (node) {
+            const raw = node.nodeValue || ''
+            const normalized = raw.replace(/\s+/g, ' ').trim().toLowerCase()
+            let translated: string | null = null
+            if (normalized === 'leave') translated = 'Выйти'
+            else if (normalized === 'participants') translated = 'Участники'
+            else if (normalized === 'settings') translated = 'Настройки'
+            else if (normalized === 'microphone') translated = 'Микрофон'
+            else if (normalized === 'camera') translated = 'Камера'
+            else if (normalized === 'screen share' || normalized === 'share screen' || normalized === 'share-screen' || normalized === 'share-screen ') translated = 'Показ экрана'
+            // fallback: contains both words
+            else if (normalized.includes('share') && normalized.includes('screen')) translated = 'Показ экрана'
+            if (translated) {
+              node.nodeValue = translated
+              // Продублируем в aria-label/title для консистентности
+              ;(el as HTMLElement).setAttribute('aria-label', translated)
+              ;(el as HTMLElement).setAttribute('title', translated)
+            }
+            node = walker.nextNode()
+          }
         }
       })
       // hide chat toggle and panel (more robust)
@@ -231,12 +260,35 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           minimizeBtn.className = 'eb-minimize-btn lk-button'
           minimizeBtn.setAttribute('aria-label', 'Свернуть')
           minimizeBtn.setAttribute('title', 'Свернуть')
-          // Use ChevronDown icon (arrow down)
-          minimizeBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>'
-          minimizeBtn.style.cssText = 'display: flex; align-items: center; justify-content: center; background: var(--surface-100); color: var(--text-primary); border: 1px solid var(--surface-border); border-radius: 8px; padding: 8px; cursor: pointer; transition: background 0.2s ease;'
-          minimizeBtn.onmouseenter = () => { minimizeBtn!.style.background = 'var(--surface-200)' }
-          minimizeBtn.onmouseleave = () => { minimizeBtn!.style.background = 'var(--surface-100)' }
-          minimizeBtn.onclick = (e) => { e.stopPropagation(); onMinimize() }
+          minimizeBtn.setAttribute('type', 'button')
+          // Custom minimize icon with text label - matching LiveKit button structure
+          minimizeBtn.innerHTML = `
+            <span style="display: flex; align-items: center; gap: 8px;">
+              <svg fill="currentColor" stroke="currentColor" width="30px" height="30px" version="1.1" viewBox="144 144 512 512" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" transform="matrix(6.123233995736766e-17,1,-1,6.123233995736766e-17,0,0)">
+                <g id="IconSvg_bgCarrier" stroke-width="0"></g>
+                <g id="IconSvg_tracerCarrier" stroke-linecap="round" stroke-linejoin="round" stroke="#CCCCCC"></g>
+                <g id="IconSvg_iconCarrier">
+                  <path d="m546.94 400v125.95-0.003906c0 5.5703-2.2109 10.91-6.1484 14.844-3.9336 3.9375-9.2734 6.1484-14.844 6.1484h-251.9c-5.5664 0-10.906-2.2109-14.844-6.1484-3.9375-3.9336-6.1484-9.2734-6.1484-14.844v-251.9c0-5.5664 2.2109-10.906 6.1484-14.844s9.2773-6.1484 14.844-6.1484h125.95c7.5 0 14.43 4 18.18 10.496 3.75 6.4961 3.75 14.496 0 20.992-3.75 6.4961-10.68 10.496-18.18 10.496h-104.96v209.92h209.92v-104.96c0-7.5 4.0039-14.43 10.496-18.18 6.4961-3.75 14.5-3.75 20.992 0 6.4961 3.75 10.496 10.68 10.496 18.18z"></path>
+                  <path fill="#d97706" stroke="#d97706" d="m567.93 253.05c0.019531-2.457-0.48047-4.8906-1.4688-7.1367-1.0117-2.043-2.2812-3.9492-3.7773-5.668l-1.6797-1.2578v-0.003907 c-1.2461-1.2812-2.7461-2.2812-4.4102-2.9375h-1.8906 0.003907c-2.2812-1.8594-4.9297-3.2188-7.7695-3.9883h-62.977 c-7.4961 0-14.43 4-18.18 10.496-3.7461 6.4961-3.7461 14.496 0 20.992 3.75 6.4961 10.684 10.496 18.18 10.496h12.387 l-111.26 111.05c-3.9727 3.9414-6.2109 9.3086-6.2109 14.906s2.2383 10.961 6.2109 14.902c3.9414 3.9727 9.3086 6.2109 14.906 6.2109s10.961-2.2383 14.902-6.2109l111.05-111.26v12.387c0 7.5 4.0039 14.43 10.496 18.18 6.4961 3.75 14.5 3.75 20.992 0 6.4961-3.75 10.496-10.68 10.496-18.18z"></path>
+                </g>
+              </svg>
+              <span style="font-size: 14px;">Свернуть</span>
+            </span>
+          `
+          // Remove inline styles to use LiveKit's default button styles
+          const handleMinimize = (evt: Event) => {
+            evt.preventDefault()
+            evt.stopPropagation()
+            try {
+              onMinimize?.()
+            } catch (err) {
+              console.error('Minimize click error', err)
+            }
+          }
+          minimizeBtn.onclick = handleMinimize
+          minimizeBtn.onmousedown = handleMinimize
+          minimizeBtn.style.pointerEvents = 'auto'
+          minimizeBtn.disabled = false
           
           // Insert before leave button (or at the end if not found)
           const leaveBtn = controlBar.querySelector('[aria-label*="Выйти" i], [title*="Выйти" i], [aria-label*="leave" i], [title*="leave" i]') as HTMLElement | null
@@ -254,13 +306,67 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             controlBar.appendChild(minimizeBtn)
           }
         }
+
+        // Обновляем расположение и подпись в зависимости от режима (desktop/mobile)
+        if (minimizeBtn) {
+          const iconSvg = `
+            <svg fill="currentColor" stroke="currentColor" width="30px" height="30px" version="1.1" viewBox="144 144 512 512" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" transform="matrix(6.123233995736766e-17,1,-1,6.123233995736766e-17,0,0)">
+              <g id="IconSvg_bgCarrier" stroke-width="0"></g>
+              <g id="IconSvg_tracerCarrier" stroke-linecap="round" stroke-linejoin="round" stroke="#CCCCCC"></g>
+              <g id="IconSvg_iconCarrier">
+                <path d="m546.94 400v125.95-0.003906c0 5.5703-2.2109 10.91-6.1484 14.844-3.9336 3.9375-9.2734 6.1484-14.844 6.1484h-251.9c-5.5664 0-10.906-2.2109-14.844-6.1484-3.9375-3.9336-6.1484-9.2734-6.1484-14.844v-251.9c0-5.5664 2.2109-10.906 6.1484-14.844s9.2773-6.1484 14.844-6.1484h125.95c7.5 0 14.43 4 18.18 10.496 3.75 6.4961 3.75 14.496 0 20.992-3.75 6.4961-10.68 10.496-18.18 10.496h-104.96v209.92h209.92v-104.96c0-7.5 4.0039-14.43 10.496-18.18 6.4961-3.75 14.5-3.75 20.992 0 6.4961-3.75 10.496-10.68 10.496-18.18z"></path>
+                <path fill="#d97706" stroke="#d97706" d="m567.93 253.05c0.019531-2.457-0.48047-4.8906-1.4688-7.1367-1.0117-2.043-2.2812-3.9492-3.7773-5.668l-1.6797-1.2578v-0.003907 c-1.2461-1.2812-2.7461-2.2812-4.4102-2.9375h-1.8906 0.003907c-2.2812-1.8594-4.9297-3.2188-7.7695-3.9883h-62.977 c-7.4961 0-14.43 4-18.18 10.496-3.7461 6.4961-3.7461 14.496 0 20.992 3.75 6.4961 10.684 10.496 18.18 10.496h12.387 l-111.26 111.05c-3.9727 3.9414-6.2109 9.3086-6.2109 14.906s2.2383 10.961 6.2109 14.902c3.9414 3.9727 9.3086 6.2109 14.906 6.2109s10.961-2.2383 14.902-6.2109l111.05-111.26v12.387c0 7.5 4.0039 14.43 10.496 18.18 6.4961 3.75 14.5 3.75 20.992 0 6.4961-3.75 10.496-10.68 10.496-18.18z"></path>
+              </g>
+            </svg>`
+          const desktopLabel = `
+            <span style="display: flex; align-items: center; gap: 8px;">
+              ${iconSvg}
+              <span style="font-size: 14px;">Свернуть</span>
+            </span>`
+          minimizeBtn.innerHTML = isDesktop ? desktopLabel : iconSvg
+          // Выравниваем высоту под другие кнопки панели
+          minimizeBtn.style.height = '44px'
+          minimizeBtn.style.minHeight = '44px'
+          minimizeBtn.style.padding = '0 12px'
+          minimizeBtn.style.display = 'flex'
+          minimizeBtn.style.alignItems = 'center'
+          minimizeBtn.style.justifyContent = 'center'
+          const handleMinimize = (evt: Event) => {
+            evt.preventDefault()
+            evt.stopPropagation()
+            try {
+              onMinimize?.()
+            } catch (err) {
+              console.error('Minimize click error', err)
+            }
+          }
+          minimizeBtn.onclick = handleMinimize
+          minimizeBtn.onmousedown = handleMinimize
+          minimizeBtn.style.pointerEvents = 'auto'
+          minimizeBtn.disabled = false
+          // Перемещаем в конец панели, чтобы была справа
+          if (minimizeBtn.parentElement === controlBar && controlBar.lastElementChild !== minimizeBtn) {
+            controlBar.appendChild(minimizeBtn)
+          }
+        }
       }
     }
-    const mo = new MutationObserver(() => translate())
+    // Без дебаунса наблюдатель может зациклиться на собственных изменениях, что ведет к подвисанию страницы.
+    let pending = false
+    const scheduleTranslate = () => {
+      if (pending) return
+      pending = true
+      requestAnimationFrame(() => {
+        pending = false
+        translate()
+      })
+    }
+
+    const mo = new MutationObserver(() => scheduleTranslate())
     mo.observe(root, { childList: true, subtree: true, attributes: true })
     translate()
     return () => mo.disconnect()
-  }, [open, onMinimize, handleClose])
+  }, [open, onMinimize, handleClose, isDesktop])
 
   // Inject avatars into participant placeholders using names
   useEffect(() => {
