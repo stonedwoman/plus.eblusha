@@ -1,0 +1,66 @@
+# ===== Витрина для eblusha.org / voice.eblusha.org =====
+eblusha.org, voice.eblusha.org {
+    encode zstd gzip
+
+    # ===== API токенов =====
+    @token path /token*
+    handle @token {
+        reverse_proxy livekit-token:8000
+    }
+
+    # ===== LiveKit WS (сигнализация) =====
+    @livekit path /rtc* /livekit*
+    handle @livekit {
+        reverse_proxy livekit:7880
+    }
+
+    # ===== Остальные пути — SPA из /www =====
+    @spa {
+        not path /rtc* /livekit* /token*
+    }
+    handle @spa {
+        root * /www
+        try_files {path} /index.html
+        file_server
+    }
+
+    header {
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
+
+# ===== РФ-витрина к EU =====
+
+ru.eblusha.org {
+
+    encode zstd gzip
+
+    # auto_https disable_redirects  # <- если ACME будет капризничать, раскомментируем временно
+
+    # ===== Проксирование API и файлов через backend (Express) =====
+    handle /api/files/* {
+        reverse_proxy http://plus.eblusha.org:4000
+    }
+
+    handle /api/* {
+        reverse_proxy http://plus.eblusha.org:4000
+    }
+
+    # ===== Остальные запросы — SPA через plus.eblusha.org =====
+    handle {
+        reverse_proxy https://plus.eblusha.org {
+            header_up Host plus.eblusha.org
+            header_up X-Forwarded-Host {host}
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
+    header {
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+}
+
