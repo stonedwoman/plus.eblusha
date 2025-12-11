@@ -12,9 +12,19 @@ declare const env: {
     LIVEKIT_API_KEY: string;
     LIVEKIT_API_SECRET: string;
     SECRET_MESSAGE_TTL_SECONDS: number;
+    STORAGE_S3_FORCE_PATH_STYLE: boolean;
+    STORAGE_PREFIX: string;
+    STORAGE_S3_SSE: string;
     CLIENT_URL?: string | undefined;
     COOKIE_DOMAIN?: string | undefined;
     REDIS_URL?: string | undefined;
+    STORAGE_S3_ENDPOINT?: string | undefined;
+    STORAGE_S3_REGION?: string | undefined;
+    STORAGE_S3_BUCKET?: string | undefined;
+    STORAGE_S3_ACCESS_KEY?: string | undefined;
+    STORAGE_S3_SECRET_KEY?: string | undefined;
+    STORAGE_PUBLIC_BASE_URL?: string | undefined;
+    STORAGE_S3_ACL?: string | undefined;
 };
 export default env;
 //# sourceMappingURL=env.d.ts.map

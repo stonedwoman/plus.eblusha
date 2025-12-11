@@ -12,6 +12,7 @@ import { api, forceRefreshSession } from './utils/api'
 import { ensureDeviceBootstrap } from './domain/device/deviceManager'
 import { Capacitor } from '@capacitor/core' // Import Capacitor
 import NativeSocket from './capacitor/plugins/native-socket-plugin'
+import LoadingSpinner from './ui/components/LoadingSpinner'
 
 // Глобальное логирование для отладки
 if (typeof window !== 'undefined') {
@@ -758,15 +759,41 @@ function AppRoot() {
         alignItems: 'center', 
         height: 'calc(var(--vh, 1vh) * 100)',
         fontSize: '16px',
-        color: 'var(--text-muted)'
+        color: 'var(--text-muted)',
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 9999,
+        background: 'var(--paper)'
       }}>
-        Загрузка...
+        <LoadingSpinner />
       </div>
     )
   }
 
+  // После проверки авторизации показываем роутер с загрузкой в Suspense
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: 'calc(var(--vh, 1vh) * 100)',
+        fontSize: '16px',
+        color: 'var(--text-muted)',
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 9999,
+        background: 'var(--paper)'
+      }}>
+        <LoadingSpinner />
+      </div>
+    }>
       <RouterProvider router={router} />
     </Suspense>
   )

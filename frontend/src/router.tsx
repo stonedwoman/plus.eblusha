@@ -2,6 +2,7 @@ import { createBrowserRouter } from 'react-router-dom'
 import { Suspense, lazy, type ReactNode } from 'react'
 import { ProtectedRoute } from './ui/components/ProtectedRoute'
 import { PublicRoute } from './ui/components/PublicRoute'
+import LoadingSpinner from './ui/components/LoadingSpinner'
 
 const AppLayout = lazy(() => import('./ui/layouts/AppLayout'))
 const AuthLayout = lazy(() => import('./ui/layouts/AuthLayout'))
@@ -13,7 +14,7 @@ const CallsPage = lazy(() => import('./ui/pages/CallsPage'))
 const SettingsPage = lazy(() => import('./ui/pages/SettingsPage'))
 
 const withSuspense = (node: ReactNode) => (
-  <Suspense fallback={<div className="page-loading">Загрузка…</div>}>{node}</Suspense>
+  <Suspense fallback={null}>{node}</Suspense>
 )
 
 export const router = createBrowserRouter([

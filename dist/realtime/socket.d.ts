@@ -9,6 +9,7 @@ type ServerToClientEvents = {
         conversationId: string;
         messageId: string;
         senderId: string;
+        message?: any;
     }) => void;
     "receipts:update": (payload: {
         conversationId: string;
@@ -20,6 +21,12 @@ type ServerToClientEvents = {
         reason: string;
     }) => void;
     "message:notify": (payload: {
+        conversationId: string;
+        messageId: string;
+        senderId: string;
+        message?: any;
+    }) => void;
+    "message:reaction": (payload: {
         conversationId: string;
         messageId: string;
         senderId: string;

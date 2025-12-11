@@ -1,4 +1,5 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
+import { convertToProxyUrl } from '../../utils/media'
 
 type Props = { name: string; size?: number; id?: string; presence?: 'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | 'IN_CALL'; avatarUrl?: string | null }
 
@@ -12,16 +13,30 @@ function colorFromId(id: string) {
   return `hsl(${hue} ${saturation}% ${lightness}%)`
 }
 
+const MAX_RETRIES = 3
+const RETRY_DELAYS = [500, 1500, 3000] // delays in ms for each retry
+
 export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Props) {
   const bg = colorFromId(id)
   const initial = (name || '?').trim().charAt(0).toUpperCase()
   const isEmoji = !!avatarUrl?.startsWith('emoji:')
   const emoji = isEmoji ? avatarUrl!.slice('emoji:'.length) : null
   const [imageError, setImageError] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
+  const [currentImageUrl, setCurrentImageUrl] = useState<string | null>(null)
+  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  
   const resolvedAvatarUrl = useMemo(() => {
     if (!avatarUrl || isEmoji) return avatarUrl ?? null
     if (avatarUrl.startsWith('data:')) return avatarUrl
     if (typeof window === 'undefined') return avatarUrl
+    
+    // Convert S3 URLs to proxy URLs if needed
+    const proxyUrl = convertToProxyUrl(avatarUrl)
+    if (proxyUrl && proxyUrl !== avatarUrl) {
+      return proxyUrl
+    }
+    
     try {
       // If URL is already absolute (starts with http:// or https://), use it as-is
       if (avatarUrl.startsWith('http://') || avatarUrl.startsWith('https://')) {
@@ -38,6 +53,7 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
       return avatarUrl
     }
   }, [avatarUrl, isEmoji])
+  
   const presenceColor = useMemo(() => {
     if (!presence) return null
     switch (presence) {
@@ -53,12 +69,64 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
     }
   }, [presence])
   
-  // Reset error state when avatarUrl changes
+  // Reset error state and retry count when avatarUrl changes
   useEffect(() => {
     setImageError(false)
+    setRetryCount(0)
+    setCurrentImageUrl(null)
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current)
+      retryTimeoutRef.current = null
+    }
   }, [avatarUrl])
   
-  const showImage = resolvedAvatarUrl && !isEmoji && !imageError
+  // Update current image URL when resolved URL changes
+  useEffect(() => {
+    if (resolvedAvatarUrl && !isEmoji) {
+      setCurrentImageUrl(resolvedAvatarUrl)
+    }
+  }, [resolvedAvatarUrl, isEmoji])
+  
+  const handleImageError = () => {
+    if (retryCount < MAX_RETRIES && resolvedAvatarUrl && !isEmoji) {
+      const delay = RETRY_DELAYS[retryCount] || RETRY_DELAYS[RETRY_DELAYS.length - 1]
+      
+      retryTimeoutRef.current = setTimeout(() => {
+        try {
+          // Add cache-busting parameter to force reload
+          // Only add parameters if URL is valid and not a data URL
+          if (resolvedAvatarUrl.startsWith('data:')) {
+            // For data URLs, just retry with the same URL
+            setCurrentImageUrl(resolvedAvatarUrl)
+          } else {
+            const url = new URL(resolvedAvatarUrl)
+            url.searchParams.set('_retry', String(retryCount + 1))
+            url.searchParams.set('_t', String(Date.now()))
+            setCurrentImageUrl(url.toString())
+          }
+          setRetryCount(prev => prev + 1)
+        } catch (err) {
+          // If URL parsing fails, just retry with the same URL
+          console.warn('[Avatar] Failed to parse URL for retry:', resolvedAvatarUrl, err)
+          setCurrentImageUrl(resolvedAvatarUrl)
+          setRetryCount(prev => prev + 1)
+        }
+      }, delay)
+    } else {
+      setImageError(true)
+    }
+  }
+  
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current)
+      }
+    }
+  }, [])
+  
+  const showImage = currentImageUrl && !isEmoji && !imageError
   return (
     <div
       style={{
@@ -76,10 +144,16 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
     >
       {showImage ? (
         <img 
-          src={resolvedAvatarUrl} 
+          src={currentImageUrl!} 
           alt={name} 
           style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover', objectPosition: 'center' }}
-          onError={() => setImageError(true)}
+          onError={handleImageError}
+          onLoad={() => {
+            // Reset retry count on successful load
+            if (retryCount > 0) {
+              setRetryCount(0)
+            }
+          }}
         />
       ) : isEmoji ? (
         <span style={{ fontSize: Math.floor(size * 0.6) }}>{emoji}</span>

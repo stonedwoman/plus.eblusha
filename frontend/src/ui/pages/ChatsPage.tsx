@@ -13,7 +13,7 @@ import { ImageEditorModal } from '../components/ImageEditorModal'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
-import { ensureMediaPermissions } from '../../utils/media'
+import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
 import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { getWaveform } from '../../utils/audioWaveform'
 
@@ -36,12 +36,15 @@ function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }
   const [waveform, setWaveform] = useState<number[]>([])
   const [loadingWaveform, setLoadingWaveform] = useState(true)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  
+  // Convert to proxy URL if needed
+  const proxyUrl = convertToProxyUrl(url) || url
 
   // Генерируем waveform при загрузке
   useEffect(() => {
     let cancelled = false
     setLoadingWaveform(true)
-    getWaveform(url, 60)
+    getWaveform(proxyUrl, 60)
       .then((data) => {
         if (!cancelled) {
           setWaveform(data)
@@ -57,7 +60,7 @@ function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }
     return () => {
       cancelled = true
     }
-  }, [url])
+  }, [proxyUrl])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -108,7 +111,7 @@ function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)' }}>
-      <audio ref={audioRef} src={url} preload="metadata" />
+      <audio ref={audioRef} src={proxyUrl} preload="metadata" />
       <button
         type="button"
         onClick={togglePlay}
@@ -351,6 +354,36 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const voiceRecorderRef = useRef<VoiceRecorder | null>(null)
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceDuration, setVoiceDuration] = useState(0)
+  const [voiceWaveform, setVoiceWaveform] = useState<number[]>([])
+  const waveformUpdateIntervalRef = useRef<number | null>(null)
+  const waveformContainerRef = useRef<HTMLDivElement | null>(null)
+  const [waveformMaxBars, setWaveformMaxBars] = useState(150)
+
+  // Вычисляем количество баров на основе ширины контейнера
+  useEffect(() => {
+    if (isMobile) {
+      setWaveformMaxBars(60)
+      return
+    }
+    
+    const updateMaxBars = () => {
+      if (!waveformContainerRef.current) return
+      const containerWidth = waveformContainerRef.current.clientWidth
+      const barTotalWidth = 4 // 2px ширина + 2px gap
+      const maxBars = Math.floor(containerWidth / barTotalWidth)
+      setWaveformMaxBars(Math.max(100, maxBars)) // Минимум 100 баров
+    }
+    
+    updateMaxBars()
+    const resizeObserver = new ResizeObserver(updateMaxBars)
+    if (waveformContainerRef.current) {
+      resizeObserver.observe(waveformContainerRef.current)
+    }
+    
+    return () => {
+      resizeObserver.disconnect()
+    }
+  }, [isMobile])
 
   // Prefetch CallOverlay to avoid first-time render delay (bundle loading)
   useEffect(() => {
@@ -1373,7 +1406,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       
       ;(async () => {
         try {
-          const response = await fetch(att.url, { credentials: 'omit' })
+          // Convert to proxy URL if needed
+          const fetchUrl = convertToProxyUrl(att.url) || att.url
+          const response = await fetch(fetchUrl, { credentials: 'omit' })
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`)
           }
@@ -1419,11 +1454,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
   const resolveAttachmentUrl = useCallback(
     (att: any) => {
       if (!att) return null
-      if (!activeConversation?.isSecret) return att.url
+      
+      // Convert S3 URL to proxy URL if needed (for old URLs in database)
+      const baseUrl = convertToProxyUrl(att.url)
+      
+      if (!activeConversation?.isSecret) return baseUrl
+      
       const meta = att.metadata?.e2ee
       if (!meta || meta.kind !== 'ciphertext') {
-        return att.url
+        return baseUrl
       }
+      
+      // For encrypted attachments, use the original URL as key for decryption map
       const entry = attachmentDecryptMap[att.url]
       if (entry?.status === 'ready' && entry.url) {
         return entry.url
@@ -3046,12 +3088,38 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         return
       }
 
+      // На всякий случай останавливаем рингтон (мог остаться активным)
+      stopRingtone()
+
+      // Сбрасываем waveform при начале новой записи
+      setVoiceWaveform([])
+
       const recorder = new VoiceRecorder({
         onStateChange: (state) => {
           setVoiceRecording(state === 'recording')
+          if (state !== 'recording') {
+            // Останавливаем сбор waveform данных
+            if (waveformUpdateIntervalRef.current) {
+              clearInterval(waveformUpdateIntervalRef.current)
+              waveformUpdateIntervalRef.current = null
+            }
+          }
         },
         onDurationUpdate: (duration) => {
           setVoiceDuration(duration)
+        },
+        onAmplitudeUpdate: (amplitude) => {
+          // Обновляем waveform в реальном времени
+          // Используем фиксированное количество баров (как при воспроизведении) для стабильности на мобильных
+          setVoiceWaveform((prev) => {
+            const maxBars = isMobile ? 60 : waveformMaxBars
+            const newWaveform = [...prev, amplitude]
+            // Ограничиваем до фиксированного количества баров, новые данные сдвигают старые влево
+            if (newWaveform.length > maxBars) {
+              return newWaveform.slice(-maxBars)
+            }
+            return newWaveform
+          })
         },
         onError: (error) => {
           console.error('Voice recording error:', error)
@@ -3087,8 +3155,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       voiceRecorderRef.current.cancel()
       voiceRecorderRef.current = null
     }
+    if (waveformUpdateIntervalRef.current) {
+      clearInterval(waveformUpdateIntervalRef.current)
+      waveformUpdateIntervalRef.current = null
+    }
     setVoiceRecording(false)
     setVoiceDuration(0)
+    setVoiceWaveform([])
   }
 
   const sendVoiceMessage = async (audioBlob: Blob, duration: number) => {
@@ -4859,8 +4932,92 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             {voiceRecording ? (
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
-                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#ef4444', animation: 'pulse 1.5s ease-in-out infinite' }} />
-                  <div style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>
+                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#ef4444', animation: 'pulse 1.5s ease-in-out infinite', flexShrink: 0 }} />
+                  {/* Фиксированный контейнер для waveform - звук движется справа налево */}
+                  <div 
+                    ref={waveformContainerRef}
+                    style={{ 
+                      width: '100%', 
+                      ...(isMobile ? { maxWidth: 200 } : {}), 
+                      height: 24, 
+                      overflow: 'hidden', 
+                      position: 'relative',
+                      flex: 1,
+                      minWidth: 0,
+                    }}
+                  >
+                    {(() => {
+                      // Используем фиксированное количество баров (как при воспроизведении)
+                      const barWidth = 2
+                      const barGap = 2
+                      const barTotalWidth = barWidth + barGap
+                      const maxBars = isMobile ? 60 : waveformMaxBars
+                      
+                      // Если данных еще нет, показываем плейсхолдер
+                      if (voiceWaveform.length === 0) {
+                        return (
+                          <div style={{ 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: barGap, 
+                            height: 24,
+                          }}>
+                            {Array(maxBars).fill(0).map((_, i) => (
+                              <div
+                                key={i}
+                                style={{
+                                  width: barWidth,
+                                  height: 12,
+                                  background: 'var(--surface-border)',
+                                  borderRadius: 1,
+                                  animation: 'pulse 1.5s ease-in-out infinite',
+                                  animationDelay: `${i * 0.1}s`,
+                                  flexShrink: 0,
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )
+                      }
+                      
+                      // Показываем waveform данные с прокруткой справа налево (как на ПК)
+                      return (
+                        <div style={{ 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: barGap, 
+                          height: 24,
+                          position: 'absolute',
+                          right: 0,
+                          // Сдвигаем влево: когда данных больше maxBars, каждый новый бар сдвигает весь waveform влево
+                          transform: voiceWaveform.length > maxBars 
+                            ? `translateX(-${(voiceWaveform.length - maxBars) * barTotalWidth}px)` 
+                            : 'translateX(0)',
+                          transition: 'none', // Убираем transition для мгновенного обновления
+                        }}>
+                          {/* Показываем последние maxBars баров, новые появляются справа */}
+                          {voiceWaveform.slice(-maxBars).map((amplitude, index) => {
+                            // Вычисляем высоту бара: минимум 4px, максимум 20px (как при воспроизведении)
+                            const height = Math.max(4, (amplitude / 100) * 20)
+                            return (
+                              <div
+                                key={`${voiceWaveform.length - maxBars + index}-${index}`}
+                                style={{
+                                  width: barWidth,
+                                  height: `${height}px`,
+                                  background: 'var(--brand)',
+                                  borderRadius: 1,
+                                  alignSelf: 'flex-end',
+                                  flexShrink: 0,
+                                }}
+                              />
+                            )
+                          })}
+                        </div>
+                      )
+                    })()}
+                  </div>
+                  <div style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500, whiteSpace: 'nowrap', flexShrink: 0 }}>
                     {Math.floor(voiceDuration / 60)}:{(voiceDuration % 60).toString().padStart(2, '0')}
                   </div>
                 </div>
@@ -4880,7 +5037,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   style={{ flexShrink: 0 }}
                   aria-label="Отправить голосовое сообщение"
                 >
-                  <Square size={16} fill="currentColor" />
+                  <Send size={16} />
                 </button>
               </div>
             ) : (
