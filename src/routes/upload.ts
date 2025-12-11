@@ -149,8 +149,15 @@ router.post("/", upload.single("file"), async (req: Request, res) => {
     // if (sse) putObjectParams.ServerSideEncryption = sse;
     const command = new PutObjectCommand(putObjectParams);
     await s3Client.send(command);
-    const url = `${s3Config.publicBaseUrl}/${encodeKeyForUrl(key)}`;
-    res.json({ url, path: key });
+    
+    // Use proxy URL instead of direct S3 URL to avoid blocking in Russia
+    // Construct proxy URL: /api/files/{encodedKey}
+    const encodedKey = encodeKeyForUrl(key);
+    const protocol = req.protocol;
+    const host = req.get("host") || "localhost";
+    const proxyUrl = `${protocol}://${host}/api/files/${encodedKey}`;
+    
+    res.json({ url: proxyUrl, path: key });
   } catch (error) {
     logger.error({ err: error }, "Failed to upload file to S3");
     res.status(500).json({ message: "Upload failed" });

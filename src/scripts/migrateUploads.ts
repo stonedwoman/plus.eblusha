@@ -27,9 +27,12 @@ const missingS3Vars = [
   "STORAGE_S3_SECRET_KEY",
 ].filter((key) => !(env as Record<string, unknown>)[key]);
 
-if (!env.STORAGE_PUBLIC_BASE_URL) {
-  throw new Error("STORAGE_PUBLIC_BASE_URL must be defined to migrate uploads.");
-}
+// For proxy URLs, we need API base URL (e.g., https://ru.eblusha.org)
+// If not set, we'll try to extract from STORAGE_PUBLIC_BASE_URL or use default
+const apiBaseUrl = process.env.API_BASE_URL || 
+  (env.STORAGE_PUBLIC_BASE_URL && typeof env.STORAGE_PUBLIC_BASE_URL === 'string'
+    ? new URL(env.STORAGE_PUBLIC_BASE_URL).origin 
+    : "http://localhost:3000");
 
 if (!skipUpload && missingS3Vars.length > 0) {
   throw new Error(
@@ -50,7 +53,8 @@ const s3Client = skipUpload
     });
 
 const objectPrefix = env.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
-const publicBaseUrl = env.STORAGE_PUBLIC_BASE_URL.replace(/\/$/, "");
+// Use proxy URL instead of direct S3 URL to avoid blocking in Russia
+const proxyBaseUrl = apiBaseUrl.replace(/\/$/, "");
 const resolvedAcl = env.STORAGE_S3_ACL as ObjectCannedACL | undefined;
 
 const resolveServerSideEncryption = (
@@ -153,7 +157,9 @@ const migrateFile = async (fileName: string) => {
     body.close();
   }
 
-  const publicUrl = `${publicBaseUrl}/${encodeKeyForUrl(key)}`;
+  // Use proxy URL: /api/files/{encodedKey}
+  const encodedKey = encodeKeyForUrl(key);
+  const publicUrl = `${proxyBaseUrl}/api/files/${encodedKey}`;
 
   const attachmentResult = await prisma.messageAttachment.updateMany({
     where: { OR: buildOrConditions("url", fileName) },

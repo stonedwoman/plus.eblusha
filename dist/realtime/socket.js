@@ -164,6 +164,53 @@ function initSocket(server) {
         socket.join(userId);
         setSocketFocus(userId, socket.id, true);
         void recomputePresence(io, userId);
+        // Проверяем активные звонки при подключении
+        // Если пользователю звонили, пока он был офлайн, отправляем событие входящего звонка
+        // Используем небольшую задержку, чтобы убедиться, что сокет полностью готов
+        setTimeout(() => {
+            void (async () => {
+                try {
+                    // Получаем все беседы пользователя
+                    const conversations = await prisma_1.default.conversation.findMany({
+                        where: {
+                            participants: {
+                                some: { userId },
+                            },
+                        },
+                        include: {
+                            participants: true,
+                        },
+                    });
+                    for (const conv of conversations) {
+                        const callSt = callState.get(conv.id);
+                        if (!callSt)
+                            continue;
+                        // Если звонок еще не принят и пользователь не является инициатором
+                        if (!callSt.accepted && callSt.inviterId !== userId) {
+                            const isGroup = !!conv.isGroup;
+                            // Для 1:1 звонков отправляем событие входящего звонка
+                            if (!isGroup) {
+                                // Убеждаемся, что сокет присоединен к комнате беседы
+                                socket.join(conv.id);
+                                const inviter = await prisma_1.default.user.findUnique({
+                                    where: { id: callSt.inviterId },
+                                    select: { displayName: true, username: true },
+                                });
+                                const name = inviter?.displayName ?? inviter?.username ?? "пользователь";
+                                io.to(userId).emit("call:incoming", {
+                                    conversationId: conv.id,
+                                    from: { id: callSt.inviterId, name },
+                                    video: callSt.video,
+                                });
+                            }
+                        }
+                    }
+                }
+                catch (error) {
+                    logger_1.default.error({ error, userId }, "Failed to check active calls on connection");
+                }
+            })();
+        }, 100);
         socket.on("presence:focus", ({ focused }) => {
             setSocketFocus(userId, socket.id, !!focused);
             void recomputePresence(io, userId);
@@ -350,10 +397,20 @@ function initSocket(server) {
                         },
                     });
                     // Отправляем событие о новом сообщении всем участникам беседы через комнату
-                    io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
+                    io.to(conversationId).emit("message:new", {
+                        conversationId,
+                        messageId: msg.id,
+                        senderId: userId,
+                        message: msg,
+                    });
                     // Также отправляем message:notify для каждого участника отдельно (кроме отправителя)
                     for (const rid of recipients) {
-                        io.to(rid).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                        io.to(rid).emit("message:notify", {
+                            conversationId,
+                            messageId: msg.id,
+                            senderId: userId,
+                            message: msg,
+                        });
                     }
                     logger_1.default.info({ conversationId, userId, video, messageId: msg.id, isGroup, participantsCount: conv.participants.length }, "Call started message created in call:invite");
                 }
@@ -364,8 +421,9 @@ function initSocket(server) {
             // Для 1:1 звонков отправляем событие входящего звонка получателям
             // Для групповых звонков это не нужно, так как они видят активный звонок через call:status
             if (!isGroup) {
+                const incomingPayload = { conversationId, from: { id: userId, name }, video };
                 for (const rid of recipients) {
-                    io.to(rid).emit("call:incoming", { conversationId, from: { id: userId, name }, video });
+                    io.to(rid).emit("call:incoming", incomingPayload);
                 }
             }
             if (isGroup) {
@@ -383,9 +441,13 @@ function initSocket(server) {
             const st = callState.get(conversationId);
             if (st)
                 callState.set(conversationId, { ...st, accepted: true });
+            // Отправляем call:accepted получателям звонка
             for (const rid of recipients) {
                 io.to(rid).emit("call:accepted", { conversationId, by: { id: userId }, video });
             }
+            // Также отправляем call:accepted самому пользователю на другие его устройства
+            // Это нужно, чтобы прекратить входящий звонок на других устройствах
+            socket.to(userId).emit("call:accepted", { conversationId, by: { id: userId }, video });
         });
         socket.on("call:decline", async ({ conversationId }) => {
             const conv = await prisma_1.default.conversation.findUnique({
@@ -429,9 +491,19 @@ function initSocket(server) {
                             metadata: { ended: true, video: !!st?.video, duration: elapsedMs },
                         },
                     });
-                    io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId });
+                    io.to(conversationId).emit("message:new", {
+                        conversationId,
+                        messageId: msg.id,
+                        senderId,
+                        message: msg,
+                    });
                     for (const rid of recipients) {
-                        io.to(rid).emit("message:notify", { conversationId, messageId: msg.id, senderId });
+                        io.to(rid).emit("message:notify", {
+                            conversationId,
+                            messageId: msg.id,
+                            senderId,
+                            message: msg,
+                        });
                     }
                 }
                 catch (error) {
@@ -456,7 +528,12 @@ function initSocket(server) {
                     });
                     // Mark as read for inviter only
                     await prisma_1.default.messageReceipt.create({ data: { messageId: msg.id, userId: st.inviterId, status: "READ" } });
-                    io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: st.inviterId });
+                    io.to(conversationId).emit("message:new", {
+                        conversationId,
+                        messageId: msg.id,
+                        senderId: st.inviterId,
+                        message: msg,
+                    });
                 }
                 catch (error) {
                     logger_1.default.warn({ error }, "Failed to create missed call message");
@@ -501,9 +578,19 @@ function initSocket(server) {
                             metadata: { ended: true, video: !!st?.video, duration: elapsedMs },
                         },
                     });
-                    io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
+                    io.to(conversationId).emit("message:new", {
+                        conversationId,
+                        messageId: msg.id,
+                        senderId: userId,
+                        message: msg,
+                    });
                     for (const rid of recipients) {
-                        io.to(rid).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                        io.to(rid).emit("message:notify", {
+                            conversationId,
+                            messageId: msg.id,
+                            senderId: userId,
+                            message: msg,
+                        });
                     }
                 }
                 catch (error) {
@@ -531,7 +618,12 @@ function initSocket(server) {
                         },
                     });
                     await prisma_1.default.messageReceipt.create({ data: { messageId: msg.id, userId: st.inviterId, status: "READ" } });
-                    io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: st.inviterId });
+                    io.to(conversationId).emit("message:new", {
+                        conversationId,
+                        messageId: msg.id,
+                        senderId: st.inviterId,
+                        message: msg,
+                    });
                 }
                 catch { }
             }
@@ -549,9 +641,19 @@ function initSocket(server) {
                             metadata: { ended: true, video: !!st.video, duration: elapsedMs },
                         },
                     });
-                    io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
+                    io.to(conversationId).emit("message:new", {
+                        conversationId,
+                        messageId: msg.id,
+                        senderId: userId,
+                        message: msg,
+                    });
                     for (const rid of recipients) {
-                        io.to(rid).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                        io.to(rid).emit("message:notify", {
+                            conversationId,
+                            messageId: msg.id,
+                            senderId: userId,
+                            message: msg,
+                        });
                     }
                 }
                 catch (error) {

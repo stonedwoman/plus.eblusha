@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const http_1 = __importDefault(require("http"));
 const path_1 = __importDefault(require("path"));
+const fs_1 = __importDefault(require("fs"));
 const express_1 = __importDefault(require("express"));
 const app_1 = __importDefault(require("./app"));
 const env_1 = __importDefault(require("./config/env"));
@@ -13,6 +14,9 @@ const socket_1 = require("./realtime/socket");
 const port = env_1.default.PORT;
 // static serving for uploads with permissive cross-origin headers for images
 const uploadsPath = path_1.default.join(process.cwd(), 'uploads');
+if (!fs_1.default.existsSync(uploadsPath)) {
+    fs_1.default.mkdirSync(uploadsPath, { recursive: true });
+}
 const staticOptions = {
     dotfiles: 'deny',
     etag: true,

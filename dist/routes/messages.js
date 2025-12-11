@@ -11,6 +11,44 @@ const auth_1 = require("../middlewares/auth");
 const socket_1 = require("../realtime/socket");
 const router = (0, express_1.Router)();
 router.use(auth_1.authenticate);
+const previewParamsSchema = zod_1.z.object({ messageId: zod_1.z.string().cuid() });
+router.get("/:messageId/preview", async (req, res) => {
+    const parsedParams = previewParamsSchema.safeParse(req.params);
+    if (!parsedParams.success) {
+        res.status(400).json({ message: "Invalid message id" });
+        return;
+    }
+    const { messageId } = parsedParams.data;
+    const userId = req.user.id;
+    const message = await prisma_1.default.message.findUnique({
+        where: { id: messageId },
+        select: {
+            id: true,
+            content: true,
+            conversationId: true,
+            senderId: true,
+            createdAt: true,
+            attachments: {
+                select: {
+                    id: true,
+                    type: true,
+                },
+            },
+        },
+    });
+    if (!message) {
+        res.status(404).json({ message: "Message not found" });
+        return;
+    }
+    const participantCount = await prisma_1.default.conversationParticipant.count({
+        where: { conversationId: message.conversationId, userId },
+    });
+    if (participantCount === 0) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+    }
+    res.json({ message });
+});
 const updateStatusSchema = zod_1.z.object({
     messageIds: zod_1.z.array(zod_1.z.string().cuid()).min(1),
     status: zod_1.z.enum(["DELIVERED", "READ", "SEEN"]),
@@ -80,8 +118,31 @@ router.post("/react", async (req, res) => {
         update: {},
         create: { messageId, userId, emoji },
     });
-    (0, socket_1.getIO)()?.to(message.conversationId).emit("message:new", { conversationId: message.conversationId, messageId, senderId: userId });
+    (0, socket_1.getIO)()?.to(message.conversationId).emit("message:reaction", { conversationId: message.conversationId, messageId, senderId: userId });
     res.json({ reaction });
+});
+router.post("/unreact", async (req, res) => {
+    const parsed = reactSchema.safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ message: "Invalid reaction" });
+        return;
+    }
+    const { messageId, emoji } = parsed.data;
+    const userId = req.user.id;
+    const message = await prisma_1.default.message.findUnique({ where: { id: messageId } });
+    if (!message) {
+        res.status(404).json({ message: "Message not found" });
+        return;
+    }
+    await prisma_1.default.messageReaction.deleteMany({
+        where: {
+            messageId,
+            userId,
+            emoji,
+        },
+    });
+    (0, socket_1.getIO)()?.to(message.conversationId).emit("message:reaction", { conversationId: message.conversationId, messageId, senderId: userId });
+    res.json({ success: true });
 });
 const deleteSchema = zod_1.z.object({ messageId: zod_1.z.string().cuid() });
 router.post("/delete", async (req, res) => {
