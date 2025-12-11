@@ -141,8 +141,9 @@ router.post("/", upload.single("file"), async (req: Request, res) => {
       Body: file.buffer,
       ContentType: file.mimetype || "application/octet-stream",
     };
-    // Note: Hetzner Object Storage doesn't support ACL/SSE in PutObject
-    // Uncomment if needed for AWS S3 or other providers:
+    // Note: twcstorage.ru (Russian S3) doesn't support ACL/SSE in PutObject
+    // Similar to Hetzner, these parameters cause InvalidRequest errors
+    // Uncomment if needed for AWS S3 or other providers that support it:
     // const acl = resolveObjectAcl(env.STORAGE_S3_ACL);
     // if (acl) putObjectParams.ACL = acl;
     // const sse = resolveServerSideEncryption(env.STORAGE_S3_SSE);
@@ -150,14 +151,11 @@ router.post("/", upload.single("file"), async (req: Request, res) => {
     const command = new PutObjectCommand(putObjectParams);
     await s3Client.send(command);
     
-    // Use proxy URL instead of direct S3 URL to avoid blocking in Russia
-    // Construct proxy URL: /api/files/{encodedKey}
+    // Возвращаем прямую ссылку на S3 (без внутреннего прокси)
     const encodedKey = encodeKeyForUrl(key);
-    const protocol = req.protocol;
-    const host = req.get("host") || "localhost";
-    const proxyUrl = `${protocol}://${host}/api/files/${encodedKey}`;
+    const publicUrl = `${s3Config.publicBaseUrl}/${encodedKey}`;
     
-    res.json({ url: proxyUrl, path: key });
+    res.json({ url: publicUrl, path: key, publicUrl });
   } catch (error) {
     logger.error({ err: error }, "Failed to upload file to S3");
     res.status(500).json({ message: "Upload failed" });
