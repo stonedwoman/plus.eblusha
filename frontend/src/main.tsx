@@ -14,25 +14,48 @@ import { Capacitor } from '@capacitor/core' // Import Capacitor
 import NativeSocket from './capacitor/plugins/native-socket-plugin'
 import LoadingSpinner from './ui/components/LoadingSpinner'
 
-// Глобальное логирование для отладки
-if (typeof window !== 'undefined') {
-  const originalLog = console.log
-  console.log = (...args: any[]) => {
-    originalLog(...args)
-    // Также отправляем в Capacitor для видимости в logcat
-    if (typeof (window as any).Capacitor !== 'undefined') {
-      try {
-        (window as any).Capacitor.Plugins?.Console?.log?.({
-          level: 'info',
-          message: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')
-        })
-      } catch (e) {
-        // Игнорируем ошибки
+// Quiet console by default (prod + web): keep warn/error, suppress log/info/debug unless explicitly enabled.
+// Enable with: localStorage.setItem('eb-debug', '1') or ?debug=1
+if (typeof window !== 'undefined' && !(window as any).__ebConsolePatched) {
+  ;(window as any).__ebConsolePatched = true
+  const isDebugEnabled = (() => {
+    try {
+      const qs = new URLSearchParams(window.location.search)
+      const q = qs.get('debug')
+      if (q === '1' || q === 'true') return true
+      const raw = window.localStorage.getItem('eb-debug')
+      return raw === '1' || raw === 'true'
+    } catch {
+      return false
+    }
+  })()
+
+  const originalLog = console.log.bind(console)
+  const originalInfo = (console.info ? console.info.bind(console) : originalLog)
+  const originalDebug = (console.debug ? console.debug.bind(console) : originalLog)
+
+  if (!isDebugEnabled) {
+    console.log = () => {}
+    console.info = () => {}
+    console.debug = () => {}
+  } else {
+    // Optional: also forward logs to Capacitor logcat when debugging on native.
+    console.log = (...args: any[]) => {
+      originalLog(...args)
+      if (typeof (window as any).Capacitor !== 'undefined') {
+        try {
+          ;(window as any).Capacitor.Plugins?.Console?.log?.({
+            level: 'info',
+            message: args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '),
+          })
+        } catch {
+          // ignore
+        }
       }
     }
+    console.info = (...args: any[]) => originalInfo(...args)
+    console.debug = (...args: any[]) => originalDebug(...args)
   }
-  
-  console.log('[Main] Script loaded, Capacitor available:', typeof (window as any).Capacitor !== 'undefined')
 }
 
 const queryClient = new QueryClient()
@@ -814,6 +837,10 @@ if (!rootElement) {
 )
   console.log('[Main] ✅ React app rendered')
 }
+
+
+
+
 
 
 

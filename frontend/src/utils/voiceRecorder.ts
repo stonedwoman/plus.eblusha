@@ -13,7 +13,7 @@ export class VoiceRecorder {
   private stream: MediaStream | null = null
   private audioContext: AudioContext | null = null
   private analyser: AnalyserNode | null = null
-  private dataArray: Uint8Array | null = null
+  private dataArray: Uint8Array<ArrayBuffer> | null = null
   private amplitudeTimer: number | null = null
   private state: VoiceRecorderState = 'idle'
   private duration = 0
@@ -53,7 +53,8 @@ export class VoiceRecorder {
         this.analyser.fftSize = 2048 // Увеличиваем для лучшего разрешения
         this.analyser.smoothingTimeConstant = 0.3 // Меньше сглаживания для более отзывчивой визуализации
         source.connect(this.analyser)
-        this.dataArray = new Uint8Array(this.analyser.frequencyBinCount)
+        // Allocate an explicit ArrayBuffer so the typed array is Uint8Array<ArrayBuffer> (matches lib.dom typing in TS 5.9+)
+        this.dataArray = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount))
         this.startAmplitudeAnalysis()
       } catch (err) {
         console.error('Failed to setup audio analysis:', err)
@@ -202,6 +203,7 @@ export class VoiceRecorder {
       
       // Используем getByteTimeDomainData для получения амплитуды (не частоты)
       try {
+        if (!this.analyser || !this.dataArray) return
         this.analyser.getByteTimeDomainData(this.dataArray)
       } catch (err) {
         // Если analyser недоступен, прекращаем анализ

@@ -25,6 +25,7 @@ declare const env: {
     STORAGE_S3_SECRET_KEY?: string | undefined;
     STORAGE_PUBLIC_BASE_URL?: string | undefined;
     STORAGE_S3_ACL?: string | undefined;
+    STORAGE_ENC_KEY?: string | undefined;
 };
 export default env;
 //# sourceMappingURL=env.d.ts.map
