@@ -57,6 +57,7 @@ import { createPortal } from 'react-dom'
 import { LiveKitRoom, VideoConference, MediaDeviceSelect, useConnectionState, useLocalParticipant, useRoomContext } from '@livekit/components-react'
 import { useKrispNoiseFilter } from '@livekit/components-react/krisp'
 import '@livekit/components-styles'
+import { X } from 'lucide-react'
 import { api } from '../../utils/api'
 import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../utils/socket'
 import { useAppStore } from '../../domain/store/appStore'
@@ -1246,6 +1247,17 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       border-radius: 16px !important;
       overflow: hidden !important;
       box-shadow: var(--shadow-sharp) !important;
+      /* Enable vertical scrolling on mobile */
+      overflow-y: auto !important;
+      -webkit-overflow-scrolling: touch !important;
+    }
+    
+    /* Ensure settings content can scroll on mobile */
+    @media (max-width: 768px) {
+      .call-container .lk-settings-menu-modal {
+        max-height: min(90vh, 600px) !important;
+        padding: 16px !important;
+      }
     }
 
     .call-container .lk-settings-menu-modal .eb-settings-grid {
@@ -1946,6 +1958,30 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         visibility: minimized ? 'hidden' : 'visible',
       }} className="call-container">
         <style>{videoContainCss}</style>
+        <button
+          className="btn btn-icon btn-ghost"
+          onClick={() => handleClose({ manual: true })}
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 12,
+            zIndex: 1001,
+            width: 36,
+            height: 36,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 8,
+            background: 'rgba(0, 0, 0, 0.3)',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            color: 'rgba(255, 255, 255, 0.9)',
+            cursor: 'pointer',
+          }}
+          aria-label="Закрыть"
+          title="Закрыть"
+        >
+          <X size={18} />
+        </button>
         <LiveKitRoom 
           serverUrl={serverUrl} 
           token={token} 
