@@ -41,6 +41,8 @@ router.post("/token", async (req, res) => {
     roomJoin: true,
     canPublish: true,
     canSubscribe: true,
+    // required for LiveKit data channel messages (used for ping exchange, etc.)
+    canPublishData: true,
   });
 
   const jwt = await token.toJwt();

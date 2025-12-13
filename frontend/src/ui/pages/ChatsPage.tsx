@@ -724,8 +724,20 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
 
   // Initialize/subscribe to server call status for group calls
   useEffect(() => {
+    const debugCallStatus = (() => {
+      try {
+        const qs = new URLSearchParams(window.location.search)
+        const q = qs.get('lkDebugCallStatus')
+        if (q === '1' || q === 'true') return true
+        const raw = window.localStorage.getItem('lk-debug-callstatus')
+        return raw === '1' || raw === 'true'
+      } catch {
+        return false
+      }
+    })()
+
     const handleSingle = (p: { conversationId: string; active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }) => {
-      console.log('[CallStatus] Single:', p)
+      if (debugCallStatus) console.log('[CallStatus] Single:', p)
       setActiveCalls((prev) => {
         const list = client.getQueryData(['conversations']) as any[] | undefined
         const conv = Array.isArray(list) ? list.find((r: any) => r.conversation.id === p.conversationId)?.conversation : null
@@ -765,7 +777,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       })
     }
     const handleBulk = (payload: { statuses: Record<string, { active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }> }) => {
-      console.log('[CallStatus] Bulk:', payload)
+      if (debugCallStatus) console.log('[CallStatus] Bulk:', payload)
       setActiveCalls((prev) => {
         const merged = { ...prev }
         const list = client.getQueryData(['conversations']) as any[] | undefined
@@ -1246,7 +1258,14 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
   useEffect(() => {
     try {
       const list = (conversationsQuery.data || []).map((r: any) => r.conversation.id)
-      console.log('[CallStatus] Requesting statuses for:', list)
+      try {
+        const qs = new URLSearchParams(window.location.search)
+        const q = qs.get('lkDebugCallStatus')
+        const debugCallStatus = (q === '1' || q === 'true') || (window.localStorage.getItem('lk-debug-callstatus') === '1' || window.localStorage.getItem('lk-debug-callstatus') === 'true')
+        if (debugCallStatus) console.log('[CallStatus] Requesting statuses for:', list)
+      } catch {
+        // ignore
+      }
       if (list.length > 0) requestCallStatuses(list)
       for (const cid of list) { try { joinConversation(cid) } catch {} }
     } catch {}

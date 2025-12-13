@@ -40,6 +40,8 @@ const envSchema = zod_1.z.object({
     STORAGE_PREFIX: zod_1.z.string().default("uploads"),
     STORAGE_S3_ACL: zod_1.z.string().optional(),
     STORAGE_S3_SSE: zod_1.z.string().default("AES256"),
+    // Optional symmetric key (base64 or hex, 32 bytes) for server-side encryption
+    STORAGE_ENC_KEY: zod_1.z.string().optional(),
 });
 const env = envSchema.parse(process.env);
 exports.default = env;

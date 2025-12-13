@@ -54,11 +54,21 @@ if (typeof window !== 'undefined' && typeof navigator !== 'undefined' && navigat
   window.__eblushaEnumeratePatched = true
 }
 import { createPortal } from 'react-dom'
-import { LiveKitRoom, VideoConference } from '@livekit/components-react'
+import { LiveKitRoom, VideoConference, MediaDeviceSelect, useConnectionState, useLocalParticipant, useRoomContext } from '@livekit/components-react'
+import { useKrispNoiseFilter } from '@livekit/components-react/krisp'
 import '@livekit/components-styles'
 import { api } from '../../utils/api'
 import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../utils/socket'
 import { useAppStore } from '../../domain/store/appStore'
+import { ConnectionState, LogLevel, RoomEvent, setLogLevel } from 'livekit-client'
+
+// Silence LiveKit internal info/debug logs (e.g. "publishing track") in production.
+// Keep warnings/errors; you can still debug via localStorage flags.
+try {
+  setLogLevel(LogLevel.warn)
+} catch {
+  // ignore
+}
 
 type Props = {
   open: boolean
@@ -73,6 +83,1040 @@ type Props = {
   avatarsById?: Record<string, string | null>
   localUserId?: string | null
   isGroup?: boolean
+}
+
+const LK_SETTINGS_KEYS = {
+  aec: 'eb.lk.webrtc.aec',
+  ns: 'eb.lk.webrtc.ns',
+  agc: 'eb.lk.webrtc.agc',
+  krisp: 'eb.lk.krisp.enabled',
+} as const
+
+function readStoredBool(key: string, fallback: boolean): boolean {
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw === null) return fallback
+    return raw === '1' || raw === 'true'
+  } catch {
+    return fallback
+  }
+}
+
+function writeStoredBool(key: string, value: boolean) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(key, value ? '1' : '0')
+  } catch {
+    // ignore
+  }
+}
+
+function isDebugFlagEnabled(storageKey: string, queryKey: string): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const qs = new URLSearchParams(window.location.search)
+    const q = qs.get(queryKey)
+    if (q === '1' || q === 'true') return true
+    const raw = window.localStorage.getItem(storageKey)
+    return raw === '1' || raw === 'true'
+  } catch {
+    return false
+  }
+}
+
+function ToggleRow({
+  label,
+  description,
+  checked,
+  onChange,
+  disabled = false,
+  rightHint,
+}: {
+  label: string
+  description?: string
+  checked: boolean
+  onChange: (next: boolean) => void
+  disabled?: boolean
+  rightHint?: string
+}) {
+  return (
+    <div className="eb-toggle-row">
+      <div className="eb-toggle-text">
+        <div className="eb-toggle-label">{label}</div>
+        {description ? <div className="eb-toggle-desc">{description}</div> : null}
+      </div>
+      <div className="eb-toggle-right">
+        {rightHint ? <div className="eb-toggle-hint">{rightHint}</div> : null}
+        <label className={`eb-switch ${disabled ? 'is-disabled' : ''}`}>
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={disabled}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+          <span className="eb-switch-track" aria-hidden="true" />
+        </label>
+      </div>
+    </div>
+  )
+}
+
+function ConnectionStatusBadge() {
+  const state = useConnectionState()
+  let label = 'Подключено'
+  if (state === ConnectionState.Connecting) label = 'Подключение…'
+  else if (state === ConnectionState.Reconnecting) label = 'Переподключение…'
+  else if (state === ConnectionState.Disconnected) label = 'Отключено'
+
+  return (
+    <div
+      className="eb-conn-badge"
+      style={{
+        position: 'absolute',
+        top: 10,
+        left: 10,
+        zIndex: 20,
+        padding: '6px 10px',
+        borderRadius: 999,
+        background: 'rgba(0,0,0,0.45)',
+        border: '1px solid rgba(255,255,255,0.12)',
+        fontSize: 12,
+        color: '#fff',
+        backdropFilter: 'blur(6px)',
+      }}
+    >
+      {label}
+    </div>
+  )
+}
+
+// Component to set default microphone device on connection
+function DefaultMicrophoneSetter() {
+  const room = useRoomContext()
+  const { isMicrophoneEnabled } = useLocalParticipant()
+  const hasSetDefaultRef = useRef(false)
+
+  useEffect(() => {
+    if (!room) return
+    if (hasSetDefaultRef.current) return
+    if (!isMicrophoneEnabled) return
+
+    // Set default microphone device on first connection
+    hasSetDefaultRef.current = true
+    room.localParticipant
+      .setMicrophoneEnabled(true, {
+        deviceId: 'default',
+      })
+      .catch((e) => console.warn('[DefaultMicrophoneSetter] Failed to set default microphone', e))
+  }, [room, isMicrophoneEnabled])
+
+  return null
+}
+
+// Component to replace connection quality indicators with ping display
+function PingDisplayUpdater({ localUserId }: { localUserId: string | null }) {
+  const room = useRoomContext()
+  const { localParticipant, microphoneTrack, cameraTrack } = useLocalParticipant()
+  const [localRtt, setLocalRtt] = useState<number | null>(null)
+  const localRttRef = useRef<number | null>(null)
+  const [localPlayoutMs, setLocalPlayoutMs] = useState<number | null>(null)
+  const localPlayoutMsRef = useRef<number | null>(null)
+  const scheduleUpdateRef = useRef<null | (() => void)>(null)
+  // Each participant broadcasts their own RTT-to-server; for remote tiles we show (remote RTT + our RTT).
+  const remoteServerRttByKeyRef = useRef<Map<string, number>>(new Map())
+  const remotePlayoutMsByKeyRef = useRef<Map<string, number>>(new Map())
+  const lastStatsAtRef = useRef<number>(0)
+  const noRttLoggedRef = useRef(false)
+  const waitingLoggedRef = useRef(false)
+  const lastSignalPingAtRef = useRef<number>(0)
+  const lastSentRef = useRef<{ at: number; rtt: number | null }>({ at: 0, rtt: null })
+  const [pingDebug, setPingDebug] = useState<boolean>(() => isDebugFlagEnabled('lk-debug-ping', 'lkDebugPing'))
+  const pingDbgStateRef = useRef<{ at: number; lastLocalRtt: number | null; lastSignalRtt: number | null }>({
+    at: 0,
+    lastLocalRtt: null,
+    lastSignalRtt: null,
+  })
+
+  const dbg = (...args: any[]) => {
+    if (!pingDebug) return
+    // eslint-disable-next-line no-console
+    console.log('[Ping]', ...args)
+  }
+
+  // Allow enabling/disabling ping debug live (without reload).
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const next = isDebugFlagEnabled('lk-debug-ping', 'lkDebugPing')
+      setPingDebug((prev) => (prev === next ? prev : next))
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  // Always emit a single line when ping debug becomes enabled so you can confirm it's active.
+  useEffect(() => {
+    if (!pingDebug) return
+    dbg('debug enabled', {
+      localStorage: (() => {
+        try {
+          return window.localStorage.getItem('lk-debug-ping')
+        } catch {
+          return '(unavailable)'
+        }
+      })(),
+      query: (() => {
+        try {
+          return new URLSearchParams(window.location.search).get('lkDebugPing')
+        } catch {
+          return '(unavailable)'
+        }
+      })(),
+      localIdentity: localParticipant?.identity ?? null,
+    })
+    try {
+      const resources = performance?.getEntriesByType?.('resource') as PerformanceResourceTiming[] | undefined
+      const callOverlayAsset = resources?.map((r) => r.name).find((n) => n.includes('/assets/CallOverlay-')) ?? null
+      if (callOverlayAsset) dbg('asset', callOverlayAsset)
+    } catch {
+      // ignore
+    }
+  }, [pingDebug, localParticipant?.identity])
+
+  // Keep latest receiver playout delay in a ref for the publisher loop.
+  useEffect(() => {
+    localPlayoutMsRef.current = localPlayoutMs
+    scheduleUpdateRef.current?.()
+    if (pingDebug) dbg('localPlayoutMs state', localPlayoutMs)
+  }, [localPlayoutMs])
+
+  // Measure receiver jitter-buffer delay (approx "how long until I hear remote audio" on this client).
+  // We broadcast this so others can estimate one-way voice delay to us: (RTT_me + RTT_them)/2 + playoutDelay_me.
+  useEffect(() => {
+    if (!room) return
+
+    const extractPlayoutMsFromStats = (stats: RTCStatsReport): number | null => {
+      let best: number | null = null
+      try {
+        stats.forEach((r: any) => {
+          if (r?.type !== 'inbound-rtp') return
+          const kind = (r?.kind || r?.mediaType || '').toString().toLowerCase()
+          if (kind && kind !== 'audio') return
+
+          // Candidate 1: target delay (seconds) — this is closest to "current playout buffering" when available.
+          const target = typeof r?.jitterBufferTargetDelay === 'number' ? r.jitterBufferTargetDelay : null
+          if (typeof target === 'number' && Number.isFinite(target) && target > 0) {
+            const ms = target * 1000
+            if (Number.isFinite(ms) && ms > 0 && ms < 5000) {
+              best = best === null ? ms : Math.max(best, ms)
+            }
+          }
+
+          // Candidate 2: average delay = jitterBufferDelay / jitterBufferEmittedCount (seconds).
+          // NOTE: in some browsers the emitted count can be very small/buggy, which makes this ratio grow unbounded.
+          // We therefore require a minimum count and clamp to a sane range.
+          const delay = typeof r?.jitterBufferDelay === 'number' ? r.jitterBufferDelay : null
+          const count = typeof r?.jitterBufferEmittedCount === 'number' ? r.jitterBufferEmittedCount : null
+          if (
+            typeof delay === 'number' &&
+            typeof count === 'number' &&
+            Number.isFinite(delay) &&
+            Number.isFinite(count) &&
+            delay > 0 &&
+            count >= 50
+          ) {
+            const ms = (delay / count) * 1000
+            if (Number.isFinite(ms) && ms > 0 && ms < 5000) {
+              best = best === null ? ms : Math.max(best, ms)
+            }
+          }
+        })
+      } catch {
+        // ignore
+      }
+      return best
+    }
+
+    let stopped = false
+    const sample = async () => {
+      try {
+        const engine = (room as any).engine
+        const subscriber = engine?.pcManager?.subscriber
+        if (subscriber?.getStats) {
+          const stats: RTCStatsReport = await subscriber.getStats()
+          const ms = extractPlayoutMsFromStats(stats)
+          if (!stopped) setLocalPlayoutMs(ms)
+          if (pingDebug) dbg('playout sample', { ms })
+          return
+        }
+      } catch (e) {
+        if (pingDebug) dbg('playout sample failed', e)
+      }
+      if (!stopped) setLocalPlayoutMs(null)
+    }
+
+    const id = window.setInterval(sample, 2000)
+    void sample()
+    return () => {
+      stopped = true
+      window.clearInterval(id)
+    }
+  }, [room, pingDebug])
+
+  const isLocalTile = (tile: HTMLElement): boolean => {
+    // LiveKit natively exposes this attribute on participant tiles.
+    const v = tile.getAttribute('data-lk-local-participant')
+    if (v === 'true') return true
+    // Some browsers/React may serialize booleans differently.
+    return (tile as any).dataset?.lkLocalParticipant === 'true'
+  }
+
+  const getTileParticipantName = (tile: HTMLElement): string | null => {
+    // ParticipantName sets data-lk-participant-name on its <span>.
+    const el =
+      (tile.querySelector('[data-lk-participant-name]') as HTMLElement | null) ||
+      (tile.querySelector('.lk-participant-name') as HTMLElement | null)
+    const attr = el?.getAttribute('data-lk-participant-name')
+    const text = (attr && attr.trim()) || (el?.textContent?.trim() ?? '')
+    if (!text) return null
+    // Normalize screenshare tiles: LiveKit renders "<Name>'s screen" as ParticipantName children.
+    // We want to map that back to the participant name.
+    return text
+      .replace(/[\u2019']/g, "'")
+      .replace(/'s\s+screen$/i, '')
+      .trim()
+  }
+
+  // Get local RTT periodically
+  useEffect(() => {
+    if (!room || !localParticipant) return
+
+    const extractRttMsFromStats = (stats: RTCStatsReport): number | null => {
+      try {
+        let bestSeconds: number | null = null
+
+        const rttSecondsFromCandidatePair = (pair: any): number | null => {
+          const s: number | null =
+            (typeof pair?.currentRoundTripTime === 'number' ? pair.currentRoundTripTime : null) ??
+            (typeof pair?.roundTripTime === 'number' ? pair.roundTripTime : null) ??
+            (typeof pair?.totalRoundTripTime === 'number' &&
+            Number.isFinite(pair.totalRoundTripTime) &&
+            pair.totalRoundTripTime > 0 &&
+            typeof pair?.responsesReceived === 'number' &&
+            Number.isFinite(pair.responsesReceived) &&
+            pair.responsesReceived > 0
+              ? pair.totalRoundTripTime / pair.responsesReceived
+              : null)
+          if (typeof s !== 'number' || !Number.isFinite(s) || s <= 0) return null
+          return s
+        }
+
+        let selectedPairId: string | null = null
+        let selectedPair: any | null = null
+
+        stats.forEach((report: any) => {
+          if (report?.type === 'transport' && report.selectedCandidatePairId) {
+            selectedPairId = String(report.selectedCandidatePairId)
+          }
+        })
+
+        if (selectedPairId) {
+          // RTCStatsReport.get is not supported in all browsers; fallback to scanning by id.
+          selectedPair =
+            (stats as any).get?.(selectedPairId) ??
+            (() => {
+              let found: any | null = null
+              stats.forEach((r: any) => {
+                if (found) return
+                if (r?.id === selectedPairId) found = r
+              })
+              return found
+            })() ??
+            null
+        }
+
+        // Fallback: find any selected/succeeded candidate-pair
+        if (!selectedPair) {
+          stats.forEach((report: any) => {
+            if (selectedPair) return
+            if (
+              report?.type === 'candidate-pair' &&
+              // Chrome: selected=true; Safari: nominated=true; spec: state='succeeded'
+              (report.selected || report.nominated || report.state === 'succeeded')
+            ) {
+              selectedPair = report
+            }
+          })
+        }
+
+        const pairSeconds: number | null =
+          selectedPair ? rttSecondsFromCandidatePair(selectedPair) : null
+
+        if (typeof pairSeconds === 'number' && Number.isFinite(pairSeconds) && pairSeconds > 0) {
+          bestSeconds = pairSeconds
+        }
+
+        // Additionally scan all candidate-pairs; some browsers don't mark selectedPair reliably, or selected pair has 0 RTT.
+        stats.forEach((report: any) => {
+          if (report?.type !== 'candidate-pair') return
+          if (!(report.selected || report.nominated || report.state === 'succeeded')) return
+          const s = rttSecondsFromCandidatePair(report)
+          if (typeof s !== 'number') return
+          if (bestSeconds === null || s < bestSeconds) bestSeconds = s
+        })
+
+        // Many browsers expose RTT in remote-inbound-rtp stats (seconds)
+        stats.forEach((report: any) => {
+          if (report?.type !== 'remote-inbound-rtp') return
+          const s =
+            (typeof report?.roundTripTime === 'number' ? report.roundTripTime : null) ??
+            (typeof report?.totalRoundTripTime === 'number' &&
+            Number.isFinite(report.totalRoundTripTime) &&
+            report.totalRoundTripTime > 0 &&
+            typeof report?.roundTripTimeMeasurements === 'number' &&
+            Number.isFinite(report.roundTripTimeMeasurements) &&
+            report.roundTripTimeMeasurements > 0
+              ? report.totalRoundTripTime / report.roundTripTimeMeasurements
+              : null)
+          if (typeof s !== 'number' || !Number.isFinite(s) || s <= 0) return
+          if (bestSeconds === null || s < bestSeconds) bestSeconds = s
+        })
+
+        // Some browsers expose RTT directly on outbound-rtp (e.g. audio) as roundTripTime (seconds)
+        stats.forEach((report: any) => {
+          const s = typeof report?.roundTripTime === 'number' ? report.roundTripTime : null
+          if (typeof s !== 'number' || !Number.isFinite(s) || s <= 0) return
+          if (bestSeconds === null || s < bestSeconds) bestSeconds = s
+        })
+
+        if (typeof bestSeconds === 'number' && Number.isFinite(bestSeconds) && bestSeconds > 0) {
+          return bestSeconds * 1000
+        }
+      } catch {
+        // ignore
+      }
+      return null
+    }
+
+    const updateRtt = async () => {
+      try {
+        // Prefer LiveKit SignalClient RTT (ms). Much cheaper than polling pc.getStats() and stable enough.
+        const engine = (room as any).engine
+        const rtt = engine?.client?.rtt
+        // If server didn't provide ping config, rtt may stay 0. We can trigger LiveKit's native signaling ping ourselves.
+        if ((!rtt || rtt <= 0) && typeof engine?.client?.sendPing === 'function') {
+          const now = Date.now()
+          if (now - lastSignalPingAtRef.current > 5000) {
+            lastSignalPingAtRef.current = now
+            try {
+              await engine.client.sendPing()
+              if (pingDebug) dbg('signal sendPing() called')
+            } catch (e) {
+              if (pingDebug) dbg('signal sendPing() failed', e)
+            }
+          }
+        }
+        if (pingDebug) {
+          const now = Date.now()
+          const s = pingDbgStateRef.current
+          if ((typeof rtt === 'number' ? rtt : null) !== s.lastSignalRtt && now - s.at > 750) {
+            pingDbgStateRef.current = { ...s, at: now, lastSignalRtt: typeof rtt === 'number' ? rtt : null }
+            dbg('signal rtt', { rtt, hasEngine: !!engine, localIdentity: localParticipant.identity })
+          }
+        }
+        if (typeof rtt === 'number' && Number.isFinite(rtt) && rtt > 0) {
+          setLocalRtt(rtt)
+          if (pingDebug) dbg('local rtt set', { ms: Math.round(rtt), source: 'engine.client.rtt' })
+          return
+        }
+
+        // Native LiveKit track sender stats (often more reliable than parsing candidate-pairs ourselves).
+        // LocalAudioTrack.getSenderStats() returns roundTripTime (seconds) in some browsers.
+        const micLocalTrack = (microphoneTrack as any)?.track
+        if (micLocalTrack && typeof micLocalTrack.getSenderStats === 'function') {
+          try {
+            const s = await micLocalTrack.getSenderStats()
+            const sec = typeof s?.roundTripTime === 'number' ? s.roundTripTime : null
+            if (typeof sec === 'number' && Number.isFinite(sec) && sec > 0) {
+              const ms = sec * 1000
+              setLocalRtt(ms)
+              if (pingDebug) dbg('local rtt set', { ms: Math.round(ms), source: 'LocalAudioTrack.getSenderStats().roundTripTime' })
+              return
+            }
+          } catch (e) {
+            if (pingDebug) dbg('mic getSenderStats failed', e)
+          }
+        }
+
+        const camLocalTrack = (cameraTrack as any)?.track
+        if (camLocalTrack && typeof camLocalTrack.getSenderStats === 'function') {
+          try {
+            const arr = await camLocalTrack.getSenderStats()
+            const list = Array.isArray(arr) ? arr : []
+            const best = list
+              .map((x: any) => (typeof x?.roundTripTime === 'number' ? x.roundTripTime : null))
+              .filter((x: any) => typeof x === 'number' && Number.isFinite(x) && x > 0) as number[]
+            if (best.length > 0) {
+              const sec = Math.min(...best)
+              const ms = sec * 1000
+              setLocalRtt(ms)
+              if (pingDebug) dbg('local rtt set', { ms: Math.round(ms), source: 'LocalVideoTrack.getSenderStats()[].roundTripTime' })
+              return
+            }
+          } catch (e) {
+            if (pingDebug) dbg('camera getSenderStats failed', e)
+          }
+        }
+
+        // Fallback: read RTT from WebRTC stats if signal RTT isn't available (some deployments disable ping/pong)
+        const now = Date.now()
+        if (now - lastStatsAtRef.current < 3000) return
+
+        const publisher = engine?.pcManager?.publisher
+        const subscriber = engine?.pcManager?.subscriber
+        const transports = [publisher, subscriber].filter(Boolean)
+        const trackCandidates: any[] = [
+          // prefer mic (most stable RTT stats)
+          (microphoneTrack as any)?.track,
+          (cameraTrack as any)?.track,
+        ].filter(Boolean)
+
+        // Only rate-limit once we actually have transports to query.
+        if (transports.length > 0 || trackCandidates.length > 0) {
+          lastStatsAtRef.current = now
+        } else {
+          if (pingDebug && !waitingLoggedRef.current) {
+            waitingLoggedRef.current = true
+            dbg('waiting for transports/tracks', {
+              publisher: !!publisher,
+              subscriber: !!subscriber,
+              trackCandidates: trackCandidates.length,
+            })
+          }
+          return
+        }
+
+        for (const t of transports as any[]) {
+          if (!t?.getStats) continue
+          const stats: RTCStatsReport = await t.getStats()
+          const rttMs = extractRttMsFromStats(stats)
+          if (typeof rttMs === 'number' && Number.isFinite(rttMs) && rttMs > 0) {
+            setLocalRtt(rttMs)
+            if (pingDebug) dbg('local rtt set', { ms: Math.round(rttMs), source: 'pcTransport.getStats()' })
+            return
+          }
+        }
+
+        // Fallback #2: per-track sender stats (works in cases where PCTransport stats don't expose RTT)
+        for (const tr of trackCandidates) {
+          if (!tr?.getRTCStatsReport) continue
+          const stats: RTCStatsReport | undefined = await tr.getRTCStatsReport()
+          if (!stats) continue
+          const rttMs = extractRttMsFromStats(stats)
+          if (typeof rttMs === 'number' && Number.isFinite(rttMs) && rttMs > 0) {
+            setLocalRtt(rttMs)
+            if (pingDebug) dbg('local rtt set', { ms: Math.round(rttMs), source: 'MediaStreamTrack.getRTCStatsReport()' })
+            return
+          }
+        }
+
+        // One-time debug to help diagnose production browsers where stats are missing
+        if (!noRttLoggedRef.current) {
+          noRttLoggedRef.current = true
+          if (pingDebug) {
+            dbg('could not compute local rtt', {
+              signalRtt: rtt,
+              transports: transports.length,
+              trackCandidates: trackCandidates.length,
+              localIdentity: localParticipant.identity,
+            })
+          }
+        }
+      } catch (e) {
+        if (pingDebug) dbg('updateRtt error', e)
+      }
+    }
+
+    const interval = setInterval(() => void updateRtt(), 1500)
+    // Kick twice: once immediately, once shortly after transport creation
+    void updateRtt()
+    const t = setTimeout(() => void updateRtt(), 2500)
+
+    return () => {
+      clearInterval(interval)
+      clearTimeout(t)
+    }
+  }, [room, localParticipant, microphoneTrack?.trackSid, cameraTrack?.trackSid])
+
+  // Broadcast our server RTT and receive others (topic: eb.ping)
+  useEffect(() => {
+    if (!room) return
+    if (!localParticipant) return
+
+    const encoder = new TextEncoder()
+    const sendMyRtt = async () => {
+      try {
+        const rtt = localRttRef.current
+        if (typeof rtt !== 'number' || !Number.isFinite(rtt) || rtt <= 0) {
+          if (pingDebug) dbg('skip publish eb.ping (no local rtt yet)', { localRtt: rtt })
+          return
+        }
+
+        const now = Date.now()
+        const last = lastSentRef.current
+        // throttle: at most once per 2s, and only if it changed noticeably
+        const changedEnough = last.rtt === null || Math.abs(last.rtt - rtt) >= 2
+        const due = now - last.at >= 2000
+        if (!due && !changedEnough) return
+        lastSentRef.current = { at: now, rtt }
+
+        const playout = localPlayoutMsRef.current
+        const payload = {
+          t: 'eb.ping',
+          v: 2,
+          rtt: Math.round(rtt),
+          // receiver-side playout/jitter-buffer delay (ms), used to estimate one-way voice delay to this participant
+          playoutMs: typeof playout === 'number' && Number.isFinite(playout) && playout >= 0 ? Math.round(playout) : 0,
+          ts: now,
+        }
+        await localParticipant.publishData(encoder.encode(JSON.stringify(payload)), {
+          reliable: false,
+          topic: 'eb.ping',
+        })
+        if (pingDebug) dbg('publish eb.ping ok', payload)
+      } catch (e) {
+        if (pingDebug) dbg('publish eb.ping failed', e)
+        // Keep this warning only while debug is enabled to avoid console noise in production.
+        if (pingDebug && !(window as any).__ebPingPublishWarned) {
+          ;(window as any).__ebPingPublishWarned = true
+          console.warn('[Ping] Failed to publish eb.ping (data channel). Check LiveKit token grant canPublishData=true.')
+        }
+      }
+    }
+
+    const decoder = new TextDecoder()
+    const onData = (payload: Uint8Array, participant: any, _kind: any, topic?: string) => {
+      // Some LiveKit versions/paths may not populate the "topic" argument consistently.
+      // If topic is present and not ours, ignore early; otherwise fall back to message type in JSON.
+      if (topic && topic !== 'eb.ping') return
+      const senderIdentity = participant?.identity as string | undefined
+      if (!senderIdentity) return
+      if (localParticipant && senderIdentity === localParticipant.identity) return
+      try {
+        const msg = JSON.parse(decoder.decode(payload))
+        if (!msg || msg.t !== 'eb.ping') return
+        const rtt = Number(msg.rtt)
+        if (!Number.isFinite(rtt) || rtt <= 0) return
+        const playoutMs = Number(msg.playoutMs)
+        const playout = Number.isFinite(playoutMs) && playoutMs >= 0 ? playoutMs : 0
+        const senderName = typeof participant?.name === 'string' && participant.name ? participant.name : null
+        const prev = remoteServerRttByKeyRef.current.get(senderIdentity)
+        remoteServerRttByKeyRef.current.set(senderIdentity, rtt)
+        if (senderName) remoteServerRttByKeyRef.current.set(senderName, rtt)
+        remotePlayoutMsByKeyRef.current.set(senderIdentity, playout)
+        if (senderName) remotePlayoutMsByKeyRef.current.set(senderName, playout)
+        // Also store by metadata displayName/userId if present (our app sets JSON metadata).
+        const metaRaw = typeof participant?.metadata === 'string' ? participant.metadata : null
+        if (metaRaw) {
+          try {
+            const meta = JSON.parse(metaRaw)
+            if (meta?.displayName) remoteServerRttByKeyRef.current.set(String(meta.displayName), rtt)
+            if (meta?.userId) remoteServerRttByKeyRef.current.set(String(meta.userId), rtt)
+            if (meta?.displayName) remotePlayoutMsByKeyRef.current.set(String(meta.displayName), playout)
+            if (meta?.userId) remotePlayoutMsByKeyRef.current.set(String(meta.userId), playout)
+          } catch {
+            // ignore
+          }
+        }
+        if (pingDebug && (prev === undefined || Math.abs(prev - rtt) >= 2)) {
+          dbg('recv eb.ping', { from: senderIdentity, name: senderName, rtt, playoutMs: playout, ts: msg.ts, topic: topic ?? null })
+        }
+        scheduleUpdateRef.current?.()
+      } catch {
+        // ignore
+      }
+    }
+
+    room.on(RoomEvent.DataReceived, onData)
+
+    const interval = setInterval(() => void sendMyRtt(), 2000)
+    void sendMyRtt()
+
+    return () => {
+      clearInterval(interval)
+      room.off(RoomEvent.DataReceived, onData)
+    }
+  }, [room, localParticipant, pingDebug])
+
+  // Keep latest RTT in a ref so DOM updater doesn't need to re-subscribe on every RTT change.
+  useEffect(() => {
+    localRttRef.current = localRtt
+    scheduleUpdateRef.current?.()
+    if (pingDebug) dbg('localRtt state', localRtt)
+  }, [localRtt])
+
+  // Update DOM to show ping instead of connection quality (debounced + scoped to call container to avoid observer loops)
+  useEffect(() => {
+    if (!room) return
+
+    const container = document.querySelector('.call-container') as HTMLElement | null
+    if (!container) return
+
+    const computeText = (isLocal: boolean) => {
+      const rtt = localRttRef.current
+      if (typeof rtt !== 'number' || !Number.isFinite(rtt) || rtt <= 0) return '—'
+      if (isLocal) return `${Math.round(rtt)}\u00A0мс`
+      // For remote: show remote RTT + our RTT (both to server). This approximates end-to-end RTT via SFU.
+      return '—'
+    }
+
+    const updatePingDisplay = () => {
+      // Target only LiveKit quality indicator element inside participant metadata
+      const indicators = container.querySelectorAll('.lk-participant-metadata-item[data-lk-quality]')
+      if (pingDebug) dbg('dom scan', { indicators: indicators.length })
+      indicators.forEach((indicator) => {
+        const tile = indicator.closest('.lk-participant-tile, [data-participant]') as HTMLElement | null
+        if (!tile) return
+
+        const isLocal = isLocalTile(tile)
+        const participantName = getTileParticipantName(tile)
+
+        if (!indicator.classList.contains('eb-ping-display')) {
+          indicator.classList.add('eb-ping-display')
+        }
+
+        let textEl = indicator.querySelector('.eb-ping-text') as HTMLSpanElement | null
+        if (!textEl) {
+          textEl = document.createElement('span')
+          textEl.className = 'eb-ping-text'
+          indicator.appendChild(textEl)
+        }
+
+        let pingMs: number | null = null
+        let next = computeText(isLocal)
+        if (!isLocal) {
+          const remote =
+            (participantName ? remoteServerRttByKeyRef.current.get(participantName) : undefined) ??
+            undefined
+          const remotePlayout =
+            (participantName ? remotePlayoutMsByKeyRef.current.get(participantName) : undefined) ??
+            0
+          const mine = localRttRef.current
+          if (typeof remote === 'number' && Number.isFinite(remote) && remote > 0 && typeof mine === 'number' && mine > 0) {
+            // Approximate one-way "voice delay":
+            // network one-way ≈ (RTT_me_to_SFU/2 + RTT_peer_to_SFU/2)
+            // + receiver-side playout/jitter-buffer delay at the peer.
+            pingMs = Math.round((remote + mine) / 2 + (typeof remotePlayout === 'number' && Number.isFinite(remotePlayout) && remotePlayout >= 0 ? remotePlayout : 0))
+            next = `${pingMs}\u00A0мс`
+          }
+        } else {
+          const mine = localRttRef.current
+          if (typeof mine === 'number' && Number.isFinite(mine) && mine > 0) {
+            pingMs = Math.round(mine)
+            next = `${pingMs}\u00A0мс`
+          }
+        }
+        const hasPingValue = typeof pingMs === 'number' && Number.isFinite(pingMs) && pingMs > 0
+        indicator.classList.toggle('eb-ping-has-value', hasPingValue)
+        if (typeof pingMs === 'number' && Number.isFinite(pingMs) && pingMs > 0) {
+          const level = pingMs <= 200 ? 'good' : pingMs <= 500 ? 'warn' : 'bad'
+          indicator.setAttribute('data-eb-ping-level', level)
+        } else {
+          indicator.removeAttribute('data-eb-ping-level')
+        }
+
+        // Keep DOM writes minimal; CSS controls whether text/icon are visible.
+        const nextText = hasPingValue ? next : ''
+        if (textEl.textContent !== nextText) {
+          textEl.textContent = nextText
+          if (pingDebug) {
+            const mine = localRttRef.current
+            const remote = participantName ? remoteServerRttByKeyRef.current.get(participantName) : undefined
+            dbg('dom set', { name: participantName, isLocal, text: nextText, mine, remote })
+          }
+        }
+      })
+    }
+
+    let pending = false
+    const schedule = () => {
+      if (pending) return
+      pending = true
+      requestAnimationFrame(() => {
+        pending = false
+        updatePingDisplay()
+      })
+    }
+    scheduleUpdateRef.current = schedule
+
+    const mo = new MutationObserver(() => schedule())
+    mo.observe(container, { childList: true, subtree: true })
+
+    // Initial paint
+    schedule()
+
+    return () => {
+      if (scheduleUpdateRef.current === schedule) scheduleUpdateRef.current = null
+      mo.disconnect()
+    }
+  }, [room, localParticipant, localUserId, pingDebug])
+
+  return null
+}
+
+function CallSettings() {
+  const room = useRoomContext()
+  const { isMicrophoneEnabled, microphoneTrack } = useLocalParticipant()
+  const krisp = useKrispNoiseFilter()
+
+  const [aec, setAec] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.aec, true))
+  const [ns, setNs] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.ns, true))
+  const [agc, setAgc] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.agc, true))
+  const [krispDesired, setKrispDesired] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.krisp, false))
+  const [krispSupport, setKrispSupport] = useState<'checking' | 'supported' | 'unsupported' | 'error'>('checking')
+  const [krispSupportDetails, setKrispSupportDetails] = useState<string>('Проверяем поддержку Krisp…')
+
+  useEffect(() => {
+    let alive = true
+    async function checkKrispSupport() {
+      try {
+        const mod = await import('@livekit/krisp-noise-filter')
+        const supported = typeof mod.isKrispNoiseFilterSupported === 'function' ? mod.isKrispNoiseFilterSupported() : false
+        if (!alive) return
+        setKrispSupport(supported ? 'supported' : 'unsupported')
+        setKrispSupportDetails(supported ? 'Браузер поддерживает Krisp.' : 'Этот браузер не поддерживает Krisp.')
+      } catch (e: any) {
+        if (!alive) return
+        setKrispSupport('error')
+        setKrispSupportDetails('Не удалось проверить поддержку Krisp (ошибка загрузки модуля).')
+      }
+    }
+    checkKrispSupport()
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // Apply WebRTC constraints by restarting the mic track with AudioCaptureOptions.
+  const lastAppliedRef = useRef<string>('')
+  useEffect(() => {
+    if (!room) return
+    if (!isMicrophoneEnabled) return
+    const key = `${aec}|${ns}|${agc}|${microphoneTrack?.trackSid ?? ''}`
+    if (lastAppliedRef.current === key) return
+    lastAppliedRef.current = key
+    room.localParticipant
+      .setMicrophoneEnabled(true, {
+        echoCancellation: aec,
+        noiseSuppression: ns,
+        autoGainControl: agc,
+      })
+      .catch((e) => console.warn('[CallSettings] Failed to apply mic capture options', e))
+  }, [room, isMicrophoneEnabled, aec, ns, agc, microphoneTrack?.trackSid])
+
+  // Apply Krisp only when mic is enabled (to avoid LiveKit hook pending state getting stuck).
+  useEffect(() => {
+    if (!isMicrophoneEnabled) return
+    if (krispSupport !== 'supported') return
+    if (krisp.isNoiseFilterPending) return
+    if (krispDesired === krisp.isNoiseFilterEnabled) return
+    krisp
+      .setNoiseFilterEnabled(krispDesired)
+      .catch((e) => {
+        // Common failure mode in our deployment: Krisp backend endpoint blocked by CORS.
+        console.warn('[CallSettings] Krisp setNoiseFilterEnabled failed, disabling toggle', e)
+        setKrispDesired(false)
+        writeStoredBool(LK_SETTINGS_KEYS.krisp, false)
+        setKrispSupport('error')
+        setKrispSupportDetails('Krisp недоступен (ошибка подключения к сервису шумоподавления).')
+      })
+  }, [isMicrophoneEnabled, microphoneTrack?.trackSid, krispDesired, krisp.isNoiseFilterPending, krisp.isNoiseFilterEnabled, krispSupport])
+
+  // Clean device labels: remove device codes like "(0bda:0567)" or "(10d6:4801)" and wrap text in span for animation
+  // Also filter out duplicate devices with "Оборудование -" or "По умолчанию -" prefixes
+  useEffect(() => {
+    const cleanup = () => {
+      // First pass: remove duplicate devices with "Оборудование -" or "По умолчанию -" prefixes
+      const listItems = document.querySelectorAll('.call-container .lk-settings-menu-modal .lk-media-device-select li')
+      const devicesToRemove: HTMLElement[] = []
+      const deviceNames = new Map<string, HTMLElement[]>() // Map: normalized name -> list items
+      
+      listItems.forEach((li) => {
+        const btn = li.querySelector('.lk-button')
+        if (!btn) return
+        const rawText = btn.textContent || ''
+        // Check if it has prefix
+        const hasPrefix = /^(Оборудование\s*-\s*|По\s+умолчанию\s*-\s*)/i.test(rawText)
+        // Normalize name (remove prefix and codes for comparison)
+        let normalized = rawText.replace(/^(Оборудование\s*-\s*|По\s+умолчанию\s*-\s*)/i, '').trim()
+        normalized = normalized.replace(/\s*\([0-9a-fA-F]{4}:[0-9a-fA-F]{0,4}\)?\s*/g, '').trim()
+        
+        if (!deviceNames.has(normalized)) {
+          deviceNames.set(normalized, [])
+        }
+        deviceNames.get(normalized)!.push(li as HTMLElement)
+        
+        // Mark for removal if it has prefix
+        if (hasPrefix) {
+          devicesToRemove.push(li as HTMLElement)
+        }
+      })
+      
+      // Remove devices with prefixes (keep only versions without prefixes)
+      devicesToRemove.forEach((li) => {
+        li.remove()
+      })
+      
+      // Second pass: clean remaining device labels
+      const buttons = document.querySelectorAll('.call-container .lk-settings-menu-modal .lk-media-device-select li > .lk-button')
+      buttons.forEach((btn) => {
+        // Find text node or existing span
+        const textNode = Array.from(btn.childNodes).find((n) => n.nodeType === Node.TEXT_NODE) as Text | undefined
+        let span = btn.querySelector('span.eb-device-label') as HTMLSpanElement | null
+        
+        if (textNode && !span) {
+          // Wrap text in span if not already wrapped
+          const text = textNode.textContent || ''
+          span = document.createElement('span')
+          span.className = 'eb-device-label'
+          span.textContent = text
+          btn.replaceChild(span, textNode)
+        }
+        
+        if (span) {
+          let text = span.textContent || ''
+          // Remove prefixes "Оборудование - " and "По умолчанию - " to avoid duplicates
+          text = text.replace(/^(Оборудование\s*-\s*|По\s+умолчанию\s*-\s*)/i, '').trim()
+          // Remove device codes: patterns like "(0bda:0567)", "(10d6:4801)", "(08bb:2902)" etc.
+          // Also remove incomplete codes like "(0bda:(" at the end
+          text = text.replace(/\s*\([0-9a-fA-F]{4}:[0-9a-fA-F]{0,4}\)?\s*/g, '').trim()
+          // Remove trailing incomplete codes like "(0bda:("
+          text = text.replace(/\s*\([0-9a-fA-F]{4}:\s*$/, '').trim()
+          if (text !== span.textContent) {
+            span.textContent = text
+          }
+          
+          // Check if text overflows and mark for animation (animation will be enabled on hover via CSS)
+          // Need to measure after text update, so use a small delay
+          setTimeout(() => {
+            const btnRect = btn.getBoundingClientRect()
+            const spanRect = span.getBoundingClientRect()
+            const padding = 24 // 12px left + 12px right
+            const availableWidth = btnRect.width - padding
+            if (spanRect.width > availableWidth) {
+              // Mark as overflowing and calculate scroll distance to show full text
+              const scrollDistance = spanRect.width - availableWidth
+              span.setAttribute('data-overflows', 'true')
+              span.style.setProperty('--eb-device-scroll-distance', `${-scrollDistance}px`)
+            } else {
+              // Remove overflow marker
+              span.removeAttribute('data-overflows')
+              span.style.removeProperty('--eb-device-scroll-distance')
+            }
+          }, 10)
+        }
+      })
+    }
+    // Run immediately and also observe changes
+    cleanup()
+    const mo = new MutationObserver(() => {
+      // Small delay to let DOM settle
+      setTimeout(cleanup, 50)
+    })
+    const container = document.querySelector('.call-container .lk-settings-menu-modal')
+    if (container) {
+      mo.observe(container, { childList: true, subtree: true, characterData: true })
+      return () => mo.disconnect()
+    }
+  }, [])
+
+  return (
+    <div className="eb-call-settings" style={{ width: '100%' }}>
+      <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Настройки</div>
+
+      <div className="eb-settings-section">
+        <div className="eb-section-title">Обработка микрофона</div>
+        <ToggleRow
+          label="WebRTC: AEC (анти-эхо)"
+          description="Эхо‑подавление на уровне браузера (лучше включать почти всегда)."
+          checked={aec}
+          onChange={(v) => {
+            setAec(v)
+            writeStoredBool(LK_SETTINGS_KEYS.aec, v)
+          }}
+        />
+        <ToggleRow
+          label="WebRTC: NS (шумоподавление)"
+          description="Шумоподавление на уровне браузера."
+          checked={ns}
+          onChange={(v) => {
+            setNs(v)
+            writeStoredBool(LK_SETTINGS_KEYS.ns, v)
+          }}
+        />
+        <ToggleRow
+          label="WebRTC: AGC (автогейн)"
+          description="Автоматическая регулировка усиления микрофона."
+          checked={agc}
+          onChange={(v) => {
+            setAgc(v)
+            writeStoredBool(LK_SETTINGS_KEYS.agc, v)
+          }}
+        />
+        <ToggleRow
+          label="Krisp (улучшенное шумоподавление)"
+          description={`${krispSupportDetails} Может быть недоступен на self-hosted LiveKit.`}
+          checked={krispDesired}
+          disabled={!isMicrophoneEnabled || krisp.isNoiseFilterPending || krispSupport === 'unsupported' || krispSupport === 'error'}
+          rightHint={
+            !isMicrophoneEnabled ? 'Включите микрофон'
+              : krispSupport === 'checking' ? 'Проверяем…'
+                : krispSupport === 'unsupported' ? 'Не поддерживается'
+                  : krispSupport === 'error' ? 'Ошибка проверки'
+                    : krisp.isNoiseFilterPending ? 'Применяем…'
+                      : krispDesired && !krisp.isNoiseFilterEnabled ? 'Не активно'
+                        : krisp.isNoiseFilterEnabled ? 'Активно' : ''
+          }
+          onChange={(v) => {
+            setKrispDesired(v)
+            writeStoredBool(LK_SETTINGS_KEYS.krisp, v)
+          }}
+        />
+        <div className="eb-settings-note">
+          Изменения AEC/NS/AGC применяются перезапуском микрофона и могут дать короткий “пик” при переключении.
+        </div>
+      </div>
+
+      <div
+        className="eb-settings-grid"
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: 16,
+          alignItems: 'start',
+          marginBottom: 12,
+        }}
+      >
+        <div className="eb-device-col" style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>Микрофон</div>
+          <MediaDeviceSelect kind="audioinput" requestPermissions />
+        </div>
+        <div className="eb-device-col" style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>Камера</div>
+          <MediaDeviceSelect kind="videoinput" requestPermissions />
+        </div>
+        <div className="eb-device-col" style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>Вывод звука</div>
+          <MediaDeviceSelect kind="audiooutput" requestPermissions />
+          <div style={{ fontSize: 11, opacity: 0.65, marginTop: 6 }}>
+            На Safari/iOS переключение устройства вывода может быть недоступно.
+          </div>
+        </div>
+      </div>
+      <div style={{ fontSize: 12, opacity: 0.8 }}>
+        Выберите устройства ввода. Закрыть это окно можно кнопкой «Настройки» внизу.
+      </div>
+    </div>
+  )
 }
 
 export function CallOverlay({ open, conversationId, onClose, onMinimize, minimized = false, initialVideo = false, initialAudio = true, peerAvatarUrl = null, avatarsByName = {}, avatarsById = {}, localUserId = null, isGroup = false }: Props) {
@@ -129,6 +1173,174 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       align-self: center !important;
       flex-shrink: 0 !important;
     }
+    
+    /* Hide chat entry point in the control bar (we expose device selection via Settings and also via button group menus) */
+    .call-container .lk-control-bar .lk-chat-toggle { display: none !important; }
+
+    /* Settings toggles */
+    .call-container .eb-settings-section { margin-bottom: 16px; }
+    .call-container .eb-section-title { font-size: 12px; color: rgba(255,255,255,0.72); margin-bottom: 10px; }
+    .call-container .eb-toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(0,0,0,0.18);
+      border-radius: 12px;
+      margin-bottom: 10px;
+    }
+    .call-container .eb-toggle-text { min-width: 0; }
+    .call-container .eb-toggle-label { font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.92); }
+    .call-container .eb-toggle-desc { font-size: 11px; color: rgba(255,255,255,0.62); margin-top: 4px; line-height: 1.25; }
+    .call-container .eb-toggle-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .call-container .eb-toggle-hint { font-size: 11px; color: rgba(255,255,255,0.55); max-width: 120px; text-align: right; }
+    .call-container .eb-settings-note { font-size: 11px; color: rgba(255,255,255,0.55); margin-top: 6px; }
+
+    .call-container .eb-switch { position: relative; display: inline-flex; align-items: center; }
+    .call-container .eb-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .call-container .eb-switch-track {
+      width: 44px;
+      height: 24px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.14);
+      border: 1px solid rgba(255,255,255,0.14);
+      position: relative;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    .call-container .eb-switch-track::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.92);
+      transition: transform 120ms ease;
+    }
+    .call-container .eb-switch input:checked + .eb-switch-track {
+      background: rgba(217,119,6,0.55);
+      border-color: rgba(217,119,6,0.55);
+    }
+    .call-container .eb-switch input:checked + .eb-switch-track::after { transform: translateX(20px); }
+    .call-container .eb-switch.is-disabled { opacity: 0.55; pointer-events: none; }
+
+    /* Settings modal: keep layout contained and prevent long device labels from breaking columns */
+    .call-container .lk-settings-menu-modal {
+      width: min(980px, calc(100vw - 32px)) !important;
+      max-width: min(980px, calc(100vw - 32px)) !important;
+      max-height: min(80vh, 760px) !important;
+      min-height: unset !important;
+      padding: 20px !important;
+      background: var(--surface-200) !important;
+      border: 1px solid var(--surface-border) !important;
+      border-radius: 16px !important;
+      overflow: hidden !important;
+      box-shadow: var(--shadow-sharp) !important;
+    }
+
+    .call-container .lk-settings-menu-modal .eb-settings-grid {
+      min-width: 0 !important;
+    }
+
+    .call-container .lk-settings-menu-modal .eb-device-col {
+      min-width: 0 !important;
+    }
+
+    /* LiveKit uses white-space: nowrap for buttons globally; override inside settings to avoid overflow */
+    .call-container .lk-settings-menu-modal .lk-media-device-select {
+      width: 100% !important;
+      max-width: 100% !important;
+      overflow: hidden !important;
+    }
+
+    .call-container .lk-settings-menu-modal .lk-media-device-select li > .lk-button {
+      width: 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
+      justify-content: flex-start !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      padding-left: 12px !important;
+      padding-right: 12px !important;
+      position: relative !important;
+      text-overflow: ellipsis !important;
+    }
+
+    /* Smooth scrolling animation for long device names - only on hover and only if overflowing */
+    @keyframes eb-device-scroll {
+      0%, 100% {
+        transform: translateX(0);
+      }
+      15% {
+        transform: translateX(0);
+      }
+      42.5% {
+        transform: translateX(var(--eb-device-scroll-distance, -100px));
+      }
+      57.5% {
+        transform: translateX(var(--eb-device-scroll-distance, -100px));
+      }
+      85% {
+        transform: translateX(0);
+      }
+    }
+
+    .call-container .lk-settings-menu-modal .lk-media-device-select li > .lk-button {
+      display: flex !important;
+      align-items: center !important;
+    }
+
+    .call-container .lk-settings-menu-modal .lk-media-device-select li > .lk-button > span.eb-device-label {
+      display: inline-block !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+      max-width: 100% !important;
+    }
+
+    /* Enable smooth scrolling animation only on hover and only if text overflows */
+    .call-container .lk-settings-menu-modal .lk-media-device-select li > .lk-button:hover > span.eb-device-label[data-overflows="true"] {
+      overflow: visible !important;
+      text-overflow: clip !important;
+      max-width: none !important;
+      animation: eb-device-scroll 6s ease-in-out infinite !important;
+    }
+
+    .call-container .lk-settings-menu-modal .lk-media-device-select li > .lk-button * {
+      min-width: 0 !important;
+    }
+
+    /* Override LiveKit's blue accent color for selected devices with eblusha brand color */
+    .call-container .lk-settings-menu-modal .lk-media-device-select [data-lk-active="true"] > .lk-button {
+      color: #fff !important;
+      background-color: var(--brand, #d97706) !important;
+    }
+    .call-container .lk-settings-menu-modal .lk-media-device-select [data-lk-active="true"] > .lk-button:hover {
+      background-color: var(--brand-600, #e38b0a) !important;
+    }
+
+    /* Ping display: always keep value on one line */
+    .call-container .eb-ping-display .eb-ping-text { font-size: 11px; opacity: 0.85; white-space: nowrap; }
+
+    /* LiveKit hides connection quality until hover; keep it always visible so ping is always visible */
+    .call-container .lk-participant-tile .lk-connection-quality {
+      opacity: 1 !important;
+      transition-delay: 0s !important;
+    }
+
+    /* When we have a ping value, fully replace the quality icon with text */
+    .call-container .lk-connection-quality.eb-ping-display { width: auto !important; min-width: 1.5rem; }
+    .call-container .eb-ping-display.eb-ping-has-value svg { display: none !important; }
+    .call-container .eb-ping-display.eb-ping-has-value .eb-ping-text { display: inline !important; }
+    .call-container .eb-ping-display:not(.eb-ping-has-value) .eb-ping-text { display: none !important; }
+
+    /* Ping severity colors */
+    .call-container .eb-ping-display[data-eb-ping-level="good"] .eb-ping-text { color: #22c55e; } /* green */
+    .call-container .eb-ping-display[data-eb-ping-level="warn"] .eb-ping-text { color: #fbbf24; } /* yellow */
+    .call-container .eb-ping-display[data-eb-ping-level="bad"] .eb-ping-text { color: #ef4444; }  /* red */
   `
 
   useEffect(() => {
@@ -140,6 +1352,22 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       if (!mounted) return
       setToken(resp.data.token)
       setServerUrl(resp.data.url)
+
+      // Debug (safe): log whether the token includes canPublishData (required for ping exchange).
+      try {
+        const parts = String(resp.data.token || '').split('.')
+        if (parts.length >= 2) {
+          const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+          const json = JSON.parse(atob(base64))
+          const canPublishData = !!json?.video?.canPublishData || !!json?.video?.can_publish_data
+          if (isDebugFlagEnabled('lk-debug-ping', 'lkDebugPing')) {
+            // eslint-disable-next-line no-console
+            console.log('[Ping] LiveKit grant canPublishData:', canPublishData)
+          }
+        }
+      } catch {
+        // ignore
+      }
     }
     fetchToken()
     return () => {
@@ -229,6 +1457,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             else if (normalized === 'settings') translated = 'Настройки'
             else if (normalized === 'microphone') translated = 'Микрофон'
             else if (normalized === 'camera') translated = 'Камера'
+            else if (normalized === 'connecting') translated = 'Подключение'
+            else if (normalized === 'reconnecting') translated = 'Переподключение'
+            else if (normalized === 'disconnected') translated = 'Отключено'
             else if (normalized === 'screen share' || normalized === 'share screen' || normalized === 'share-screen' || normalized === 'share-screen ') translated = 'Показ экрана'
             // fallback: contains both words
             else if (normalized.includes('share') && normalized.includes('screen')) translated = 'Показ экрана'
@@ -242,19 +1473,30 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           }
         }
       })
-      // hide chat toggle and panel (more robust)
-      const chatNodes = root.querySelectorAll('.call-container .lk-chat, .call-container [data-lk-chat], .call-container [data-lk-chat-toggle], .call-container .lk-chat-toggle, .call-container .lk-button.lk-chat-toggle, .call-container button.lk-chat-toggle, .call-container [aria-label*="chat" i], .call-container [title*="chat" i]')
-      chatNodes.forEach((el) => {
-        const node = el as HTMLElement
-        node.style.display = 'none'
-        try { node.remove() } catch {}
+
+      // Translate connection state toast text (it's not a button, so handle separately)
+      document.querySelectorAll('.call-container .lk-toast-connection-state').forEach((toast) => {
+        const walker = document.createTreeWalker(toast, NodeFilter.SHOW_TEXT)
+        let node = walker.nextNode()
+        while (node) {
+          const raw = node.nodeValue || ''
+          const normalized = raw.replace(/\s+/g, ' ').trim().toLowerCase()
+          if (normalized === 'connecting') node.nodeValue = 'Подключение'
+          else if (normalized === 'reconnecting') node.nodeValue = 'Переподключение'
+          else if (normalized === 'disconnected') node.nodeValue = 'Отключено'
+          node = walker.nextNode()
+        }
       })
+      // Ensure control bar and its buttons stay visible (do not hide chat here to avoid accidental removals)
+      const controlBar =
+        (root.querySelector('.call-container .lk-control-bar') as HTMLElement | null) ||
+        (root.querySelector('.call-container [data-lk-control-bar]') as HTMLElement | null) ||
+        (root.querySelector('.call-container [role="toolbar"]') as HTMLElement | null)
       
       // Add minimize button to control bar
-      const controlBar = root.querySelector('.call-container .lk-control-bar, .call-container [data-lk-control-bar]') as HTMLElement | null
       if (controlBar && onMinimize) {
         // Check if minimize button already exists
-        let minimizeBtn = controlBar.querySelector('.eb-minimize-btn') as HTMLElement | null
+        let minimizeBtn = controlBar.querySelector('.eb-minimize-btn') as HTMLButtonElement | null
         if (!minimizeBtn) {
           minimizeBtn = document.createElement('button')
           minimizeBtn.className = 'eb-minimize-btn lk-button'
@@ -291,14 +1533,23 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           minimizeBtn.disabled = false
           
           // Insert before leave button (or at the end if not found)
-          const leaveBtn = controlBar.querySelector('[aria-label*="Выйти" i], [title*="Выйти" i], [aria-label*="leave" i], [title*="leave" i]') as HTMLElement | null
+          // Ищем кнопку "Выйти" максимально надежно (у LiveKit есть стабильный класс lk-disconnect-button)
+          let leaveBtn =
+            (controlBar.querySelector('button.lk-disconnect-button') as HTMLElement | null) ||
+            (controlBar.querySelector(
+              '[aria-label*="Выйти" i], [title*="Выйти" i], [aria-label*="leave" i], [title*="leave" i]'
+            ) as HTMLElement | null)
+          
           if (leaveBtn && leaveBtn.parentNode) {
             if (!(leaveBtn as any).__ebLeaveBound) {
-              const handler = () => {
-                // Даем LiveKit завершить обработку клика и только затем синхронизируем наш стейт
-                setTimeout(() => handleClose({ manual: true }), 0)
+              const handler = (evt: Event) => {
+                // Устанавливаем флаг ДО того, как LiveKit обработает клик
+                manualCloseRef.current = true
+                // Не предотвращаем дефолтное поведение - пусть LiveKit обработает отключение
+                // handleClose будет вызван через onDisconnected с manual: true
               }
-              leaveBtn.addEventListener('click', handler)
+              // Используем capture phase, чтобы установить флаг до обработки LiveKit
+              leaveBtn.addEventListener('click', handler, true)
               ;(leaveBtn as any).__ebLeaveBound = handler
             }
             leaveBtn.parentNode.insertBefore(minimizeBtn, leaveBtn)
@@ -375,7 +1626,19 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     const mo = new MutationObserver(() => scheduleTranslate())
     mo.observe(root, { childList: true, subtree: true, attributes: true })
     translate()
-    return () => mo.disconnect()
+    return () => {
+      mo.disconnect()
+      // Cleanup: удаляем обработчики с кнопки "Выйти" при размонтировании
+      const leaveBtn =
+        (root.querySelector('.call-container .lk-control-bar button.lk-disconnect-button') as HTMLElement | null) ||
+        (root.querySelector(
+          '.call-container .lk-control-bar [aria-label*="Выйти" i], .call-container .lk-control-bar [title*="Выйти" i], .call-container .lk-control-bar [aria-label*="leave" i], .call-container .lk-control-bar [title*="leave" i]'
+        ) as HTMLElement | null)
+      if (leaveBtn && (leaveBtn as any).__ebLeaveBound) {
+        leaveBtn.removeEventListener('click', (leaveBtn as any).__ebLeaveBound, true)
+        delete (leaveBtn as any).__ebLeaveBound
+      }
+    }
   }, [open, onMinimize, handleClose, isDesktop])
 
   // Inject avatars into participant placeholders using names
@@ -389,22 +1652,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     const localIdRef = localUserId || null
     const myAvatarRef = myAvatar || null
     const peerAvatarRef = peerAvatarUrl || null
-    
-    // Логируем словари один раз при открытии оверлея с полным содержимым
-    const byIdEntries = Object.entries(byIdRef)
-    const byNameEntries = Object.entries(byNameRef)
-    console.log('[CallOverlay] Avatar maps initialized:', {
-      byId: byIdEntries.length,
-      byName: byNameEntries.length,
-      byIdEntries: byIdEntries.map(([id, url]) => ({ id, url: url ? 'present' : 'null' })), // Упрощенный вид для читаемости
-      byNameEntries: byNameEntries.map(([name, url]) => ({ name, url: url ? 'present' : 'null' })), // Упрощенный вид для читаемости
-      localIdRef: localIdRef || '(empty)',
-      myAvatar: myAvatarRef ? 'present' : 'missing',
-      peerAvatar: peerAvatarRef ? 'present' : 'missing',
-      // Полные словари для детальной проверки (раскомментировать при необходимости)
-      // byIdMap: byIdRef,
-      // byNameMap: byNameRef
-    })
+    const avatarsDebug = isDebugFlagEnabled('lk-debug-avatars', 'lkDebugAvatars')
     const colorFromId = (id: string) => {
       let hash = 0
       for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash)
@@ -523,27 +1771,19 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         let finalUrl = idUrl ?? url ?? (isLocal ? (myUrl || (localIdRef ? byIdRef[localIdRef] ?? null : null)) : peerUrl)
         const fallbackUrl = buildLetterDataUrl(name || identity || 'U', identity || name || 'U')
         
-        // Логирование для отладки - всегда включено для диагностики проблемы
-        if (!finalUrl && (identity || name)) {
+        if (avatarsDebug && !finalUrl && (identity || name)) {
           const nameKeys = Object.keys(byNameRef)
-          const nameMatch = name ? nameKeys.find(k => k.toLowerCase() === name.toLowerCase()) : null
-          console.log('[CallOverlay Avatar Debug] Avatar not found:', {
+          const nameMatch = name ? nameKeys.find((k) => k.toLowerCase() === name.toLowerCase()) : null
+          // eslint-disable-next-line no-console
+          console.log('[Avatars] Avatar not found:', {
             identity: identity || '(empty)',
             name: name || '(empty)',
             isLocal,
             localIdRef: localIdRef || '(empty)',
-            idUrl: idUrl || '(not found)',
-            url: url || '(not found)',
-            peerUrl: peerUrl || '(not found)',
-            peerAvatarRef: peerAvatarRef || '(not set)',
-            finalUrl: finalUrl || '(using fallback)',
-            byIdEntries: Object.entries(byIdRef), // [id, avatarUrl] пары
-            byNameEntries: Object.entries(byNameRef), // [name, avatarUrl] пары
-            byIdHasIdentity: identity ? (identity in byIdRef) : false,
+            byIdHasIdentity: identity ? identity in byIdRef : false,
             byNameHasName: !!nameMatch,
             nameMatch: nameMatch || '(no match)',
-            allNameKeys: nameKeys, // Все ключи в словаре имен
-            participantMeta: participantMeta ? { userId: participantMeta.userId, displayName: participantMeta.displayName } : null
+            participantMeta: participantMeta ? { userId: participantMeta.userId, displayName: participantMeta.displayName } : null,
           })
         }
         
@@ -559,7 +1799,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           // Обработчик ошибок загрузки - если аватар не загрузился, показываем fallback
           img.onerror = () => {
             if (img && img.src !== fallbackUrl) {
-              console.log('[CallOverlay] Avatar image failed to load, using fallback:', img.src)
+              if (avatarsDebug) {
+                // eslint-disable-next-line no-console
+                console.log('[Avatars] Avatar image failed to load, using fallback:', img.src)
+              }
               img.src = fallbackUrl
             }
           }
@@ -650,7 +1893,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             setWasConnected(true)
             try { 
               if (conversationId && isGroup) { 
-                console.log('[CallOverlay] joinCallRoom emit', { conversationId, video: initialVideo })
+                if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
+                  // eslint-disable-next-line no-console
+                  console.log('[CallOverlay] joinCallRoom emit', { conversationId, video: initialVideo })
+                }
                 joinCallRoom(conversationId, initialVideo)
                 requestCallStatuses([conversationId]) 
               } 
@@ -659,7 +1905,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             }
           }}
           onDisconnected={(reason) => {
-            console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup, 'minimized:', minimized)
+            if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
+              // eslint-disable-next-line no-console
+              console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup, 'minimized:', minimized)
+            }
             const hadConnection = wasConnected
             setWasConnected(false)
             const manual = reason === 1 || manualCloseRef.current
@@ -686,7 +1935,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           }}
         >
           <div style={{ width: '100%', height: '100%' }}>
-            <VideoConference />
+            <ConnectionStatusBadge />
+            <DefaultMicrophoneSetter />
+            <PingDisplayUpdater localUserId={localUserId} />
+            <VideoConference SettingsComponent={CallSettings} />
           </div>
         </LiveKitRoom>
         {/* avatar overlay removed; avatars are injected into placeholders */}
