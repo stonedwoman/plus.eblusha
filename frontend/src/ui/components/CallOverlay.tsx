@@ -1174,6 +1174,13 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       flex-shrink: 0 !important;
     }
     
+    /* Light semi-transparent border for participant tiles */
+    .call-container .lk-participant-tile {
+      border: 1px solid rgba(255, 255, 255, 0.12) !important;
+      border-radius: 8px !important;
+      overflow: hidden !important;
+    }
+    
     /* Hide chat entry point in the control bar (we expose device selection via Settings and also via button group menus) */
     .call-container .lk-control-bar .lk-chat-toggle { display: none !important; }
 
@@ -1641,6 +1648,61 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     }
   }, [open, onMinimize, handleClose, isDesktop])
 
+  // Add "(мы)" label to local participant name in tiles
+  useEffect(() => {
+    if (!open) return
+    const root = document.body
+    if (!root) return
+    const localIdRef = localUserId || null
+
+    const updateLocalParticipantName = () => {
+      const tiles = root.querySelectorAll('.call-container .lk-participant-tile, .call-container [data-participant]') as NodeListOf<HTMLElement>
+      tiles.forEach((tile) => {
+        // Проверяем, является ли это локальным участником
+        const isLocalByAttr = tile.getAttribute('data-lk-local-participant') === 'true' || (tile as any).dataset?.lkLocalParticipant === 'true'
+        
+        // Также проверяем по identity для совместимости
+        let identity = tile.getAttribute('data-lk-participant-identity') || ''
+        if (!identity) {
+          const idEl = tile.querySelector('[data-lk-participant-identity]') as HTMLElement | null
+          if (idEl) identity = idEl.getAttribute('data-lk-participant-identity') || ''
+        }
+        const identityMatchesLocal = !!(identity && localIdRef && identity === localIdRef)
+        const isLocal = isLocalByAttr || identityMatchesLocal
+
+        if (!isLocal) return
+
+        // Находим элемент с именем
+        const nameEl = tile.querySelector('.lk-participant-name, [data-lk-participant-name]') as HTMLElement | null
+        if (!nameEl) return
+
+        const currentText = nameEl.textContent || ''
+        // Убираем старое "(мы)", если оно есть
+        const nameWithoutWe = currentText.replace(/\s*\(мы\)\s*$/, '').trim()
+        if (!nameWithoutWe) return // Пропускаем, если имени нет
+        
+        const expectedText = `${nameWithoutWe} (мы)`
+        // Обновляем только если текст отличается
+        if (currentText !== expectedText) {
+          nameEl.textContent = expectedText
+          // Также обновляем data-атрибут для консистентности
+          if (nameEl.hasAttribute('data-lk-participant-name')) {
+            nameEl.setAttribute('data-lk-participant-name', expectedText)
+          }
+        }
+      })
+    }
+
+    // Запускаем сразу и при изменениях DOM
+    updateLocalParticipantName()
+    const mo = new MutationObserver(() => {
+      // Небольшая задержка, чтобы дать LiveKit обновить имена
+      setTimeout(updateLocalParticipantName, 50)
+    })
+    mo.observe(root, { childList: true, subtree: true, characterData: true })
+    return () => mo.disconnect()
+  }, [open, localUserId])
+
   // Inject avatars into participant placeholders using names
   useEffect(() => {
     if (!open) return
@@ -1739,6 +1801,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         //   console.log('[CallOverlay] Identity not found in tile, all data attributes:', allDataAttrs, 'metadata:', participantMeta, 'tile classes:', tile.className)
         // }
         let name = (nameEl.textContent || nameEl.getAttribute('data-lk-participant-name') || '').trim()
+        // Убираем "(мы)" из имени для корректного поиска аватара в словаре
+        const originalName = name.replace(/\s*\(мы\)\s*$/, '').trim()
         if (!name && participantMeta?.displayName) {
           name = String(participantMeta.displayName).trim()
         }
@@ -1756,20 +1820,19 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         // Сначала пытаемся найти аватар по identity (самый надежный способ)
         const idUrl = identity ? (byIdRef[identity] ?? null) : null
         
-        // Затем по имени (case-insensitive)
-        const key = Object.keys(byNameRef).find((k) => k.toLowerCase() === name.toLowerCase())
+        // Затем по оригинальному имени без "(мы)" (case-insensitive)
+        const nameForLookup = originalName || name.replace(/\s*\(мы\)\s*$/, '').trim()
+        const key = Object.keys(byNameRef).find((k) => k.toLowerCase() === nameForLookup.toLowerCase())
         const url = key ? byNameRef[key] : null
         
         // Используем мой аватар ТОЛЬКО если это точно локальный участник (identity совпадает)
         // И только если не нашли аватар по identity или имени
         const myUrl = myAvatarRef
-        // Если это не локальный участник и не нашли аватар, используем peerAvatarUrl как fallback
-        // (полезно для 1:1 звонков, когда передается peerAvatarUrl)
-        // Также используем peerAvatarUrl если имя найдено, но аватар не найден в словаре
-        const peerUrl = !isLocal ? peerAvatarRef : null
-        // Приоритет: idUrl > url > (для локального: myUrl) > (для нелокального: peerUrl)
-        let finalUrl = idUrl ?? url ?? (isLocal ? (myUrl || (localIdRef ? byIdRef[localIdRef] ?? null : null)) : peerUrl)
-        const fallbackUrl = buildLetterDataUrl(name || identity || 'U', identity || name || 'U')
+        // peerAvatarUrl используется только для 1:1 звонков, но мы не можем точно определить,
+        // что это именно тот участник, поэтому не используем его как общий fallback
+        // Приоритет: idUrl > url > (для локального: myUrl) > fallbackUrl (генерация с буквой)
+        let finalUrl = idUrl ?? url ?? (isLocal ? (myUrl || (localIdRef ? byIdRef[localIdRef] ?? null : null)) : null)
+        const fallbackUrl = buildLetterDataUrl(nameForLookup || identity || 'U', identity || nameForLookup || 'U')
         
         if (avatarsDebug && !finalUrl && (identity || name)) {
           const nameKeys = Object.keys(byNameRef)
