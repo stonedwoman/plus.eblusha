@@ -1051,10 +1051,13 @@ function ParticipantVolumeUpdater() {
       pop.setAttribute('data-eb-open', 'false')
       pop.innerHTML = `
         <div class="top">
-          <button class="icon-btn" type="button" aria-label="Mute" title="Mute">
+          <button class="icon-btn mute-btn" type="button" aria-label="Mute" title="Mute">
             <span class="icon" aria-hidden="true">🔊</span>
           </button>
-          <div class="pct" aria-live="polite">100%</div>
+          <div class="right">
+            <div class="pct" aria-live="polite">100%</div>
+            <button class="close-btn" type="button" aria-label="Закрыть" title="Закрыть">✕</button>
+          </div>
         </div>
         <input class="range" type="range" min="0" max="150" value="100" step="1" />
       `
@@ -1214,7 +1217,8 @@ function ParticipantVolumeUpdater() {
               if (!(pop as any).__ebVolBound) {
                 ;(pop as any).__ebVolBound = true
                 const range = pop.querySelector('.range') as HTMLInputElement | null
-                const muteBtn = pop.querySelector('.icon-btn') as HTMLButtonElement | null
+                const muteBtn = pop.querySelector('.mute-btn') as HTMLButtonElement | null
+                const closeBtn = pop.querySelector('.close-btn') as HTMLButtonElement | null
                 range?.addEventListener('input', () => {
                   const info = currentKeyInfoRef.current
                   if (!info) return
@@ -1233,10 +1237,17 @@ function ParticipantVolumeUpdater() {
                   void applyToKey(info, pct > 100)
                   positionPopover()
                 })
-                muteBtn?.addEventListener('click', async (e) => {
+                muteBtn?.addEventListener('click', (e) => {
                   e.preventDefault()
                   e.stopPropagation()
-                  setMuted(!(getSettings(currentKeyInfoRef.current?.key || '').muted))
+                  const info = currentKeyInfoRef.current
+                  if (!info) return
+                  setMuted(!getSettings(info.key).muted)
+                })
+                closeBtn?.addEventListener('click', (e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  closeAllPanels()
                 })
               }
               syncUi()
@@ -2005,6 +2016,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       left: 8px;
       top: 8px;
       width:300px;
+      max-width: calc(100vw - 24px);
       padding:12px;
       border-radius:16px;
       background:var(--card);
@@ -2012,15 +2024,17 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       box-shadow:0 18px 55px rgba(0,0,0,.55);
       backdrop-filter:blur(18px);
       -webkit-backdrop-filter:blur(18px);
-      display:none;
       z-index:9999;
       box-sizing:border-box;
       color:var(--text);
+      font-family: inherit;
       display:grid;
       gap:10px;
     }
-    .eb-vol-popover[data-eb-open="true"]{ display:grid; }
+    .eb-vol-popover.overlay{ display:none; }
+    .eb-vol-popover.overlay[data-eb-open="true"]{ display:grid; }
     .eb-vol-popover .top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+    .eb-vol-popover .right{display:flex;align-items:center;gap:10px;}
     .eb-vol-popover .icon-btn{
       width:38px;height:38px;border-radius:12px;display:grid;place-items:center;
       border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);
@@ -2028,6 +2042,17 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       -webkit-tap-highlight-color: transparent;
       user-select:none;
     }
+    .eb-vol-popover .close-btn{
+      width:32px;height:32px;border-radius:12px;display:grid;place-items:center;
+      border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);
+      color:var(--text);cursor:pointer;
+      -webkit-tap-highlight-color: transparent;
+      user-select:none;
+      font-size: 14px;
+      line-height: 1;
+      opacity: 0.9;
+    }
+    .eb-vol-popover .close-btn:hover{ opacity: 1; background: rgba(255,255,255,.10); }
     .eb-vol-popover .pct{
       min-width:84px;text-align:right;font-size:18px;font-weight:650;
       font-variant-numeric:tabular-nums; padding:6px 10px;border-radius:12px;
