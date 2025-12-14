@@ -867,11 +867,13 @@ function PingDisplayUpdater({ localUserId }: { localUserId: string | null }) {
 function ParticipantVolumeUpdater() {
   const room = useRoomContext()
   const audioCtxRef = useRef<AudioContext | null>(null)
-  const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean }>>(new Map())
+  const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean; lastNonZeroPct: number }>>(new Map())
   const openKeyRef = useRef<string | null>(null)
   const popoverRef = useRef<HTMLElement | null>(null)
   const currentKeyInfoRef = useRef<{ key: string; userId: string | null; name: string | null } | null>(null)
   const currentAnchorRef = useRef<HTMLElement | null>(null)
+  const lastKeyInfoRef = useRef<{ key: string; userId: string | null; name: string | null } | null>(null)
+  const lastAnchorRef = useRef<HTMLElement | null>(null)
   const lastUserGestureAtRef = useRef<number>(0)
 
   const isLocalTile = (tile: HTMLElement): boolean => {
@@ -932,7 +934,7 @@ function ParticipantVolumeUpdater() {
     const map = settingsByKeyRef.current
     const existing = map.get(key)
     if (existing) return existing
-    const init = { volume: 1, muted: false }
+    const init = { volume: 1, muted: false, lastNonZeroPct: 100 }
     map.set(key, init)
     return init
   }
@@ -1045,27 +1047,77 @@ function ParticipantVolumeUpdater() {
     const ensurePopover = () => {
       if (popoverRef.current && document.body.contains(popoverRef.current)) return popoverRef.current
       const pop = document.createElement('div')
-      pop.className = 'eb-vol-popover'
+      pop.className = 'eb-vol-popover overlay'
       pop.setAttribute('data-eb-open', 'false')
       pop.innerHTML = `
-        <div class="eb-vol-row">
-          <div class="eb-vol-title">Громкость</div>
-          <button type="button" class="eb-vol-mute" title="Мьют" aria-label="Мьют">
-            <svg class="eb-vol-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
-              <path d="M23 9l-6 6"></path>
-              <path d="M17 9l6 6"></path>
-            </svg>
+        <div class="top">
+          <button class="icon-btn" type="button" aria-label="Mute" title="Mute">
+            <span class="icon" aria-hidden="true">🔊</span>
           </button>
+          <div class="pct" aria-live="polite">100%</div>
         </div>
-        <input class="eb-vol-range" type="range" min="0" max="150" step="5" value="100" />
-        <div class="eb-vol-hint"><span class="eb-vol-value">100%</span><span class="eb-vol-max">150%</span></div>
+        <input class="range" type="range" min="0" max="150" value="100" step="1" />
       `
       pop.addEventListener('click', (e) => e.stopPropagation())
       pop.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true } as any)
       document.body.appendChild(pop)
       popoverRef.current = pop
       return pop
+    }
+
+    const levelIcon = (vPct: number, muted: boolean) => {
+      if (muted || vPct === 0) return '🔇'
+      if (vPct <= 33) return '🔈'
+      return '🔊'
+    }
+
+    const updateFill = () => {
+      const pop = popoverRef.current
+      const info = currentKeyInfoRef.current
+      if (!pop || !info) return
+      const s = getSettings(info.key)
+      const range = pop.querySelector('.range') as HTMLInputElement | null
+      const pctEl = pop.querySelector('.pct') as HTMLElement | null
+      const iconEl = pop.querySelector('.icon') as HTMLElement | null
+      if (!range || !pctEl || !iconEl) return
+      const v = Math.max(0, Math.min(150, Math.round((s.muted ? 0 : s.volume * 100) || 0)))
+      range.value = String(v)
+
+      const max = Number(range.max) || 150
+      const safeMax = 100
+      const safeFill = Math.max(0, Math.min(100, (Math.min(v, safeMax) / max) * 100))
+      const overFill = v > safeMax ? Math.max(0, Math.min(100, ((v - safeMax) / (max - safeMax)) * 100)) : 0
+
+      range.style.background = `linear-gradient(90deg,
+        var(--accent) 0%,
+        var(--accent-hot) ${safeFill}%,
+        var(--danger) ${safeFill}%,
+        var(--danger) ${safeFill + overFill}%),
+       var(--track)`
+
+      pctEl.textContent = `${v}%`
+      iconEl.textContent = levelIcon(v, s.muted)
+      ;(pctEl as HTMLElement).style.boxShadow = v > 100 ? '0 0 0 2px rgba(239,68,68,.25) inset' : 'none'
+    }
+
+    const setMuted = (nextMuted: boolean) => {
+      const info = currentKeyInfoRef.current
+      if (!info) return
+      const s = getSettings(info.key)
+      if (nextMuted) {
+        // remember last non-zero percent
+        const curPct = Math.max(0, Math.min(150, Math.round(s.volume * 100)))
+        if (curPct > 0) s.lastNonZeroPct = curPct
+        s.muted = true
+        s.volume = 0
+      } else {
+        s.muted = false
+        const pct = Math.max(1, Math.min(150, Math.round(s.lastNonZeroPct || 100)))
+        s.lastNonZeroPct = pct
+        s.volume = pct / 100
+      }
+      updateFill()
+      void applyToKey(info, (s.volume * 100) > 100)
     }
 
     const positionPopover = () => {
@@ -1140,14 +1192,11 @@ function ParticipantVolumeUpdater() {
           nameEl.setAttribute('data-eb-vol-key', keyInfo.key)
 
           const syncUi = () => {
-            const pop = ensurePopover()
-            const range = pop.querySelector('.eb-vol-range') as HTMLInputElement | null
-            const valueEl = pop.querySelector('.eb-vol-value') as HTMLElement | null
             const s = getSettings(keyInfo.key)
-            const pct = Math.round(s.volume * 100)
-            if (range) range.value = String(pct)
-            if (valueEl) valueEl.textContent = `${pct}%${s.muted ? ' (мьют)' : ''}`
             nameEl.classList.toggle('eb-vol-muted', !!s.muted)
+            // ensure lastNonZeroPct stays valid
+            const pct = Math.max(0, Math.min(150, Math.round(s.volume * 100)))
+            if (pct > 0) s.lastNonZeroPct = pct
           }
 
           const toggleOpen = (nextOpen: boolean) => {
@@ -1158,39 +1207,45 @@ function ParticipantVolumeUpdater() {
               nameEl.setAttribute('data-eb-vol-open', 'true')
               currentKeyInfoRef.current = keyInfo
               currentAnchorRef.current = nameEl
+              lastKeyInfoRef.current = keyInfo
+              lastAnchorRef.current = nameEl
               pop.setAttribute('data-eb-open', 'true')
               // bind popover events once
               if (!(pop as any).__ebVolBound) {
                 ;(pop as any).__ebVolBound = true
-                const range = pop.querySelector('.eb-vol-range') as HTMLInputElement | null
-                const muteBtn = pop.querySelector('.eb-vol-mute') as HTMLButtonElement | null
+                const range = pop.querySelector('.range') as HTMLInputElement | null
+                const muteBtn = pop.querySelector('.icon-btn') as HTMLButtonElement | null
                 range?.addEventListener('input', () => {
                   const info = currentKeyInfoRef.current
                   if (!info) return
                   const pct = Math.max(0, Math.min(150, Number(range.value) || 0))
                   const s = getSettings(info.key)
-                  s.volume = pct / 100
-                  syncUi()
+                  // Behavior: 0 => muted, >0 => unmuted + remember lastNonZero
+                  if (pct === 0) {
+                    s.muted = true
+                    s.volume = 0
+                  } else {
+                    s.muted = false
+                    s.lastNonZeroPct = pct
+                    s.volume = pct / 100
+                  }
+                  updateFill()
                   void applyToKey(info, pct > 100)
                   positionPopover()
                 })
                 muteBtn?.addEventListener('click', async (e) => {
                   e.preventDefault()
                   e.stopPropagation()
-                  const info = currentKeyInfoRef.current
-                  if (!info) return
-                  const s = getSettings(info.key)
-                  s.muted = !s.muted
-                  syncUi()
-                  const needsAmp = s.volume > 1
-                  if (needsAmp) await ensureAudioContextFromGesture()
-                  void applyToKey(info, needsAmp)
+                  setMuted(!(getSettings(currentKeyInfoRef.current?.key || '').muted))
                 })
               }
               syncUi()
+              updateFill()
               // Position after layout
               requestAnimationFrame(() => {
                 positionPopover()
+                // second pass helps after fonts/layout settle
+                requestAnimationFrame(() => positionPopover())
               })
             } else {
               if (openKeyRef.current === keyInfo.key) openKeyRef.current = null
@@ -1254,6 +1309,73 @@ function ParticipantVolumeUpdater() {
     document.addEventListener('click', onDocClick, true)
     document.addEventListener('touchstart', onDocClick, true)
 
+    const onKeyDown = (e: KeyboardEvent) => {
+      const pop = popoverRef.current
+      const isOpen = !!pop && pop.getAttribute('data-eb-open') === 'true'
+      const keyLower = (e.key || '').toLowerCase()
+
+      // Esc: hide/show (toggle)
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        if (isOpen) {
+          closeAllPanels()
+          return
+        }
+        const info = lastKeyInfoRef.current
+        const anchor = lastAnchorRef.current
+        if (info && anchor && document.body.contains(anchor)) {
+          // reopen
+          openKeyRef.current = info.key
+          currentKeyInfoRef.current = info
+          currentAnchorRef.current = anchor
+          anchor.setAttribute('data-eb-vol-open', 'true')
+          ensurePopover().setAttribute('data-eb-open', 'true')
+          updateFill()
+          requestAnimationFrame(() => positionPopover())
+        }
+        return
+      }
+
+      if (!isOpen) return
+
+      // Arrow keys adjust
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault()
+        const step = e.shiftKey ? 5 : 2
+        const dir = e.key === 'ArrowRight' ? 1 : -1
+        const info = currentKeyInfoRef.current
+        if (!info) return
+        const s = getSettings(info.key)
+        const curPct = Math.max(0, Math.min(150, Math.round((s.muted ? 0 : s.volume * 100) || 0)))
+        let next = curPct + dir * step
+        next = Math.max(0, Math.min(150, next))
+        if (next === 0) {
+          s.muted = true
+          s.volume = 0
+        } else {
+          s.muted = false
+          s.lastNonZeroPct = next
+          s.volume = next / 100
+        }
+        updateFill()
+        void applyToKey(info, next > 100)
+        positionPopover()
+        return
+      }
+
+      // M toggles mute
+      if (keyLower === 'm') {
+        e.preventDefault()
+        const info = currentKeyInfoRef.current
+        if (!info) return
+        setMuted(!getSettings(info.key).muted)
+        positionPopover()
+        return
+      }
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+
     const onWin = () => {
       requestAnimationFrame(() => positionPopover())
     }
@@ -1279,6 +1401,7 @@ function ParticipantVolumeUpdater() {
     return () => {
       document.removeEventListener('click', onDocClick, true)
       document.removeEventListener('touchstart', onDocClick, true)
+      document.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('resize', onWin)
       window.removeEventListener('scroll', onWin, true)
       mo.disconnect()
@@ -1867,59 +1990,79 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       opacity: 0.9;
     }
 
-    /* Popover is rendered into body to avoid tile overflow clipping */
-    .eb-vol-popover {
+    /* Volume popover (portal into body) — new spec */
+    .eb-vol-popover{
+      --card: rgba(20,22,28,.72);
+      --border: rgba(255,255,255,.08);
+      --text: rgba(255,255,255,.92);
+      --track: rgba(255,255,255,.14);
+      --accent:#d97706;
+      --accent-hot:#f59e0b;
+      --danger:#ef4444;
+    }
+    .eb-vol-popover.overlay{
       position: fixed;
       left: 8px;
       top: 8px;
-      width: 220px;
-      max-width: min(240px, calc(100vw - 32px));
-      padding: 10px 10px 10px;
-      border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.14);
-      background: rgba(0,0,0,0.62);
-      backdrop-filter: blur(10px) saturate(115%);
-      box-shadow: 0 18px 55px rgba(0,0,0,0.45);
-      display: none;
-      z-index: 9999;
+      width:300px;
+      padding:12px;
+      border-radius:16px;
+      background:var(--card);
+      border:1px solid var(--border);
+      box-shadow:0 18px 55px rgba(0,0,0,.55);
+      backdrop-filter:blur(18px);
+      -webkit-backdrop-filter:blur(18px);
+      display:none;
+      z-index:9999;
+      box-sizing:border-box;
+      color:var(--text);
+      display:grid;
+      gap:10px;
     }
-    .eb-vol-popover[data-eb-open="true"] { display: block; }
-    .call-container .eb-vol-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      margin-bottom: 8px;
-    }
-    .call-container .eb-vol-title { font-size: 12px; font-weight: 700; color: rgba(255,255,255,0.92); }
-    .call-container .eb-vol-mute {
+    .eb-vol-popover[data-eb-open="true"]{ display:grid; }
+    .eb-vol-popover .top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+    .eb-vol-popover .icon-btn{
+      width:38px;height:38px;border-radius:12px;display:grid;place-items:center;
+      border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);
+      color:var(--text);cursor:pointer;
       -webkit-tap-highlight-color: transparent;
-      appearance: none;
-      border: 1px solid rgba(255,255,255,0.14);
-      background: rgba(255,255,255,0.06);
-      color: rgba(255,255,255,0.92);
-      border-radius: 10px;
-      height: 30px;
-      width: 38px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      user-select: none;
+      user-select:none;
     }
-    .call-container .eb-vol-mute:hover { background: rgba(255,255,255,0.10); }
-    .call-container .eb-vol-icon-svg { width: 16px; height: 16px; display: block; }
-    .call-container .eb-vol-range { width: 100%; }
-    .call-container .eb-vol-hint {
-      display: flex;
-      justify-content: space-between;
-      margin-top: 6px;
-      font-size: 11px;
-      opacity: 0.75;
-      font-variant-numeric: tabular-nums;
-      color: rgba(255,255,255,0.85);
+    .eb-vol-popover .pct{
+      min-width:84px;text-align:right;font-size:18px;font-weight:650;
+      font-variant-numeric:tabular-nums; padding:6px 10px;border-radius:12px;
+      background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.08);
     }
-    .call-container .eb-vol-max { opacity: 0.75; }
+    .eb-vol-popover input[type="range"]{
+      appearance:none;
+      -webkit-appearance:none;
+      width:100%;
+      height:8px;
+      border-radius:999px;
+      outline:none;
+      background:var(--track);
+    }
+    .eb-vol-popover input[type="range"]::-webkit-slider-thumb{
+      appearance:none;
+      -webkit-appearance:none;
+      width:16px;height:16px;border-radius:999px;
+      background:rgba(255,255,255,.92);
+      border:1px solid rgba(0,0,0,.25);
+      box-shadow:0 8px 18px rgba(0,0,0,.35);
+      cursor:pointer;
+    }
+    .eb-vol-popover input[type="range"]::-moz-range-thumb{
+      width:16px;height:16px;border-radius:999px;
+      background:rgba(255,255,255,.92);
+      border:1px solid rgba(0,0,0,.25);
+      box-shadow:0 8px 18px rgba(0,0,0,.35);
+      cursor:pointer;
+    }
+    .eb-vol-popover input[type="range"]::-moz-range-track{
+      height:8px;
+      border-radius:999px;
+      background:var(--track);
+    }
   `
 
   useEffect(() => {
