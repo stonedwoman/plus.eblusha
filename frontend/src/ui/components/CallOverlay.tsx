@@ -875,6 +875,7 @@ function ParticipantVolumeUpdater() {
   const lastKeyInfoRef = useRef<{ key: string; userId: string | null; name: string | null } | null>(null)
   const lastAnchorRef = useRef<HTMLElement | null>(null)
   const lastUserGestureAtRef = useRef<number>(0)
+  const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; inited: boolean }>>(new WeakMap())
 
   const isLocalTile = (tile: HTMLElement): boolean => {
     const v = tile.getAttribute('data-lk-local-participant')
@@ -1041,8 +1042,24 @@ function ParticipantVolumeUpdater() {
       const tr = pub?.track
       if (!(tr instanceof RemoteAudioTrack)) continue
       if (ctx) {
-        // Enable WebAudio routing so gain can exceed 1.0.
-        tr.setAudioContext(ctx)
+        // IMPORTANT: avoid rewiring WebAudio on every slider tick (causes audible crackle).
+        const prev = webAudioStateRef.current.get(tr)
+        if (!prev || prev.ctx !== ctx || !prev.inited) {
+          tr.setAudioContext(ctx)
+          // Add a light limiter/compressor to reduce clipping when >100%.
+          try {
+            const comp = ctx.createDynamicsCompressor()
+            comp.threshold.setValueAtTime(-18, ctx.currentTime)
+            comp.knee.setValueAtTime(0, ctx.currentTime)
+            comp.ratio.setValueAtTime(20, ctx.currentTime)
+            comp.attack.setValueAtTime(0.003, ctx.currentTime)
+            comp.release.setValueAtTime(0.25, ctx.currentTime)
+            tr.setWebAudioPlugins([comp])
+          } catch {
+            // ignore
+          }
+          webAudioStateRef.current.set(tr, { ctx, inited: true })
+        }
       }
       tr.setVolume(effective)
     }
@@ -1278,6 +1295,35 @@ function ParticipantVolumeUpdater() {
                   void applyToKey(info, pct > 100)
                   positionPopover()
                 })
+                // Wheel support on hover: change volume with mouse wheel over the slider
+                range?.addEventListener(
+                  'wheel',
+                  (e: WheelEvent) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    const info = currentKeyInfoRef.current
+                    if (!info || !range) return
+                    const step = e.shiftKey ? 5 : 2
+                    const dir = e.deltaY < 0 ? 1 : -1 // wheel up => louder
+                    const s = getSettings(info.key)
+                    const curPct = Math.max(0, Math.min(150, Math.round((s.muted ? 0 : s.volume * 100) || 0)))
+                    let next = curPct + dir * step
+                    next = Math.max(0, Math.min(150, next))
+                    range.value = String(next)
+                    if (next === 0) {
+                      s.muted = true
+                      s.volume = 0
+                    } else {
+                      s.muted = false
+                      s.lastNonZeroPct = next
+                      s.volume = next / 100
+                    }
+                    updateFill()
+                    void applyToKey(info, next > 100)
+                    positionPopover()
+                  },
+                  { passive: false } as any,
+                )
                 muteBtn?.addEventListener('click', (e) => {
                   e.preventDefault()
                   e.stopPropagation()
