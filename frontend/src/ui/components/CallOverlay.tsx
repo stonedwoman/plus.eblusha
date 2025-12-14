@@ -61,7 +61,7 @@ import { X } from 'lucide-react'
 import { api } from '../../utils/api'
 import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../utils/socket'
 import { useAppStore } from '../../domain/store/appStore'
-import { ConnectionState, LogLevel, RoomEvent, setLogLevel } from 'livekit-client'
+import { ConnectionState, LogLevel, RoomEvent, setLogLevel, Track, RemoteAudioTrack } from 'livekit-client'
 
 // Silence LiveKit internal info/debug logs (e.g. "publishing track") in production.
 // Keep warnings/errors; you can still debug via localStorage flags.
@@ -864,6 +864,284 @@ function PingDisplayUpdater({ localUserId }: { localUserId: string | null }) {
   return null
 }
 
+function ParticipantVolumeUpdater() {
+  const room = useRoomContext()
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const settingsByIdentityRef = useRef<Map<string, { volume: number; muted: boolean }>>(new Map())
+  const openIdentityRef = useRef<string | null>(null)
+  const lastUserGestureAtRef = useRef<number>(0)
+
+  const isLocalTile = (tile: HTMLElement): boolean => {
+    const v = tile.getAttribute('data-lk-local-participant')
+    if (v === 'true') return true
+    return (tile as any).dataset?.lkLocalParticipant === 'true'
+  }
+
+  const getTileIdentity = (tile: HTMLElement): string | null => {
+    let identity =
+      tile.getAttribute('data-lk-participant-identity') ||
+      (tile as any).dataset?.lkParticipantIdentity ||
+      ''
+    if (!identity) {
+      const idEl = tile.querySelector('[data-lk-participant-identity]') as HTMLElement | null
+      if (idEl) {
+        identity =
+          idEl.getAttribute('data-lk-participant-identity') ||
+          (idEl as any).dataset?.lkParticipantIdentity ||
+          ''
+      }
+    }
+    identity = String(identity || '').trim()
+    return identity ? identity : null
+  }
+
+  const getSettings = (identity: string) => {
+    const map = settingsByIdentityRef.current
+    const existing = map.get(identity)
+    if (existing) return existing
+    const init = { volume: 1, muted: false }
+    map.set(identity, init)
+    return init
+  }
+
+  const ensureAudioContextFromGesture = async () => {
+    lastUserGestureAtRef.current = Date.now()
+    if (audioCtxRef.current) {
+      try {
+        if (audioCtxRef.current.state !== 'running') {
+          await audioCtxRef.current.resume()
+        }
+      } catch {
+        // ignore
+      }
+      return audioCtxRef.current
+    }
+    try {
+      // Create only from a user gesture; keep default audio path untouched otherwise.
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+      audioCtxRef.current = ctx
+      try {
+        if (ctx.state !== 'running') await ctx.resume()
+      } catch {
+        // ignore
+      }
+      return ctx
+    } catch {
+      return null
+    }
+  }
+
+  const applyToIdentity = async (identity: string, fromGesture: boolean) => {
+    if (!room) return
+    const participant = room.remoteParticipants.get(identity)
+    if (!participant) return
+    const settings = getSettings(identity)
+    const effective = settings.muted ? 0 : settings.volume
+
+    // Only create/use AudioContext when amplification > 1 is needed, and only from a user gesture.
+    const needsAmp = effective > 1
+    const ctx = needsAmp ? (fromGesture ? await ensureAudioContextFromGesture() : audioCtxRef.current) : null
+
+    // Iterate all audio publications (mic + screen share audio).
+    const pubs: any[] = []
+    try {
+      const trackPubs = (participant as any).trackPublications
+      if (trackPubs?.values) {
+        for (const pub of trackPubs.values()) pubs.push(pub)
+      }
+    } catch {
+      // ignore
+    }
+
+    for (const pub of pubs) {
+      if (pub?.kind !== Track.Kind.Audio) continue
+      const tr = pub?.track
+      if (!(tr instanceof RemoteAudioTrack)) continue
+      if (ctx) {
+        // Enable WebAudio routing so gain can exceed 1.0.
+        tr.setAudioContext(ctx)
+      }
+      tr.setVolume(effective)
+    }
+  }
+
+  // Keep volumes applied when tracks subscribe later (or reattach).
+  useEffect(() => {
+    if (!room) return
+    const onTrackSubscribed = (track: any, pub: any, participant: any) => {
+      try {
+        const id = String(participant?.identity || '')
+        if (!id) return
+        if ((participant as any)?.isLocal) return
+        if (settingsByIdentityRef.current.has(id) && track?.kind === Track.Kind.Audio) {
+          void applyToIdentity(id, false)
+        }
+      } catch {
+        // ignore
+      }
+    }
+    room.on(RoomEvent.TrackSubscribed as any, onTrackSubscribed as any)
+    return () => {
+      room.off(RoomEvent.TrackSubscribed as any, onTrackSubscribed as any)
+    }
+  }, [room])
+
+  // Inject UI into participant tiles.
+  useEffect(() => {
+    if (!room) return
+    const root = document.body
+    if (!root) return
+
+    const closeAllPanels = () => {
+      openIdentityRef.current = null
+      root.querySelectorAll('.call-container .eb-vol-control[data-eb-open="true"]').forEach((el) => {
+        ;(el as HTMLElement).setAttribute('data-eb-open', 'false')
+      })
+    }
+
+    const applyDom = () => {
+      const tiles = root.querySelectorAll('.call-container .lk-participant-tile') as NodeListOf<HTMLElement>
+      tiles.forEach((tile) => {
+        if (isLocalTile(tile)) return
+        const identity = getTileIdentity(tile)
+        if (!identity) return
+
+        const meta = tile.querySelector('.lk-participant-metadata') as HTMLElement | null
+        if (!meta) return
+
+        let wrap = meta.querySelector(`.eb-vol-control[data-eb-identity="${CSS.escape(identity)}"]`) as HTMLElement | null
+        if (!wrap) {
+          wrap = document.createElement('div')
+          wrap.className = 'lk-participant-metadata-item eb-vol-control'
+          wrap.setAttribute('data-eb-identity', identity)
+          wrap.setAttribute('data-eb-open', 'false')
+
+          const btn = document.createElement('button')
+          btn.type = 'button'
+          btn.className = 'eb-vol-btn'
+          btn.setAttribute('aria-label', 'Громкость участника')
+          btn.title = 'Громкость'
+          btn.innerHTML = `
+            <span class="eb-vol-icon" aria-hidden="true">
+              <svg class="eb-vol-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
+                <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
+                <path d="M18 6a9 9 0 0 1 0 12"></path>
+              </svg>
+            </span>
+            <span class="eb-vol-badge"></span>
+          `
+
+          const panel = document.createElement('div')
+          panel.className = 'eb-vol-panel'
+          panel.innerHTML = `
+            <div class="eb-vol-row">
+              <div class="eb-vol-title">Громкость</div>
+              <button type="button" class="eb-vol-mute" title="Мьют" aria-label="Мьют">
+                <svg class="eb-vol-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
+                  <path d="M23 9l-6 6"></path>
+                  <path d="M17 9l6 6"></path>
+                </svg>
+              </button>
+            </div>
+            <input class="eb-vol-range" type="range" min="0" max="150" step="5" value="100" />
+            <div class="eb-vol-hint"><span class="eb-vol-value">100%</span><span class="eb-vol-max">150%</span></div>
+          `
+
+          const badge = btn.querySelector('.eb-vol-badge') as HTMLElement | null
+          const range = panel.querySelector('.eb-vol-range') as HTMLInputElement | null
+          const valueEl = panel.querySelector('.eb-vol-value') as HTMLElement | null
+          const muteBtn = panel.querySelector('.eb-vol-mute') as HTMLButtonElement | null
+
+          const syncUi = () => {
+            const s = getSettings(identity)
+            const pct = Math.round(s.volume * 100)
+            if (range) range.value = String(pct)
+            if (valueEl) valueEl.textContent = `${pct}%${s.muted ? ' (мьют)' : ''}`
+            if (badge) badge.textContent = s.muted ? '0%' : pct === 100 ? '' : `${pct}%`
+            wrap!.classList.toggle('is-muted', !!s.muted)
+          }
+
+          const toggleOpen = (nextOpen: boolean) => {
+            if (nextOpen) {
+              closeAllPanels()
+              openIdentityRef.current = identity
+              wrap!.setAttribute('data-eb-open', 'true')
+            } else {
+              if (openIdentityRef.current === identity) openIdentityRef.current = null
+              wrap!.setAttribute('data-eb-open', 'false')
+            }
+          }
+
+          btn.addEventListener('click', (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            const isOpen = wrap!.getAttribute('data-eb-open') === 'true'
+            toggleOpen(!isOpen)
+            syncUi()
+          })
+          btn.addEventListener('touchstart', (e) => {
+            e.stopPropagation()
+          }, { passive: true } as any)
+
+          panel.addEventListener('click', (e) => e.stopPropagation())
+          panel.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true } as any)
+
+          range?.addEventListener('input', () => {
+            const pct = Math.max(0, Math.min(150, Number(range.value) || 0))
+            const s = getSettings(identity)
+            s.volume = pct / 100
+            // Keep mute state; slider doesn't auto-unmute.
+            syncUi()
+            void applyToIdentity(identity, pct > 100) // treat >100 as requiring AudioContext (gesture)
+          })
+
+          muteBtn?.addEventListener('click', async (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            const s = getSettings(identity)
+            s.muted = !s.muted
+            syncUi()
+            // Ensure AudioContext if current volume needs amplification.
+            const needsAmp = s.volume > 1
+            if (needsAmp) await ensureAudioContextFromGesture()
+            void applyToIdentity(identity, needsAmp)
+          })
+
+          wrap.appendChild(btn)
+          wrap.appendChild(panel)
+          meta.appendChild(wrap)
+
+          // Initial apply/sync.
+          syncUi()
+          void applyToIdentity(identity, false)
+        } else {
+          // Update open state reflect current global state (single-open panel)
+          const shouldBeOpen = openIdentityRef.current === identity
+          wrap.setAttribute('data-eb-open', shouldBeOpen ? 'true' : 'false')
+        }
+      })
+    }
+
+    const onDocClick = () => closeAllPanels()
+    document.addEventListener('click', onDocClick, true)
+    document.addEventListener('touchstart', onDocClick, true)
+
+    const mo = new MutationObserver(() => applyDom())
+    mo.observe(root, { childList: true, subtree: true })
+    applyDom()
+
+    return () => {
+      document.removeEventListener('click', onDocClick, true)
+      document.removeEventListener('touchstart', onDocClick, true)
+      mo.disconnect()
+    }
+  }, [room])
+
+  return null
+}
+
 function CallSettings() {
   const room = useRoomContext()
   const { isMicrophoneEnabled, microphoneTrack } = useLocalParticipant()
@@ -1394,6 +1672,89 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     .call-container .eb-ping-display[data-eb-ping-level="good"] .eb-ping-text { color: #22c55e; } /* green */
     .call-container .eb-ping-display[data-eb-ping-level="warn"] .eb-ping-text { color: #fbbf24; } /* yellow */
     .call-container .eb-ping-display[data-eb-ping-level="bad"] .eb-ping-text { color: #ef4444; }  /* red */
+
+    /* Per-participant volume controls */
+    .call-container .eb-vol-control {
+      position: relative !important;
+      gap: 6px !important;
+      padding: 0.25rem 0.35rem !important;
+    }
+    .call-container .eb-vol-btn {
+      -webkit-tap-highlight-color: transparent;
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: rgba(255,255,255,0.92);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+      font-size: 12px;
+      user-select: none;
+    }
+    .call-container .eb-vol-icon { display: inline-flex; align-items: center; opacity: 0.95; }
+    .call-container .eb-vol-svg { width: 14px; height: 14px; display: block; }
+    .call-container .eb-vol-badge {
+      font-size: 11px;
+      opacity: 0.8;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .call-container .eb-vol-control.is-muted .eb-vol-icon { opacity: 0.85; }
+    .call-container .eb-vol-panel {
+      position: absolute;
+      right: 0;
+      bottom: calc(100% + 8px);
+      width: 210px;
+      max-width: min(220px, calc(100vw - 32px));
+      padding: 10px 10px 10px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(0,0,0,0.62);
+      backdrop-filter: blur(8px) saturate(110%);
+      box-shadow: 0 18px 55px rgba(0,0,0,0.45);
+      display: none;
+      z-index: 60;
+    }
+    .call-container .eb-vol-control[data-eb-open="true"] .eb-vol-panel { display: block; }
+    .call-container .eb-vol-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .call-container .eb-vol-title { font-size: 12px; font-weight: 700; color: rgba(255,255,255,0.92); }
+    .call-container .eb-vol-mute {
+      -webkit-tap-highlight-color: transparent;
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.06);
+      color: rgba(255,255,255,0.92);
+      border-radius: 10px;
+      height: 30px;
+      width: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .call-container .eb-vol-mute .eb-vol-svg { width: 16px; height: 16px; }
+    .call-container .eb-vol-mute:hover { background: rgba(255,255,255,0.10); }
+    .call-container .eb-vol-range { width: 100%; }
+    .call-container .eb-vol-hint {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 6px;
+      font-size: 11px;
+      opacity: 0.75;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255,255,255,0.85);
+    }
+    .call-container .eb-vol-max { opacity: 0.75; }
   `
 
   useEffect(() => {
@@ -2050,6 +2411,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             <ConnectionStatusBadge />
             <DefaultMicrophoneSetter />
             <PingDisplayUpdater localUserId={localUserId} />
+            <ParticipantVolumeUpdater />
             <VideoConference SettingsComponent={CallSettings} />
           </div>
         </LiveKitRoom>
