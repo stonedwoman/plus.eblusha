@@ -867,8 +867,8 @@ function PingDisplayUpdater({ localUserId }: { localUserId: string | null }) {
 function ParticipantVolumeUpdater() {
   const room = useRoomContext()
   const audioCtxRef = useRef<AudioContext | null>(null)
-  const settingsByIdentityRef = useRef<Map<string, { volume: number; muted: boolean }>>(new Map())
-  const openIdentityRef = useRef<string | null>(null)
+  const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean }>>(new Map())
+  const openKeyRef = useRef<string | null>(null)
   const lastUserGestureAtRef = useRef<number>(0)
 
   const isLocalTile = (tile: HTMLElement): boolean => {
@@ -877,30 +877,60 @@ function ParticipantVolumeUpdater() {
     return (tile as any).dataset?.lkLocalParticipant === 'true'
   }
 
-  const getTileIdentity = (tile: HTMLElement): string | null => {
-    let identity =
-      tile.getAttribute('data-lk-participant-identity') ||
-      (tile as any).dataset?.lkParticipantIdentity ||
-      ''
-    if (!identity) {
-      const idEl = tile.querySelector('[data-lk-participant-identity]') as HTMLElement | null
-      if (idEl) {
-        identity =
-          idEl.getAttribute('data-lk-participant-identity') ||
-          (idEl as any).dataset?.lkParticipantIdentity ||
-          ''
-      }
-    }
-    identity = String(identity || '').trim()
-    return identity ? identity : null
+  const getTileParticipantName = (tile: HTMLElement): string | null => {
+    const el =
+      (tile.querySelector('[data-lk-participant-name]') as HTMLElement | null) ||
+      (tile.querySelector('.lk-participant-name') as HTMLElement | null)
+    const attr = el?.getAttribute('data-lk-participant-name')
+    const text = (attr && attr.trim()) || (el?.textContent?.trim() ?? '')
+    if (!text) return null
+    return text
+      .replace(/[\u2019']/g, "'")
+      .replace(/'s\s+screen$/i, '')
+      .trim()
   }
 
-  const getSettings = (identity: string) => {
-    const map = settingsByIdentityRef.current
-    const existing = map.get(identity)
+  const extractTileUserId = (tile: HTMLElement): string | null => {
+    // Try explicit attrs first (if app adds them)
+    const direct =
+      tile.getAttribute('data-lk-participant-identity') ||
+      tile.getAttribute('data-participant-identity') ||
+      tile.getAttribute('data-user-id') ||
+      (tile as any).dataset?.lkParticipantIdentity ||
+      ''
+    const directTrim = String(direct || '').trim()
+    if (directTrim) return directTrim
+
+    // Try metadata JSON (our app often injects it for avatar mapping)
+    const metaAttr =
+      tile.getAttribute('data-lk-participant-metadata') ||
+      (tile.dataset ? (tile.dataset as any).lkParticipantMetadata : '') ||
+      ''
+    if (metaAttr) {
+      try {
+        const parsed = JSON.parse(metaAttr)
+        if (parsed?.userId) return String(parsed.userId).trim()
+      } catch {
+        // ignore
+      }
+    }
+    return null
+  }
+
+  const getTileKey = (tile: HTMLElement): { key: string; userId: string | null; name: string | null } | null => {
+    const userId = extractTileUserId(tile)
+    const name = getTileParticipantName(tile)
+    const key = userId || name
+    if (!key) return null
+    return { key, userId, name }
+  }
+
+  const getSettings = (key: string) => {
+    const map = settingsByKeyRef.current
+    const existing = map.get(key)
     if (existing) return existing
     const init = { volume: 1, muted: false }
-    map.set(identity, init)
+    map.set(key, init)
     return init
   }
 
@@ -931,11 +961,26 @@ function ParticipantVolumeUpdater() {
     }
   }
 
-  const applyToIdentity = async (identity: string, fromGesture: boolean) => {
+  const applyToKey = async (
+    keyInfo: { key: string; userId: string | null; name: string | null },
+    fromGesture: boolean,
+  ) => {
     if (!room) return
-    const participant = room.remoteParticipants.get(identity)
+    const { key, userId, name } = keyInfo
+
+    // Prefer identity match; fallback to name match (best-effort).
+    const participant =
+      (userId ? room.remoteParticipants.get(userId) : null) ||
+      (() => {
+        if (!name) return null
+        for (const p of room.remoteParticipants.values()) {
+          if ((p as any)?.name && String((p as any).name).trim() === name) return p
+        }
+        return null
+      })()
     if (!participant) return
-    const settings = getSettings(identity)
+
+    const settings = getSettings(key)
     const effective = settings.muted ? 0 : settings.volume
 
     // Only create/use AudioContext when amplification > 1 is needed, and only from a user gesture.
@@ -971,10 +1016,12 @@ function ParticipantVolumeUpdater() {
     const onTrackSubscribed = (track: any, pub: any, participant: any) => {
       try {
         const id = String(participant?.identity || '')
-        if (!id) return
+        const name = String(participant?.name || '')
+        const key = id || name
+        if (!key) return
         if ((participant as any)?.isLocal) return
-        if (settingsByIdentityRef.current.has(id) && track?.kind === Track.Kind.Audio) {
-          void applyToIdentity(id, false)
+        if (settingsByKeyRef.current.has(key) && track?.kind === Track.Kind.Audio) {
+          void applyToKey({ key, userId: id || null, name: name || null }, false)
         }
       } catch {
         // ignore
@@ -993,142 +1040,166 @@ function ParticipantVolumeUpdater() {
     if (!root) return
 
     const closeAllPanels = () => {
-      openIdentityRef.current = null
+      openKeyRef.current = null
       root.querySelectorAll('.call-container .eb-vol-control[data-eb-open="true"]').forEach((el) => {
         ;(el as HTMLElement).setAttribute('data-eb-open', 'false')
       })
     }
 
     const applyDom = () => {
-      const tiles = root.querySelectorAll('.call-container .lk-participant-tile') as NodeListOf<HTMLElement>
-      tiles.forEach((tile) => {
-        if (isLocalTile(tile)) return
-        const identity = getTileIdentity(tile)
-        if (!identity) return
+      try {
+        const tiles = root.querySelectorAll('.call-container .lk-participant-tile') as NodeListOf<HTMLElement>
+        tiles.forEach((tile) => {
+          if (isLocalTile(tile)) return
+          const keyInfo = getTileKey(tile)
+          if (!keyInfo) return
 
-        const meta = tile.querySelector('.lk-participant-metadata') as HTMLElement | null
-        if (!meta) return
+          const meta = tile.querySelector('.lk-participant-metadata') as HTMLElement | null
+          if (!meta) return
 
-        let wrap = meta.querySelector(`.eb-vol-control[data-eb-identity="${CSS.escape(identity)}"]`) as HTMLElement | null
-        if (!wrap) {
-          wrap = document.createElement('div')
-          wrap.className = 'lk-participant-metadata-item eb-vol-control'
-          wrap.setAttribute('data-eb-identity', identity)
-          wrap.setAttribute('data-eb-open', 'false')
+          const existing = Array.from(meta.querySelectorAll('.eb-vol-control')) as HTMLElement[]
+          let wrap = existing.find((el) => el.getAttribute('data-eb-key') === keyInfo.key) || null
+          if (!wrap) {
+            wrap = document.createElement('div')
+            wrap.className = 'lk-participant-metadata-item eb-vol-control'
+            wrap.setAttribute('data-eb-key', keyInfo.key)
+            wrap.setAttribute('data-eb-open', 'false')
 
-          const btn = document.createElement('button')
-          btn.type = 'button'
-          btn.className = 'eb-vol-btn'
-          btn.setAttribute('aria-label', 'Громкость участника')
-          btn.title = 'Громкость'
-          btn.innerHTML = `
-            <span class="eb-vol-icon" aria-hidden="true">
-              <svg class="eb-vol-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
-                <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
-                <path d="M18 6a9 9 0 0 1 0 12"></path>
-              </svg>
-            </span>
-            <span class="eb-vol-badge"></span>
-          `
-
-          const panel = document.createElement('div')
-          panel.className = 'eb-vol-panel'
-          panel.innerHTML = `
-            <div class="eb-vol-row">
-              <div class="eb-vol-title">Громкость</div>
-              <button type="button" class="eb-vol-mute" title="Мьют" aria-label="Мьют">
-                <svg class="eb-vol-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            const btn = document.createElement('button')
+            btn.type = 'button'
+            btn.className = 'eb-vol-btn'
+            btn.setAttribute('aria-label', 'Громкость участника')
+            btn.title = 'Громкость'
+            btn.innerHTML = `
+              <span class="eb-vol-icon" aria-hidden="true">
+                <svg class="eb-vol-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
-                  <path d="M23 9l-6 6"></path>
-                  <path d="M17 9l6 6"></path>
+                  <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
+                  <path d="M18 6a9 9 0 0 1 0 12"></path>
                 </svg>
-              </button>
-            </div>
-            <input class="eb-vol-range" type="range" min="0" max="150" step="5" value="100" />
-            <div class="eb-vol-hint"><span class="eb-vol-value">100%</span><span class="eb-vol-max">150%</span></div>
-          `
+              </span>
+              <span class="eb-vol-badge"></span>
+            `
 
-          const badge = btn.querySelector('.eb-vol-badge') as HTMLElement | null
-          const range = panel.querySelector('.eb-vol-range') as HTMLInputElement | null
-          const valueEl = panel.querySelector('.eb-vol-value') as HTMLElement | null
-          const muteBtn = panel.querySelector('.eb-vol-mute') as HTMLButtonElement | null
+            const panel = document.createElement('div')
+            panel.className = 'eb-vol-panel'
+            panel.innerHTML = `
+              <div class="eb-vol-row">
+                <div class="eb-vol-title">Громкость</div>
+                <button type="button" class="eb-vol-mute" title="Мьют" aria-label="Мьют">
+                  <svg class="eb-vol-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
+                    <path d="M23 9l-6 6"></path>
+                    <path d="M17 9l6 6"></path>
+                  </svg>
+                </button>
+              </div>
+              <input class="eb-vol-range" type="range" min="0" max="150" step="5" value="100" />
+              <div class="eb-vol-hint"><span class="eb-vol-value">100%</span><span class="eb-vol-max">150%</span></div>
+            `
 
-          const syncUi = () => {
-            const s = getSettings(identity)
-            const pct = Math.round(s.volume * 100)
-            if (range) range.value = String(pct)
-            if (valueEl) valueEl.textContent = `${pct}%${s.muted ? ' (мьют)' : ''}`
-            if (badge) badge.textContent = s.muted ? '0%' : pct === 100 ? '' : `${pct}%`
-            wrap!.classList.toggle('is-muted', !!s.muted)
-          }
+            const badge = btn.querySelector('.eb-vol-badge') as HTMLElement | null
+            const range = panel.querySelector('.eb-vol-range') as HTMLInputElement | null
+            const valueEl = panel.querySelector('.eb-vol-value') as HTMLElement | null
+            const muteBtn = panel.querySelector('.eb-vol-mute') as HTMLButtonElement | null
 
-          const toggleOpen = (nextOpen: boolean) => {
-            if (nextOpen) {
-              closeAllPanels()
-              openIdentityRef.current = identity
-              wrap!.setAttribute('data-eb-open', 'true')
-            } else {
-              if (openIdentityRef.current === identity) openIdentityRef.current = null
-              wrap!.setAttribute('data-eb-open', 'false')
+            const syncUi = () => {
+              const s = getSettings(keyInfo.key)
+              const pct = Math.round(s.volume * 100)
+              if (range) range.value = String(pct)
+              if (valueEl) valueEl.textContent = `${pct}%${s.muted ? ' (мьют)' : ''}`
+              if (badge) badge.textContent = s.muted ? '0%' : pct === 100 ? '' : `${pct}%`
+              wrap!.classList.toggle('is-muted', !!s.muted)
             }
+
+            const toggleOpen = (nextOpen: boolean) => {
+              if (nextOpen) {
+                closeAllPanels()
+                openKeyRef.current = keyInfo.key
+                wrap!.setAttribute('data-eb-open', 'true')
+              } else {
+                if (openKeyRef.current === keyInfo.key) openKeyRef.current = null
+                wrap!.setAttribute('data-eb-open', 'false')
+              }
+            }
+
+            btn.addEventListener('click', (e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              const isOpen = wrap!.getAttribute('data-eb-open') === 'true'
+              toggleOpen(!isOpen)
+              syncUi()
+            })
+            btn.addEventListener(
+              'touchstart',
+              (e) => {
+                e.stopPropagation()
+              },
+              { passive: true } as any,
+            )
+
+            panel.addEventListener('click', (e) => e.stopPropagation())
+            panel.addEventListener(
+              'touchstart',
+              (e) => e.stopPropagation(),
+              { passive: true } as any,
+            )
+
+            range?.addEventListener('input', () => {
+              const pct = Math.max(0, Math.min(150, Number(range.value) || 0))
+              const s = getSettings(keyInfo.key)
+              s.volume = pct / 100
+              // Keep mute state; slider doesn't auto-unmute.
+              syncUi()
+              void applyToKey(keyInfo, pct > 100) // treat >100 as requiring AudioContext (gesture)
+            })
+
+            muteBtn?.addEventListener('click', async (e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              const s = getSettings(keyInfo.key)
+              s.muted = !s.muted
+              syncUi()
+              // Ensure AudioContext if current volume needs amplification.
+              const needsAmp = s.volume > 1
+              if (needsAmp) await ensureAudioContextFromGesture()
+              void applyToKey(keyInfo, needsAmp)
+            })
+
+            wrap.appendChild(btn)
+            wrap.appendChild(panel)
+            meta.appendChild(wrap)
+
+            // Initial apply/sync.
+            syncUi()
+            void applyToKey(keyInfo, false)
+          } else {
+            // Update open state reflect current global state (single-open panel)
+            const shouldBeOpen = openKeyRef.current === keyInfo.key
+            wrap.setAttribute('data-eb-open', shouldBeOpen ? 'true' : 'false')
           }
-
-          btn.addEventListener('click', (e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            const isOpen = wrap!.getAttribute('data-eb-open') === 'true'
-            toggleOpen(!isOpen)
-            syncUi()
-          })
-          btn.addEventListener('touchstart', (e) => {
-            e.stopPropagation()
-          }, { passive: true } as any)
-
-          panel.addEventListener('click', (e) => e.stopPropagation())
-          panel.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true } as any)
-
-          range?.addEventListener('input', () => {
-            const pct = Math.max(0, Math.min(150, Number(range.value) || 0))
-            const s = getSettings(identity)
-            s.volume = pct / 100
-            // Keep mute state; slider doesn't auto-unmute.
-            syncUi()
-            void applyToIdentity(identity, pct > 100) // treat >100 as requiring AudioContext (gesture)
-          })
-
-          muteBtn?.addEventListener('click', async (e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            const s = getSettings(identity)
-            s.muted = !s.muted
-            syncUi()
-            // Ensure AudioContext if current volume needs amplification.
-            const needsAmp = s.volume > 1
-            if (needsAmp) await ensureAudioContextFromGesture()
-            void applyToIdentity(identity, needsAmp)
-          })
-
-          wrap.appendChild(btn)
-          wrap.appendChild(panel)
-          meta.appendChild(wrap)
-
-          // Initial apply/sync.
-          syncUi()
-          void applyToIdentity(identity, false)
-        } else {
-          // Update open state reflect current global state (single-open panel)
-          const shouldBeOpen = openIdentityRef.current === identity
-          wrap.setAttribute('data-eb-open', shouldBeOpen ? 'true' : 'false')
-        }
-      })
+        })
+      } catch {
+        // ignore
+      }
     }
 
     const onDocClick = () => closeAllPanels()
     document.addEventListener('click', onDocClick, true)
     document.addEventListener('touchstart', onDocClick, true)
 
-    const mo = new MutationObserver(() => applyDom())
+    // Debounce to avoid running too often on busy DOM trees.
+    let pending = false
+    const schedule = () => {
+      if (pending) return
+      pending = true
+      requestAnimationFrame(() => {
+        pending = false
+        applyDom()
+      })
+    }
+
+    const mo = new MutationObserver(() => schedule())
     mo.observe(root, { childList: true, subtree: true })
     applyDom()
 
