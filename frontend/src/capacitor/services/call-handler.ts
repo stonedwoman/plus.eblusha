@@ -88,6 +88,8 @@ export class CallHandler {
     const unsubscribeAccepted = this.socketService.onCallAccepted((payload) => {
       console.log('[CallHandler] call:accepted:', payload)
 
+      const hadIncomingHere = this.activeIncomingCalls.has(payload.conversationId)
+
       // Очищаем таймер авто-decline
       const timer = this.autoDeclineTimers.get(payload.conversationId)
       if (timer) {
@@ -98,7 +100,16 @@ export class CallHandler {
       // Закрываем экран входящего звонка
       void this.closeIncomingCallScreen(payload.conversationId)
 
-      // Открываем экран звонка (LiveKit)
+      // Важно: если на этом устройстве этот звонок был "входящим", то call:accepted означает,
+      // что звонок приняли где-то ещё (на другом устройстве этого же аккаунта).
+      // В этом случае просто гасим входящий экран/уведомление и НИЧЕГО не подключаем.
+      if (hadIncomingHere) {
+        this.activeIncomingCalls.delete(payload.conversationId)
+        this.callNotificationIds.delete(payload.conversationId)
+        return
+      }
+
+      // Иначе (обычно: это устройство инициировало исходящий звонок и ждало принятия) — открываем экран звонка (LiveKit)
       this.callbacks.onCallAccepted?.(payload)
     })
     unsubscribers.push(unsubscribeAccepted)

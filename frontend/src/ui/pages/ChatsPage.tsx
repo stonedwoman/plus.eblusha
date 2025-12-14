@@ -1896,6 +1896,27 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         // Не открываем оверлей на этом устройстве - звонок принят на другом
         return
       }
+
+      // Если звонок принят ДРУГИМ пользователем (т.е. это ответ на наш исходящий),
+      // то на этом устройстве подключаемся только если МЫ здесь реально инициировали звонок (activeConvId)
+      // или уже находимся в этом оверлее. Это предотвращает ситуацию "звонок принялся на другом устройстве"
+      // когда один аккаунт открыт на нескольких устройствах.
+      const isAlreadyInOverlayHere = callConvIdRef.current === conversationId
+      const isOutgoingIntentHere = callStore.activeConvId === conversationId
+      if (!isAlreadyInOverlayHere && !isOutgoingIntentHere) {
+        // У нас на этом устройстве нет намерения участвовать — просто гасим возможный рингтон/инкоминг UI.
+        const hasIncomingForThisConv = callStore.incoming?.conversationId === conversationId || ringingConvIdRef.current === conversationId
+        if (hasIncomingForThisConv) {
+          stopRingtone()
+          callStore.setIncoming(null)
+          if (ringTimerRef.current) {
+            window.clearTimeout(ringTimerRef.current)
+            ringTimerRef.current = null
+          }
+          ringingConvIdRef.current = null
+        }
+        return
+      }
       
       // Закрываем экран дозвона, если он открыт (звонок принят на этом устройстве)
       setOutgoingCall((prev) => {
