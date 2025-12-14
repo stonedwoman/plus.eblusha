@@ -2139,9 +2139,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     }
     .eb-vol-popover .close-btn:hover{ opacity: 1; background: rgba(255,255,255,.10); }
     .eb-vol-popover .pct{
-      min-width:84px;text-align:right;font-size:18px;font-weight:650;
-      font-variant-numeric:tabular-nums; padding:6px 10px;border-radius:12px;
-      background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.08);
+      min-width:72px;
+      text-align:right;
+      font-size:14px;
+      font-weight:600;
+      line-height:20px;
+      font-variant-numeric:tabular-nums;
+      padding:4px 8px;
+      border-radius:12px;
+      background:rgba(0,0,0,.18);
+      border:1px solid rgba(255,255,255,.08);
     }
     .eb-vol-popover input[type="range"]{
       appearance:none;
