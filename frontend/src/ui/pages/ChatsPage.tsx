@@ -227,6 +227,8 @@ export default function ChatsPage() {
   const [callConvId, setCallConvId] = useState<string | null>(null)
   const [minimizedCallConvId, setMinimizedCallConvId] = useState<string | null>(null)
   const [outgoingCall, setOutgoingCall] = useState<{ conversationId: string; startedAt: number; video: boolean; minimized?: boolean } | null>(null)
+  const outgoingCallRef = useRef<typeof outgoingCall>(null)
+  useEffect(() => { outgoingCallRef.current = outgoingCall }, [outgoingCall])
   const outgoingCallTimerRef = useRef<number | null>(null)
   const [messageText, setMessageText] = useState('')
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
@@ -1864,8 +1866,22 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         callStore.setIncoming(null)
       }, 25000)
     })
-    onCallAccepted(({ conversationId, by }) => {
+    onCallAccepted(({ conversationId, by, video }) => {
       clearMinCallDurationGuard(conversationId)
+
+      // Останавливаем "дозвон" на этом устройстве сразу, как только другой участник принял звонок.
+      // (Даже если мы не будем подключаться на этом устройстве — дозвон UI/звук не должен продолжаться.)
+      setOutgoingCall((prev) => {
+        if (prev?.conversationId === conversationId) {
+          if (outgoingCallTimerRef.current) {
+            window.clearTimeout(outgoingCallTimerRef.current)
+            outgoingCallTimerRef.current = null
+          }
+          stopDialingSound()
+          return null
+        }
+        return prev
+      })
       
       // Если звонок принят на другом устройстве (by.id === me.id), прекращаем все действия на этом устройстве
       // и не открываем оверлей - звонок должен быть активен только на том устройстве, где его приняли
@@ -1882,17 +1898,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           ringingConvIdRef.current = null
         }
         // Закрываем экран дозвона, если он открыт (если пользователь звонил с этого устройства)
-        setOutgoingCall((prev) => {
-          if (prev?.conversationId === conversationId) {
-            if (outgoingCallTimerRef.current) {
-              window.clearTimeout(outgoingCallTimerRef.current)
-              outgoingCallTimerRef.current = null
-            }
-            stopDialingSound()
-            return null
-          }
-          return prev
-        })
+        // (уже остановили выше)
         // Не открываем оверлей на этом устройстве - звонок принят на другом
         return
       }
@@ -1902,10 +1908,11 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       // или уже находимся в этом оверлее. Это предотвращает ситуацию "звонок принялся на другом устройстве"
       // когда один аккаунт открыт на нескольких устройствах.
       const isAlreadyInOverlayHere = callConvIdRef.current === conversationId
-      const isOutgoingIntentHere = callStore.activeConvId === conversationId
-      if (!isAlreadyInOverlayHere && !isOutgoingIntentHere) {
+      const isOutgoingIntentHere = useCallStore.getState().activeConvId === conversationId
+      const hadOutgoingHere = outgoingCallRef.current?.conversationId === conversationId
+      if (!isAlreadyInOverlayHere && !isOutgoingIntentHere && !hadOutgoingHere) {
         // У нас на этом устройстве нет намерения участвовать — просто гасим возможный рингтон/инкоминг UI.
-        const hasIncomingForThisConv = callStore.incoming?.conversationId === conversationId || ringingConvIdRef.current === conversationId
+        const hasIncomingForThisConv = useCallStore.getState().incoming?.conversationId === conversationId || ringingConvIdRef.current === conversationId
         if (hasIncomingForThisConv) {
           stopRingtone()
           callStore.setIncoming(null)
@@ -1917,19 +1924,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         }
         return
       }
-      
-      // Закрываем экран дозвона, если он открыт (звонок принят на этом устройстве)
-      setOutgoingCall((prev) => {
-        if (prev?.conversationId === conversationId) {
-          if (outgoingCallTimerRef.current) {
-            window.clearTimeout(outgoingCallTimerRef.current)
-            outgoingCallTimerRef.current = null
-          }
-          stopDialingSound()
-          return null
-        }
-        return prev
-      })
+      // (дозвон уже остановили выше)
       
       // Для всех типов звонков (1:1 и группы) устанавливаем activeCalls вручную
       // Это обеспечивает единообразное поведение: звонок становится активным сразу
@@ -1945,7 +1940,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       if (callStore.activeConvId !== conversationId) {
         // Определяем, есть ли информация о видео в активных звонках или используем false по умолчанию
         // Для 1:1 звонков можно использовать информацию из callStore, если она есть
-        const hasVideo = false // Можно улучшить, если будет доступна информация о типе звонка
+        const hasVideo = !!video
         callStore.startOutgoing(conversationId, hasVideo)
       }
       // Открываем оверлей только на устройстве, где звонок был принят
