@@ -3419,7 +3419,15 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 style={{
                   ...(row.unreadCount > 0 ? { borderColor: 'var(--brand-600)', boxShadow: '0 3px 10px rgba(227,139,10,0.15)' } : {}),
                   ...(isActive ? { borderColor: 'var(--brand-600)', boxShadow: '0 4px 12px rgba(227,139,10,0.14)' } : {}),
-                  ...(isConnectedToCall ? { background: 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)' } : {}),
+                  ...(isConnectedToCall
+                    ? {
+                        background: 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)',
+                        borderColor: 'var(--brand-600)',
+                        ...(isActive
+                          ? {}
+                          : { boxShadow: '0 0 0 1px rgba(227,139,10,0.22), 0 6px 16px rgba(227,139,10,0.14)' }),
+                      }
+                    : {}),
                 }}
               >
                 {isGroup ? (

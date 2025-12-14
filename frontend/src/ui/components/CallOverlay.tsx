@@ -1856,6 +1856,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     
     /* Light semi-transparent border for participant tiles */
     .call-container .lk-participant-tile {
+      background: #000 !important;
       border: 1px solid rgba(255, 255, 255, 0.12) !important;
       border-radius: 8px !important;
       overflow: hidden !important;
