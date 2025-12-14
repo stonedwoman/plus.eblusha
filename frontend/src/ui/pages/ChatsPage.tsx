@@ -3404,7 +3404,24 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             const isActive = activeId === c.id
             const isConnectedToCall = callConvId === c.id
             return (
-              <div key={c.id} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setConvMenu({ open: true, x: e.clientX, y: e.clientY, conversationId: c.id }) }} onClick={() => selectConversation(c.id)} className="tile" style={{ ...(row.unreadCount > 0 ? { borderColor: 'var(--brand-600)', boxShadow: '0 3px 10px rgba(227,139,10,0.15)' } : {}), ...(isActive ? { borderColor: 'var(--brand-600)', boxShadow: '0 4px 12px rgba(227,139,10,0.14)' } : {}), ...(isConnectedToCall ? { background: 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)' } : {}) }}>
+              <div
+                key={c.id}
+                onContextMenu={(e) => {
+                  // Desktop: open the same conversation menu as right-click.
+                  // Mobile: disable long-press context menu entirely (we provide the "⋯" button instead).
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (mobile) return
+                  setConvMenu({ open: true, x: e.clientX, y: e.clientY, conversationId: c.id })
+                }}
+                onClick={() => selectConversation(c.id)}
+                className="tile"
+                style={{
+                  ...(row.unreadCount > 0 ? { borderColor: 'var(--brand-600)', boxShadow: '0 3px 10px rgba(227,139,10,0.15)' } : {}),
+                  ...(isActive ? { borderColor: 'var(--brand-600)', boxShadow: '0 4px 12px rgba(227,139,10,0.14)' } : {}),
+                  ...(isConnectedToCall ? { background: 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)' } : {}),
+                }}
+              >
                 {isGroup ? (
                   (() => {
                     const entry = activeCalls[c.id]
@@ -3432,7 +3449,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     )
                   })()
                 )}
-                <div>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span>{title}</span>
                     {!isGroup && isSecret && (
@@ -3481,6 +3498,40 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         })()}
                   </div>
                 </div>
+                {mobile && (
+                  <button
+                    type="button"
+                    aria-label="Меню беседы"
+                    title="Меню"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                      setConvMenu({
+                        open: true,
+                        x: Math.round(rect.right - 8),
+                        y: Math.round(rect.bottom + 6),
+                        conversationId: c.id,
+                      })
+                    }}
+                    style={{
+                      flexShrink: 0,
+                      width: 36,
+                      height: 36,
+                      borderRadius: 10,
+                      border: '1px solid transparent',
+                      background: 'transparent',
+                      color: 'var(--text-muted)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginLeft: 8,
+                      WebkitTapHighlightColor: 'transparent',
+                    }}
+                  >
+                    <MoreVertical size={20} />
+                  </button>
+                )}
               </div>
             )
           })}
