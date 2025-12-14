@@ -869,6 +869,9 @@ function ParticipantVolumeUpdater() {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean }>>(new Map())
   const openKeyRef = useRef<string | null>(null)
+  const popoverRef = useRef<HTMLElement | null>(null)
+  const currentKeyInfoRef = useRef<{ key: string; userId: string | null; name: string | null } | null>(null)
+  const currentAnchorRef = useRef<HTMLElement | null>(null)
   const lastUserGestureAtRef = useRef<number>(0)
 
   const isLocalTile = (tile: HTMLElement): boolean => {
@@ -1039,14 +1042,71 @@ function ParticipantVolumeUpdater() {
     const root = document.body
     if (!root) return
 
+    const ensurePopover = () => {
+      if (popoverRef.current && document.body.contains(popoverRef.current)) return popoverRef.current
+      const pop = document.createElement('div')
+      pop.className = 'eb-vol-popover'
+      pop.setAttribute('data-eb-open', 'false')
+      pop.innerHTML = `
+        <div class="eb-vol-row">
+          <div class="eb-vol-title">Громкость</div>
+          <button type="button" class="eb-vol-mute" title="Мьют" aria-label="Мьют">
+            <svg class="eb-vol-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
+              <path d="M23 9l-6 6"></path>
+              <path d="M17 9l6 6"></path>
+            </svg>
+          </button>
+        </div>
+        <input class="eb-vol-range" type="range" min="0" max="150" step="5" value="100" />
+        <div class="eb-vol-hint"><span class="eb-vol-value">100%</span><span class="eb-vol-max">150%</span></div>
+      `
+      pop.addEventListener('click', (e) => e.stopPropagation())
+      pop.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true } as any)
+      document.body.appendChild(pop)
+      popoverRef.current = pop
+      return pop
+    }
+
+    const positionPopover = () => {
+      const pop = popoverRef.current
+      const anchor = currentAnchorRef.current
+      if (!pop || !anchor) return
+      if (pop.getAttribute('data-eb-open') !== 'true') return
+      const rect = anchor.getBoundingClientRect()
+
+      // Measure popover
+      const popRect = pop.getBoundingClientRect()
+      const pad = 8
+      const vw = window.innerWidth || 0
+      const vh = window.innerHeight || 0
+
+      // Prefer above anchor, fallback below
+      const aboveY = rect.top - popRect.height - 10
+      const belowY = rect.bottom + 10
+      let top = aboveY >= pad ? aboveY : belowY
+      // clamp
+      if (top + popRect.height > vh - pad) top = Math.max(pad, vh - pad - popRect.height)
+      if (top < pad) top = pad
+
+      // Align right edge to anchor right, clamp
+      let left = rect.right - popRect.width
+      if (left + popRect.width > vw - pad) left = vw - pad - popRect.width
+      if (left < pad) left = pad
+
+      pop.style.left = `${Math.round(left)}px`
+      pop.style.top = `${Math.round(top)}px`
+    }
+
     const closeAllPanels = () => {
       openKeyRef.current = null
-      root.querySelectorAll('.call-container .eb-vol-panel[data-eb-open="true"]').forEach((el) => {
-        ;(el as HTMLElement).setAttribute('data-eb-open', 'false')
-      })
-      root.querySelectorAll('.call-container .eb-vol-namewrap.is-open').forEach((el) => {
-        ;(el as HTMLElement).classList.remove('is-open')
-      })
+      currentKeyInfoRef.current = null
+      currentAnchorRef.current = null
+      root
+        .querySelectorAll('.call-container [data-eb-vol-open="true"]')
+        .forEach((el) => (el as HTMLElement).removeAttribute('data-eb-vol-open'))
+      const pop = popoverRef.current
+      if (pop) pop.setAttribute('data-eb-open', 'false')
     }
 
     const applyDom = () => {
@@ -1079,35 +1139,10 @@ function ParticipantVolumeUpdater() {
           nameEl.setAttribute('aria-label', 'Громкость участника')
           nameEl.setAttribute('data-eb-vol-key', keyInfo.key)
 
-          // Ensure volume panel exists (anchored to the main meta item).
-          let panel = mainMetaItem.querySelector(`.eb-vol-panel[data-eb-key="${keyInfo.key}"]`) as HTMLElement | null
-          if (!panel) {
-            panel = document.createElement('div')
-            panel.className = 'eb-vol-panel'
-            panel.setAttribute('data-eb-key', keyInfo.key)
-            panel.setAttribute('data-eb-open', 'false')
-            panel.innerHTML = `
-              <div class="eb-vol-row">
-                <div class="eb-vol-title">Громкость</div>
-                <button type="button" class="eb-vol-mute" title="Мьют" aria-label="Мьют">
-                  <svg class="eb-vol-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
-                    <path d="M23 9l-6 6"></path>
-                    <path d="M17 9l6 6"></path>
-                  </svg>
-                </button>
-              </div>
-              <input class="eb-vol-range" type="range" min="0" max="150" step="5" value="100" />
-              <div class="eb-vol-hint"><span class="eb-vol-value">100%</span><span class="eb-vol-max">150%</span></div>
-            `
-            mainMetaItem.appendChild(panel)
-          }
-
-          const range = panel.querySelector('.eb-vol-range') as HTMLInputElement | null
-          const valueEl = panel.querySelector('.eb-vol-value') as HTMLElement | null
-          const muteBtn = panel.querySelector('.eb-vol-mute') as HTMLButtonElement | null
-
           const syncUi = () => {
+            const pop = ensurePopover()
+            const range = pop.querySelector('.eb-vol-range') as HTMLInputElement | null
+            const valueEl = pop.querySelector('.eb-vol-value') as HTMLElement | null
             const s = getSettings(keyInfo.key)
             const pct = Math.round(s.volume * 100)
             if (range) range.value = String(pct)
@@ -1116,15 +1151,53 @@ function ParticipantVolumeUpdater() {
           }
 
           const toggleOpen = (nextOpen: boolean) => {
+            const pop = ensurePopover()
             if (nextOpen) {
               closeAllPanels()
               openKeyRef.current = keyInfo.key
-              panel!.setAttribute('data-eb-open', 'true')
               nameEl.setAttribute('data-eb-vol-open', 'true')
+              currentKeyInfoRef.current = keyInfo
+              currentAnchorRef.current = nameEl
+              pop.setAttribute('data-eb-open', 'true')
+              // bind popover events once
+              if (!(pop as any).__ebVolBound) {
+                ;(pop as any).__ebVolBound = true
+                const range = pop.querySelector('.eb-vol-range') as HTMLInputElement | null
+                const muteBtn = pop.querySelector('.eb-vol-mute') as HTMLButtonElement | null
+                range?.addEventListener('input', () => {
+                  const info = currentKeyInfoRef.current
+                  if (!info) return
+                  const pct = Math.max(0, Math.min(150, Number(range.value) || 0))
+                  const s = getSettings(info.key)
+                  s.volume = pct / 100
+                  syncUi()
+                  void applyToKey(info, pct > 100)
+                  positionPopover()
+                })
+                muteBtn?.addEventListener('click', async (e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  const info = currentKeyInfoRef.current
+                  if (!info) return
+                  const s = getSettings(info.key)
+                  s.muted = !s.muted
+                  syncUi()
+                  const needsAmp = s.volume > 1
+                  if (needsAmp) await ensureAudioContextFromGesture()
+                  void applyToKey(info, needsAmp)
+                })
+              }
+              syncUi()
+              // Position after layout
+              requestAnimationFrame(() => {
+                positionPopover()
+              })
             } else {
               if (openKeyRef.current === keyInfo.key) openKeyRef.current = null
-              panel!.setAttribute('data-eb-open', 'false')
               nameEl.removeAttribute('data-eb-vol-open')
+              pop.setAttribute('data-eb-open', 'false')
+              currentKeyInfoRef.current = null
+              currentAnchorRef.current = null
             }
           }
 
@@ -1135,9 +1208,9 @@ function ParticipantVolumeUpdater() {
             nameEl.addEventListener('click', (e) => {
               e.preventDefault()
               e.stopPropagation()
-              const isOpen = panel!.getAttribute('data-eb-open') === 'true'
+              const pop = ensurePopover()
+              const isOpen = pop.getAttribute('data-eb-open') === 'true' && openKeyRef.current === keyInfo.key
               toggleOpen(!isOpen)
-              syncUi()
             })
             nameEl.addEventListener(
               'touchstart',
@@ -1151,40 +1224,14 @@ function ParticipantVolumeUpdater() {
               if (key !== 'Enter' && key !== ' ') return
               e.preventDefault()
               e.stopPropagation()
-              const isOpen = panel!.getAttribute('data-eb-open') === 'true'
+              const pop = ensurePopover()
+              const isOpen = pop.getAttribute('data-eb-open') === 'true' && openKeyRef.current === keyInfo.key
               toggleOpen(!isOpen)
-              syncUi()
-            })
-          }
-
-          if (!(panel as any).__ebVolPanelBound) {
-            ;(panel as any).__ebVolPanelBound = true
-            panel.addEventListener('click', (e) => e.stopPropagation())
-            panel.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true } as any)
-
-            range?.addEventListener('input', () => {
-              const pct = Math.max(0, Math.min(150, Number(range.value) || 0))
-              const s = getSettings(keyInfo.key)
-              s.volume = pct / 100
-              syncUi()
-              void applyToKey(keyInfo, pct > 100)
-            })
-
-            muteBtn?.addEventListener('click', async (e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              const s = getSettings(keyInfo.key)
-              s.muted = !s.muted
-              syncUi()
-              const needsAmp = s.volume > 1
-              if (needsAmp) await ensureAudioContextFromGesture()
-              void applyToKey(keyInfo, needsAmp)
             })
           }
 
           // Reflect open state when DOM re-renders.
           const shouldBeOpen = openKeyRef.current === keyInfo.key
-          panel.setAttribute('data-eb-open', shouldBeOpen ? 'true' : 'false')
           if (shouldBeOpen) nameEl.setAttribute('data-eb-vol-open', 'true')
           else nameEl.removeAttribute('data-eb-vol-open')
 
@@ -1197,9 +1244,21 @@ function ParticipantVolumeUpdater() {
       }
     }
 
-    const onDocClick = () => closeAllPanels()
+    const onDocClick = (evt: Event) => {
+      const t = evt.target as HTMLElement | null
+      const pop = popoverRef.current
+      if (t && (t.closest?.('.eb-vol-popover') || t.closest?.('[data-eb-vol-key]'))) return
+      if (pop && t && pop.contains(t)) return
+      closeAllPanels()
+    }
     document.addEventListener('click', onDocClick, true)
     document.addEventListener('touchstart', onDocClick, true)
+
+    const onWin = () => {
+      requestAnimationFrame(() => positionPopover())
+    }
+    window.addEventListener('resize', onWin)
+    window.addEventListener('scroll', onWin, true)
 
     // Debounce to avoid running too often on busy DOM trees.
     let pending = false
@@ -1209,6 +1268,7 @@ function ParticipantVolumeUpdater() {
       requestAnimationFrame(() => {
         pending = false
         applyDom()
+        positionPopover()
       })
     }
 
@@ -1219,7 +1279,13 @@ function ParticipantVolumeUpdater() {
     return () => {
       document.removeEventListener('click', onDocClick, true)
       document.removeEventListener('touchstart', onDocClick, true)
+      window.removeEventListener('resize', onWin)
+      window.removeEventListener('scroll', onWin, true)
       mo.disconnect()
+      if (popoverRef.current && popoverRef.current.parentElement) {
+        popoverRef.current.parentElement.removeChild(popoverRef.current)
+      }
+      popoverRef.current = null
     }
   }, [room])
 
@@ -1801,11 +1867,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       opacity: 0.9;
     }
 
-    .call-container .lk-participant-metadata-item { position: relative; }
-    .call-container .eb-vol-panel {
-      position: absolute;
-      right: 0;
-      bottom: calc(100% + 8px);
+    /* Popover is rendered into body to avoid tile overflow clipping */
+    .eb-vol-popover {
+      position: fixed;
+      left: 8px;
+      top: 8px;
       width: 220px;
       max-width: min(240px, calc(100vw - 32px));
       padding: 10px 10px 10px;
@@ -1815,9 +1881,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       backdrop-filter: blur(10px) saturate(115%);
       box-shadow: 0 18px 55px rgba(0,0,0,0.45);
       display: none;
-      z-index: 60;
+      z-index: 9999;
     }
-    .call-container .eb-vol-panel[data-eb-open="true"] { display: block; }
+    .eb-vol-popover[data-eb-open="true"] { display: block; }
     .call-container .eb-vol-row {
       display: flex;
       align-items: center;
