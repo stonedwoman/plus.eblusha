@@ -966,23 +966,56 @@ function ParticipantVolumeUpdater() {
     }
   }
 
+  const parseParticipantMeta = (p: any): { userId?: string; displayName?: string } | null => {
+    const raw = p?.metadata
+    if (!raw || typeof raw !== 'string') return null
+    try {
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object') return null
+      const userId = parsed.userId ? String(parsed.userId) : undefined
+      const displayName = parsed.displayName ? String(parsed.displayName) : undefined
+      return { userId, displayName }
+    } catch {
+      return null
+    }
+  }
+
+  const resolveParticipant = (info: { key: string; userId: string | null; name: string | null }) => {
+    if (!room) return null
+    // 1) direct identity match
+    const direct =
+      (info.userId ? room.remoteParticipants.get(info.userId) : null) ||
+      room.remoteParticipants.get(info.key) ||
+      null
+    if (direct) return direct
+
+    const wantName = (info.name || '').trim()
+    const wantKey = (info.key || '').trim()
+    const wantUser = (info.userId || '').trim()
+
+    // 2) scan by participant.name / identity / metadata.displayName/userId
+    for (const p of room.remoteParticipants.values()) {
+      try {
+        if (wantUser && String(p.identity) === wantUser) return p
+        if (wantKey && String(p.identity) === wantKey) return p
+        if (wantName && String((p as any).name || '').trim() === wantName) return p
+        const meta = parseParticipantMeta(p)
+        if (wantUser && meta?.userId && meta.userId === wantUser) return p
+        if (wantName && meta?.displayName && meta.displayName.trim() === wantName) return p
+      } catch {
+        // ignore
+      }
+    }
+    return null
+  }
+
   const applyToKey = async (
     keyInfo: { key: string; userId: string | null; name: string | null },
     fromGesture: boolean,
   ) => {
     if (!room) return
-    const { key, userId, name } = keyInfo
-
-    // Prefer identity match; fallback to name match (best-effort).
-    const participant =
-      (userId ? room.remoteParticipants.get(userId) : null) ||
-      (() => {
-        if (!name) return null
-        for (const p of room.remoteParticipants.values()) {
-          if ((p as any)?.name && String((p as any).name).trim() === name) return p
-        }
-        return null
-      })()
+    const { key } = keyInfo
+    const participant = resolveParticipant(keyInfo)
     if (!participant) return
 
     const settings = getSettings(key)
@@ -1188,14 +1221,22 @@ function ParticipantVolumeUpdater() {
             (mainMetaItem.querySelector('[data-lk-participant-name]') as HTMLElement | null) ||
             (mainMetaItem.querySelector('.lk-participant-name') as HTMLElement | null)
           if (!nameEl) return
+
+          // Try to resolve stable identity key via room (so settings persist even if DOM changes).
+          const resolved = resolveParticipant(keyInfo)
+          const stableKey = resolved ? String(resolved.identity) : keyInfo.key
+          const resolvedMeta = resolved ? parseParticipantMeta(resolved) : null
+          const displayName = resolvedMeta?.displayName || (keyInfo.name || null)
+          const stableInfo = { key: stableKey, userId: stableKey, name: displayName }
+
           // Make name clickable (do NOT move/replace React-managed nodes).
           nameEl.setAttribute('role', 'button')
           nameEl.setAttribute('tabindex', '0')
           nameEl.setAttribute('aria-label', 'Громкость участника')
-          nameEl.setAttribute('data-eb-vol-key', keyInfo.key)
+          nameEl.setAttribute('data-eb-vol-key', stableKey)
 
           const syncUi = () => {
-            const s = getSettings(keyInfo.key)
+            const s = getSettings(stableKey)
             nameEl.classList.toggle('eb-vol-muted', !!s.muted)
             // ensure lastNonZeroPct stays valid
             const pct = Math.max(0, Math.min(150, Math.round(s.volume * 100)))
@@ -1206,11 +1247,11 @@ function ParticipantVolumeUpdater() {
             const pop = ensurePopover()
             if (nextOpen) {
               closeAllPanels()
-              openKeyRef.current = keyInfo.key
+              openKeyRef.current = stableKey
               nameEl.setAttribute('data-eb-vol-open', 'true')
-              currentKeyInfoRef.current = keyInfo
+              currentKeyInfoRef.current = stableInfo
               currentAnchorRef.current = nameEl
-              lastKeyInfoRef.current = keyInfo
+              lastKeyInfoRef.current = stableInfo
               lastAnchorRef.current = nameEl
               pop.setAttribute('data-eb-open', 'true')
               // bind popover events once
@@ -1259,7 +1300,7 @@ function ParticipantVolumeUpdater() {
                 requestAnimationFrame(() => positionPopover())
               })
             } else {
-              if (openKeyRef.current === keyInfo.key) openKeyRef.current = null
+              if (openKeyRef.current === stableKey) openKeyRef.current = null
               nameEl.removeAttribute('data-eb-vol-open')
               pop.setAttribute('data-eb-open', 'false')
               currentKeyInfoRef.current = null
@@ -1268,14 +1309,14 @@ function ParticipantVolumeUpdater() {
           }
 
           // Bind events once.
-          if (!(nameEl as any).__ebVolBound || (nameEl as any).__ebVolKey !== keyInfo.key) {
+          if (!(nameEl as any).__ebVolBound || (nameEl as any).__ebVolKey !== stableKey) {
             ;(nameEl as any).__ebVolBound = true
-            ;(nameEl as any).__ebVolKey = keyInfo.key
+            ;(nameEl as any).__ebVolKey = stableKey
             nameEl.addEventListener('click', (e) => {
               e.preventDefault()
               e.stopPropagation()
               const pop = ensurePopover()
-              const isOpen = pop.getAttribute('data-eb-open') === 'true' && openKeyRef.current === keyInfo.key
+              const isOpen = pop.getAttribute('data-eb-open') === 'true' && openKeyRef.current === stableKey
               toggleOpen(!isOpen)
             })
             nameEl.addEventListener(
@@ -1291,19 +1332,19 @@ function ParticipantVolumeUpdater() {
               e.preventDefault()
               e.stopPropagation()
               const pop = ensurePopover()
-              const isOpen = pop.getAttribute('data-eb-open') === 'true' && openKeyRef.current === keyInfo.key
+              const isOpen = pop.getAttribute('data-eb-open') === 'true' && openKeyRef.current === stableKey
               toggleOpen(!isOpen)
             })
           }
 
           // Reflect open state when DOM re-renders.
-          const shouldBeOpen = openKeyRef.current === keyInfo.key
+          const shouldBeOpen = openKeyRef.current === stableKey
           if (shouldBeOpen) nameEl.setAttribute('data-eb-vol-open', 'true')
           else nameEl.removeAttribute('data-eb-vol-open')
 
           // Initial sync/apply once.
           syncUi()
-          void applyToKey(keyInfo, false)
+          void applyToKey(stableInfo, false)
         })
       } catch {
         // ignore
@@ -2261,17 +2302,27 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               <span style="font-size: 14px;">Свернуть</span>
             </span>
           `
-          // Remove inline styles to use LiveKit's default button styles
-          const handleMinimize = (evt: Event) => {
-            evt.preventDefault()
-            evt.stopPropagation()
-            try {
-              onMinimize?.()
-            } catch (err) {
-              console.error('Minimize click error', err)
+          // Bind minimize handler using capture phase to avoid LiveKit / parent interception.
+          if (!(minimizeBtn as any).__ebMinBound) {
+            ;(minimizeBtn as any).__ebMinBound = true
+            const handler = (evt: Event) => {
+              evt.preventDefault()
+              evt.stopPropagation()
+              try {
+                onMinimize?.()
+              } catch (err) {
+                console.error('Minimize click error', err)
+              }
             }
+            ;(minimizeBtn as any).__ebMinHandler = handler
+            minimizeBtn.addEventListener('click', handler, true)
+            minimizeBtn.addEventListener('pointerup', handler, true)
+            minimizeBtn.addEventListener('touchend', handler, true)
+            minimizeBtn.addEventListener('keydown', (e: any) => {
+              if (e?.key !== 'Enter' && e?.key !== ' ') return
+              handler(e)
+            })
           }
-          minimizeBtn.onclick = handleMinimize
           minimizeBtn.style.pointerEvents = 'auto'
           minimizeBtn.disabled = false
           
@@ -2329,16 +2380,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           minimizeBtn.style.fontSize = '14px'
           minimizeBtn.style.fontWeight = '500'
           minimizeBtn.style.lineHeight = '20px'
-          const handleMinimize = (evt: Event) => {
-            evt.preventDefault()
-            evt.stopPropagation()
-            try {
-              onMinimize?.()
-            } catch (err) {
-              console.error('Minimize click error', err)
-            }
-          }
-          minimizeBtn.onclick = handleMinimize
+          // Keep handler bound (don't overwrite via onclick).
           minimizeBtn.style.pointerEvents = 'auto'
           minimizeBtn.disabled = false
           minimizeBtn.style.marginLeft = 'auto'
