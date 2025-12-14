@@ -1250,6 +1250,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       /* Enable vertical scrolling on mobile */
       overflow-y: auto !important;
       -webkit-overflow-scrolling: touch !important;
+      /* Ensure modal stays above our overlay chrome */
+      z-index: 2000 !important;
     }
     
     /* Ensure settings content can scroll on mobile */
@@ -1623,11 +1625,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           if (minimizeBtn.parentElement === controlBar && controlBar.lastElementChild !== minimizeBtn) {
             controlBar.appendChild(minimizeBtn)
           }
-
-          // Все кнопки в панели — выравнивание контента влево, кроме того что margin-left авто у "Свернуть"
-          controlBar.querySelectorAll('button.lk-button').forEach((btn) => {
-            (btn as HTMLElement).style.justifyContent = 'flex-start'
-          })
         }
       }
     }
@@ -1940,10 +1937,13 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   if (!open || !conversationId || !token || !serverUrl) return null
 
   const overlay = (
-    <div className="call-overlay" style={{
-      position: 'fixed', inset: 0, background: minimized ? 'transparent' : 'rgba(10,12,16,0.55)', backdropFilter: minimized ? 'none' : 'blur(4px) saturate(110%)', display: minimized ? 'none' : 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-      pointerEvents: minimized ? 'none' : 'auto',
-    }}>
+    <div
+      className="call-overlay"
+      style={{
+        position: 'fixed', inset: 0, background: minimized ? 'transparent' : 'rgba(10,12,16,0.55)', backdropFilter: minimized ? 'none' : 'blur(4px) saturate(110%)', display: minimized ? 'none' : 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        pointerEvents: minimized ? 'none' : 'auto',
+      }}
+    >
       <div data-lk-theme="default" style={{ 
         width: minimized ? 0 : '90vw', 
         height: minimized ? 0 : '80vh', 
@@ -1960,12 +1960,20 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         <style>{videoContainCss}</style>
         <button
           className="btn btn-icon btn-ghost"
-          onClick={() => handleClose({ manual: true })}
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            handleClose({ manual: true })
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
           style={{
             position: 'absolute',
             top: 12,
             right: 12,
-            zIndex: 1001,
+            zIndex: 10,
             width: 36,
             height: 36,
             display: 'flex',
@@ -1976,6 +1984,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             border: '1px solid rgba(255, 255, 255, 0.1)',
             color: 'rgba(255, 255, 255, 0.9)',
             cursor: 'pointer',
+            pointerEvents: 'auto',
           }}
           aria-label="Закрыть"
           title="Закрыть"
@@ -2018,9 +2027,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             // Для 1:1 звонков закрываем только при ручном закрытии (когда пользователь нажал "Leave")
             // Для временных отключений полагаемся на события с сервера (call:ended)
             if (isGroup) {
-              // Для групповых звонков закрываем при любом отключении, если было подключение
-              if (hadConnection) {
-                handleClose({ manual })
+              // Для групповых звонков НЕ закрываем оверлей на не-ручных отключениях:
+              // на мобильных/при смене устройств возможны краткие дисконнекты.
+              // Закрываем только при явном "Выйти" / ручном закрытии.
+              if (hadConnection && manual) {
+                handleClose({ manual: true })
               }
             } else {
               // Для 1:1 звонков закрываем только при явном ручном закрытии
