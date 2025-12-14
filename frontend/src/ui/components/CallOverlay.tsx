@@ -1056,6 +1056,7 @@ function ParticipantVolumeUpdater() {
           if (isLocalTile(tile)) return
           const keyInfo = getTileKey(tile)
           if (!keyInfo) return
+          tile.setAttribute('data-eb-remote', 'true')
 
           const meta = tile.querySelector('.lk-participant-metadata') as HTMLElement | null
           if (!meta) return
@@ -1072,30 +1073,11 @@ function ParticipantVolumeUpdater() {
             (mainMetaItem.querySelector('[data-lk-participant-name]') as HTMLElement | null) ||
             (mainMetaItem.querySelector('.lk-participant-name') as HTMLElement | null)
           if (!nameEl) return
-
-          // Create (or reuse) clickable wrapper around the name and add a small gear icon.
-          let nameWrap = nameEl.parentElement?.classList.contains('eb-vol-namewrap') ? (nameEl.parentElement as HTMLElement) : null
-          if (!nameWrap) {
-            nameWrap = document.createElement('span')
-            nameWrap.className = 'eb-vol-namewrap'
-            nameWrap.setAttribute('role', 'button')
-            nameWrap.setAttribute('tabindex', '0')
-            nameWrap.setAttribute('aria-label', 'Настройки громкости')
-            nameEl.parentElement?.insertBefore(nameWrap, nameEl)
-            nameWrap.appendChild(nameEl)
-          }
-          if (!nameWrap.querySelector('.eb-vol-gear')) {
-            const gear = document.createElement('span')
-            gear.className = 'eb-vol-gear'
-            gear.setAttribute('aria-hidden', 'true')
-            gear.innerHTML = `
-              <svg class="eb-vol-gear-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"></path>
-                <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2.2 2.2 0 0 1-1.56 3.76h-.1a1.8 1.8 0 0 0-1.82 1.3 2.2 2.2 0 0 1-4.22 0A1.8 1.8 0 0 0 10.3 20.8h-.1a2.2 2.2 0 0 1-1.56-3.76l.05-.05A1.8 1.8 0 0 0 9.04 15a1.8 1.8 0 0 0-1.3-1.82 2.2 2.2 0 0 1 0-4.22A1.8 1.8 0 0 0 9.04 7a1.8 1.8 0 0 0-.36-1.98l-.05-.05A2.2 2.2 0 0 1 10.2 1.2h.1A1.8 1.8 0 0 0 12.12-.1a2.2 2.2 0 0 1 4.22 0A1.8 1.8 0 0 0 18.16 1.2h.1a2.2 2.2 0 0 1 1.56 3.76l-.05.05A1.8 1.8 0 0 0 19.4 7a1.8 1.8 0 0 0 1.3 1.82 2.2 2.2 0 0 1 0 4.22A1.8 1.8 0 0 0 19.4 15z"></path>
-              </svg>
-            `
-            nameWrap.appendChild(gear)
-          }
+          // Make name clickable (do NOT move/replace React-managed nodes).
+          nameEl.setAttribute('role', 'button')
+          nameEl.setAttribute('tabindex', '0')
+          nameEl.setAttribute('aria-label', 'Громкость участника')
+          nameEl.setAttribute('data-eb-vol-key', keyInfo.key)
 
           // Ensure volume panel exists (anchored to the main meta item).
           let panel = mainMetaItem.querySelector(`.eb-vol-panel[data-eb-key="${keyInfo.key}"]`) as HTMLElement | null
@@ -1130,7 +1112,7 @@ function ParticipantVolumeUpdater() {
             const pct = Math.round(s.volume * 100)
             if (range) range.value = String(pct)
             if (valueEl) valueEl.textContent = `${pct}%${s.muted ? ' (мьют)' : ''}`
-            nameWrap!.classList.toggle('is-muted', !!s.muted)
+            nameEl.classList.toggle('eb-vol-muted', !!s.muted)
           }
 
           const toggleOpen = (nextOpen: boolean) => {
@@ -1138,32 +1120,33 @@ function ParticipantVolumeUpdater() {
               closeAllPanels()
               openKeyRef.current = keyInfo.key
               panel!.setAttribute('data-eb-open', 'true')
-              nameWrap!.classList.add('is-open')
+              nameEl.setAttribute('data-eb-vol-open', 'true')
             } else {
               if (openKeyRef.current === keyInfo.key) openKeyRef.current = null
               panel!.setAttribute('data-eb-open', 'false')
-              nameWrap!.classList.remove('is-open')
+              nameEl.removeAttribute('data-eb-vol-open')
             }
           }
 
           // Bind events once.
-          if (!(nameWrap as any).__ebVolBound) {
-            ;(nameWrap as any).__ebVolBound = true
-            nameWrap.addEventListener('click', (e) => {
+          if (!(nameEl as any).__ebVolBound || (nameEl as any).__ebVolKey !== keyInfo.key) {
+            ;(nameEl as any).__ebVolBound = true
+            ;(nameEl as any).__ebVolKey = keyInfo.key
+            nameEl.addEventListener('click', (e) => {
               e.preventDefault()
               e.stopPropagation()
               const isOpen = panel!.getAttribute('data-eb-open') === 'true'
               toggleOpen(!isOpen)
               syncUi()
             })
-            nameWrap.addEventListener(
+            nameEl.addEventListener(
               'touchstart',
               (e) => {
                 e.stopPropagation()
               },
               { passive: true } as any,
             )
-            nameWrap.addEventListener('keydown', (e: any) => {
+            nameEl.addEventListener('keydown', (e: any) => {
               const key = e?.key
               if (key !== 'Enter' && key !== ' ') return
               e.preventDefault()
@@ -1202,7 +1185,8 @@ function ParticipantVolumeUpdater() {
           // Reflect open state when DOM re-renders.
           const shouldBeOpen = openKeyRef.current === keyInfo.key
           panel.setAttribute('data-eb-open', shouldBeOpen ? 'true' : 'false')
-          nameWrap.classList.toggle('is-open', shouldBeOpen)
+          if (shouldBeOpen) nameEl.setAttribute('data-eb-vol-open', 'true')
+          else nameEl.removeAttribute('data-eb-vol-open')
 
           // Initial sync/apply once.
           syncUi()
@@ -1773,25 +1757,50 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     .call-container .eb-ping-display[data-eb-ping-level="warn"] .eb-ping-text { color: #fbbf24; } /* yellow */
     .call-container .eb-ping-display[data-eb-ping-level="bad"] .eb-ping-text { color: #ef4444; }  /* red */
 
-    /* Keep ping on the far right inside metadata */
-    .call-container .lk-participant-metadata { display: flex; align-items: center; gap: 10px; width: 100%; }
-    .call-container .lk-participant-metadata .lk-connection-quality { margin-left: auto; }
+    /* Avoid metadata overflow (ping text should not leave tile) */
+    .call-container .lk-participant-metadata { box-sizing: border-box; max-width: 100%; }
+    .call-container .lk-connection-quality.eb-ping-display { max-width: 72px; overflow: hidden; }
+    .call-container .eb-ping-display .eb-ping-text {
+      display: inline-block;
+      max-width: 72px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
-    /* Per-participant volume: click name (with gear) */
-    .call-container .eb-vol-namewrap {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
+    /* Per-participant volume: click participant name (add gear via CSS, don't touch React DOM) */
+    .call-container [data-eb-remote="true"] .lk-participant-name,
+    .call-container [data-eb-remote="true"] [data-lk-participant-name] {
       cursor: pointer;
       user-select: none;
       -webkit-tap-highlight-color: transparent;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
-    .call-container .eb-vol-namewrap:focus { outline: none; }
-    .call-container .eb-vol-namewrap.is-open { opacity: 0.98; }
-    .call-container .eb-vol-namewrap.is-muted { opacity: 0.92; }
-    .call-container .eb-vol-gear { display: inline-flex; align-items: center; opacity: 0.75; }
-    .call-container .eb-vol-namewrap:hover .eb-vol-gear { opacity: 0.95; }
-    .call-container .eb-vol-gear-svg { width: 12px; height: 12px; display: block; }
+    .call-container [data-eb-remote="true"] .lk-participant-name::after,
+    .call-container [data-eb-remote="true"] [data-lk-participant-name]::after {
+      content: "";
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      opacity: 0.78;
+      margin-left: 2px;
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: 12px 12px;
+      /* lucide-react Settings icon (stroke white) */
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E");
+    }
+    .call-container [data-eb-remote="true"] .lk-participant-name[data-eb-vol-open="true"]::after,
+    .call-container [data-eb-remote="true"] [data-lk-participant-name][data-eb-vol-open="true"]::after {
+      opacity: 1;
+    }
+    .call-container [data-eb-remote="true"] .lk-participant-name.eb-vol-muted,
+    .call-container [data-eb-remote="true"] [data-lk-participant-name].eb-vol-muted {
+      opacity: 0.9;
+    }
+
     .call-container .lk-participant-metadata-item { position: relative; }
     .call-container .eb-vol-panel {
       position: absolute;
