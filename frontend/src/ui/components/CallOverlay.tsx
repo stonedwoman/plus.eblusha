@@ -1089,6 +1089,27 @@ function ParticipantVolumeUpdater() {
     }
   }
 
+  // Periodically re-apply custom volumes to survive track/element re-attachments.
+  useEffect(() => {
+    if (!room) return
+    const id = window.setInterval(() => {
+      try {
+        const entries: { key: string; userId: string | null; name: string | null }[] = []
+        settingsByKeyRef.current.forEach((s, key) => {
+          const isDefault = !s.muted && Math.abs((s.volume ?? 1) - 1) < 0.001
+          if (isDefault) return
+          entries.push({ key, userId: key, name: null })
+        })
+        for (const info of entries) {
+          void applyToKey(info, false)
+        }
+      } catch {
+        // ignore
+      }
+    }, 2000)
+    return () => window.clearInterval(id)
+  }, [room])
+
   // Keep volumes applied when tracks subscribe later (or reattach).
   useEffect(() => {
     if (!room) return
