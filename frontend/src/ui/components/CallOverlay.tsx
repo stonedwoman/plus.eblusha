@@ -875,7 +875,9 @@ function ParticipantVolumeUpdater() {
   const lastKeyInfoRef = useRef<{ key: string; userId: string | null; name: string | null } | null>(null)
   const lastAnchorRef = useRef<HTMLElement | null>(null)
   const lastUserGestureAtRef = useRef<number>(0)
-  const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; inited: boolean }>>(new WeakMap())
+  const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; inited: boolean; comp?: DynamicsCompressorNode }>>(
+    new WeakMap(),
+  )
 
   const isLocalTile = (tile: HTMLElement): boolean => {
     const v = tile.getAttribute('data-lk-local-participant')
@@ -1049,18 +1051,40 @@ function ParticipantVolumeUpdater() {
           // Add a light limiter/compressor to reduce clipping when >100%.
           try {
             const comp = ctx.createDynamicsCompressor()
-            comp.threshold.setValueAtTime(-18, ctx.currentTime)
-            comp.knee.setValueAtTime(0, ctx.currentTime)
-            comp.ratio.setValueAtTime(20, ctx.currentTime)
+            // default to bypass-ish, we'll enable only when >100%
+            comp.threshold.setValueAtTime(0, ctx.currentTime)
+            comp.knee.setValueAtTime(40, ctx.currentTime)
+            comp.ratio.setValueAtTime(1, ctx.currentTime)
             comp.attack.setValueAtTime(0.003, ctx.currentTime)
             comp.release.setValueAtTime(0.25, ctx.currentTime)
             tr.setWebAudioPlugins([comp])
+            webAudioStateRef.current.set(tr, { ctx, inited: true, comp })
           } catch {
             // ignore
+            webAudioStateRef.current.set(tr, { ctx, inited: true })
           }
-          webAudioStateRef.current.set(tr, { ctx, inited: true })
         }
       }
+
+      // Enable limiter only when amplifying (>100%), otherwise keep it effectively bypassed.
+      try {
+        const st = webAudioStateRef.current.get(tr)
+        const comp = st?.comp
+        if (comp) {
+          if (effective > 1) {
+            comp.threshold.setValueAtTime(-18, comp.context.currentTime)
+            comp.knee.setValueAtTime(0, comp.context.currentTime)
+            comp.ratio.setValueAtTime(20, comp.context.currentTime)
+          } else {
+            comp.threshold.setValueAtTime(0, comp.context.currentTime)
+            comp.knee.setValueAtTime(40, comp.context.currentTime)
+            comp.ratio.setValueAtTime(1, comp.context.currentTime)
+          }
+        }
+      } catch {
+        // ignore
+      }
+
       tr.setVolume(effective)
     }
   }
