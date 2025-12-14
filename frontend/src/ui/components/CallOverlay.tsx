@@ -1413,12 +1413,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768
     if (isMobile) {
       const prevOverflow = document.body.style.overflow
-      const prevTouch = (document.body.style as any).touchAction
       document.body.style.overflow = 'hidden'
-      ;(document.body.style as any).touchAction = 'none'
       return () => {
         document.body.style.overflow = prevOverflow
-        ;(document.body.style as any).touchAction = prevTouch
       }
     }
   }, [open])
@@ -1549,7 +1546,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             }
           }
           minimizeBtn.onclick = handleMinimize
-          minimizeBtn.onmousedown = handleMinimize
           minimizeBtn.style.pointerEvents = 'auto'
           minimizeBtn.disabled = false
           
@@ -1617,7 +1613,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             }
           }
           minimizeBtn.onclick = handleMinimize
-          minimizeBtn.onmousedown = handleMinimize
           minimizeBtn.style.pointerEvents = 'auto'
           minimizeBtn.disabled = false
           minimizeBtn.style.marginLeft = 'auto'
@@ -1939,6 +1934,14 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const overlay = (
     <div
       className="call-overlay"
+      onClick={(e) => {
+        // Prevent taps/clicks from bubbling to the underlying app on mobile (can cause call state to reset)
+        e.stopPropagation()
+      }}
+      onTouchStart={(e) => {
+        // Same as onClick; important for iOS/Safari where touch events may trigger global handlers
+        e.stopPropagation()
+      }}
       style={{
         position: 'fixed', inset: 0, background: minimized ? 'transparent' : 'rgba(10,12,16,0.55)', backdropFilter: minimized ? 'none' : 'blur(4px) saturate(110%)', display: minimized ? 'none' : 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
         pointerEvents: minimized ? 'none' : 'auto',
@@ -1964,10 +1967,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             e.preventDefault()
             e.stopPropagation()
             handleClose({ manual: true })
-          }}
-          onMouseDown={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
           }}
           style={{
             position: 'absolute',
