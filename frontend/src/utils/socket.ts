@@ -158,7 +158,7 @@ export function declineCall(conversationId: string) {
 export function endCall(conversationId: string) {
   socket.emit('call:end', { conversationId })
 }
-export function onCallAccepted(cb: (payload: { conversationId: string; by: { id: string } }) => void) {
+export function onCallAccepted(cb: (payload: { conversationId: string; by: { id: string }; video: boolean }) => void) {
   socket.on('call:accepted', cb)
 }
 export function onCallDeclined(cb: (payload: { conversationId: string; by: { id: string } }) => void) {
