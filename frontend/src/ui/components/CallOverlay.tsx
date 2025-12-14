@@ -1032,7 +1032,39 @@ function CallSettings() {
 
   return (
     <div className="eb-call-settings" style={{ width: '100%' }}>
-      <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Настройки</div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginBottom: 12,
+        }}
+      >
+        <div style={{ fontSize: 18, fontWeight: 600 }}>Настройки</div>
+        <button
+          type="button"
+          className="btn btn-icon btn-ghost"
+          aria-label="Закрыть настройки"
+          title="Закрыть настройки"
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            // Close settings via LiveKit's native SettingsMenuToggle (it uses `.lk-settings-toggle`)
+            const toggle = document.querySelector('.call-container .lk-settings-toggle') as HTMLButtonElement | null
+            if (toggle) {
+              toggle.click()
+              return
+            }
+            // Fallback: hide the modal if the toggle button isn't found (should be rare)
+            const modal = document.querySelector('.call-container .lk-settings-menu-modal') as HTMLElement | null
+            if (modal) modal.style.display = 'none'
+          }}
+          style={{ padding: 8 }}
+        >
+          <X size={18} />
+        </button>
+      </div>
 
       <div className="eb-settings-section">
         <div className="eb-section-title">Обработка микрофона</div>
@@ -1961,35 +1993,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         visibility: minimized ? 'hidden' : 'visible',
       }} className="call-container">
         <style>{videoContainCss}</style>
-        <button
-          className="btn btn-icon btn-ghost"
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            handleClose({ manual: true })
-          }}
-          style={{
-            position: 'absolute',
-            top: 12,
-            right: 12,
-            zIndex: 10,
-            width: 36,
-            height: 36,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: 8,
-            background: 'rgba(0, 0, 0, 0.3)',
-            border: '1px solid rgba(255, 255, 255, 0.1)',
-            color: 'rgba(255, 255, 255, 0.9)',
-            cursor: 'pointer',
-            pointerEvents: 'auto',
-          }}
-          aria-label="Закрыть"
-          title="Закрыть"
-        >
-          <X size={18} />
-        </button>
         <LiveKitRoom 
           serverUrl={serverUrl} 
           token={token} 
