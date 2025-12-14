@@ -3402,6 +3402,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             const isSecret = !!c.isSecret
             const participantsText = othersArr.map((u: any) => u.displayName ?? u.username).join(', ')
             const isActive = activeId === c.id
+            const callEntry = activeCalls[c.id]
+            const isCallActive = !!callEntry?.active
             const isConnectedToCall = callConvId === c.id
             return (
               <div
@@ -3419,21 +3421,25 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 style={{
                   ...(row.unreadCount > 0 ? { borderColor: 'var(--brand-600)', boxShadow: '0 3px 10px rgba(227,139,10,0.15)' } : {}),
                   ...(isActive ? { borderColor: 'var(--brand-600)', boxShadow: '0 4px 12px rgba(227,139,10,0.14)' } : {}),
-                  ...(isConnectedToCall
+                  ...(isCallActive
                     ? {
-                        background: 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)',
+                        background: isConnectedToCall
+                          ? 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)'
+                          : 'linear-gradient(135deg, rgba(217, 119, 6, 0.10) 0%, rgba(227, 139, 10, 0.12) 100%)',
                         borderColor: 'var(--brand-600)',
-                        ...(isActive
-                          ? {}
-                          : { boxShadow: '0 0 0 1px rgba(227,139,10,0.22), 0 6px 16px rgba(227,139,10,0.14)' }),
+                        ...(isConnectedToCall
+                          ? isActive
+                            ? {}
+                            : { boxShadow: '0 0 0 1px rgba(227,139,10,0.22), 0 6px 16px rgba(227,139,10,0.14)' }
+                          : isActive
+                            ? {}
+                            : { boxShadow: '0 0 0 1px rgba(227,139,10,0.16)' }),
                       }
                     : {}),
                 }}
               >
                 {isGroup ? (
                   (() => {
-                    const entry = activeCalls[c.id]
-                    const isCallActive = entry?.active
                     return (
                       <Avatar 
                         name={title?.trim()?.charAt(0) || 'Г'} 
@@ -3445,8 +3451,6 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   })()
                 ) : (
                   (() => {
-                    const entry = activeCalls[c.id]
-                    const isCallActive = entry?.active
                     return (
                       <Avatar
                         name={othersArr[0]?.displayName ?? othersArr[0]?.username ?? 'D'}
