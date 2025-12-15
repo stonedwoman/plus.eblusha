@@ -1814,10 +1814,25 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     .call-container .lk-stage video,
     .call-container .lk-grid-stage video { object-fit: contain !important; object-position: center !important; background: #000 !important; }
 
-    /* Ensure video element is laid out full height within tile (prevents top-anchored half-height video) */
-    .call-container .lk-participant-media,
-    .call-container .lk-participant-media-video {
-      height: 100% !important;
+    /* Focus layout: some browsers/layouts end up placing the <video> element at the top (auto height).
+       Make the media area a flex box and center the video element itself. */
+    .call-container .lk-participant-tile .lk-participant-media{
+      display:flex !important;
+      align-items:center !important;
+      justify-content:center !important;
+      min-height:0 !important;
+      flex: 1 1 auto !important;
+    }
+    .call-container .lk-participant-tile .lk-participant-media-video,
+    .call-container .lk-participant-tile video.lk-participant-media-video,
+    .call-container .lk-participant-tile .lk-participant-media video{
+      width: 100% !important;
+      height: auto !important;
+      max-height: 100% !important;
+      object-fit: contain !important;
+      object-position: center !important;
+      background: #000 !important;
+      display:block !important;
     }
     
     /* Ensure placeholder stays circular and doesn't stretch */
