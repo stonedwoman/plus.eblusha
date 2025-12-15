@@ -1496,7 +1496,7 @@ function ParticipantVolumeUpdater() {
           if (isTouch && (!(tile as any).__ebVolTapBound || (tile as any).__ebVolTapKey !== stableKey)) {
             ;(tile as any).__ebVolTapBound = true
             ;(tile as any).__ebVolTapKey = stableKey
-            const onTileToggle = (e: Event) => {
+            tile.addEventListener('click', (e: MouseEvent) => {
               if ((tile as any).__ebSuppressNextClick) return
               const target = e.target as HTMLElement | null
               if (!target) return
@@ -1506,17 +1506,10 @@ function ParticipantVolumeUpdater() {
               if (!key) return
               const ringEl = tile.querySelector('.eb-vol-ring') as HTMLElement | null
               if (!ringEl) return
-              // If the ring is currently handling a drag/tap-close gesture, don't also toggle here.
-              if ((ringEl as any).__ebDragging || (ringEl as any).__ebTapArmed) return
-              e.preventDefault?.()
-              ;(e as any).stopPropagation?.()
+              e.preventDefault()
+              e.stopPropagation()
               toggleOpen(key, ringEl)
-            }
-            // Use capture-phase end events for reliability on mobile (click can be suppressed by pointer handlers).
-            tile.addEventListener('pointerup', onTileToggle, true)
-            tile.addEventListener('touchend', onTileToggle as any, true)
-            // Fallback
-            tile.addEventListener('click', onTileToggle as any, true)
+            })
           }
 
           // Wheel support: change remote participant volume while hovering their tile
