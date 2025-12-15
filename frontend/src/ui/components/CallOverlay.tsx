@@ -1084,7 +1084,7 @@ function ParticipantVolumeUpdater() {
   const MAX = 150
   const NORMAL = 100
   // Must match SVG circle radius below (eb-vol-ring-svg)
-  const R = 101
+  const R = 105
   const C = 2 * Math.PI * R
 
   const clampPct = (pct: number) => Math.max(0, Math.min(MAX, Math.round(pct)))
@@ -1175,11 +1175,11 @@ function ParticipantVolumeUpdater() {
             ring.setAttribute('data-eb-vol-key', stableKey)
             ring.innerHTML = `
               <svg class="eb-vol-ring-svg" width="220" height="220" viewBox="0 0 220 220" aria-hidden="true" style="transform: rotate(-90deg)">
-                <circle class="bg" cx="110" cy="110" r="101" />
-                <circle class="safe" cx="110" cy="110" r="101" />
-                <circle class="over" cx="110" cy="110" r="101" />
-                <circle class="thumb" cx="110" cy="9" r="7" />
-                <circle class="hit" cx="110" cy="110" r="101" />
+                <circle class="bg" cx="110" cy="110" r="105" />
+                <circle class="safe" cx="110" cy="110" r="105" />
+                <circle class="over" cx="110" cy="110" r="105" />
+                <circle class="thumb" cx="110" cy="5" r="7" />
+                <circle class="hit" cx="110" cy="110" r="105" />
               </svg>
               <div class="label" aria-hidden="true">100%</div>
             `
