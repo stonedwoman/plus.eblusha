@@ -1166,6 +1166,17 @@ function ParticipantVolumeUpdater() {
           const stableInfo = { key: stableKey, userId: stableKey, name: displayName }
           tile.setAttribute('data-eb-vol-key', stableKey)
 
+          // If this tile currently has video visible, do NOT show volume UI (video layer stacks above and looks bad).
+          // We keep volume control for audio-only tiles.
+          const videoEl =
+            (tile.querySelector('video.lk-participant-media-video') as HTMLVideoElement | null) ||
+            (tile.querySelector('video') as HTMLVideoElement | null)
+          const hasVideo = !!(videoEl && videoEl.offsetWidth > 0 && videoEl.offsetHeight > 0)
+          if (hasVideo) {
+            tile.querySelectorAll('.eb-vol-ring').forEach((el) => el.remove())
+            return
+          }
+
           const placeholder = tile.querySelector('.lk-participant-placeholder') as HTMLElement | null
           if (!placeholder) return
 
