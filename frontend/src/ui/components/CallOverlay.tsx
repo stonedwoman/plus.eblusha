@@ -1384,6 +1384,9 @@ function ParticipantVolumeUpdater() {
                 e.stopPropagation()
                 lastUserGestureAtRef.current = Date.now()
                 const isOpen = ring?.getAttribute('data-eb-vol-open') === 'true'
+                // Protection on mobile: ignore any touches unless the overlay is already open.
+                // This prevents accidental volume changes on the same tap that opens the overlay.
+                if (isTouch && !isOpen) return
                 // Touch UX: when overlay is open, a simple tap should close it; drag changes volume.
                 if (isTouch && isOpen) {
                   ;(ring as any).__ebTapArmed = true
@@ -2160,7 +2163,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       display:block;
       pointer-events:none;
       opacity:0;
-      transition: opacity 120ms ease;
+      transition: opacity 220ms cubic-bezier(.2,.8,.2,1);
       touch-action:none;
       -webkit-tap-highlight-color: transparent;
       user-select:none;
@@ -2243,11 +2246,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       align-items:center;
       gap:6px;
       opacity:0;
-      transition: opacity 120ms ease;
+      transition: opacity 220ms cubic-bezier(.2,.8,.2,1), transform 220ms cubic-bezier(.2,.8,.2,1);
+      transform: translate(-50%, -50%) scale(.985);
       pointer-events:none;
     }
     .call-container .lk-participant-tile:hover .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
     .call-container .eb-vol-ring[data-eb-vol-open="true"] .center{ opacity: 1; pointer-events: auto; }
+    .call-container .lk-participant-tile:hover .eb-vol-ring .center,
+    .call-container .eb-vol-ring[data-eb-vol-open="true"] .center{
+      transform: translate(-50%, -50%) scale(1);
+    }
     .call-container .eb-vol-ring .actions{
       display:flex;
       gap:6px;
