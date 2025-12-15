@@ -2072,7 +2072,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       display:block;
       pointer-events:none;
       opacity:0;
-      transition: opacity 220ms cubic-bezier(.2,.8,.2,1);
+      transition: opacity 520ms cubic-bezier(.2,.8,.2,1);
       transition-delay: 200ms;
       touch-action:none;
       -webkit-tap-highlight-color: transparent;
@@ -2150,7 +2150,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       align-items:center;
       gap:6px;
       opacity:0;
-      transition: opacity 220ms cubic-bezier(.2,.8,.2,1), transform 220ms cubic-bezier(.2,.8,.2,1);
+      transition: opacity 520ms cubic-bezier(.2,.8,.2,1), transform 520ms cubic-bezier(.2,.8,.2,1);
       transform: translate(-50%, -50%) scale(.985);
       pointer-events:none;
     }
