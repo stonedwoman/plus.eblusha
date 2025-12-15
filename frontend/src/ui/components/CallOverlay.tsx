@@ -2841,16 +2841,19 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       inset: 0,
       background: minimized ? 'transparent' : 'rgba(10,12,16,0.55)',
       backdropFilter: minimized ? 'none' : 'blur(4px) saturate(110%)',
-      display: minimized ? 'none' : 'flex',
-      alignItems: isDesktop ? 'center' : 'stretch',
-      justifyContent: isDesktop ? 'center' : 'stretch',
+      // On mobile, avoid flex centering edge-cases (some WebViews ignore stretch/viewport units combos).
+      // Use block layout + explicit 100vh/100dvh sizing on the inner container.
+      display: minimized ? 'none' : (isDesktop ? 'flex' : 'block'),
+      alignItems: isDesktop ? 'center' : undefined,
+      justifyContent: isDesktop ? 'center' : undefined,
       zIndex: 1000,
       pointerEvents: minimized ? 'none' : 'auto',
       }}
     >
       <div data-lk-theme="default" style={{ 
         width: minimized ? 0 : (isDesktop ? '90vw' : '100vw'),
-        height: minimized ? 0 : (isDesktop ? '80vh' : '100dvh'),
+        height: minimized ? 0 : (isDesktop ? '80vh' : '100vh'),
+        minHeight: minimized ? 0 : (isDesktop ? undefined : '100dvh'),
         maxWidth: minimized ? 0 : (isDesktop ? 1200 : '100vw'),
         background: 'var(--surface-200)', 
         borderRadius: isDesktop ? 16 : 0, 
