@@ -1165,10 +1165,11 @@ function ParticipantVolumeUpdater() {
 
           const placeholder = tile.querySelector('.lk-participant-placeholder') as HTMLElement | null
           if (!placeholder) return
-          // Ensure anchor positioning for ring
-          if (!placeholder.style.position) placeholder.style.position = 'relative'
 
-          let ring = placeholder.querySelector('.eb-vol-ring') as HTMLElement | null
+          // Ensure positioning context
+          if (!tile.style.position) tile.style.position = 'relative'
+
+          let ring = tile.querySelector('.eb-vol-ring') as HTMLElement | null
           if (!ring) {
             ring = document.createElement('div')
             ring.className = 'eb-vol-ring'
@@ -1183,7 +1184,7 @@ function ParticipantVolumeUpdater() {
               </svg>
               <div class="label" aria-hidden="true">100%</div>
             `
-            placeholder.appendChild(ring)
+            tile.appendChild(ring)
           } else {
             ring.setAttribute('data-eb-vol-key', stableKey)
           }
@@ -1210,6 +1211,23 @@ function ParticipantVolumeUpdater() {
             const pct = pctFromSettings(s)
             if (pct > 0) s.lastNonZeroPct = pct
             renderRing(ring!, pct)
+          }
+
+          // Position ring OUTSIDE the avatar: compute center from placeholder and expand radius
+          try {
+            const tileRect = tile.getBoundingClientRect()
+            const phRect = placeholder.getBoundingClientRect()
+            const cx = phRect.left - tileRect.left + phRect.width / 2
+            const cy = phRect.top - tileRect.top + phRect.height / 2
+            // Grow the ring beyond avatar/placeholder so it reads as an outer halo.
+            const raw = phRect.width * 1.32
+            const max = Math.max(64, Math.min(Math.min(tileRect.width, tileRect.height) - 6, raw))
+            ring.style.width = `${Math.round(max)}px`
+            ring.style.height = `${Math.round(max)}px`
+            ring.style.left = `${Math.round(cx - max / 2)}px`
+            ring.style.top = `${Math.round(cy - max / 2)}px`
+          } catch {
+            // ignore
           }
 
           const setPct = (nextPct: number, fromGesture: boolean) => {
@@ -1904,7 +1922,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     /* Per-participant volume: modern volume ring around avatar (0..150%, red after 100) */
     .call-container .eb-vol-ring{
       position:absolute;
-      inset:0;
       display:block;
       pointer-events:none;
       opacity:0;
@@ -1912,6 +1929,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       touch-action:none;
       -webkit-tap-highlight-color: transparent;
       user-select:none;
+      z-index: 6;
     }
     .call-container .lk-participant-tile:hover .eb-vol-ring{
       opacity:1;
@@ -2537,10 +2555,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         img.alt = name
         // Fit avatar INSIDE the volume ring and keep it circular
         img.style.aspectRatio = '1' // Ensure square shape
-        img.style.width = '80%'
-        img.style.height = '80%'
-        img.style.maxWidth = '80%'
-        img.style.maxHeight = '80%'
+        img.style.width = '74%'
+        img.style.height = '74%'
+        img.style.maxWidth = '74%'
+        img.style.maxHeight = '74%'
         img.style.objectFit = 'cover'
         img.style.borderRadius = '50%'
         img.style.display = 'block'
