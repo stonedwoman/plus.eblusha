@@ -1819,6 +1819,15 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       border: 1px solid rgba(255, 255, 255, 0.12) !important;
       border-radius: 8px !important;
       overflow: hidden !important;
+      isolation: isolate !important; /* ensure our overlays can z-index above video layers */
+    }
+
+    /* Ensure our volume ring always sits above LiveKit video layer */
+    .call-container .lk-participant-media,
+    .call-container .lk-participant-video,
+    .call-container video {
+      position: relative;
+      z-index: 1;
     }
     
     /* Hide chat entry point in the control bar (we expose device selection via Settings and also via button group menus) */
@@ -2023,7 +2032,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       touch-action:none;
       -webkit-tap-highlight-color: transparent;
       user-select:none;
-      z-index: 6;
+      z-index: 50;
     }
     .call-container .lk-participant-tile:hover .eb-vol-ring{
       opacity:1;
