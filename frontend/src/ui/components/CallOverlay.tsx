@@ -868,6 +868,7 @@ function ParticipantVolumeUpdater() {
   const room = useRoomContext()
   const audioCtxRef = useRef<AudioContext | null>(null)
   const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean; lastNonZeroPct: number }>>(new Map())
+  const openKeyRef = useRef<string | null>(null)
   const lastUserGestureAtRef = useRef<number>(0)
   const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; inited: boolean }>>(new WeakMap())
   const wheelAccByKeyRef = useRef<Map<string, number>>(new Map())
@@ -1150,6 +1151,42 @@ function ParticipantVolumeUpdater() {
     if (!room) return
     const root = document.body
     if (!root) return
+
+    const isTouch = (() => {
+      try {
+        return typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(hover: none)').matches
+      } catch {
+        return false
+      }
+    })()
+
+    const closeAll = () => {
+      openKeyRef.current = null
+      root.querySelectorAll('.call-container .eb-vol-ring[data-eb-vol-open="true"]').forEach((el) => {
+        ;(el as HTMLElement).removeAttribute('data-eb-vol-open')
+      })
+    }
+
+    const toggleOpen = (key: string, ring: HTMLElement) => {
+      const isOpen = ring.getAttribute('data-eb-vol-open') === 'true'
+      if (isOpen) closeAll()
+      else {
+        closeAll()
+        openKeyRef.current = key
+        ring.setAttribute('data-eb-vol-open', 'true')
+      }
+    }
+
+    const onDocTap = (evt: Event) => {
+      if (!isTouch) return
+      const t = evt.target as HTMLElement | null
+      if (!t) return
+      if (t.closest?.('.eb-vol-ring')) return
+      if (t.closest?.('.lk-participant-tile')) return
+      closeAll()
+    }
+    document.addEventListener('click', onDocTap, true)
+    document.addEventListener('touchstart', onDocTap, true)
     const applyDom = () => {
       try {
         const tiles = root.querySelectorAll('.call-container .lk-participant-tile') as NodeListOf<HTMLElement>
@@ -1179,6 +1216,7 @@ function ParticipantVolumeUpdater() {
           const hasActiveVideo = !!(!isVideoMuted && videoEl && videoEl.offsetWidth > 0 && videoEl.offsetHeight > 0)
           if (hasActiveVideo) {
             tile.querySelectorAll('.eb-vol-ring').forEach((el) => el.remove())
+            if (openKeyRef.current === stableKey) openKeyRef.current = null
             return
           }
 
@@ -1213,6 +1251,10 @@ function ParticipantVolumeUpdater() {
           } else {
             ring.setAttribute('data-eb-vol-key', stableKey)
           }
+
+          // Mobile/touch: show overlay by tap (persist open state across DOM updates)
+          if (openKeyRef.current === stableKey) ring.setAttribute('data-eb-vol-open', 'true')
+          else ring.removeAttribute('data-eb-vol-open')
 
           // Cache SVG refs for fast updates
           if (!(ring as any).__ebRingInit) {
@@ -1416,6 +1458,27 @@ function ParticipantVolumeUpdater() {
             resetBtn?.addEventListener('click', onResetClick)
           }
 
+          // Touch devices: tap on tile toggles overlay open/close.
+          if (isTouch && (!(tile as any).__ebVolTapBound || (tile as any).__ebVolTapKey !== stableKey)) {
+            ;(tile as any).__ebVolTapBound = true
+            ;(tile as any).__ebVolTapKey = stableKey
+            tile.addEventListener('click', (e: MouseEvent) => {
+              const target = e.target as HTMLElement | null
+              if (!target) return
+              // Don't toggle when user taps buttons/inputs/metadata overlay
+              if (target.closest('button, a, input, select, textarea')) return
+              if (target.closest('.lk-participant-metadata')) return
+              if (target.closest('.lk-connection-quality')) return
+              const key = String(tile.getAttribute('data-eb-vol-key') || '').trim()
+              if (!key) return
+              const ringEl = tile.querySelector('.eb-vol-ring') as HTMLElement | null
+              if (!ringEl) return
+              e.preventDefault()
+              e.stopPropagation()
+              toggleOpen(key, ringEl)
+            })
+          }
+
           // Wheel support: change remote participant volume while hovering their tile
           if (!(tile as any).__ebVolWheelBound) {
             ;(tile as any).__ebVolWheelBound = true
@@ -1478,6 +1541,8 @@ function ParticipantVolumeUpdater() {
     applyDom()
 
     return () => {
+      document.removeEventListener('click', onDocTap, true)
+      document.removeEventListener('touchstart', onDocTap, true)
       mo.disconnect()
     }
   }, [room])
@@ -2072,11 +2137,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       opacity:1;
       pointer-events:auto;
     }
-    @media (hover: none){
-      .call-container .eb-vol-ring{
-        opacity:1;
-        pointer-events:auto;
-      }
+    /* Mobile/touch: show by tap (data-eb-vol-open), not always-on */
+    .call-container .eb-vol-ring[data-eb-vol-open="true"]{
+      opacity:1;
+      pointer-events:auto;
     }
     .call-container .eb-vol-ring-svg{
       width:100%;
@@ -2146,9 +2210,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       pointer-events:none;
     }
     .call-container .lk-participant-tile:hover .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
-    @media (hover: none){
-      .call-container .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
-    }
+    .call-container .eb-vol-ring[data-eb-vol-open="true"] .center{ opacity: 1; pointer-events: auto; }
     .call-container .eb-vol-ring .actions{
       display:flex;
       gap:6px;
