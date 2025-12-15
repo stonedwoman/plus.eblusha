@@ -1166,13 +1166,18 @@ function ParticipantVolumeUpdater() {
           const stableInfo = { key: stableKey, userId: stableKey, name: displayName }
           tile.setAttribute('data-eb-vol-key', stableKey)
 
-          // If this tile currently has video visible, do NOT show volume UI (video layer stacks above and looks bad).
-          // We keep volume control for audio-only tiles.
+          // If this tile currently has ACTIVE video, do NOT show volume UI (video layer stacks above and looks bad).
+          // IMPORTANT: when camera is turned off, LiveKit may keep <video> in DOM but mark tile as video-muted.
+          const isVideoMuted =
+            tile.getAttribute('data-video-muted') === 'true' ||
+            tile.getAttribute('data-lk-video-muted') === 'true' ||
+            (tile as any).dataset?.videoMuted === 'true' ||
+            (tile as any).dataset?.lkVideoMuted === 'true'
           const videoEl =
             (tile.querySelector('video.lk-participant-media-video') as HTMLVideoElement | null) ||
             (tile.querySelector('video') as HTMLVideoElement | null)
-          const hasVideo = !!(videoEl && videoEl.offsetWidth > 0 && videoEl.offsetHeight > 0)
-          if (hasVideo) {
+          const hasActiveVideo = !!(!isVideoMuted && videoEl && videoEl.offsetWidth > 0 && videoEl.offsetHeight > 0)
+          if (hasActiveVideo) {
             tile.querySelectorAll('.eb-vol-ring').forEach((el) => el.remove())
             return
           }
@@ -2561,9 +2566,14 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         const v =
           (tile.querySelector('video.lk-participant-media-video') as HTMLVideoElement | null) ||
           (tile.querySelector('video') as HTMLVideoElement | null)
-        const hasVideo = !!(v && v.offsetWidth > 0 && v.offsetHeight > 0)
-        tile.setAttribute('data-eb-has-video', hasVideo ? 'true' : 'false')
-        if (hasVideo) {
+        const isVideoMuted =
+          tile.getAttribute('data-video-muted') === 'true' ||
+          tile.getAttribute('data-lk-video-muted') === 'true' ||
+          (tile as any).dataset?.videoMuted === 'true' ||
+          (tile as any).dataset?.lkVideoMuted === 'true'
+        const hasActiveVideo = !!(!isVideoMuted && v && v.offsetWidth > 0 && v.offsetHeight > 0)
+        tile.setAttribute('data-eb-has-video', hasActiveVideo ? 'true' : 'false')
+        if (hasActiveVideo) {
           // Restore placeholder to LiveKit defaults as much as possible.
           placeholder.style.position = ''
           ;(placeholder.style as any).inset = ''
