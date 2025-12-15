@@ -2112,7 +2112,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     }
     .call-container .eb-vol-ring .actions .btn{
       border: 1px solid rgba(255,255,255,.10);
-      background: rgba(0,0,0,.32);
+      background: #040303a1;
       color: rgba(255,255,255,.92);
       border-radius: 999px;
       padding: 7px 12px;
@@ -2123,7 +2123,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       -webkit-tap-highlight-color: transparent;
     }
     .call-container .eb-vol-ring .actions .btn:hover{
-      background: rgba(0,0,0,.42);
+      background: #040303c1;
     }
   `
 
