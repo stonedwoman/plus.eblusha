@@ -1509,9 +1509,42 @@ function ParticipantVolumeUpdater() {
               if (!key) return
               const ringEl = tile.querySelector('.eb-vol-ring') as HTMLElement | null
               if (!ringEl) return
+
+              // If user is tapping/dragging the ring itself, let ring handlers decide (tap closes, drag changes).
+              if (target.closest('.eb-vol-ring')) return
+
+              // Compute whether tap is inside the avatar circle (opens only on avatar).
+              const x = (e as MouseEvent).clientX
+              const y = (e as MouseEvent).clientY
+              const img = tile.querySelector('img.eb-ph') as HTMLElement | null
+              const ph = tile.querySelector('.lk-participant-placeholder') as HTMLElement | null
+              const rect = (img || ph)?.getBoundingClientRect?.()
+              const isInAvatar = (() => {
+                if (!rect) return false
+                const r = Math.min(rect.width, rect.height) / 2
+                const cx = rect.left + rect.width / 2
+                const cy = rect.top + rect.height / 2
+                return Math.hypot(x - cx, y - cy) <= r
+              })()
+
+              // UX:
+              // - tap on avatar => open (never closes by tapping avatar)
+              // - tap outside avatar => close (if something is open)
+              if (openKeyRef.current === key) {
+                if (!isInAvatar) closeAll()
+                return
+              }
+              if (openKeyRef.current && !isInAvatar) {
+                closeAll()
+                return
+              }
+              if (!isInAvatar) return
+
               e.preventDefault()
               e.stopPropagation()
-              toggleOpen(key, ringEl)
+              closeAll()
+              openKeyRef.current = key
+              ringEl.setAttribute('data-eb-vol-open', 'true')
             })
           }
 
