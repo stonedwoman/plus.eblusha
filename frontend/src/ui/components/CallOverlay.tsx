@@ -1170,7 +1170,7 @@ function ParticipantVolumeUpdater() {
     }
 
     const toggleOpen = (key: string, ring: HTMLElement) => {
-      const isOpen = ring.getAttribute('data-eb-vol-open') === 'true'
+      const isOpen = openKeyRef.current === key || ring.getAttribute('data-eb-vol-open') === 'true'
       if (isOpen) closeAll()
       else {
         closeAll()
@@ -1500,10 +1500,8 @@ function ParticipantVolumeUpdater() {
               if ((tile as any).__ebSuppressNextClick) return
               const target = e.target as HTMLElement | null
               if (!target) return
-              // Don't toggle when user taps buttons/inputs/metadata overlay
+              // Don't toggle when user taps interactive controls (keep buttons usable)
               if (target.closest('button, a, input, select, textarea')) return
-              if (target.closest('.lk-participant-metadata')) return
-              if (target.closest('.lk-connection-quality')) return
               const key = String(tile.getAttribute('data-eb-vol-key') || '').trim()
               if (!key) return
               const ringEl = tile.querySelector('.eb-vol-ring') as HTMLElement | null
