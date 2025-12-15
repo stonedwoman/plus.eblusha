@@ -2081,7 +2081,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       font-variant-numeric: tabular-nums;
       padding: 8px 12px;
       border-radius: 999px;
-      background: rgba(0,0,0,.22);
+      background: #040303a1;
       border: 1px solid rgba(255,255,255,.10);
       color: rgba(255,255,255,.92);
     }
@@ -2101,9 +2101,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     .call-container .lk-participant-tile:hover .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
     @media (hover: none){
       .call-container .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
-    }
-    .call-container .eb-vol-ring[data-eb-over="true"] .label{
-      box-shadow: 0 0 0 2px rgba(239,68,68,.22) inset;
     }
     .call-container .eb-vol-ring .actions{
       display:flex;
