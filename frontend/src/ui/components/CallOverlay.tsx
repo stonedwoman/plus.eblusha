@@ -1877,6 +1877,24 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     /* Hide chat entry point in the control bar (we expose device selection via Settings and also via button group menus) */
     .call-container .lk-control-bar .lk-chat-toggle { display: none !important; }
 
+    /* Mobile: make the LiveKit UI feel native fullscreen and fix control button height mismatch */
+    @media (max-width: 768px){
+      /* iOS safe area: keep controls above home indicator */
+      .call-container .lk-control-bar{
+        padding-bottom: calc(.75rem + env(safe-area-inset-bottom, 0px)) !important;
+      }
+      /* Unify button heights (Settings + Leave were shorter than button-groups on mobile) */
+      .call-container .lk-control-bar button,
+      .call-container .lk-control-bar .lk-button,
+      .call-container .lk-control-bar .lk-disconnect-button,
+      .call-container .lk-control-bar .lk-settings-toggle{
+        min-height: 44px !important;
+        padding-top: .75rem !important;
+        padding-bottom: .75rem !important;
+        align-items: center !important;
+      }
+    }
+
     /* Settings toggles */
     .call-container .eb-settings-section { margin-bottom: 16px; }
     .call-container .eb-section-title { font-size: 12px; color: rgba(255,255,255,0.72); margin-bottom: 10px; }
@@ -2819,20 +2837,27 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         e.stopPropagation()
       }}
       style={{
-      position: 'fixed', inset: 0, background: minimized ? 'transparent' : 'rgba(10,12,16,0.55)', backdropFilter: minimized ? 'none' : 'blur(4px) saturate(110%)', display: minimized ? 'none' : 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      position: 'fixed',
+      inset: 0,
+      background: minimized ? 'transparent' : 'rgba(10,12,16,0.55)',
+      backdropFilter: minimized ? 'none' : 'blur(4px) saturate(110%)',
+      display: minimized ? 'none' : 'flex',
+      alignItems: isDesktop ? 'center' : 'stretch',
+      justifyContent: isDesktop ? 'center' : 'stretch',
+      zIndex: 1000,
       pointerEvents: minimized ? 'none' : 'auto',
       }}
     >
       <div data-lk-theme="default" style={{ 
-        width: minimized ? 0 : '90vw', 
-        height: minimized ? 0 : '80vh', 
-        maxWidth: minimized ? 0 : 1200, 
+        width: minimized ? 0 : (isDesktop ? '90vw' : '100vw'),
+        height: minimized ? 0 : (isDesktop ? '80vh' : '100dvh'),
+        maxWidth: minimized ? 0 : (isDesktop ? 1200 : '100vw'),
         background: 'var(--surface-200)', 
-        borderRadius: 16, 
+        borderRadius: isDesktop ? 16 : 0, 
         overflow: minimized ? 'hidden' : 'hidden', 
         position: 'relative', 
-        border: '1px solid var(--surface-border)', 
-        boxShadow: minimized ? 'none' : 'var(--shadow-sharp)',
+        border: isDesktop ? '1px solid var(--surface-border)' : 'none',
+        boxShadow: minimized ? 'none' : (isDesktop ? 'var(--shadow-sharp)' : 'none'),
         opacity: minimized ? 0 : 1,
         visibility: minimized ? 'hidden' : 'visible',
       }} className="call-container">
