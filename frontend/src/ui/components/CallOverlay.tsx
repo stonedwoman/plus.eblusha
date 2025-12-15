@@ -1842,7 +1842,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       margin: auto !important;
       align-self: center !important;
       flex-shrink: 0 !important;
-      position: relative !important;
+      /* IMPORTANT: don't override LiveKit's absolute positioning here; it can break video layout */
     }
     
     /* Light semi-transparent border for participant tiles */
@@ -2550,6 +2550,30 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         const nameEl = tile.querySelector('.lk-participant-name, [data-lk-participant-name]') as HTMLElement | null
         const placeholder = tile.querySelector('.lk-participant-placeholder') as HTMLElement | null
         if (!nameEl || !placeholder) return
+
+        // If video is visible in this tile, DO NOT touch placeholder layout (it can cause video to stick to top).
+        const v =
+          (tile.querySelector('video.lk-participant-media-video') as HTMLVideoElement | null) ||
+          (tile.querySelector('video') as HTMLVideoElement | null)
+        const hasVideo = !!(v && v.offsetWidth > 0 && v.offsetHeight > 0)
+        if (hasVideo) {
+          // Restore placeholder to LiveKit defaults as much as possible.
+          placeholder.style.position = ''
+          ;(placeholder.style as any).inset = ''
+          placeholder.style.left = ''
+          placeholder.style.top = ''
+          placeholder.style.right = ''
+          placeholder.style.bottom = ''
+          placeholder.style.transform = ''
+          placeholder.style.width = ''
+          placeholder.style.height = ''
+          placeholder.style.maxWidth = ''
+          placeholder.style.maxHeight = ''
+          placeholder.style.minWidth = ''
+          placeholder.style.minHeight = ''
+          placeholder.style.margin = ''
+          return
+        }
         // identity lookup preferred (must compute before using as a fallback for name)
         // Проверяем несколько мест, где может быть identity
         let identity = ''
@@ -2699,7 +2723,15 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         // Use 95% of the smaller dimension for placeholder
         const placeholderSize = Math.floor(tileMinDimension * 0.95)
         
-        // Set placeholder size to ensure it's always circular
+        // Set placeholder size to ensure it's always circular.
+        // Keep it OUT of layout flow (do not affect video tiles): absolute centered circle.
+        placeholder.style.position = 'absolute'
+        ;(placeholder.style as any).inset = 'auto'
+        placeholder.style.left = '50%'
+        placeholder.style.top = '50%'
+        placeholder.style.right = 'auto'
+        placeholder.style.bottom = 'auto'
+        placeholder.style.transform = 'translate(-50%, -50%)'
         placeholder.style.width = `${placeholderSize}px`
         placeholder.style.height = `${placeholderSize}px`
         placeholder.style.maxWidth = `${placeholderSize}px`
@@ -2715,7 +2747,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         placeholder.style.color = 'transparent'
         placeholder.style.fontSize = '0'
         placeholder.style.overflow = 'hidden'
-        placeholder.style.margin = 'auto'
+        placeholder.style.margin = '0'
         // keep placeholder circular - always use smaller dimension
         placeholder.style.borderRadius = '50%'
         placeholder.style.aspectRatio = '1'
