@@ -1104,6 +1104,7 @@ function ParticipantVolumeUpdater() {
     const overCircle = (ring as any).__ebRingOver as SVGCircleElement | undefined
     const thumb = (ring as any).__ebRingThumb as SVGCircleElement | undefined
     const label = (ring as any).__ebRingLabel as HTMLElement | undefined
+    const valEl = (ring as any).__ebRingVal as HTMLElement | undefined
     const muteBtn = (ring as any).__ebRingMuteBtn as HTMLButtonElement | undefined
     if (!safeCircle || !overCircle) return
 
@@ -1126,7 +1127,8 @@ function ParticipantVolumeUpdater() {
       thumb.setAttribute('cy', `${cy}`)
       thumb.style.opacity = '1'
     }
-    if (label) label.textContent = `громкость: ${volume}%`
+    if (valEl) valEl.textContent = `${volume}%`
+    else if (label) label.textContent = `${volume}%`
     if (muteBtn) muteBtn.textContent = muted || volume === 0 ? 'Вернуть' : 'Заглушить'
 
     ring.setAttribute('data-eb-over', volume > NORMAL ? 'true' : 'false')
@@ -1240,7 +1242,7 @@ function ParticipantVolumeUpdater() {
                 <circle class="hit" cx="110" cy="110" r="105" />
               </svg>
               <div class="center" aria-hidden="true">
-                <div class="label">100%</div>
+                <div class="label"><span class="prefix">громкость: </span><span class="val">100%</span></div>
                 <div class="actions">
                   <button type="button" class="btn mute">Заглушить</button>
                   <button type="button" class="btn reset">100%</button>
@@ -1265,6 +1267,7 @@ function ParticipantVolumeUpdater() {
             const thumb = ring.querySelector('circle.thumb') as SVGCircleElement | null
             const hit = ring.querySelector('circle.hit') as SVGCircleElement | null
             const label = ring.querySelector('.label') as HTMLElement | null
+            const valEl = ring.querySelector('.label .val') as HTMLElement | null
             const muteBtn = ring.querySelector('button.btn.mute') as HTMLButtonElement | null
             const resetBtn = ring.querySelector('button.btn.reset') as HTMLButtonElement | null
             ;(ring as any).__ebRingSvg = svg
@@ -1273,6 +1276,7 @@ function ParticipantVolumeUpdater() {
             ;(ring as any).__ebRingThumb = thumb
             ;(ring as any).__ebRingHit = hit
             ;(ring as any).__ebRingLabel = label
+            ;(ring as any).__ebRingVal = valEl
             ;(ring as any).__ebRingMuteBtn = muteBtn
             ;(ring as any).__ebRingResetBtn = resetBtn
           }
@@ -1379,6 +1383,19 @@ function ParticipantVolumeUpdater() {
                 e.preventDefault()
                 e.stopPropagation()
                 lastUserGestureAtRef.current = Date.now()
+                const isOpen = ring?.getAttribute('data-eb-vol-open') === 'true'
+                // Touch UX: when overlay is open, a simple tap should close it; drag changes volume.
+                if (isTouch && isOpen) {
+                  ;(ring as any).__ebTapArmed = true
+                  ;(ring as any).__ebTapX = (e as PointerEvent).clientX
+                  ;(ring as any).__ebTapY = (e as PointerEvent).clientY
+                  try {
+                    ;(hit as any).setPointerCapture?.(e.pointerId)
+                  } catch {
+                    // ignore
+                  }
+                  return
+                }
                 ;(ring as any).__ebDragging = true
                 try {
                   const keyNow = String(ring?.getAttribute('data-eb-vol-key') || '').trim()
@@ -1397,6 +1414,13 @@ function ParticipantVolumeUpdater() {
                 setPct(pct, true)
               })
               hit.addEventListener('pointermove', (e: any) => {
+                if ((ring as any).__ebTapArmed) {
+                  const dx = ((e as PointerEvent).clientX || 0) - ((ring as any).__ebTapX || 0)
+                  const dy = ((e as PointerEvent).clientY || 0) - ((ring as any).__ebTapY || 0)
+                  if (Math.hypot(dx, dy) < 6) return
+                  ;(ring as any).__ebTapArmed = false
+                  ;(ring as any).__ebDragging = true
+                }
                 if (!(ring as any).__ebDragging) return
                 e.preventDefault()
                 e.stopPropagation()
@@ -1404,8 +1428,18 @@ function ParticipantVolumeUpdater() {
                 setPct(pct, true)
               })
               const endDrag = (e: any) => {
-                if (!(ring as any).__ebDragging) return
-                ;(ring as any).__ebDragging = false
+                if ((ring as any).__ebTapArmed) {
+                  ;(ring as any).__ebTapArmed = false
+                  // Suppress the subsequent click that mobile browsers may emit.
+                  ;(tile as any).__ebSuppressNextClick = true
+                  setTimeout(() => {
+                    ;(tile as any).__ebSuppressNextClick = false
+                  }, 0)
+                  closeAll()
+                }
+                if ((ring as any).__ebDragging) {
+                  ;(ring as any).__ebDragging = false
+                }
                 try {
                   ;(hit as any).releasePointerCapture?.(e.pointerId)
                 } catch {
@@ -1463,6 +1497,7 @@ function ParticipantVolumeUpdater() {
             ;(tile as any).__ebVolTapBound = true
             ;(tile as any).__ebVolTapKey = stableKey
             tile.addEventListener('click', (e: MouseEvent) => {
+              if ((tile as any).__ebSuppressNextClick) return
               const target = e.target as HTMLElement | null
               if (!target) return
               // Don't toggle when user taps buttons/inputs/metadata overlay
@@ -2195,6 +2230,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       background: #040303a1;
       border: 1px solid rgba(255,255,255,.10);
       color: rgba(255,255,255,.92);
+    }
+    /* Mobile: don't show "громкость:" prefix */
+    @media (hover: none){
+      .call-container .eb-vol-ring .label .prefix{ display:none; }
     }
     .call-container .eb-vol-ring .center{
       position:absolute;
