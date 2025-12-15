@@ -1229,18 +1229,26 @@ function ParticipantVolumeUpdater() {
           // Position ring just OUTSIDE the avatar (tight halo): compute center from placeholder, size from avatar image.
           try {
             const tileRect = tile.getBoundingClientRect()
+            // LiveKit tiles can be scaled via CSS transforms; convert screen px -> local px.
+            const tileWLocal = (tile as HTMLElement).offsetWidth || tileRect.width || 1
+            const tileHLocal = (tile as HTMLElement).offsetHeight || tileRect.height || 1
+            const scaleX = tileRect.width ? tileRect.width / tileWLocal : 1
+            const scaleY = tileRect.height ? tileRect.height / tileHLocal : 1
             const phRect = placeholder.getBoundingClientRect()
             const img = placeholder.querySelector('img.eb-ph') as HTMLImageElement | null
             const imgRect = img?.getBoundingClientRect()
-            const avatarD = imgRect && imgRect.width > 10 ? imgRect.width : phRect.width * 0.8
-            const cx =
+            const avatarDScreen = imgRect && imgRect.width > 10 ? imgRect.width : phRect.width * 0.8
+            const avatarD = avatarDScreen / scaleX
+            const cxScreen =
               imgRect && imgRect.width > 10
                 ? imgRect.left - tileRect.left + imgRect.width / 2
                 : phRect.left - tileRect.left + phRect.width / 2
-            const cy =
+            const cyScreen =
               imgRect && imgRect.height > 10
                 ? imgRect.top - tileRect.top + imgRect.height / 2
                 : phRect.top - tileRect.top + phRect.height / 2
+            const cx = cxScreen / scaleX
+            const cy = cyScreen / scaleY
 
             // Inner edge of the stroke should touch the avatar edge (gap=0) WITHOUT overlapping the avatar.
             // SVG stroke scales with the element, so compute size using viewBox geometry:
@@ -1252,7 +1260,7 @@ function ParticipantVolumeUpdater() {
             const gap = 0 // requested: 0px padding
             const avatarR = avatarD / 2
             const ringD = (VIEW * (avatarR + gap)) / INNER_R
-            const maxD = Math.min(Math.min(tileRect.width, tileRect.height) - 6, ringD)
+            const maxD = Math.min(Math.min(tileWLocal, tileHLocal) - 6, ringD)
             const finalD = Math.max(56, maxD)
 
             ring.style.width = `${finalD}px`
