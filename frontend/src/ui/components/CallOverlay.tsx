@@ -870,6 +870,7 @@ function ParticipantVolumeUpdater() {
   const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean; lastNonZeroPct: number }>>(new Map())
   const lastUserGestureAtRef = useRef<number>(0)
   const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; inited: boolean }>>(new WeakMap())
+  const wheelAccByKeyRef = useRef<Map<string, number>>(new Map())
 
   const isLocalTile = (tile: HTMLElement): boolean => {
     const v = tile.getAttribute('data-lk-local-participant')
@@ -1300,10 +1301,25 @@ function ParticipantVolumeUpdater() {
                 if (!keyNow) return
                 const s = getSettings(keyNow)
                 const cur = pctFromSettings(s)
-                const step = 1
-                const dir = e.deltaY < 0 ? 1 : -1 // wheel up => louder
-                // Apply via the ring helper so WebAudio can kick in when needed
-                setPct(cur + dir * step, true)
+                // Normalize high-resolution wheels/trackpads: accumulate delta and apply 1–2% per "notch".
+                const deltaPx =
+                  (e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * (window.innerHeight || 800) : e.deltaY) || 0
+                const accMap = wheelAccByKeyRef.current
+                const prevAcc = accMap.get(keyNow) || 0
+                const nextAcc = prevAcc + deltaPx
+                accMap.set(keyNow, nextAcc)
+
+                const threshold = 100 // typical mouse notch ~= 100px
+                const steps = Math.trunc(Math.abs(nextAcc) / threshold)
+                if (steps <= 0) return
+
+                // Reduce accumulator by the consumed steps
+                const consumed = steps * threshold * Math.sign(nextAcc)
+                accMap.set(keyNow, nextAcc - consumed)
+
+                const stepPct = e.shiftKey ? 2 : 1
+                const dir = nextAcc < 0 ? 1 : -1 // wheel up (negative delta) => louder
+                setPct(cur + dir * steps * stepPct, true)
               },
               { passive: false } as any,
             )
@@ -2521,10 +2537,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         img.alt = name
         // Fit avatar INSIDE the volume ring and keep it circular
         img.style.aspectRatio = '1' // Ensure square shape
-        img.style.width = '88%'
-        img.style.height = '88%'
-        img.style.maxWidth = '88%'
-        img.style.maxHeight = '88%'
+        img.style.width = '80%'
+        img.style.height = '80%'
+        img.style.maxWidth = '80%'
+        img.style.maxHeight = '80%'
         img.style.objectFit = 'cover'
         img.style.borderRadius = '50%'
         img.style.display = 'block'
