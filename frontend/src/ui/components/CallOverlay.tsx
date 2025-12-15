@@ -864,13 +864,15 @@ function PingDisplayUpdater({ localUserId }: { localUserId: string | null }) {
   return null
 }
 
-function ParticipantVolumeUpdater() {
+function ParticipantVolumeUpdater({ disabled = false }: { disabled?: boolean }) {
   const room = useRoomContext()
   const audioCtxRef = useRef<AudioContext | null>(null)
   const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean; lastNonZeroPct: number }>>(new Map())
   const lastUserGestureAtRef = useRef<number>(0)
   const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; inited: boolean }>>(new WeakMap())
   const wheelAccByKeyRef = useRef<Map<string, number>>(new Map())
+  const ringByKeyRef = useRef<Map<string, HTMLElement>>(new Map())
+  const hoverCountByKeyRef = useRef<Map<string, number>>(new Map())
 
   const isLocalTile = (tile: HTMLElement): boolean => {
     const v = tile.getAttribute('data-lk-local-participant')
@@ -1145,14 +1147,77 @@ function ParticipantVolumeUpdater() {
     return clampPct(ratio * MAX)
   }
 
-  // Inject volume ring UI into participant tiles (around injected avatars).
+  // Inject volume ring UI into participant tiles (portal into body so it stays above video layers).
   useEffect(() => {
     if (!room) return
+    if (disabled) {
+      for (const el of ringByKeyRef.current.values()) {
+        try {
+          el.remove()
+        } catch {
+          // ignore
+        }
+      }
+      ringByKeyRef.current.clear()
+      hoverCountByKeyRef.current.clear()
+      return
+    }
     const root = document.body
     if (!root) return
+    const isHoverNone = (() => {
+      try {
+        return typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(hover: none)').matches
+      } catch {
+        return false
+      }
+    })()
+
+    const ensurePortalRing = (key: string) => {
+      const existing = ringByKeyRef.current.get(key)
+      if (existing && document.body.contains(existing)) return existing
+      const ring = document.createElement('div')
+      ring.className = 'eb-vol-ring'
+      ring.setAttribute('data-eb-vol-key', key)
+      ring.setAttribute('data-eb-active', isHoverNone ? 'true' : 'false')
+      ring.style.position = 'fixed'
+      ring.style.left = '0px'
+      ring.style.top = '0px'
+      ring.style.width = '0px'
+      ring.style.height = '0px'
+      ring.style.transform = 'translate(-50%, -50%)'
+      ring.innerHTML = `
+        <svg class="eb-vol-ring-svg" width="220" height="220" viewBox="0 0 220 220" aria-hidden="true" style="transform: rotate(-90deg)">
+          <circle class="bg" cx="110" cy="110" r="105" />
+          <circle class="safe" cx="110" cy="110" r="105" />
+          <circle class="over" cx="110" cy="110" r="105" />
+          <circle class="thumb" cx="110" cy="5" r="7" />
+          <circle class="hit" cx="110" cy="110" r="105" />
+        </svg>
+        <div class="center" aria-hidden="true">
+          <div class="label">громкость: 100%</div>
+          <div class="actions">
+            <button type="button" class="btn mute">Заглушить</button>
+            <button type="button" class="btn reset">100%</button>
+          </div>
+        </div>
+      `
+      document.body.appendChild(ring)
+      ringByKeyRef.current.set(key, ring)
+      return ring
+    }
+
+    const bumpHover = (key: string, delta: number) => {
+      if (isHoverNone) return
+      const m = hoverCountByKeyRef.current
+      const next = Math.max(0, (m.get(key) || 0) + delta)
+      m.set(key, next)
+      const ring = ringByKeyRef.current.get(key)
+      if (ring) ring.setAttribute('data-eb-active', next > 0 ? 'true' : 'false')
+    }
     const applyDom = () => {
       try {
         const tiles = root.querySelectorAll('.call-container .lk-participant-tile') as NodeListOf<HTMLElement>
+        const seenKeys = new Set<string>()
         tiles.forEach((tile) => {
           if (isLocalTile(tile)) return
           const keyInfo = getTileKey(tile)
@@ -1165,38 +1230,14 @@ function ParticipantVolumeUpdater() {
           const displayName = resolvedMeta?.displayName || (keyInfo.name || null)
           const stableInfo = { key: stableKey, userId: stableKey, name: displayName }
           tile.setAttribute('data-eb-vol-key', stableKey)
+          seenKeys.add(stableKey)
 
           const placeholder = tile.querySelector('.lk-participant-placeholder') as HTMLElement | null
           if (!placeholder) return
 
-          // Ensure positioning context
-          if (!tile.style.position) tile.style.position = 'relative'
-
-          let ring = tile.querySelector('.eb-vol-ring') as HTMLElement | null
-          if (!ring) {
-            ring = document.createElement('div')
-            ring.className = 'eb-vol-ring'
-            ring.setAttribute('data-eb-vol-key', stableKey)
-            ring.innerHTML = `
-              <svg class="eb-vol-ring-svg" width="220" height="220" viewBox="0 0 220 220" aria-hidden="true" style="transform: rotate(-90deg)">
-                <circle class="bg" cx="110" cy="110" r="105" />
-                <circle class="safe" cx="110" cy="110" r="105" />
-                <circle class="over" cx="110" cy="110" r="105" />
-                <circle class="thumb" cx="110" cy="5" r="7" />
-                <circle class="hit" cx="110" cy="110" r="105" />
-              </svg>
-              <div class="center" aria-hidden="true">
-                <div class="label">100%</div>
-                <div class="actions">
-                  <button type="button" class="btn mute">Заглушить</button>
-                  <button type="button" class="btn reset">100%</button>
-                </div>
-              </div>
-            `
-            tile.appendChild(ring)
-          } else {
-            ring.setAttribute('data-eb-vol-key', stableKey)
-          }
+          // Remove any stale in-tile rings from previous versions (we portal the ring into body).
+          tile.querySelectorAll('.eb-vol-ring').forEach((el) => el.remove())
+          const ring = ensurePortalRing(stableKey)
 
           // Cache SVG refs for fast updates
           if (!(ring as any).__ebRingInit) {
@@ -1226,31 +1267,15 @@ function ParticipantVolumeUpdater() {
             renderRing(ring!, pct, !!s.muted)
           }
 
-          // Position ring just OUTSIDE the avatar (tight halo): compute center from placeholder, size from avatar image.
+          // Position ring just OUTSIDE the avatar (tight halo), in viewport coords (portal ring is position: fixed).
           try {
             const tileRect = tile.getBoundingClientRect()
-            // LiveKit tiles can be scaled via CSS transforms; convert screen px -> local px.
-            const tileWLocal = (tile as HTMLElement).offsetWidth || tileRect.width || 1
-            const tileHLocal = (tile as HTMLElement).offsetHeight || tileRect.height || 1
-            const scaleX = tileRect.width ? tileRect.width / tileWLocal : 1
-            const scaleY = tileRect.height ? tileRect.height / tileHLocal : 1
             const phRect = placeholder.getBoundingClientRect()
             const img = placeholder.querySelector('img.eb-ph') as HTMLImageElement | null
             const imgRect = img?.getBoundingClientRect()
-            const avatarDScreen = imgRect && imgRect.width > 10 ? imgRect.width : phRect.width * 0.8
-            const scaleAvg = (scaleX + scaleY) / 2 || 1
-            const avatarD = avatarDScreen / scaleAvg
-            const cxScreen =
-              imgRect && imgRect.width > 10
-                ? imgRect.left - tileRect.left + imgRect.width / 2
-                : phRect.left - tileRect.left + phRect.width / 2
-            const cyScreen =
-              imgRect && imgRect.height > 10
-                ? imgRect.top - tileRect.top + imgRect.height / 2
-                : phRect.top - tileRect.top + phRect.height / 2
-            // Absolute positioning origin is the padding box; compensate border (clientLeft/Top) in LOCAL units.
-            const cx = cxScreen / scaleX - (tile as HTMLElement).clientLeft
-            const cy = cyScreen / scaleY - (tile as HTMLElement).clientTop
+            const avatarD = imgRect && imgRect.width > 10 ? imgRect.width : phRect.width * 0.8
+            const cx = imgRect && imgRect.width > 10 ? imgRect.left + imgRect.width / 2 : phRect.left + phRect.width / 2
+            const cy = imgRect && imgRect.height > 10 ? imgRect.top + imgRect.height / 2 : phRect.top + phRect.height / 2
 
             // Inner edge of the stroke should touch the avatar edge (gap=0) WITHOUT overlapping the avatar.
             // SVG stroke scales with the element, so compute size using viewBox geometry:
@@ -1262,10 +1287,7 @@ function ParticipantVolumeUpdater() {
             const gap = 0 // requested: 0px padding
             const avatarR = avatarD / 2
             const ringD = (VIEW * (avatarR + gap)) / INNER_R
-            const maxD = Math.min(
-              Math.min((tile as HTMLElement).clientWidth || tileWLocal, (tile as HTMLElement).clientHeight || tileHLocal) - 6,
-              ringD,
-            )
+            const maxD = Math.min(Math.min(tileRect.width, tileRect.height) - 6, ringD)
             const finalD = Math.max(56, maxD)
 
             // Compact UI for small tiles (spotlight sidebar, grids, etc.)
@@ -1398,6 +1420,22 @@ function ParticipantVolumeUpdater() {
             }
             muteBtn?.addEventListener('click', onMuteClick)
             resetBtn?.addEventListener('click', onResetClick)
+
+            // Keep ring visible while interacting (hover can move from tile -> ring since ring is portalled)
+            if (!isHoverNone) {
+              ring.addEventListener('mouseenter', () => bumpHover(stableKey, 1))
+              ring.addEventListener('mouseleave', () => bumpHover(stableKey, -1))
+            }
+          }
+
+          // Show ring on tile hover
+          if (!(tile as any).__ebRingHoverBound || (tile as any).__ebRingHoverKey !== stableKey) {
+            ;(tile as any).__ebRingHoverBound = true
+            ;(tile as any).__ebRingHoverKey = stableKey
+            if (!isHoverNone) {
+              tile.addEventListener('mouseenter', () => bumpHover(stableKey, 1))
+              tile.addEventListener('mouseleave', () => bumpHover(stableKey, -1))
+            }
           }
 
           // Wheel support: change remote participant volume while hovering their tile
@@ -1441,6 +1479,19 @@ function ParticipantVolumeUpdater() {
           updateFromSettings()
           void applyToKey(stableInfo, false)
         })
+
+        // Remove rings that no longer have tiles
+        for (const [key, el] of ringByKeyRef.current.entries()) {
+          if (!seenKeys.has(key)) {
+            try {
+              el.remove()
+            } catch {
+              // ignore
+            }
+            ringByKeyRef.current.delete(key)
+            hoverCountByKeyRef.current.delete(key)
+          }
+        }
       } catch {
         // ignore
       }
@@ -1463,8 +1514,17 @@ function ParticipantVolumeUpdater() {
 
     return () => {
       mo.disconnect()
+      for (const el of ringByKeyRef.current.values()) {
+        try {
+          el.remove()
+        } catch {
+          // ignore
+        }
+      }
+      ringByKeyRef.current.clear()
+      hoverCountByKeyRef.current.clear()
     }
-  }, [room])
+  }, [room, disabled])
 
   return null
 }
@@ -2025,9 +2085,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       white-space: nowrap;
     }
 
-    /* Per-participant volume: modern volume ring around avatar (0..150%, red after 100) */
-    .call-container .eb-vol-ring{
-      position:absolute;
+    /* Per-participant volume: modern volume ring (portal into body, position: fixed) */
+    .eb-vol-ring{
+      position: fixed;
       display:block;
       pointer-events:none;
       opacity:0;
@@ -2035,59 +2095,59 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       touch-action:none;
       -webkit-tap-highlight-color: transparent;
       user-select:none;
-      z-index: 9999 !important;
+      z-index: 1500;
     }
-    .call-container .lk-participant-tile:hover .eb-vol-ring{
+    .eb-vol-ring[data-eb-active="true"]{
       opacity:1;
       pointer-events:auto;
     }
     @media (hover: none){
-      .call-container .eb-vol-ring{
+      .eb-vol-ring{
         opacity:1;
         pointer-events:auto;
       }
     }
-    .call-container .eb-vol-ring-svg{
+    .eb-vol-ring-svg{
       width:100%;
       height:100%;
       display:block;
     }
-    .call-container .eb-vol-ring-svg circle{
+    .eb-vol-ring-svg circle{
       fill:none;
       stroke-width:10;
     }
-    .call-container .eb-vol-ring-svg .bg{
+    .eb-vol-ring-svg .bg{
       stroke: rgba(255,255,255,0.12);
     }
-    .call-container .eb-vol-ring-svg .safe{
+    .eb-vol-ring-svg .safe{
       stroke:#d97706;
       stroke-linecap:round;
       opacity:0;
     }
-    .call-container .eb-vol-ring-svg .over{
+    .eb-vol-ring-svg .over{
       stroke:#ef4444;
       stroke-linecap:round;
       opacity:0;
     }
-    .call-container .eb-vol-ring-svg .thumb{
+    .eb-vol-ring-svg .thumb{
       fill: rgba(255,255,255,.92);
       stroke: rgba(0,0,0,.25);
       stroke-width:1;
       filter: drop-shadow(0 8px 18px rgba(0,0,0,.35));
       opacity:0;
     }
-    .call-container .lk-participant-tile:hover .eb-vol-ring-svg .thumb{
+    .eb-vol-ring[data-eb-active="true"] .eb-vol-ring-svg .thumb{
       opacity:1;
     }
     @media (hover: none){
-      .call-container .eb-vol-ring-svg .thumb{ opacity: 1; }
+      .eb-vol-ring-svg .thumb{ opacity: 1; }
     }
-    .call-container .eb-vol-ring-svg .hit{
+    .eb-vol-ring-svg .hit{
       stroke: transparent;
       stroke-width: 28;
       pointer-events: stroke;
     }
-    .call-container .eb-vol-ring .label{
+    .eb-vol-ring .label{
       display:flex;
       align-items:center;
       justify-content:center;
@@ -2101,7 +2161,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       border: 1px solid rgba(255,255,255,.10);
       color: rgba(255,255,255,.92);
     }
-    .call-container .eb-vol-ring .center{
+    .eb-vol-ring .center{
       position:absolute;
       left:50%;
       top:50%;
@@ -2114,16 +2174,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       transition: opacity 120ms ease;
       pointer-events:none;
     }
-    .call-container .lk-participant-tile:hover .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
+    .eb-vol-ring[data-eb-active="true"] .center{ opacity: 1; pointer-events: auto; }
     @media (hover: none){
-      .call-container .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
+      .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
     }
-    .call-container .eb-vol-ring .actions{
+    .eb-vol-ring .actions{
       display:flex;
       gap:6px;
       pointer-events:auto;
     }
-    .call-container .eb-vol-ring .actions .btn{
+    .eb-vol-ring .actions .btn{
       border: 1px solid rgba(255,255,255,.10);
       background: #040303a1;
       color: rgba(255,255,255,.92);
@@ -2135,21 +2195,21 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       user-select:none;
       -webkit-tap-highlight-color: transparent;
     }
-    .call-container .eb-vol-ring .actions .btn:hover{
+    .eb-vol-ring .actions .btn:hover{
       background: #040303c1;
     }
 
     /* Spotlight / tiny tiles: show only mute/restore button */
-    .call-container .eb-vol-ring[data-eb-compact="true"] .label{
+    .eb-vol-ring[data-eb-compact="true"] .label{
       display:none;
     }
-    .call-container .eb-vol-ring[data-eb-compact="true"] .actions .btn.reset{
+    .eb-vol-ring[data-eb-compact="true"] .actions .btn.reset{
       display:none;
     }
-    .call-container .eb-vol-ring[data-eb-compact="true"] .actions{
+    .eb-vol-ring[data-eb-compact="true"] .actions{
       gap:0;
     }
-    .call-container .eb-vol-ring[data-eb-compact="true"] .actions .btn{
+    .eb-vol-ring[data-eb-compact="true"] .actions .btn{
       padding: 8px 14px;
       font-size: 14px;
       line-height: 18px;
@@ -2814,7 +2874,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             <ConnectionStatusBadge />
             <DefaultMicrophoneSetter />
             <PingDisplayUpdater localUserId={localUserId} />
-            <ParticipantVolumeUpdater />
+            <ParticipantVolumeUpdater disabled={minimized} />
             <VideoConference SettingsComponent={CallSettings} />
           </div>
         </LiveKitRoom>
