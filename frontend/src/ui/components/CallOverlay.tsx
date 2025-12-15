@@ -1082,7 +1082,8 @@ function ParticipantVolumeUpdater() {
 
   const MAX = 150
   const NORMAL = 100
-  const R = 96
+  // Must match SVG circle radius below (eb-vol-ring-svg)
+  const R = 101
   const C = 2 * Math.PI * R
 
   const clampPct = (pct: number) => Math.max(0, Math.min(MAX, Math.round(pct)))
@@ -1114,7 +1115,8 @@ function ParticipantVolumeUpdater() {
 
     if (thumb) {
       const t = volume / MAX
-      const a = t * (Math.PI * 2) - Math.PI / 2 // start at top
+      // NOTE: SVG is rotated -90deg, so keep the math "start at +X" and let the SVG rotation move it to the top.
+      const a = t * (Math.PI * 2)
       const cx = 110 + R * Math.cos(a)
       const cy = 110 + R * Math.sin(a)
       thumb.setAttribute('cx', `${cx}`)
@@ -1133,6 +1135,7 @@ function ParticipantVolumeUpdater() {
     const dx = e.clientX - cx
     const dy = e.clientY - cy
     let deg = (Math.atan2(dy, dx) * 180) / Math.PI // -180..180, 0 at +x
+    // User expectation: 0% at top; our SVG is rotated -90deg, so keep 0% at top in screen space.
     deg = (deg + 90 + 360) % 360 // 0 at top
     const ratio = deg / 360
     return clampPct(ratio * MAX)
@@ -1171,11 +1174,11 @@ function ParticipantVolumeUpdater() {
             ring.setAttribute('data-eb-vol-key', stableKey)
             ring.innerHTML = `
               <svg class="eb-vol-ring-svg" width="220" height="220" viewBox="0 0 220 220" aria-hidden="true" style="transform: rotate(-90deg)">
-                <circle class="bg" cx="110" cy="110" r="96" />
-                <circle class="safe" cx="110" cy="110" r="96" />
-                <circle class="over" cx="110" cy="110" r="96" />
-                <circle class="thumb" cx="110" cy="14" r="7" />
-                <circle class="hit" cx="110" cy="110" r="96" />
+                <circle class="bg" cx="110" cy="110" r="101" />
+                <circle class="safe" cx="110" cy="110" r="101" />
+                <circle class="over" cx="110" cy="110" r="101" />
+                <circle class="thumb" cx="110" cy="9" r="7" />
+                <circle class="hit" cx="110" cy="110" r="101" />
               </svg>
               <div class="label" aria-hidden="true">100%</div>
             `
@@ -1209,9 +1212,20 @@ function ParticipantVolumeUpdater() {
           }
 
           const setPct = (nextPct: number, fromGesture: boolean) => {
-            const pct = clampPct(nextPct)
+            let pct = clampPct(nextPct)
             const keyNow = String(ring?.getAttribute('data-eb-vol-key') || stableKey).trim()
             if (!keyNow) return
+
+            // Prevent wrap-around: when dragging near the seam, don't jump 150->0 or 0->150.
+            const last = typeof (ring as any).__ebLastPct === 'number' ? (ring as any).__ebLastPct : pct
+            if ((ring as any).__ebDragging) {
+              const diff = pct - last
+              if (Math.abs(diff) > MAX / 2) {
+                pct = last > MAX / 2 ? MAX : 0
+              }
+            }
+            ;(ring as any).__ebLastPct = pct
+
             const s = getSettings(keyNow)
             if (pct === 0) {
               s.muted = true
@@ -1236,6 +1250,14 @@ function ParticipantVolumeUpdater() {
                 e.stopPropagation()
                 lastUserGestureAtRef.current = Date.now()
                 ;(ring as any).__ebDragging = true
+                try {
+                  const keyNow = String(ring?.getAttribute('data-eb-vol-key') || '').trim()
+                  if (keyNow) {
+                    ;(ring as any).__ebLastPct = pctFromSettings(getSettings(keyNow))
+                  }
+                } catch {
+                  // ignore
+                }
                 try {
                   ;(hit as any).setPointerCapture?.(e.pointerId)
                 } catch {
@@ -1278,7 +1300,7 @@ function ParticipantVolumeUpdater() {
                 if (!keyNow) return
                 const s = getSettings(keyNow)
                 const cur = pctFromSettings(s)
-                const step = e.shiftKey ? 1 : 2
+                const step = 1
                 const dir = e.deltaY < 0 ? 1 : -1 // wheel up => louder
                 // Apply via the ring helper so WebAudio can kick in when needed
                 setPct(cur + dir * step, true)
@@ -2497,15 +2519,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         placeholder.style.aspectRatio = '1'
         
         img.alt = name
-        // Ensure avatar fills the placeholder and stays circular
+        // Fit avatar INSIDE the volume ring and keep it circular
         img.style.aspectRatio = '1' // Ensure square shape
-        img.style.width = '100%'
-        img.style.height = '100%'
-        img.style.maxWidth = '100%'
-        img.style.maxHeight = '100%'
+        img.style.width = '88%'
+        img.style.height = '88%'
+        img.style.maxWidth = '88%'
+        img.style.maxHeight = '88%'
         img.style.objectFit = 'cover'
         img.style.borderRadius = '50%'
         img.style.display = 'block'
+        img.style.margin = 'auto'
         Array.from(placeholder.childNodes).forEach((n) => {
           if (n.nodeType === Node.TEXT_NODE) {
             (n as any).textContent = ''
