@@ -1807,12 +1807,18 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   }, [conversationId, isGroup, onClose])
   const videoContainCss = `
     /* Force videos to fit tile without cropping on all layouts */
-    .call-container video { object-fit: contain !important; background: #000 !important; }
+    .call-container video { object-fit: contain !important; object-position: center !important; background: #000 !important; }
     .call-container .lk-participant-tile video,
     .call-container .lk-participant-media video,
     .call-container .lk-video-tile video,
     .call-container .lk-stage video,
-    .call-container .lk-grid-stage video { object-fit: contain !important; background: #000 !important; }
+    .call-container .lk-grid-stage video { object-fit: contain !important; object-position: center !important; background: #000 !important; }
+
+    /* Ensure video element is laid out full height within tile (prevents top-anchored half-height video) */
+    .call-container .lk-participant-media,
+    .call-container .lk-participant-media-video {
+      height: 100% !important;
+    }
     
     /* Ensure placeholder stays circular and doesn't stretch */
     .call-container .lk-participant-placeholder {
