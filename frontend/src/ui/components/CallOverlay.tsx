@@ -868,12 +868,6 @@ function ParticipantVolumeUpdater() {
   const room = useRoomContext()
   const audioCtxRef = useRef<AudioContext | null>(null)
   const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean; lastNonZeroPct: number }>>(new Map())
-  const openKeyRef = useRef<string | null>(null)
-  const popoverRef = useRef<HTMLElement | null>(null)
-  const currentKeyInfoRef = useRef<{ key: string; userId: string | null; name: string | null } | null>(null)
-  const currentAnchorRef = useRef<HTMLElement | null>(null)
-  const lastKeyInfoRef = useRef<{ key: string; userId: string | null; name: string | null } | null>(null)
-  const lastAnchorRef = useRef<HTMLElement | null>(null)
   const lastUserGestureAtRef = useRef<number>(0)
   const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; inited: boolean }>>(new WeakMap())
 
@@ -1086,132 +1080,69 @@ function ParticipantVolumeUpdater() {
     }
   }, [room])
 
-  // Inject UI into participant tiles.
+  const MAX = 150
+  const NORMAL = 100
+  const R = 96
+  const C = 2 * Math.PI * R
+
+  const clampPct = (pct: number) => Math.max(0, Math.min(MAX, Math.round(pct)))
+
+  const pctFromSettings = (s: { volume: number; muted: boolean }) => clampPct(s.muted ? 0 : s.volume * 100)
+
+  const setArc = (circle: SVGCircleElement, start: number, length: number) => {
+    const rest = Math.max(0, C - length)
+    circle.style.strokeDasharray = `${length} ${rest}`
+    circle.style.strokeDashoffset = `-${start}`
+    circle.style.opacity = length > 0 ? '1' : '0'
+  }
+
+  const renderRing = (ring: HTMLElement, pct: number) => {
+    const safeCircle = (ring as any).__ebRingSafe as SVGCircleElement | undefined
+    const overCircle = (ring as any).__ebRingOver as SVGCircleElement | undefined
+    const thumb = (ring as any).__ebRingThumb as SVGCircleElement | undefined
+    const label = (ring as any).__ebRingLabel as HTMLElement | undefined
+    if (!safeCircle || !overCircle) return
+
+    const volume = clampPct(pct)
+    const safeRatio = Math.min(volume, NORMAL) / MAX
+    const overRatio = Math.max(volume - NORMAL, 0) / MAX
+    const safeLen = C * safeRatio
+    const overLen = C * overRatio
+
+    setArc(safeCircle, 0, safeLen)
+    setArc(overCircle, safeLen, overLen)
+
+    if (thumb) {
+      const t = volume / MAX
+      const a = t * (Math.PI * 2) - Math.PI / 2 // start at top
+      const cx = 110 + R * Math.cos(a)
+      const cy = 110 + R * Math.sin(a)
+      thumb.setAttribute('cx', `${cx}`)
+      thumb.setAttribute('cy', `${cy}`)
+      thumb.style.opacity = '1'
+    }
+    if (label) label.textContent = `${volume}%`
+
+    ring.setAttribute('data-eb-over', volume > NORMAL ? 'true' : 'false')
+  }
+
+  const pctFromPointer = (e: PointerEvent, svg: SVGSVGElement) => {
+    const rect = svg.getBoundingClientRect()
+    const cx = rect.left + rect.width / 2
+    const cy = rect.top + rect.height / 2
+    const dx = e.clientX - cx
+    const dy = e.clientY - cy
+    let deg = (Math.atan2(dy, dx) * 180) / Math.PI // -180..180, 0 at +x
+    deg = (deg + 90 + 360) % 360 // 0 at top
+    const ratio = deg / 360
+    return clampPct(ratio * MAX)
+  }
+
+  // Inject volume ring UI into participant tiles (around injected avatars).
   useEffect(() => {
     if (!room) return
     const root = document.body
     if (!root) return
-
-    const ensurePopover = () => {
-      if (popoverRef.current && document.body.contains(popoverRef.current)) return popoverRef.current
-      const pop = document.createElement('div')
-      pop.className = 'eb-vol-popover overlay'
-      pop.setAttribute('data-eb-open', 'false')
-      pop.innerHTML = `
-        <div class="top">
-          <button class="icon-btn mute-btn" type="button" aria-label="Mute" title="Mute">
-            <span class="icon" aria-hidden="true">🔊</span>
-          </button>
-          <div class="right">
-            <div class="pct" aria-live="polite">100%</div>
-            <button class="close-btn" type="button" aria-label="Закрыть" title="Закрыть">✕</button>
-          </div>
-        </div>
-        <input class="range" type="range" min="0" max="150" value="100" step="1" />
-      `
-      pop.addEventListener('click', (e) => e.stopPropagation())
-      pop.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true } as any)
-      document.body.appendChild(pop)
-      popoverRef.current = pop
-      return pop
-    }
-
-    const levelIcon = (vPct: number, muted: boolean) => {
-      if (muted || vPct === 0) return '🔇'
-      if (vPct <= 33) return '🔈'
-      return '🔊'
-    }
-
-    const updateFill = () => {
-      const pop = popoverRef.current
-      const info = currentKeyInfoRef.current
-      if (!pop || !info) return
-      const s = getSettings(info.key)
-      const range = pop.querySelector('.range') as HTMLInputElement | null
-      const pctEl = pop.querySelector('.pct') as HTMLElement | null
-      const iconEl = pop.querySelector('.icon') as HTMLElement | null
-      if (!range || !pctEl || !iconEl) return
-      const v = Math.max(0, Math.min(150, Math.round((s.muted ? 0 : s.volume * 100) || 0)))
-      range.value = String(v)
-
-      const max = Number(range.max) || 150
-      const safeMax = 100
-      const safeFill = Math.max(0, Math.min(100, (Math.min(v, safeMax) / max) * 100))
-      const overFill = v > safeMax ? Math.max(0, Math.min(100, ((v - safeMax) / (max - safeMax)) * 100)) : 0
-
-      range.style.background = `linear-gradient(90deg,
-        var(--accent) 0%,
-        var(--accent-hot) ${safeFill}%,
-        var(--danger) ${safeFill}%,
-        var(--danger) ${safeFill + overFill}%),
-       var(--track)`
-
-      pctEl.textContent = `${v}%`
-      iconEl.textContent = levelIcon(v, s.muted)
-      ;(pctEl as HTMLElement).style.boxShadow = v > 100 ? '0 0 0 2px rgba(239,68,68,.25) inset' : 'none'
-    }
-
-    const setMuted = (nextMuted: boolean) => {
-      const info = currentKeyInfoRef.current
-      if (!info) return
-      const s = getSettings(info.key)
-      if (nextMuted) {
-        // remember last non-zero percent
-        const curPct = Math.max(0, Math.min(150, Math.round(s.volume * 100)))
-        if (curPct > 0) s.lastNonZeroPct = curPct
-        s.muted = true
-        s.volume = 0
-      } else {
-        s.muted = false
-        const pct = Math.max(1, Math.min(150, Math.round(s.lastNonZeroPct || 100)))
-        s.lastNonZeroPct = pct
-        s.volume = pct / 100
-      }
-      updateFill()
-      void applyToKey(info, (s.volume * 100) > 100)
-    }
-
-    const positionPopover = () => {
-      const pop = popoverRef.current
-      const anchor = currentAnchorRef.current
-      if (!pop || !anchor) return
-      if (pop.getAttribute('data-eb-open') !== 'true') return
-      const rect = anchor.getBoundingClientRect()
-
-      // Measure popover
-      const popRect = pop.getBoundingClientRect()
-      const pad = 8
-      const vw = window.innerWidth || 0
-      const vh = window.innerHeight || 0
-
-      // Prefer above anchor, fallback below
-      const aboveY = rect.top - popRect.height - 10
-      const belowY = rect.bottom + 10
-      let top = aboveY >= pad ? aboveY : belowY
-      // clamp
-      if (top + popRect.height > vh - pad) top = Math.max(pad, vh - pad - popRect.height)
-      if (top < pad) top = pad
-
-      // Align right edge to anchor right, clamp
-      let left = rect.right - popRect.width
-      if (left + popRect.width > vw - pad) left = vw - pad - popRect.width
-      if (left < pad) left = pad
-
-      pop.style.left = `${Math.round(left)}px`
-      pop.style.top = `${Math.round(top)}px`
-    }
-
-    const closeAllPanels = () => {
-      openKeyRef.current = null
-      currentKeyInfoRef.current = null
-      currentAnchorRef.current = null
-      root
-        .querySelectorAll('.call-container [data-eb-vol-open="true"]')
-        .forEach((el) => (el as HTMLElement).removeAttribute('data-eb-vol-open'))
-      const pop = popoverRef.current
-      if (pop) pop.setAttribute('data-eb-open', 'false')
-    }
-
     const applyDom = () => {
       try {
         const tiles = root.querySelectorAll('.call-container .lk-participant-tile') as NodeListOf<HTMLElement>
@@ -1221,262 +1152,149 @@ function ParticipantVolumeUpdater() {
           if (!keyInfo) return
           tile.setAttribute('data-eb-remote', 'true')
 
-          const meta = tile.querySelector('.lk-participant-metadata') as HTMLElement | null
-          if (!meta) return
-
-          // Cleanup old UI if present
-          meta.querySelectorAll('.eb-vol-control').forEach((el) => el.remove())
-
-          const metaItems = meta.querySelectorAll('.lk-participant-metadata-item') as NodeListOf<HTMLElement>
-          const mainMetaItem = metaItems[0] || null
-          if (!mainMetaItem) return
-
-          // Find the participant name element (span)
-          const nameEl =
-            (mainMetaItem.querySelector('[data-lk-participant-name]') as HTMLElement | null) ||
-            (mainMetaItem.querySelector('.lk-participant-name') as HTMLElement | null)
-          if (!nameEl) return
-
-          // Try to resolve stable identity key via room (so settings persist even if DOM changes).
           const resolved = resolveParticipant(keyInfo)
           const stableKey = resolved ? String(resolved.identity) : keyInfo.key
           const resolvedMeta = resolved ? parseParticipantMeta(resolved) : null
           const displayName = resolvedMeta?.displayName || (keyInfo.name || null)
           const stableInfo = { key: stableKey, userId: stableKey, name: displayName }
+          tile.setAttribute('data-eb-vol-key', stableKey)
 
-          // Make name clickable (do NOT move/replace React-managed nodes).
-          nameEl.setAttribute('role', 'button')
-          nameEl.setAttribute('tabindex', '0')
-          nameEl.setAttribute('aria-label', 'Громкость участника')
-          nameEl.setAttribute('data-eb-vol-key', stableKey)
+          const placeholder = tile.querySelector('.lk-participant-placeholder') as HTMLElement | null
+          if (!placeholder) return
+          // Ensure anchor positioning for ring
+          if (!placeholder.style.position) placeholder.style.position = 'relative'
 
-          const syncUi = () => {
-            const s = getSettings(stableKey)
-            nameEl.classList.toggle('eb-vol-muted', !!s.muted)
-            // ensure lastNonZeroPct stays valid
-            const pct = Math.max(0, Math.min(150, Math.round(s.volume * 100)))
-            if (pct > 0) s.lastNonZeroPct = pct
+          let ring = placeholder.querySelector('.eb-vol-ring') as HTMLElement | null
+          if (!ring) {
+            ring = document.createElement('div')
+            ring.className = 'eb-vol-ring'
+            ring.setAttribute('data-eb-vol-key', stableKey)
+            ring.innerHTML = `
+              <svg class="eb-vol-ring-svg" width="220" height="220" viewBox="0 0 220 220" aria-hidden="true" style="transform: rotate(-90deg)">
+                <circle class="bg" cx="110" cy="110" r="96" />
+                <circle class="safe" cx="110" cy="110" r="96" />
+                <circle class="over" cx="110" cy="110" r="96" />
+                <circle class="thumb" cx="110" cy="14" r="7" />
+                <circle class="hit" cx="110" cy="110" r="96" />
+              </svg>
+              <div class="label" aria-hidden="true">100%</div>
+            `
+            placeholder.appendChild(ring)
+          } else {
+            ring.setAttribute('data-eb-vol-key', stableKey)
           }
 
-          const toggleOpen = (nextOpen: boolean) => {
-            const pop = ensurePopover()
-            if (nextOpen) {
-              closeAllPanels()
-              openKeyRef.current = stableKey
-              nameEl.setAttribute('data-eb-vol-open', 'true')
-              currentKeyInfoRef.current = stableInfo
-              currentAnchorRef.current = nameEl
-              lastKeyInfoRef.current = stableInfo
-              lastAnchorRef.current = nameEl
-              pop.setAttribute('data-eb-open', 'true')
-              // bind popover events once
-              if (!(pop as any).__ebVolBound) {
-                ;(pop as any).__ebVolBound = true
-                const range = pop.querySelector('.range') as HTMLInputElement | null
-                const muteBtn = pop.querySelector('.mute-btn') as HTMLButtonElement | null
-                const closeBtn = pop.querySelector('.close-btn') as HTMLButtonElement | null
-                range?.addEventListener('input', () => {
-                  const info = currentKeyInfoRef.current
-                  if (!info) return
-                  const pct = Math.max(0, Math.min(150, Number(range.value) || 0))
-                  const s = getSettings(info.key)
-                  // Behavior: 0 => muted, >0 => unmuted + remember lastNonZero
-                  if (pct === 0) {
-                    s.muted = true
-                    s.volume = 0
-                  } else {
-                    s.muted = false
-                    s.lastNonZeroPct = pct
-                    s.volume = pct / 100
-                  }
-                  updateFill()
-                  void applyToKey(info, pct > 100)
-                  positionPopover()
-                })
-                // Wheel support on hover: change volume with mouse wheel over the slider
-                range?.addEventListener(
-                  'wheel',
-                  (e: WheelEvent) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    const info = currentKeyInfoRef.current
-                    if (!info || !range) return
-                    const step = e.shiftKey ? 5 : 2
-                    const dir = e.deltaY < 0 ? 1 : -1 // wheel up => louder
-                    const s = getSettings(info.key)
-                    const curPct = Math.max(0, Math.min(150, Math.round((s.muted ? 0 : s.volume * 100) || 0)))
-                    let next = curPct + dir * step
-                    next = Math.max(0, Math.min(150, next))
-                    range.value = String(next)
-                    if (next === 0) {
-                      s.muted = true
-                      s.volume = 0
-                    } else {
-                      s.muted = false
-                      s.lastNonZeroPct = next
-                      s.volume = next / 100
-                    }
-                    updateFill()
-                    void applyToKey(info, next > 100)
-                    positionPopover()
-                  },
-                  { passive: false } as any,
-                )
-                muteBtn?.addEventListener('click', (e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  const info = currentKeyInfoRef.current
-                  if (!info) return
-                  setMuted(!getSettings(info.key).muted)
-                })
-                closeBtn?.addEventListener('click', (e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  closeAllPanels()
-                })
-              }
-              syncUi()
-              updateFill()
-              // Position after layout
-              requestAnimationFrame(() => {
-                positionPopover()
-                // second pass helps after fonts/layout settle
-                requestAnimationFrame(() => positionPopover())
-              })
+          // Cache SVG refs for fast updates
+          if (!(ring as any).__ebRingInit) {
+            ;(ring as any).__ebRingInit = true
+            const svg = ring.querySelector('svg.eb-vol-ring-svg') as SVGSVGElement | null
+            const safe = ring.querySelector('circle.safe') as SVGCircleElement | null
+            const over = ring.querySelector('circle.over') as SVGCircleElement | null
+            const thumb = ring.querySelector('circle.thumb') as SVGCircleElement | null
+            const hit = ring.querySelector('circle.hit') as SVGCircleElement | null
+            const label = ring.querySelector('.label') as HTMLElement | null
+            ;(ring as any).__ebRingSvg = svg
+            ;(ring as any).__ebRingSafe = safe
+            ;(ring as any).__ebRingOver = over
+            ;(ring as any).__ebRingThumb = thumb
+            ;(ring as any).__ebRingHit = hit
+            ;(ring as any).__ebRingLabel = label
+          }
+
+          const updateFromSettings = () => {
+            const s = getSettings(stableKey)
+            const pct = pctFromSettings(s)
+            if (pct > 0) s.lastNonZeroPct = pct
+            renderRing(ring!, pct)
+          }
+
+          const setPct = (nextPct: number, fromGesture: boolean) => {
+            const pct = clampPct(nextPct)
+            const keyNow = String(ring?.getAttribute('data-eb-vol-key') || stableKey).trim()
+            if (!keyNow) return
+            const s = getSettings(keyNow)
+            if (pct === 0) {
+              s.muted = true
+              s.volume = 0
             } else {
-              if (openKeyRef.current === stableKey) openKeyRef.current = null
-              nameEl.removeAttribute('data-eb-vol-open')
-              pop.setAttribute('data-eb-open', 'false')
-              currentKeyInfoRef.current = null
-              currentAnchorRef.current = null
+              s.muted = false
+              s.lastNonZeroPct = pct
+              s.volume = pct / 100
+            }
+            renderRing(ring!, pct)
+            void applyToKey({ key: keyNow, userId: keyNow, name: null }, fromGesture)
+          }
+
+          // Bind interaction once per ring
+          if (!(ring as any).__ebRingBound) {
+            ;(ring as any).__ebRingBound = true
+            const svg = (ring as any).__ebRingSvg as SVGSVGElement | null
+            const hit = (ring as any).__ebRingHit as SVGCircleElement | null
+            if (svg && hit) {
+              hit.addEventListener('pointerdown', (e: any) => {
+                e.preventDefault()
+                e.stopPropagation()
+                lastUserGestureAtRef.current = Date.now()
+                ;(ring as any).__ebDragging = true
+                try {
+                  ;(hit as any).setPointerCapture?.(e.pointerId)
+                } catch {
+                  // ignore
+                }
+                const pct = pctFromPointer(e as PointerEvent, svg)
+                setPct(pct, true)
+              })
+              hit.addEventListener('pointermove', (e: any) => {
+                if (!(ring as any).__ebDragging) return
+                e.preventDefault()
+                e.stopPropagation()
+                const pct = pctFromPointer(e as PointerEvent, svg)
+                setPct(pct, true)
+              })
+              const endDrag = (e: any) => {
+                if (!(ring as any).__ebDragging) return
+                ;(ring as any).__ebDragging = false
+                try {
+                  ;(hit as any).releasePointerCapture?.(e.pointerId)
+                } catch {
+                  // ignore
+                }
+              }
+              hit.addEventListener('pointerup', endDrag)
+              hit.addEventListener('pointercancel', endDrag)
             }
           }
 
-          // Bind events once.
-          if (!(nameEl as any).__ebVolBound || (nameEl as any).__ebVolKey !== stableKey) {
-            ;(nameEl as any).__ebVolBound = true
-            ;(nameEl as any).__ebVolKey = stableKey
-            nameEl.addEventListener('click', (e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              const pop = ensurePopover()
-              const isOpen = pop.getAttribute('data-eb-open') === 'true' && openKeyRef.current === stableKey
-              toggleOpen(!isOpen)
-            })
-            nameEl.addEventListener(
-              'touchstart',
-              (e) => {
+          // Wheel support: change remote participant volume while hovering their tile
+          if (!(tile as any).__ebVolWheelBound) {
+            ;(tile as any).__ebVolWheelBound = true
+            tile.addEventListener(
+              'wheel',
+              (e: WheelEvent) => {
+                // Only when cursor is over this tile (wheel event target is inside the tile)
+                e.preventDefault()
                 e.stopPropagation()
+                const keyNow = String((tile as HTMLElement).getAttribute('data-eb-vol-key') || '').trim()
+                if (!keyNow) return
+                const s = getSettings(keyNow)
+                const cur = pctFromSettings(s)
+                const step = e.shiftKey ? 1 : 2
+                const dir = e.deltaY < 0 ? 1 : -1 // wheel up => louder
+                // Apply via the ring helper so WebAudio can kick in when needed
+                setPct(cur + dir * step, true)
               },
-              { passive: true } as any,
+              { passive: false } as any,
             )
-            nameEl.addEventListener('keydown', (e: any) => {
-              const key = e?.key
-              if (key !== 'Enter' && key !== ' ') return
-              e.preventDefault()
-              e.stopPropagation()
-              const pop = ensurePopover()
-              const isOpen = pop.getAttribute('data-eb-open') === 'true' && openKeyRef.current === stableKey
-              toggleOpen(!isOpen)
-            })
           }
 
-          // Reflect open state when DOM re-renders.
-          const shouldBeOpen = openKeyRef.current === stableKey
-          if (shouldBeOpen) nameEl.setAttribute('data-eb-vol-open', 'true')
-          else nameEl.removeAttribute('data-eb-vol-open')
-
-          // Initial sync/apply once.
-          syncUi()
+          // Initial sync/apply once (no gesture).
+          updateFromSettings()
           void applyToKey(stableInfo, false)
         })
       } catch {
         // ignore
       }
     }
-
-    const onDocClick = (evt: Event) => {
-      const t = evt.target as HTMLElement | null
-      const pop = popoverRef.current
-      if (t && (t.closest?.('.eb-vol-popover') || t.closest?.('[data-eb-vol-key]'))) return
-      if (pop && t && pop.contains(t)) return
-      closeAllPanels()
-    }
-    document.addEventListener('click', onDocClick, true)
-    document.addEventListener('touchstart', onDocClick, true)
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      const pop = popoverRef.current
-      const isOpen = !!pop && pop.getAttribute('data-eb-open') === 'true'
-      const keyLower = (e.key || '').toLowerCase()
-
-      // Esc: hide/show (toggle)
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        if (isOpen) {
-          closeAllPanels()
-          return
-        }
-        const info = lastKeyInfoRef.current
-        const anchor = lastAnchorRef.current
-        if (info && anchor && document.body.contains(anchor)) {
-          // reopen
-          openKeyRef.current = info.key
-          currentKeyInfoRef.current = info
-          currentAnchorRef.current = anchor
-          anchor.setAttribute('data-eb-vol-open', 'true')
-          ensurePopover().setAttribute('data-eb-open', 'true')
-          updateFill()
-          requestAnimationFrame(() => positionPopover())
-        }
-        return
-      }
-
-      if (!isOpen) return
-
-      // Arrow keys adjust
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        e.preventDefault()
-        const step = e.shiftKey ? 5 : 2
-        const dir = e.key === 'ArrowRight' ? 1 : -1
-        const info = currentKeyInfoRef.current
-        if (!info) return
-        const s = getSettings(info.key)
-        const curPct = Math.max(0, Math.min(150, Math.round((s.muted ? 0 : s.volume * 100) || 0)))
-        let next = curPct + dir * step
-        next = Math.max(0, Math.min(150, next))
-        if (next === 0) {
-          s.muted = true
-          s.volume = 0
-        } else {
-          s.muted = false
-          s.lastNonZeroPct = next
-          s.volume = next / 100
-        }
-        updateFill()
-        void applyToKey(info, next > 100)
-        positionPopover()
-        return
-      }
-
-      // M toggles mute
-      if (keyLower === 'm') {
-        e.preventDefault()
-        const info = currentKeyInfoRef.current
-        if (!info) return
-        setMuted(!getSettings(info.key).muted)
-        positionPopover()
-        return
-      }
-    }
-    document.addEventListener('keydown', onKeyDown, true)
-
-    const onWin = () => {
-      requestAnimationFrame(() => positionPopover())
-    }
-    window.addEventListener('resize', onWin)
-    window.addEventListener('scroll', onWin, true)
 
     // Debounce to avoid running too often on busy DOM trees.
     let pending = false
@@ -1486,7 +1304,6 @@ function ParticipantVolumeUpdater() {
       requestAnimationFrame(() => {
         pending = false
         applyDom()
-        positionPopover()
       })
     }
 
@@ -1495,16 +1312,7 @@ function ParticipantVolumeUpdater() {
     applyDom()
 
     return () => {
-      document.removeEventListener('click', onDocClick, true)
-      document.removeEventListener('touchstart', onDocClick, true)
-      document.removeEventListener('keydown', onKeyDown, true)
-      window.removeEventListener('resize', onWin)
-      window.removeEventListener('scroll', onWin, true)
       mo.disconnect()
-      if (popoverRef.current && popoverRef.current.parentElement) {
-        popoverRef.current.parentElement.removeChild(popoverRef.current)
-      }
-      popoverRef.current = null
     }
   }, [room])
 
@@ -1852,6 +1660,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       margin: auto !important;
       align-self: center !important;
       flex-shrink: 0 !important;
+      position: relative !important;
     }
     
     /* Light semi-transparent border for participant tiles */
@@ -2054,132 +1863,92 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       white-space: nowrap;
     }
 
-    /* Per-participant volume: click participant name (add gear via CSS, don't touch React DOM) */
-    .call-container [data-eb-remote="true"] .lk-participant-name,
-    .call-container [data-eb-remote="true"] [data-lk-participant-name] {
-      cursor: pointer;
-      user-select: none;
-      -webkit-tap-highlight-color: transparent;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .call-container [data-eb-remote="true"] .lk-participant-name::after,
-    .call-container [data-eb-remote="true"] [data-lk-participant-name]::after {
-      content: "";
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      opacity: 0.78;
-      margin-left: 2px;
-      background-repeat: no-repeat;
-      background-position: center;
-      background-size: 12px 12px;
-      /* lucide-react Settings icon (stroke white) */
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E");
-    }
-    .call-container [data-eb-remote="true"] .lk-participant-name[data-eb-vol-open="true"]::after,
-    .call-container [data-eb-remote="true"] [data-lk-participant-name][data-eb-vol-open="true"]::after {
-      opacity: 1;
-    }
-    .call-container [data-eb-remote="true"] .lk-participant-name.eb-vol-muted,
-    .call-container [data-eb-remote="true"] [data-lk-participant-name].eb-vol-muted {
-      opacity: 0.9;
-    }
-
-    /* Volume popover (portal into body) — new spec */
-    .eb-vol-popover{
-      --card: rgba(20,22,28,.72);
-      --border: rgba(255,255,255,.08);
-      --text: rgba(255,255,255,.92);
-      --track: rgba(255,255,255,.14);
-      --accent:#d97706;
-      --accent-hot:#f59e0b;
-      --danger:#ef4444;
-    }
-    .eb-vol-popover.overlay{
-      position: fixed;
-      left: 8px;
-      top: 8px;
-      width:300px;
-      max-width: calc(100vw - 24px);
-      padding:12px;
-      border-radius:16px;
-      background:var(--card);
-      border:1px solid var(--border);
-      box-shadow:0 18px 55px rgba(0,0,0,.55);
-      backdrop-filter:blur(18px);
-      -webkit-backdrop-filter:blur(18px);
-      z-index:9999;
-      box-sizing:border-box;
-      color:var(--text);
-      font-family: inherit;
-      display:grid;
-      gap:10px;
-    }
-    .eb-vol-popover.overlay{ display:none; }
-    .eb-vol-popover.overlay[data-eb-open="true"]{ display:grid; }
-    .eb-vol-popover .top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
-    .eb-vol-popover .right{display:flex;align-items:center;gap:10px;}
-    .eb-vol-popover .icon-btn{
-      width:38px;height:38px;border-radius:12px;display:grid;place-items:center;
-      border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);
-      color:var(--text);cursor:pointer;
+    /* Per-participant volume: modern volume ring around avatar (0..150%, red after 100) */
+    .call-container .eb-vol-ring{
+      position:absolute;
+      inset:0;
+      display:block;
+      pointer-events:none;
+      opacity:0;
+      transition: opacity 120ms ease;
+      touch-action:none;
       -webkit-tap-highlight-color: transparent;
       user-select:none;
     }
-    .eb-vol-popover .close-btn{
-      width:32px;height:32px;border-radius:12px;display:grid;place-items:center;
-      border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);
-      color:var(--text);cursor:pointer;
-      -webkit-tap-highlight-color: transparent;
-      user-select:none;
-      font-size: 14px;
-      line-height: 1;
-      opacity: 0.9;
+    .call-container .lk-participant-tile:hover .eb-vol-ring{
+      opacity:1;
+      pointer-events:auto;
     }
-    .eb-vol-popover .close-btn:hover{ opacity: 1; background: rgba(255,255,255,.10); }
-    .eb-vol-popover .pct{
-      min-width:72px;
-      text-align:right;
-      font-size:14px;
-      font-weight:600;
-      line-height:20px;
-      font-variant-numeric:tabular-nums;
-      padding:4px 8px;
-      border-radius:12px;
-      background:rgba(0,0,0,.18);
-      border:1px solid rgba(255,255,255,.08);
+    @media (hover: none){
+      .call-container .eb-vol-ring{
+        opacity:1;
+        pointer-events:auto;
+      }
     }
-    .eb-vol-popover input[type="range"]{
-      appearance:none;
-      -webkit-appearance:none;
+    .call-container .eb-vol-ring-svg{
       width:100%;
-      height:8px;
-      border-radius:999px;
-      outline:none;
-      background:var(--track);
+      height:100%;
+      display:block;
     }
-    .eb-vol-popover input[type="range"]::-webkit-slider-thumb{
-      appearance:none;
-      -webkit-appearance:none;
-      width:16px;height:16px;border-radius:999px;
-      background:rgba(255,255,255,.92);
-      border:1px solid rgba(0,0,0,.25);
-      box-shadow:0 8px 18px rgba(0,0,0,.35);
-      cursor:pointer;
+    .call-container .eb-vol-ring-svg circle{
+      fill:none;
+      stroke-width:10;
     }
-    .eb-vol-popover input[type="range"]::-moz-range-thumb{
-      width:16px;height:16px;border-radius:999px;
-      background:rgba(255,255,255,.92);
-      border:1px solid rgba(0,0,0,.25);
-      box-shadow:0 8px 18px rgba(0,0,0,.35);
-      cursor:pointer;
+    .call-container .eb-vol-ring-svg .bg{
+      stroke: rgba(255,255,255,0.12);
     }
-    .eb-vol-popover input[type="range"]::-moz-range-track{
-      height:8px;
-      border-radius:999px;
-      background:var(--track);
+    .call-container .eb-vol-ring-svg .safe{
+      stroke:#d97706;
+      stroke-linecap:round;
+      opacity:0;
+    }
+    .call-container .eb-vol-ring-svg .over{
+      stroke:#ef4444;
+      stroke-linecap:round;
+      opacity:0;
+    }
+    .call-container .eb-vol-ring-svg .thumb{
+      fill: rgba(255,255,255,.92);
+      stroke: rgba(0,0,0,.25);
+      stroke-width:1;
+      filter: drop-shadow(0 8px 18px rgba(0,0,0,.35));
+      opacity:0;
+    }
+    .call-container .lk-participant-tile:hover .eb-vol-ring-svg .thumb{
+      opacity:1;
+    }
+    @media (hover: none){
+      .call-container .eb-vol-ring-svg .thumb{ opacity: 1; }
+    }
+    .call-container .eb-vol-ring-svg .hit{
+      stroke: transparent;
+      stroke-width: 28;
+      pointer-events: stroke;
+    }
+    .call-container .eb-vol-ring .label{
+      position:absolute;
+      left:50%;
+      top:50%;
+      transform: translate(-50%, -50%);
+      font-size: 12px;
+      line-height: 16px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+      padding: 6px 8px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.22);
+      border: 1px solid rgba(255,255,255,.10);
+      color: rgba(255,255,255,.92);
+      opacity: 0;
+      transition: opacity 120ms ease;
+      pointer-events:none;
+    }
+    .call-container .lk-participant-tile:hover .eb-vol-ring .label{ opacity: 1; }
+    @media (hover: none){
+      .call-container .eb-vol-ring .label{ opacity: 1; }
+    }
+    .call-container .eb-vol-ring[data-eb-over="true"] .label{
+      box-shadow: 0 0 0 2px rgba(239,68,68,.22) inset;
     }
   `
 
@@ -2358,14 +2127,14 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           if (!(minimizeBtn as any).__ebMinBound) {
             ;(minimizeBtn as any).__ebMinBound = true
             const handler = (evt: Event) => {
-              evt.preventDefault()
-              evt.stopPropagation()
-              try {
-                onMinimize?.()
-              } catch (err) {
-                console.error('Minimize click error', err)
-              }
+            evt.preventDefault()
+            evt.stopPropagation()
+            try {
+              onMinimize?.()
+            } catch (err) {
+              console.error('Minimize click error', err)
             }
+          }
             ;(minimizeBtn as any).__ebMinHandler = handler
             minimizeBtn.addEventListener('click', handler, true)
             minimizeBtn.addEventListener('pointerup', handler, true)
@@ -2674,9 +2443,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           })
         }
         
-        // Remove default svg completely and any background
-        placeholder.querySelectorAll('svg').forEach((svg) => svg.remove())
-        placeholder.querySelectorAll('svg').forEach((svg) => ((svg as SVGElement).style.display = 'none'))
+        // Remove LiveKit default SVG placeholders, but keep our own overlay SVGs (e.g. volume ring)
+        placeholder.querySelectorAll('svg:not(.eb-vol-ring-svg)').forEach((svg) => svg.remove())
+        placeholder
+          .querySelectorAll('svg:not(.eb-vol-ring-svg)')
+          .forEach((svg) => ((svg as SVGElement).style.display = 'none'))
         // Create or update img
         let img = placeholder.querySelector('img.eb-ph') as HTMLImageElement | null
         if (!img) {
@@ -2763,8 +2534,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         e.stopPropagation()
       }}
       style={{
-        position: 'fixed', inset: 0, background: minimized ? 'transparent' : 'rgba(10,12,16,0.55)', backdropFilter: minimized ? 'none' : 'blur(4px) saturate(110%)', display: minimized ? 'none' : 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-        pointerEvents: minimized ? 'none' : 'auto',
+      position: 'fixed', inset: 0, background: minimized ? 'transparent' : 'rgba(10,12,16,0.55)', backdropFilter: minimized ? 'none' : 'blur(4px) saturate(110%)', display: minimized ? 'none' : 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      pointerEvents: minimized ? 'none' : 'auto',
       }}
     >
       <div data-lk-theme="default" style={{ 
@@ -2793,7 +2564,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               if (conversationId && isGroup) { 
                 if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
                   // eslint-disable-next-line no-console
-                  console.log('[CallOverlay] joinCallRoom emit', { conversationId, video: initialVideo })
+                console.log('[CallOverlay] joinCallRoom emit', { conversationId, video: initialVideo })
                 }
                 joinCallRoom(conversationId, initialVideo)
                 requestCallStatuses([conversationId]) 
@@ -2805,7 +2576,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           onDisconnected={(reason) => {
             if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
               // eslint-disable-next-line no-console
-              console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup, 'minimized:', minimized)
+            console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup, 'minimized:', minimized)
             }
             const hadConnection = wasConnected
             setWasConnected(false)
