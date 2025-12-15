@@ -1223,12 +1223,16 @@ function ParticipantVolumeUpdater() {
             const imgRect = img?.getBoundingClientRect()
             const avatarD = imgRect && imgRect.width > 10 ? imgRect.width : phRect.width * 0.8
 
-            // Inner edge of the stroke should sit just outside the avatar.
-            // IMPORTANT: stroke is centered on the path (half inside, half outside),
-            // so to make the INNER edge touch the avatar we need +2*stroke on the box diameter.
-            const stroke = 10 // CSS stroke-width
-            const gap = 0 // no padding: ring touches avatar edge
-            const ringD = avatarD + 2 * (stroke + gap)
+            // Inner edge of the stroke should touch the avatar edge (gap=0) WITHOUT overlapping the avatar.
+            // SVG stroke scales with the element, so compute size using viewBox geometry:
+            // viewBox 0..220, path radius=105, stroke-width=10 => inner edge radius = 105 - 10/2 = 100 (in viewBox units).
+            const VIEW = 220
+            const PATH_R = 105
+            const STROKE = 10
+            const INNER_R = PATH_R - STROKE / 2 // 100
+            const gap = 0 // requested: 0px padding
+            const avatarR = avatarD / 2
+            const ringD = (VIEW * (avatarR + gap)) / INNER_R
             const maxD = Math.min(Math.min(tileRect.width, tileRect.height) - 6, ringD)
             const finalD = Math.max(56, maxD)
 
