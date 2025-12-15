@@ -1125,7 +1125,7 @@ function ParticipantVolumeUpdater() {
       thumb.setAttribute('cy', `${cy}`)
       thumb.style.opacity = '1'
     }
-    if (label) label.textContent = `${volume}%`
+    if (label) label.textContent = `громкость: ${volume}%`
     if (muteBtn) muteBtn.textContent = muted || volume === 0 ? 'Вернуть' : 'Заглушить'
 
     ring.setAttribute('data-eb-over', volume > NORMAL ? 'true' : 'false')
@@ -2055,11 +2055,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       display:flex;
       align-items:center;
       justify-content:center;
-      font-size: 12px;
-      line-height: 16px;
+      font-size: 18px;
+      line-height: 22px;
       font-weight: 650;
       font-variant-numeric: tabular-nums;
-      padding: 6px 8px;
+      padding: 8px 12px;
       border-radius: 999px;
       background: rgba(0,0,0,.22);
       border: 1px solid rgba(255,255,255,.10);
@@ -2092,18 +2092,18 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     }
     .call-container .eb-vol-ring .actions .btn{
       border: 1px solid rgba(255,255,255,.10);
-      background: rgba(255,255,255,.06);
+      background: rgba(0,0,0,.32);
       color: rgba(255,255,255,.92);
       border-radius: 999px;
-      padding: 4px 8px;
-      font-size: 11px;
-      line-height: 14px;
+      padding: 7px 12px;
+      font-size: 14px;
+      line-height: 18px;
       cursor: pointer;
       user-select:none;
       -webkit-tap-highlight-color: transparent;
     }
     .call-container .eb-vol-ring .actions .btn:hover{
-      background: rgba(255,255,255,.10);
+      background: rgba(0,0,0,.42);
     }
   `
 
