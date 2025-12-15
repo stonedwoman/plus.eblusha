@@ -1213,19 +1213,27 @@ function ParticipantVolumeUpdater() {
             renderRing(ring!, pct)
           }
 
-          // Position ring OUTSIDE the avatar: compute center from placeholder and expand radius
+          // Position ring just OUTSIDE the avatar (tight halo): compute center from placeholder, size from avatar image.
           try {
             const tileRect = tile.getBoundingClientRect()
             const phRect = placeholder.getBoundingClientRect()
             const cx = phRect.left - tileRect.left + phRect.width / 2
             const cy = phRect.top - tileRect.top + phRect.height / 2
-            // Grow the ring beyond avatar/placeholder so it reads as an outer halo.
-            const raw = phRect.width * 1.32
-            const max = Math.max(64, Math.min(Math.min(tileRect.width, tileRect.height) - 6, raw))
-            ring.style.width = `${Math.round(max)}px`
-            ring.style.height = `${Math.round(max)}px`
-            ring.style.left = `${Math.round(cx - max / 2)}px`
-            ring.style.top = `${Math.round(cy - max / 2)}px`
+            const img = placeholder.querySelector('img.eb-ph') as HTMLImageElement | null
+            const imgRect = img?.getBoundingClientRect()
+            const avatarD = imgRect && imgRect.width > 10 ? imgRect.width : phRect.width * 0.8
+
+            // Inner edge of the stroke should sit just outside the avatar.
+            const stroke = 10 // CSS stroke-width
+            const gap = 4 // desired gap between avatar edge and ring inner edge
+            const ringD = avatarD + (stroke + gap * 2)
+            const maxD = Math.min(Math.min(tileRect.width, tileRect.height) - 6, ringD)
+            const finalD = Math.max(56, maxD)
+
+            ring.style.width = `${Math.round(finalD)}px`
+            ring.style.height = `${Math.round(finalD)}px`
+            ring.style.left = `${Math.round(cx - finalD / 2)}px`
+            ring.style.top = `${Math.round(cy - finalD / 2)}px`
           } catch {
             // ignore
           }
@@ -2555,10 +2563,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         img.alt = name
         // Fit avatar INSIDE the volume ring and keep it circular
         img.style.aspectRatio = '1' // Ensure square shape
-        img.style.width = '74%'
-        img.style.height = '74%'
-        img.style.maxWidth = '74%'
-        img.style.maxHeight = '74%'
+        img.style.width = '80%'
+        img.style.height = '80%'
+        img.style.maxWidth = '80%'
+        img.style.maxHeight = '80%'
         img.style.objectFit = 'cover'
         img.style.borderRadius = '50%'
         img.style.display = 'block'
