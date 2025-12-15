@@ -1098,11 +1098,12 @@ function ParticipantVolumeUpdater() {
     circle.style.opacity = length > 0 ? '1' : '0'
   }
 
-  const renderRing = (ring: HTMLElement, pct: number) => {
+  const renderRing = (ring: HTMLElement, pct: number, muted: boolean) => {
     const safeCircle = (ring as any).__ebRingSafe as SVGCircleElement | undefined
     const overCircle = (ring as any).__ebRingOver as SVGCircleElement | undefined
     const thumb = (ring as any).__ebRingThumb as SVGCircleElement | undefined
     const label = (ring as any).__ebRingLabel as HTMLElement | undefined
+    const muteBtn = (ring as any).__ebRingMuteBtn as HTMLButtonElement | undefined
     if (!safeCircle || !overCircle) return
 
     const volume = clampPct(pct)
@@ -1125,8 +1126,10 @@ function ParticipantVolumeUpdater() {
       thumb.style.opacity = '1'
     }
     if (label) label.textContent = `${volume}%`
+    if (muteBtn) muteBtn.textContent = muted || volume === 0 ? 'Вернуть' : 'Заглушить'
 
     ring.setAttribute('data-eb-over', volume > NORMAL ? 'true' : 'false')
+    ring.setAttribute('data-eb-muted', muted || volume === 0 ? 'true' : 'false')
   }
 
   const pctFromPointer = (e: PointerEvent, svg: SVGSVGElement) => {
@@ -1182,7 +1185,13 @@ function ParticipantVolumeUpdater() {
                 <circle class="thumb" cx="110" cy="5" r="7" />
                 <circle class="hit" cx="110" cy="110" r="105" />
               </svg>
-              <div class="label" aria-hidden="true">100%</div>
+              <div class="center" aria-hidden="true">
+                <div class="label">100%</div>
+                <div class="actions">
+                  <button type="button" class="btn mute">Заглушить</button>
+                  <button type="button" class="btn reset">100%</button>
+                </div>
+              </div>
             `
             tile.appendChild(ring)
           } else {
@@ -1198,19 +1207,23 @@ function ParticipantVolumeUpdater() {
             const thumb = ring.querySelector('circle.thumb') as SVGCircleElement | null
             const hit = ring.querySelector('circle.hit') as SVGCircleElement | null
             const label = ring.querySelector('.label') as HTMLElement | null
+            const muteBtn = ring.querySelector('button.btn.mute') as HTMLButtonElement | null
+            const resetBtn = ring.querySelector('button.btn.reset') as HTMLButtonElement | null
             ;(ring as any).__ebRingSvg = svg
             ;(ring as any).__ebRingSafe = safe
             ;(ring as any).__ebRingOver = over
             ;(ring as any).__ebRingThumb = thumb
             ;(ring as any).__ebRingHit = hit
             ;(ring as any).__ebRingLabel = label
+            ;(ring as any).__ebRingMuteBtn = muteBtn
+            ;(ring as any).__ebRingResetBtn = resetBtn
           }
 
           const updateFromSettings = () => {
             const s = getSettings(stableKey)
             const pct = pctFromSettings(s)
             if (pct > 0) s.lastNonZeroPct = pct
-            renderRing(ring!, pct)
+            renderRing(ring!, pct, !!s.muted)
           }
 
           // Position ring just OUTSIDE the avatar (tight halo): compute center from placeholder, size from avatar image.
@@ -1268,7 +1281,7 @@ function ParticipantVolumeUpdater() {
               s.lastNonZeroPct = pct
               s.volume = pct / 100
             }
-            renderRing(ring!, pct)
+            renderRing(ring!, pct, !!s.muted)
             void applyToKey({ key: keyNow, userId: keyNow, name: null }, fromGesture)
           }
 
@@ -1277,6 +1290,8 @@ function ParticipantVolumeUpdater() {
             ;(ring as any).__ebRingBound = true
             const svg = (ring as any).__ebRingSvg as SVGSVGElement | null
             const hit = (ring as any).__ebRingHit as SVGCircleElement | null
+            const muteBtn = (ring as any).__ebRingMuteBtn as HTMLButtonElement | null
+            const resetBtn = (ring as any).__ebRingResetBtn as HTMLButtonElement | null
             if (svg && hit) {
               hit.addEventListener('pointerdown', (e: any) => {
                 e.preventDefault()
@@ -1318,6 +1333,47 @@ function ParticipantVolumeUpdater() {
               hit.addEventListener('pointerup', endDrag)
               hit.addEventListener('pointercancel', endDrag)
             }
+
+            const onMuteClick = (e: Event) => {
+              e.preventDefault()
+              e.stopPropagation()
+              const keyNow = String(ring?.getAttribute('data-eb-vol-key') || '').trim()
+              if (!keyNow) return
+              const s = getSettings(keyNow)
+              const curPct = pctFromSettings(s)
+              if (s.muted || curPct === 0) {
+                // restore last non-zero volume
+                const restore = clampPct(s.lastNonZeroPct || 100)
+                s.muted = false
+                s.lastNonZeroPct = Math.max(1, restore)
+                s.volume = s.lastNonZeroPct / 100
+              } else {
+                // mute and remember current as lastNonZero
+                if (curPct > 0) s.lastNonZeroPct = curPct
+                s.muted = true
+                s.volume = 0
+              }
+              const pct = pctFromSettings(s)
+              ;(ring as any).__ebLastPct = pct
+              renderRing(ring!, pct, !!s.muted)
+              void applyToKey({ key: keyNow, userId: keyNow, name: null }, true)
+            }
+            const onResetClick = (e: Event) => {
+              e.preventDefault()
+              e.stopPropagation()
+              const keyNow = String(ring?.getAttribute('data-eb-vol-key') || '').trim()
+              if (!keyNow) return
+              const s = getSettings(keyNow)
+              s.muted = false
+              s.lastNonZeroPct = 100
+              s.volume = 1
+              const pct = pctFromSettings(s)
+              ;(ring as any).__ebLastPct = pct
+              renderRing(ring!, pct, !!s.muted)
+              void applyToKey({ key: keyNow, userId: keyNow, name: null }, true)
+            }
+            muteBtn?.addEventListener('click', onMuteClick)
+            resetBtn?.addEventListener('click', onResetClick)
           }
 
           // Wheel support: change remote participant volume while hovering their tile
@@ -1996,10 +2052,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       pointer-events: stroke;
     }
     .call-container .eb-vol-ring .label{
-      position:absolute;
-      left:50%;
-      top:50%;
-      transform: translate(-50%, -50%);
+      display:flex;
+      align-items:center;
+      justify-content:center;
       font-size: 12px;
       line-height: 16px;
       font-weight: 650;
@@ -2009,16 +2064,46 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       background: rgba(0,0,0,.22);
       border: 1px solid rgba(255,255,255,.10);
       color: rgba(255,255,255,.92);
-      opacity: 0;
+    }
+    .call-container .eb-vol-ring .center{
+      position:absolute;
+      left:50%;
+      top:50%;
+      transform: translate(-50%, -50%);
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:6px;
+      opacity:0;
       transition: opacity 120ms ease;
       pointer-events:none;
     }
-    .call-container .lk-participant-tile:hover .eb-vol-ring .label{ opacity: 1; }
+    .call-container .lk-participant-tile:hover .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
     @media (hover: none){
-      .call-container .eb-vol-ring .label{ opacity: 1; }
+      .call-container .eb-vol-ring .center{ opacity: 1; pointer-events: auto; }
     }
     .call-container .eb-vol-ring[data-eb-over="true"] .label{
       box-shadow: 0 0 0 2px rgba(239,68,68,.22) inset;
+    }
+    .call-container .eb-vol-ring .actions{
+      display:flex;
+      gap:6px;
+      pointer-events:auto;
+    }
+    .call-container .eb-vol-ring .actions .btn{
+      border: 1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.06);
+      color: rgba(255,255,255,.92);
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 11px;
+      line-height: 14px;
+      cursor: pointer;
+      user-select:none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .call-container .eb-vol-ring .actions .btn:hover{
+      background: rgba(255,255,255,.10);
     }
   `
 
