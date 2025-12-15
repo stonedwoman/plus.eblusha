@@ -1230,11 +1230,17 @@ function ParticipantVolumeUpdater() {
           try {
             const tileRect = tile.getBoundingClientRect()
             const phRect = placeholder.getBoundingClientRect()
-            const cx = phRect.left - tileRect.left + phRect.width / 2
-            const cy = phRect.top - tileRect.top + phRect.height / 2
             const img = placeholder.querySelector('img.eb-ph') as HTMLImageElement | null
             const imgRect = img?.getBoundingClientRect()
             const avatarD = imgRect && imgRect.width > 10 ? imgRect.width : phRect.width * 0.8
+            const cx =
+              imgRect && imgRect.width > 10
+                ? imgRect.left - tileRect.left + imgRect.width / 2
+                : phRect.left - tileRect.left + phRect.width / 2
+            const cy =
+              imgRect && imgRect.height > 10
+                ? imgRect.top - tileRect.top + imgRect.height / 2
+                : phRect.top - tileRect.top + phRect.height / 2
 
             // Inner edge of the stroke should touch the avatar edge (gap=0) WITHOUT overlapping the avatar.
             // SVG stroke scales with the element, so compute size using viewBox geometry:
@@ -1249,10 +1255,11 @@ function ParticipantVolumeUpdater() {
             const maxD = Math.min(Math.min(tileRect.width, tileRect.height) - 6, ringD)
             const finalD = Math.max(56, maxD)
 
-            ring.style.width = `${Math.round(finalD)}px`
-            ring.style.height = `${Math.round(finalD)}px`
-            ring.style.left = `${Math.round(cx - finalD / 2)}px`
-            ring.style.top = `${Math.round(cy - finalD / 2)}px`
+            ring.style.width = `${finalD}px`
+            ring.style.height = `${finalD}px`
+            ring.style.left = `${cx}px`
+            ring.style.top = `${cy}px`
+            ring.style.transform = 'translate(-50%, -50%)'
           } catch {
             // ignore
           }
