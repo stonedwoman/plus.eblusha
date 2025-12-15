@@ -1852,6 +1852,12 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       border-radius: 8px !important;
       overflow: hidden !important;
     }
+
+    /* When a tile is stretched tall (focus layout) but its media element is auto-height,
+       the media ends up top-aligned. Center the flex column ONLY for tiles that currently show video. */
+    .call-container .lk-participant-tile[data-eb-has-video="true"]{
+      justify-content: center !important;
+    }
     
     /* Hide chat entry point in the control bar (we expose device selection via Settings and also via button group menus) */
     .call-container .lk-control-bar .lk-chat-toggle { display: none !important; }
@@ -2556,6 +2562,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           (tile.querySelector('video.lk-participant-media-video') as HTMLVideoElement | null) ||
           (tile.querySelector('video') as HTMLVideoElement | null)
         const hasVideo = !!(v && v.offsetWidth > 0 && v.offsetHeight > 0)
+        tile.setAttribute('data-eb-has-video', hasVideo ? 'true' : 'false')
         if (hasVideo) {
           // Restore placeholder to LiveKit defaults as much as possible.
           placeholder.style.position = ''
