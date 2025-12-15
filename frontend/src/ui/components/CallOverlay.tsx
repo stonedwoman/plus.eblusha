@@ -1268,6 +1268,10 @@ function ParticipantVolumeUpdater() {
             )
             const finalD = Math.max(56, maxD)
 
+            // Compact UI for small tiles (spotlight sidebar, grids, etc.)
+            if (finalD < 150) ring.setAttribute('data-eb-compact', 'true')
+            else ring.removeAttribute('data-eb-compact')
+
             ring.style.width = `${finalD}px`
             ring.style.height = `${finalD}px`
             ring.style.left = `${cx}px`
@@ -2121,6 +2125,22 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     }
     .call-container .eb-vol-ring .actions .btn:hover{
       background: #040303c1;
+    }
+
+    /* Spotlight / tiny tiles: show only mute/restore button */
+    .call-container .eb-vol-ring[data-eb-compact="true"] .label{
+      display:none;
+    }
+    .call-container .eb-vol-ring[data-eb-compact="true"] .actions .btn.reset{
+      display:none;
+    }
+    .call-container .eb-vol-ring[data-eb-compact="true"] .actions{
+      gap:0;
+    }
+    .call-container .eb-vol-ring[data-eb-compact="true"] .actions .btn{
+      padding: 8px 14px;
+      font-size: 14px;
+      line-height: 18px;
     }
   `
 
