@@ -44,13 +44,14 @@ const s3Client = s3Config
       forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
       // If explicit keys aren't provided, fall back to the default AWS credential chain
       // (e.g. /root/.aws/credentials for systemd services running as root).
-      credentials:
-        s3Config.accessKeyId && s3Config.secretAccessKey
-          ? {
+      ...(s3Config.accessKeyId && s3Config.secretAccessKey
+        ? {
+            credentials: {
               accessKeyId: s3Config.accessKeyId,
               secretAccessKey: s3Config.secretAccessKey,
-            }
-          : undefined,
+            },
+          }
+        : {}),
     })
   : null;
 
