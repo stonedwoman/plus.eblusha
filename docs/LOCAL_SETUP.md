@@ -31,18 +31,18 @@ LIVEKIT_URL=https://example.livekit.cloud
 LIVEKIT_API_KEY=lk_api_key
 LIVEKIT_API_SECRET=lk_api_secret
 STORAGE_S3_ENDPOINT=https://hel1.your-objectstorage.com
-STORAGE_S3_REGION=us-east-1
-STORAGE_S3_BUCKET=eblusha-uploads
+STORAGE_S3_REGION=ru-1
+STORAGE_S3_BUCKET=<twc-bucket-id>
 STORAGE_S3_ACCESS_KEY=<access-key>
 STORAGE_S3_SECRET_KEY=<secret-key>
-STORAGE_PUBLIC_BASE_URL=https://eblusha-uploads.hel1.your-objectstorage.com
+STORAGE_PUBLIC_BASE_URL=https://s3.twcstorage.ru/<twc-bucket-id>
 STORAGE_PREFIX=uploads
 STORAGE_S3_FORCE_PATH_STYLE=true
 STORAGE_S3_ACL=public-read
 STORAGE_S3_SSE=AES256
 ```
 
-`STORAGE_*` переменные настраивают S3-совместимое хранилище (Hetzner, MinIO и т.д.). `STORAGE_PUBLIC_BASE_URL` должен указывать на публичный хост бакета, а `STORAGE_S3_ACL` можно убрать, если доступ выдаётся политикой самого бакета. В Hetzner endpoint содержит локацию (`hel1`, `fsn1` и т.д.), но `STORAGE_S3_REGION` всё равно нужно ставить в значение, которое они показывают для API-подписей (сейчас это `us-east-1`). `STORAGE_S3_SSE` включает server-side encryption (`AES256` по умолчанию) для всех объектов. Для секретных (1:1) чатов вложения дополнительно шифруются на клиенте перед отправкой в бакет.
+`STORAGE_*` переменные настраивают S3-совместимое хранилище (TWC SPB, AWS, MinIO и т.д.). `STORAGE_PUBLIC_BASE_URL` должен указывать на публичную базу для ссылок (в нашем случае это path-style URL `https://s3.twcstorage.ru/<bucket>`). `STORAGE_S3_SSE` включает server-side encryption (`AES256` по умолчанию) для всех объектов. Для секретных (1:1) чатов вложения дополнительно шифруются на клиенте перед отправкой в бакет.
 
 ## Миграция старых файлов в Object Storage
 
@@ -52,7 +52,7 @@ STORAGE_S3_SSE=AES256
 4. Выполни `npm run migrate:uploads` — скрипт загрузит файлы из `uploads/` в бакет (с включённым SSE) и обновит ссылки в базе на прокси URL (`/api/files/...`).  
    Добавь флаг `--keep-local`, если нужно оставить копию файлов, а `--skip-upload`, если ты уже залил их через `mc`/`s3cmd` и хочешь лишь обновить БД.
 
-**Важно:** Все новые загрузки автоматически используют прокси URL (`/api/files/...`), чтобы избежать блокировки домена `your-objectstorage.com` в РФ. Старые URL в базе автоматически конвертируются на фронтенде.
+**Важно:** Все новые загрузки используют прокси URL (`/api/files/...`). Это помогает с совместимостью (CORS) и позволяет менять storage-провайдера без обновления ссылок на клиенте. Старые URL в базе автоматически конвертируются на фронтенде.
 
 Генерация секрета:
 
