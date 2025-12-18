@@ -27,10 +27,9 @@ const s3Client = s3Config
       region: s3Config.region,
       endpoint: s3Config.endpoint,
       forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
-      credentials:
-        s3Config.accessKeyId && s3Config.secretAccessKey
-          ? { accessKeyId: s3Config.accessKeyId, secretAccessKey: s3Config.secretAccessKey }
-          : undefined,
+      ...(s3Config.accessKeyId && s3Config.secretAccessKey
+        ? { credentials: { accessKeyId: s3Config.accessKeyId, secretAccessKey: s3Config.secretAccessKey } }
+        : {}),
     })
   : null;
 
@@ -52,10 +51,11 @@ const fallbackS3Client = fallbackS3Config
       region: fallbackS3Config.region,
       endpoint: fallbackS3Config.endpoint,
       forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
-      credentials:
-        fallbackS3Config.accessKeyId && fallbackS3Config.secretAccessKey
-          ? { accessKeyId: fallbackS3Config.accessKeyId, secretAccessKey: fallbackS3Config.secretAccessKey }
-          : undefined,
+      ...(fallbackS3Config.accessKeyId && fallbackS3Config.secretAccessKey
+        ? {
+            credentials: { accessKeyId: fallbackS3Config.accessKeyId, secretAccessKey: fallbackS3Config.secretAccessKey },
+          }
+        : {}),
     })
   : null;
 
@@ -93,6 +93,16 @@ router.use(async (req: Request, res: Response, next) => {
   let decodedPath = decodeKeyFromUrl(urlPath);
   // Remove leading slash if present
   decodedPath = decodedPath.replace(/^\//, "");
+
+  // Some providers (e.g. path-style base URL like https://s3.twcstorage.ru/<bucket>/...)
+  // embed the bucket name in the URL path. Our proxy path is "/api/files/*" and should only
+  // contain the object key, so strip a leading "<bucket>/" if present.
+  if (s3Config?.bucket && decodedPath.startsWith(s3Config.bucket + "/")) {
+    decodedPath = decodedPath.slice(s3Config.bucket.length + 1);
+  }
+  if (fallbackS3Config?.bucket && decodedPath.startsWith(fallbackS3Config.bucket + "/")) {
+    decodedPath = decodedPath.slice(fallbackS3Config.bucket.length + 1);
+  }
   
   // If objectPrefix is set, ensure the path starts with it
   // If decodedPath already starts with objectPrefix, use it as-is
