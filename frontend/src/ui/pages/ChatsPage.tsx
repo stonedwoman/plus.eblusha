@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
@@ -10,6 +10,7 @@ const preloadCallOverlay = () => import('../components/CallOverlay')
 import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
 import { ImageEditorModal } from '../components/ImageEditorModal'
+import { ImageLightbox } from '../components/ImageLightbox'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
@@ -341,7 +342,6 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const [dragOver, setDragOver] = useState(false)
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<{ open: boolean; index: number; items: string[] }>({ open: false, index: 0, items: [] })
-  const [lightboxScale, setLightboxScale] = useState<number>(1)
   const [attachUploading, setAttachUploading] = useState(false)
   const [attachProgress, setAttachProgress] = useState(0)
   const [attachDragOver, setAttachDragOver] = useState(false)
@@ -465,8 +465,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
   })
   const [pingMs, setPingMs] = useState<number | null>(null)
   const [isSocketOnline, setIsSocketOnline] = useState<boolean>(() => socket.connected)
-  const [myPresence, setMyPresence] = useState<'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | null>(null)
+  const [myPresence, setMyPresence] = useState<'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | 'IN_CALL' | null>(null)
+  // Realtime presence overrides (e.g. IN_CALL) must win over API poll results,
+  // because the API returns base User.status (ONLINE/BACKGROUND/OFFLINE) from DB.
+  const [presenceOverridesByUserId, setPresenceOverridesByUserId] = useState<Record<string, string>>({})
   const [loadedImages, setLoadedImages] = useState<Record<string, boolean>>({})
+  const [failedImages, setFailedImages] = useState<Record<string, boolean>>({})
   const [imageDimensions, setImageDimensions] = useState<Record<string, { width: number; height: number }>>({})
   const [endSecretModalOpen, setEndSecretModalOpen] = useState(false)
   const [pendingSecretOffers, setPendingSecretOffers] = useState<Record<string, { from: { id: string; name: string; deviceId?: string | null } }>>({})
@@ -1596,6 +1600,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
   // Realtime presence updates into conversations list
   useEffect(() => {
     const handler = (p: { userId: string; status: string }) => {
+      // Keep an in-memory override map so polling doesn't revert "IN_CALL" back to "ONLINE".
+      setPresenceOverridesByUserId((prev) => {
+        const nextStatus = (p.status || '').toString().toUpperCase()
+        const prevStatus = prev[p.userId]
+        if (prevStatus === nextStatus) return prev
+        return { ...prev, [p.userId]: nextStatus }
+      })
       // Update status in conversations cache
       client.setQueryData(['conversations'], (old: any) => {
         if (!old) return old
@@ -1612,7 +1623,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         ...cp.user,
                         status: p.status,
                         lastSeenAt:
-                          p.status === 'ONLINE' || p.status === 'BACKGROUND' || p.status === 'OFFLINE'
+                          p.status === 'ONLINE' || p.status === 'BACKGROUND' || p.status === 'IN_CALL' || p.status === 'OFFLINE'
                             ? new Date().toISOString()
                             : cp.user.lastSeenAt,
                       },
@@ -1628,6 +1639,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     onPresenceUpdate(handler)
     return () => { socket.off('presence:update', handler as any) }
   }, [client])
+
+  const effectiveUserStatus = useCallback((u: any): 'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | 'IN_CALL' => {
+    const rawId = u?.id
+    const id = typeof rawId === 'string' ? rawId : null
+    const override = id ? presenceOverridesByUserId[id] : undefined
+    const raw = (override ?? u?.status ?? 'OFFLINE').toString().toUpperCase()
+    if (raw === 'IN_CALL') return 'IN_CALL'
+    if (raw === 'ONLINE') return 'ONLINE'
+    if (raw === 'BACKGROUND') return 'BACKGROUND'
+    if (raw === 'AWAY') return 'AWAY'
+    return 'OFFLINE'
+  }, [presenceOverridesByUserId])
 
   // Track if socket was previously connected to detect actual reconnects
   const wasConnectedRef = useRef(socket.connected)
@@ -1685,7 +1708,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       if (!me?.id) return
       if (payload.userId === me.id) {
         const v = (payload.status || '').toUpperCase()
-        if (v === 'ONLINE' || v === 'AWAY' || v === 'BACKGROUND' || v === 'OFFLINE') setMyPresence(v)
+        if (v === 'ONLINE' || v === 'AWAY' || v === 'BACKGROUND' || v === 'IN_CALL' || v === 'OFFLINE') setMyPresence(v)
       }
     }
     onPresenceUpdate(handler)
@@ -1695,7 +1718,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
   // Initialize own presence from meInfo endpoint when available
   useEffect(() => {
     const v = ((meInfoQuery.data as any)?.status || '').toString().toUpperCase()
-    if (v === 'ONLINE' || v === 'AWAY' || v === 'BACKGROUND' || v === 'OFFLINE') setMyPresence(v)
+    if (v === 'ONLINE' || v === 'AWAY' || v === 'BACKGROUND' || v === 'IN_CALL' || v === 'OFFLINE') setMyPresence(v)
   }, [meInfoQuery.data])
 
   // Lightbox keyboard controls
@@ -3333,11 +3356,40 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return () => { if (t) clearInterval(t) }
   }, [client])
 
+  // Users participating in active *group* calls (for labeling IN_CALL as "В БЕСЕДЕ" vs "В ЗВОНКЕ").
+  const groupCallParticipantIds = useMemo(() => {
+    const set = new Set<string>()
+    try {
+      const rows = (conversationsQuery.data || []) as any[]
+      const convById = new Map<string, any>()
+      for (const row of rows) {
+        const conv = row?.conversation
+        if (conv?.id) convById.set(conv.id, conv)
+      }
+      for (const [cid, entry] of Object.entries(activeCalls || {})) {
+        if (!entry?.active) continue
+        const conv = convById.get(cid)
+        const isGroup = !!(conv && (conv.isGroup || (conv.participants?.length ?? 0) > 2))
+        if (!isGroup) continue
+        const parts = entry.participants || []
+        for (const uid of parts) set.add(uid)
+      }
+    } catch {
+      // ignore
+    }
+    return set
+  }, [activeCalls, conversationsQuery.data])
+
   function formatPresence(u: any): string {
-    const status = u.status as string | undefined
+    const status = (u?.id ? effectiveUserStatus(u) : ((u?.status as string | undefined) ?? 'OFFLINE')) as string | undefined
     const last = u.lastSeenAt ? new Date(u.lastSeenAt) : null
     if (status === 'ONLINE') return 'ОНЛАЙН'
     if (status === 'BACKGROUND') return 'В ФОНЕ'
+    if (status === 'IN_CALL') {
+      const uid = typeof u?.id === 'string' ? u.id : null
+      if (uid && groupCallParticipantIds.has(uid)) return 'В БЕСЕДЕ'
+      return 'В ЗВОНКЕ'
+    }
     if (!last) return 'оффлайн'
     const now = new Date()
     const diffMs = now.getTime() - last.getTime()
@@ -3455,7 +3507,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       <Avatar
                         name={othersArr[0]?.displayName ?? othersArr[0]?.username ?? 'D'}
                         id={othersArr[0]?.id ?? c.id}
-                        presence={isCallActive ? 'IN_CALL' : (othersArr[0]?.status ?? 'OFFLINE')}
+                        presence={isCallActive ? 'IN_CALL' : effectiveUserStatus(othersArr[0])}
                         avatarUrl={othersArr[0]?.avatarUrl && othersArr[0].avatarUrl.trim() ? othersArr[0].avatarUrl : undefined}
                       />
                     )
@@ -3611,7 +3663,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               const directStatus = myPresence ?? (meInfoQuery.data as any)?.status
               const fallbackStatus = isSocketOnline ? 'ONLINE' : 'OFFLINE'
               const normalized = (directStatus ?? fallbackStatus ?? 'OFFLINE').toString().toUpperCase()
-              const allowedPresence = ['ONLINE', 'AWAY', 'BACKGROUND', 'OFFLINE'] as const
+              const allowedPresence = ['ONLINE', 'AWAY', 'BACKGROUND', 'IN_CALL', 'OFFLINE'] as const
               type KnownPresence = (typeof allowedPresence)[number]
               const normalizedPresence = normalized as KnownPresence
               const fallbackPresence = fallbackStatus as KnownPresence
@@ -3828,7 +3880,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             name={peer?.displayName ?? peer?.username ?? 'D'}
                             id={peer?.id ?? activeConversation.id}
                             avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
-                            presence={(callEntry?.active ? 'IN_CALL' : (peer?.status ?? 'OFFLINE'))}
+                          presence={(callEntry?.active ? 'IN_CALL' : effectiveUserStatus(peer))}
                             size={60}
                           />
                         </div>
@@ -3884,7 +3936,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                               }
                               // Иначе показываем статус пользователя
                               return peer
-                                ? (peer.status === 'ONLINE' ? 'ОНЛАЙН' : peer.status === 'BACKGROUND' ? 'В ФОНЕ' : formatPresence(peer))
+                                ? formatPresence(peer)
                                 : ''
                             })()}
                           </div>
@@ -4677,244 +4729,523 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         )}
                         <>
                           <div style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>{m.content}</div>
-                          {(m.attachments || []).map((att: any, idx: number) => {
-                            const metadata = att.metadata ?? {}
-                            const resolvedUrl = resolveAttachmentUrl(att)
-                            const needsDecrypt = Boolean(
-                              activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext',
-                            )
-                            const decryptState = needsDecrypt ? attachmentDecryptMap[att.url] : undefined
-                            const decryptPending =
-                              needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
-                            const decryptError = needsDecrypt && decryptState?.status === 'error'
-                            const fileLabel =
-                              metadata?.e2ee?.originalName || att.url?.split('/').pop() || 'вложение'
-                            if (att.type === 'AUDIO') {
-                              const duration = m.metadata?.duration || 0
-                              const audioUrl = resolvedUrl || att.url
-                              return (
-                                <div key={`${att.url}-${idx}`} style={{ marginTop: 8, minWidth: 200, maxWidth: 300 }}>
-                                  {decryptPending ? (
-                                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
-                                      <div style={{ width: 16, height: 16, border: '2px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                                      <span style={{ fontSize: 13 }}>Расшифровка аудио...</span>
-                                    </div>
-                                  ) : decryptError ? (
-                                    <div style={{ color: '#f87171', fontSize: 12 }}>Не удалось расшифровать аудио</div>
-                                  ) : audioUrl ? (
-                                    <VoiceMessagePlayer url={audioUrl} duration={duration} />
-                                  ) : (
-                                    <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Голосовое сообщение</div>
-                                  )}
-                                </div>
-                              )
-                            }
-                            if (att.type === 'IMAGE') {
-                              const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
-                              const isMobile = vw <= 768
-                              // Для мобильных: максимум половина экрана, минимум 320px
-                              // Для десктопа: максимум 600px, минимум 320px
-                              const maxScreen = isMobile 
-                                ? Math.max(320, Math.floor(vw / 2))
-                                : Math.min(600, Math.max(320, Math.floor(vw / 3)))
-                              
-                              // Используем реальные размеры изображения из разных источников
-                              // Приоритет: imageDimensions (загруженные) > att.width/height > metadata.width/height > fallback
-                              const dimKey = `${att.url || idx}`
-                              const loadedDims = imageDimensions[dimKey]
-                              const baseW = loadedDims?.width || att.width || att.metadata?.width || maxScreen
-                              const baseH = loadedDims?.height || att.height || att.metadata?.height || Math.round(baseW * 0.75)
-                              const ratio = baseH / baseW || 0.75 // высота / ширина
-                              
-                              // Масштабируем изображение с сохранением пропорций
-                              // Для очень широких изображений (ratio < 0.5) используем меньшую максимальную высоту
-                              const maxWidth = maxScreen
-                              // Для широких изображений ограничиваем высоту сильнее, чтобы избежать обрезки
-                              let maxHeight = maxScreen
-                              if (ratio < 0.5) {
-                                // Для очень широких изображений (ширина в 2+ раза больше высоты)
-                                // Используем меньшую максимальную высоту, чтобы изображение полностью поместилось
-                                maxHeight = Math.max(Math.round(maxScreen * 0.6), 200)
-                              } else if (ratio < 0.7) {
-                                // Для широких изображений (ширина примерно в 1.4 раза больше высоты)
-                                maxHeight = Math.max(Math.round(maxScreen * 0.75), 200)
+                          {(() => {
+                            const attachments = (m.attachments || []) as any[]
+                            const imageAtts = attachments.filter((a) => a?.type === 'IMAGE')
+                            const hasText = typeof m.content === 'string' ? m.content.trim().length > 0 : !!m.content
+                            const hasNonImage = attachments.some((a) => a?.type && a.type !== 'IMAGE')
+                            const imageOnly = imageAtts.length > 0 && !hasText && !hasNonImage
+                            const ordered: Array<
+                              | { kind: 'imageGroup'; atts: any[] }
+                              | { kind: 'single'; att: any; idx: number }
+                            > = []
+
+                            let addedImages = false
+                            attachments.forEach((att, idx) => {
+                              if (att?.type === 'IMAGE') {
+                                if (!addedImages) {
+                                  ordered.push({ kind: 'imageGroup', atts: imageAtts })
+                                  addedImages = true
+                                }
+                                return
                               }
-                              
-                              // Вычисляем масштаб для обоих измерений
-                              const scaleByWidth = baseW > maxWidth ? maxWidth / baseW : 1
-                              const scaleByHeight = baseH > maxHeight ? maxHeight / baseH : 1
-                              
-                              // Используем меньший масштаб, чтобы оба измерения поместились в ограничения
-                              const scale = Math.min(scaleByWidth, scaleByHeight, 1)
-                              
-                              // Вычисляем финальные размеры с сохранением пропорций
-                              // Используем точные вычисления без округления до финального шага
-                              let targetW = baseW * scale
-                              let targetH = baseH * scale
-                              
-                              // Пересчитываем одно измерение на основе другого для точного соответствия пропорциям
-                              // Это гарантирует, что targetH / targetW === ratio точно
-                              if (targetW > maxWidth) {
-                                targetW = maxWidth
-                                targetH = targetW * ratio
-                              }
-                              if (targetH > maxHeight) {
-                                targetH = maxHeight
-                                targetW = targetH / ratio
-                              }
-                              
-                              // Округляем только в конце
-                              targetW = Math.round(targetW)
-                              targetH = Math.round(targetH)
-                              
-                              const placeholderKey = `${att.url || idx}`
-                              const isLoaded = !!loadedImages[placeholderKey]
-                              const showPending = att.__pending || decryptPending || !isLoaded
-                              
-                              return (
-                                <div key={`${att.url}-${idx}`} style={{ 
-                                  maxWidth: '100%',
-                                  maxHeight: targetH,
-                                  width: showPending ? Math.min(targetW, typeof window !== 'undefined' ? window.innerWidth - 100 : targetW) : 'fit-content',
-                                  height: showPending ? targetH : 'auto',
-                                  minWidth: 0,
-                                  minHeight: showPending ? targetH : 0,
-                                  marginTop: 8, 
-                                  position: 'relative',
-                                  borderRadius: 10,
-                                  overflow: 'hidden',
-                                  display: 'inline-block',
-                                  lineHeight: 0,
-                                  boxSizing: 'border-box'
-                                }}>
-                                  {showPending && (
+                              ordered.push({ kind: 'single', att, idx })
+                            })
+
+                            const renderImageGroup = (atts: any[]) => {
+                              if (!atts.length) return null
+                              if (atts.length === 1) {
+                                const att = atts[0]
+                                const idx = 0
+                                const metadata = att.metadata ?? {}
+                                const resolvedUrl = resolveAttachmentUrl(att)
+                                const needsDecrypt = Boolean(activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext')
+                                const decryptState = needsDecrypt ? attachmentDecryptMap[att.url] : undefined
+                                const decryptPending = needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
+                                const decryptError = needsDecrypt && decryptState?.status === 'error'
+
+                                const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
+                                const isMobile = vw <= 768
+                                const maxScreen = isMobile
+                                  ? Math.max(320, Math.floor(vw / 2))
+                                  : Math.min(600, Math.max(320, Math.floor(vw / 3)))
+
+                                const dimKey = `${att.url || idx}`
+                                const loadedDims = imageDimensions[dimKey]
+                                const baseW = loadedDims?.width || att.width || att.metadata?.width || maxScreen
+                                const baseH =
+                                  loadedDims?.height || att.height || att.metadata?.height || Math.round(baseW * 0.75)
+                                const ratio = baseH / baseW || 0.75
+
+                                const maxWidth = maxScreen
+                                let maxHeight = maxScreen
+                                if (ratio < 0.5) {
+                                  maxHeight = Math.max(Math.round(maxScreen * 0.6), 200)
+                                } else if (ratio < 0.7) {
+                                  maxHeight = Math.max(Math.round(maxScreen * 0.75), 200)
+                                }
+
+                                const scaleByWidth = baseW > maxWidth ? maxWidth / baseW : 1
+                                const scaleByHeight = baseH > maxHeight ? maxHeight / baseH : 1
+                                const scale = Math.min(scaleByWidth, scaleByHeight, 1)
+
+                                let targetW = baseW * scale
+                                let targetH = baseH * scale
+                                if (targetW > maxWidth) {
+                                  targetW = maxWidth
+                                  targetH = targetW * ratio
+                                }
+                                if (targetH > maxHeight) {
+                                  targetH = maxHeight
+                                  targetW = targetH / ratio
+                                }
+
+                                targetW = Math.round(targetW)
+                                targetH = Math.round(targetH)
+
+                                const placeholderKey = `${att.url || idx}`
+                                const isLoaded = !!loadedImages[placeholderKey]
+                                const isFailed = !!failedImages[placeholderKey]
+                                const showPending = att.__pending || decryptPending || (!isLoaded && !isFailed)
+
+                                return (
                                   <div
+                                    key={`images-single-${att.url || idx}`}
                                     style={{
-                                        position: 'absolute',
-                                        inset: 0,
-                                      width: '100%',
-                                        height: '100%',
+                                      maxWidth: '100%',
+                                      maxHeight: targetH,
+                                      width: showPending
+                                        ? Math.min(targetW, typeof window !== 'undefined' ? window.innerWidth - 100 : targetW)
+                                        : 'fit-content',
+                                      height: showPending ? targetH : 'auto',
+                                      minWidth: 0,
+                                      minHeight: showPending ? targetH : 0,
+                                      marginTop: 8,
+                                      position: 'relative',
                                       borderRadius: 10,
-                                        background: 'var(--surface-100)',
-                                        border: '1px solid var(--surface-border)',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        zIndex: 1
-                                      }}
-                                    >
+                                      overflow: 'hidden',
+                                      display: 'inline-block',
+                                      lineHeight: 0,
+                                      boxSizing: 'border-box',
+                                    }}
+                                  >
+                                    {imageOnly && (
+                                      <div className="msg-media-meta">
+                                        <span>{timeLabel}</span>
+                                        {!!ticks && <span>{ticks}</span>}
+                                      </div>
+                                    )}
+                                    {showPending && (
                                       <div
                                         style={{
                                           position: 'absolute',
                                           inset: 0,
-                                          background: 'linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.1) 37%, transparent 63%)',
-                                      backgroundSize: '400% 100%',
-                                      animation: 'eb-shimmer 1.2s ease-in-out infinite',
+                                          width: '100%',
+                                          height: '100%',
+                                          borderRadius: 10,
+                                          background: 'var(--surface-100)',
+                                          border: '1px solid var(--surface-border)',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          zIndex: 1,
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            position: 'absolute',
+                                            inset: 0,
+                                            background:
+                                              'linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.1) 37%, transparent 63%)',
+                                            backgroundSize: '400% 100%',
+                                            animation: 'eb-shimmer 1.2s ease-in-out infinite',
+                                          }}
+                                        />
+                                        {decryptPending ? (
+                                          <div
+                                            style={{
+                                              position: 'relative',
+                                              zIndex: 2,
+                                              display: 'flex',
+                                              flexDirection: 'column',
+                                              alignItems: 'center',
+                                              gap: 8,
+                                              color: 'var(--text-muted)',
+                                              fontSize: 12,
+                                            }}
+                                          >
+                                            Расшифровка изображения...
+                                          </div>
+                                        ) : typeof att.progress === 'number' && att.progress < 100 ? (
+                                          <div
+                                            style={{
+                                              position: 'relative',
+                                              zIndex: 2,
+                                              display: 'flex',
+                                              flexDirection: 'column',
+                                              alignItems: 'center',
+                                              gap: 8,
+                                            }}
+                                          >
+                                            <div
+                                              style={{
+                                                width: 40,
+                                                height: 40,
+                                                border: '3px solid var(--surface-border)',
+                                                borderTopColor: 'var(--brand)',
+                                                borderRadius: '50%',
+                                                animation: 'spin 1s linear infinite',
+                                              }}
+                                            />
+                                            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>
+                                              {att.progress}%
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <div
+                                            style={{
+                                              position: 'relative',
+                                              zIndex: 2,
+                                              width: 40,
+                                              height: 40,
+                                              border: '3px solid var(--surface-border)',
+                                              borderTopColor: 'var(--brand)',
+                                              borderRadius: '50%',
+                                              animation: 'spin 1s linear infinite',
+                                            }}
+                                          />
+                                        )}
+                                      </div>
+                                    )}
+                                    {decryptError && (
+                                      <div style={{ marginTop: 8, color: '#f87171', fontSize: 12 }}>
+                                        Не удалось расшифровать изображение
+                                      </div>
+                                    )}
+                                    {isFailed && !decryptError && (
+                                      <div style={{ marginTop: 8, color: '#f87171', fontSize: 12 }}>
+                                        Не удалось загрузить изображение
+                                      </div>
+                                    )}
+                                    {resolvedUrl && !decryptError && (
+                                      <img
+                                        src={resolvedUrl}
+                                        alt="img"
+                                        style={{
+                                          maxWidth: '100%',
+                                          maxHeight: targetH,
+                                          width: 'auto',
+                                          height: 'auto',
+                                          objectFit: 'contain',
+                                          borderRadius: 10,
+                                          cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in',
+                                          opacity: att.__pending ? 0.85 : 1,
+                                          display: isLoaded ? 'block' : 'none',
+                                          position: 'relative',
+                                          zIndex: 0,
+                                          background: 'var(--surface-100)',
+                                          verticalAlign: 'top',
+                                        }}
+                                        onLoad={(e) => {
+                                          const img = e.target as HTMLImageElement
+                                          if ((!att.width && !metadata?.width) && img.naturalWidth && img.naturalHeight) {
+                                            setImageDimensions((prev) => ({
+                                              ...prev,
+                                              [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight },
+                                            }))
+                                          }
+                                          setFailedImages((prev) => ({ ...prev, [placeholderKey]: false }))
+                                          setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
+                                          if (messagesRef.current && nearBottomRef.current) {
+                                            const el = messagesRef.current
+                                            el.scrollTop = el.scrollHeight
+                                          }
+                                        }}
+                                        onError={() => {
+                                          setFailedImages((prev) => ({ ...prev, [placeholderKey]: true }))
+                                          setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
+                                        }}
+                                        onClick={() => {
+                                          if (!att.__pending && !decryptPending && resolvedUrl) {
+                                            openLightbox(resolvedUrl)
+                                          }
                                         }}
                                       />
-                                      {decryptPending ? (
-                                        <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12 }}>
-                                          Расшифровка изображения...
+                                    )}
+                                    {isLoaded && !decryptPending && typeof att.progress === 'number' && att.progress < 100 && (
+                                      <div
+                                        style={{
+                                          position: 'absolute',
+                                          left: 0,
+                                          right: 0,
+                                          bottom: 0,
+                                          height: 6,
+                                          background: 'rgba(0,0,0,0.15)',
+                                          borderRadius: '0 0 10px 10px',
+                                          overflow: 'hidden',
+                                          zIndex: 3,
+                                        }}
+                                      >
+                                        <div style={{ width: `${att.progress}%`, height: '100%', background: 'rgba(255,255,255,0.9)' }} />
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              }
+
+                              // Mosaic for 2+ images:
+                              // We compute a layout where each tile keeps the image's own aspect ratio (h/w),
+                              // so nothing is cropped for any formats. For 2/3/4+ we pick a Telegram-like arrangement,
+                              // but column widths are computed from ratios to make heights match.
+                              const visible = atts.slice(0, 4)
+                              const extra = atts.length - visible.length
+                              const getRatio = (a: any, i: number): number => {
+                                const md = a?.metadata ?? {}
+                                const key = `${a?.url || i}`
+                                const dims = imageDimensions[key]
+                                const w = dims?.width || a?.width || md?.width
+                                const h = dims?.height || a?.height || md?.height
+                                const r = typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0 ? h / w : 1
+                                // Clamp extreme cases (panoramas / very tall scans) so bubble stays sane.
+                                return Math.max(0.2, Math.min(5, Number.isFinite(r) ? r : 1))
+                              }
+
+                              const renderTile = (att: any, tileIdx: number, showMore: boolean) => {
+                                const metadata = att.metadata ?? {}
+                                const resolvedUrl = resolveAttachmentUrl(att)
+                                const needsDecrypt = Boolean(activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext')
+                                const decryptState = needsDecrypt ? attachmentDecryptMap[att.url] : undefined
+                                const decryptPending = needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
+                                const decryptError = needsDecrypt && decryptState?.status === 'error'
+                                const placeholderKey = `${att.url || tileIdx}`
+                                const isLoaded = !!loadedImages[placeholderKey]
+                                const isFailed = !!failedImages[placeholderKey]
+                                const showPending = att.__pending || decryptPending || (!isLoaded && !isFailed)
+                                const disabled = att.__pending || decryptPending || decryptError || !resolvedUrl
+                                const ratio = getRatio(att, tileIdx) // h/w
+
+                                return (
+                                  <button
+                                    key={`${att.url || tileIdx}`}
+                                    type="button"
+                                    className="msg-media-tile"
+                                    style={{ aspectRatio: 1 / ratio }}
+                                    disabled={disabled}
+                                    onClick={() => {
+                                      if (!disabled && resolvedUrl) openLightbox(resolvedUrl)
+                                    }}
+                                  >
+                                    {resolvedUrl && (
+                                      <img
+                                        src={resolvedUrl}
+                                        alt="img"
+                                        style={{ opacity: isLoaded && !showPending ? 1 : 0.001 }}
+                                        onLoad={(e) => {
+                                          const img = e.target as HTMLImageElement
+                                          if ((!att.width && !metadata?.width) && img.naturalWidth && img.naturalHeight) {
+                                            setImageDimensions((prev) => ({
+                                              ...prev,
+                                              [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight },
+                                            }))
+                                          }
+                                          setFailedImages((prev) => ({ ...prev, [placeholderKey]: false }))
+                                          setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
+                                        }}
+                                        onError={() => {
+                                          setFailedImages((prev) => ({ ...prev, [placeholderKey]: true }))
+                                          setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
+                                        }}
+                                      />
+                                    )}
+                                    {showPending && (
+                                      <div className="msg-media-overlay">
+                                        <div className="msg-media-overlay-shimmer" />
+                                        {decryptPending ? (
+                                          <div style={{ position: 'relative', zIndex: 2, color: 'var(--text-muted)', fontSize: 12 }}>
+                                            Расшифровка...
+                                          </div>
+                                        ) : typeof att.progress === 'number' && att.progress < 100 ? (
+                                          <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                                            <div style={{ width: 34, height: 34, border: '3px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                                            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>{att.progress}%</div>
+                                          </div>
+                                        ) : (
+                                          <div style={{ position: 'relative', zIndex: 2, width: 34, height: 34, border: '3px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                                        )}
+                                      </div>
+                                    )}
+                                    {(decryptError || isFailed) && (
+                                      <div className="msg-media-overlay" style={{ background: 'rgba(15, 23, 42, 0.55)' }}>
+                                        <div style={{ position: 'relative', zIndex: 2, color: '#f87171', fontSize: 12, padding: 10, textAlign: 'center' }}>
+                                          {decryptError ? 'Ошибка расшифровки' : 'Ошибка загрузки'}
                                         </div>
-                                      ) : typeof att.progress === 'number' && att.progress < 100 ? (
-                                        <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-                                          <div style={{ width: 40, height: 40, border: '3px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                                          <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>{att.progress}%</div>
+                                      </div>
+                                    )}
+                                    {showMore && <div className="msg-media-more">+{extra}</div>}
+                                  </button>
+                                )
+                              }
+
+                              return (
+                                <div
+                                  key="images-mosaic"
+                                  className="msg-media-grid"
+                                >
+                                  {imageOnly && (
+                                    <div className="msg-media-meta">
+                                      <span>{timeLabel}</span>
+                                      {!!ticks && <span>{ticks}</span>}
+                                    </div>
+                                  )}
+                                  {visible.length === 2 && (() => {
+                                    const r0 = getRatio(visible[0], 0)
+                                    const r1 = getRatio(visible[1], 1)
+                                    // widths proportional to the opposite ratio to equalize heights
+                                    const w0 = r1
+                                    const w1 = r0
+                                    return (
+                                      <>
+                                        <div style={{ flex: `${w0} 1 0`, minWidth: 0 }}>
+                                          {renderTile(visible[0], 0, false)}
                                         </div>
-                                      ) : (
-                                        <div style={{ position: 'relative', zIndex: 2, width: 40, height: 40, border: '3px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                                      )}
-                                    </div>
-                                  )}
-                                  {decryptError && (
-                                    <div style={{ marginTop: 8, color: '#f87171', fontSize: 12 }}>
-                                      Не удалось расшифровать изображение
-                                    </div>
-                                  )}
-                                  {resolvedUrl && !decryptError && (
-                                    <img
-                                      src={resolvedUrl}
-                                      alt="img"
-                                      style={{ 
-                                        maxWidth: '100%',
-                                        maxHeight: targetH,
-                                        width: 'auto',
-                                        height: 'auto',
-                                        objectFit: 'contain', 
-                                        borderRadius: 10, 
-                                        cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in', 
-                                        opacity: att.__pending ? 0.85 : 1, 
-                                        display: isLoaded ? 'block' : 'none',
-                                        position: 'relative',
-                                        zIndex: 0,
-                                        background: 'var(--surface-100)',
-                                        verticalAlign: 'top'
-                                      }}
-                                      onLoad={(e) => {
-                                        const img = e.target as HTMLImageElement
-                                        if ((!att.width && !metadata?.width) && img.naturalWidth && img.naturalHeight) {
-                                          setImageDimensions((prev) => ({
-                                            ...prev,
-                                            [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight }
-                                          }))
-                                        }
-                                        setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
-                                        if (messagesRef.current && nearBottomRef.current) {
-                                          const el = messagesRef.current
-                                          el.scrollTop = el.scrollHeight
-                                        }
-                                      }}
-                                      onError={(e) => {
-                                        const target = e.target as HTMLImageElement
-                                        if (target) target.style.display = 'none'
-                                      }}
-                                      onClick={() => {
-                                        if (!att.__pending && !decryptPending && resolvedUrl) {
-                                          openLightbox(resolvedUrl)
-                                        }
-                                      }}
-                                    />
-                                  )}
-                                  {isLoaded && !decryptPending && typeof att.progress === 'number' && att.progress < 100 && (
-                                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 6, background: 'rgba(0,0,0,0.15)', borderRadius: '0 0 10px 10px', overflow: 'hidden', zIndex: 3 }}>
-                                      <div style={{ width: `${att.progress}%`, height: '100%', background: 'rgba(255,255,255,0.9)' }} />
-                                    </div>
-                                  )}
+                                        <div style={{ flex: `${w1} 1 0`, minWidth: 0 }}>
+                                          {renderTile(visible[1], 1, extra > 0 && 1 === visible.length - 1)}
+                                        </div>
+                                      </>
+                                    )
+                                  })()}
+
+                                  {visible.length === 3 && (() => {
+                                    const r0 = getRatio(visible[0], 0)
+                                    const r1 = getRatio(visible[1], 1)
+                                    const r2 = getRatio(visible[2], 2)
+                                    // left = big (0), right = stack (1,2)
+                                    const wLeft = r1 + r2
+                                    const wRight = r0
+                                    return (
+                                      <>
+                                        <div style={{ flex: `${wLeft} 1 0`, minWidth: 0 }}>
+                                          {renderTile(visible[0], 0, false)}
+                                        </div>
+                                        <div className="msg-media-col" style={{ flex: `${wRight} 1 0` }}>
+                                          {renderTile(visible[1], 1, false)}
+                                          {renderTile(visible[2], 2, extra > 0 && 2 === visible.length - 1)}
+                                        </div>
+                                      </>
+                                    )
+                                  })()}
+
+                                  {visible.length >= 4 && (() => {
+                                    // 2x2: (0,2) left column; (1,3) right column
+                                    const r0 = getRatio(visible[0], 0)
+                                    const r1 = getRatio(visible[1], 1)
+                                    const r2 = getRatio(visible[2], 2)
+                                    const r3 = getRatio(visible[3], 3)
+                                    const wLeft = r1 + r3
+                                    const wRight = r0 + r2
+                                    return (
+                                      <>
+                                        <div className="msg-media-col" style={{ flex: `${wLeft} 1 0` }}>
+                                          {renderTile(visible[0], 0, false)}
+                                          {renderTile(visible[2], 2, false)}
+                                        </div>
+                                        <div className="msg-media-col" style={{ flex: `${wRight} 1 0` }}>
+                                          {renderTile(visible[1], 1, false)}
+                                          {renderTile(visible[3], 3, extra > 0)}
+                                        </div>
+                                      </>
+                                    )
+                                  })()}
                                 </div>
                               )
                             }
+
                             return (
-                              <div key={`${att.url}-${idx}`} style={{ marginTop: 8 }}>
-                                {att.__pending || decryptPending ? (
-                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#6b7280' }}>
-                                    Файл: {fileLabel}
-                                    {decryptPending && ' (расшифровка...)'}
-                                  </div>
-                                ) : decryptError ? (
-                                  <div style={{ color: '#f87171', fontSize: 12 }}>Не удалось расшифровать файл</div>
-                                ) : (
-                                  <a
-                                    href={resolvedUrl || att.url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    download={fileLabel}
-                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                                  >
-                                    Файл: {fileLabel}
-                                  </a>
-                                )}
-                                {typeof att.progress === 'number' && att.progress < 100 && (
-                                  <div style={{ height: 6, background: '#e5e7eb', borderRadius: 6, overflow: 'hidden', marginTop: 6 }}>
-                                    <div style={{ width: `${att.progress}%`, height: '100%', background: 'var(--brand)' }} />
-                                  </div>
-                                )}
-                              </div>
+                              <>
+                                {ordered.map((item, renderIdx) => {
+                                  if (item.kind === 'imageGroup') {
+                                    return <Fragment key="images-group">{renderImageGroup(item.atts)}</Fragment>
+                                  }
+
+                                  const att = item.att
+                                  const idx = item.idx
+                                  const metadata = att.metadata ?? {}
+                                  const resolvedUrl = resolveAttachmentUrl(att)
+                                  const needsDecrypt = Boolean(
+                                    activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext',
+                                  )
+                                  const decryptState = needsDecrypt ? attachmentDecryptMap[att.url] : undefined
+                                  const decryptPending =
+                                    needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
+                                  const decryptError = needsDecrypt && decryptState?.status === 'error'
+                                  const fileLabel = metadata?.e2ee?.originalName || att.url?.split('/').pop() || 'вложение'
+
+                                  if (att.type === 'AUDIO') {
+                                    const duration = m.metadata?.duration || 0
+                                    const audioUrl = resolvedUrl || att.url
+                                    return (
+                                      <div key={`${att.url}-${idx}-${renderIdx}`} style={{ marginTop: 8, minWidth: 200, maxWidth: 300 }}>
+                                        {decryptPending ? (
+                                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
+                                            <div style={{ width: 16, height: 16, border: '2px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                                            <span style={{ fontSize: 13 }}>Расшифровка аудио...</span>
+                                          </div>
+                                        ) : decryptError ? (
+                                          <div style={{ color: '#f87171', fontSize: 12 }}>Не удалось расшифровать аудио</div>
+                                        ) : audioUrl ? (
+                                          <VoiceMessagePlayer url={audioUrl} duration={duration} />
+                                        ) : (
+                                          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Голосовое сообщение</div>
+                                        )}
+                                      </div>
+                                    )
+                                  }
+
+                                  return (
+                                    <div key={`${att.url}-${idx}-${renderIdx}`} style={{ marginTop: 8 }}>
+                                      {att.__pending || decryptPending ? (
+                                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#6b7280' }}>
+                                          Файл: {fileLabel}
+                                          {decryptPending && ' (расшифровка...)'}
+                                        </div>
+                                      ) : decryptError ? (
+                                        <div style={{ color: '#f87171', fontSize: 12 }}>Не удалось расшифровать файл</div>
+                                      ) : (
+                                        <a
+                                          href={resolvedUrl || att.url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          download={fileLabel}
+                                          style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                                        >
+                                          Файл: {fileLabel}
+                                        </a>
+                                      )}
+                                      {typeof att.progress === 'number' && att.progress < 100 && (
+                                        <div style={{ height: 6, background: '#e5e7eb', borderRadius: 6, overflow: 'hidden', marginTop: 6 }}>
+                                          <div style={{ width: `${att.progress}%`, height: '100%', background: 'var(--brand)' }} />
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </>
                             )
-                          })}
+                          })()}
                         </>
-                        <div className="msg-meta" style={{ color: '#9aa0a8' }}>
-                          {timeLabel} {ticks}
-                        </div>
+                        {(() => {
+                          const attachments = (m.attachments || []) as any[]
+                          const hasText = typeof m.content === 'string' ? m.content.trim().length > 0 : !!m.content
+                          const hasNonImage = attachments.some((a) => a?.type && a.type !== 'IMAGE')
+                          const hasImages = attachments.some((a) => a?.type === 'IMAGE')
+                          const imageOnly = hasImages && !hasText && !hasNonImage
+                          if (imageOnly) return null
+                          return (
+                            <div className="msg-meta" style={{ color: '#9aa0a8' }}>
+                              {timeLabel} {ticks}
+                            </div>
+                          )
+                        })()}
                       </div>
                     </div>
                   )
@@ -6474,7 +6805,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   <Avatar
                     name={u.displayName ?? u.username}
                     id={u.id}
-                    presence={u.status}
+                    presence={effectiveUserStatus(u)}
                     avatarUrl={u.avatarUrl ?? undefined}
                   />
                   <div>
@@ -6609,7 +6940,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           </div>
           {foundUser && (
             <div className="tile" style={{ marginBottom: 12 }}>
-              <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={foundUser.status} avatarUrl={foundUser.avatarUrl ?? undefined} />
+              <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={effectiveUserStatus(foundUser)} avatarUrl={foundUser.avatarUrl ?? undefined} />
               <div>
                 <div style={{ fontWeight: 600 }}>{foundUser.displayName ?? foundUser.username}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Найден по EBLID</div>
@@ -6631,7 +6962,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               const u = c.friend
               return (
                 <div key={c.id} className="tile">
-                  <Avatar name={u.displayName ?? u.username} id={u.id} presence={u.status} avatarUrl={u.avatarUrl ?? undefined} />
+                  <Avatar name={u.displayName ?? u.username} id={u.id} presence={effectiveUserStatus(u)} avatarUrl={u.avatarUrl ?? undefined} />
                   <div>
                     <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
                     <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Контакт</div>
@@ -6740,21 +7071,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         </div>
       </div>
     )}
-    {lightbox.open && (
-      <div className="lightbox-backdrop" onClick={() => setLightbox({ ...lightbox, open: false })}>
-        <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
-          <button className="lightbox-arrow" onClick={() => setLightbox((l) => ({ ...l, index: (l.index - 1 + l.items.length) % l.items.length }))}>{'‹'}</button>
-          <img src={lightbox.items[lightbox.index]} alt="preview" style={{ transform: `scale(${lightboxScale})`, transformOrigin: 'center center' }} />
-          <button className="lightbox-arrow" onClick={() => setLightbox((l) => ({ ...l, index: (l.index + 1) % l.items.length }))}>{'›'}</button>
-          <button className="lightbox-close" onClick={() => setLightbox({ ...lightbox, open: false })}>✕</button>
-          <div style={{ position: 'absolute', bottom: -48, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 8 }}>
-            <button className="btn btn-secondary" onClick={() => setLightboxScale((s) => Math.max(0.25, s - 0.25))}>-</button>
-            <button className="btn btn-secondary" onClick={() => setLightboxScale(1)}>100%</button>
-            <button className="btn btn-secondary" onClick={() => setLightboxScale((s) => Math.min(4, s + 0.25))}>+</button>
-          </div>
-        </div>
-      </div>
-    )}
+    <ImageLightbox
+      open={lightbox.open}
+      items={lightbox.items}
+      index={lightbox.index}
+      onClose={() => setLightbox((l) => ({ ...l, open: false }))}
+      onIndexChange={(nextIndex) => setLightbox((l) => ({ ...l, index: nextIndex }))}
+    />
     {forwardModal.open && (
       <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setForwardModal({ open: false, messageId: null })}>
         <div style={{ background: 'var(--surface-200)', padding: 16, borderRadius: 12, width: 420, border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-sharp)', color: 'var(--text-primary)' }} onClick={(e) => e.stopPropagation()}>
@@ -6847,13 +7170,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       <Avatar
                         name={u.displayName ?? u.username}
                         id={u.id}
-                        presence={u.status}
+                        presence={effectiveUserStatus(u)}
                         avatarUrl={u.avatarUrl ?? undefined}
                       />
                       <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
                         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                          {u.status === 'ONLINE' ? 'ОНЛАЙН' : u.status === 'BACKGROUND' ? 'В ФОНЕ' : formatPresence(u)}
+                          {formatPresence(u)}
                         </div>
                       </div>
                       <div style={{ width: 18, height: 18, borderRadius: 4, border: '2px solid var(--surface-border)', background: checked ? 'var(--brand-600)' : 'transparent' }} />

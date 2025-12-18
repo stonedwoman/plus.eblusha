@@ -21,15 +21,13 @@ const upload = (0, multer_1.default)({
 const s3Config = env_1.default.STORAGE_S3_ENDPOINT &&
     env_1.default.STORAGE_S3_REGION &&
     env_1.default.STORAGE_S3_BUCKET &&
-    env_1.default.STORAGE_S3_ACCESS_KEY &&
-    env_1.default.STORAGE_S3_SECRET_KEY &&
     env_1.default.STORAGE_PUBLIC_BASE_URL
     ? {
         endpoint: env_1.default.STORAGE_S3_ENDPOINT,
         region: env_1.default.STORAGE_S3_REGION,
         bucket: env_1.default.STORAGE_S3_BUCKET,
-        accessKeyId: env_1.default.STORAGE_S3_ACCESS_KEY,
-        secretAccessKey: env_1.default.STORAGE_S3_SECRET_KEY,
+        accessKeyId: env_1.default.STORAGE_S3_ACCESS_KEY || undefined,
+        secretAccessKey: env_1.default.STORAGE_S3_SECRET_KEY || undefined,
         publicBaseUrl: env_1.default.STORAGE_PUBLIC_BASE_URL.replace(/\/$/, ""),
     }
     : null;
@@ -38,10 +36,16 @@ const s3Client = s3Config
         region: s3Config.region,
         endpoint: s3Config.endpoint,
         forcePathStyle: env_1.default.STORAGE_S3_FORCE_PATH_STYLE,
-        credentials: {
-            accessKeyId: s3Config.accessKeyId,
-            secretAccessKey: s3Config.secretAccessKey,
-        },
+        // If explicit keys aren't provided, fall back to the default AWS credential chain
+        // (e.g. /root/.aws/credentials for systemd services running as root).
+        ...(s3Config.accessKeyId && s3Config.secretAccessKey
+            ? {
+                credentials: {
+                    accessKeyId: s3Config.accessKeyId,
+                    secretAccessKey: s3Config.secretAccessKey,
+                },
+            }
+            : {}),
     })
     : null;
 const objectPrefix = env_1.default.STORAGE_PREFIX.replace(/^\/|\/$/g, "");

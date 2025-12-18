@@ -58,8 +58,10 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
     if (!presence) return null
     switch (presence) {
       case 'ONLINE':
-      case 'IN_CALL':
         return '#22c55e'
+      case 'IN_CALL':
+        // Red to make "in call" clearly distinguishable from regular ONLINE
+        return '#ef4444'
       case 'BACKGROUND':
         return '#facc15'
       case 'AWAY':

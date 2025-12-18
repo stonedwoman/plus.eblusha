@@ -10,15 +10,13 @@ const logger_1 = __importDefault(require("../config/logger"));
 const router = (0, express_1.Router)();
 const s3Config = env_1.default.STORAGE_S3_ENDPOINT &&
     env_1.default.STORAGE_S3_REGION &&
-    env_1.default.STORAGE_S3_BUCKET &&
-    env_1.default.STORAGE_S3_ACCESS_KEY &&
-    env_1.default.STORAGE_S3_SECRET_KEY
+    env_1.default.STORAGE_S3_BUCKET
     ? {
         endpoint: env_1.default.STORAGE_S3_ENDPOINT,
         region: env_1.default.STORAGE_S3_REGION,
         bucket: env_1.default.STORAGE_S3_BUCKET,
-        accessKeyId: env_1.default.STORAGE_S3_ACCESS_KEY,
-        secretAccessKey: env_1.default.STORAGE_S3_SECRET_KEY,
+        accessKeyId: env_1.default.STORAGE_S3_ACCESS_KEY || undefined,
+        secretAccessKey: env_1.default.STORAGE_S3_SECRET_KEY || undefined,
     }
     : null;
 const s3Client = s3Config
@@ -26,10 +24,9 @@ const s3Client = s3Config
         region: s3Config.region,
         endpoint: s3Config.endpoint,
         forcePathStyle: env_1.default.STORAGE_S3_FORCE_PATH_STYLE,
-        credentials: {
-            accessKeyId: s3Config.accessKeyId,
-            secretAccessKey: s3Config.secretAccessKey,
-        },
+        ...(s3Config.accessKeyId && s3Config.secretAccessKey
+            ? { credentials: { accessKeyId: s3Config.accessKeyId, secretAccessKey: s3Config.secretAccessKey } }
+            : {}),
     })
     : null;
 const objectPrefix = env_1.default.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
@@ -60,6 +57,12 @@ router.use(async (req, res, next) => {
     let decodedPath = decodeKeyFromUrl(urlPath);
     // Remove leading slash if present
     decodedPath = decodedPath.replace(/^\//, "");
+    // Some providers (e.g. path-style base URL like https://s3.twcstorage.ru/<bucket>/...)
+    // embed the bucket name in the URL path. Our proxy path is "/api/files/*" and should only
+    // contain the object key, so strip a leading "<bucket>/" if present.
+    if (s3Config?.bucket && decodedPath.startsWith(s3Config.bucket + "/")) {
+        decodedPath = decodedPath.slice(s3Config.bucket.length + 1);
+    }
     // If objectPrefix is set, ensure the path starts with it
     // If decodedPath already starts with objectPrefix, use it as-is
     // Otherwise, prepend objectPrefix
@@ -81,10 +84,7 @@ router.use(async (req, res, next) => {
     logger_1.default.info({ urlPath, decodedPath, objectPrefix, key, originalPath: req.path }, "Resolving S3 key for file request");
     try {
         // First, check if object exists and get metadata
-        const headCommand = new client_s3_1.HeadObjectCommand({
-            Bucket: s3Config.bucket,
-            Key: key,
-        });
+        const headCommand = new client_s3_1.HeadObjectCommand({ Bucket: s3Config.bucket, Key: key });
         let contentType = "application/octet-stream";
         let contentLength;
         let lastModified;
@@ -105,10 +105,7 @@ router.use(async (req, res, next) => {
             logger_1.default.warn({ err: headError, key }, "HEAD request failed, will try GET");
         }
         // Get the object
-        const getCommand = new client_s3_1.GetObjectCommand({
-            Bucket: s3Config.bucket,
-            Key: key,
-        });
+        const getCommand = new client_s3_1.GetObjectCommand({ Bucket: s3Config.bucket, Key: key });
         const response = await s3Client.send(getCommand);
         // Set appropriate headers
         res.setHeader("Content-Type", response.ContentType || contentType);
