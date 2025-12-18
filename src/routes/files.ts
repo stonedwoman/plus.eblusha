@@ -12,15 +12,13 @@ const router = Router();
 const s3Config =
   env.STORAGE_S3_ENDPOINT &&
   env.STORAGE_S3_REGION &&
-  env.STORAGE_S3_BUCKET &&
-  env.STORAGE_S3_ACCESS_KEY &&
-  env.STORAGE_S3_SECRET_KEY
+  env.STORAGE_S3_BUCKET
     ? {
         endpoint: env.STORAGE_S3_ENDPOINT,
         region: env.STORAGE_S3_REGION,
         bucket: env.STORAGE_S3_BUCKET,
-        accessKeyId: env.STORAGE_S3_ACCESS_KEY,
-        secretAccessKey: env.STORAGE_S3_SECRET_KEY,
+        accessKeyId: env.STORAGE_S3_ACCESS_KEY || undefined,
+        secretAccessKey: env.STORAGE_S3_SECRET_KEY || undefined,
       }
     : null;
 
@@ -29,10 +27,35 @@ const s3Client = s3Config
       region: s3Config.region,
       endpoint: s3Config.endpoint,
       forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
-      credentials: {
-        accessKeyId: s3Config.accessKeyId,
-        secretAccessKey: s3Config.secretAccessKey,
-      },
+      credentials:
+        s3Config.accessKeyId && s3Config.secretAccessKey
+          ? { accessKeyId: s3Config.accessKeyId, secretAccessKey: s3Config.secretAccessKey }
+          : undefined,
+    })
+  : null;
+
+const fallbackS3Config =
+  env.STORAGE_S3_FALLBACK_ENDPOINT &&
+  env.STORAGE_S3_FALLBACK_REGION &&
+  env.STORAGE_S3_FALLBACK_BUCKET
+    ? {
+        endpoint: env.STORAGE_S3_FALLBACK_ENDPOINT,
+        region: env.STORAGE_S3_FALLBACK_REGION,
+        bucket: env.STORAGE_S3_FALLBACK_BUCKET,
+        accessKeyId: env.STORAGE_S3_FALLBACK_ACCESS_KEY || undefined,
+        secretAccessKey: env.STORAGE_S3_FALLBACK_SECRET_KEY || undefined,
+      }
+    : null;
+
+const fallbackS3Client = fallbackS3Config
+  ? new S3Client({
+      region: fallbackS3Config.region,
+      endpoint: fallbackS3Config.endpoint,
+      forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
+      credentials:
+        fallbackS3Config.accessKeyId && fallbackS3Config.secretAccessKey
+          ? { accessKeyId: fallbackS3Config.accessKeyId, secretAccessKey: fallbackS3Config.secretAccessKey }
+          : undefined,
     })
   : null;
 
@@ -91,39 +114,45 @@ router.use(async (req: Request, res: Response, next) => {
   logger.info({ urlPath, decodedPath, objectPrefix, key, originalPath: req.path }, "Resolving S3 key for file request");
 
   try {
-    // First, check if object exists and get metadata
-    const headCommand = new HeadObjectCommand({
-      Bucket: s3Config.bucket,
-      Key: key,
-    });
-    
-    let contentType = "application/octet-stream";
-    let contentLength: number | undefined;
-    let lastModified: Date | undefined;
-    let etag: string | undefined;
+    const fetchFrom = async (client: S3Client, bucket: string) => {
+      // First, check if object exists and get metadata
+      const headCommand = new HeadObjectCommand({ Bucket: bucket, Key: key });
 
-    try {
-      const headResponse = await s3Client.send(headCommand);
-      contentType = headResponse.ContentType || contentType;
-      contentLength = headResponse.ContentLength;
-      lastModified = headResponse.LastModified;
-      etag = headResponse.ETag;
-    } catch (headError: any) {
-      if (headError.name === "NotFound" || headError.$metadata?.httpStatusCode === 404) {
-        res.status(404).json({ message: "File not found" });
-        return;
+      let contentType = "application/octet-stream";
+      let contentLength: number | undefined;
+      let lastModified: Date | undefined;
+      let etag: string | undefined;
+
+      try {
+        const headResponse = await client.send(headCommand);
+        contentType = headResponse.ContentType || contentType;
+        contentLength = headResponse.ContentLength;
+        lastModified = headResponse.LastModified;
+        etag = headResponse.ETag;
+      } catch (headError: any) {
+        // If HEAD fails, try GET anyway (some S3-compatible services don't support HEAD)
+        logger.warn({ err: headError, key, bucket }, "HEAD request failed, will try GET");
       }
-      // If HEAD fails, try GET anyway (some S3-compatible services don't support HEAD)
-      logger.warn({ err: headError, key }, "HEAD request failed, will try GET");
+
+      const getCommand = new GetObjectCommand({ Bucket: bucket, Key: key });
+      const response = await client.send(getCommand);
+
+      return { response, contentType, contentLength, lastModified, etag };
+    };
+
+    let fetched: Awaited<ReturnType<typeof fetchFrom>> | null = null;
+    try {
+      fetched = await fetchFrom(s3Client, s3Config.bucket);
+    } catch (error: any) {
+      const notFound = error?.name === "NoSuchKey" || error?.name === "NotFound" || error?.$metadata?.httpStatusCode === 404;
+      if (!notFound || !fallbackS3Client || !fallbackS3Config) {
+        throw error;
+      }
+      logger.info({ key }, "Primary S3 missed; trying fallback S3");
+      fetched = await fetchFrom(fallbackS3Client, fallbackS3Config.bucket);
     }
 
-    // Get the object
-    const getCommand = new GetObjectCommand({
-      Bucket: s3Config.bucket,
-      Key: key,
-    });
-
-    const response = await s3Client.send(getCommand);
+    const { response, contentType, contentLength, lastModified, etag } = fetched!;
 
     // Set appropriate headers
     res.setHeader("Content-Type", response.ContentType || contentType);

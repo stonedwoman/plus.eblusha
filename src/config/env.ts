@@ -37,6 +37,12 @@ const envSchema = z.object({
   STORAGE_PREFIX: z.string().default("uploads"),
   STORAGE_S3_ACL: z.string().optional(),
   STORAGE_S3_SSE: z.string().default("AES256"),
+  // Optional fallback S3 for reading legacy objects after switching primary storage.
+  STORAGE_S3_FALLBACK_ENDPOINT: z.string().url().optional(),
+  STORAGE_S3_FALLBACK_REGION: z.string().optional(),
+  STORAGE_S3_FALLBACK_BUCKET: z.string().optional(),
+  STORAGE_S3_FALLBACK_ACCESS_KEY: z.string().optional(),
+  STORAGE_S3_FALLBACK_SECRET_KEY: z.string().optional(),
   // Optional symmetric key (base64 or hex, 32 bytes) for server-side encryption
   STORAGE_ENC_KEY: z.string().optional(),
 });

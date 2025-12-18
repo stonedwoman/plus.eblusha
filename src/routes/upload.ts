@@ -26,15 +26,13 @@ const s3Config =
   env.STORAGE_S3_ENDPOINT &&
   env.STORAGE_S3_REGION &&
   env.STORAGE_S3_BUCKET &&
-  env.STORAGE_S3_ACCESS_KEY &&
-  env.STORAGE_S3_SECRET_KEY &&
   env.STORAGE_PUBLIC_BASE_URL
     ? {
         endpoint: env.STORAGE_S3_ENDPOINT,
         region: env.STORAGE_S3_REGION,
         bucket: env.STORAGE_S3_BUCKET,
-        accessKeyId: env.STORAGE_S3_ACCESS_KEY,
-        secretAccessKey: env.STORAGE_S3_SECRET_KEY,
+        accessKeyId: env.STORAGE_S3_ACCESS_KEY || undefined,
+        secretAccessKey: env.STORAGE_S3_SECRET_KEY || undefined,
         publicBaseUrl: env.STORAGE_PUBLIC_BASE_URL.replace(/\/$/, ""),
       }
     : null;
@@ -44,10 +42,15 @@ const s3Client = s3Config
       region: s3Config.region,
       endpoint: s3Config.endpoint,
       forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
-      credentials: {
-        accessKeyId: s3Config.accessKeyId,
-        secretAccessKey: s3Config.secretAccessKey,
-      },
+      // If explicit keys aren't provided, fall back to the default AWS credential chain
+      // (e.g. /root/.aws/credentials for systemd services running as root).
+      credentials:
+        s3Config.accessKeyId && s3Config.secretAccessKey
+          ? {
+              accessKeyId: s3Config.accessKeyId,
+              secretAccessKey: s3Config.secretAccessKey,
+            }
+          : undefined,
     })
   : null;
 
