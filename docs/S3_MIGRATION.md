@@ -16,7 +16,7 @@
 ### 1. Создайте бакет в S3
 
 Выберите провайдера S3-совместимого хранилища:
-- **Hetzner Object Storage** (рекомендуется для EU)
+- **TWC Object Storage (SPB, ru-1)** (рекомендуется для РФ)
 - **AWS S3**
 - **MinIO** (self-hosted)
 - Другой S3-совместимый провайдер
@@ -34,12 +34,12 @@
 
 ```env
 # S3 Storage Configuration
-STORAGE_S3_ENDPOINT=https://hel1.your-objectstorage.com
-STORAGE_S3_REGION=us-east-1
-STORAGE_S3_BUCKET=eblusha-uploads
+STORAGE_S3_ENDPOINT=https://s3.twcstorage.ru
+STORAGE_S3_REGION=ru-1
+STORAGE_S3_BUCKET=<twc-bucket-id>
 STORAGE_S3_ACCESS_KEY=ваш-access-key
 STORAGE_S3_SECRET_KEY=ваш-secret-key
-STORAGE_PUBLIC_BASE_URL=https://eblusha-uploads.hel1.your-objectstorage.com
+STORAGE_PUBLIC_BASE_URL=https://s3.twcstorage.ru/<twc-bucket-id>
 STORAGE_PREFIX=uploads
 STORAGE_S3_FORCE_PATH_STYLE=true
 STORAGE_S3_ACL=public-read
@@ -48,12 +48,12 @@ STORAGE_S3_SSE=AES256
 
 #### Примеры для разных провайдеров:
 
-**Hetzner Object Storage:**
+**TWC (SPB, ru-1):**
 ```env
-STORAGE_S3_ENDPOINT=https://hel1.your-objectstorage.com
-STORAGE_S3_REGION=us-east-1
-STORAGE_S3_BUCKET=eblusha-uploads
-STORAGE_PUBLIC_BASE_URL=https://eblusha-uploads.hel1.your-objectstorage.com
+STORAGE_S3_ENDPOINT=https://s3.twcstorage.ru
+STORAGE_S3_REGION=ru-1
+STORAGE_S3_BUCKET=<twc-bucket-id>
+STORAGE_PUBLIC_BASE_URL=https://s3.twcstorage.ru/<twc-bucket-id>
 STORAGE_S3_FORCE_PATH_STYLE=true
 ```
 
@@ -82,7 +82,7 @@ STORAGE_S3_FORCE_PATH_STYLE=true
 - CORS настроен для доступа с вашего домена
 - Если используете политики бакета вместо ACL, можно убрать `STORAGE_S3_ACL`
 
-**Важно:** Все файлы теперь проксируются через `/api/files/...` вместо прямых ссылок на S3, чтобы избежать блокировки домена `your-objectstorage.com` в РФ. Новые загрузки автоматически используют прокси URL, а старые URL в базе конвертируются на фронтенде.
+**Важно:** Все файлы отдаются через `/api/files/...` вместо прямых ссылок на S3. Это упрощает миграции между storage-провайдерами, решает CORS и не требует менять ссылки в клиенте.
 
 ## Запуск миграции
 
