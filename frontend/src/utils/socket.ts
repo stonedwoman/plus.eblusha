@@ -25,8 +25,35 @@ function computeWsUrl() {
 const WS_URL = computeWsUrl()
 export const socket = io(WS_URL, {
   autoConnect: false,
-  transports: ['websocket'],
+  // Allow fallback to HTTP long-polling when WebSocket upgrade is blocked/flaky.
+  // This is critical for reliably receiving realtime statuses (presence/call) on restrictive networks.
+  transports: ['websocket', 'polling'],
+  upgrade: true,
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 500,
+  reconnectionDelayMax: 5000,
+  timeout: 12000,
 })
+
+function isDebugSocketEnabled(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const qs = new URLSearchParams(window.location.search)
+    const q = qs.get('ebDebugSocket')
+    if (q === '1' || q === 'true') return true
+    const raw = window.localStorage.getItem('eb-debug-socket')
+    return raw === '1' || raw === 'true'
+  } catch {
+    return false
+  }
+}
+
+function dbg(...args: any[]) {
+  if (!isDebugSocketEnabled()) return
+  // eslint-disable-next-line no-console
+  console.log('[SocketDbg]', ...args)
+}
 
 // Expose socket globally for Electron overlay bridge
 if (typeof window !== 'undefined') {
@@ -49,6 +76,7 @@ export function connectSocket() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(socket.io.opts as any).query = { token }
   if (!socket.connected) {
+    dbg('connect()', { WS_URL, hasToken: !!token, transports: socket.io.opts.transports })
     socket.connect()
   }
 }
@@ -66,7 +94,29 @@ if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== 'android') {
 }
 
 socket.on('disconnect', () => {
+  dbg('disconnect', { connected: socket.connected })
   console.log('socket disconnected')
+})
+
+socket.on('connect', () => {
+  dbg('connect', { id: socket.id, connected: socket.connected, transport: socket.io.engine?.transport?.name })
+})
+
+socket.on('connect_error', (err) => {
+  dbg('connect_error', { message: (err as any)?.message, description: (err as any)?.description, context: (err as any)?.context })
+})
+
+// Helpful to confirm we actually receive realtime status events in the browser
+socket.on('presence:update', (p) => {
+  dbg('presence:update', p)
+})
+
+socket.on('call:status', (p) => {
+  dbg('call:status', p)
+})
+
+socket.on('call:status:bulk', (p) => {
+  dbg('call:status:bulk', p)
 })
 
 // Contact request events

@@ -57,15 +57,75 @@ type SocketData = { userId: string };
 let ioInstance: Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData> | null = null;
 // Track call state per conversation to detect missed calls
 const callState: Map<string, { inviterId: string; accepted: boolean; video: boolean; startedAt?: number }> = new Map();
-// Track active group calls: conversationId -> { startedAt: number, participants: Set<string> }
-const activeGroupCalls: Map<string, { startedAt: number; participants: Set<string> }> = new Map();
+type ActiveCallInfo = { startedAt: number; participantsByUser: Map<string, Set<string>> };
+// Track active group calls: conversationId -> { startedAt: number, participantsByUser: Map<userId, Set<socketId>> }
+const activeGroupCalls: Map<string, ActiveCallInfo> = new Map();
+// Track active direct calls (1:1): conversationId -> { startedAt: number, participantsByUser: Map<userId, Set<socketId>> }
+const activeDirectCalls: Map<string, ActiveCallInfo> = new Map();
 let statusInterval: NodeJS.Timeout | null = null;
 
 type PresenceStatus = "ONLINE" | "OFFLINE" | "BACKGROUND";
+type BroadcastPresenceStatus = PresenceStatus | "IN_CALL";
 
 const socketFocusByUser: Map<string, Map<string, boolean>> = new Map();
 const persistedPresenceByUser: Map<string, PresenceStatus> = new Map();
+const broadcastedPresenceByUser: Map<string, BroadcastPresenceStatus> = new Map();
 const presenceUpdateQueue: Map<string, Promise<void>> = new Map();
+
+function addAllCurrentSockets(info: ActiveCallInfo, userId: string) {
+  const sockets = socketFocusByUser.get(userId);
+  if (!sockets || sockets.size === 0) return;
+  for (const socketId of sockets.keys()) {
+    addParticipant(info, userId, socketId);
+  }
+}
+
+function addParticipant(info: ActiveCallInfo, userId: string, socketId: string) {
+  const existing = info.participantsByUser.get(userId) ?? new Set<string>();
+  existing.add(socketId);
+  info.participantsByUser.set(userId, existing);
+}
+
+function removeParticipant(info: ActiveCallInfo, userId: string, socketId: string) {
+  const existing = info.participantsByUser.get(userId);
+  if (!existing) return;
+  existing.delete(socketId);
+  if (existing.size === 0) {
+    info.participantsByUser.delete(userId);
+  } else {
+    info.participantsByUser.set(userId, existing);
+  }
+}
+
+function listParticipants(info: ActiveCallInfo): string[] {
+  return Array.from(info.participantsByUser.keys());
+}
+
+function isUserInAnyCall(userId: string): boolean {
+  for (const info of activeGroupCalls.values()) {
+    if (info.participantsByUser.has(userId)) return true;
+  }
+  for (const info of activeDirectCalls.values()) {
+    if (info.participantsByUser.has(userId)) return true;
+  }
+  return false;
+}
+
+function computeBroadcastPresence(userId: string, base: PresenceStatus): BroadcastPresenceStatus {
+  if (base === "OFFLINE") return "OFFLINE";
+  if (isUserInAnyCall(userId)) return "IN_CALL";
+  return base;
+}
+
+function emitEffectivePresence(io: Server, userId: string, baseOverride?: PresenceStatus) {
+  const base = baseOverride ?? (persistedPresenceByUser.get(userId) ?? computePresenceStatus(userId));
+  const effective = computeBroadcastPresence(userId, base);
+  const prev = broadcastedPresenceByUser.get(userId);
+  if (prev === effective) return;
+  if (effective === "OFFLINE") broadcastedPresenceByUser.delete(userId);
+  else broadcastedPresenceByUser.set(userId, effective);
+  io.emit("presence:update", { userId, status: effective });
+}
 
 function setSocketFocus(userId: string, socketId: string, focused: boolean) {
   const current = socketFocusByUser.get(userId) ?? new Map<string, boolean>();
@@ -110,7 +170,8 @@ async function persistPresence(io: Server, userId: string, status: PresenceStatu
     logger.warn({ error, userId, status }, "Failed to persist presence state");
     return;
   }
-  io.emit("presence:update", { userId, status });
+  // Broadcast effective status (IN_CALL overrides base ONLINE/BACKGROUND), but keep DB persisted base presence.
+  emitEffectivePresence(io, userId, status);
 }
 
 function recomputePresence(io: Server, userId: string): Promise<void> {
@@ -162,7 +223,7 @@ export function initSocket(
     
     if (callInfo) {
       const elapsedMs = now - callInfo.startedAt;
-      const participants = Array.from(callInfo.participants);
+      const participants = listParticipants(callInfo);
       io.to(conversationId).emit("call:status", {
         conversationId,
         active: true,
@@ -222,6 +283,26 @@ export function initSocket(
     socket.join(userId);
     setSocketFocus(userId, socket.id, true);
     void recomputePresence(io, userId);
+
+    // Snapshot: if there are active calls right now, inform this socket so it can render "IN_CALL" immediately.
+    try {
+      const inCallUsers = new Set<string>();
+      for (const info of activeGroupCalls.values()) {
+        for (const uid of info.participantsByUser.keys()) inCallUsers.add(uid);
+      }
+      for (const info of activeDirectCalls.values()) {
+        for (const uid of info.participantsByUser.keys()) inCallUsers.add(uid);
+      }
+      for (const uid of inCallUsers) {
+        const base = persistedPresenceByUser.get(uid) ?? computePresenceStatus(uid);
+        const effective = computeBroadcastPresence(uid, base);
+        if (effective === "IN_CALL") {
+          socket.emit("presence:update", { userId: uid, status: "IN_CALL" });
+        }
+      }
+    } catch {
+      // ignore snapshot failures
+    }
 
     // Проверяем активные звонки при подключении
     // Если пользователю звонили, пока он был офлайн, отправляем событие входящего звонка
@@ -438,14 +519,18 @@ export function initSocket(
       const startedAt = Date.now();
       callState.set(conversationId, { inviterId: userId, accepted: false, video, startedAt });
 
-        if (isGroup) {
+      if (isGroup) {
         const callInfo = activeGroupCalls.get(conversationId);
         if (!callInfo) {
-          activeGroupCalls.set(conversationId, { startedAt, participants: new Set<string>() });
+          const info: ActiveCallInfo = { startedAt, participantsByUser: new Map<string, Set<string>>() };
+          addParticipant(info, userId, socket.id);
+          activeGroupCalls.set(conversationId, info);
         } else {
           callInfo.startedAt = startedAt;
-          callInfo.participants.add(userId);
+          addParticipant(callInfo, userId, socket.id);
         }
+        // Update global presence for inviter (IN_CALL override)
+        emitEffectivePresence(io, userId);
       }
       
       // Создаем системное сообщение о начале звонка только для групповых бесед
@@ -511,6 +596,25 @@ export function initSocket(
       const recipients = conv.participants.map((p) => p.userId).filter((id) => id !== userId);
       const st = callState.get(conversationId);
       if (st) callState.set(conversationId, { ...st, accepted: true });
+      const isGroup = !!conv.isGroup;
+
+      // For direct (1:1) calls, we treat the call as active starting at accept time,
+      // and wire it into presence so everyone sees "IN_CALL" reliably (even though the web client
+      // does not emit call:room:join for 1:1).
+      if (!isGroup) {
+        const startedAt = st?.startedAt ?? Date.now();
+        const info = activeDirectCalls.get(conversationId) ?? { startedAt, participantsByUser: new Map<string, Set<string>>() };
+        info.startedAt = startedAt;
+        // Add all currently connected sockets for both parties (works for multi-tab / multi-device).
+        if (st?.inviterId) {
+          addAllCurrentSockets(info, st.inviterId);
+        }
+        addAllCurrentSockets(info, userId);
+        activeDirectCalls.set(conversationId, info);
+        // Broadcast effective presence for both participants.
+        if (st?.inviterId) emitEffectivePresence(io, st.inviterId);
+        emitEffectivePresence(io, userId);
+      }
       // Отправляем call:accepted получателям звонка
       for (const rid of recipients) {
         io.to(rid).emit("call:accepted", { conversationId, by: { id: userId }, video });
@@ -582,6 +686,11 @@ export function initSocket(
         io.to(conversationId).emit("call:status", { conversationId, active: false });
         return;
       }
+
+      // Direct (1:1): clear any active-direct-call state and recompute presence for both sides.
+      activeDirectCalls.delete(conversationId);
+      if (st?.inviterId) emitEffectivePresence(io, st.inviterId);
+      emitEffectivePresence(io, userId);
 
       // treat as missed call if not accepted yet (1:1)
       if (st && !st.accepted) {
@@ -675,6 +784,11 @@ export function initSocket(
         return;
       }
 
+      // Direct (1:1): clear active call presence state
+      activeDirectCalls.delete(conversationId);
+      if (st?.inviterId) emitEffectivePresence(io, st.inviterId);
+      emitEffectivePresence(io, userId);
+
       const caller = await prisma.user.findUnique({ where: { id: userId }, select: { displayName: true, username: true } });
       const name = caller?.displayName ?? caller?.username ?? "пользователь";
 
@@ -750,83 +864,94 @@ export function initSocket(
       
       const isGroup = !!conv.isGroup;
       logger.info({ conversationId, userId, isGroup, participantCount: conv.participants.length }, "call:room:join received");
-      if (!isGroup) return; // Только для групповых звонков
-      
+
       // Убеждаемся, что сокет присоединен к комнате беседы для получения событий
       socket.join(conversationId);
+      // Track call participation for presence (both group and direct)
+      const targetMap = isGroup ? activeGroupCalls : activeDirectCalls;
       
       // Отмечаем звонок как принятый ТОЛЬКО когда присоединился кто-то кроме инициатора
       const st = callState.get(conversationId);
-      if (st && !st.accepted && userId !== st.inviterId) {
+      if (isGroup && st && !st.accepted && userId !== st.inviterId) {
         callState.set(conversationId, { ...st, accepted: true });
       }
       
-      let callInfo = activeGroupCalls.get(conversationId);
+      let callInfo = targetMap.get(conversationId);
       const isFirstParticipant = !callInfo;
       
       if (!callInfo) {
-        // Первый участник - начинаем звонок
-        // ВАЖНО: Для групп сообщение должно создаваться либо в call:invite, либо здесь
-        // Если callState существует, значит call:invite уже был вызван и сообщение создано
-        // Если callState не существует, значит создатель сразу присоединился без call:invite - создаем сообщение здесь
-        if (!st) {
-          const caller = await prisma.user.findUnique({ where: { id: userId }, select: { displayName: true, username: true } });
-          const name = caller?.displayName ?? caller?.username ?? "пользователь";
-          // Используем переданный video или по умолчанию false
-          const callVideo = video ?? false;
-          const startedAt = Date.now();
-          callState.set(conversationId, { inviterId: userId, accepted: true, video: callVideo, startedAt });
-          
-          // Создаем системное сообщение о начале звонка
-          try {
-            const callTypeText = callVideo ? "звонок с видео" : "звонок";
-            const now = new Date();
-            const msg = await prisma.message.create({
-              data: {
-                conversationId,
-                senderId: userId,
-                type: "SYSTEM",
-                content: `${name} начал ${callTypeText} ${formatTime(now)}`,
-                metadata: { started: true, video: callVideo } as any,
-              },
-            });
-            // Отправляем событие о новом сообщении всем участникам беседы через комнату
-            io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
-            // Также отправляем message:notify для всех участников (кроме отправителя)
-            for (const p of conv.participants) {
-              if (p.userId !== userId) {
-                io.to(p.userId).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+        // Initialize call info if needed
+        // For group calls we may need to create the "call started" message (if call:invite wasn't called).
+        if (isGroup) {
+          // Первый участник - начинаем звонок
+          // ВАЖНО: Для групп сообщение должно создаваться либо в call:invite, либо здесь
+          // Если callState существует, значит call:invite уже был вызван и сообщение создано
+          // Если callState не существует, значит создатель сразу присоединился без call:invite - создаем сообщение здесь
+          if (!st) {
+            const caller = await prisma.user.findUnique({ where: { id: userId }, select: { displayName: true, username: true } });
+            const name = caller?.displayName ?? caller?.username ?? "пользователь";
+            // Используем переданный video или по умолчанию false
+            const callVideo = video ?? false;
+            const startedAt = Date.now();
+            callState.set(conversationId, { inviterId: userId, accepted: true, video: callVideo, startedAt });
+            
+            // Создаем системное сообщение о начале звонка
+            try {
+              const callTypeText = callVideo ? "звонок с видео" : "звонок";
+              const now = new Date();
+              const msg = await prisma.message.create({
+                data: {
+                  conversationId,
+                  senderId: userId,
+                  type: "SYSTEM",
+                  content: `${name} начал ${callTypeText} ${formatTime(now)}`,
+                  metadata: { started: true, video: callVideo } as any,
+                },
+              });
+              // Отправляем событие о новом сообщении всем участникам беседы через комнату
+              io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
+              // Также отправляем message:notify для всех участников (кроме отправителя)
+              for (const p of conv.participants) {
+                if (p.userId !== userId) {
+                  io.to(p.userId).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                }
               }
+              logger.info({ conversationId, userId, video: callVideo, messageId: msg.id }, "Call started message created in call:room:join (no callState)");
+            } catch (error) {
+              logger.error({ error, conversationId, userId, video: callVideo }, "Failed to create call started message in call:room:join");
             }
-            logger.info({ conversationId, userId, video: callVideo, messageId: msg.id }, "Call started message created in call:room:join (no callState)");
-          } catch (error) {
-            logger.error({ error, conversationId, userId, video: callVideo }, "Failed to create call started message in call:room:join");
+          } else {
+            // callState существует, значит сообщение уже создано в call:invite
+            logger.info({ conversationId, userId, hasCallState: true }, "Call state exists, message should already be created in call:invite");
           }
-        } else {
-          // callState существует, значит сообщение уже создано в call:invite
-          logger.info({ conversationId, userId, hasCallState: true }, "Call state exists, message should already be created in call:invite");
         }
-        
-        callInfo = { startedAt: callState.get(conversationId)?.startedAt ?? Date.now(), participants: new Set<string>() };
-        activeGroupCalls.set(conversationId, callInfo);
+
+        callInfo = { startedAt: callState.get(conversationId)?.startedAt ?? Date.now(), participantsByUser: new Map<string, Set<string>>() };
+        targetMap.set(conversationId, callInfo);
       }
 
       // На всякий случай повторно читаем обновленную запись (map может вернуть новый объект)
-      callInfo = activeGroupCalls.get(conversationId) ?? callInfo;
+      callInfo = targetMap.get(conversationId) ?? callInfo;
       if (!callInfo) {
         logger.warn({ conversationId, userId }, "call:room:join missing callInfo after initialization");
         return;
       }
 
-      callInfo.participants.add(userId);
+      addParticipant(callInfo, userId, socket.id);
       logger.info({ conversationId, userId, isFirstParticipant }, "User added to activeGroupCalls participants");
 
-      // Обновляем состояние звонка для всех участников
-      broadcastCallStatus(conversationId);
+      // Обновляем состояние звонка для всех участников (только для групповых)
+      if (isGroup) {
+        broadcastCallStatus(conversationId);
+      }
+      // Update global presence (IN_CALL override) for joining user
+      emitEffectivePresence(io, userId);
     });
 
     socket.on("call:room:leave", async ({ conversationId }) => {
-      const callInfo = activeGroupCalls.get(conversationId);
+      const groupInfo = activeGroupCalls.get(conversationId);
+      const directInfo = activeDirectCalls.get(conversationId);
+      const callInfo = groupInfo ?? directInfo;
       if (!callInfo) {
         // Если звонок еще не успел инициировать комнату (например, создатель сразу отменил)
         const st = callState.get(conversationId);
@@ -841,60 +966,70 @@ export function initSocket(
         return;
       }
       
-      callInfo.participants.delete(userId);
+      removeParticipant(callInfo, userId, socket.id);
       
-      if (callInfo.participants.size === 0) {
-        activeGroupCalls.delete(conversationId);
-        try {
-          const st = callState.get(conversationId);
-          const startedAt = st?.startedAt ?? callInfo.startedAt;
-          const elapsedMs = Math.max(0, Date.now() - (startedAt ?? Date.now()));
-          const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
-          const hours = Math.floor(totalSec / 3600);
-          const minutes = Math.floor((totalSec % 3600) / 60);
-          const seconds = totalSec % 60;
-          const durationText = hours > 0
-            ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
-            : `${minutes}:${String(seconds).padStart(2, "0")}`;
+      const remainingUsers = callInfo.participantsByUser.size;
+      const isGroup = !!groupInfo;
+      if (remainingUsers === 0) {
+        if (isGroup) activeGroupCalls.delete(conversationId);
+        else activeDirectCalls.delete(conversationId);
+        if (isGroup) {
+          try {
+            const st = callState.get(conversationId);
+            const startedAt = st?.startedAt ?? callInfo.startedAt;
+            const elapsedMs = Math.max(0, Date.now() - (startedAt ?? Date.now()));
+            const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
+            const hours = Math.floor(totalSec / 3600);
+            const minutes = Math.floor((totalSec % 3600) / 60);
+            const seconds = totalSec % 60;
+            const durationText = hours > 0
+              ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+              : `${minutes}:${String(seconds).padStart(2, "0")}`;
 
-          const msg = await prisma.message.create({
-            data: {
-              conversationId,
-              senderId: userId,
-              type: "SYSTEM",
-              content: `Звонок продлился ${durationText} и был завершён`,
-              metadata: { ended: true, video: !!st?.video, duration: elapsedMs } as any,
-            },
-          });
+            const msg = await prisma.message.create({
+              data: {
+                conversationId,
+                senderId: userId,
+                type: "SYSTEM",
+                content: `Звонок продлился ${durationText} и был завершён`,
+                metadata: { ended: true, video: !!st?.video, duration: elapsedMs } as any,
+              },
+            });
 
-          io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
+            io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
 
-          const conv = await prisma.conversation.findUnique({
-            where: { id: conversationId },
-            include: { participants: true },
-          });
-          if (conv) {
-            for (const p of conv.participants) {
-              if (p.userId !== userId) {
-                io.to(p.userId).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+            const conv = await prisma.conversation.findUnique({
+              where: { id: conversationId },
+              include: { participants: true },
+            });
+            if (conv) {
+              for (const p of conv.participants) {
+                if (p.userId !== userId) {
+                  io.to(p.userId).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                }
               }
             }
+
+            logger.info({ conversationId, userId, messageId: msg.id, duration: elapsedMs }, "Group call duration message created in call:room:leave");
+            callState.delete(conversationId);
+          } catch (error) {
+            logger.warn({ error, conversationId, userId }, "Failed to create call ended message on room leave");
           }
 
-          logger.info({ conversationId, userId, messageId: msg.id, duration: elapsedMs }, "Group call duration message created in call:room:leave");
-          callState.delete(conversationId);
-        } catch (error) {
-          logger.warn({ error, conversationId, userId }, "Failed to create call ended message on room leave");
+          io.to(conversationId).emit("call:status", {
+            conversationId,
+            active: false,
+          });
+          logger.info({ conversationId, userId }, "Call status set to inactive in call:room:leave (no participants remain)");
         }
-
-        io.to(conversationId).emit("call:status", {
-          conversationId,
-          active: false,
-        });
-        logger.info({ conversationId, userId }, "Call status set to inactive in call:room:leave (no participants remain)");
       } else {
-      broadcastCallStatus(conversationId);
+        if (isGroup) {
+          broadcastCallStatus(conversationId);
+        }
       }
+
+      // Update global presence for leaving user
+      emitEffectivePresence(io, userId);
     });
 
     socket.on("call:status:request", async ({ conversationIds }) => {
@@ -911,7 +1046,7 @@ export function initSocket(
             active: true,
             startedAt: callInfo.startedAt,
             elapsedMs,
-            participants: Array.from(callInfo.participants),
+            participants: listParticipants(callInfo),
           };
         } else {
           statuses[conversationId] = {
@@ -930,15 +1065,26 @@ export function initSocket(
       
       // Удаляем пользователя из всех активных звонков
       for (const [conversationId, callInfo] of activeGroupCalls.entries()) {
-        if (callInfo.participants.has(userId)) {
-          callInfo.participants.delete(userId);
-          if (callInfo.participants.size === 0) {
+        if (callInfo.participantsByUser.has(userId)) {
+          removeParticipant(callInfo, userId, socket.id);
+          if (callInfo.participantsByUser.size === 0) {
             activeGroupCalls.delete(conversationId);
           }
           // Отправляем обновленный статус
           broadcastCallStatus(conversationId);
         }
       }
+
+      for (const [conversationId, callInfo] of activeDirectCalls.entries()) {
+        if (callInfo.participantsByUser.has(userId)) {
+          removeParticipant(callInfo, userId, socket.id);
+          if (callInfo.participantsByUser.size === 0) {
+            activeDirectCalls.delete(conversationId);
+          }
+        }
+      }
+      // Presence may flip from IN_CALL to base presence due to call removal on disconnecting.
+      emitEffectivePresence(io, userId);
       
       removeSocketFocus(userId, socket.id);
       const remainingConnections = socketFocusByUser.get(userId)?.size ?? 0;
