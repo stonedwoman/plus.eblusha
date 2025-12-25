@@ -101,7 +101,12 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
             // For data URLs, just retry with the same URL
             setCurrentImageUrl(resolvedAvatarUrl)
           } else {
-            const url = new URL(resolvedAvatarUrl)
+            // resolvedAvatarUrl can be a relative proxy URL like "/api/files/...".
+            // new URL(relative) throws, so always provide a base in the browser.
+            const url = new URL(
+              resolvedAvatarUrl,
+              typeof window !== 'undefined' ? window.location.origin : undefined,
+            )
             url.searchParams.set('_retry', String(retryCount + 1))
             url.searchParams.set('_t', String(Date.now()))
             setCurrentImageUrl(url.toString())

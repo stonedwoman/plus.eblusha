@@ -454,7 +454,7 @@ a {
 
 .imglb-stage {
   position: absolute;
-  inset: 56px 0 82px 0; /* topbar + thumbs */
+  inset: 56px 0 var(--imglb-thumbs-h, 82px) 0; /* topbar + thumbs */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -504,7 +504,7 @@ a {
 .imglb-thumbs {
   position: absolute;
   left: 0; right: 0; bottom: 0;
-  height: 82px;
+  height: var(--imglb-thumbs-h, 82px);
   padding: 10px 14px 12px;
   z-index: 2;
   background: linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0));
@@ -513,6 +513,8 @@ a {
   height: 100%;
   display: flex;
   gap: 8px;
+  align-items: center;
+  justify-content: center; /* REQUIRED: center thumbnails on desktop when they fit */
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior: contain;
@@ -520,10 +522,11 @@ a {
   -webkit-overflow-scrolling: touch;
   touch-action: pan-x;
   padding-bottom: 6px;
+  padding-inline: 18px;
 }
 .imglb-thumb {
-  width: 58px;
-  height: 58px;
+  width: clamp(60px, calc(var(--imglb-thumbs-h, 82px) - 22px), 140px);
+  height: clamp(60px, calc(var(--imglb-thumbs-h, 82px) - 22px), 140px);
   padding: 0;
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,0.14);
@@ -538,7 +541,7 @@ a {
 @media (max-width: 768px) {
   .imglb-media { width: 98vw; height: 78vh; border-radius: 12px; }
   .imglb-nav { display: none; } /* swipe on mobile */
-  .imglb-stage { inset: 56px 0 72px 0; }
+  .imglb-stage { inset: 56px 0 var(--imglb-thumbs-h, 72px) 0; }
   .imglb-thumbs { height: 72px; padding: 8px 12px 10px; }
   .imglb-thumb { width: 52px; height: 52px; border-radius: 10px; }
 }
