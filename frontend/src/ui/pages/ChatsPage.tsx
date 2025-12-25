@@ -1721,17 +1721,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     if (v === 'ONLINE' || v === 'AWAY' || v === 'BACKGROUND' || v === 'IN_CALL' || v === 'OFFLINE') setMyPresence(v)
   }, [meInfoQuery.data])
 
-  // Lightbox keyboard controls
-  useEffect(() => {
-    if (!lightbox.open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setLightbox((l) => ({ ...l, open: false }))
-      if (e.key === 'ArrowLeft') setLightbox((l) => ({ ...l, index: (l.index - 1 + l.items.length) % l.items.length }))
-      if (e.key === 'ArrowRight') setLightbox((l) => ({ ...l, index: (l.index + 1) % l.items.length }))
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [lightbox.open])
+  // Lightbox keyboard controls are handled inside <ImageLightbox /> now.
 
   // Live profile updates (avatar/name) across app
   useEffect(() => {
@@ -3660,7 +3650,29 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             </div>
             <div className="tile" onClick={() => setMePopupOpen(true)} style={{ cursor: 'pointer', marginTop: 0 }}>
             {(() => {
-              const directStatus = myPresence ?? (meInfoQuery.data as any)?.status
+              // Force red presence while we are participating in ANY call type (1:1 or group),
+              // even if server presence lags behind.
+              const isMeInAnyCall = (() => {
+                const myId = me?.id
+                if (outgoingCall?.conversationId) return true
+                if (callConvId) return true
+                if (minimizedCallConvId) return true
+                if (callStore.activeConvId) return true
+                if (myId) {
+                  try {
+                    for (const entry of Object.values(activeCalls || {})) {
+                      if (entry?.active && Array.isArray(entry.participants) && entry.participants.includes(myId)) {
+                        return true
+                      }
+                    }
+                  } catch {
+                    // ignore
+                  }
+                }
+                return false
+              })()
+
+              const directStatus = isMeInAnyCall ? 'IN_CALL' : (myPresence ?? (meInfoQuery.data as any)?.status)
               const fallbackStatus = isSocketOnline ? 'ONLINE' : 'OFFLINE'
               const normalized = (directStatus ?? fallbackStatus ?? 'OFFLINE').toString().toUpperCase()
               const allowedPresence = ['ONLINE', 'AWAY', 'BACKGROUND', 'IN_CALL', 'OFFLINE'] as const
@@ -4592,17 +4604,14 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     const el = nodesByMessageId.current.get(qid)
                     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
                   }
-                  const imagesInThread = fullList
-                    .filter((x: any) => (x.attachments || []).some((a: any) => a.type === 'IMAGE'))
-                    .flatMap((x: any) =>
-                      x.attachments
-                        .filter((a: any) => a.type === 'IMAGE')
-                        .map((a: any) => resolveAttachmentUrl(a))
-                        .filter((u: string | null): u is string => !!u),
-                    )
+                  // Lightbox should be scoped to this message (not the whole chat).
+                  const imagesInMessage = (m.attachments || [])
+                    .filter((a: any) => a?.type === 'IMAGE')
+                    .map((a: any) => resolveAttachmentUrl(a))
+                    .filter((u: string | null): u is string => !!u)
                   const openLightbox = (url: string) => {
-                    const index = imagesInThread.findIndex((u: string) => u === url)
-                    setLightbox({ open: true, index: index >= 0 ? index : 0, items: imagesInThread })
+                    const index = imagesInMessage.findIndex((u: string) => u === url)
+                    setLightbox({ open: true, index: index >= 0 ? index : 0, items: imagesInMessage })
                   }
                       const onLongPress = {
                         onPointerDown: (e: any) => {

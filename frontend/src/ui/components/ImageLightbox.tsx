@@ -48,11 +48,19 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
   const url = items[index] || ''
   const dims = url ? dimsByUrl[url] : undefined
 
+  const thumbsHpx = useMemo(() => {
+    if (total <= 1) return 24
+    const isMobile = viewport.w <= 768
+    if (isMobile) return 72
+    // Desktop: at least 20% of viewport height (but not too tiny)
+    return Math.max(140, Math.round(viewport.h * 0.2))
+  }, [total, viewport.w, viewport.h])
+
   const fit = useMemo(() => {
     if (!dims || !viewport.w || !viewport.h) return { scale: 1, maxX: 0, maxY: 0 }
     // leave space for chrome (topbar + thumbs) and some padding
     const TOP = 56
-    const BOTTOM = total > 1 ? 82 : 24
+    const BOTTOM = thumbsHpx
     const PAD = 28
     const usableW = Math.max(0, viewport.w - PAD * 2)
     const usableH = Math.max(0, viewport.h - TOP - BOTTOM - PAD * 2)
@@ -63,7 +71,7 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
     const maxX = Math.max(0, (scaledW - usableW) / 2)
     const maxY = Math.max(0, (scaledH - usableH) / 2)
     return { scale: actualScale, maxX, maxY }
-  }, [dims, viewport.w, viewport.h, zoom, total])
+  }, [dims, viewport.w, viewport.h, zoom, thumbsHpx])
 
   const goPrev = () => {
     if (!canNav) return
@@ -320,7 +328,12 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
   })()
 
   const content = (
-    <div className="imglb-root" ref={containerRef} onWheel={onWheel}>
+    <div
+      className="imglb-root"
+      ref={containerRef}
+      onWheel={onWheel}
+      style={{ ['--imglb-thumbs-h' as any]: `${thumbsHpx}px` }}
+    >
       <div className="imglb-backdrop" onClick={onClose} />
 
       <div className="imglb-topbar">

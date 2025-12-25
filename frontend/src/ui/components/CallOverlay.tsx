@@ -55,7 +55,6 @@ if (typeof window !== 'undefined' && typeof navigator !== 'undefined' && navigat
 }
 import { createPortal } from 'react-dom'
 import { LiveKitRoom, VideoConference, MediaDeviceSelect, useConnectionState, useLocalParticipant, useRoomContext } from '@livekit/components-react'
-import { useKrispNoiseFilter } from '@livekit/components-react/krisp'
 import '@livekit/components-styles'
 import { X } from 'lucide-react'
 import { api } from '../../utils/api'
@@ -90,7 +89,6 @@ const LK_SETTINGS_KEYS = {
   aec: 'eb.lk.webrtc.aec',
   ns: 'eb.lk.webrtc.ns',
   agc: 'eb.lk.webrtc.agc',
-  krisp: 'eb.lk.krisp.enabled',
 } as const
 
 function readStoredBool(key: string, fallback: boolean): boolean {
@@ -1498,35 +1496,10 @@ function ParticipantVolumeUpdater() {
 function CallSettings() {
   const room = useRoomContext()
   const { isMicrophoneEnabled, microphoneTrack } = useLocalParticipant()
-  const krisp = useKrispNoiseFilter()
 
   const [aec, setAec] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.aec, true))
   const [ns, setNs] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.ns, true))
   const [agc, setAgc] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.agc, true))
-  const [krispDesired, setKrispDesired] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.krisp, false))
-  const [krispSupport, setKrispSupport] = useState<'checking' | 'supported' | 'unsupported' | 'error'>('checking')
-  const [krispSupportDetails, setKrispSupportDetails] = useState<string>('Проверяем поддержку Krisp…')
-
-  useEffect(() => {
-    let alive = true
-    async function checkKrispSupport() {
-      try {
-        const mod = await import('@livekit/krisp-noise-filter')
-        const supported = typeof mod.isKrispNoiseFilterSupported === 'function' ? mod.isKrispNoiseFilterSupported() : false
-        if (!alive) return
-        setKrispSupport(supported ? 'supported' : 'unsupported')
-        setKrispSupportDetails(supported ? 'Браузер поддерживает Krisp.' : 'Этот браузер не поддерживает Krisp.')
-      } catch (e: any) {
-        if (!alive) return
-        setKrispSupport('error')
-        setKrispSupportDetails('Не удалось проверить поддержку Krisp (ошибка загрузки модуля).')
-      }
-    }
-    checkKrispSupport()
-    return () => {
-      alive = false
-    }
-  }, [])
 
   // Apply WebRTC constraints by restarting the mic track with AudioCaptureOptions.
   const lastAppliedRef = useRef<string>('')
@@ -1544,24 +1517,6 @@ function CallSettings() {
       })
       .catch((e) => console.warn('[CallSettings] Failed to apply mic capture options', e))
   }, [room, isMicrophoneEnabled, aec, ns, agc, microphoneTrack?.trackSid])
-
-  // Apply Krisp only when mic is enabled (to avoid LiveKit hook pending state getting stuck).
-  useEffect(() => {
-    if (!isMicrophoneEnabled) return
-    if (krispSupport !== 'supported') return
-    if (krisp.isNoiseFilterPending) return
-    if (krispDesired === krisp.isNoiseFilterEnabled) return
-    krisp
-      .setNoiseFilterEnabled(krispDesired)
-      .catch((e) => {
-        // Common failure mode in our deployment: Krisp backend endpoint blocked by CORS.
-        console.warn('[CallSettings] Krisp setNoiseFilterEnabled failed, disabling toggle', e)
-        setKrispDesired(false)
-        writeStoredBool(LK_SETTINGS_KEYS.krisp, false)
-        setKrispSupport('error')
-        setKrispSupportDetails('Krisp недоступен (ошибка подключения к сервису шумоподавления).')
-      })
-  }, [isMicrophoneEnabled, microphoneTrack?.trackSid, krispDesired, krisp.isNoiseFilterPending, krisp.isNoiseFilterEnabled, krispSupport])
 
   // Clean device labels: remove device codes like "(0bda:0567)" or "(10d6:4801)" and wrap text in span for animation
   // Also filter out duplicate devices with "Оборудование -" or "По умолчанию -" prefixes
@@ -1724,25 +1679,6 @@ function CallSettings() {
           onChange={(v) => {
             setAgc(v)
             writeStoredBool(LK_SETTINGS_KEYS.agc, v)
-          }}
-        />
-        <ToggleRow
-          label="Krisp (улучшенное шумоподавление)"
-          description={`${krispSupportDetails} Может быть недоступен на self-hosted LiveKit.`}
-          checked={krispDesired}
-          disabled={!isMicrophoneEnabled || krisp.isNoiseFilterPending || krispSupport === 'unsupported' || krispSupport === 'error'}
-          rightHint={
-            !isMicrophoneEnabled ? 'Включите микрофон'
-              : krispSupport === 'checking' ? 'Проверяем…'
-                : krispSupport === 'unsupported' ? 'Не поддерживается'
-                  : krispSupport === 'error' ? 'Ошибка проверки'
-                    : krisp.isNoiseFilterPending ? 'Применяем…'
-                      : krispDesired && !krisp.isNoiseFilterEnabled ? 'Не активно'
-                        : krisp.isNoiseFilterEnabled ? 'Активно' : ''
-          }
-          onChange={(v) => {
-            setKrispDesired(v)
-            writeStoredBool(LK_SETTINGS_KEYS.krisp, v)
           }}
         />
         <div className="eb-settings-note">
