@@ -587,6 +587,270 @@ a {
   gap: 12px;
 }
 
+/* Contacts modal (ChatsPage) */
+.contacts-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(10,12,16,0.62);
+  backdrop-filter: blur(6px) saturate(115%);
+}
+
+.contacts-modal {
+  width: min(560px, 92vw);
+  max-height: min(760px, 88vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface-200);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sharp);
+}
+
+.contacts-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--surface-border);
+  background: linear-gradient(to bottom, rgba(255,255,255,0.03), rgba(255,255,255,0));
+}
+
+.contacts-modal__title {
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  font-size: 16px;
+}
+
+.contacts-modal__body {
+  padding: 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.contacts-section { display: flex; flex-direction: column; gap: 10px; }
+.contacts-section__title { font-weight: 750; font-size: 14px; }
+.contacts-section__hint { color: var(--text-muted); font-size: 12px; margin-top: -6px; }
+.contacts-section__list { display: flex; flex-direction: column; gap: 8px; }
+
+.contacts-search-toggle {
+  -webkit-tap-highlight-color: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--surface-border);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.contacts-search-toggle:hover { background: var(--surface-100); border-color: var(--surface-border-strong); }
+.contacts-search-toggle:focus-visible { outline: 3px solid rgba(255,255,255,0.14); outline-offset: 2px; }
+.contacts-search-toggle__label { font-weight: 700; font-size: 13px; }
+.contacts-search-toggle__right { display: inline-flex; align-items: center; gap: 10px; }
+.contacts-search-toggle__meta { font-size: 12px; color: var(--text-muted); }
+.contacts-search-toggle__chev { color: var(--text-muted); transition: transform .15s ease; }
+.contacts-search-toggle__chev.is-open { transform: rotate(180deg); }
+
+.contacts-modal .tile { cursor: default; }
+.contacts-modal .tile:hover { transform: none; box-shadow: 0 10px 22px rgba(5,6,9,0.24); }
+
+.contacts-tile__main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.contacts-tile__name { font-weight: 700; line-height: 1.15; }
+.contacts-tile__meta { font-size: 12px; color: var(--text-muted); }
+
+.contacts-nav-item {
+  -webkit-tap-highlight-color: transparent;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--surface-border);
+  background: transparent;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.contacts-nav-item:hover { background: var(--surface-100); border-color: var(--surface-border-strong); }
+.contacts-nav-item:active { background: rgba(255,255,255,0.03); }
+.contacts-nav-item:focus-visible { outline: 3px solid rgba(255,255,255,0.14); outline-offset: 2px; }
+.contacts-nav-item.is-active {
+  border-color: var(--brand-600);
+  background: rgba(227,139,10,0.06);
+  box-shadow: 0 0 0 3px rgba(227,139,10,0.10);
+}
+
+.contacts-nav-item__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.contacts-nav-item__name-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.contacts-nav-item__name {
+  font-weight: 750;
+  line-height: 1.15;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contacts-nav-item__status { font-size: 12px; color: var(--text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.contacts-secret-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--surface-border);
+  background: rgba(255,255,255,0.03);
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  position: relative;
+}
+.contacts-secret-badge.is-pending::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.55);
+}
+
+.contacts-menu-btn {
+  -webkit-tap-highlight-color: transparent;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  line-height: 1;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+.contacts-menu-btn:hover { background: var(--surface-100); border-color: var(--surface-border); color: var(--text-primary); }
+.contacts-menu-btn:focus-visible { outline: 3px solid rgba(255,255,255,0.14); outline-offset: 2px; }
+
+.contacts-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+}
+.contacts-actions .btn { padding: 9px 12px; }
+
+.contacts-eblid__inputs {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  padding: 2px 0;
+}
+
+.contacts-eblid__digit {
+  width: 54px;
+  height: 58px;
+  font-size: 22px;
+  font-weight: 750;
+  text-align: center;
+  border-radius: 12px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface-100);
+  color: var(--text-primary);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.14);
+  transition: border-color .15s ease, box-shadow .15s ease, transform .08s ease;
+}
+.contacts-eblid__digit:focus {
+  outline: none;
+  border-color: var(--brand-600);
+  box-shadow: 0 0 0 4px rgba(227,139,10,.18), 0 10px 22px rgba(0,0,0,0.22);
+  transform: translateY(-1px);
+}
+
+.contacts-my-eblid { display: flex; align-items: center; gap: 10px; padding-top: 2px; }
+.contacts-my-eblid__label { font-size: 12px; color: var(--text-muted); }
+.contacts-my-eblid__value {
+  font-weight: 900;
+  letter-spacing: 0.28em;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.contacts-friends__list {
+  max-height: 320px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.contacts-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 10px 10px 4px;
+}
+
+.contacts-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: transparent;
+}
+.ctx-menu {
+  z-index: 81;
+  background: var(--surface-200);
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sharp);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  color: var(--text-primary);
+}
+.ctx-menu button {
+  background: transparent;
+  border: 0;
+  text-align: left;
+  padding: 10px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-weight: 550;
+}
+.ctx-menu button:hover { background: var(--surface-100); }
+.ctx-menu button:focus-visible { outline: 3px solid rgba(255,255,255,0.14); outline-offset: 2px; }
+.ctx-menu__danger { color: #f87171 !important; }
+.ctx-menu__danger:hover { background: rgba(248,113,113,0.10) !important; }
+
+@media (max-width: 480px) {
+  .contacts-overlay { padding: 10px; }
+  .contacts-modal { width: 94vw; border-radius: 16px; }
+  .contacts-modal__body { padding: 12px; }
+  .contacts-eblid__inputs { gap: 8px; }
+  .contacts-eblid__digit { width: 46px; height: 52px; border-radius: 12px; font-size: 20px; }
+  .contacts-friends__list { max-height: 42vh; }
+}
+
 .settings-page form {
   display: flex;
   flex-direction: column;
@@ -1025,4 +1289,78 @@ textarea[placeholder="Напишите сообщение..."]::placeholder {
   bottom: 0;
   z-index: 9999;
   background: var(--paper);
+}
+
+/* =========================================================
+   Call overlay: replace LiveKit inline SVG control icons.
+
+   LiveKit sets stable attributes on toggle buttons:
+   - data-lk-source="microphone" | "camera" | "screen_share"
+   - data-lk-enabled="true|false"
+
+   We hide LiveKit's built-in <svg> and render our own icon via ::before.
+   Icons live in /frontend/public/call-icons/*.svg (can be swapped without touching code).
+   ========================================================= */
+
+.call-container .lk-control-bar button[data-lk-source="microphone"] > svg,
+.call-container .lk-control-bar button[data-lk-source="camera"] > svg,
+.call-container .lk-control-bar button[data-lk-source="screen_share"] > svg,
+.call-container .lk-control-bar button.lk-settings-toggle > svg,
+.call-container .lk-control-bar button.lk-disconnect-button > svg {
+  display: none !important;
+}
+
+.call-container .lk-control-bar button[data-lk-source="microphone"],
+.call-container .lk-control-bar button[data-lk-source="camera"],
+.call-container .lk-control-bar button[data-lk-source="screen_share"],
+.call-container .lk-control-bar button.lk-settings-toggle,
+.call-container .lk-control-bar button.lk-disconnect-button {
+  --eb-call-icon: none;
+}
+
+.call-container .lk-control-bar button[data-lk-source="microphone"]::before,
+.call-container .lk-control-bar button[data-lk-source="camera"]::before,
+.call-container .lk-control-bar button[data-lk-source="screen_share"]::before,
+.call-container .lk-control-bar button.lk-settings-toggle::before,
+.call-container .lk-control-bar button.lk-disconnect-button::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  background-image: var(--eb-call-icon);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+/* Microphone */
+.call-container .lk-control-bar button[data-lk-source="microphone"][data-lk-enabled="true"] {
+  --eb-call-icon: url("/call-icons/mic-on.svg");
+}
+.call-container .lk-control-bar button[data-lk-source="microphone"][data-lk-enabled="false"] {
+  --eb-call-icon: url("/call-icons/mic-off.svg");
+}
+
+/* Camera */
+.call-container .lk-control-bar button[data-lk-source="camera"][data-lk-enabled="true"] {
+  --eb-call-icon: url("/call-icons/cam-on.svg");
+}
+.call-container .lk-control-bar button[data-lk-source="camera"][data-lk-enabled="false"] {
+  --eb-call-icon: url("/call-icons/cam-off.svg");
+}
+
+/* Screen share: when enabled, show "stop" icon */
+.call-container .lk-control-bar button[data-lk-source="screen_share"][data-lk-enabled="true"] {
+  --eb-call-icon: url("/call-icons/screen-off.svg");
+}
+.call-container .lk-control-bar button[data-lk-source="screen_share"][data-lk-enabled="false"] {
+  --eb-call-icon: url("/call-icons/screen-on.svg");
+}
+
+/* Settings / Leave */
+.call-container .lk-control-bar button.lk-settings-toggle {
+  --eb-call-icon: url("/call-icons/settings.svg");
+}
+.call-container .lk-control-bar button.lk-disconnect-button {
+  --eb-call-icon: url("/call-icons/leave.svg");
 }

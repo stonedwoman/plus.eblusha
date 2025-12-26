@@ -255,6 +255,14 @@ export default function ChatsPage() {
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; messageId: string | null }>(() => ({ open: false, x: 0, y: 0, messageId: null }))
   const [convMenu, setConvMenu] = useState<{ open: boolean; x: number; y: number; conversationId: string | null }>(() => ({ open: false, x: 0, y: 0, conversationId: null }))
   const convMenuRef = useRef<HTMLDivElement | null>(null)
+  const [contactMenu, setContactMenu] = useState<{
+    open: boolean
+    x: number
+    y: number
+    contactId: string | null
+    user: any | null
+  }>(() => ({ open: false, x: 0, y: 0, contactId: null, user: null }))
+  const contactMenuRef = useRef<HTMLDivElement | null>(null)
   const [headerMenu, setHeaderMenu] = useState<{ open: boolean; anchor: HTMLElement | null }>(() => ({ open: false, anchor: null }))
   const headerMenuRef = useRef<HTMLDivElement | null>(null)
   const convScrollRef = useRef<HTMLDivElement | null>(null)
@@ -2831,6 +2839,16 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
 
   function onChangeDigit(idx: number, val: string) {
     if (!/^\d?$/.test(val)) return
+    // If user starts typing from the first digit, treat it as "start over" and clear the rest.
+    // This matches common OTP UX and avoids accidental mixing of old/new digits.
+    if (idx === 0 && val && eblDigits.some(Boolean)) {
+      const next = [val, '', '', '']
+      setEblDigits(next)
+      setFoundUser(null)
+      eblRefs[1].current?.focus()
+      return
+    }
+
     const next = [...eblDigits]
     next[idx] = val
     setEblDigits(next)
@@ -2848,6 +2866,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       setFoundUser(null)
     }
   }
+
+  // Clear EBLID input when closing the contacts overlay
+  useEffect(() => {
+    if (contactsOpen) return
+    setEblDigits(['', '', '', ''])
+    setFoundUser(null)
+  }, [contactsOpen])
 
   async function openContactsOverlay() {
     setContactsOpen(true)
@@ -3370,6 +3395,50 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return set
   }, [activeCalls, conversationsQuery.data])
 
+  const secretChatStatusByUserId = useMemo(() => {
+    const map: Record<string, 'ACTIVE' | 'PENDING'> = {}
+    try {
+      const rows = (conversationsQuery.data || []) as any[]
+      for (const row of rows) {
+        const conv = row?.conversation
+        if (!conv?.isSecret) continue
+        const status = ((conv.secretStatus ?? 'ACTIVE') as string).toString().toUpperCase()
+        if (status !== 'ACTIVE' && status !== 'PENDING') continue
+        const parts = Array.isArray(conv.participants) ? conv.participants : []
+        const others = parts
+          .filter((p: any) => (currentUserId ? p?.user?.id !== currentUserId : true))
+          .map((p: any) => p?.user)
+          .filter(Boolean)
+        if (others.length !== 1) continue
+        const peerId = others[0]?.id
+        if (typeof peerId !== 'string') continue
+        const prev = map[peerId]
+        // Prefer ACTIVE over PENDING if both exist.
+        if (!prev || status === 'ACTIVE') {
+          map[peerId] = status as 'ACTIVE' | 'PENDING'
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return map
+  }, [conversationsQuery.data, currentUserId])
+
+  const activeDirectPeerId = useMemo(() => {
+    try {
+      const conv = activeConversation
+      if (!conv || conv.isGroup || conv.isSecret) return null
+      const parts = Array.isArray(conv.participants) ? conv.participants : []
+      const others = parts
+        .filter((p: any) => (currentUserId ? p?.user?.id !== currentUserId : true))
+        .map((p: any) => p?.user?.id)
+        .filter((id: any) => typeof id === 'string')
+      return (others[0] as string | undefined) ?? null
+    } catch {
+      return null
+    }
+  }, [activeConversation, currentUserId])
+
   function formatPresence(u: any): string {
     const status = (u?.id ? effectiveUserStatus(u) : ((u?.status as string | undefined) ?? 'OFFLINE')) as string | undefined
     const last = u.lastSeenAt ? new Date(u.lastSeenAt) : null
@@ -3392,6 +3461,15 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     const dateStr = last.toLocaleDateString()
     const timeStr = last.toLocaleTimeString([], opts)
     return `был(а) онлайн ${dateStr} в ${timeStr}`
+  }
+
+  function formatPresenceForContacts(u: any): string {
+    const raw = formatPresence(u)
+    if (raw === 'ОНЛАЙН') return 'онлайн'
+    if (raw === 'В ФОНЕ') return 'в фоне'
+    if (raw === 'В ЗВОНКЕ') return 'в звонке'
+    if (raw === 'В БЕСЕДЕ') return 'в беседе'
+    return raw
   }
 
   function formatDuration(ms: number): string {
@@ -6903,116 +6981,308 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     )}
 
     {contactsOpen && (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }}>
-        <div style={{ background: 'var(--surface-200)', padding: 16, borderRadius: 16, width: 520, border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-sharp)', color: 'var(--text-primary)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <div style={{ fontWeight: 700 }}>Контакты</div>
-            <button className="btn btn-icon btn-ghost" onClick={() => setContactsOpen(false)}><X size={16} /></button>
-          </div>
-          {incomingContactsQuery.data && incomingContactsQuery.data.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontWeight: 700, marginBottom: 6 }}>Новые запросы</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {incomingContactsQuery.data.map((c: any) => (
-                  <div key={c.id} className="tile">
-                    <Avatar name={(c.friend.displayName ?? c.friend.username)} id={c.friend.id} presence={c.friend.status} avatarUrl={c.friend.avatarUrl ?? undefined} />
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{c.friend.displayName ?? c.friend.username}</div>
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>хочет добавить вас</div>
-                    </div>
-                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-                      <button className="btn btn-secondary" onClick={async () => { await api.post('/contacts/respond', { contactId: c.id, action: 'reject' }); incomingContactsQuery.refetch() }}>Отклонить</button>
-                      <button className="btn btn-primary" onClick={async () => { await api.post('/contacts/respond', { contactId: c.id, action: 'accept' }); contactsQuery.refetch(); incomingContactsQuery.refetch(); conversationsQuery.refetch() }}>Добавить</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          <div style={{ marginBottom: 8, color: 'var(--text-muted)' }}>Поиск по EBLID</div>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 12 }}>
-            {[0,1,2,3].map((i) => (
-              <input
-                key={i}
-                ref={eblRefs[i]}
-                type="tel"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                autoComplete="one-time-code"
-                enterKeyHint="done"
-                value={eblDigits[i]}
-                onChange={(e) => onChangeDigit(i, e.target.value.replace(/\D/g,'').slice(0,1))}
-                maxLength={1}
-                style={{ width: 52, height: 56, fontSize: 22, textAlign: 'center', borderRadius: 8, border: '1px solid var(--surface-border)', background: 'var(--surface-100)', color: 'var(--text-primary)' }}
-              />
-            ))}
-          </div>
-          {foundUser && (
-            <div className="tile" style={{ marginBottom: 12 }}>
-              <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={effectiveUserStatus(foundUser)} avatarUrl={foundUser.avatarUrl ?? undefined} />
-              <div>
-                <div style={{ fontWeight: 600 }}>{foundUser.displayName ?? foundUser.username}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Найден по EBLID</div>
-              </div>
-              <div style={{ marginLeft: 'auto' }}>
-                <button disabled={sendingInvite} className="btn btn-primary" onClick={sendInvite}>Добавить</button>
-              </div>
-            </div>
-          )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Мой EBLID:</div>
-            <div style={{ fontWeight: 700 }}>{myEblid || '— — — —'}</div>
-            <button className="btn btn-secondary btn-icon" onClick={() => { if (myEblid) navigator.clipboard.writeText(myEblid) }} title="Скопировать EBLID"><Copy size={16} /></button>
+      <div
+        className="contacts-overlay"
+        onClick={() => {
+          if (contactMenu.open) {
+            setContactMenu({ open: false, x: 0, y: 0, contactId: null, user: null })
+            return
+          }
+          setContactsOpen(false)
+        }}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="contacts-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="contacts-modal__header">
+            <div className="contacts-modal__title">Контакты</div>
+            <button
+              className="btn btn-icon btn-ghost"
+              onClick={() => {
+                setContactMenu({ open: false, x: 0, y: 0, contactId: null, user: null })
+                setContactsOpen(false)
+              }}
+              aria-label="Закрыть"
+            >
+              <X size={16} />
+            </button>
           </div>
 
-          <div style={{ marginTop: 16, fontWeight: 700 }}>Мои друзья</div>
-          <div style={{ maxHeight: 300, overflow: 'auto', marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(contactsQuery.data || []).map((c: any) => {
-              const u = c.friend
-              return (
-                <div key={c.id} className="tile">
-                  <Avatar name={u.displayName ?? u.username} id={u.id} presence={effectiveUserStatus(u)} avatarUrl={u.avatarUrl ?? undefined} />
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Контакт</div>
+          <div className="contacts-modal__body">
+            {incomingContactsQuery.data && incomingContactsQuery.data.length > 0 && (
+              <section className="contacts-section">
+                <div className="contacts-section__title">Новые запросы</div>
+                <div className="contacts-section__list">
+                  {incomingContactsQuery.data.map((c: any) => (
+                    <div key={c.id} className="tile">
+                      <Avatar
+                        name={c.friend.displayName ?? c.friend.username}
+                        id={c.friend.id}
+                        presence={c.friend.status}
+                        avatarUrl={c.friend.avatarUrl ?? undefined}
+                      />
+                      <div className="contacts-tile__main">
+                        <div className="contacts-tile__name">{c.friend.displayName ?? c.friend.username}</div>
+                        <div className="contacts-tile__meta">хочет добавить вас</div>
+                      </div>
+                      <div className="contacts-actions">
+                        <button
+                          className="btn btn-secondary"
+                          onClick={async () => {
+                            await api.post('/contacts/respond', { contactId: c.id, action: 'reject' })
+                            incomingContactsQuery.refetch()
+                          }}
+                        >
+                          Отклонить
+                        </button>
+                        <button
+                          className="btn btn-primary"
+                          onClick={async () => {
+                            await api.post('/contacts/respond', { contactId: c.id, action: 'accept' })
+                            contactsQuery.refetch()
+                            incomingContactsQuery.refetch()
+                            conversationsQuery.refetch()
+                          }}
+                        >
+                          Добавить
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            <section className="contacts-section">
+              <div className="contacts-section__title">Поиск по EBLID</div>
+              <div className="contacts-section__hint">Введите 4 цифры, чтобы найти пользователя и отправить запрос.</div>
+              <div className="contacts-eblid__inputs">
+                {[0, 1, 2, 3].map((i) => (
+                  <input
+                    key={i}
+                    ref={eblRefs[i]}
+                    className="contacts-eblid__digit"
+                    type="tel"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    autoComplete="one-time-code"
+                    enterKeyHint="done"
+                    value={eblDigits[i]}
+                    onChange={(e) => onChangeDigit(i, e.target.value.replace(/\D/g, '').slice(0, 1))}
+                    onKeyDown={(e) => {
+                      // Ensure OTP-like behavior: digit key always overwrites the current box
+                      // (maxLength=1 may block onChange when already filled).
+                      if (/^\d$/.test(e.key)) {
+                        e.preventDefault()
+                        onChangeDigit(i, e.key)
+                        return
+                      }
+                      if (e.key !== 'Backspace') return
+                      e.preventDefault()
+                      // If current box has a digit, clear it and stay here.
+                      if (eblDigits[i] !== '') {
+                        const next = [...eblDigits]
+                        next[i] = ''
+                        setEblDigits(next)
+                        setFoundUser(null)
+                        return
+                      }
+                      // Backspace on empty input does not trigger onChange → go to previous.
+                      if (i <= 0) return
+                      const next = [...eblDigits]
+                      next[i - 1] = ''
+                      setEblDigits(next)
+                      setFoundUser(null)
+                      eblRefs[i - 1].current?.focus()
+                    }}
+                    maxLength={1}
+                  />
+                ))}
+              </div>
+
+              {foundUser && (
+                <div className="tile contacts-found" style={{ marginTop: 12 }}>
+                  <Avatar
+                    name={foundUser.displayName ?? foundUser.username}
+                    id={foundUser.id}
+                    presence={effectiveUserStatus(foundUser)}
+                    avatarUrl={foundUser.avatarUrl ?? undefined}
+                  />
+                  <div className="contacts-tile__main">
+                    <div className="contacts-tile__name">{foundUser.displayName ?? foundUser.username}</div>
+                    <div className="contacts-tile__meta">{formatPresenceForContacts(foundUser)}</div>
                   </div>
-                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={async () => {
-                        await api.post('/contacts/remove', { contactId: c.id })
-                        contactsQuery.refetch()
-                      }}
-                    >
-                      Удалить
-                    </button>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={async () => {
-                        await initiateSecretChat(u.id)
-                        setContactsOpen(false)
-                        client.invalidateQueries({ queryKey: ['conversations'] })
-                      }}
-                    >
-                      Секретный чат
-                    </button>
-                    <button
-                      className="btn btn-primary"
-                      onClick={async () => {
-                        const resp = await api.post('/conversations', { participantIds: [u.id], isGroup: false })
-                        setContactsOpen(false)
-                        selectConversation(resp.data.conversation.id)
-                        client.invalidateQueries({ queryKey: ['conversations'] })
-                      }}
-                    >
-                      Открыть чат
+                  <div className="contacts-actions">
+                    <button disabled={sendingInvite} className="btn btn-primary" onClick={sendInvite}>
+                      Добавить
                     </button>
                   </div>
                 </div>
-              )
-            })}
+              )}
+
+              <div className="contacts-my-eblid">
+                <div className="contacts-my-eblid__label">Мой EBLID:</div>
+                <div className="contacts-my-eblid__value">{myEblid || '— — — —'}</div>
+                <button
+                  className="btn btn-secondary btn-icon"
+                  onClick={() => {
+                    if (myEblid) navigator.clipboard.writeText(myEblid)
+                  }}
+                  title="Скопировать EBLID"
+                  aria-label="Скопировать EBLID"
+                >
+                  <Copy size={16} />
+                </button>
+              </div>
+            </section>
+
+            <section className="contacts-section">
+              <div className="contacts-section__title">Мои друзья</div>
+
+              <div className="contacts-friends__list">
+                {(contactsQuery.data || []).length === 0 ? (
+                  <div className="contacts-empty">Пока нет друзей. Добавьте контакт по EBLID.</div>
+                ) : (
+                  (contactsQuery.data || []).map((c: any) => {
+                    const u = c.friend
+                    const secretStatus = typeof u?.id === 'string' ? secretChatStatusByUserId[u.id] : undefined
+                    const isActiveContact = typeof u?.id === 'string' && activeDirectPeerId ? u.id === activeDirectPeerId : false
+                    const name = u.displayName ?? u.username
+                    return (
+                      <div
+                        key={c.id}
+                        className={`contacts-nav-item ${isActiveContact ? 'is-active' : ''}`}
+                        role="button"
+                        tabIndex={0}
+                        onContextMenu={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                          const menuW = 220
+                          const pad = 12
+                          const x = Math.min(e.clientX, window.innerWidth - menuW - pad)
+                          const y = Math.min(rect.bottom + 6, window.innerHeight - 180)
+                          setContactMenu({ open: true, x, y, contactId: c.id, user: u })
+                        }}
+                        onKeyDown={async (e) => {
+                          if (e.key !== 'Enter' && e.key !== ' ') return
+                          e.preventDefault()
+                          const resp = await api.post('/conversations', { participantIds: [u.id], isGroup: false })
+                          setContactMenu({ open: false, x: 0, y: 0, contactId: null, user: null })
+                          setContactsOpen(false)
+                          selectConversation(resp.data.conversation.id)
+                          client.invalidateQueries({ queryKey: ['conversations'] })
+                        }}
+                        onClick={async () => {
+                          const resp = await api.post('/conversations', { participantIds: [u.id], isGroup: false })
+                          setContactMenu({ open: false, x: 0, y: 0, contactId: null, user: null })
+                          setContactsOpen(false)
+                          selectConversation(resp.data.conversation.id)
+                          client.invalidateQueries({ queryKey: ['conversations'] })
+                        }}
+                      >
+                        <Avatar name={name} id={u.id} presence={effectiveUserStatus(u)} avatarUrl={u.avatarUrl ?? undefined} />
+                        <div className="contacts-nav-item__main">
+                          <div className="contacts-nav-item__name-row">
+                            <div className="contacts-nav-item__name" title={name}>
+                              {name}
+                            </div>
+                            {secretStatus && (
+                              <div
+                                className={`contacts-secret-badge ${secretStatus === 'PENDING' ? 'is-pending' : ''}`}
+                                title={secretStatus === 'PENDING' ? 'Секретный чат (ожидание)' : 'Секретный чат'}
+                                aria-label={secretStatus === 'PENDING' ? 'Секретный чат (ожидание)' : 'Секретный чат'}
+                              >
+                                <Lock size={14} />
+                              </div>
+                            )}
+                          </div>
+                          <div className="contacts-nav-item__status">{formatPresenceForContacts(u)}</div>
+                        </div>
+                        <button
+                          type="button"
+                          className="contacts-menu-btn"
+                          aria-label="Меню контакта"
+                          aria-haspopup="menu"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                            const menuW = 220
+                            const pad = 12
+                            const x = Math.min(rect.right, window.innerWidth - menuW - pad)
+                            const y = Math.min(rect.bottom + 6, window.innerHeight - 180)
+                            setContactMenu({ open: true, x, y, contactId: c.id, user: u })
+                          }}
+                        >
+                          ⋯
+                        </button>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            </section>
           </div>
         </div>
+        {contactMenu.open && contactMenu.contactId && contactMenu.user && (
+          <div
+            className="contacts-menu-overlay"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              setContactMenu({ open: false, x: 0, y: 0, contactId: null, user: null })
+            }}
+          >
+            <div
+              ref={contactMenuRef}
+              className="ctx-menu"
+              style={{ position: 'fixed', left: contactMenu.x, top: contactMenu.y }}
+              onClick={(e) => e.stopPropagation()}
+              role="menu"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={async () => {
+                  const uid = contactMenu.user!.id
+                  const resp = await api.post('/conversations', { participantIds: [uid], isGroup: false })
+                  setContactMenu({ open: false, x: 0, y: 0, contactId: null, user: null })
+                  setContactsOpen(false)
+                  selectConversation(resp.data.conversation.id)
+                  client.invalidateQueries({ queryKey: ['conversations'] })
+                }}
+              >
+                Открыть чат
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={async () => {
+                  const uid = contactMenu.user!.id
+                  await initiateSecretChat(uid)
+                  setContactMenu({ open: false, x: 0, y: 0, contactId: null, user: null })
+                  setContactsOpen(false)
+                  client.invalidateQueries({ queryKey: ['conversations'] })
+                }}
+              >
+                Секретный чат
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="ctx-menu__danger"
+                onClick={async () => {
+                  await api.post('/contacts/remove', { contactId: contactMenu.contactId })
+                  setContactMenu({ open: false, x: 0, y: 0, contactId: null, user: null })
+                  contactsQuery.refetch()
+                }}
+              >
+                Удалить контакт
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     )}
     {contextMenu.open && contextMenu.messageId && (

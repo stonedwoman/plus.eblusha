@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="16" viewBox="0 0 20 16" fill="none">
+  <!-- Mask: cut middle of left side (unchanged) -->
+  <mask id="cutLeftMid" maskUnits="userSpaceOnUse" x="0" y="0" width="20" height="16">
+    <rect x="0" y="0" width="20" height="16" fill="#ffffff"/>
+    <rect x="0" y="4" width="3" height="8" fill="#000000"/>
+  </mask>
+
+  <!-- Frame (UNCHANGED geometry) -->
+  <path mask="url(#cutLeftMid)" fill-rule="evenodd" clip-rule="evenodd"
+    d="M0 2.75C0 1.23122 1.23122 0 2.75 0H17.25C18.7688 0 20 1.23122 20 2.75V13.25C20 14.7688 18.7688 16 17.25 16H2.75C1.23122 16 0 14.7688 0 13.25V2.75ZM2.75 1.5C2.05964 1.5 1.5 2.05964 1.5 2.75V13.25C1.5 13.9404 2.05964 14.5 2.75 14.5H17.25C17.9404 14.5 18.5 13.9404 18.5 13.25V2.75C18.5 2.05964 17.9404 1.5 17.25 1.5H2.75Z"
+    fill="#ffffff"/>
+
+  <!-- BIG arrow (smooth + centered) -->
+  <path d="M5.2 8H12.2"
+        stroke="#910000ff" stroke-width="3.2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M10.6 4.9L13.8 8L10.6 11.1"
+        stroke="#910000ff" stroke-width="3.2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
