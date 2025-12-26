@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">
+  <!-- camera body -->
+  <path d="M0 4.5C0 3.67157 0.671573 3 1.5 3H9.5C10.3284 3 11 3.67157 11 4.5V11.5C11 12.3284 10.3284 13 9.5 13H1.5C0.671573 13 0 12.3284 0 11.5V4.5Z" fill="#ffffffff"/>
+  <path d="M15.2 3.6L12.4 5.7C12.1482 5.88885 12 6.18524 12 6.5V9.5C12 9.81476 12.1482 10.1111 12.4 10.3L15.2 12.4C15.5296 12.6472 16 12.412 16 12V4C16 3.58798 15.5296 3.35279 15.2 3.6Z" fill="#ffffffff"/>
+
+  <!-- orange strike -->
+  <path d="M1 1L15 15" stroke="#d97706" stroke-width="2" stroke-linecap="round"/>
+</svg>

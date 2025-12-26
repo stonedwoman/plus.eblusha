@@ -867,7 +867,11 @@ function ParticipantVolumeUpdater() {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean; lastNonZeroPct: number }>>(new Map())
   const lastUserGestureAtRef = useRef<number>(0)
-  const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; inited: boolean }>>(new WeakMap())
+  // Track whether we enabled WebAudio routing for a given track.
+  // Important: LiveKit mutes the underlying <audio> element ONLY if AudioContext is set before `attach()`.
+  // In our app, we often call `setAudioContext()` after LiveKit components already attached elements,
+  // which otherwise results in double playback (element path + WebAudio path).
+  const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; enabled: boolean }>>(new WeakMap())
   const wheelAccByKeyRef = useRef<Map<string, number>>(new Map())
 
   const isLocalTile = (tile: HTMLElement): boolean => {
@@ -1042,16 +1046,58 @@ function ParticipantVolumeUpdater() {
       }
       const tr = pub?.track
       if (!(tr instanceof RemoteAudioTrack)) continue
-      if (ctx) {
-        // Enable WebAudio routing once per track (so >100% works) but don't keep re-wiring.
-        const prev = webAudioStateRef.current.get(tr)
-        if (!prev || prev.ctx !== ctx || !prev.inited) {
+
+      // If we need amplification > 100%, switch this track to WebAudio routing.
+      // When switching AFTER elements have already been attached, we must mute the attached <audio> elements
+      // to avoid double playback (direct element + webaudio destination).
+      const prev = webAudioStateRef.current.get(tr)
+      if (needsAmp && ctx) {
+        if (!prev || prev.ctx !== ctx || !prev.enabled) {
           tr.setAudioContext(ctx)
-          webAudioStateRef.current.set(tr, { ctx, inited: true })
+          webAudioStateRef.current.set(tr, { ctx, enabled: true })
+        }
+        // Ensure the attached elements are silent; WebAudio path will produce the sound.
+        try {
+          tr.attachedElements.forEach((el) => {
+            try {
+              el.volume = 0
+              el.muted = true
+            } catch {
+              // ignore
+            }
+          })
+        } catch {
+          // ignore
+        }
+      } else {
+        // No amplification needed: restore default element-based playback if we previously enabled WebAudio.
+        if (prev?.enabled) {
+          try {
+            tr.setAudioContext(undefined)
+          } catch {
+            // ignore
+          }
+          webAudioStateRef.current.set(tr, { ctx: prev.ctx, enabled: false })
+        }
+        // Unmute elements so normal playback works (unless user explicitly muted this participant).
+        try {
+          const shouldMuteEl = settings.muted || effective <= 0
+          tr.attachedElements.forEach((el) => {
+            try {
+              el.muted = shouldMuteEl
+            } catch {
+              // ignore
+            }
+          })
+        } catch {
+          // ignore
         }
       }
-      // Clamp for safety
-      const vol = settings.muted ? 0 : Math.max(0, Math.min(1.5, effective))
+
+      // Clamp for safety.
+      // - Element path expects 0..1 (browser clamps anyway).
+      // - WebAudio gain can safely go above 1; cap at 1.5 (=150%).
+      const vol = settings.muted ? 0 : Math.max(0, Math.min(needsAmp ? 1.5 : 1, effective))
       tr.setVolume(vol)
     }
   }
