@@ -39,6 +39,7 @@ router.get("/", async (req, res) => {
                                 select: {
                                     id: true,
                                     username: true,
+                                    eblid: true,
                                     displayName: true,
                                     avatarUrl: true,
                                     status: true,
@@ -152,7 +153,7 @@ router.post("/", async (req, res) => {
                 participants: {
                     include: {
                         user: {
-                            select: { id: true, username: true, displayName: true, avatarUrl: true },
+                            select: { id: true, username: true, eblid: true, displayName: true, avatarUrl: true },
                         },
                     },
                 },
@@ -184,6 +185,7 @@ router.post("/", async (req, res) => {
                         select: {
                             id: true,
                             username: true,
+                            eblid: true,
                             displayName: true,
                             avatarUrl: true,
                         },
@@ -259,6 +261,7 @@ router.post("/:id/participants", async (req, res) => {
                         select: {
                             id: true,
                             username: true,
+                            eblid: true,
                             displayName: true,
                             avatarUrl: true,
                         },
