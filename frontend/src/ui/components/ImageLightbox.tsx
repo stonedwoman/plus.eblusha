@@ -177,10 +177,12 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
       return
     }
 
-    // Very smooth zoom step (much smaller than before).
-    // exp(-delta * k): trackpads/wheels become consistent.
-    const k = 0.00008 // ~4x faster than previous value
-    const factor = Math.exp(-deltaPx * k)
+    // Zoom inside image.
+    // exp(-delta * k): consistent for wheels/trackpads.
+    // Tuned for ~5–10% per typical wheel notch (delta ~100px).
+    const k = 0.0009
+    const factorRaw = Math.exp(-deltaPx * k)
+    const factor = clamp(factorRaw, 0.8, 1.25)
     setZoom((z) => clamp(z * factor, 1, 6))
   }
 
