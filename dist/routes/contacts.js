@@ -44,8 +44,8 @@ router.get("/", async (req, res) => {
     const contacts = await prisma_1.default.contact.findMany({
         where: whereByFilter(),
         include: {
-            requester: { select: { id: true, username: true, displayName: true, avatarUrl: true, status: true } },
-            addressee: { select: { id: true, username: true, displayName: true, avatarUrl: true, status: true } },
+            requester: { select: { id: true, username: true, displayName: true, avatarUrl: true, status: true, eblid: true } },
+            addressee: { select: { id: true, username: true, displayName: true, avatarUrl: true, status: true, eblid: true } },
         },
         orderBy: { updatedAt: "desc" },
     });

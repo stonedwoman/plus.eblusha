@@ -11,6 +11,7 @@ import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
 import { ImageEditorModal } from '../components/ImageEditorModal'
 import { ImageLightbox } from '../components/ImageLightbox'
+import { ProfileOverlay } from '../components/profile/ProfileOverlay'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
@@ -263,6 +264,14 @@ export default function ChatsPage() {
     user: any | null
   }>(() => ({ open: false, x: 0, y: 0, contactId: null, user: null }))
   const contactMenuRef = useRef<HTMLDivElement | null>(null)
+
+  const [profileOverlay, setProfileOverlay] = useState<{
+    open: boolean
+    userId: string | null
+    user: any | null
+    contact: { id: string; status: string; direction: string } | null
+  }>(() => ({ open: false, userId: null, user: null, contact: null }))
+
   const [headerMenu, setHeaderMenu] = useState<{ open: boolean; anchor: HTMLElement | null }>(() => ({ open: false, anchor: null }))
   const headerMenuRef = useRef<HTMLDivElement | null>(null)
   const convScrollRef = useRef<HTMLDivElement | null>(null)
@@ -3424,6 +3433,62 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return map
   }, [conversationsQuery.data, currentUserId])
 
+  const secretConversationIdByUserId = useMemo(() => {
+    const map: Record<string, string> = {}
+    try {
+      const rows = (conversationsQuery.data || []) as any[]
+      for (const row of rows) {
+        const conv = row?.conversation
+        if (!conv?.isSecret) continue
+        const status = ((conv.secretStatus ?? 'ACTIVE') as string).toString().toUpperCase()
+        if (status !== 'ACTIVE') continue
+        const parts = Array.isArray(conv.participants) ? conv.participants : []
+        const others = parts
+          .filter((p: any) => (currentUserId ? p?.user?.id !== currentUserId : true))
+          .map((p: any) => p?.user)
+          .filter(Boolean)
+        if (others.length !== 1) continue
+        const peerId = others[0]?.id
+        if (typeof peerId !== 'string') continue
+        map[peerId] = conv.id
+      }
+    } catch {
+      // ignore
+    }
+    return map
+  }, [conversationsQuery.data, currentUserId])
+
+  const contactByUserId = useMemo(() => {
+    const map: Record<string, any> = {}
+    try {
+      for (const c of contactsQuery.data || []) {
+        const u = c?.friend
+        if (u?.id) map[u.id] = c
+      }
+    } catch {
+      // ignore
+    }
+    return map
+  }, [contactsQuery.data])
+
+  const openProfile = useCallback(
+    (user: any | null | undefined, contact?: { id: string; status: string; direction: string } | null) => {
+    const uid = user?.id
+    if (!uid || typeof uid !== 'string') return
+    setProfileOverlay((prev) => {
+      if (prev.open && prev.userId === uid) {
+        return { open: false, userId: null, user: null, contact: null }
+      }
+      return { open: true, userId: uid, user: user ?? null, contact: contact ?? null }
+    })
+    },
+    [],
+  )
+
+  const closeProfile = useCallback(() => {
+    setProfileOverlay({ open: false, userId: null, user: null, contact: null })
+  }, [])
+
   const activeDirectPeerId = useMemo(() => {
     try {
       const conv = activeConversation
@@ -3572,12 +3637,25 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 ) : (
                   (() => {
                     return (
-                      <Avatar
-                        name={othersArr[0]?.displayName ?? othersArr[0]?.username ?? 'D'}
-                        id={othersArr[0]?.id ?? c.id}
-                        presence={isCallActive ? 'IN_CALL' : effectiveUserStatus(othersArr[0])}
-                        avatarUrl={othersArr[0]?.avatarUrl && othersArr[0].avatarUrl.trim() ? othersArr[0].avatarUrl : undefined}
-                      />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          const peer = othersArr[0]
+                          const c = peer?.id ? contactByUserId[peer.id] : null
+                          openProfile(peer, c ? { id: c.id, status: c.status, direction: c.direction } : null)
+                        }}
+                        style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
+                        aria-label="Открыть профиль"
+                      >
+                        <Avatar
+                          name={othersArr[0]?.displayName ?? othersArr[0]?.username ?? 'D'}
+                          id={othersArr[0]?.id ?? c.id}
+                          presence={isCallActive ? 'IN_CALL' : effectiveUserStatus(othersArr[0])}
+                          avatarUrl={othersArr[0]?.avatarUrl && othersArr[0].avatarUrl.trim() ? othersArr[0].avatarUrl : undefined}
+                        />
+                      </button>
                     )
                   })()
                 )}
@@ -3966,13 +4044,25 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     return (
                       <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
                         <div style={{ marginRight: 10 }}>
-                          <Avatar
-                            name={peer?.displayName ?? peer?.username ?? 'D'}
-                            id={peer?.id ?? activeConversation.id}
-                            avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
-                          presence={(callEntry?.active ? 'IN_CALL' : effectiveUserStatus(peer))}
-                            size={60}
-                          />
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              const c = peer?.id ? contactByUserId[peer.id] : null
+                              openProfile(peer, c ? { id: c.id, status: c.status, direction: c.direction } : null)
+                            }}
+                            style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
+                            aria-label="Открыть профиль"
+                          >
+                            <Avatar
+                              name={peer?.displayName ?? peer?.username ?? 'D'}
+                              id={peer?.id ?? activeConversation.id}
+                              avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
+                              presence={(callEntry?.active ? 'IN_CALL' : effectiveUserStatus(peer))}
+                              size={60}
+                            />
+                          </button>
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
@@ -7014,7 +7104,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 <div className="contacts-section__title">Новые запросы</div>
                 <div className="contacts-section__list">
                   {incomingContactsQuery.data.map((c: any) => (
-                    <div key={c.id} className="tile">
+                    <div
+                      key={c.id}
+                      className="tile"
+                      onClick={() => openProfile(c.friend, { id: c.id, status: c.status, direction: c.direction })}
+                      style={{ cursor: 'pointer' }}
+                    >
                       <Avatar
                         name={c.friend.displayName ?? c.friend.username}
                         id={c.friend.id}
@@ -7024,28 +7119,6 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       <div className="contacts-tile__main">
                         <div className="contacts-tile__name">{c.friend.displayName ?? c.friend.username}</div>
                         <div className="contacts-tile__meta">хочет добавить вас</div>
-                      </div>
-                      <div className="contacts-actions">
-                        <button
-                          className="btn btn-secondary"
-                          onClick={async () => {
-                            await api.post('/contacts/respond', { contactId: c.id, action: 'reject' })
-                            incomingContactsQuery.refetch()
-                          }}
-                        >
-                          Отклонить
-                        </button>
-                        <button
-                          className="btn btn-primary"
-                          onClick={async () => {
-                            await api.post('/contacts/respond', { contactId: c.id, action: 'accept' })
-                            contactsQuery.refetch()
-                            incomingContactsQuery.refetch()
-                            conversationsQuery.refetch()
-                          }}
-                        >
-                          Добавить
-                        </button>
                       </div>
                     </div>
                   ))}
@@ -7181,7 +7254,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           client.invalidateQueries({ queryKey: ['conversations'] })
                         }}
                       >
-                        <Avatar name={name} id={u.id} presence={effectiveUserStatus(u)} avatarUrl={u.avatarUrl ?? undefined} />
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            openProfile(u, { id: c.id, status: c.status, direction: c.direction })
+                          }}
+                          style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
+                          aria-label="Открыть профиль"
+                        >
+                          <Avatar name={name} id={u.id} presence={effectiveUserStatus(u)} avatarUrl={u.avatarUrl ?? undefined} />
+                        </button>
                         <div className="contacts-nav-item__main">
                           <div className="contacts-nav-item__name-row">
                             <div className="contacts-nav-item__name" title={name}>
@@ -7653,6 +7737,32 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     <LogOut size={16} />
                     Выйти из беседы
                   </button>
+                  <div style={{ height: 8 }} />
+                  <div style={{ padding: '6px 10px', color: 'var(--text-muted)', fontSize: 12, fontWeight: 700 }}>
+                    Участники
+                  </div>
+                  {(activeConversation.participants || [])
+                    .map((p: any) => p.user)
+                    .filter((u: any) => (currentUserId ? u.id !== currentUserId : true))
+                    .slice(0, 30)
+                    .map((u: any) => {
+                      const name = u.displayName ?? u.username ?? 'Пользователь'
+                      return (
+                        <button
+                          key={u.id}
+                          type="button"
+                          onClick={() => {
+                            const c = u?.id ? contactByUserId[u.id] : null
+                            openProfile(u, c ? { id: c.id, status: c.status, direction: c.direction } : null)
+                            setHeaderMenu({ open: false, anchor: null })
+                          }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 10 }}
+                        >
+                          <Avatar name={name} id={u.id} avatarUrl={u.avatarUrl ?? undefined} presence={effectiveUserStatus(u)} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                        </button>
+                      )
+                    })}
                 </>
               )
             } else {
@@ -7710,6 +7820,154 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         </div>
       </div>
     )}
+
+    <ProfileOverlay
+      open={profileOverlay.open}
+      isMobile={isMobile}
+      user={profileOverlay.user}
+      meId={me?.id ?? null}
+      statusText={profileOverlay.user ? formatPresence(profileOverlay.user) : ''}
+      idLabel={profileOverlay.user?.eblid ? 'EBLID' : 'ID'}
+      idValue={(profileOverlay.user?.eblid ?? profileOverlay.user?.id ?? '').toString()}
+      isContact={(() => {
+        const uid = profileOverlay.user?.id
+        const c = profileOverlay.contact ?? (uid ? contactByUserId[uid] : null)
+        return !!(c && c.status === 'ACCEPTED')
+      })()}
+      canBlock={(() => {
+        const uid = profileOverlay.user?.id
+        const c = profileOverlay.contact ?? (uid ? contactByUserId[uid] : null)
+        return !!c?.id
+      })()}
+      contactRequest={(() => {
+        const c = profileOverlay.contact
+        if (!c) return null
+        if (c.status === 'PENDING' && c.direction === 'incoming') return { incoming: true }
+        return null
+      })()}
+      secret={{
+        enabled: !!(profileOverlay.user?.id && secretChatStatusByUserId[profileOverlay.user.id] === 'ACTIVE'),
+        canOpen: !!(profileOverlay.user?.id && secretConversationIdByUserId[profileOverlay.user.id]),
+      }}
+      commonGroups={(() => {
+        const uid = profileOverlay.user?.id
+        if (!uid) return []
+        const rows = conversationsQuery.data || []
+        const list: Array<{ id: string; title: string }> = []
+        for (const row of rows) {
+          const conv = row?.conversation
+          if (!conv) continue
+          const isGroup = !!(conv.isGroup || (conv.participants?.length ?? 0) > 2)
+          if (!isGroup) continue
+          const parts = Array.isArray(conv.participants) ? conv.participants : []
+          const ids = parts.map((p: any) => p?.user?.id).filter((x: any) => typeof x === 'string')
+          if (!ids.includes(uid)) continue
+          const title =
+            conv.title ??
+            parts
+              .map((p: any) => p?.user?.displayName ?? p?.user?.username)
+              .filter(Boolean)
+              .join(', ') ??
+            'Группа'
+          list.push({ id: conv.id, title })
+        }
+        return list
+      })()}
+      onClose={closeProfile}
+      onAcceptContact={async () => {
+        const c = profileOverlay.contact
+        if (!c?.id) return
+        await api.post('/contacts/respond', { contactId: c.id, action: 'accept' })
+        client.invalidateQueries({ queryKey: ['accepted-contacts'] })
+        client.invalidateQueries({ queryKey: ['incoming-contacts'] })
+        client.invalidateQueries({ queryKey: ['conversations'] })
+        closeProfile()
+      }}
+      onRejectContact={async () => {
+        const c = profileOverlay.contact
+        if (!c?.id) return
+        await api.post('/contacts/respond', { contactId: c.id, action: 'reject' })
+        client.invalidateQueries({ queryKey: ['accepted-contacts'] })
+        client.invalidateQueries({ queryKey: ['incoming-contacts'] })
+        closeProfile()
+      }}
+      onCopyId={async () => {
+        const value = (profileOverlay.user?.eblid ?? profileOverlay.user?.id ?? '').toString()
+        if (!value) return
+        try {
+          await navigator.clipboard.writeText(value)
+        } catch {
+          // ignore
+        }
+      }}
+      onWrite={async () => {
+        const uid = profileOverlay.user?.id
+        if (!uid) return
+        const resp = await api.post('/conversations', { participantIds: [uid], isGroup: false })
+        client.invalidateQueries({ queryKey: ['conversations'] })
+        closeProfile()
+        if (resp?.data?.conversation?.id) {
+          selectConversation(resp.data.conversation.id)
+        }
+      }}
+      onStartSecretChat={async () => {
+        const uid = profileOverlay.user?.id
+        if (!uid) return
+        await initiateSecretChat(uid)
+        client.invalidateQueries({ queryKey: ['conversations'] })
+      }}
+      onOpenSecretChat={async () => {
+        const uid = profileOverlay.user?.id
+        if (!uid) return
+        const cid = secretConversationIdByUserId[uid]
+        if (!cid) return
+        closeProfile()
+        selectConversation(cid)
+      }}
+      onEditProfile={() => {
+        closeProfile()
+        window.location.assign('/settings')
+      }}
+      onChangeAvatar={() => {
+        closeProfile()
+        setMePopupOpen(true)
+      }}
+      onPrivacy={() => {
+        closeProfile()
+        window.location.assign('/settings')
+      }}
+      onAddContact={async () => {
+        const u = profileOverlay.user
+        const identifier = (u?.username ?? u?.eblid ?? '').toString()
+        if (!identifier) return
+        await api.post('/contacts/add', { identifier })
+        client.invalidateQueries({ queryKey: ['accepted-contacts'] })
+        client.invalidateQueries({ queryKey: ['incoming-contacts'] })
+      }}
+      onRemoveContact={async () => {
+        const uid = profileOverlay.user?.id
+        if (!uid) return
+        const c = profileOverlay.contact ?? contactByUserId[uid]
+        if (!c?.id) return
+        await api.post('/contacts/remove', { contactId: c.id })
+        client.invalidateQueries({ queryKey: ['accepted-contacts'] })
+        client.invalidateQueries({ queryKey: ['incoming-contacts'] })
+        closeProfile()
+      }}
+      onBlock={async () => {
+        const uid = profileOverlay.user?.id
+        if (!uid) return
+        const c = profileOverlay.contact ?? contactByUserId[uid]
+        if (!c?.id) return
+        await api.post('/contacts/respond', { contactId: c.id, action: 'block' })
+        client.invalidateQueries({ queryKey: ['accepted-contacts'] })
+        client.invalidateQueries({ queryKey: ['incoming-contacts'] })
+        closeProfile()
+      }}
+      onReport={async () => {
+        // v1: no backend; keep UI confirm only
+      }}
+    />
     {groupAvatarEditor && activeConversation && (
       <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setGroupAvatarEditor(false)}>
         <div style={{ background: 'var(--surface-200)', padding: 24, borderRadius: 16, width: 440, maxWidth: '90vw', border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-medium)' }} onClick={(e) => e.stopPropagation()}>
