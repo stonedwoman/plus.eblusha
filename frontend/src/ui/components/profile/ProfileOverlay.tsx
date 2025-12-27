@@ -1,10 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X } from 'lucide-react'
-import { ProfileHeader, type ProfileHeaderUser } from './ProfileHeader'
-import { ProfileActions } from './ProfileActions'
-import { ProfileSection } from './ProfileSection'
-import { DangerZone } from './DangerZone'
+import {
+  Copy,
+  Hash,
+  Info,
+  Lock,
+  MessageSquare,
+  MoreHorizontal,
+  Phone,
+  ShieldOff,
+  Trash2,
+  UserPlus,
+  X,
+} from 'lucide-react'
+import { Avatar } from '../Avatar'
 
 type ConfirmState =
   | null
@@ -17,6 +26,17 @@ type ConfirmState =
     }
 
 type ToastState = null | { text: string }
+
+export type ProfileHeaderUser = {
+  id: string
+  username?: string | null
+  displayName?: string | null
+  avatarUrl?: string | null
+  status?: string | null
+  lastSeenAt?: string | null
+  eblid?: string | null
+  bio?: string | null
+}
 
 export type ProfileOverlayProps = {
   open: boolean
@@ -31,6 +51,7 @@ export type ProfileOverlayProps = {
   isContact: boolean
   canBlock: boolean
   contactRequest: { incoming: boolean } | null
+  mediaPreview?: Array<{ id: string; title?: string; type?: string }>
   secret: { enabled: boolean; canOpen: boolean }
   commonGroups: Array<{ id: string; title: string }>
   onClose: () => void
@@ -64,6 +85,7 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
     isContact,
     canBlock,
     contactRequest,
+    mediaPreview,
     secret,
     commonGroups,
     onClose,
@@ -86,6 +108,8 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
   const isSelf = !!(user?.id && meId && user.id === meId)
   const [confirm, setConfirm] = useState<ConfirmState>(null)
   const [toast, setToast] = useState<ToastState>(null)
+  const [menu, setMenu] = useState<{ open: boolean; x: number; y: number }>(() => ({ open: false, x: 0, y: 0 }))
+  const moreBtnRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -109,14 +133,213 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
     if (!open) {
       setConfirm(null)
       setToast(null)
+      setMenu({ open: false, x: 0, y: 0 })
     }
   }, [open])
 
   const canRender = open && typeof document !== 'undefined'
   const panelMode = isMobile ? 'sheet' : 'panel'
 
+  const menuItems = useMemo(() => {
+    const items: Array<{
+      key: string
+      label: string
+      icon: React.ReactNode
+      tone?: 'danger'
+      onClick: () => void
+    }> = []
+
+    if (isSelf) {
+      if (typeof onEditProfile === 'function') {
+        items.push({
+          key: 'settings',
+          label: 'Настройки',
+          icon: <Info size={18} />,
+          onClick: () => {
+            setMenu({ open: false, x: 0, y: 0 })
+            onEditProfile()
+          },
+        })
+      }
+      if (typeof onChangeAvatar === 'function') {
+        items.push({
+          key: 'avatar',
+          label: 'Сменить аватар',
+          icon: <UserPlus size={18} />,
+          onClick: () => {
+            setMenu({ open: false, x: 0, y: 0 })
+            onChangeAvatar()
+          },
+        })
+      }
+      if (typeof onPrivacy === 'function') {
+        items.push({
+          key: 'privacy',
+          label: 'Приватность',
+          icon: <Lock size={18} />,
+          onClick: () => {
+            setMenu({ open: false, x: 0, y: 0 })
+            onPrivacy()
+          },
+        })
+      }
+    } else {
+      if (isContact && typeof onRemoveContact === 'function') {
+        items.push({
+          key: 'remove-contact',
+          label: 'Удалить контакт',
+          icon: <Trash2 size={18} />,
+          tone: 'danger',
+          onClick: () => {
+            setConfirm({
+              title: 'Удалить контакт?',
+              text: 'Контакт будет удалён из вашего списка.',
+              confirmLabel: 'Удалить',
+              tone: 'danger',
+              onConfirm: async () => {
+                await onRemoveContact()
+                setConfirm(null)
+              },
+            })
+            setMenu({ open: false, x: 0, y: 0 })
+          },
+        })
+      } else if (!isContact && typeof onAddContact === 'function') {
+        items.push({
+          key: 'add-contact',
+          label: 'Добавить в контакты',
+          icon: <UserPlus size={18} />,
+          onClick: () => {
+            setConfirm({
+              title: 'Добавить в контакты?',
+              text: 'Пользователь получит запрос на добавление.',
+              confirmLabel: 'Добавить',
+              tone: 'muted',
+              onConfirm: async () => {
+                await onAddContact()
+                setConfirm(null)
+              },
+            })
+            setMenu({ open: false, x: 0, y: 0 })
+          },
+        })
+      }
+
+      if (canBlock && typeof onBlock === 'function') {
+        items.push({
+          key: 'block',
+          label: 'Заблокировать',
+          icon: <ShieldOff size={18} />,
+          onClick: () => {
+            setConfirm({
+              title: 'Заблокировать?',
+              text: 'Пользователь не сможет писать и звонить вам.',
+              confirmLabel: 'Заблокировать',
+              tone: 'danger',
+              onConfirm: async () => {
+                await onBlock()
+                setConfirm(null)
+              },
+            })
+            setMenu({ open: false, x: 0, y: 0 })
+          },
+        })
+      }
+
+      if (typeof onReport === 'function') {
+        items.push({
+          key: 'report',
+          label: 'Пожаловаться',
+          icon: <Info size={18} />,
+          onClick: () => {
+            setConfirm({
+              title: 'Пожаловаться?',
+              text: 'Мы получим жалобу и сможем проверить ситуацию.',
+              confirmLabel: 'Отправить',
+              tone: 'muted',
+              onConfirm: async () => {
+                await onReport()
+                setConfirm(null)
+              },
+            })
+            setMenu({ open: false, x: 0, y: 0 })
+          },
+        })
+      }
+    }
+
+    return items
+  }, [
+    isSelf,
+    secret?.enabled,
+    onOpenSecretChat,
+    onStartSecretChat,
+    onEditProfile,
+    onChangeAvatar,
+    onPrivacy,
+    isContact,
+    onRemoveContact,
+    onAddContact,
+    canBlock,
+    onBlock,
+    onReport,
+  ])
+
+  const openMoreMenu = () => {
+    if (!moreBtnRef.current) return
+    const rect = moreBtnRef.current.getBoundingClientRect()
+    const menuW = 260
+    const menuH = 320
+    const pad = 12
+    const x = Math.min(Math.max(pad, rect.right - menuW), window.innerWidth - menuW - pad)
+    const y = Math.min(Math.max(pad, rect.bottom + 10), window.innerHeight - menuH - pad)
+    setMenu({ open: true, x, y })
+  }
+
   const body = useMemo(() => {
     if (!open) return null
+
+    const name = user?.displayName ?? user?.username ?? 'Пользователь'
+    const status = statusText || ''
+    const showActions = !!(onWrite || onCall || (contactRequest?.incoming && (onAcceptContact || onRejectContact)) || menuItems.length > 0)
+    const canSecret = !isSelf && (!!secret?.enabled ? typeof onOpenSecretChat === 'function' : typeof onStartSecretChat === 'function')
+
+    const infoRows: Array<
+      | { key: string; icon: React.ReactNode; title: string; subtitle?: string; right?: React.ReactNode; onClick?: () => void }
+      | null
+    > = [
+      idValue
+        ? {
+            key: 'id',
+            icon: <Hash size={18} />,
+            title: `${idLabel}: ${idValue}`,
+            subtitle: undefined,
+            right: (
+              <button
+                className="pov-row__iconbtn"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  void onCopyId()
+                  setToast({ text: 'Скопировано' })
+                }}
+                aria-label="Скопировать"
+              >
+                <Copy size={18} />
+              </button>
+            ),
+          }
+        : null,
+      user?.bio
+        ? {
+            key: 'bio',
+            icon: <Info size={18} />,
+            title: user.bio,
+            subtitle: 'О себе',
+          }
+        : null,
+    ].filter(Boolean) as any
+
     return (
       <div
         className={`profile-overlay profile-overlay--${panelMode} ${open ? 'is-open' : ''}`}
@@ -149,154 +372,101 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
             )
           ) : (
             <>
-              <div className="profile-sticky">
-                <ProfileHeader
-                  user={user}
-                  statusText={statusText}
-                  onClose={onClose}
-                  idLabel={idLabel}
-                  idValue={idValue}
-                  onCopyId={async () => {
-                    await onCopyId()
-                    setToast({ text: 'Скопировано' })
-                  }}
-                />
-                <ProfileActions
-                  isSelf={isSelf}
-                  canCall={!!onCall}
-                  secretState={secret}
-                  contactRequest={
-                    contactRequest?.incoming
-                      ? {
-                          incoming: true,
-                          onAccept: () => void onAcceptContact?.(),
-                          onReject: () => void onRejectContact?.(),
-                        }
-                      : null
-                  }
-                  onWrite={() => void onWrite?.()}
-                  onCall={() => void onCall?.()}
-                  onStartSecretChat={() => void onStartSecretChat?.()}
-                  onOpenSecretChat={() => void onOpenSecretChat?.()}
-                  onEditProfile={onEditProfile}
-                  onChangeAvatar={onChangeAvatar}
-                  onPrivacy={onPrivacy}
-                />
-              </div>
+              <div className="pov">
+                <div className="pov-top">
+                  <button className="pov-close" onClick={onClose} aria-label="Закрыть">
+                    <X size={20} />
+                  </button>
+                  <div className="pov-avatar">
+                    <Avatar name={name} id={user.id} size={96} presence={(user.status as any) ?? undefined} avatarUrl={user.avatarUrl ?? undefined} />
+                  </div>
+                  <div className="pov-name" title={name}>
+                    {name}
+                  </div>
+                  {status ? <div className="pov-sub">{status}</div> : null}
+                </div>
 
-              <div className="profile-body">
-                <ProfileSection title="О пользователе" defaultOpen>
-                  <div className="profile-kv">
-                    <div className="profile-kv__row">
-                      <div className="profile-kv__k">Имя</div>
-                      <div className="profile-kv__v">{user.displayName ?? '—'}</div>
-                    </div>
-                    <div className="profile-kv__row">
-                      <div className="profile-kv__k">Ник</div>
-                      <div className="profile-kv__v">{user.username ?? '—'}</div>
-                    </div>
-                    {user.bio ? (
-                      <div className="profile-kv__row">
-                        <div className="profile-kv__k">О себе</div>
-                        <div className="profile-kv__v profile-kv__v--multiline">{user.bio}</div>
-                      </div>
+                {showActions ? (
+                  <div className="pov-actions">
+                    {contactRequest?.incoming ? (
+                      <>
+                        {typeof onAcceptContact === 'function' ? (
+                          <button className="pov-action pov-action--accent" onClick={() => void onAcceptContact()}>
+                            <UserPlus size={20} />
+                            <span>Принять</span>
+                          </button>
+                        ) : null}
+                        {typeof onRejectContact === 'function' ? (
+                          <button className="pov-action" onClick={() => void onRejectContact()}>
+                            <X size={20} />
+                            <span>Отклонить</span>
+                          </button>
+                        ) : null}
+                      </>
+                    ) : null}
+
+                    {isSelf && typeof onEditProfile === 'function' ? (
+                      <button className="pov-action pov-action--accent" onClick={() => void onEditProfile()}>
+                        <Info size={20} />
+                        <span>Профиль</span>
+                      </button>
+                    ) : null}
+
+                    {!isSelf && typeof onWrite === 'function' ? (
+                      <button className="pov-action pov-action--accent" onClick={() => void onWrite()}>
+                        <MessageSquare size={20} />
+                        <span>Чат</span>
+                      </button>
+                    ) : null}
+                    {!isSelf && canSecret ? (
+                      <button
+                        className="pov-action"
+                        onClick={() => {
+                          if (secret?.enabled) void onOpenSecretChat?.()
+                          else void onStartSecretChat?.()
+                        }}
+                      >
+                        <Lock size={20} />
+                        <span>Секрет</span>
+                      </button>
+                    ) : null}
+                    {typeof onCall === 'function' ? (
+                      <button className="pov-action" onClick={() => void onCall()}>
+                        <Phone size={20} />
+                        <span>Звонок</span>
+                      </button>
+                    ) : null}
+                    {menuItems.length > 0 ? (
+                      <button
+                        ref={moreBtnRef}
+                        className="pov-action"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          openMoreMenu()
+                        }}
+                      >
+                        <MoreHorizontal size={20} />
+                        <span>Ещё</span>
+                      </button>
                     ) : null}
                   </div>
-                </ProfileSection>
+                ) : null}
 
-                <ProfileSection title="Общие медиа / файлы">
-                  <div className="profile-empty">Пока тут пусто</div>
-                </ProfileSection>
-
-                <ProfileSection title="Общие чаты">
-                  {commonGroups.length === 0 ? (
-                    <div className="profile-empty">Пока тут пусто</div>
-                  ) : (
-                    <div className="profile-list">
-                      {commonGroups.slice(0, 6).map((g) => (
-                        <div key={g.id} className="profile-list__item">
-                          <div className="profile-list__title">{g.title}</div>
+                {infoRows.length > 0 ? (
+                  <div className="pov-list">
+                    {infoRows.map((r) => (
+                      <div key={r.key} className="pov-row" onClick={r.onClick} role={r.onClick ? 'button' : undefined}>
+                        <div className="pov-row__icon">{r.icon}</div>
+                        <div className="pov-row__main">
+                          <div className="pov-row__title">{r.title}</div>
+                          {r.subtitle ? <div className="pov-row__sub">{r.subtitle}</div> : null}
                         </div>
-                      ))}
-                      {commonGroups.length > 6 ? <div className="profile-muted">Показать все</div> : null}
-                    </div>
-                  )}
-                </ProfileSection>
-
-                <ProfileSection title="Тех-инфо">
-                  <div className="profile-kv">
-                    <div className="profile-kv__row">
-                      <div className="profile-kv__k">ID</div>
-                      <div className="profile-kv__v profile-kv__v--mono">{user.id}</div>
-                    </div>
-                    {user.eblid ? (
-                      <div className="profile-kv__row">
-                        <div className="profile-kv__k">EBLID</div>
-                        <div className="profile-kv__v profile-kv__v--mono">{user.eblid}</div>
+                        {r.right ? <div className="pov-row__right">{r.right}</div> : null}
                       </div>
-                    ) : null}
-                    {user.lastSeenAt ? (
-                      <div className="profile-kv__row">
-                        <div className="profile-kv__k">last seen</div>
-                        <div className="profile-kv__v">{new Date(user.lastSeenAt).toLocaleString()}</div>
-                      </div>
-                    ) : null}
+                    ))}
                   </div>
-                </ProfileSection>
-
-                <DangerZone
-                  isSelf={isSelf}
-                  isContact={isContact}
-                  canBlock={canBlock}
-                  onAddContact={() => {
-                    setConfirm({
-                      title: 'Добавить в контакты?',
-                      text: 'Пользователь получит запрос на добавление.',
-                      confirmLabel: 'Добавить',
-                      tone: 'muted',
-                      onConfirm: async () => {
-                        await onAddContact?.()
-                        setConfirm(null)
-                      },
-                    })
-                  }}
-                  onRemoveContact={() => {
-                    setConfirm({
-                      title: 'Удалить контакт?',
-                      text: 'Контакт будет удалён из вашего списка. Это действие можно будет отменить только повторным добавлением.',
-                      confirmLabel: 'Удалить',
-                      tone: 'danger',
-                      onConfirm: async () => {
-                        await onRemoveContact?.()
-                        setConfirm(null)
-                      },
-                    })
-                  }}
-                  onBlock={() => {
-                    setConfirm({
-                      title: 'Заблокировать пользователя?',
-                      text: 'Он не сможет писать и звонить вам. Вы сможете снять блокировку позже.',
-                      confirmLabel: 'Заблокировать',
-                      tone: 'danger',
-                      onConfirm: async () => {
-                        await onBlock?.()
-                        setConfirm(null)
-                      },
-                    })
-                  }}
-                  onReport={() => {
-                    setConfirm({
-                      title: 'Пожаловаться?',
-                      text: 'Мы получим жалобу и сможем проверить ситуацию.',
-                      confirmLabel: 'Отправить',
-                      tone: 'muted',
-                      onConfirm: async () => {
-                        await onReport?.()
-                        setConfirm(null)
-                      },
-                    })
-                  }}
-                />
+                ) : null}
               </div>
 
               {confirm ? (
@@ -333,6 +503,34 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
             </>
           )}
         </div>
+
+        {menu.open ? (
+          <div
+            className="pov-menu-overlay"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              setMenu({ open: false, x: 0, y: 0 })
+            }}
+          >
+            <div className="pov-menu" style={{ position: 'fixed', left: menu.x, top: menu.y }} onClick={(e) => e.stopPropagation()}>
+              {menuItems.map((item) => (
+                <button
+                  key={item.key}
+                  className={`pov-menu__item ${item.tone === 'danger' ? 'is-danger' : ''}`}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    item.onClick()
+                  }}
+                >
+                  <span className="pov-menu__icon">{item.icon}</span>
+                  <span className="pov-menu__label">{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     )
   }, [
@@ -352,6 +550,7 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
     contactRequest,
     onAcceptContact,
     onRejectContact,
+    mediaPreview,
     secret,
     onStartSecretChat,
     onOpenSecretChat,
@@ -367,6 +566,10 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
     onReport,
     confirm,
     toast,
+    menu.open,
+    menu.x,
+    menu.y,
+    menuItems,
   ])
 
   if (!canRender) return null

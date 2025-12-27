@@ -938,8 +938,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return info
   }
 
-  async function initiateSecretChat(targetUserId: string) {
-    if (secretRequestLoading) return
+  async function initiateSecretChat(targetUserId: string): Promise<string | null> {
+    if (secretRequestLoading) return null
     setSecretRequestLoading(true)
     const MAX_REBOOT_ATTEMPTS = 2
     let rebootAttempts = 0
@@ -955,7 +955,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         const device = await ensureLocalDevice()
         if (!device) {
           alert('Не удалось инициализировать устройство для секретного чата')
-          return
+          return null
         }
         try {
           const payload = {
@@ -965,9 +965,10 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             initiatorDeviceId: device.deviceId,
           }
           console.log('[SecretChat] Creating with payload:', payload)
-          await api.post('/conversations', payload)
+          const resp = await api.post('/conversations', payload)
           client.invalidateQueries({ queryKey: ['conversations'] })
-          return
+          const cid = resp?.data?.conversation?.id
+          return typeof cid === 'string' ? cid : null
         } catch (err: any) {
           console.error('[SecretChat] Creation error:', err?.response?.data || err)
           const message = err?.response?.data?.message
@@ -993,6 +994,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       console.error('Failed to start secret conversation:', err)
       const errorMessage = err?.message || err?.response?.data?.message || 'Не удалось отправить запрос на секретный чат'
       alert(errorMessage)
+      return null
     } finally {
       setSecretRequestLoading(false)
     }
@@ -7344,10 +7346,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 role="menuitem"
                 onClick={async () => {
                   const uid = contactMenu.user!.id
-                  await initiateSecretChat(uid)
+                  const cid = await initiateSecretChat(uid)
                   setContactMenu({ open: false, x: 0, y: 0, contactId: null, user: null })
                   setContactsOpen(false)
                   client.invalidateQueries({ queryKey: ['conversations'] })
+                  if (cid) {
+                    selectConversation(cid)
+                  }
                 }}
               >
                 Секретный чат
@@ -7772,7 +7777,10 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     <button
                       onClick={async () => {
                         if (peer?.id) {
-                          await initiateSecretChat(peer.id)
+                          const cid = await initiateSecretChat(peer.id)
+                          if (cid) {
+                            selectConversation(cid)
+                          }
                         }
                         setHeaderMenu({ open: false, anchor: null })
                       }}
@@ -7913,8 +7921,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       onStartSecretChat={async () => {
         const uid = profileOverlay.user?.id
         if (!uid) return
-        await initiateSecretChat(uid)
+        const cid = await initiateSecretChat(uid)
         client.invalidateQueries({ queryKey: ['conversations'] })
+        if (cid) {
+          closeProfile()
+          selectConversation(cid)
+        }
       }}
       onOpenSecretChat={async () => {
         const uid = profileOverlay.user?.id
