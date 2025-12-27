@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Copy,
+  ChevronRight,
   Hash,
   Info,
   Lock,
@@ -70,6 +71,7 @@ export type ProfileOverlayProps = {
   onRemoveContact?: () => Promise<void> | void
   onBlock?: () => Promise<void> | void
   onReport?: () => Promise<void> | void
+  onOpenCommonGroup?: (conversationId: string) => Promise<void> | void
 }
 
 export function ProfileOverlay(props: ProfileOverlayProps) {
@@ -104,6 +106,7 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
     onRemoveContact,
     onBlock,
     onReport,
+    onOpenCommonGroup,
   } = props
 
   const isSelf = !!(user?.id && meId && user.id === meId)
@@ -491,6 +494,21 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
                         <div className="pov-row__main">
                           <div className="pov-row__title">{g.title}</div>
                         </div>
+                        {typeof onOpenCommonGroup === 'function' ? (
+                          <div className="pov-row__right">
+                            <button
+                              className="pov-row__iconbtn"
+                              aria-label="Открыть чат"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                void onOpenCommonGroup(g.id)
+                              }}
+                            >
+                              <ChevronRight size={18} />
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     ))}
 

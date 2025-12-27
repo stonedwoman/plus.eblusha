@@ -7881,6 +7881,10 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         }
         return list
       })()}
+      onOpenCommonGroup={(conversationId) => {
+        closeProfile()
+        selectConversation(conversationId)
+      }}
       onClose={closeProfile}
       onAcceptContact={async () => {
         const c = profileOverlay.contact
