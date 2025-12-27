@@ -11,6 +11,7 @@ import {
   ShieldOff,
   Trash2,
   UserPlus,
+  Users,
   X,
 } from 'lucide-react'
 import { Avatar } from '../Avatar'
@@ -303,6 +304,8 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
     const status = statusText || ''
     const showActions = !!(onWrite || onCall || (contactRequest?.incoming && (onAcceptContact || onRejectContact)) || menuItems.length > 0)
     const canSecret = !isSelf && (!!secret?.enabled ? typeof onOpenSecretChat === 'function' : typeof onStartSecretChat === 'function')
+    const commonGroupsToShow = !isSelf && commonGroups?.length ? commonGroups.slice(0, 6) : []
+    const commonGroupsRest = !isSelf && commonGroups?.length ? Math.max(0, commonGroups.length - commonGroupsToShow.length) : 0
 
     const infoRows: Array<
       | { key: string; icon: React.ReactNode; title: string; subtitle?: string; right?: React.ReactNode; onClick?: () => void }
@@ -465,6 +468,40 @@ export function ProfileOverlay(props: ProfileOverlayProps) {
                         {r.right ? <div className="pov-row__right">{r.right}</div> : null}
                       </div>
                     ))}
+                  </div>
+                ) : null}
+
+                {commonGroupsToShow.length > 0 ? (
+                  <div className="pov-list">
+                    <div className="pov-row pov-row--section">
+                      <div className="pov-row__icon">
+                        <Users size={18} />
+                      </div>
+                      <div className="pov-row__main">
+                        <div className="pov-row__title">Общие чаты</div>
+                        <div className="pov-row__sub">{commonGroups.length}</div>
+                      </div>
+                    </div>
+
+                    {commonGroupsToShow.map((g) => (
+                      <div key={g.id} className="pov-row">
+                        <div className="pov-row__avatar">
+                          <Avatar name={g.title} id={g.id} size={38} />
+                        </div>
+                        <div className="pov-row__main">
+                          <div className="pov-row__title">{g.title}</div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {commonGroupsRest > 0 ? (
+                      <div className="pov-row">
+                        <div className="pov-row__avatar" />
+                        <div className="pov-row__main">
+                          <div className="pov-row__sub">и ещё {commonGroupsRest}</div>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
