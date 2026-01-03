@@ -5,3 +5,8 @@ frontend/public/updates/
 frontend/dist/updates/
 
 .env
+
+.env
+.env.*
+*.env
+*.env.*
