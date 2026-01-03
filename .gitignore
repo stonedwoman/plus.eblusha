@@ -3,3 +3,5 @@ uploads/
 # Build/update artifacts (Electron auto-updater bundles) should not be committed
 frontend/public/updates/
 frontend/dist/updates/
+
+.env
