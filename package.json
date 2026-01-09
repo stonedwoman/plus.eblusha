@@ -13,7 +13,9 @@
     "prisma:migrate": "prisma migrate dev",
     "docker:db": "docker compose up -d postgres",
     "smoke": "ts-node test/local-smoke.ts",
-    "migrate:uploads": "ts-node src/scripts/migrateUploads.ts"
+    "migrate:uploads": "ts-node src/scripts/migrateUploads.ts",
+    "encrypt:s3": "ts-node src/scripts/encryptS3Objects.ts",
+    "migrate:eblusha-keys": "ts-node src/scripts/migrateKeysToEblusha.ts"
   },
   "keywords": [],
   "author": "",

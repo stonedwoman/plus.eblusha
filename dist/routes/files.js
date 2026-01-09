@@ -7,6 +7,7 @@ const express_1 = require("express");
 const client_s3_1 = require("@aws-sdk/client-s3");
 const env_1 = __importDefault(require("../config/env"));
 const logger_1 = __importDefault(require("../config/logger"));
+const storageEncryption_1 = require("../lib/storageEncryption");
 const router = (0, express_1.Router)();
 const s3Config = env_1.default.STORAGE_S3_ENDPOINT &&
     env_1.default.STORAGE_S3_REGION &&
@@ -30,6 +31,16 @@ const s3Client = s3Config
     })
     : null;
 const objectPrefix = env_1.default.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
+const encKey = env_1.default.STORAGE_ENC_KEY ? (0, storageEncryption_1.parseStorageEncKey)(env_1.default.STORAGE_ENC_KEY) : null;
+if (s3Client && s3Config) {
+    logger_1.default.info({
+        endpoint: s3Config.endpoint,
+        region: s3Config.region,
+        bucket: s3Config.bucket,
+        forcePathStyle: env_1.default.STORAGE_S3_FORCE_PATH_STYLE,
+        objectPrefix,
+    }, "S3 file proxy initialized");
+}
 // Decode URL-encoded path segments
 const decodeKeyFromUrl = (urlPath) => urlPath
     .split("/")
@@ -61,6 +72,43 @@ const isAccessDenied = (err) => err?.name === "AccessDenied" ||
     err?.name === "Forbidden" ||
     err?.Code === "AccessDenied" ||
     err?.$metadata?.httpStatusCode === 403;
+const readBodyToBuffer = async (body) => {
+    if (!body)
+        return Buffer.alloc(0);
+    // Node stream
+    if (typeof body.pipe === "function") {
+        const chunks = [];
+        await new Promise((resolve, reject) => {
+            body.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+            body.on("end", () => resolve());
+            body.on("error", (e) => reject(e));
+        });
+        return Buffer.concat(chunks);
+    }
+    // Web ReadableStream
+    if (body instanceof ReadableStream || typeof body.getReader === "function") {
+        const reader = body.getReader();
+        const chunks = [];
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done)
+                    break;
+                if (value)
+                    chunks.push(value);
+            }
+        }
+        finally {
+            reader.releaseLock();
+        }
+        return Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    }
+    // ArrayBuffer-ish
+    const arrayBuffer = (await body.transformToByteArray?.()) || (await body.arrayBuffer?.());
+    if (arrayBuffer)
+        return Buffer.from(arrayBuffer);
+    throw new Error("Unsupported S3 body type");
+};
 const buildCandidateKeys = (decodedPath, bucket, prefix) => {
     const base = decodedPath.replace(/^\//, "");
     const stripped = stripLeadingBucketSegment(base, bucket, prefix);
@@ -88,6 +136,18 @@ const buildCandidateKeys = (decodedPath, bucket, prefix) => {
         }
     }
     return candidates;
+};
+const toEblushaKey = (k) => {
+    if (k.endsWith(".eblusha"))
+        return k;
+    const parts = k.split("/");
+    const base = parts.pop() ?? "";
+    if (!base)
+        return `${k}.eblusha`;
+    const dot = base.lastIndexOf(".");
+    const baseNoExt = dot > 0 ? base.slice(0, dot) : base;
+    parts.push(`${baseNoExt}.eblusha`);
+    return parts.join("/");
 };
 // Proxy route: /api/files/*
 // Use router.use with method check for catch-all
@@ -121,14 +181,19 @@ router.use(async (req, res, next) => {
     // Remove leading slash if present
     decodedPath = decodedPath.replace(/^\//, "");
     const candidates = buildCandidateKeys(decodedPath, s3Config.bucket, objectPrefix);
-    logger_1.default.info({ urlPath, decodedPath, objectPrefix, candidates, originalPath: req.path }, "Resolving S3 key candidates for file request");
+    // If we migrated objects to *.eblusha but DB still contains old URLs (.jpg/.png/.bin),
+    // transparently try the ".eblusha" variant as a fallback.
+    const expandedCandidates = encKey
+        ? Array.from(new Set([...candidates, ...candidates.map(toEblushaKey)]))
+        : candidates;
+    logger_1.default.info({ urlPath, decodedPath, objectPrefix, candidates: expandedCandidates, originalPath: req.path }, "Resolving S3 key candidates for file request");
     try {
         let contentType = "application/octet-stream";
         let contentLength;
         let lastModified;
         let etag;
         let lastErr = null;
-        for (const key of candidates) {
+        for (const key of expandedCandidates) {
             try {
                 // First, check if object exists and get metadata (best-effort).
                 try {
@@ -153,6 +218,37 @@ router.use(async (req, res, next) => {
                 const getCommand = new client_s3_1.GetObjectCommand({ Bucket: s3Config.bucket, Key: key });
                 const response = await s3Client.send(getCommand);
                 logger_1.default.info({ key }, "Proxying file from S3 using resolved key");
+                const isEncrypted = response.Metadata?.enc === "ebp1" ||
+                    response.Metadata?.encv === "1" ||
+                    // Backward compat (older attempt used underscores)
+                    response.Metadata?.enc_v === "1" ||
+                    false;
+                if (isEncrypted) {
+                    if (!encKey) {
+                        res.status(500).json({ message: "Storage encryption key is not configured" });
+                        return;
+                    }
+                    // Encryption disables efficient range reads; return full body.
+                    if (req.headers.range) {
+                        res.status(416).json({ message: "Range requests are not supported for encrypted files" });
+                        return;
+                    }
+                    const encryptedBuf = await readBodyToBuffer(response.Body);
+                    const decrypted = (0, storageEncryption_1.isEncryptedPayload)(encryptedBuf)
+                        ? (0, storageEncryption_1.decryptBuffer)(encryptedBuf, encKey, { aad: key })
+                        : (0, storageEncryption_1.decryptBuffer)(encryptedBuf, encKey, { aad: key });
+                    const originalCt = (response.Metadata?.ct && response.Metadata.ct.trim()) || "application/octet-stream";
+                    res.setHeader("Content-Type", originalCt);
+                    res.setHeader("Content-Length", decrypted.length.toString());
+                    // CORS headers
+                    res.setHeader("Access-Control-Allow-Origin", "*");
+                    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+                    res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified");
+                    // Cache headers
+                    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+                    res.send(decrypted);
+                    return;
+                }
                 // Set appropriate headers
                 res.setHeader("Content-Type", response.ContentType || contentType);
                 if (contentLength !== undefined) {
@@ -182,32 +278,9 @@ router.use(async (req, res, next) => {
                         body.pipe(res);
                         return;
                     }
-                    if (body instanceof ReadableStream || typeof body.getReader === "function") {
-                        const reader = body.getReader();
-                        const chunks = [];
-                        try {
-                            while (true) {
-                                const { done, value } = await reader.read();
-                                if (done)
-                                    break;
-                                if (value)
-                                    chunks.push(value);
-                            }
-                        }
-                        finally {
-                            reader.releaseLock();
-                        }
-                        const buffer = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
-                        res.send(buffer);
-                        return;
-                    }
                     try {
-                        const arrayBuffer = (await body.transformToByteArray?.()) || (await body.arrayBuffer?.());
-                        if (arrayBuffer) {
-                            res.send(Buffer.from(arrayBuffer));
-                            return;
-                        }
-                        res.status(500).json({ message: "Unable to read file content" });
+                        const buffer = await readBodyToBuffer(body);
+                        res.send(buffer);
                         return;
                     }
                     catch (readError) {

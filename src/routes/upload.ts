@@ -13,6 +13,11 @@ import {
 import { authenticate } from "../middlewares/auth";
 import env from "../config/env";
 import logger from "../config/logger";
+import {
+  encryptBuffer,
+  parseStorageEncKey,
+  type EncryptionMetadata,
+} from "../lib/storageEncryption";
 
 const router = Router();
 
@@ -71,6 +76,8 @@ if (s3Client && s3Config) {
   );
 }
 
+const encKey = env.STORAGE_ENC_KEY ? parseStorageEncKey(env.STORAGE_ENC_KEY) : null;
+
 const encodeKeyForUrl = (key: string) =>
   key
     .split("/")
@@ -119,11 +126,6 @@ const resolveServerSideEncryption = (
   return undefined;
 };
 
-const uploadsDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
 router.use(authenticate);
 
 router.post("/", upload.single("file"), async (req: Request, res) => {
@@ -133,7 +135,9 @@ router.post("/", upload.single("file"), async (req: Request, res) => {
     return;
   }
 
-  const ext = path.extname(file.originalname || "") || ".bin";
+  // If app-level encryption is enabled, hide the original extension in S3 object keys.
+  // Clients will rely on Content-Type from our proxy response (stored in object metadata).
+  const ext = encKey ? ".eblusha" : path.extname(file.originalname || "") || ".bin";
   const randomId =
     typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
@@ -153,11 +157,41 @@ router.post("/", upload.single("file"), async (req: Request, res) => {
     // All uploads go to S3 - no local fallback
     // Hetzner Object Storage may not support ACL/SSE parameters
     // Use them only if explicitly needed for other providers
+    let bodyToUpload: Buffer = file.buffer;
+    let encryptionMeta: EncryptionMetadata | null = null;
+    let originalContentType = file.mimetype || "application/octet-stream";
+
+    // Optional app-level encryption: store only ciphertext in S3. Decrypt in /api/files.
+    // AAD binds ciphertext to its object key (prevents key-swapping attacks inside the bucket).
+    if (encKey) {
+      const encrypted = encryptBuffer(file.buffer, encKey, {
+        aad: key,
+        contentType: originalContentType,
+      });
+      bodyToUpload = encrypted.payload;
+      encryptionMeta = encrypted.meta;
+      // ciphertext shouldn't advertise original type
+      originalContentType = "application/octet-stream";
+    }
+
     const putObjectParams: any = {
       Bucket: s3Config.bucket,
       Key: key,
-      Body: file.buffer,
-      ContentType: file.mimetype || "application/octet-stream",
+      Body: bodyToUpload,
+      ContentType: originalContentType,
+      Metadata: encryptionMeta
+        ? {
+            enc: "ebp1",
+            // Avoid underscores in x-amz-meta-* keys for S3-compatible providers.
+            // Some proxies/services normalize '_' which breaks SigV4 signature verification.
+            encv: encryptionMeta.v,
+            encalg: encryptionMeta.alg,
+            enciv: encryptionMeta.iv,
+            enctag: encryptionMeta.tag,
+            // preserve original content-type for API response
+            ct: encryptionMeta.ct || "",
+          }
+        : undefined,
     };
     // Note: twcstorage.ru (Russian S3) doesn't support ACL/SSE in PutObject
     // Similar to Hetzner, these parameters cause InvalidRequest errors
@@ -169,9 +203,11 @@ router.post("/", upload.single("file"), async (req: Request, res) => {
     const command = new PutObjectCommand(putObjectParams);
     await s3Client.send(command);
     
-    // Возвращаем прямую ссылку на S3 (без внутреннего прокси)
     const encodedKey = encodeKeyForUrl(key);
-    const publicUrl = `${s3Config.publicBaseUrl}/${encodedKey}`;
+    // If encrypted, direct S3 URL is useless (ciphertext). Return proxy URL so client always hits server.
+    const publicUrl = encKey
+      ? `/api/files/${encodedKey}`
+      : `${s3Config.publicBaseUrl}/${encodedKey}`;
     
     res.json({ url: publicUrl, path: key, publicUrl });
   } catch (error) {

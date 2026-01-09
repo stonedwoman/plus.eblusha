@@ -12,33 +12,42 @@ const env_1 = __importDefault(require("./config/env"));
 const logger_1 = __importDefault(require("./config/logger"));
 const socket_1 = require("./realtime/socket");
 const port = env_1.default.PORT;
-// static serving for uploads with permissive cross-origin headers for images
-const uploadsPath = path_1.default.join(process.cwd(), 'uploads');
-if (!fs_1.default.existsSync(uploadsPath)) {
-    fs_1.default.mkdirSync(uploadsPath, { recursive: true });
-}
-const staticOptions = {
-    dotfiles: 'deny',
-    etag: true,
-    fallthrough: true, // Allow request to continue if file not found
-    index: false,
-    lastModified: true,
-    maxAge: '1y',
-};
-// Middleware to set CORS headers for uploads
-const uploadsCors = (req, res, next) => {
-    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    next();
-};
-app_1.default.use('/uploads', uploadsCors, express_1.default.static(uploadsPath, staticOptions));
-app_1.default.use('/api/uploads', uploadsCors, express_1.default.static(uploadsPath, staticOptions), (req, res) => {
-    // If file not found, return 404 with proper headers
-    if (!res.headersSent) {
-        res.status(404).json({ message: 'File not found' });
+// Local uploads are disabled by default when S3 is configured.
+// This enforces "nothing is stored on the server" for media.
+const s3Configured = !!(env_1.default.STORAGE_S3_ENDPOINT && env_1.default.STORAGE_S3_REGION && env_1.default.STORAGE_S3_BUCKET);
+const localUploadsEnabled = !s3Configured && process.env.ENABLE_LOCAL_UPLOADS === "true";
+if (localUploadsEnabled) {
+    // static serving for uploads with permissive cross-origin headers for images
+    const uploadsPath = path_1.default.join(process.cwd(), "uploads");
+    if (!fs_1.default.existsSync(uploadsPath)) {
+        fs_1.default.mkdirSync(uploadsPath, { recursive: true });
     }
-});
+    const staticOptions = {
+        dotfiles: "deny",
+        etag: true,
+        fallthrough: true, // Allow request to continue if file not found
+        index: false,
+        lastModified: true,
+        maxAge: "1y",
+    };
+    // Middleware to set CORS headers for uploads
+    const uploadsCors = (req, res, next) => {
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        next();
+    };
+    app_1.default.use("/uploads", uploadsCors, express_1.default.static(uploadsPath, staticOptions));
+    app_1.default.use("/api/uploads", uploadsCors, express_1.default.static(uploadsPath, staticOptions), (_req, res) => {
+        // If file not found, return 404 with proper headers
+        if (!res.headersSent) {
+            res.status(404).json({ message: "File not found" });
+        }
+    });
+}
+else {
+    logger_1.default.info({ s3Configured, enableLocalUploadsEnv: process.env.ENABLE_LOCAL_UPLOADS }, "Local uploads are disabled");
+}
 const httpServer = http_1.default.createServer(app_1.default);
 (0, socket_1.initSocket)(httpServer);
 httpServer.listen(port, () => {

@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const zod_1 = require("zod");
 const prisma_1 = __importDefault(require("../lib/prisma"));
+const storageDeletion_1 = require("../lib/storageDeletion");
 const auth_1 = require("../middlewares/auth");
 const socket_1 = require("../realtime/socket");
 const env_1 = __importDefault(require("../config/env"));
@@ -459,6 +460,11 @@ router.delete("/:id", async (req, res) => {
     const isMember = conv.participants.some((p) => p.userId === userId);
     if (!isMember)
         return res.status(403).json({ message: "Forbidden" });
+    // Fetch attachment URLs before deletion for best-effort S3 cleanup.
+    const attachmentUrls = (await prisma_1.default.messageAttachment.findMany({
+        where: { message: { conversationId: id } },
+        select: { url: true },
+    })).map((a) => a.url);
     await prisma_1.default.$transaction([
         prisma_1.default.messageReceipt.deleteMany({ where: { message: { conversationId: id } } }),
         prisma_1.default.messageAttachment.deleteMany({ where: { message: { conversationId: id } } }),
@@ -467,6 +473,9 @@ router.delete("/:id", async (req, res) => {
         prisma_1.default.conversationParticipant.deleteMany({ where: { conversationId: id } }),
         prisma_1.default.conversation.delete({ where: { id } }),
     ]);
+    if (attachmentUrls.length) {
+        void (0, storageDeletion_1.deleteS3ObjectsByUrls)(attachmentUrls, { reason: `conversation:${id}` });
+    }
     // Notify participants
     const recipients = conv.participants.map((p) => p.userId);
     const io = (0, socket_1.getIO)();

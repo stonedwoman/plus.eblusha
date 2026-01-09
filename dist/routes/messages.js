@@ -7,6 +7,7 @@ const express_1 = require("express");
 const client_1 = require("@prisma/client");
 const zod_1 = require("zod");
 const prisma_1 = __importDefault(require("../lib/prisma"));
+const storageDeletion_1 = require("../lib/storageDeletion");
 const auth_1 = require("../middlewares/auth");
 const socket_1 = require("../realtime/socket");
 const router = (0, express_1.Router)();
@@ -158,11 +159,20 @@ router.post("/delete", async (req, res) => {
         return res.status(404).json({ message: "Not found" });
     if (msg.senderId !== userId)
         return res.status(403).json({ message: "Forbidden" });
+    // Fetch attachment URLs before deletion so we can attempt to delete blobs in S3 as well.
+    const attachmentUrls = (await prisma_1.default.messageAttachment.findMany({
+        where: { messageId },
+        select: { url: true },
+    })).map((a) => a.url);
     await prisma_1.default.$transaction([
         prisma_1.default.messageAttachment.deleteMany({ where: { messageId } }),
         prisma_1.default.messageReaction.deleteMany({ where: { messageId } }),
         prisma_1.default.message.update({ where: { id: messageId }, data: { deletedAt: new Date(), content: null, metadata: client_1.Prisma.DbNull } }),
     ]);
+    // Best-effort S3 deletion (do not block the response; do not throw).
+    if (attachmentUrls.length) {
+        void (0, storageDeletion_1.deleteS3ObjectsByUrls)(attachmentUrls, { reason: `message:${messageId}` });
+    }
     (0, socket_1.getIO)()?.to(msg.conversationId).emit("message:update", { conversationId: msg.conversationId, messageId, reason: "deleted" });
     res.json({ success: true });
 });
