@@ -57,6 +57,20 @@ const s3Client = s3Config
 
 const objectPrefix = env.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
 
+if (s3Client && s3Config) {
+  logger.info(
+    {
+      endpoint: s3Config.endpoint,
+      region: s3Config.region,
+      bucket: s3Config.bucket,
+      publicBaseUrl: s3Config.publicBaseUrl,
+      forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
+      objectPrefix,
+    },
+    "S3 upload initialized"
+  );
+}
+
 const encodeKeyForUrl = (key: string) =>
   key
     .split("/")

@@ -35,6 +35,60 @@ const decodeKeyFromUrl = (urlPath) => urlPath
     .split("/")
     .map((segment) => decodeURIComponent(segment))
     .join("/");
+const splitPathSegments = (p) => p.split("/").filter(Boolean);
+const stripLeadingBucketSegment = (decodedPath, bucket, prefix) => {
+    const segments = splitPathSegments(decodedPath);
+    if (segments.length === 0)
+        return decodedPath;
+    // Common case: proxy path was derived from a path-style public URL:
+    //   https://s3.example.com/<bucket>/<key>
+    // Frontend converts it to: /api/files/<bucket>/<key>
+    // If we see "<something>/<prefix>/..." treat the leading segment as bucket and strip it.
+    const prefixSegments = splitPathSegments(prefix);
+    if (prefixSegments.length > 0 && segments.length >= 1 + prefixSegments.length) {
+        const maybePrefix = segments.slice(1, 1 + prefixSegments.length).join("/");
+        if (maybePrefix === prefixSegments.join("/")) {
+            return segments.slice(1).join("/");
+        }
+    }
+    // Also strip an explicit, configured bucket name if present.
+    if (bucket && segments[0] === bucket) {
+        return segments.slice(1).join("/");
+    }
+    return decodedPath;
+};
+const isAccessDenied = (err) => err?.name === "AccessDenied" ||
+    err?.name === "Forbidden" ||
+    err?.Code === "AccessDenied" ||
+    err?.$metadata?.httpStatusCode === 403;
+const buildCandidateKeys = (decodedPath, bucket, prefix) => {
+    const base = decodedPath.replace(/^\//, "");
+    const stripped = stripLeadingBucketSegment(base, bucket, prefix);
+    const candidates = [];
+    const push = (k) => {
+        const key = k.replace(/^\//, "");
+        if (!key)
+            return;
+        if (!candidates.includes(key))
+            candidates.push(key);
+    };
+    // Try as-is first (it might already be the real object key).
+    push(base);
+    push(stripped);
+    // Then try enforcing STORAGE_PREFIX (avoids missing prefix issues).
+    const prefixNorm = prefix.replace(/^\/|\/$/g, "");
+    if (prefixNorm) {
+        for (const k of [base, stripped]) {
+            if (k === prefixNorm || k.startsWith(prefixNorm + "/")) {
+                push(k);
+            }
+            else {
+                push(`${prefixNorm}/${k}`);
+            }
+        }
+    }
+    return candidates;
+};
 // Proxy route: /api/files/*
 // Use router.use with method check for catch-all
 router.use(async (req, res, next) => {
@@ -42,13 +96,22 @@ router.use(async (req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
         return next();
     }
+    // Handle OPTIONS for CORS preflight without touching S3.
+    if (req.method === "OPTIONS") {
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "*");
+        res.setHeader("Access-Control-Max-Age", "3600");
+        res.status(204).end();
+        return;
+    }
     if (!s3Client || !s3Config) {
         res.status(503).json({ message: "S3 storage is not configured" });
         return;
     }
     // Extract path from request (everything after /api/files/)
     // req.path will be like "/files/uploads/file.jpg" when mounted at /api
-    const urlPath = req.path.replace(/^\/files\/?/, "") || req.path.replace(/^\/api\/files\/?/, "");
+    const urlPath = req.path.replace(/^\//, "");
     if (!urlPath) {
         res.status(400).json({ message: "File path is required" });
         return;
@@ -57,145 +120,137 @@ router.use(async (req, res, next) => {
     let decodedPath = decodeKeyFromUrl(urlPath);
     // Remove leading slash if present
     decodedPath = decodedPath.replace(/^\//, "");
-    // Some providers (e.g. path-style base URL like https://s3.twcstorage.ru/<bucket>/...)
-    // embed the bucket name in the URL path. Our proxy path is "/api/files/*" and should only
-    // contain the object key, so strip a leading "<bucket>/" if present.
-    if (s3Config?.bucket && decodedPath.startsWith(s3Config.bucket + "/")) {
-        decodedPath = decodedPath.slice(s3Config.bucket.length + 1);
-    }
-    // If objectPrefix is set, ensure the path starts with it
-    // If decodedPath already starts with objectPrefix, use it as-is
-    // Otherwise, prepend objectPrefix
-    let key = decodedPath;
-    if (objectPrefix) {
-        if (decodedPath.startsWith(objectPrefix + "/")) {
-            // Path already has prefix, use as-is
-            key = decodedPath;
-        }
-        else if (decodedPath === objectPrefix) {
-            // Path is exactly the prefix, use as-is
-            key = decodedPath;
-        }
-        else {
-            // Path doesn't have prefix, add it
-            key = `${objectPrefix}/${decodedPath}`;
-        }
-    }
-    logger_1.default.info({ urlPath, decodedPath, objectPrefix, key, originalPath: req.path }, "Resolving S3 key for file request");
+    const candidates = buildCandidateKeys(decodedPath, s3Config.bucket, objectPrefix);
+    logger_1.default.info({ urlPath, decodedPath, objectPrefix, candidates, originalPath: req.path }, "Resolving S3 key candidates for file request");
     try {
-        // First, check if object exists and get metadata
-        const headCommand = new client_s3_1.HeadObjectCommand({ Bucket: s3Config.bucket, Key: key });
         let contentType = "application/octet-stream";
         let contentLength;
         let lastModified;
         let etag;
-        try {
-            const headResponse = await s3Client.send(headCommand);
-            contentType = headResponse.ContentType || contentType;
-            contentLength = headResponse.ContentLength;
-            lastModified = headResponse.LastModified;
-            etag = headResponse.ETag;
-        }
-        catch (headError) {
-            if (headError.name === "NotFound" || headError.$metadata?.httpStatusCode === 404) {
-                res.status(404).json({ message: "File not found" });
-                return;
-            }
-            // If HEAD fails, try GET anyway (some S3-compatible services don't support HEAD)
-            logger_1.default.warn({ err: headError, key }, "HEAD request failed, will try GET");
-        }
-        // Get the object
-        const getCommand = new client_s3_1.GetObjectCommand({ Bucket: s3Config.bucket, Key: key });
-        const response = await s3Client.send(getCommand);
-        // Set appropriate headers
-        res.setHeader("Content-Type", response.ContentType || contentType);
-        if (contentLength !== undefined) {
-            res.setHeader("Content-Length", contentLength.toString());
-        }
-        if (lastModified) {
-            res.setHeader("Last-Modified", lastModified.toUTCString());
-        }
-        if (etag) {
-            res.setHeader("ETag", etag);
-        }
-        // CORS headers
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-        res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified");
-        // Cache headers
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        // Handle range requests (for video/audio streaming)
-        const range = req.headers.range;
-        if (range && response.ContentRange) {
-            res.status(206).setHeader("Content-Range", response.ContentRange);
-        }
-        // Stream the object body to response
-        if (response.Body) {
-            // AWS SDK v3 returns Body as ReadableStream
-            // Convert to Node.js stream or buffer
-            const body = response.Body;
-            // Try to pipe if it's a Node.js stream
-            if (typeof body.pipe === "function") {
-                body.pipe(res);
-                return;
-            }
-            // Otherwise, read as ReadableStream and convert to buffer
-            if (body instanceof ReadableStream || typeof body.getReader === "function") {
-                const reader = body.getReader();
-                const chunks = [];
+        let lastErr = null;
+        for (const key of candidates) {
+            try {
+                // First, check if object exists and get metadata (best-effort).
                 try {
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done)
-                            break;
-                        if (value)
-                            chunks.push(value);
-                    }
+                    const headCommand = new client_s3_1.HeadObjectCommand({ Bucket: s3Config.bucket, Key: key });
+                    const headResponse = await s3Client.send(headCommand);
+                    contentType = headResponse.ContentType || contentType;
+                    contentLength = headResponse.ContentLength;
+                    lastModified = headResponse.LastModified;
+                    etag = headResponse.ETag;
                 }
-                finally {
-                    reader.releaseLock();
-                }
-                const buffer = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)));
-                res.send(buffer);
-            }
-            else {
-                // Fallback: try to read as arrayBuffer
-                try {
-                    const arrayBuffer = await body.transformToByteArray?.() || await body.arrayBuffer?.();
-                    if (arrayBuffer) {
-                        res.send(Buffer.from(arrayBuffer));
+                catch (headError) {
+                    // NotFound -> try next candidate without GET.
+                    if (headError.name === "NotFound" || headError.$metadata?.httpStatusCode === 404) {
+                        lastErr = headError;
+                        continue;
                     }
-                    else {
+                    // Other errors (including AccessDenied or unsupported HEAD) -> we still try GET.
+                    lastErr = headError;
+                    logger_1.default.warn({ err: headError, key }, "HEAD request failed for candidate, will try GET");
+                }
+                // Get the object
+                const getCommand = new client_s3_1.GetObjectCommand({ Bucket: s3Config.bucket, Key: key });
+                const response = await s3Client.send(getCommand);
+                logger_1.default.info({ key }, "Proxying file from S3 using resolved key");
+                // Set appropriate headers
+                res.setHeader("Content-Type", response.ContentType || contentType);
+                if (contentLength !== undefined) {
+                    res.setHeader("Content-Length", contentLength.toString());
+                }
+                if (lastModified) {
+                    res.setHeader("Last-Modified", lastModified.toUTCString());
+                }
+                if (etag) {
+                    res.setHeader("ETag", etag);
+                }
+                // CORS headers
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+                res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified");
+                // Cache headers
+                res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+                // Handle range requests (for video/audio streaming)
+                const range = req.headers.range;
+                if (range && response.ContentRange) {
+                    res.status(206).setHeader("Content-Range", response.ContentRange);
+                }
+                // Stream the object body to response
+                if (response.Body) {
+                    const body = response.Body;
+                    if (typeof body.pipe === "function") {
+                        body.pipe(res);
+                        return;
+                    }
+                    if (body instanceof ReadableStream || typeof body.getReader === "function") {
+                        const reader = body.getReader();
+                        const chunks = [];
+                        try {
+                            while (true) {
+                                const { done, value } = await reader.read();
+                                if (done)
+                                    break;
+                                if (value)
+                                    chunks.push(value);
+                            }
+                        }
+                        finally {
+                            reader.releaseLock();
+                        }
+                        const buffer = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+                        res.send(buffer);
+                        return;
+                    }
+                    try {
+                        const arrayBuffer = (await body.transformToByteArray?.()) || (await body.arrayBuffer?.());
+                        if (arrayBuffer) {
+                            res.send(Buffer.from(arrayBuffer));
+                            return;
+                        }
                         res.status(500).json({ message: "Unable to read file content" });
+                        return;
+                    }
+                    catch (readError) {
+                        logger_1.default.error({ err: readError, key }, "Failed to read file body");
+                        res.status(500).json({ message: "Failed to read file content" });
+                        return;
                     }
                 }
-                catch (readError) {
-                    logger_1.default.error({ err: readError, key }, "Failed to read file body");
-                    res.status(500).json({ message: "Failed to read file content" });
+                res.status(500).json({ message: "No file content" });
+                return;
+            }
+            catch (err) {
+                lastErr = err;
+                if (err?.name === "NoSuchKey" || err?.$metadata?.httpStatusCode === 404) {
+                    continue;
                 }
+                // Some S3-compatible providers return 403 even for missing keys; continue trying other candidates.
+                if (isAccessDenied(err)) {
+                    continue;
+                }
+                // For other errors, also continue (we'll return a best-effort status later).
+                continue;
             }
         }
-        else {
-            res.status(500).json({ message: "No file content" });
+        // If we got here, none of the candidates worked.
+        if (lastErr && isAccessDenied(lastErr)) {
+            res.status(403).json({ message: "Access denied" });
+            return;
         }
+        res.status(404).json({ message: "File not found" });
+        return;
     }
     catch (error) {
-        logger_1.default.error({ err: error, key }, "Failed to proxy file from S3");
+        logger_1.default.error({ err: error }, "Failed to proxy file from S3");
         if (error.name === "NoSuchKey" || error.$metadata?.httpStatusCode === 404) {
             res.status(404).json({ message: "File not found" });
+        }
+        else if (isAccessDenied(error)) {
+            res.status(403).json({ message: "Access denied" });
         }
         else {
             res.status(500).json({ message: "Failed to retrieve file" });
         }
-    }
-    // Handle OPTIONS for CORS preflight
-    if (req.method === "OPTIONS") {
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "*");
-        res.setHeader("Access-Control-Max-Age", "3600");
-        res.status(204).end();
-        return;
     }
 });
 exports.default = router;
