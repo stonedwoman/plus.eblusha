@@ -57,6 +57,7 @@ import { createPortal } from 'react-dom'
 import { LiveKitRoom, VideoConference, MediaDeviceSelect, useConnectionState, useLocalParticipant, useRoomContext } from '@livekit/components-react'
 import '@livekit/components-styles'
 import { X } from 'lucide-react'
+import { convertToProxyUrl } from '../../utils/media'
 import { api } from '../../utils/api'
 import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../utils/socket'
 import { useAppStore } from '../../domain/store/appStore'
@@ -867,7 +868,10 @@ function ParticipantVolumeUpdater() {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const settingsByKeyRef = useRef<Map<string, { volume: number; muted: boolean; lastNonZeroPct: number }>>(new Map())
   const lastUserGestureAtRef = useRef<number>(0)
-  const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; inited: boolean }>>(new WeakMap())
+  // Track whether WebAudio routing is enabled for a given track.
+  // If AudioContext is set AFTER elements were attached, the HTMLAudio path stays active,
+  // which causes double playback unless we mute the attached elements manually.
+  const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; enabled: boolean }>>(new WeakMap())
   const wheelAccByKeyRef = useRef<Map<string, number>>(new Map())
 
   const isLocalTile = (tile: HTMLElement): boolean => {
@@ -1042,16 +1046,55 @@ function ParticipantVolumeUpdater() {
       }
       const tr = pub?.track
       if (!(tr instanceof RemoteAudioTrack)) continue
-      if (ctx) {
+
+      const prev = webAudioStateRef.current.get(tr)
+      if (needsAmp && ctx) {
         // Enable WebAudio routing once per track (so >100% works) but don't keep re-wiring.
-        const prev = webAudioStateRef.current.get(tr)
-        if (!prev || prev.ctx !== ctx || !prev.inited) {
+        if (!prev || prev.ctx !== ctx || !prev.enabled) {
           tr.setAudioContext(ctx)
-          webAudioStateRef.current.set(tr, { ctx, inited: true })
+          webAudioStateRef.current.set(tr, { ctx, enabled: true })
+        }
+        // If AudioContext was set after attach, mute attached elements to avoid double playback.
+        try {
+          tr.attachedElements.forEach((el) => {
+            try {
+              el.volume = 0
+              el.muted = true
+            } catch {
+              // ignore
+            }
+          })
+        } catch {
+          // ignore
+        }
+      } else {
+        // No amplification needed: restore default element path if WebAudio was enabled.
+        if (prev?.enabled) {
+          try {
+            tr.setAudioContext(undefined)
+          } catch {
+            // ignore
+          }
+          webAudioStateRef.current.set(tr, { ctx: prev.ctx, enabled: false })
+        }
+        // Ensure element playback is unmuted unless explicitly muted.
+        try {
+          const shouldMuteEl = settings.muted || effective <= 0
+          tr.attachedElements.forEach((el) => {
+            try {
+              el.muted = shouldMuteEl
+            } catch {
+              // ignore
+            }
+          })
+        } catch {
+          // ignore
         }
       }
-      // Clamp for safety
-      const vol = settings.muted ? 0 : Math.max(0, Math.min(1.5, effective))
+
+      // Clamp for safety.
+      // Element path expects 0..1; WebAudio gain can go >1.
+      const vol = settings.muted ? 0 : Math.max(0, Math.min(needsAmp ? 1.5 : 1, effective))
       tr.setVolume(vol)
     }
   }
@@ -1731,6 +1774,24 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const closingRef = useRef(false)
   const manualCloseRef = useRef(false)
   const myAvatar = useMemo(() => me?.avatarUrl ?? null, [me?.avatarUrl])
+  const resolveAvatarUrl = useCallback((url: string | null | undefined) => {
+    if (!url) return null
+    if (url.startsWith('data:') || url.startsWith('blob:')) return url
+    if (typeof window === 'undefined') return url
+    const proxied = convertToProxyUrl(url)
+    if (proxied && proxied !== url) return proxied
+    if (url.startsWith('/') || url.startsWith('http://') || url.startsWith('https://')) return url
+    try {
+      const current = window.location
+      const resolved = new URL(url, current.origin)
+      if (resolved.host === current.host && resolved.protocol !== current.protocol) {
+        resolved.protocol = current.protocol
+      }
+      return resolved.toString()
+    } catch {
+      return url
+    }
+  }, [])
   const handleClose = useCallback((options?: { manual?: boolean }) => {
     // Позволяем повторные вызовы, чтобы не зависать в состоянии закрытия.
     // Дополнительные вызовы idempotent, но обеспечивают выход из оверлея,
@@ -2525,7 +2586,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       tiles.forEach((tile) => {
         const nameEl = tile.querySelector('.lk-participant-name, [data-lk-participant-name]') as HTMLElement | null
         const placeholder = tile.querySelector('.lk-participant-placeholder') as HTMLElement | null
-        if (!nameEl || !placeholder) return
+        if (!placeholder) return
 
         // If video is visible in this tile, DO NOT touch placeholder layout (it can cause video to stick to top).
         const v =
@@ -2539,6 +2600,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         const hasActiveVideo = !!(!isVideoMuted && v && v.offsetWidth > 0 && v.offsetHeight > 0)
         tile.setAttribute('data-eb-has-video', hasActiveVideo ? 'true' : 'false')
         if (hasActiveVideo) {
+          // Clean up any injected avatar when video is active.
+          placeholder.querySelectorAll('img.eb-ph').forEach((img) => img.remove())
           // Restore placeholder to LiveKit defaults as much as possible.
           placeholder.style.position = ''
           ;(placeholder.style as any).inset = ''
@@ -2623,7 +2686,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         // if (!identity) {
         //   console.log('[CallOverlay] Identity not found in tile, all data attributes:', allDataAttrs, 'metadata:', participantMeta, 'tile classes:', tile.className)
         // }
-        let name = (nameEl.textContent || nameEl.getAttribute('data-lk-participant-name') || '').trim()
+        let name = (nameEl?.textContent || nameEl?.getAttribute('data-lk-participant-name') || '').trim()
         // Убираем "(мы)" из имени для корректного поиска аватара в словаре
         const originalName = name.replace(/\s*\(мы\)\s*$/, '').trim()
         if (!name && participantMeta?.displayName) {
@@ -2655,6 +2718,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         // что это именно тот участник, поэтому не используем его как общий fallback
         // Приоритет: idUrl > url > (для локального: myUrl) > fallbackUrl (генерация с буквой)
         let finalUrl = idUrl ?? url ?? (isLocal ? (myUrl || (localIdRef ? byIdRef[localIdRef] ?? null : null)) : null)
+        finalUrl = resolveAvatarUrl(finalUrl)
         const fallbackUrl = buildLetterDataUrl(nameForLookup || identity || 'U', identity || nameForLookup || 'U')
         
         if (avatarsDebug && !finalUrl && (identity || name)) {
@@ -2673,31 +2737,50 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           })
         }
         
-        // Remove LiveKit default SVG placeholders, but keep our own overlay SVGs (e.g. volume ring)
-        placeholder.querySelectorAll('svg:not(.eb-vol-ring-svg)').forEach((svg) => svg.remove())
-        placeholder
-          .querySelectorAll('svg:not(.eb-vol-ring-svg)')
-          .forEach((svg) => ((svg as SVGElement).style.display = 'none'))
         // Create or update img
         let img = placeholder.querySelector('img.eb-ph') as HTMLImageElement | null
         if (!img) {
           img = document.createElement('img')
           img.className = 'eb-ph'
           placeholder.appendChild(img)
-          // Обработчик ошибок загрузки - если аватар не загрузился, показываем fallback
-          img.onerror = () => {
-            if (img && img.src !== fallbackUrl) {
-              if (avatarsDebug) {
-                // eslint-disable-next-line no-console
-                console.log('[Avatars] Avatar image failed to load, using fallback:', img.src)
-              }
-              img.src = fallbackUrl
-            }
+        }
+        const failedUrl = img.dataset.ebFailedUrl || ''
+        const desiredUrl = finalUrl && finalUrl !== failedUrl ? finalUrl : fallbackUrl
+        const removeLiveKitSvg = () => {
+          // Remove LiveKit default SVG placeholders, but keep our own overlay SVGs (e.g. volume ring)
+          placeholder.querySelectorAll('svg:not(.eb-vol-ring-svg)').forEach((svg) => svg.remove())
+          placeholder
+            .querySelectorAll('svg:not(.eb-vol-ring-svg)')
+            .forEach((svg) => ((svg as SVGElement).style.display = 'none'))
+        }
+        // Обработчик ошибок загрузки - если аватар не загрузился, запоминаем и показываем fallback
+        img.dataset.ebAvatarUrl = desiredUrl
+        img.dataset.ebFallback = fallbackUrl
+        img.onload = () => {
+          img.dataset.ebLoaded = '1'
+          removeLiveKitSvg()
+        }
+        img.onerror = () => {
+          const failedSrc = img?.dataset?.ebAvatarUrl || ''
+          if (failedSrc && failedSrc !== fallbackUrl) {
+            img.dataset.ebFailedUrl = failedSrc
+          }
+          img.dataset.ebLoaded = ''
+          if (avatarsDebug) {
+            // eslint-disable-next-line no-console
+            console.log('[Avatars] Avatar image failed to load, using fallback:', img?.getAttribute('src') || '')
+          }
+          if (failedSrc && failedSrc !== fallbackUrl && img && img.getAttribute('src') !== fallbackUrl) {
+            img.src = fallbackUrl
           }
         }
         // Обновляем src только если он изменился, чтобы избежать лишних перезагрузок
-        if (img.src !== (finalUrl || fallbackUrl)) {
-          img.src = finalUrl || fallbackUrl
+        if (img.getAttribute('src') !== desiredUrl) {
+          img.src = desiredUrl
+        }
+        if (img.complete && img.naturalWidth > 0) {
+          img.dataset.ebLoaded = '1'
+          removeLiveKitSvg()
         }
         // Calculate size based on smaller dimension of tile to ensure circle
         const tileRect = tile.getBoundingClientRect()
