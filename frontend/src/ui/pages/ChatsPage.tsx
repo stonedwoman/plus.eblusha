@@ -243,6 +243,9 @@ export default function ChatsPage() {
   // notify sound
   const notifyAudioRef = useRef<HTMLAudioElement | null>(null)
   const notifyUnlockedRef = useRef<boolean>(false)
+  const [showAudioUnlock, setShowAudioUnlock] = useState(false)
+  const audioUnlockingRef = useRef<boolean>(false)
+  const unlockAudioRef = useRef<HTMLAudioElement | null>(null)
   // dialing sound
   const dialingAudioRef = useRef<HTMLAudioElement | null>(null)
   // end call sound
@@ -2069,46 +2072,34 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       client.refetchQueries({ queryKey: ['messages', conversationId] })
     })
     // prepare notification audio and unlock on first user gesture (autoplay policy)
+    let detachUnlockListeners: (() => void) | null = null
     try {
-      if (!notifyAudioRef.current) {
-        notifyAudioRef.current = new Audio('/notify.mp3')
-        notifyAudioRef.current.preload = 'auto'
-        notifyAudioRef.current.volume = 0.9
+      ensureNotifyAudio()
+      const isMobileInitial = window.innerWidth <= 768
+      if (isMobileInitial) {
+        const hasSession = !!useAppStore.getState().session?.user
+        if (hasSession && (!notifyUnlockedRef.current || !ringUnlockedRef.current)) {
+          setShowAudioUnlock(true)
+        }
       }
       const unlock = async () => {
-        try {
-          if (notifyAudioRef.current && !notifyUnlockedRef.current) {
-            notifyAudioRef.current.volume = 0
-            await notifyAudioRef.current.play()
-            notifyAudioRef.current.pause()
-            notifyAudioRef.current.currentTime = 0
-            notifyAudioRef.current.volume = 0.9
-            notifyUnlockedRef.current = true
-          }
-          if (!ringUnlockedRef.current) {
-            const ringAudio = ensureRingAudio()
-            if (ringAudio) {
-              const prevVolume = ringAudio.volume
-              ringAudio.volume = 0
-              await ringAudio.play().catch(() => {})
-              ringAudio.pause()
-              ringAudio.currentTime = 0
-              ringAudio.volume = prevVolume
-              ringUnlockedRef.current = true
-            }
-          }
-        } catch {}
-        if (notifyUnlockedRef.current && ringUnlockedRef.current) {
-          window.removeEventListener('click', unlock)
-          window.removeEventListener('keydown', unlock)
-          window.removeEventListener('touchstart', unlock)
+        const ready = await performAudioUnlock()
+        if (ready && detachUnlockListeners) {
+          detachUnlockListeners()
+          detachUnlockListeners = null
         }
       }
       window.addEventListener('click', unlock)
       window.addEventListener('keydown', unlock)
       window.addEventListener('touchstart', unlock)
+      detachUnlockListeners = () => {
+        window.removeEventListener('click', unlock)
+        window.removeEventListener('keydown', unlock)
+        window.removeEventListener('touchstart', unlock)
+      }
     } catch {}
     return () => {
+      detachUnlockListeners?.()
       offSecretOffer?.()
       offSecretAccepted?.()
     }
@@ -2460,6 +2451,17 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     }
   }, [groupAvatarPreviewUrl, groupCrop.scale, groupCrop.x, groupCrop.y])
 
+  const ensureNotifyAudio = useCallback(() => {
+    if (typeof window === 'undefined') return null
+    if (!notifyAudioRef.current) {
+      const audio = new Audio('/notify.mp3')
+      audio.preload = 'auto'
+      audio.volume = 0.9
+      notifyAudioRef.current = audio
+    }
+    return notifyAudioRef.current
+  }, [])
+
   const ensureRingAudio = useCallback(() => {
     if (typeof window === 'undefined') return null
     if (!ringAudioRef.current) {
@@ -2471,6 +2473,54 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     }
     return ringAudioRef.current
   }, [])
+
+  const ensureUnlockAudio = useCallback(() => {
+    if (typeof window === 'undefined') return null
+    if (!unlockAudioRef.current) {
+      const audio = new Audio('/silent.wav')
+      audio.preload = 'auto'
+      unlockAudioRef.current = audio
+    }
+    return unlockAudioRef.current
+  }, [])
+
+  const performAudioUnlock = async () => {
+    if (audioUnlockingRef.current) {
+      return notifyUnlockedRef.current && ringUnlockedRef.current
+    }
+    audioUnlockingRef.current = true
+    const tryPlay = async (audio: HTMLAudioElement) => {
+      try {
+        const res = audio.play()
+        if (res && typeof (res as Promise<void>).then === 'function') {
+          await res
+        }
+        return true
+      } catch {
+        return false
+      }
+    }
+    try {
+      ensureNotifyAudio()
+      ensureRingAudio()
+      let played = false
+      const unlockAudio = ensureUnlockAudio()
+      if (unlockAudio) {
+        played = await tryPlay(unlockAudio)
+        try {
+          unlockAudio.pause()
+          unlockAudio.currentTime = 0
+        } catch {}
+      }
+      if (played) {
+        notifyUnlockedRef.current = true
+        ringUnlockedRef.current = true
+        setShowAudioUnlock(false)
+      }
+    } catch {}
+    audioUnlockingRef.current = false
+    return notifyUnlockedRef.current && ringUnlockedRef.current
+  }
 
   function stopRingtone() {
     try {
@@ -5915,6 +5965,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
 
   return (
     <>
+    {showAudioUnlock && (
+      <div className="audio-unlock-overlay">
+        <button
+          type="button"
+          className="audio-unlock-button"
+          onClick={() => { void performAudioUnlock() }}
+        >
+          Войти
+        </button>
+        <div className="audio-unlock-hint">Включить звук сообщений и звонков</div>
+      </div>
+    )}
     <div className={isMobile ? 'chats-page mobile-slider' : 'chats-page'}>
       {isMobile ? (
         <div
