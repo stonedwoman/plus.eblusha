@@ -38,6 +38,9 @@ model User {
   callSessions      CallSession[]               @relation("CallSessionInitiator")
   callParticipations CallParticipant[]
   devices           UserDevice[]
+  availabilityIntervals ConversationAvailabilityInterval[]
+  availabilityProposalsCreated ConversationAvailabilityProposal[] @relation("AvailabilityProposalCreator")
+  availabilityProposalReactions ConversationAvailabilityProposalReaction[]
 }
 
 model Contact {
@@ -75,6 +78,8 @@ model Conversation {
   participants   ConversationParticipant[]
   messages       Message[]
   callSessions   CallSession[]
+  availabilityIntervals ConversationAvailabilityInterval[]
+  availabilityProposals ConversationAvailabilityProposal[]
 }
 
 model ConversationParticipant {
@@ -89,6 +94,75 @@ model ConversationParticipant {
 
   @@unique([conversationId, userId])
   @@index([userId])
+}
+
+model ConversationAvailabilityInterval {
+  id             String       @id @default(cuid())
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  conversationId String
+  userId         String
+  startUtc       DateTime
+  endUtc         DateTime
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, userId])
+  @@index([conversationId, startUtc])
+  @@unique([conversationId, userId, startUtc, endUtc])
+}
+
+enum AvailabilityProposalReactionValue {
+  YES
+  MAYBE
+  NO
+}
+
+model ConversationAvailabilityProposal {
+  id             String       @id @default(cuid())
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  conversationId String
+  createdById    String
+  note           String?
+  /// Max end time of all ranges for filtering expired proposals
+  maxEndUtc      DateTime
+  deletedAt      DateTime?
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdBy      User         @relation("AvailabilityProposalCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  intervals      ConversationAvailabilityProposalInterval[]
+  reactions      ConversationAvailabilityProposalReaction[]
+
+  @@index([conversationId, maxEndUtc])
+  @@index([conversationId, createdAt])
+  @@index([createdById, createdAt])
+}
+
+model ConversationAvailabilityProposalInterval {
+  id         String       @id @default(cuid())
+  proposalId String
+  startUtc   DateTime
+  endUtc     DateTime
+  proposal   ConversationAvailabilityProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@index([proposalId, startUtc])
+  @@unique([proposalId, startUtc, endUtc])
+}
+
+model ConversationAvailabilityProposalReaction {
+  id         String       @id @default(cuid())
+  proposalId String
+  userId     String
+  value      AvailabilityProposalReactionValue
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  proposal   ConversationAvailabilityProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([proposalId, userId])
+  @@index([userId, createdAt])
 }
 
 model Message {
@@ -200,6 +274,7 @@ enum UserStatus {
   AWAY
   DND
   BACKGROUND
+  IN_CALL
 }
 
 enum ContactStatus {

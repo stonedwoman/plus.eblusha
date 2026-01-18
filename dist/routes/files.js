@@ -72,6 +72,38 @@ const isAccessDenied = (err) => err?.name === "AccessDenied" ||
     err?.name === "Forbidden" ||
     err?.Code === "AccessDenied" ||
     err?.$metadata?.httpStatusCode === 403;
+const parseRangeHeader = (rangeHeader, totalSize) => {
+    // Only support single range: "bytes=start-end" or "bytes=start-" or "bytes=-suffix"
+    const m = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+    if (!m)
+        return null;
+    const startStr = m[1];
+    const endStr = m[2];
+    if (!startStr && !endStr)
+        return null;
+    // suffix range: last N bytes
+    if (!startStr && endStr) {
+        const suffixLen = Number(endStr);
+        if (!Number.isFinite(suffixLen) || suffixLen <= 0)
+            return null;
+        const start = Math.max(0, totalSize - suffixLen);
+        const end = totalSize > 0 ? totalSize - 1 : 0;
+        return { start, end };
+    }
+    const start = Number(startStr);
+    if (!Number.isFinite(start) || start < 0)
+        return null;
+    let end = totalSize > 0 ? totalSize - 1 : 0;
+    if (endStr) {
+        const parsedEnd = Number(endStr);
+        if (!Number.isFinite(parsedEnd) || parsedEnd < start)
+            return null;
+        end = Math.min(end, parsedEnd);
+    }
+    if (start >= totalSize)
+        return null;
+    return { start, end };
+};
 const readBodyToBuffer = async (body) => {
     if (!body)
         return Buffer.alloc(0);
@@ -228,22 +260,43 @@ router.use(async (req, res, next) => {
                         res.status(500).json({ message: "Storage encryption key is not configured" });
                         return;
                     }
-                    // Encryption disables efficient range reads; return full body.
-                    if (req.headers.range) {
-                        res.status(416).json({ message: "Range requests are not supported for encrypted files" });
-                        return;
-                    }
                     const encryptedBuf = await readBodyToBuffer(response.Body);
                     const decrypted = (0, storageEncryption_1.isEncryptedPayload)(encryptedBuf)
                         ? (0, storageEncryption_1.decryptBuffer)(encryptedBuf, encKey, { aad: key })
                         : (0, storageEncryption_1.decryptBuffer)(encryptedBuf, encKey, { aad: key });
                     const originalCt = (response.Metadata?.ct && response.Metadata.ct.trim()) || "application/octet-stream";
+                    // Support Range requests in a best-effort way for encrypted objects:
+                    // decrypt full body, then serve requested slice. This fixes mobile Safari/WebView audio playback.
+                    const rangeHeader = req.headers.range;
+                    if (rangeHeader) {
+                        const parsed = parseRangeHeader(rangeHeader, decrypted.length);
+                        if (!parsed) {
+                            res.status(416).json({ message: "Invalid Range" });
+                            return;
+                        }
+                        const { start, end } = parsed;
+                        const slice = decrypted.subarray(start, end + 1);
+                        res.status(206);
+                        res.setHeader("Accept-Ranges", "bytes");
+                        res.setHeader("Content-Range", `bytes ${start}-${end}/${decrypted.length}`);
+                        res.setHeader("Content-Type", originalCt);
+                        res.setHeader("Content-Length", slice.length.toString());
+                        // CORS headers
+                        res.setHeader("Access-Control-Allow-Origin", "*");
+                        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+                        res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges");
+                        // Cache headers
+                        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+                        res.send(slice);
+                        return;
+                    }
                     res.setHeader("Content-Type", originalCt);
                     res.setHeader("Content-Length", decrypted.length.toString());
+                    res.setHeader("Accept-Ranges", "bytes");
                     // CORS headers
                     res.setHeader("Access-Control-Allow-Origin", "*");
                     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-                    res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified");
+                    res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Accept-Ranges");
                     // Cache headers
                     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
                     res.send(decrypted);

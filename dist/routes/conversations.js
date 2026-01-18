@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const zod_1 = require("zod");
 const prisma_1 = __importDefault(require("../lib/prisma"));
+const client_1 = require("@prisma/client");
 const storageDeletion_1 = require("../lib/storageDeletion");
 const auth_1 = require("../middlewares/auth");
 const socket_1 = require("../realtime/socket");
@@ -21,6 +22,349 @@ const createConversationSchema = zod_1.z.object({
     // Optionally pin initiator device id (must exist for the current user)
     // Device IDs can be UUID or CUID format
     initiatorDeviceId: zod_1.z.union([zod_1.z.string().uuid(), zod_1.z.string().cuid()]).optional(),
+});
+const intervalSchema = zod_1.z.object({
+    startUtcISO: zod_1.z.string().datetime(),
+    endUtcISO: zod_1.z.string().datetime(),
+});
+const proposalReactionSchema = zod_1.z.object({
+    value: zod_1.z.union([zod_1.z.literal("YES"), zod_1.z.literal("MAYBE"), zod_1.z.literal("NO"), zod_1.z.null()]),
+});
+function handleAvailabilityDbError(res, err) {
+    // Common case on prod: migrations not applied yet -> table missing
+    if (err instanceof client_1.Prisma.PrismaClientKnownRequestError) {
+        // P2021: table does not exist (depending on adapter)
+        // P2022: column does not exist
+        const code = err.code;
+        if (code === "P2021" || code === "P2022") {
+            res.status(503).json({
+                message: "Availability storage is not ready (database migration missing).",
+                code: "AVAILABILITY_DB_NOT_READY",
+            });
+            return true;
+        }
+    }
+    if (err instanceof client_1.Prisma.PrismaClientInitializationError) {
+        res.status(503).json({ message: "Database unavailable", code: "DB_UNAVAILABLE" });
+        return true;
+    }
+    return false;
+}
+router.get("/:id/availability", async (req, res) => {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const membership = await prisma_1.default.conversationParticipant.findFirst({
+        where: { conversationId: id, userId },
+    });
+    if (!membership) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+    }
+    const conv = await prisma_1.default.conversation.findUnique({
+        where: { id },
+        include: { participants: true },
+    });
+    if (!conv) {
+        res.status(404).json({ message: "Not found" });
+        return;
+    }
+    const participantIds = conv.participants.map((p) => p.userId);
+    let rows = [];
+    try {
+        rows = await prisma_1.default.conversationAvailabilityInterval.findMany({
+            where: { conversationId: id, userId: { in: participantIds } },
+            orderBy: [{ userId: "asc" }, { startUtc: "asc" }],
+            select: { userId: true, startUtc: true, endUtc: true },
+        });
+    }
+    catch (err) {
+        if (handleAvailabilityDbError(res, err))
+            return;
+        console.error("[Availability] GET failed", err);
+        res.status(500).json({ message: "Internal error", code: "AVAILABILITY_INTERNAL" });
+        return;
+    }
+    const byUserId = {};
+    for (const pid of participantIds)
+        byUserId[pid] = [];
+    for (const row of rows) {
+        const key = row.userId;
+        const list = byUserId[key] ?? [];
+        byUserId[key] = list;
+        list.push({
+            startUtcISO: row.startUtc.toISOString(),
+            endUtcISO: row.endUtc.toISOString(),
+        });
+    }
+    res.json({ intervalsByUserId: byUserId });
+});
+router.put("/:id/availability/me", async (req, res) => {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const membership = await prisma_1.default.conversationParticipant.findFirst({
+        where: { conversationId: id, userId },
+    });
+    if (!membership) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+    }
+    const bodySchema = zod_1.z.object({
+        intervals: intervalSchema.array().max(2000),
+    });
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ message: "Invalid intervals", errors: parsed.error.issues });
+        return;
+    }
+    const intervals = parsed.data.intervals
+        .map((i) => ({
+        start: new Date(i.startUtcISO),
+        end: new Date(i.endUtcISO),
+    }))
+        .filter((i) => !Number.isNaN(i.start.getTime()) && !Number.isNaN(i.end.getTime()) && i.end > i.start);
+    try {
+        await prisma_1.default.$transaction([
+            prisma_1.default.conversationAvailabilityInterval.deleteMany({
+                where: { conversationId: id, userId },
+            }),
+            prisma_1.default.conversationAvailabilityInterval.createMany({
+                data: intervals.map((i) => ({
+                    conversationId: id,
+                    userId,
+                    startUtc: i.start,
+                    endUtc: i.end,
+                })),
+                skipDuplicates: true,
+            }),
+        ]);
+    }
+    catch (err) {
+        if (handleAvailabilityDbError(res, err))
+            return;
+        console.error("[Availability] PUT failed", err);
+        res.status(500).json({ message: "Internal error", code: "AVAILABILITY_INTERNAL" });
+        return;
+    }
+    try {
+        const io = (0, socket_1.getIO)();
+        // Notify both the conversation room and each participant user room (more robust for realtime)
+        io?.to(id).emit("availability:updated", { conversationId: id, userId });
+        const conv = await prisma_1.default.conversation.findUnique({
+            where: { id },
+            include: { participants: true },
+        });
+        const participantIds = conv?.participants.map((p) => p.userId) ?? [];
+        for (const pid of participantIds) {
+            io?.to(pid).emit("availability:updated", { conversationId: id, userId });
+        }
+    }
+    catch { }
+    res.json({ success: true });
+});
+router.get("/:id/availability/proposals", async (req, res) => {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const membership = await prisma_1.default.conversationParticipant.findFirst({
+        where: { conversationId: id, userId },
+    });
+    if (!membership) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+    }
+    const now = new Date();
+    try {
+        const proposals = await prisma_1.default.conversationAvailabilityProposal.findMany({
+            where: { conversationId: id, deletedAt: null, maxEndUtc: { gt: now } },
+            orderBy: { createdAt: "desc" },
+            include: {
+                intervals: { orderBy: { startUtc: "asc" } },
+                reactions: true,
+            },
+        });
+        res.json({
+            proposals: proposals.map((p) => ({
+                id: p.id,
+                conversationId: p.conversationId,
+                createdById: p.createdById,
+                createdAt: p.createdAt.toISOString(),
+                note: p.note ?? null,
+                maxEndUtcISO: p.maxEndUtc.toISOString(),
+                ranges: p.intervals.map((i) => ({ startUtcISO: i.startUtc.toISOString(), endUtcISO: i.endUtc.toISOString() })),
+                reactionsByUserId: Object.fromEntries(p.reactions.map((r) => [r.userId, r.value])),
+            })),
+        });
+    }
+    catch (err) {
+        if (handleAvailabilityDbError(res, err))
+            return;
+        console.error("[Availability] proposals GET failed", err);
+        res.status(500).json({ message: "Internal error", code: "AVAILABILITY_INTERNAL" });
+    }
+});
+router.post("/:id/availability/proposals", async (req, res) => {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const membership = await prisma_1.default.conversationParticipant.findFirst({
+        where: { conversationId: id, userId },
+    });
+    if (!membership) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+    }
+    const bodySchema = zod_1.z.object({
+        ranges: intervalSchema.array().min(1).max(50),
+        note: zod_1.z.string().max(500).optional(),
+    });
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ message: "Invalid proposal", errors: parsed.error.issues });
+        return;
+    }
+    const intervals = parsed.data.ranges
+        .map((i) => ({ startUtc: new Date(i.startUtcISO), endUtc: new Date(i.endUtcISO) }))
+        .filter((i) => !Number.isNaN(i.startUtc.getTime()) && !Number.isNaN(i.endUtc.getTime()) && i.endUtc > i.startUtc);
+    if (intervals.length === 0) {
+        res.status(400).json({ message: "Invalid ranges" });
+        return;
+    }
+    const maxEndUtc = intervals.reduce((acc, cur) => (cur.endUtc > acc ? cur.endUtc : acc), intervals[0]?.endUtc ?? new Date(0));
+    const now = new Date();
+    if (maxEndUtc <= now) {
+        res.status(400).json({ message: "Proposal is in the past" });
+        return;
+    }
+    try {
+        const created = await prisma_1.default.conversationAvailabilityProposal.create({
+            data: {
+                conversationId: id,
+                createdById: userId,
+                note: parsed.data.note ?? null,
+                maxEndUtc,
+                intervals: {
+                    create: intervals.map((i) => ({ startUtc: i.startUtc, endUtc: i.endUtc })),
+                },
+            },
+            include: { intervals: true, reactions: true },
+        });
+        const io = (0, socket_1.getIO)();
+        io?.to(id).emit("availability:proposals:updated", { conversationId: id, proposalId: created.id });
+        const conv = await prisma_1.default.conversation.findUnique({ where: { id }, include: { participants: true } });
+        const participantIds = conv?.participants.map((p) => p.userId) ?? [];
+        for (const pid of participantIds) {
+            io?.to(pid).emit("availability:proposals:updated", { conversationId: id, proposalId: created.id });
+        }
+        res.status(201).json({
+            proposal: {
+                id: created.id,
+                conversationId: created.conversationId,
+                createdById: created.createdById,
+                createdAt: created.createdAt.toISOString(),
+                note: created.note ?? null,
+                maxEndUtcISO: created.maxEndUtc.toISOString(),
+                ranges: created.intervals
+                    .sort((a, b) => a.startUtc.getTime() - b.startUtc.getTime())
+                    .map((i) => ({ startUtcISO: i.startUtc.toISOString(), endUtcISO: i.endUtc.toISOString() })),
+                reactionsByUserId: {},
+            },
+        });
+    }
+    catch (err) {
+        if (handleAvailabilityDbError(res, err))
+            return;
+        console.error("[Availability] proposals POST failed", err);
+        res.status(500).json({ message: "Internal error", code: "AVAILABILITY_INTERNAL" });
+    }
+});
+router.delete("/:id/availability/proposals/:proposalId", async (req, res) => {
+    const { id, proposalId } = req.params;
+    const userId = req.user.id;
+    const membership = await prisma_1.default.conversationParticipant.findFirst({
+        where: { conversationId: id, userId },
+    });
+    if (!membership) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+    }
+    try {
+        const proposal = await prisma_1.default.conversationAvailabilityProposal.findUnique({
+            where: { id: proposalId },
+            select: { id: true, conversationId: true, createdById: true, deletedAt: true },
+        });
+        if (!proposal || proposal.conversationId !== id || proposal.deletedAt) {
+            res.status(404).json({ message: "Not found" });
+            return;
+        }
+        if (proposal.createdById !== userId) {
+            res.status(403).json({ message: "Only creator can delete" });
+            return;
+        }
+        await prisma_1.default.conversationAvailabilityProposal.update({
+            where: { id: proposalId },
+            data: { deletedAt: new Date() },
+        });
+        const io = (0, socket_1.getIO)();
+        io?.to(id).emit("availability:proposals:updated", { conversationId: id, proposalId });
+        io?.to(userId).emit("availability:proposals:updated", { conversationId: id, proposalId });
+        res.json({ success: true });
+    }
+    catch (err) {
+        if (handleAvailabilityDbError(res, err))
+            return;
+        console.error("[Availability] proposals DELETE failed", err);
+        res.status(500).json({ message: "Internal error", code: "AVAILABILITY_INTERNAL" });
+    }
+});
+router.put("/:id/availability/proposals/:proposalId/reaction", async (req, res) => {
+    const { id, proposalId } = req.params;
+    const userId = req.user.id;
+    const membership = await prisma_1.default.conversationParticipant.findFirst({
+        where: { conversationId: id, userId },
+    });
+    if (!membership) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+    }
+    const parsed = proposalReactionSchema.safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ message: "Invalid reaction", errors: parsed.error.issues });
+        return;
+    }
+    try {
+        const proposal = await prisma_1.default.conversationAvailabilityProposal.findUnique({
+            where: { id: proposalId },
+            select: { id: true, conversationId: true, deletedAt: true, maxEndUtc: true },
+        });
+        if (!proposal || proposal.conversationId !== id || proposal.deletedAt || proposal.maxEndUtc <= new Date()) {
+            res.status(404).json({ message: "Not found" });
+            return;
+        }
+        if (parsed.data.value === null) {
+            await prisma_1.default.conversationAvailabilityProposalReaction.deleteMany({
+                where: { proposalId, userId },
+            });
+        }
+        else {
+            await prisma_1.default.conversationAvailabilityProposalReaction.upsert({
+                where: { proposalId_userId: { proposalId, userId } },
+                create: { proposalId, userId, value: parsed.data.value },
+                update: { value: parsed.data.value },
+            });
+        }
+        const io = (0, socket_1.getIO)();
+        io?.to(id).emit("availability:proposals:updated", { conversationId: id, proposalId });
+        const conv = await prisma_1.default.conversation.findUnique({ where: { id }, include: { participants: true } });
+        const participantIds = conv?.participants.map((p) => p.userId) ?? [];
+        for (const pid of participantIds) {
+            io?.to(pid).emit("availability:proposals:updated", { conversationId: id, proposalId });
+        }
+        res.json({ success: true });
+    }
+    catch (err) {
+        if (handleAvailabilityDbError(res, err))
+            return;
+        console.error("[Availability] proposals reaction PUT failed", err);
+        res.status(500).json({ message: "Internal error", code: "AVAILABILITY_INTERNAL" });
+    }
 });
 router.get("/", async (req, res) => {
     const userId = req.user.id;

@@ -11,6 +11,8 @@ type ServerToClientEvents = {
   "message:update": (payload: { conversationId: string; messageId: string; reason: string }) => void;
   "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "message:reaction": (payload: { conversationId: string; messageId: string; senderId: string }) => void;
+  "availability:updated": (payload: { conversationId: string; userId: string }) => void;
+  "availability:proposals:updated": (payload: { conversationId: string; proposalId?: string }) => void;
   "contacts:removed": (payload: { contactId: string }) => void;
   "profile:update": (payload: { userId: string; avatarUrl?: string | null; displayName?: string | null }) => void;
   "conversation:typing": (payload: {

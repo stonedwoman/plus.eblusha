@@ -5,6 +5,9 @@ import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted } from '../../utils/socket'
 import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square, Send } from 'lucide-react'
+import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
+import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
+import { getFallbackTimeZone } from '../../features/availability/availability.time'
 const CallOverlay = lazy(() => import('../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
 const preloadCallOverlay = () => import('../components/CallOverlay')
 import { useAppStore } from '../../domain/store/appStore'
@@ -260,6 +263,12 @@ export default function ChatsPage() {
   const convMenuRef = useRef<HTMLDivElement | null>(null)
   const [headerMenu, setHeaderMenu] = useState<{ open: boolean; anchor: HTMLElement | null }>(() => ({ open: false, anchor: null }))
   const headerMenuRef = useRef<HTMLDivElement | null>(null)
+  const [availabilityContext, setAvailabilityContext] = useState<{
+    conversationId: string
+    peerId: string
+    peerName?: string | null
+    peerTimeZone?: string | null
+  } | null>(null)
   const convScrollRef = useRef<HTMLDivElement | null>(null)
   const [groupAvatarEditor, setGroupAvatarEditor] = useState(false)
   const [reactionBar, setReactionBar] = useState<{ open: boolean; x: number; y: number; messageId: string | null }>(() => ({ open: false, x: 0, y: 0, messageId: null }))
@@ -396,6 +405,11 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   }, [])
 const activeConversationIdRef = useRef<string | null>(null)
 useEffect(() => { activeConversationIdRef.current = activeId }, [activeId])
+  useEffect(() => {
+    if (availabilityContext && availabilityContext.conversationId !== activeId) {
+      setAvailabilityContext(null)
+    }
+  }, [availabilityContext, activeId])
 const pendingImagesRef = useRef<PendingComposerImage[]>([])
 useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
   const releasePreviewUrl = useCallback((url: string | null | undefined) => {
@@ -4117,6 +4131,23 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 const callEntry = activeCalls[activeId]
                 const isActive = callEntry?.active
                 const isGroup = activeConversation?.isGroup || (activeConversation?.participants.length ?? 0) > 2
+                const othersArr = activeConversation?.participants
+                  ?.filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
+                  .map((p: any) => p.user) ?? []
+                const peerUser = othersArr[0]
+                const fallbackTimeZone = getFallbackTimeZone()
+                const peerTimeZone = (peerUser as any)?.timezone ?? (peerUser as any)?.timeZone ?? fallbackTimeZone
+                const peerName = peerUser?.displayName ?? peerUser?.username ?? 'Собеседник'
+                const canShowAvailability = !isGroup && !!peerUser?.id
+                const handleOpenAvailability = () => {
+                  if (!activeConversation || !peerUser?.id) return
+                  setAvailabilityContext({
+                    conversationId: activeConversation.id,
+                    peerId: peerUser.id,
+                    peerName,
+                    peerTimeZone,
+                  })
+                }
                 const isMinimized = minimizedCallConvId === activeId
                 // Оверлей открыт, только если callConvId установлен И не минимизирован
                 const isOverlayOpen = callConvId === activeId && !isMinimized
@@ -4351,6 +4382,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             <Video size={isMobile ? 16 : 18} />
                             {isMobile ? 'Подключиться с видео' : ' Подключиться с видео'}
                           </button>
+                          {canShowAvailability && (
+                            <AvailabilityButton
+                              onClick={handleOpenAvailability}
+                              style={menuButtonStyle}
+                            />
+                          )}
                           {!isMobile && (
                             <button
                               className="btn btn-icon btn-ghost"
@@ -4422,6 +4459,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           <PhoneOff size={isMobile ? 16 : 18} />
                           {isMobile ? 'Сбросить' : ' Сбросить'}
                         </button>
+                        {canShowAvailability && (
+                          <AvailabilityButton
+                            onClick={handleOpenAvailability}
+                            style={menuButtonStyle}
+                          />
+                        )}
                         {!isMobile && (
                           <button
                             className="btn btn-icon btn-ghost"
@@ -4456,6 +4499,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         <Video size={isMobile ? 16 : 18} />
                         {isMobile ? ' Начать с видео' : ' Видео'}
                       </button>
+                      {canShowAvailability && (
+                        <AvailabilityButton
+                          onClick={handleOpenAvailability}
+                          style={menuButtonStyle}
+                        />
+                      )}
                       {!isMobile && (
                         <button
                           className="btn btn-icon btn-ghost"
@@ -7857,6 +7906,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           )}
         </div>
       </div>
+    )}
+    {availabilityContext && (
+      <AvailabilityOverlay
+        isOpen={!!availabilityContext}
+        conversationId={availabilityContext.conversationId}
+        viewerId={me?.id ?? 'me'}
+        peerId={availabilityContext.peerId}
+        peerName={availabilityContext.peerName}
+        viewerTimeZone={(me as any)?.timezone ?? (me as any)?.timeZone ?? getFallbackTimeZone()}
+        peerTimeZone={availabilityContext.peerTimeZone ?? getFallbackTimeZone()}
+        onClose={() => setAvailabilityContext(null)}
+      />
     )}
     </>
   )

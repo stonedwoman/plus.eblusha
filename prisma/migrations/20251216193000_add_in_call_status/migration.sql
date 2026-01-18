@@ -1,0 +1,3 @@
+-- AddEnumValue
+ALTER TYPE "UserStatus" ADD VALUE IF NOT EXISTS 'IN_CALL';
+

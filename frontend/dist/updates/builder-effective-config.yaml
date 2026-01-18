@@ -1,0 +1,53 @@
+directories:
+  output: dist
+  buildResources: build
+appId: org.eblusha.plus
+productName: Eblusha Plus
+asar: true
+compression: maximum
+files:
+  - filter:
+      - out/**/*.js
+      - package.json
+      - '!**/*.map'
+      - '!**/src/**/*'
+      - '!**/tsconfig.json'
+      - '!**/.eslintrc.cjs'
+      - '!**/main.cjs'
+      - '!**/preload.cjs'
+      - node_modules/**/*
+      - '!node_modules/@types/**/*'
+      - '!node_modules/cross-env/**/*'
+      - '!node_modules/electron/**/*'
+      - '!node_modules/electron-builder/**/*'
+      - '!node_modules/eslint/**/*'
+      - '!node_modules/ts-node/**/*'
+      - '!node_modules/tsx/**/*'
+      - '!node_modules/typescript/**/*'
+extraMetadata:
+  main: out/main.js
+extraResources:
+  - from: build/icons
+    to: build/icons
+  - from: overlay
+    to: overlay
+protocols:
+  - name: eblusha-protocol
+    role: Viewer
+    schemes:
+      - eblusha
+win:
+  target:
+    - nsis
+  icon: build/icons/icon.ico
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: false
+  deleteAppDataOnUninstall: false
+  artifactName: ${productName}-${version}-setup.${ext}
+electronVersion: 30.5.1

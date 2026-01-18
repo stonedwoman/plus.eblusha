@@ -33,6 +33,7 @@ LIVEKIT_API_SECRET=YOUR_LIVEKIT_SECRET
 ## 4) Build backend and run migrations
 ```
 cd /opt/eblusha-plus
+# Ensure devDependencies are present for TypeScript build (some @types packages are required)
 npm ci
 npx prisma generate
 npx prisma migrate deploy

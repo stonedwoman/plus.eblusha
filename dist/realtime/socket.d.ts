@@ -31,6 +31,14 @@ type ServerToClientEvents = {
         messageId: string;
         senderId: string;
     }) => void;
+    "availability:updated": (payload: {
+        conversationId: string;
+        userId: string;
+    }) => void;
+    "availability:proposals:updated": (payload: {
+        conversationId: string;
+        proposalId?: string;
+    }) => void;
     "contacts:removed": (payload: {
         contactId: string;
     }) => void;

@@ -1,0 +1,566 @@
+.availability-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 10, 14, 0.65);
+  backdrop-filter: blur(6px) saturate(110%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.availability-panel {
+  width: min(1240px, 96vw);
+  max-height: 92vh;
+  background: var(--surface-200);
+  border: 1px solid var(--surface-border);
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.availability-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.availability-title {
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.availability-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.availability-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 16px;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.availability-left {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.availability-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.availability-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.availability-tab {
+  border: 1px solid var(--surface-border);
+  background: var(--surface-100);
+  color: var(--text-muted);
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.availability-tab.active {
+  color: var(--text-primary);
+  border-color: rgba(217, 119, 6, 0.6);
+  background: rgba(217, 119, 6, 0.15);
+}
+
+.availability-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.availability-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  margin-right: 6px;
+}
+
+.legend-swatch.me {
+  background: rgba(59, 130, 246, 0.6);
+}
+
+.legend-swatch.peer {
+  background: rgba(16, 185, 129, 0.6);
+}
+
+.legend-swatch.overlap {
+  background: rgba(217, 119, 6, 0.9);
+}
+
+.availability-grid-wrapper {
+  border: 1px solid var(--surface-border);
+  border-radius: 14px;
+  overflow: auto;
+  background: var(--surface-100);
+  flex: 1;
+  min-height: 0;
+}
+
+.availability-grid-inner {
+  position: relative;
+}
+
+/* Merged proposal blocks (overlay) */
+.availability-proposal-layer {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.availability-proposal-block {
+  cursor: pointer;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  line-height: 1.1;
+  border-radius: 0;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.45);
+  margin: 0;
+}
+
+.availability-proposal-block-label {
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.availability-proposal-block.focus {
+  border-color: rgba(255, 255, 255, 0.70);
+  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.18), inset 0 0 0 1px rgba(0,0,0,0.35);
+}
+
+.availability-proposal-block.kind-REQUESTED_BY_ME,
+.availability-proposal-block.kind-REQUESTED_OF_ME {
+  background: #5b21b6;
+  color: rgba(245, 243, 255, 0.95);
+  border-color: rgba(196, 181, 253, 0.35);
+}
+
+.availability-proposal-block.kind-MAYBE {
+  background: #b45309;
+  color: rgba(255, 247, 237, 0.95);
+  border-color: rgba(253, 186, 116, 0.35);
+}
+
+.availability-proposal-block.kind-DECLINED {
+  background: #b91c1c;
+  color: rgba(254, 226, 226, 0.95);
+  border-color: rgba(254, 202, 202, 0.35);
+}
+
+.availability-proposal-block.kind-AGREED {
+  background: #15803d;
+  color: rgba(220, 252, 231, 0.95);
+  border-color: rgba(187, 247, 208, 0.35);
+}
+
+/* Prevent clicking/painting/selecting on time cells under proposals */
+.availability-cell.covered-by-proposal {
+  pointer-events: none;
+}
+
+/* Proposal fill on grid cells (overrides overlap) */
+.availability-cell.proposal {
+  position: relative;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.18);
+}
+
+.availability-cell.proposal.proposal-focus {
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.70), 0 0 0 2px rgba(217, 119, 6, 0.18);
+}
+
+.availability-cell.proposal-REQUESTED_BY_ME {
+  background: rgba(59, 130, 246, 0.24);
+}
+
+.availability-cell.proposal-REQUESTED_OF_ME {
+  background: rgba(168, 85, 247, 0.22);
+}
+
+.availability-cell.proposal-MAYBE {
+  background: rgba(245, 158, 11, 0.24);
+}
+
+.availability-cell.proposal-DECLINED {
+  background: rgba(239, 68, 68, 0.20);
+}
+
+.availability-cell.proposal-AGREED {
+  background: rgba(34, 197, 94, 0.20);
+}
+
+.availability-grid {
+  display: grid;
+  min-width: 640px;
+}
+
+.availability-corner {
+  height: 36px;
+  border-right: 1px solid var(--surface-border);
+  border-bottom: 1px solid var(--surface-border);
+  background: rgba(15, 23, 42, 0.35);
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 5;
+}
+
+.availability-day-label {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  border-right: 1px solid var(--surface-border);
+  border-bottom: 1px solid var(--surface-border);
+  background: rgba(15, 23, 42, 0.35);
+  position: sticky;
+  top: 0;
+  z-index: 4;
+}
+
+.availability-day-label.weekend {
+  background: rgba(217, 119, 6, 0.08);
+}
+
+.availability-row {
+  display: contents;
+}
+
+.availability-time-label {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-right: 1px solid var(--surface-border);
+  border-bottom: 1px solid var(--surface-border);
+  background: rgba(15, 23, 42, 0.28);
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: sticky;
+  left: 0;
+  z-index: 3;
+}
+
+.availability-now-line {
+  position: absolute;
+  left: 72px;
+  right: 0;
+  height: 2px;
+  transform: translateY(-1px);
+  background: rgba(239, 68, 68, 0.9);
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.15);
+  pointer-events: none;
+  z-index: 4;
+}
+
+.availability-now-label {
+  position: absolute;
+  left: 8px;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: rgba(248, 113, 113, 0.95);
+  pointer-events: none;
+  z-index: 6;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.availability-cell {
+  height: 28px;
+  border-right: 1px solid var(--surface-border);
+  border-bottom: 1px solid var(--surface-border);
+  background: rgba(12, 16, 24, 0.2);
+  cursor: crosshair;
+  user-select: none;
+}
+
+.availability-cell.weekend {
+  background: rgba(217, 119, 6, 0.04);
+}
+
+.availability-cell.filled-me {
+  background: rgba(59, 130, 246, 0.35);
+}
+
+.availability-cell.filled-peer {
+  background: rgba(16, 185, 129, 0.35);
+}
+
+.availability-cell.overlap {
+  background: rgba(217, 119, 6, 0.7);
+}
+
+.availability-cell.selected {
+  outline: 2px solid rgba(245, 158, 11, 0.9);
+  outline-offset: -2px;
+}
+
+.availability-cell.has-proposal {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.availability-cell.only-overlap:not(.overlap) {
+  background: rgba(12, 16, 24, 0.1);
+}
+
+.availability-cell[data-hidden='true'] {
+  background: rgba(12, 16, 24, 0.05);
+}
+
+.availability-right {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.availability-block {
+  background: var(--surface-100);
+  border: 1px solid var(--surface-border);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.availability-block-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.availability-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.availability-ranges,
+.availability-proposals {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.availability-range-card {
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(15, 23, 42, 0.2);
+}
+
+.availability-range-main {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.availability-range-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.availability-propose {
+  align-self: flex-start;
+}
+
+.availability-quick-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.availability-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.availability-chat-message {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.2);
+}
+
+.availability-chat-message.me {
+  border-left: 2px solid rgba(59, 130, 246, 0.7);
+}
+
+.availability-chat-message.system {
+  border-left: 2px solid rgba(217, 119, 6, 0.7);
+}
+
+.availability-chat-text {
+  white-space: pre-wrap;
+}
+
+.availability-chat-time {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.availability-chat-input {
+  display: flex;
+  gap: 8px;
+}
+
+.availability-chat-input input {
+  flex: 1;
+  border-radius: 10px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface-100);
+  color: var(--text-primary);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.availability-proposal-card {
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.2);
+}
+
+.availability-proposal-card.hovered {
+  border-color: rgba(168, 85, 247, 0.6);
+  box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.25);
+}
+
+.availability-proposal-card.linked {
+  border-color: rgba(245, 158, 11, 0.55);
+}
+
+.availability-proposal-card.matched {
+  border-color: rgba(34, 197, 94, 0.7);
+  background: rgba(34, 197, 94, 0.10);
+}
+
+.availability-proposal-card.selected {
+  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.30);
+}
+
+/* Card background by status */
+.availability-proposal-card.status-REQUESTED_BY_ME,
+.availability-proposal-card.status-REQUESTED_OF_ME {
+  border-color: rgba(168, 85, 247, 0.55);
+  background: rgba(168, 85, 247, 0.10);
+}
+
+.availability-proposal-card.status-MAYBE {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.10);
+}
+
+.availability-proposal-card.status-DECLINED {
+  border-color: rgba(239, 68, 68, 0.60);
+  background: rgba(239, 68, 68, 0.10);
+}
+
+.availability-proposal-title {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.availability-reactions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.availability-reaction {
+  border: 1px solid var(--surface-border);
+  background: var(--surface-100);
+  border-radius: 8px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.availability-reaction.active {
+  border-color: rgba(217, 119, 6, 0.6);
+  background: rgba(217, 119, 6, 0.15);
+}
+
+.availability-reaction.danger {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.10);
+}
+
+.availability-reaction-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.availability-privacy {
+  align-items: flex-start;
+}
+
+@media (max-width: 1024px) {
+  .availability-content {
+    grid-template-columns: 1fr;
+  }
+
+  .availability-right {
+    max-height: 40vh;
+  }
+}
