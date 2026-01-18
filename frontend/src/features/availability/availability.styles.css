@@ -108,15 +108,18 @@
 }
 
 .legend-swatch.me {
-  background: rgba(59, 130, 246, 0.6);
+  /* brighter cold blue-gray (still not UI-blue) */
+  background: rgba(110, 155, 210, 0.70);
 }
 
 .legend-swatch.peer {
-  background: rgba(16, 185, 129, 0.6);
+  /* brighter warm gray-green */
+  background: rgba(120, 190, 145, 0.70);
 }
 
 .legend-swatch.overlap {
-  background: rgba(217, 119, 6, 0.9);
+  /* brand color like "Показывать только пересечения" */
+  background: var(--brand-600);
 }
 
 .availability-grid-wrapper {
@@ -172,27 +175,31 @@
 
 .availability-proposal-block.kind-REQUESTED_BY_ME,
 .availability-proposal-block.kind-REQUESTED_OF_ME {
-  background: #5b21b6;
-  color: rgba(245, 243, 255, 0.95);
-  border-color: rgba(196, 181, 253, 0.35);
+  /* screenshot palette: purple */
+  background: rgba(124, 92, 214, 0.92);
+  color: rgba(245, 243, 255, 0.97);
+  border-color: rgba(196, 181, 253, 0.45);
 }
 
 .availability-proposal-block.kind-MAYBE {
-  background: #b45309;
-  color: rgba(255, 247, 237, 0.95);
-  border-color: rgba(253, 186, 116, 0.35);
+  /* screenshot palette: warm orange/brown */
+  background: rgba(176, 102, 30, 0.92);
+  color: rgba(255, 247, 237, 0.97);
+  border-color: rgba(253, 186, 116, 0.45);
 }
 
 .availability-proposal-block.kind-DECLINED {
-  background: #b91c1c;
-  color: rgba(254, 226, 226, 0.95);
-  border-color: rgba(254, 202, 202, 0.35);
+  /* screenshot-aligned red (not too neon) */
+  background: rgba(153, 43, 43, 0.92);
+  color: rgba(254, 226, 226, 0.97);
+  border-color: rgba(254, 202, 202, 0.45);
 }
 
 .availability-proposal-block.kind-AGREED {
-  background: #15803d;
-  color: rgba(220, 252, 231, 0.95);
-  border-color: rgba(187, 247, 208, 0.35);
+  /* screenshot palette: green */
+  background: rgba(30, 122, 74, 0.92);
+  color: rgba(220, 252, 231, 0.97);
+  border-color: rgba(187, 247, 208, 0.45);
 }
 
 /* Prevent clicking/painting/selecting on time cells under proposals */
@@ -325,15 +332,18 @@
 }
 
 .availability-cell.filled-me {
-  background: rgba(59, 130, 246, 0.35);
+  /* brighter cold blue-gray (still not UI-blue) */
+  background: rgba(110, 155, 210, 0.32);
 }
 
 .availability-cell.filled-peer {
-  background: rgba(16, 185, 129, 0.35);
+  /* brighter warm gray-green */
+  background: rgba(120, 190, 145, 0.30);
 }
 
 .availability-cell.overlap {
-  background: rgba(217, 119, 6, 0.7);
+  /* brand color like "Показывать только пересечения" */
+  background: color-mix(in srgb, var(--brand-600) 55%, transparent);
 }
 
 .availability-cell.selected {
@@ -497,18 +507,18 @@
 /* Card background by status */
 .availability-proposal-card.status-REQUESTED_BY_ME,
 .availability-proposal-card.status-REQUESTED_OF_ME {
-  border-color: rgba(168, 85, 247, 0.55);
-  background: rgba(168, 85, 247, 0.10);
+  border-color: rgba(196, 181, 253, 0.55);
+  background: rgba(124, 92, 214, 0.14);
 }
 
 .availability-proposal-card.status-MAYBE {
-  border-color: rgba(245, 158, 11, 0.55);
-  background: rgba(245, 158, 11, 0.10);
+  border-color: rgba(253, 186, 116, 0.55);
+  background: rgba(176, 102, 30, 0.14);
 }
 
 .availability-proposal-card.status-DECLINED {
-  border-color: rgba(239, 68, 68, 0.60);
-  background: rgba(239, 68, 68, 0.10);
+  border-color: rgba(254, 202, 202, 0.55);
+  background: rgba(153, 43, 43, 0.14);
 }
 
 .availability-proposal-title {
@@ -524,8 +534,8 @@
 }
 
 .availability-reaction {
-  border: 1px solid var(--surface-border);
-  background: var(--surface-100);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(15, 23, 42, 0.55);
   border-radius: 8px;
   padding: 4px 8px;
   cursor: pointer;
@@ -534,11 +544,17 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
+  color: var(--text-primary);
 }
 
 .availability-reaction.active {
   border-color: rgba(217, 119, 6, 0.6);
   background: rgba(217, 119, 6, 0.15);
+}
+
+.availability-reaction:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(15, 23, 42, 0.75);
 }
 
 .availability-reaction.danger {
