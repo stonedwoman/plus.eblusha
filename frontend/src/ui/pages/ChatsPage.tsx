@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
-import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted, type PresenceGamePayload } from '../../utils/socket'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
 import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square, Send } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
@@ -1979,13 +1979,73 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       }
     }
 
+    const handleBatch = (payload: PresenceGameSnapshotBatchPayload) => {
+      const items = Array.isArray(payload?.items) ? payload.items : []
+      for (const it of items) handler(it as any)
+    }
+
     onPresenceGame(handler)
+    onPresenceGameSnapshot(handler)
+    onPresenceGameSnapshotBatch(handleBatch)
     return () => {
       socket.off('presence:game', handler as any)
+      socket.off('presence:game:snapshot', handler as any)
+      socket.off('presence:game:snapshot:batch', handleBatch as any)
       for (const t of timers.values()) window.clearTimeout(t)
       timers.clear()
     }
   }, [])
+
+  // Request game presence snapshots for "relevant" peers (last dialogs) once conversations list is available.
+  const helloPeersRef = useRef<string[]>([])
+  useEffect(() => {
+    const rows = (conversationsQuery.data || []) as any[]
+    const peers: string[] = []
+    const seen = new Set<string>()
+    try {
+      for (const row of rows) {
+        const conv = row?.conversation
+        if (!conv) continue
+        const isGroup = !!(conv.isGroup || (conv.participants?.length ?? 0) > 2)
+        if (isGroup) continue
+        const parts = conv.participants || []
+        const peer = parts.find((p: any) => p?.user?.id && p.user.id !== me?.id)?.user
+        const peerId = typeof peer?.id === 'string' ? peer.id : null
+        if (!peerId) continue
+        if (seen.has(peerId)) continue
+        seen.add(peerId)
+        peers.push(peerId)
+        if (peers.length >= 50) break
+      }
+    } catch {}
+    helloPeersRef.current = peers
+    if (!peers.length) return
+    if (!socket.connected) return
+    try { helloPresenceGame(peers) } catch {}
+  }, [conversationsQuery.data, me?.id])
+
+  // Re-send hello snapshot batch after reconnect.
+  useEffect(() => {
+    const onConnect = () => {
+      const peers = helloPeersRef.current || []
+      if (!peers.length) return
+      try { helloPresenceGame(peers) } catch {}
+    }
+    socket.on('connect', onConnect)
+    return () => { socket.off('connect', onConnect as any) }
+  }, [])
+
+  // When opening a 1:1 chat, request an immediate snapshot for that peer.
+  useEffect(() => {
+    if (!activeConversation) return
+    const isGroup = !!(activeConversation.isGroup || (activeConversation.participants?.length ?? 0) > 2)
+    if (isGroup) return
+    const parts = activeConversation.participants || []
+    const peer = parts.find((p: any) => p?.user?.id && p.user.id !== me?.id)?.user
+    const peerId = typeof peer?.id === 'string' ? peer.id : null
+    if (!peerId) return
+    try { subscribePresenceGame(peerId) } catch {}
+  }, [activeConversation?.id, me?.id])
 
   // Realtime presence updates into conversations list
   useEffect(() => {
