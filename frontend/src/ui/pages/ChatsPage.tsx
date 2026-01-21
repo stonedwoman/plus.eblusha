@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
-import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted } from '../../utils/socket'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted, type PresenceGamePayload } from '../../utils/socket'
 import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square, Send } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
@@ -20,6 +20,7 @@ import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
 import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { getWaveform } from '../../utils/audioWaveform'
+import { unlockAppAudio } from '../../utils/audioUnlock'
 
 declare global {
   interface Window {
@@ -33,6 +34,223 @@ declare global {
 const LAST_ACTIVE_CONVERSATION_KEY = 'eblusha:last-active-conversation'
 const MIN_OUTGOING_CALL_DURATION_MS = 30_000
 const MAX_PENDING_IMAGES = 10
+
+// Matches:
+// - https://example.com/...
+// - www.example.com/...
+// - example.com/... (bare domains)
+const URL_RE = /((?:(?:https?:\/\/)|www\.)[^\s<]+|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})(?::\d{2,5})?(?:\/[^\s<]*)?)/gi
+const TRAILING_PUNCT_RE = /[)\]}.,!?;:]+$/
+
+function normalizeLinkHref(raw: string) {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  const lower = trimmed.toLowerCase()
+  const withScheme =
+    lower.startsWith('http://') || lower.startsWith('https://')
+      ? trimmed
+      : lower.startsWith('www.')
+        ? `https://${trimmed}`
+        : `https://${trimmed}`
+  try {
+    const url = new URL(withScheme)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+function renderLinkifiedText(value: unknown) {
+  if (typeof value !== 'string') return value as any
+  if (!value) return value
+
+  const lines = value.split('\n')
+  return (
+    <>
+      {lines.map((line, lineIdx) => {
+        const nodes: any[] = []
+        let lastIndex = 0
+        URL_RE.lastIndex = 0
+        let match: RegExpExecArray | null
+        while ((match = URL_RE.exec(line)) !== null) {
+          const raw = match[1]
+          const start = match.index
+          const end = start + raw.length
+          if (start > lastIndex) nodes.push(line.slice(lastIndex, start))
+
+          const trailing = (raw.match(TRAILING_PUNCT_RE)?.[0] ?? '')
+          const core = trailing ? raw.slice(0, -trailing.length) : raw
+          const href = normalizeLinkHref(core)
+
+          if (href) {
+            nodes.push(
+              <a
+                key={`u-${lineIdx}-${start}`}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                style={{ color: 'inherit', textDecoration: 'underline' }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                {core}
+              </a>,
+            )
+          } else {
+            nodes.push(raw)
+          }
+
+          if (trailing) nodes.push(trailing)
+          lastIndex = end
+        }
+        if (lastIndex < line.length) nodes.push(line.slice(lastIndex))
+
+        return (
+          <Fragment key={`l-${lineIdx}`}>
+            {nodes}
+            {lineIdx < lines.length - 1 ? <br /> : null}
+          </Fragment>
+        )
+      })}
+    </>
+  )
+}
+
+function extractFirstUrlFromText(value: unknown) {
+  if (typeof value !== 'string') return null
+  URL_RE.lastIndex = 0
+  const m = URL_RE.exec(value)
+  if (!m) return null
+  const raw = m[1] ?? ''
+  const trailing = (raw.match(TRAILING_PUNCT_RE)?.[0] ?? '')
+  const core = trailing ? raw.slice(0, -trailing.length) : raw
+  return normalizeLinkHref(core)
+}
+
+function renderLinkPreviewCard(preview: any) {
+  // Full preview when metadata exists, but still show a minimal card (domain + url) when it doesn't.
+  if (!preview || typeof preview !== 'object') return null
+  const url = typeof preview.url === 'string' ? preview.url : null
+  const title = typeof preview.title === 'string' ? preview.title : null
+  const description = typeof preview.description === 'string' ? preview.description : null
+  const imageUrl = typeof preview.imageUrl === 'string' ? preview.imageUrl : null
+  const imageWidth = typeof preview.imageWidth === 'number' && preview.imageWidth > 0 ? preview.imageWidth : null
+  const imageHeight = typeof preview.imageHeight === 'number' && preview.imageHeight > 0 ? preview.imageHeight : null
+  const siteName = typeof preview.siteName === 'string' ? preview.siteName : null
+  if (!url) return null
+
+  const siteLabel = siteName || (() => {
+    try { return new URL(url).hostname } catch { return null }
+  })()
+  const fallbackTitle = (() => {
+    try {
+      const u = new URL(url)
+      const host = u.hostname
+      const path = (u.pathname && u.pathname !== '/' ? u.pathname : '')
+      return (host + path).slice(0, 160)
+    } catch {
+      return url.slice(0, 160)
+    }
+  })()
+  const finalTitle = title || fallbackTitle
+  const hasImage = !!imageUrl
+  const aspectRatio = imageWidth && imageHeight ? `${imageWidth} / ${imageHeight}` : (hasImage ? '16 / 9' : undefined)
+  const isMediaProvider = (() => {
+    const label = (siteLabel || '').toLowerCase()
+    if (label.includes('youtube') || label.includes('spotify')) return true
+    try {
+      const host = new URL(url).hostname.toLowerCase()
+      return host.includes('youtube.com') || host === 'youtu.be' || host.includes('spotify.com') || host === 'spoti.fi'
+    } catch {
+      return false
+    }
+  })()
+  // Never crop: show the whole image, let the container grow by aspect ratio.
+  const imageFit: React.CSSProperties['objectFit'] = 'contain'
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer nofollow"
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{
+        display: 'block',
+        marginTop: 8,
+        borderRadius: 12,
+        overflow: 'hidden',
+        border: '1px solid var(--surface-border)',
+        background: 'rgba(0,0,0,0.10)',
+        boxShadow: '0 6px 18px rgba(0,0,0,0.25)',
+        position: 'relative',
+        textDecoration: 'none',
+        color: 'inherit',
+      }}
+    >
+      <div style={{ padding: hasImage ? '12px 12px 10px 12px' : '12px 12px 12px 12px' }}>
+        {siteLabel && (
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: 'var(--brand)',
+              marginBottom: 6,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {siteLabel}
+          </div>
+        )}
+        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: description ? 6 : 0, lineHeight: 1.25 }}>
+          {finalTitle}
+        </div>
+        {!!description && (
+          <div
+            style={{
+              fontSize: 13,
+              opacity: 0.9,
+              lineHeight: 1.25,
+              display: '-webkit-box',
+              WebkitLineClamp: hasImage ? 2 : 3,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
+            {description}
+          </div>
+        )}
+      </div>
+      {imageUrl && (
+        <div style={{ padding: '0 12px 12px 12px' }}>
+          <div
+            style={{
+              width: '100%',
+              ...(aspectRatio ? { aspectRatio } : {}),
+              borderRadius: 10,
+              overflow: 'hidden',
+              background: isMediaProvider ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.18)',
+              border: '1px solid rgba(255,255,255,0.08)',
+            }}
+          >
+            <img
+              src={imageUrl}
+              alt=""
+              style={{ width: '100%', height: '100%', display: 'block', objectFit: imageFit, objectPosition: 'center' }}
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                const el = e.currentTarget
+                el.style.display = 'none'
+              }}
+            />
+          </div>
+        </div>
+      )}
+    </a>
+  )
+}
 
 function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }) {
   const [playing, setPlaying] = useState(false)
@@ -248,7 +466,6 @@ export default function ChatsPage() {
   const notifyUnlockedRef = useRef<boolean>(false)
   const [showAudioUnlock, setShowAudioUnlock] = useState(false)
   const audioUnlockingRef = useRef<boolean>(false)
-  const unlockAudioRef = useRef<HTMLAudioElement | null>(null)
   // dialing sound
   const dialingAudioRef = useRef<HTMLAudioElement | null>(null)
   // end call sound
@@ -292,6 +509,7 @@ export default function ChatsPage() {
   const [convHasBottomFade, setConvHasBottomFade] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
   const isMobileRef = useRef(isMobile)
+  const [isNarrowHeaderButtons, setIsNarrowHeaderButtons] = useState(false)
   const [mobileView, setMobileView] = useState<'list' | 'conversation'>('list')
 useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const [showJump, setShowJump] = useState(false)
@@ -486,6 +704,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
   // Realtime presence overrides (e.g. IN_CALL) must win over API poll results,
   // because the API returns base User.status (ONLINE/BACKGROUND/OFFLINE) from DB.
   const [presenceOverridesByUserId, setPresenceOverridesByUserId] = useState<Record<string, string>>({})
+  type PresenceGameState = { ts: number; game: NonNullable<PresenceGamePayload['game']> }
+  const [presenceGameByUserId, setPresenceGameByUserId] = useState<Record<string, PresenceGameState>>({})
+  const presenceGameExpiryTimersRef = useRef<Map<string, number>>(new Map())
   const [loadedImages, setLoadedImages] = useState<Record<string, boolean>>({})
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({})
   const [imageDimensions, setImageDimensions] = useState<Record<string, { width: number; height: number }>>({})
@@ -726,6 +947,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       const mobile = window.innerWidth <= 768
       setIsMobile(mobile)
       isMobileRef.current = mobile
+      // Narrow desktop header: shrink ONLY call buttons to icons.
+      setIsNarrowHeaderButtons(!mobile && window.innerWidth <= 1300)
       if (!mobile) {
         setMobileView('conversation')
       } else if (!activeId) {
@@ -1179,6 +1402,51 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     refetchInterval: activeId ? 15000 : false,
   })
 
+  // Lazy link preview fetch for older messages (or when socket updates are missed).
+  // Server persists preview in message.metadata and may broadcast message:update.
+  const requestedPreviewsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!activeId) return
+    const row = (conversationsQuery.data || []).find((r: any) => r?.conversation?.id === activeId)
+    const isSecret = !!row?.conversation?.isSecret
+    if (isSecret) return
+    const list = (messagesQuery.data || []) as any[]
+    if (!list.length) return
+    const candidates = list
+      .filter((m) => m && m.type === 'TEXT' && typeof m.content === 'string' && m.content && !m.deletedAt)
+      // Do not gate by attemptedAt here: we may have attempted before we added oEmbed support (e.g., YouTube).
+      .filter((m) => !(m as any)?.metadata?.linkPreview)
+      .filter((m) => {
+        if (requestedPreviewsRef.current.has(m.id)) return false
+        return !!extractFirstUrlFromText(m.content)
+      })
+      .slice(0, 2)
+
+    if (candidates.length === 0) return
+
+    candidates.forEach((m) => {
+      requestedPreviewsRef.current.add(m.id)
+      api.get(`/messages/${m.id}/preview`)
+        .then((r) => {
+          const updated = r.data?.message
+          if (updated && updated.id) {
+            updateMessageInCache(activeId, updated, { preserveScroll: true })
+          } else {
+            // fallback
+            messagesQuery.refetch().catch(() => {})
+          }
+        })
+        .catch(() => {
+          try {
+            // Make failures visible even when logs are silenced.
+            console.warn('[linkPreview] preview request failed for message', m.id)
+          } catch {}
+          // allow retry later
+          requestedPreviewsRef.current.delete(m.id)
+        })
+    })
+  }, [activeId, conversationsQuery.data, messagesQuery.data])
+
   useEffect(() => {
     const error = messagesQuery.error as AxiosError | undefined
     if (error?.response?.status === 403 && activeId) {
@@ -1614,6 +1882,55 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     }
   }, [addParticipantsModal, addParticipantsMode])
 
+  // Realtime "playing game" presence (Electron) with local TTL fallback (60s)
+  useEffect(() => {
+    const timers = presenceGameExpiryTimersRef.current
+    const clearTimer = (uid: string) => {
+      const t = timers.get(uid)
+      if (t) window.clearTimeout(t)
+      timers.delete(uid)
+    }
+    const scheduleExpiry = (uid: string, ts: number) => {
+      clearTimer(uid)
+      const age = Date.now() - ts
+      const remaining = Math.max(0, 60_000 - age)
+      const t = window.setTimeout(() => {
+        setPresenceGameByUserId((prev) => {
+          if (!prev[uid]) return prev
+          const next = { ...prev }
+          delete next[uid]
+          return next
+        })
+        timers.delete(uid)
+      }, remaining + 50)
+      timers.set(uid, t)
+    }
+
+    const handler = (p: PresenceGamePayload) => {
+      const uid = typeof p?.userId === 'string' ? p.userId : ''
+      if (!uid) return
+      if (p.game && typeof p.ts === 'number') {
+        scheduleExpiry(uid, p.ts)
+        setPresenceGameByUserId((prev) => ({ ...prev, [uid]: { ts: p.ts, game: p.game as any } }))
+      } else {
+        clearTimer(uid)
+        setPresenceGameByUserId((prev) => {
+          if (!prev[uid]) return prev
+          const next = { ...prev }
+          delete next[uid]
+          return next
+        })
+      }
+    }
+
+    onPresenceGame(handler)
+    return () => {
+      socket.off('presence:game', handler as any)
+      for (const t of timers.values()) window.clearTimeout(t)
+      timers.clear()
+    }
+  }, [])
+
   // Realtime presence updates into conversations list
   useEffect(() => {
     const handler = (p: { userId: string; status: string }) => {
@@ -1961,7 +2278,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       setActiveCalls((prev) => {
         const current = prev[conversationId]
         if (!current?.active) {
-          return { ...prev, [conversationId]: { startedAt: Date.now(), active: true, participants: [me?.id || ''].filter(Boolean) } }
+          return { ...prev, [conversationId]: { startedAt: Date.now(), active: true, endedAt: null, participants: [me?.id || ''].filter(Boolean) } }
         }
         return prev
       })
@@ -2092,7 +2409,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       const isMobileInitial = window.innerWidth <= 768
       if (isMobileInitial) {
         const hasSession = !!useAppStore.getState().session?.user
-        if (hasSession && (!notifyUnlockedRef.current || !ringUnlockedRef.current)) {
+        const alreadyUnlocked = !!(window as any).__ebAudioUnlockedOnce
+        if (hasSession && !alreadyUnlocked && (!notifyUnlockedRef.current || !ringUnlockedRef.current)) {
           setShowAudioUnlock(true)
         }
       }
@@ -2488,44 +2806,15 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return ringAudioRef.current
   }, [])
 
-  const ensureUnlockAudio = useCallback(() => {
-    if (typeof window === 'undefined') return null
-    if (!unlockAudioRef.current) {
-      const audio = new Audio('/silent.wav')
-      audio.preload = 'auto'
-      unlockAudioRef.current = audio
-    }
-    return unlockAudioRef.current
-  }, [])
-
   const performAudioUnlock = async () => {
     if (audioUnlockingRef.current) {
       return notifyUnlockedRef.current && ringUnlockedRef.current
     }
     audioUnlockingRef.current = true
-    const tryPlay = async (audio: HTMLAudioElement) => {
-      try {
-        const res = audio.play()
-        if (res && typeof (res as Promise<void>).then === 'function') {
-          await res
-        }
-        return true
-      } catch {
-        return false
-      }
-    }
     try {
       ensureNotifyAudio()
       ensureRingAudio()
-      let played = false
-      const unlockAudio = ensureUnlockAudio()
-      if (unlockAudio) {
-        played = await tryPlay(unlockAudio)
-        try {
-          unlockAudio.pause()
-          unlockAudio.currentTime = 0
-        } catch {}
-      }
+      const played = await unlockAppAudio()
       if (played) {
         notifyUnlockedRef.current = true
         ringUnlockedRef.current = true
@@ -2679,13 +2968,26 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         messagesQuery.refetch()
       }
     }
+    const onUpdate = (payload: any) => {
+      if (!payload) return
+      const conversationId = payload.conversationId
+      if (!activeId || conversationId !== activeId) return
+      if (payload.message && payload.message.id) {
+        updateMessageInCache(activeId, payload.message, { preserveScroll: payload.reason === 'link_preview' })
+      } else if (payload.messageId) {
+        messagesQuery.refetch().catch(() => {})
+      }
+    }
+
     socket.on('message:new', onNew)
     socket.on('conversation:typing', onTyping)
     socket.on('message:reaction', onReaction)
+    socket.on('message:update', onUpdate)
     return () => {
       socket.off('message:new', onNew as any)
       socket.off('conversation:typing', onTyping as any)
       socket.off('message:reaction', onReaction as any)
+      socket.off('message:update', onUpdate as any)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId])
@@ -3436,11 +3738,14 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
 
   function formatPresence(u: any): string {
     const status = (u?.id ? effectiveUserStatus(u) : ((u?.status as string | undefined) ?? 'OFFLINE')) as string | undefined
+    const uid = typeof u?.id === 'string' ? u.id : null
+    const playing = uid ? presenceGameByUserId[uid]?.game : undefined
     const last = u.lastSeenAt ? new Date(u.lastSeenAt) : null
+    if (playing?.name && status === 'IN_CALL') return `В ЗВОНКЕ И В ${playing.name}`
+    if (playing?.name && (status === 'ONLINE' || status === 'BACKGROUND')) return `Играет в ${playing.name}`
     if (status === 'ONLINE') return 'ОНЛАЙН'
     if (status === 'BACKGROUND') return 'В ФОНЕ'
     if (status === 'IN_CALL') {
-      const uid = typeof u?.id === 'string' ? u.id : null
       if (uid && groupCallParticipantIds.has(uid)) return 'В БЕСЕДЕ'
       return 'В ЗВОНКЕ'
     }
@@ -3457,6 +3762,30 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     const timeStr = last.toLocaleTimeString([], opts)
     return `был(а) онлайн ${dateStr} в ${timeStr}`
   }
+
+  type AvatarPresence = 'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | 'IN_CALL' | 'PLAYING'
+  const avatarPresenceForUser = useCallback((u: any): AvatarPresence => {
+    const uid = typeof u?.id === 'string' ? u.id : null
+    const base = effectiveUserStatus(u)
+    const playing = uid ? presenceGameByUserId[uid]?.game : undefined
+    // If we have game presence (TTL-backed), prefer showing PLAYING regardless of base presence.
+    // This allows rendering the gamepad even when the base status is briefly stale/offline.
+    if (playing?.name) return 'PLAYING'
+    return base
+  }, [effectiveUserStatus, presenceGameByUserId])
+
+  const avatarPresenceForUserIdAndStatus = useCallback((userId: string | null, status: any): AvatarPresence => {
+    const raw = (status ?? 'OFFLINE').toString().toUpperCase()
+    const base: AvatarPresence =
+      raw === 'IN_CALL' ? 'IN_CALL'
+      : raw === 'ONLINE' ? 'ONLINE'
+      : raw === 'BACKGROUND' ? 'BACKGROUND'
+      : raw === 'AWAY' ? 'AWAY'
+      : 'OFFLINE'
+    const playing = userId ? presenceGameByUserId[userId]?.game : undefined
+    if (playing?.name) return 'PLAYING'
+    return base
+  }, [presenceGameByUserId])
 
   function formatDuration(ms: number): string {
     const totalSec = Math.max(0, Math.floor(ms / 1000))
@@ -3510,6 +3839,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             const isActive = activeId === c.id
             const callEntry = activeCalls[c.id]
             const isCallActive = !!callEntry?.active
+            const isCallActiveByState =
+              isCallActive ||
+              callConvId === c.id ||
+              minimizedCallConvId === c.id ||
+              outgoingCall?.conversationId === c.id ||
+              callStore.activeConvId === c.id
             const isConnectedToCall = callConvId === c.id
             return (
               <div
@@ -3552,17 +3887,21 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         id={c.id} 
                         avatarUrl={c.avatarUrl && c.avatarUrl.trim() ? c.avatarUrl : undefined}
                         presence={isCallActive ? 'IN_CALL' : undefined}
+                        inCall={isCallActiveByState}
                       />
                     )
                   })()
                 ) : (
                   (() => {
+                    const peerUser = othersArr[0]
+                    const peerInCallByPresence = peerUser ? effectiveUserStatus(peerUser) === 'IN_CALL' : false
                     return (
                       <Avatar
-                        name={othersArr[0]?.displayName ?? othersArr[0]?.username ?? 'D'}
-                        id={othersArr[0]?.id ?? c.id}
-                        presence={isCallActive ? 'IN_CALL' : effectiveUserStatus(othersArr[0])}
-                        avatarUrl={othersArr[0]?.avatarUrl && othersArr[0].avatarUrl.trim() ? othersArr[0].avatarUrl : undefined}
+                        name={peerUser?.displayName ?? peerUser?.username ?? 'D'}
+                        id={peerUser?.id ?? c.id}
+                        presence={avatarPresenceForUser(peerUser)}
+                        inCall={peerInCallByPresence || isCallActiveByState}
+                        avatarUrl={peerUser?.avatarUrl && peerUser.avatarUrl.trim() ? peerUser.avatarUrl : undefined}
                       />
                     )
                   })()
@@ -3591,12 +3930,42 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       ? `${row.unreadCount} непрочитанных`
                       : (() => {
                             const entry = activeCalls[c.id]
-                            if (entry?.active) {
-                            // Используем elapsedMs с сервера и добавляем локальный тик для плавного обновления между событиями
-                            // Re-render each second via timerTick, compute from startedAt to avoid double counting
-                            const elapsedMs = entry.startedAt ? (Date.now() - entry.startedAt) : (typeof entry.elapsedMs === 'number' ? entry.elapsedMs : 0)
-                            return <span>{formatDuration(elapsedMs)}</span>
-                          } else if (entry && entry.endedAt) {
+                            const peer = othersArr[0]
+                            const uid = typeof peer?.id === 'string' ? peer.id : null
+                            const g = uid ? presenceGameByUserId[uid]?.game : undefined
+                            const base = peer ? effectiveUserStatus(peer) : 'OFFLINE'
+                            const gameSuffix = g?.name ? ` И В ${g.name}` : ''
+
+                            // Call may be active in this conversation, but duration should be shown
+                            // ONLY to actual call participants (confidential).
+                            const myId = me?.id
+                            const isParticipantByServer =
+                              !!(myId && entry?.active && Array.isArray(entry.participants) && entry.participants.includes(myId))
+                            const isParticipantByLocalState =
+                              callConvId === c.id ||
+                              minimizedCallConvId === c.id ||
+                              outgoingCall?.conversationId === c.id ||
+                              callStore.activeConvId === c.id
+                            const isParticipant = isParticipantByServer || isParticipantByLocalState
+                            const isCallOngoing = !!entry?.active || isParticipant
+
+                            if (isParticipant) {
+                              // Use startedAt from entry or outgoingCall as a fallback.
+                              const startedAt =
+                                (typeof entry?.startedAt === 'number' && entry.startedAt > 0)
+                                  ? entry.startedAt
+                                  : (outgoingCall && outgoingCall.conversationId === c.id ? outgoingCall.startedAt : null)
+                              const elapsedMs = startedAt ? (Date.now() - startedAt) : (typeof entry?.elapsedMs === 'number' ? entry.elapsedMs : 0)
+                              return <span>В ЗВОНКЕ: {formatDuration(elapsedMs)}{gameSuffix}</span>
+                            }
+
+                            if (isCallOngoing) {
+                              // Not a participant: do NOT show duration.
+                              if (g?.name) return <span>В ЗВОНКЕ{gameSuffix}</span>
+                              return <span>В ЗВОНКЕ</span>
+                            }
+
+                            if (entry && entry.endedAt) {
                             // Звонок завершен
                             const endedAt = entry.endedAt
                             const now = Date.now()
@@ -3610,7 +3979,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             const dateStr = endedDate.toLocaleDateString()
                             const timeStr = endedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                             return <span>Завершен {dateStr} в {timeStr}</span>
-                          }
+                            }
                           // Для групповых бесед показываем null, для личных - статус
                           return isGroup ? null : formatPresence(othersArr[0] ?? {})
                         })()}
@@ -3744,19 +4113,37 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               const normalizedPresence = normalized as KnownPresence
               const fallbackPresence = fallbackStatus as KnownPresence
               const presenceValue: KnownPresence = allowedPresence.includes(normalizedPresence) ? normalizedPresence : fallbackPresence
+              const myId = me?.id
+              const myGame = myId ? presenceGameByUserId[myId]?.game : undefined
+              const presenceWithGame: any =
+                myGame?.name && (presenceValue === 'ONLINE' || presenceValue === 'BACKGROUND' || presenceValue === 'IN_CALL')
+                  ? 'PLAYING'
+                  : presenceValue
               const avatarUrl = (meInfoQuery.data as any)?.avatarUrl ?? me?.avatarUrl ?? undefined
               return (
                 <Avatar
                   name={me?.displayName ?? me?.username ?? 'Me'}
                   id={me?.id ?? 'me'}
-                  presence={presenceValue}
+                  presence={presenceWithGame}
+                  inCall={isMeInAnyCall}
                   avatarUrl={avatarUrl}
                 />
               )
             })()}
             <div>
               <div style={{ fontWeight: 700 }}>{me?.displayName ?? me?.username ?? 'Я'}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>EBLID: {meInfoQuery.data?.eblid ?? '— — — —'}</div>
+              {(() => {
+                const myId = me?.id
+                const g = myId ? presenceGameByUserId[myId]?.game : undefined
+                if (g?.name) {
+                  return (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>Играю в {g.name}</span>
+                    </div>
+                  )
+                }
+                return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>EBLID: {meInfoQuery.data?.eblid ?? '— — — —'}</div>
+              })()}
               </div>
             </div>
           </div>
@@ -3801,7 +4188,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             })(),
             display: 'flex',
             flexDirection: isMobile ? 'column' : 'row',
-            justifyContent: isMobile ? 'flex-start' : 'space-between',
+            justifyContent: 'flex-start',
             alignItems: isMobile ? 'stretch' : 'center',
             flexShrink: 0,
           }}
@@ -3838,6 +4225,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         size={60} 
                         avatarUrl={activeConversation.avatarUrl && activeConversation.avatarUrl.trim() ? activeConversation.avatarUrl : undefined}
                         presence={isActive ? 'IN_CALL' : undefined}
+                        inCall={!!isActive}
                       />
                     </div>
                     <div style={{ flex: 1, minWidth: 0, order: isMobile ? 1 : 2 }}>
@@ -3956,7 +4344,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             name={peer?.displayName ?? peer?.username ?? 'D'}
                             id={peer?.id ?? activeConversation.id}
                             avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
-                          presence={(callEntry?.active ? 'IN_CALL' : effectiveUserStatus(peer))}
+                            presence={avatarPresenceForUser(peer)}
+                              inCall={effectiveUserStatus(peer) === 'IN_CALL' || !!callEntry?.active || minimizedCallConvId === activeId}
                             size={60}
                           />
                         </div>
@@ -3987,14 +4376,20 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                               </button>
                             )}
                           </div>
-                          <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: 'var(--text-muted)',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'flex-start',
+                              gap: 2,
+                              lineHeight: 1.15,
+                            }}
+                          >
                             {(() => {
                               const isMinimized = minimizedCallConvId === activeId
-                              // Если звонок минимизирован или активен, показываем продолжительность
-                              if ((callEntry?.active || isMinimized) && callEntry) {
-                                const elapsedMs = callEntry.startedAt ? (Date.now() - callEntry.startedAt) : (typeof callEntry.elapsedMs === 'number' ? callEntry.elapsedMs : 0)
-                                return <span>{formatDuration(elapsedMs)}</span>
-                              }
+
                               // Если звонок завершен (и не минимизирован), показываем время завершения
                               if (callEntry && callEntry.endedAt && !isMinimized) {
                                 const endedAt = callEntry.endedAt
@@ -4010,10 +4405,50 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                 const timeStr = endedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                                 return <span>Завершен {dateStr} в {timeStr}</span>
                               }
-                              // Иначе показываем статус пользователя
-                              return peer
-                                ? formatPresence(peer)
-                                : ''
+
+                              // Если звонок минимизирован или активен — показываем статус звонка (с длительностью только участникам)
+                              if ((callEntry?.active || isMinimized) && callEntry) {
+                                const uid = typeof peer?.id === 'string' ? peer.id : null
+                                const g = uid ? presenceGameByUserId[uid]?.game : undefined
+                                const myId = me?.id
+                                const isParticipantByServer =
+                                  !!(myId && callEntry?.active && Array.isArray(callEntry.participants) && callEntry.participants.includes(myId))
+                                const isParticipantByLocalState =
+                                  callConvId === activeId ||
+                                  minimizedCallConvId === activeId ||
+                                  outgoingCall?.conversationId === activeId ||
+                                  callStore.activeConvId === activeId
+                                const isParticipant = isParticipantByServer || isParticipantByLocalState
+                                const elapsedMs = isParticipant
+                                  ? (callEntry.startedAt ? (Date.now() - callEntry.startedAt) : (typeof callEntry.elapsedMs === 'number' ? callEntry.elapsedMs : 0))
+                                  : null
+
+                                return (
+                                  <>
+                                    <span>{elapsedMs != null ? `В ЗВОНКЕ: ${formatDuration(elapsedMs)}` : 'В ЗВОНКЕ'}</span>
+                                    {g?.name ? <span>ИГРАЕТ В {g.name}</span> : null}
+                                  </>
+                                )
+                              }
+
+                              // Иначе показываем статус пользователя (в две строки, если в игре)
+                              if (!peer) return ''
+                              const uid = typeof peer?.id === 'string' ? peer.id : null
+                              const base = effectiveUserStatus(peer)
+                              const g = uid ? presenceGameByUserId[uid]?.game : undefined
+
+                              if (g?.name && base === 'IN_CALL') {
+                                return (
+                                  <>
+                                    <span>В ЗВОНКЕ</span>
+                                    <span>ИГРАЕТ В {g.name}</span>
+                                  </>
+                                )
+                              }
+                              if (g?.name && (base === 'ONLINE' || base === 'BACKGROUND' || base === 'IN_CALL')) {
+                                return <span>ИГРАЕТ В {g.name}</span>
+                              }
+                              return <span>{formatPresence(peer)}</span>
                             })()}
                           </div>
                         </div>
@@ -4026,6 +4461,96 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               <div>Выберите чат</div>
             )}
         </div>
+          {/* Center game image (no bubble) */}
+          {activeConversation && (() => {
+            if (isMobile) return null
+            const isGroup = !!(activeConversation.isGroup || (activeConversation.participants?.length ?? 0) > 2)
+            if (isGroup) return null
+            const othersArr = activeConversation.participants
+              .filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
+              .map((p: any) => p.user)
+            const peer: any = othersArr[0]
+            const uid = typeof peer?.id === 'string' ? peer.id : null
+            const baseStatus = peer ? effectiveUserStatus(peer) : 'OFFLINE'
+            const playing = uid ? presenceGameByUserId[uid]?.game : undefined
+            if (!playing?.name || !(baseStatus === 'ONLINE' || baseStatus === 'BACKGROUND' || baseStatus === 'IN_CALL')) return null
+            const steamAppIdRaw = playing?.steamAppId
+            const steamAppId =
+              typeof steamAppIdRaw === 'number'
+                ? (Number.isFinite(steamAppIdRaw) ? String(steamAppIdRaw) : null)
+                : (typeof steamAppIdRaw === 'string' && steamAppIdRaw.trim() ? steamAppIdRaw.trim() : null)
+            const steamUrl = steamAppId ? `https://store.steampowered.com/app/${encodeURIComponent(steamAppId)}/` : null
+
+            return (
+              <div
+                style={{
+                  // Take the whole middle space so the image is truly centered.
+                  flex: isMobile ? '0 0 auto' : 1,
+                  minWidth: 0,
+                  width: isMobile ? '100%' : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: isMobile ? '10px 8px 0' : '0 14px',
+                }}
+              >
+                {playing.imageUrl ? (
+                  <div
+                    title={
+                      steamUrl
+                        ? `Открыть в Steam: ${playing?.name ? playing.name : ''}`.trim()
+                        : `Играет в ${playing.name}`
+                    }
+                    onClick={() => {
+                      if (!steamUrl) return
+                      try { window.open(steamUrl, '_blank', 'noopener,noreferrer') } catch {}
+                    }}
+                    style={{
+                      cursor: steamUrl ? 'pointer' : 'default',
+                      userSelect: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      minWidth: 0,
+                      maxWidth: '100%',
+                    }}
+                  >
+                    <img
+                      src={playing.imageUrl}
+                      alt=""
+                      style={{
+                        height: 60,
+                        maxHeight: 60,
+                        width: 'auto',
+                        // Keep it large, but allow shrinking to prevent overflow.
+                        maxWidth: '100%',
+                        // Light rounding like buttons.
+                        borderRadius: 10,
+                        objectFit: 'contain',
+                        display: 'block',
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div style={{ minWidth: 0, maxWidth: 320, lineHeight: 1.1 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{baseStatus === 'IN_CALL' ? 'В звонке' : 'Играет'}</div>
+                    <div
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 650,
+                        color: 'var(--text-primary)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {playing.name}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
           {endSecretModalOpen &&
             activeConversation &&
             !!activeConversation.isSecret &&
@@ -4139,6 +4664,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 const peerTimeZone = (peerUser as any)?.timezone ?? (peerUser as any)?.timeZone ?? fallbackTimeZone
                 const peerName = peerUser?.displayName ?? peerUser?.username ?? 'Собеседник'
                 const canShowAvailability = !isGroup && !!peerUser?.id
+                const hasHeaderGame = (() => {
+                  if (isMobile) return false
+                  if (isGroup) return false
+                  const uid = typeof peerUser?.id === 'string' ? peerUser.id : null
+                  if (!uid) return false
+                  const base = effectiveUserStatus(peerUser)
+                  const g = presenceGameByUserId[uid]?.game
+                  return !!(g?.name && (base === 'ONLINE' || base === 'BACKGROUND' || base === 'IN_CALL'))
+                })()
+                // Show text labels on wide screens; icons-only on narrow desktop.
+                // If no game info in header, keep labels (there's space).
+                const compactButtons = !isMobile && isNarrowHeaderButtons && hasHeaderGame
                 const handleOpenAvailability = () => {
                   if (!activeConversation || !peerUser?.id) return
                   setAvailabilityContext({
@@ -4171,10 +4708,11 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   display: 'flex' as const,
                   alignItems: 'center' as const,
                   justifyContent: 'center' as const,
-                  gap: 6,
-                  padding: isMobile ? '8px 12px' : '12px 16px',
+                  gap: compactButtons ? 0 : 6,
+                  padding: isMobile ? '8px 12px' : (!compactButtons ? '12px 16px' : '10px'),
                   flex: isMobile ? 1 : 'auto' as const,
-                  minWidth: isMobile ? 0 : 'auto' as const,
+                  minWidth: isMobile ? 0 : (!compactButtons ? 'auto' : 44 as any),
+                  width: compactButtons ? 44 : undefined,
                   fontSize: isMobile ? '14px' : '15px',
                   fontWeight: isMobile ? 500 : 600,
                   height: isMobile ? '42px' : '46px',
@@ -4215,7 +4753,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       const current = prev[activeId]
                       const myId = me?.id
                       if (!current?.active) {
-                        return { ...prev, [activeId]: { startedAt: Date.now(), active: true, participants: myId ? [myId] : [] } }
+                        return { ...prev, [activeId]: { startedAt: Date.now(), active: true, endedAt: null, participants: myId ? [myId] : [] } }
                       }
                       if (myId && current.participants && !current.participants.includes(myId)) {
                         return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
@@ -4277,7 +4815,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       const current = prev[activeId]
                       const myId = me?.id
                       if (!current?.active) {
-                        return { ...prev, [activeId]: { startedAt: Date.now(), active: true, participants: myId ? [myId] : [] } }
+                        return { ...prev, [activeId]: { startedAt: Date.now(), active: true, endedAt: null, participants: myId ? [myId] : [] } }
                       }
                       if (myId && current.participants && !current.participants.includes(myId)) {
                         return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
@@ -4342,6 +4880,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         <>
                           <button 
                             className="btn btn-secondary" 
+                            title={!isMobile ? 'Подключиться' : undefined}
                             onClick={() => {
                               const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
                               if (isGroupCall) {
@@ -4359,10 +4898,11 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             style={buttonBaseStyle}
                           >
                             <Phone size={isMobile ? 16 : 18} />
-                            {isMobile ? 'Подключиться' : ' Подключиться'}
+                            {isMobile ? 'Подключиться' : (compactButtons ? null : ' Подключиться')}
                           </button>
                           <button 
                             className="btn btn-primary" 
+                            title={!isMobile ? 'Подключиться с видео' : undefined}
                             onClick={() => {
                               const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
                               if (isGroupCall) {
@@ -4380,7 +4920,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             style={buttonBaseStyle}
                           >
                             <Video size={isMobile ? 16 : 18} />
-                            {isMobile ? 'Подключиться с видео' : ' Подключиться с видео'}
+                            {isMobile ? 'Подключиться с видео' : (compactButtons ? null : ' Подключиться с видео')}
                           </button>
                           {canShowAvailability && (
                             <AvailabilityButton
@@ -4410,16 +4950,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         {!isOverlayOpen && (
                           <button 
                             className="btn btn-secondary"
+                            title={!isMobile ? 'Развернуть' : undefined}
                             onClick={handleExpandCall}
                             style={buttonBaseStyle}
                           >
                             <Maximize2 size={isMobile ? 16 : 18} />
-                            {isMobile ? 'Развернуть' : ' Развернуть'}
+                            {isMobile ? 'Развернуть' : (compactButtons ? null : ' Развернуть')}
                           </button>
                         )}
                         {/* Кнопка "Сбросить" показывается всегда, пока пользователь участвует в звонке */}
                         <button 
                           className="btn"
+                          title={!isMobile ? 'Сбросить' : undefined}
                           onClick={() => {
                             const count = activeConversation?.participants?.length ?? 0
                             const isDialog = count <= 2
@@ -4457,7 +4999,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           }}
                         >
                           <PhoneOff size={isMobile ? 16 : 18} />
-                          {isMobile ? 'Сбросить' : ' Сбросить'}
+                          {isMobile ? 'Сбросить' : (compactButtons ? null : ' Сбросить')}
                         </button>
                         {canShowAvailability && (
                           <AvailabilityButton
@@ -4485,19 +5027,21 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     <>
                       <button 
                         className="btn btn-secondary" 
+                        title={!isMobile ? 'Звонок' : undefined}
                         onClick={() => { void handleStartCall() }}
                         style={buttonBaseStyle}
                       >
                         <Phone size={isMobile ? 16 : 18} />
-                        {isMobile ? ' Начать звонок' : ' Звонок'}
+                        {isMobile ? ' Начать звонок' : (compactButtons ? null : ' Звонок')}
                       </button>
                       <button 
                         className="btn btn-primary" 
+                        title={!isMobile ? 'Видео' : undefined}
                         onClick={() => { void handleStartVideoCall() }}
                         style={buttonBaseStyle}
                       >
                         <Video size={isMobile ? 16 : 18} />
-                        {isMobile ? ' Начать с видео' : ' Видео'}
+                        {isMobile ? ' Начать с видео' : (compactButtons ? null : ' Видео')}
                       </button>
                       {canShowAvailability && (
                         <AvailabilityButton
@@ -4661,7 +5205,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           fontStyle: 'italic',
                           opacity: 0.8
                         }}>
-                          {m.content}
+                          {renderLinkifiedText(m.content)}
                         </div>
                       </div>
                     )
@@ -4677,6 +5221,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   const rowClass = `${baseRow} ${spacingClass}`
                   const baseBubble = leftAlignAll ? 'msg-bubble left' : (isMe ? 'msg-bubble me' : 'msg-bubble them')
                   const bubbleClass = isLastOfRun ? `${baseBubble} ${isMe && !leftAlignAll ? 'tail-right' : 'tail-left'}` : baseBubble
+                  const hasAnyLink = typeof m.content === 'string' ? !!extractFirstUrlFromText(m.content) : false
                   const senderUser = usersById[m.senderId]
                   const avatarName = senderUser?.displayName ?? senderUser?.username ?? (isMe ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
                   const avatarId = senderUser?.id ?? (isMe ? (me?.id ?? 'me') : 'user')
@@ -4733,7 +5278,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         <div className="avatar-spacer" />
                       ))}
                       <div
-                        className={bubbleClass}
+                        className={hasAnyLink ? `${bubbleClass} has-link-preview` : bubbleClass}
                         data-mid={m.id}
                         ref={(el) => {
                           if (!el) { nodesByMessageId.current.delete(m.id); return }
@@ -4836,7 +5381,20 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           </div>
                         )}
                         <>
-                          <div style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>{m.content}</div>
+                          <div style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                            {renderLinkifiedText(m.content)}
+                          </div>
+                          {(() => {
+                            const firstUrl = extractFirstUrlFromText(m.content)
+                            if (!firstUrl) return null
+                            const preview = (m as any)?.metadata?.linkPreview
+                            // Don't show previews in secret chats even if present.
+                            if (activeConversation?.isSecret) return null
+                            // Always render a card for the first URL:
+                            // - if preview exists -> rich
+                            // - else -> minimal (still shows domain + url-derived title)
+                            return renderLinkPreviewCard(preview ? { ...preview, url: preview.url || firstUrl } : { url: firstUrl })
+                          })()}
                           {(() => {
                             const attachments = (m.attachments || []) as any[]
                             const imageAtts = attachments.filter((a) => a?.type === 'IMAGE')
@@ -6000,8 +6558,11 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     })
   }
 
-  function updateMessageInCache(conversationId: string, msg: any) {
+  function updateMessageInCache(conversationId: string, msg: any, opts?: { preserveScroll?: boolean }) {
     if (!msg) return
+    const el = messagesRef.current
+    const preserve = !!opts?.preserveScroll && !!el && !nearBottomRef.current
+    const before = preserve && el ? { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight } : null
     client.setQueryData(['messages', conversationId], (old: any) => {
       if (!Array.isArray(old)) return old
       const idx = old.findIndex((m: any) => m.id === msg.id)
@@ -6010,6 +6571,16 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       next[idx] = { ...next[idx], ...msg }
       return next
     })
+    if (preserve && before) {
+      requestAnimationFrame(() => {
+        const el2 = messagesRef.current
+        if (!el2) return
+        const delta = el2.scrollHeight - before.scrollHeight
+        if (delta > 0) {
+          el2.scrollTop = before.scrollTop + delta
+        }
+      })
+    }
   }
 
   return (
@@ -6019,7 +6590,16 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         <button
           type="button"
           className="audio-unlock-button"
-          onClick={() => { void performAudioUnlock() }}
+          onClick={() => {
+            // Optimistically close overlay so UX doesn't "hang" on iOS while audio loads/plays.
+            setShowAudioUnlock(false)
+            void performAudioUnlock().then((ok) => {
+              if (!ok) {
+                // If unlock didn't succeed, show the button again so user can retry.
+                setShowAudioUnlock(true)
+              }
+            })
+          }}
         >
           Войти
         </button>
@@ -6056,7 +6636,19 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             <Avatar name={me?.displayName ?? me?.username ?? 'Me'} id={me?.id ?? 'me'} avatarUrl={avatarPreviewUrl ?? meInfoQuery.data?.avatarUrl ?? undefined} />
             <div>
               <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{me?.displayName ?? me?.username}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>EBLID: {meInfoQuery.data?.eblid ?? '— — — —'}</div>
+              {(() => {
+                const myId = me?.id
+                const g = myId ? presenceGameByUserId[myId]?.game : undefined
+                if (g?.name) {
+                  return (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {g.imageUrl ? <img src={g.imageUrl} alt="" style={{ width: 14, height: 14, borderRadius: 4, objectFit: 'cover' }} /> : null}
+                      <span>Играю в {g.name}</span>
+                    </div>
+                  )
+                }
+                return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>EBLID: {meInfoQuery.data?.eblid ?? '— — — —'}</div>
+              })()}
             </div>
           </div>
           <input ref={fileInputRef} type="file" accept="image/*" onChange={(e) => {
@@ -6925,7 +7517,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   <Avatar
                     name={u.displayName ?? u.username}
                     id={u.id}
-                    presence={effectiveUserStatus(u)}
+                    presence={avatarPresenceForUser(u)}
                     avatarUrl={u.avatarUrl ?? undefined}
                   />
                   <div>
@@ -7026,7 +7618,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {incomingContactsQuery.data.map((c: any) => (
                   <div key={c.id} className="tile">
-                    <Avatar name={(c.friend.displayName ?? c.friend.username)} id={c.friend.id} presence={c.friend.status} avatarUrl={c.friend.avatarUrl ?? undefined} />
+            <Avatar
+              name={(c.friend.displayName ?? c.friend.username)}
+              id={c.friend.id}
+              presence={avatarPresenceForUserIdAndStatus(c.friend.id, c.friend.status)}
+              avatarUrl={c.friend.avatarUrl ?? undefined}
+            />
                     <div>
                       <div style={{ fontWeight: 600 }}>{c.friend.displayName ?? c.friend.username}</div>
                       <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>хочет добавить вас</div>
@@ -7060,7 +7657,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           </div>
           {foundUser && (
             <div className="tile" style={{ marginBottom: 12 }}>
-              <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={effectiveUserStatus(foundUser)} avatarUrl={foundUser.avatarUrl ?? undefined} />
+              <Avatar
+                name={foundUser.displayName ?? foundUser.username}
+                id={foundUser.id}
+                presence={avatarPresenceForUser(foundUser)}
+                avatarUrl={foundUser.avatarUrl ?? undefined}
+              />
               <div>
                 <div style={{ fontWeight: 600 }}>{foundUser.displayName ?? foundUser.username}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Найден по EBLID</div>
@@ -7082,7 +7684,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               const u = c.friend
               return (
                 <div key={c.id} className="tile">
-                  <Avatar name={u.displayName ?? u.username} id={u.id} presence={effectiveUserStatus(u)} avatarUrl={u.avatarUrl ?? undefined} />
+                  <Avatar
+                    name={u.displayName ?? u.username}
+                    id={u.id}
+                    presence={avatarPresenceForUser(u)}
+                    avatarUrl={u.avatarUrl ?? undefined}
+                  />
                   <div>
                     <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
                     <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Контакт</div>
@@ -7290,7 +7897,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       <Avatar
                         name={u.displayName ?? u.username}
                         id={u.id}
-                        presence={effectiveUserStatus(u)}
+                        presence={avatarPresenceForUser(u)}
                         avatarUrl={u.avatarUrl ?? undefined}
                       />
                       <div style={{ flex: 1 }}>
@@ -7342,7 +7949,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   <Avatar
                     name={addParticipantsFoundUser.displayName ?? addParticipantsFoundUser.username}
                     id={addParticipantsFoundUser.id}
-                    presence={addParticipantsFoundUser.status}
+                    presence={avatarPresenceForUserIdAndStatus(addParticipantsFoundUser.id, addParticipantsFoundUser.status)}
                     avatarUrl={addParticipantsFoundUser.avatarUrl ?? undefined}
                   />
                   <div style={{ flex: 1 }}>
