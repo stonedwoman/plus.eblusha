@@ -4314,6 +4314,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               display: 'flex',
               alignItems: 'center',
               gap: 10,
+              // Prevent long titles/statuses from squeezing the centered game image.
+              flex: isMobile ? '0 0 auto' : '0 1 420px',
+              minWidth: 0,
               width: isMobile ? '100%' : 'auto',
               padding: isMobile ? '0 8px' : '0',
             }}
@@ -4466,8 +4469,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           />
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
-                            <span>{title}</span>
+                        <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
+                          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
                             {isMobile && (
                               <button
                                 className="btn btn-icon btn-ghost"
@@ -4542,7 +4545,11 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                 return (
                                   <>
                                     <span>{elapsedMs != null ? `В ЗВОНКЕ: ${formatDuration(elapsedMs)}` : 'В ЗВОНКЕ'}</span>
-                                    {g?.name ? <span>ИГРАЕТ В {g.name}</span> : null}
+                                    {g?.name ? (
+                                      <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+                                        ИГРАЕТ В {g.name}
+                                      </span>
+                                    ) : null}
                                   </>
                                 )
                               }
@@ -4557,12 +4564,18 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                 return (
                                   <>
                                     <span>В ЗВОНКЕ</span>
-                                    <span>ИГРАЕТ В {g.name}</span>
+                                    <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+                                      ИГРАЕТ В {g.name}
+                                    </span>
                                   </>
                                 )
                               }
                               if (g?.name && (base === 'ONLINE' || base === 'BACKGROUND' || base === 'IN_CALL')) {
-                                return <span>ИГРАЕТ В {g.name}</span>
+                                return (
+                                  <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+                                    ИГРАЕТ В {g.name}
+                                  </span>
+                                )
                               }
                               return <span>{formatPresence(peer)}</span>
                             })()}
