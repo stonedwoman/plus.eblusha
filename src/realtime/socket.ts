@@ -4,11 +4,24 @@ import prisma from "../lib/prisma";
 import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
 
+type PresenceGame = {
+  discordAppId: string;
+  name: string;
+  steamAppId?: string | number;
+  startedAt: number;
+  imageUrl?: string | null;
+};
+
+type PresenceGameClearReason = "no_game" | "privacy_off";
+
 type ServerToClientEvents = {
   "presence:update": (payload: { userId: string; status: string }) => void;
+  "presence:game": (payload: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }) => void;
+  "presence:game:snapshot": (payload: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }) => void;
+  "presence:game:snapshot:batch": (payload: { items: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }[] }) => void;
   "message:new": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "receipts:update": (payload: { conversationId: string; messageIds: string[] }) => void;
-  "message:update": (payload: { conversationId: string; messageId: string; reason: string }) => void;
+  "message:update": (payload: { conversationId: string; messageId: string; reason: string; message?: any }) => void;
   "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "message:reaction": (payload: { conversationId: string; messageId: string; senderId: string }) => void;
   "availability:updated": (payload: { conversationId: string; userId: string }) => void;
@@ -51,6 +64,10 @@ type ClientToServerEvents = {
   "secret:chat:accept": (payload: { conversationId: string; deviceId: string }) => void;
   "secret:chat:decline": (payload: { conversationId: string }) => void;
   "presence:focus": (payload: { focused: boolean }) => void;
+  "presence:game:update": (payload: { game: PresenceGame }) => void;
+  "presence:game:clear": (payload: { reason: PresenceGameClearReason }) => void;
+  "presence:game:subscribe": (payload: { peerUserId: string }) => void;
+  "presence:game:hello": (payload: { openPeers: string[] }) => void;
 };
 
 type InterServerEvents = Record<string, never>;
@@ -73,6 +90,49 @@ const socketFocusByUser: Map<string, Map<string, boolean>> = new Map();
 const persistedPresenceByUser: Map<string, PresenceStatus> = new Map();
 const broadcastedPresenceByUser: Map<string, BroadcastPresenceStatus> = new Map();
 const presenceUpdateQueue: Map<string, Promise<void>> = new Map();
+
+const PRESENCE_GAME_TTL_MS = 60_000;
+const presenceGameByUser: Map<string, { game: PresenceGame; ts: number; timeout: NodeJS.Timeout }> = new Map();
+
+function broadcastPresenceGame(io: Server, payload: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }) {
+  io.emit("presence:game", payload);
+}
+
+function getPresenceGameSnapshotPayload(userId: string): { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason } {
+  const entry = presenceGameByUser.get(userId);
+  if (!entry) return { userId, ts: Date.now(), game: null, reason: "no_game" };
+  // Lazy TTL enforcement (defense-in-depth): prevent returning stale presence if timer didn't fire.
+  const age = Date.now() - entry.ts;
+  if (age > PRESENCE_GAME_TTL_MS) {
+    try { clearTimeout(entry.timeout); } catch {}
+    presenceGameByUser.delete(userId);
+    return { userId, ts: Date.now(), game: null, reason: "no_game" };
+  }
+  return { userId, ts: entry.ts, game: entry.game };
+}
+
+function setPresenceGame(io: Server, userId: string, game: PresenceGame) {
+  const ts = Date.now();
+  const prev = presenceGameByUser.get(userId);
+  if (prev) clearTimeout(prev.timeout);
+  const timeout = setTimeout(() => {
+    const cur = presenceGameByUser.get(userId);
+    if (!cur) return;
+    // Only expire the latest update we scheduled.
+    if (cur.ts !== ts) return;
+    presenceGameByUser.delete(userId);
+    broadcastPresenceGame(io, { userId, ts: Date.now(), game: null, reason: "no_game" });
+  }, PRESENCE_GAME_TTL_MS);
+  presenceGameByUser.set(userId, { game, ts, timeout });
+  broadcastPresenceGame(io, { userId, ts, game });
+}
+
+function clearPresenceGame(io: Server, userId: string, reason: PresenceGameClearReason) {
+  const prev = presenceGameByUser.get(userId);
+  if (prev) clearTimeout(prev.timeout);
+  presenceGameByUser.delete(userId);
+  broadcastPresenceGame(io, { userId, ts: Date.now(), game: null, reason });
+}
 
 function addAllCurrentSockets(info: ActiveCallInfo, userId: string) {
   const sockets = socketFocusByUser.get(userId);
@@ -306,6 +366,15 @@ export function initSocket(
       // ignore snapshot failures
     }
 
+    // Snapshot: send current "playing game" presences to the connecting socket.
+    try {
+      for (const [uid, entry] of presenceGameByUser.entries()) {
+        socket.emit("presence:game", { userId: uid, ts: entry.ts, game: entry.game });
+      }
+    } catch {
+      // ignore snapshot failures
+    }
+
     // Проверяем активные звонки при подключении
     // Если пользователю звонили, пока он был офлайн, отправляем событие входящего звонка
     // Используем небольшую задержку, чтобы убедиться, что сокет полностью готов
@@ -358,6 +427,88 @@ export function initSocket(
     socket.on("presence:focus", ({ focused }) => {
       setSocketFocus(userId, socket.id, !!focused);
       void recomputePresence(io, userId);
+    });
+
+    socket.on("presence:game:update", ({ game }) => {
+      try {
+        if (!game || typeof game !== "object") return;
+        if (process.env.DEBUG_GAME_PRESENCE === "1") {
+          // eslint-disable-next-line no-console
+          console.log("[presence_game] <- presence:game:update", JSON.stringify({ game }, null, 2));
+        }
+        const name = (game as any).name;
+        const discordAppId = (game as any).discordAppId;
+        const startedAt = (game as any).startedAt;
+        if (typeof name !== "string" || name.trim().length === 0) return;
+        if (typeof discordAppId !== "string" || discordAppId.trim().length === 0) return;
+        if (typeof startedAt !== "number" || !Number.isFinite(startedAt)) return;
+        // sanitize optional fields
+        const steamAppIdRaw = (game as any).steamAppId;
+        const steamAppId =
+          typeof steamAppIdRaw === "string"
+            ? steamAppIdRaw
+            : typeof steamAppIdRaw === "number" && Number.isFinite(steamAppIdRaw)
+              ? String(steamAppIdRaw)
+              : undefined;
+        const imageUrlRaw = (game as any).imageUrl;
+        const imageUrl = typeof imageUrlRaw === "string" ? imageUrlRaw : (imageUrlRaw == null ? null : undefined);
+        setPresenceGame(io, userId, {
+          discordAppId: discordAppId.trim(),
+          name: name.trim(),
+          startedAt,
+          ...(steamAppId ? { steamAppId: steamAppId.trim() } : {}),
+          ...(imageUrl !== undefined ? { imageUrl } : {}),
+        });
+      } catch (error) {
+        logger.warn({ error, userId }, "Failed to handle presence:game:update");
+      }
+    });
+
+    socket.on("presence:game:clear", ({ reason }) => {
+      const r: PresenceGameClearReason = reason === "privacy_off" ? "privacy_off" : "no_game";
+      clearPresenceGame(io, userId, r);
+    });
+
+    // Game presence as state: allow clients to request snapshots when they are ready to consume them.
+    socket.on("presence:game:subscribe", ({ peerUserId }) => {
+      try {
+        if (typeof peerUserId !== "string" || peerUserId.trim().length === 0) return;
+        const uid = peerUserId.trim();
+        const payload = getPresenceGameSnapshotPayload(uid);
+        if (process.env.DEBUG_GAME_PRESENCE === "1") {
+          // eslint-disable-next-line no-console
+          console.log("[presence_game] <- presence:game:subscribe", JSON.stringify({ peerUserId: uid }, null, 2));
+          // eslint-disable-next-line no-console
+          console.log("[presence_game] -> presence:game:snapshot", JSON.stringify(payload, null, 2));
+        }
+        socket.emit("presence:game:snapshot", payload);
+      } catch (error) {
+        logger.warn({ error, userId }, "Failed to handle presence:game:subscribe");
+      }
+    });
+
+    socket.on("presence:game:hello", ({ openPeers }) => {
+      try {
+        const peers = Array.isArray(openPeers) ? openPeers.filter((v) => typeof v === "string").map((v) => v.trim()).filter(Boolean) : [];
+        const uniquePeers: string[] = [];
+        const seen = new Set<string>();
+        for (const p of peers) {
+          if (seen.has(p)) continue;
+          seen.add(p);
+          uniquePeers.push(p);
+          if (uniquePeers.length >= 50) break;
+        }
+        const items = uniquePeers.map((uid) => getPresenceGameSnapshotPayload(uid));
+        if (process.env.DEBUG_GAME_PRESENCE === "1") {
+          // eslint-disable-next-line no-console
+          console.log("[presence_game] <- presence:game:hello", JSON.stringify({ openPeers: uniquePeers }, null, 2));
+          // eslint-disable-next-line no-console
+          console.log("[presence_game] -> presence:game:snapshot:batch", JSON.stringify({ items }, null, 2));
+        }
+        socket.emit("presence:game:snapshot:batch", { items });
+      } catch (error) {
+        logger.warn({ error, userId }, "Failed to handle presence:game:hello");
+      }
     });
 
     socket.on("conversation:join", async (conversationId) => {
@@ -1085,9 +1236,7 @@ export function initSocket(
           }
         }
       }
-      // Presence may flip from IN_CALL to base presence due to call removal on disconnecting.
-      emitEffectivePresence(io, userId);
-      
+
       removeSocketFocus(userId, socket.id);
       const remainingConnections = socketFocusByUser.get(userId)?.size ?? 0;
       await recomputePresence(io, userId);
