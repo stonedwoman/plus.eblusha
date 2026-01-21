@@ -1030,8 +1030,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         const list = client.getQueryData(['conversations']) as any[] | undefined
         const conv = Array.isArray(list) ? list.find((r: any) => r.conversation.id === p.conversationId)?.conversation : null
         const current = prev[p.conversationId]
-        const activeConvId = useCallStore.getState().activeConvId
-        const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2))) || (!!current && (current.participants ? current.participants.length > 1 : true)) || activeConvId === p.conversationId
+        // Server call status stream is used only for group calls.
+        // Do NOT apply it to 1:1 calls, otherwise it can overwrite local endedAt and show wrong "Завершен N мин назад".
+        const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
         if (!isGroup) {
           return prev
         }
@@ -1081,8 +1082,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         for (const [cid, st] of Object.entries(payload.statuses || {})) {
           const conv = Array.isArray(list) ? list.find((r: any) => r.conversation.id === cid)?.conversation : null
           const current = prev[cid]
-          const activeConvId = useCallStore.getState().activeConvId
-          const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2))) || (!!current && (current.participants ? current.participants.length > 1 : true)) || activeConvId === cid
+          const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
           if (!isGroup) continue
 
           const participants = st.participants || []
