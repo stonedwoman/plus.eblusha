@@ -1009,7 +1009,15 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           }
         }
 
-        const endedAt = current?.active ? Date.now() : (current?.endedAt ?? null)
+        const prevEndedAt = (typeof current?.endedAt === 'number' && Number.isFinite(current.endedAt)) ? current.endedAt : null
+        const startedAt = (typeof current?.startedAt === 'number' && Number.isFinite(current.startedAt)) ? current.startedAt : null
+        // If we receive an "inactive" update but endedAt is missing/invalid (or equals startedAt),
+        // treat it as ended "now" to avoid incorrect "Завершен N мин назад" right after hangup.
+        const endedAtRaw = current?.active ? Date.now() : prevEndedAt
+        const endedAt =
+          (typeof endedAtRaw === 'number' && typeof startedAt === 'number' && endedAtRaw <= startedAt)
+            ? Date.now()
+            : endedAtRaw
         return {
           ...prev,
           [p.conversationId]: {
@@ -1048,7 +1056,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             continue
           }
 
-          const endedAt = current?.active ? Date.now() : (current?.endedAt ?? null)
+          const prevEndedAt = (typeof current?.endedAt === 'number' && Number.isFinite(current.endedAt)) ? current.endedAt : null
+          const startedAt = (typeof current?.startedAt === 'number' && Number.isFinite(current.startedAt)) ? current.startedAt : null
+          const endedAtRaw = current?.active ? Date.now() : prevEndedAt
+          const endedAt =
+            (typeof endedAtRaw === 'number' && typeof startedAt === 'number' && endedAtRaw <= startedAt)
+              ? Date.now()
+              : endedAtRaw
           merged[cid] = {
             active: false,
             startedAt: current?.startedAt ?? null,
