@@ -4303,7 +4303,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               return {}
             })(),
             display: isMobile ? 'flex' : 'grid',
-            gridTemplateColumns: isMobile ? undefined : 'minmax(0, 1fr) auto minmax(0, 1fr)',
+            // Left takes remaining space, center is image, right is buttons (auto).
+            gridTemplateColumns: isMobile ? undefined : 'minmax(0, 1fr) auto auto',
             columnGap: isMobile ? undefined : 12,
             flexDirection: isMobile ? 'column' : undefined,
             justifyContent: isMobile ? 'flex-start' : undefined,
