@@ -935,35 +935,43 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return () => window.clearInterval(id)
   }, [])
 
-  // Sanity-fix: sometimes endedAt may incorrectly equal startedAt.
-  // This makes the UI show "Завершен N мин назад" immediately after hangup (N ~= call duration).
-  // If detected, correct endedAt to "now" once so the post-call timer counts from the hangup moment.
+  // Fix "Завершен N мин назад" right after hangup:
+  // when a call transitions active -> inactive, endedAt must be "now".
+  // If endedAt is far from now at that exact transition (e.g. equals call start),
+  // force-correct it once so the post-call timer counts from the hangup moment.
+  const prevCallActiveByConvIdRef = useRef<Record<string, boolean>>({})
   useEffect(() => {
-    let needsFix = false
-    for (const entry of Object.values(activeCalls || {})) {
+    const prevActiveMap = prevCallActiveByConvIdRef.current
+    const now = Date.now()
+    const toFix: string[] = []
+
+    for (const [cid, entry] of Object.entries(activeCalls || {})) {
       if (!entry) continue
-      if (entry.active) continue
-      const startedAt = typeof entry.startedAt === 'number' && Number.isFinite(entry.startedAt) ? entry.startedAt : null
+      const wasActive = !!prevActiveMap[cid]
+      const isActive = !!entry.active
+      if (!wasActive || isActive) continue
       const endedAt = typeof entry.endedAt === 'number' && Number.isFinite(entry.endedAt) ? entry.endedAt : null
-      if (!startedAt || !endedAt) continue
-      if (endedAt <= startedAt) {
-        needsFix = true
-        break
+      // If we just transitioned to inactive, endedAt should be very close to "now".
+      if (!endedAt || Math.abs(now - endedAt) > 5000) {
+        toFix.push(cid)
       }
     }
-    if (!needsFix) return
+
+    // Update prev map to current.
+    const nextPrev: Record<string, boolean> = {}
+    for (const [cid, entry] of Object.entries(activeCalls || {})) {
+      if (!entry) continue
+      nextPrev[cid] = !!entry.active
+    }
+    prevCallActiveByConvIdRef.current = nextPrev
+
+    if (!toFix.length) return
     setActiveCalls((prev) => {
       const next = { ...prev }
-      const now = Date.now()
-      for (const [cid, entry] of Object.entries(prev || {})) {
-        if (!entry) continue
-        if (entry.active) continue
-        const startedAt = typeof entry.startedAt === 'number' && Number.isFinite(entry.startedAt) ? entry.startedAt : null
-        const endedAt = typeof entry.endedAt === 'number' && Number.isFinite(entry.endedAt) ? entry.endedAt : null
-        if (!startedAt || !endedAt) continue
-        if (endedAt <= startedAt) {
-          next[cid] = { ...entry, endedAt: now }
-        }
+      for (const cid of toFix) {
+        const entry = prev[cid]
+        if (!entry || entry.active) continue
+        next[cid] = { ...entry, endedAt: now }
       }
       return next
     })
