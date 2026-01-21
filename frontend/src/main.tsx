@@ -160,6 +160,49 @@ function AppRoot() {
   
   console.log('[AppRoot] Component rendered, session:', !!session, 'hydrated:', hydrated, 'isCheckingAuth:', isCheckingAuth)
 
+  // Keep Windows/PWA title bar color in sync with current theme.
+  // Chromium uses <meta name="theme-color"> for the window header color in installed apps.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+
+    const applyThemeColor = () => {
+      try {
+        const meta = document.querySelector('meta[name="theme-color"]') as HTMLMetaElement | null
+        if (!meta) return
+        const paper = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim()
+        if (!paper) return
+        if (meta.content !== paper) meta.content = paper
+      } catch {
+        // ignore
+      }
+    }
+
+    applyThemeColor()
+
+    // Observe theme toggles that usually update html/body class or inline CSS vars.
+    const obs = new MutationObserver(() => applyThemeColor())
+    try {
+      obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] })
+      obs.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] })
+    } catch {
+      // ignore
+    }
+
+    // Also react to OS theme changes.
+    const mql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+    const onMql = () => applyThemeColor()
+    try {
+      mql?.addEventListener?.('change', onMql)
+    } catch {
+      // ignore
+    }
+
+    return () => {
+      try { obs.disconnect() } catch {}
+      try { mql?.removeEventListener?.('change', onMql) } catch {}
+    }
+  }, [])
+
   // Инициализация высоты viewport при монтировании приложения
   useEffect(() => {
     function setVh() {
