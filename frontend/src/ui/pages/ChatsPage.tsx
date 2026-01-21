@@ -935,6 +935,40 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return () => window.clearInterval(id)
   }, [])
 
+  // Sanity-fix: sometimes endedAt may incorrectly equal startedAt.
+  // This makes the UI show "Завершен N мин назад" immediately after hangup (N ~= call duration).
+  // If detected, correct endedAt to "now" once so the post-call timer counts from the hangup moment.
+  useEffect(() => {
+    let needsFix = false
+    for (const entry of Object.values(activeCalls || {})) {
+      if (!entry) continue
+      if (entry.active) continue
+      const startedAt = typeof entry.startedAt === 'number' && Number.isFinite(entry.startedAt) ? entry.startedAt : null
+      const endedAt = typeof entry.endedAt === 'number' && Number.isFinite(entry.endedAt) ? entry.endedAt : null
+      if (!startedAt || !endedAt) continue
+      if (endedAt <= startedAt) {
+        needsFix = true
+        break
+      }
+    }
+    if (!needsFix) return
+    setActiveCalls((prev) => {
+      const next = { ...prev }
+      const now = Date.now()
+      for (const [cid, entry] of Object.entries(prev || {})) {
+        if (!entry) continue
+        if (entry.active) continue
+        const startedAt = typeof entry.startedAt === 'number' && Number.isFinite(entry.startedAt) ? entry.startedAt : null
+        const endedAt = typeof entry.endedAt === 'number' && Number.isFinite(entry.endedAt) ? entry.endedAt : null
+        if (!startedAt || !endedAt) continue
+        if (endedAt <= startedAt) {
+          next[cid] = { ...entry, endedAt: now }
+        }
+      }
+      return next
+    })
+  }, [activeCalls])
+
   useEffect(() => {
     if (!callPermissionError) return
     if (typeof window === 'undefined') return
