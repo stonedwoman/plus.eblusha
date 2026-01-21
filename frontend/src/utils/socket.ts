@@ -111,6 +111,30 @@ socket.on('presence:update', (p) => {
   dbg('presence:update', p)
 })
 
+export type PresenceGame = {
+  discordAppId: string
+  name: string
+  steamAppId?: string | number
+  startedAt: number
+  imageUrl?: string | null
+}
+export type PresenceGameClearReason = 'no_game' | 'privacy_off'
+export type PresenceGamePayload = { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }
+export type PresenceGameSnapshotBatchPayload = { items: PresenceGamePayload[] }
+
+// Helpful to confirm we actually receive game presence events in the browser
+socket.on('presence:game', (p) => {
+  dbg('presence:game', p)
+})
+
+socket.on('presence:game:snapshot', (p) => {
+  dbg('presence:game:snapshot', p)
+})
+
+socket.on('presence:game:snapshot:batch', (p) => {
+  dbg('presence:game:snapshot:batch', p)
+})
+
 socket.on('call:status', (p) => {
   dbg('call:status', p)
 })
@@ -186,6 +210,34 @@ export function onMessageNotify(cb: (payload: { conversationId: string; messageI
 
 export function onPresenceUpdate(cb: (payload: { userId: string; status: string }) => void) {
   socket.on('presence:update', cb)
+}
+
+export function onPresenceGame(cb: (payload: PresenceGamePayload) => void) {
+  socket.on('presence:game', cb)
+}
+
+export function onPresenceGameSnapshot(cb: (payload: PresenceGamePayload) => void) {
+  socket.on('presence:game:snapshot', cb)
+}
+
+export function onPresenceGameSnapshotBatch(cb: (payload: PresenceGameSnapshotBatchPayload) => void) {
+  socket.on('presence:game:snapshot:batch', cb)
+}
+
+export function subscribePresenceGame(peerUserId: string) {
+  if (!peerUserId || typeof peerUserId !== 'string') return
+  if (!socket.connected) {
+    connectSocket()
+  }
+  socket.emit('presence:game:subscribe', { peerUserId })
+}
+
+export function helloPresenceGame(openPeers: string[]) {
+  const peers = Array.isArray(openPeers) ? openPeers.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim()) : []
+  if (!socket.connected) {
+    connectSocket()
+  }
+  socket.emit('presence:game:hello', { openPeers: peers })
 }
 
 export function inviteCall(conversationId: string, video: boolean) {
