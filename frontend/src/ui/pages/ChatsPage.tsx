@@ -4307,6 +4307,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             justifyContent: 'flex-start',
             alignItems: isMobile ? 'stretch' : 'center',
             flexShrink: 0,
+            position: isMobile ? undefined : 'relative',
           }}
         >
           <div
@@ -4315,8 +4316,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               alignItems: 'center',
               gap: 10,
               // Prevent long titles/statuses from squeezing the centered game image.
-              flex: isMobile ? '0 0 auto' : '0 1 420px',
+              flex: isMobile ? '0 0 auto' : '0 1 25%',
               minWidth: 0,
+              maxWidth: isMobile ? undefined : '25%',
               width: isMobile ? '100%' : 'auto',
               padding: isMobile ? '0 8px' : '0',
             }}
@@ -4613,14 +4615,17 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             return (
               <div
                 style={{
-                  // Take the whole middle space so the image is truly centered.
-                  flex: isMobile ? '0 0 auto' : 1,
-                  minWidth: 0,
-                  width: isMobile ? '100%' : undefined,
+                  // Always keep the game image visible on desktop.
+                  // Center it independently from the left text block (which is capped to 25%).
+                  position: 'absolute',
+                  left: '50%',
+                  top: '50%',
+                  transform: 'translate(-50%, -50%)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  padding: isMobile ? '10px 8px 0' : '0 14px',
+                  pointerEvents: 'auto',
+                  zIndex: 2,
                 }}
               >
                 {playing.imageUrl ? (
@@ -4642,6 +4647,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                       justifyContent: 'center',
                       minWidth: 0,
                       maxWidth: '100%',
+                      flexShrink: 0,
                     }}
                   >
                     <img
@@ -4657,6 +4663,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         borderRadius: 10,
                         objectFit: 'contain',
                         display: 'block',
+                        flexShrink: 0,
                       }}
                     />
                   </div>
