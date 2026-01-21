@@ -4302,12 +4302,14 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               }
               return {}
             })(),
-            display: 'flex',
-            flexDirection: isMobile ? 'column' : 'row',
-            justifyContent: 'flex-start',
+            display: isMobile ? 'flex' : 'grid',
+            gridTemplateColumns: isMobile ? undefined : 'minmax(0, 1fr) auto minmax(0, 1fr)',
+            columnGap: isMobile ? undefined : 12,
+            flexDirection: isMobile ? 'column' : undefined,
+            justifyContent: isMobile ? 'flex-start' : undefined,
+            justifyItems: isMobile ? undefined : 'stretch',
             alignItems: isMobile ? 'stretch' : 'center',
             flexShrink: 0,
-            position: isMobile ? undefined : 'relative',
           }}
         >
           <div
@@ -4315,12 +4317,10 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               display: 'flex',
               alignItems: 'center',
               gap: 10,
-              // Prevent long titles/statuses from squeezing the centered game image.
-              flex: isMobile ? '0 0 auto' : '0 1 25%',
               minWidth: 0,
-              maxWidth: isMobile ? undefined : '25%',
               width: isMobile ? '100%' : 'auto',
               padding: isMobile ? '0 8px' : '0',
+              gridColumn: isMobile ? undefined : '1 / 2',
             }}
           >
             {mobile && (
@@ -4615,17 +4615,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             return (
               <div
                 style={{
-                  // Always keep the game image visible on desktop.
-                  // Center it independently from the left text block (which is capped to 25%).
-                  position: 'absolute',
-                  left: '50%',
-                  top: '50%',
-                  transform: 'translate(-50%, -50%)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
+                  padding: '0 14px',
+                  gridColumn: '2 / 3',
+                  justifySelf: 'center',
                   pointerEvents: 'auto',
-                  zIndex: 2,
                 }}
               >
                 {playing.imageUrl ? (
@@ -4863,7 +4859,10 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   width: isMobile ? '100%' : 'auto',
                   padding: isMobile ? '0 8px' : '0',
                   justifyContent: isMobile ? 'center' : 'flex-end',
-                  marginLeft: isMobile ? 0 : 'auto',
+                  marginLeft: isMobile ? 0 : 0,
+                  // Desktop header uses 3-column grid; controls live in the right column.
+                  gridColumn: isMobile ? undefined : '3 / 4',
+                  justifySelf: isMobile ? undefined : 'end',
                 }
                 
                 const menuButtonStyle = {
