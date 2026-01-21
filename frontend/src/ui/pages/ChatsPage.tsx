@@ -4305,7 +4305,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             display: isMobile ? 'flex' : 'grid',
             // Left takes remaining space, center is image, right is buttons (auto).
             gridTemplateColumns: isMobile ? undefined : 'minmax(0, 1fr) auto auto',
-            columnGap: isMobile ? undefined : 12,
+            // Match spacing between call control buttons (gap: 8)
+            columnGap: isMobile ? undefined : 8,
             flexDirection: isMobile ? 'column' : undefined,
             justifyContent: isMobile ? 'flex-start' : undefined,
             justifyItems: isMobile ? undefined : 'stretch',
