@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square, Send } from 'lucide-react'
+import { Phone, Video, Play, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square, Send } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -127,7 +127,60 @@ function extractFirstUrlFromText(value: unknown) {
   return normalizeLinkHref(core)
 }
 
-function renderLinkPreviewCard(preview: any) {
+function getYouTubeEmbedUrl(urlString: string): string | null {
+  try {
+    const u = new URL(urlString)
+    const host = u.hostname.toLowerCase()
+    let id: string | null = null
+    if (host === 'youtu.be') {
+      id = u.pathname.replace(/^\//, '').split('/')[0] || null
+    } else if (host.includes('youtube.com')) {
+      if (u.pathname.startsWith('/watch')) id = u.searchParams.get('v')
+      else if (u.pathname.startsWith('/shorts/')) id = u.pathname.split('/')[2] || null
+      else if (u.pathname.startsWith('/embed/')) id = u.pathname.split('/')[2] || null
+    }
+    if (!id) return null
+    // NOTE: Some environments (Capacitor/Electron/proxies) can break the player unless origin/referrer are sane.
+    // Using the regular domain is more compatible than youtube-nocookie for embeds.
+    const embed = new URL(`https://www.youtube.com/embed/${id}`)
+    embed.searchParams.set('modestbranding', '1')
+    embed.searchParams.set('rel', '0')
+    embed.searchParams.set('playsinline', '1')
+    embed.searchParams.set('fs', '1')
+    const origin =
+      typeof window !== 'undefined' &&
+      typeof window.location?.origin === 'string' &&
+      (window.location.origin.startsWith('http://') || window.location.origin.startsWith('https://'))
+        ? window.location.origin
+        : null
+    if (origin) embed.searchParams.set('origin', origin)
+    return embed.toString()
+  } catch {
+    return null
+  }
+}
+
+function getSpotifyEmbed(urlString: string): { url: string; height: number } | null {
+  try {
+    const u = new URL(urlString)
+    const host = u.hostname.toLowerCase()
+    if (!host.includes('spotify.com') && host !== 'spoti.fi') return null
+    if (host === 'spoti.fi') return null // short links require a HEAD/redirect; skip for now
+    const parts = u.pathname.split('/').filter(Boolean)
+    const type = parts[0]
+    const id = parts[1]
+    if (!type || !id) return null
+    const allow = new Set(['track', 'album', 'playlist', 'episode', 'show', 'artist'])
+    if (!allow.has(type)) return null
+    const embedUrl = `https://open.spotify.com/embed/${type}/${id}`
+    const height = type === 'track' ? 152 : 352
+    return { url: embedUrl, height }
+  } catch {
+    return null
+  }
+}
+
+function LinkPreviewCard({ preview }: { preview: any }) {
   // Full preview when metadata exists, but still show a minimal card (domain + url) when it doesn't.
   if (!preview || typeof preview !== 'object') return null
   const url = typeof preview.url === 'string' ? preview.url : null
@@ -137,7 +190,10 @@ function renderLinkPreviewCard(preview: any) {
   const imageWidth = typeof preview.imageWidth === 'number' && preview.imageWidth > 0 ? preview.imageWidth : null
   const imageHeight = typeof preview.imageHeight === 'number' && preview.imageHeight > 0 ? preview.imageHeight : null
   const siteName = typeof preview.siteName === 'string' ? preview.siteName : null
+  const isLoading = (preview as any).__loading === true
   if (!url) return null
+
+  const [showEmbed, setShowEmbed] = useState(false)
 
   const siteLabel = siteName || (() => {
     try { return new URL(url).hostname } catch { return null }
@@ -168,12 +224,21 @@ function renderLinkPreviewCard(preview: any) {
   // Never crop: show the whole image, let the container grow by aspect ratio.
   const imageFit: React.CSSProperties['objectFit'] = 'contain'
 
+  const youTubeEmbedUrl = getYouTubeEmbedUrl(url)
+  const spotifyEmbed = getSpotifyEmbed(url)
+  const embed =
+    youTubeEmbedUrl
+      ? ({ kind: 'youtube' as const, url: youTubeEmbedUrl, aspectRatio: '16 / 9' })
+      : spotifyEmbed
+        ? ({ kind: 'spotify' as const, url: spotifyEmbed.url, height: spotifyEmbed.height })
+        : null
+
   return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer nofollow"
+    <div
+      role="link"
+      tabIndex={0}
       onMouseDown={(e) => e.stopPropagation()}
+      onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
       style={{
         display: 'block',
         marginTop: 8,
@@ -185,6 +250,7 @@ function renderLinkPreviewCard(preview: any) {
         position: 'relative',
         textDecoration: 'none',
         color: 'inherit',
+        cursor: 'pointer',
       }}
     >
       <div style={{ padding: hasImage ? '12px 12px 10px 12px' : '12px 12px 12px 12px' }}>
@@ -221,34 +287,148 @@ function renderLinkPreviewCard(preview: any) {
             {description}
           </div>
         )}
+        {!description && isLoading && (
+          <div
+            style={{
+              marginTop: 6,
+              height: 30,
+              borderRadius: 8,
+              background:
+                'linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.12) 37%, rgba(255,255,255,0.06) 63%)',
+              backgroundSize: '400% 100%',
+              animation: 'eb-shimmer 1.2s ease-in-out infinite',
+            }}
+          />
+        )}
       </div>
-      {imageUrl && (
+      {showEmbed && embed && (
+        <div style={{ padding: '0 12px 12px 12px' }} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+          {embed.kind === 'youtube' ? (
+            <div
+              style={{
+                width: '100%',
+                aspectRatio: embed.aspectRatio,
+                borderRadius: 10,
+                overflow: 'hidden',
+                background: 'rgba(0,0,0,0.18)',
+                border: '1px solid rgba(255,255,255,0.08)',
+              }}
+            >
+              <iframe
+                src={embed.url}
+                title={finalTitle}
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+                loading="lazy"
+                style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
+              />
+            </div>
+          ) : (
+            <div
+              style={{
+                width: '100%',
+                height: embed.height,
+                borderRadius: 10,
+                overflow: 'hidden',
+                background: 'rgba(0,0,0,0.18)',
+                border: '1px solid rgba(255,255,255,0.08)',
+              }}
+            >
+              <iframe
+                src={embed.url}
+                title={finalTitle}
+                allow="encrypted-media"
+                loading="lazy"
+                style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+      {!showEmbed && (imageUrl || (isLoading && embed)) && (
         <div style={{ padding: '0 12px 12px 12px' }}>
           <div
             style={{
               width: '100%',
-              ...(aspectRatio ? { aspectRatio } : {}),
+              ...(embed?.kind === 'youtube'
+                ? { aspectRatio: embed.aspectRatio }
+                : embed?.kind === 'spotify'
+                  ? { height: embed.height }
+                  : (aspectRatio ? { aspectRatio } : {})),
               borderRadius: 10,
               overflow: 'hidden',
               background: isMediaProvider ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.18)',
               border: '1px solid rgba(255,255,255,0.08)',
+              position: 'relative',
             }}
           >
-            <img
-              src={imageUrl}
-              alt=""
-              style={{ width: '100%', height: '100%', display: 'block', objectFit: imageFit, objectPosition: 'center' }}
-              loading="lazy"
-              referrerPolicy="no-referrer"
-              onError={(e) => {
-                const el = e.currentTarget
-                el.style.display = 'none'
-              }}
-            />
+            {imageUrl ? (
+              <img
+                src={imageUrl}
+                alt=""
+                style={{ width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', display: 'block', objectFit: imageFit, objectPosition: 'center' }}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  const el = e.currentTarget
+                  el.style.display = 'none'
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  background:
+                    'linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.12) 37%, rgba(255,255,255,0.06) 63%)',
+                  backgroundSize: '400% 100%',
+                  animation: 'eb-shimmer 1.2s ease-in-out infinite',
+                }}
+              />
+            )}
+            {embed && (
+              <button
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setShowEmbed(true)
+                }}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: 'none',
+                  background: 'linear-gradient(180deg, rgba(0,0,0,0.05), rgba(0,0,0,0.25))',
+                  color: '#fff',
+                  cursor: 'pointer',
+                }}
+                aria-label="Play"
+              >
+                <span
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: 999,
+                    background: 'rgba(0,0,0,0.55)',
+                    border: '1px solid rgba(255,255,255,0.18)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backdropFilter: 'blur(6px)',
+                  }}
+                >
+                  <Play size={24} />
+                </span>
+              </button>
+            )}
           </div>
         </div>
       )}
-    </a>
+    </div>
   )
 }
 
@@ -5525,12 +5705,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             const firstUrl = extractFirstUrlFromText(m.content)
                             if (!firstUrl) return null
                             const preview = (m as any)?.metadata?.linkPreview
-                            // Don't show previews in secret chats even if present.
-                            if (activeConversation?.isSecret) return null
-                            // Always render a card for the first URL:
-                            // - if preview exists -> rich
-                            // - else -> minimal (still shows domain + url-derived title)
-                            return renderLinkPreviewCard(preview ? { ...preview, url: preview.url || firstUrl } : { url: firstUrl })
+                            // In secret chats: show only minimal (derived from URL), never fetch/render rich metadata.
+                            if (activeConversation?.isSecret) {
+                              return <LinkPreviewCard preview={{ url: firstUrl }} />
+                            }
+                            // Non-secret: rich if available, otherwise minimal while loading.
+                            return <LinkPreviewCard preview={preview ? { ...preview, url: preview.url || firstUrl } : { url: firstUrl, __loading: true }} />
                           })()}
                           {(() => {
                             const attachments = (m.attachments || []) as any[]
