@@ -144,9 +144,12 @@ async function validateStoredSession(): Promise<boolean> {
           return true
         }
       }
-    } catch {
-      // Refresh тоже невалиден, очищаем сессию
-      useAppStore.getState().setSession(null)
+    } catch (refreshError) {
+      const status = (refreshError as { response?: { status?: number } })?.response?.status
+      // Очищаем сессию только при явной невалидности refresh (401/403)
+      if (status === 401 || status === 403) {
+        useAppStore.getState().setSession(null)
+      }
       return false
     }
     return false
@@ -703,9 +706,12 @@ function AppRoot() {
         } catch (error) {
           // Если refresh не удался - проверяем, может быть это просто временная ошибка
           console.warn('Token refresh failed:', error)
-          // Если токен уже истек (timeLeft <= 0), очищаем сессию
-          if (timeLeft !== null && timeLeft <= 0) {
-          useAppStore.getState().setSession(null)
+          const status = (error as { response?: { status?: number } })?.response?.status
+          // Очищаем сессию только при явной невалидности refresh (401/403)
+          if (status === 401 || status === 403) {
+            useAppStore.getState().setSession(null)
+          } else {
+            scheduleNext()
           }
         }
       }

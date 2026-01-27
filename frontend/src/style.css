@@ -68,6 +68,59 @@ a {
   height: calc(var(--vh, 1vh) * 100);
 }
 
+/* ============================
+   Electron frameless window drag
+   ============================
+   Goal: allow dragging the BrowserWindow by "background/empty" areas,
+   while keeping all interactive UI (click/scroll/type/select) fully usable.
+
+   Important:
+   - We mark only the stable app root (#app) as a drag region.
+   - Everything interactive is explicitly "no-drag".
+   - Portals rendered into document.body are NOT inside #app, so they stay
+     interactive by default (and won't become draggable accidentally).
+*/
+@supports (-webkit-app-region: drag) {
+  /* Single source of truth drag surface */
+  #app {
+    -webkit-app-region: drag;
+  }
+
+  /* Utility: opt-out for any subtree when needed */
+  #app .eb-no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  /* All interactive elements must remain clickable/scrollable */
+  #app a,
+  #app button,
+  #app input,
+  #app textarea,
+  #app select,
+  #app option,
+  #app label,
+  #app summary,
+  #app [role='button'],
+  #app [role='link'],
+  #app [role='textbox'],
+  #app [contenteditable='true'],
+  #app video,
+  #app canvas,
+  #app iframe {
+    -webkit-app-region: no-drag;
+  }
+
+  /* Known high-interaction / scroll-heavy areas (chat + lists) */
+  #app .conversations-list,
+  #app .conversations-list *,
+  #app .messages-pane,
+  #app .messages-pane *,
+  #app .messages-container,
+  #app .messages-container * {
+    -webkit-app-region: no-drag;
+  }
+}
+
 .app-layout {
   display: grid;
   grid-template-columns: 280px 1fr;
@@ -360,6 +413,11 @@ a {
   color: var(--bubble-fg, var(--text-primary));
   border: 1px solid rgba(255, 255, 255, 0.04);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* Wider bubbles for link previews (so media doesn't feel "shrunk") */
+.msg-bubble.has-link-preview {
+  max-width: min(92%, 720px);
 }
 .msg-menu { position: absolute; z-index: 50; background: var(--surface-200); border: 1px solid var(--surface-border); border-radius: 10px; box-shadow: var(--shadow-sharp); padding: 6px; display: flex; flex-direction: column; min-width: 160px; color: #ffffff; }
 .msg-menu button { background: transparent; border: 0; text-align: left; padding: 8px 10px; border-radius: 8px; cursor: pointer; color: #ffffff; }

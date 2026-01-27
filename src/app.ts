@@ -16,6 +16,19 @@ app.use(
   helmet({
     // Allow cross-origin loading of static uploads in <img> tags
     crossOriginResourcePolicy: { policy: "cross-origin" },
+    // Default Helmet CSP blocks external images (img-src 'self' data:),
+    // but game presence uses Steam/Discord CDNs for icons/covers.
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        "img-src": [
+          "'self'",
+          "data:",
+          "https://cdn.steamstatic.com",
+          "https://cdn.discordapp.com",
+        ],
+      },
+    },
   })
 );
 app.use(

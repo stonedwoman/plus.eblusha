@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import { useAppStore } from '../../domain/store/appStore'
+import { unlockAppAudio } from '../../utils/audioUnlock'
 
 export default function LoginPage() {
   const setSession = useAppStore((state) => state.setSession)
@@ -33,6 +34,8 @@ export default function LoginPage() {
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    // Unlock audio right on the login gesture (so we don't need a separate overlay).
+    void unlockAppAudio()
     const form = new FormData(event.currentTarget)
     mutation.mutate({
       username: String(form.get('username') ?? ''),

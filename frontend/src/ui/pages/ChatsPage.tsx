@@ -14,6 +14,7 @@ import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
 import { ImageEditorModal } from '../components/ImageEditorModal'
 import { ImageLightbox } from '../components/ImageLightbox'
+import { LazyImage } from '../components/LazyImage'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
@@ -34,6 +35,7 @@ declare global {
 const LAST_ACTIVE_CONVERSATION_KEY = 'eblusha:last-active-conversation'
 const MIN_OUTGOING_CALL_DURATION_MS = 30_000
 const MAX_PENDING_IMAGES = 10
+const MESSAGES_PAGE_SIZE = 80
 
 // Matches:
 // - https://example.com/...
@@ -1628,15 +1630,97 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     },
   })
 
+  const [olderMeta, setOlderMeta] = useState<{ hasMore: boolean; nextCursor: string | null }>({ hasMore: false, nextCursor: null })
+  const [olderLoading, setOlderLoading] = useState<boolean>(false)
+  const olderLoadingRef = useRef<boolean>(false)
+  const olderMetaRef = useRef<{ hasMore: boolean; nextCursor: string | null }>({ hasMore: false, nextCursor: null })
+  useEffect(() => { olderMetaRef.current = olderMeta }, [olderMeta])
+
   const messagesQuery = useQuery({
     queryKey: ['messages', activeId],
     enabled: !!activeId,
     queryFn: async () => {
-      const response = await api.get(`/conversations/${activeId}/messages`)
-      return response.data.messages as Array<any>
+      const conversationId = activeId
+      const response = await api.get(`/conversations/${conversationId}/messages`, { params: { limit: MESSAGES_PAGE_SIZE } })
+      const fetched = (response.data?.messages || []) as Array<any>
+      const sortedFetched = [...fetched].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+      const nextCursor = (response.data?.nextCursor ?? null) as string | null
+      const hasMore = !!response.data?.hasMore
+      // Keep older pages already loaded when refetching.
+      const existing = client.getQueryData(['messages', conversationId]) as Array<any> | undefined
+      const merged = (() => {
+        const all = [...(Array.isArray(existing) ? existing : []), ...sortedFetched]
+        const byId = new Map<string, any>()
+        for (const m of all) {
+          if (m && m.id) byId.set(m.id, m)
+        }
+        return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+      })()
+      // Initialize cursor/meta only on first load; do not overwrite after older pages are loaded,
+      // otherwise periodic refetch would reset `nextCursor` back to the newest page.
+      if (!Array.isArray(existing) || existing.length === 0) {
+        setOlderMeta({ hasMore, nextCursor })
+      }
+      return merged
     },
+    // Avoid hard overwriting older pages; we merge in queryFn.
     refetchInterval: activeId ? 15000 : false,
   })
+
+  useEffect(() => {
+    // Reset pagination state when switching chats
+    setOlderMeta({ hasMore: false, nextCursor: null })
+    olderLoadingRef.current = false
+    setOlderLoading(false)
+  }, [activeId])
+
+  const loadOlderMessages = useCallback(async () => {
+    const conversationId = activeId
+    if (!conversationId) return
+    if (olderLoadingRef.current) return
+    const meta = olderMetaRef.current
+    if (!meta.hasMore || !meta.nextCursor) return
+
+    const el = messagesRef.current
+    const before = el ? { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight } : null
+    olderLoadingRef.current = true
+    setOlderLoading(true)
+    try {
+      const resp = await api.get(`/conversations/${conversationId}/messages`, {
+        params: { cursor: meta.nextCursor, limit: MESSAGES_PAGE_SIZE },
+      })
+      const fetched = (resp.data?.messages || []) as Array<any>
+      const sortedFetched = [...fetched].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+      const nextCursor = (resp.data?.nextCursor ?? null) as string | null
+      const hasMore = !!resp.data?.hasMore
+
+      client.setQueryData(['messages', conversationId], (old: any) => {
+        const existing = Array.isArray(old) ? old : []
+        const byId = new Map<string, any>()
+        for (const m of [...sortedFetched, ...existing]) {
+          if (m && m.id) byId.set(m.id, m)
+        }
+        return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+      })
+      setOlderMeta({ hasMore, nextCursor })
+
+      if (before && messagesRef.current) {
+        requestAnimationFrame(() => {
+          const el2 = messagesRef.current
+          if (!el2) return
+          const delta = el2.scrollHeight - before.scrollHeight
+          if (delta > 0) {
+            el2.scrollTop = before.scrollTop + delta
+          }
+        })
+      }
+    } catch (err) {
+      console.warn('[ChatsPage] Failed to load older messages', err)
+    } finally {
+      olderLoadingRef.current = false
+      setOlderLoading(false)
+    }
+  }, [activeId, client])
 
   // Lazy link preview fetch for older messages (or when socket updates are missed).
   // Server persists preview in message.metadata and may broadcast message:update.
@@ -2632,7 +2716,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         finalize()
       }
     })
-    onCallEnded(({ conversationId }) => {
+    onCallEnded(({ conversationId, by }) => {
+      const endedByOther = !!by?.id && by.id !== me?.id
       // Игнорируем для групповых звонков — статус придет отдельным событием call:status
       try {
         const list = client.getQueryData(['conversations']) as any[] | undefined
@@ -2653,12 +2738,22 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         // Если пользователь участвует в звонке, не закрываем при получении call:ended
         // Это может быть временное отключение, звонок должен закрыться только когда
         // оба участника явно отключились или один нажал "Leave"
-        if (isParticipating && currentCall?.active) {
+        if (isParticipating && currentCall?.active && !endedByOther) {
           console.log('[ChatsPage] Ignoring call:ended for active 1:1 call where user is participating', conversationId)
           return
         }
       }
       const finalize = () => {
+        if (endedByOther) {
+          try {
+            const audio = ensureNotifyAudio()
+            if (audio && notifyUnlockedRef.current) {
+              audio.currentTime = 0
+              audio.volume = 0.9
+              void audio.play().catch(() => {})
+            }
+          } catch {}
+        }
         // Закрываем экран дозвона, если он открыт
         setOutgoingCall((prev) => {
           if (prev?.conversationId === conversationId) {
@@ -3459,6 +3554,11 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8
         nearBottomRef.current = nearBottom
         setShowJump(!nearBottom)
+        // Infinite scroll: when user reaches near-top, load older messages.
+        // We keep scroll position stable in `loadOlderMessages`.
+        if (el.scrollTop < 140) {
+          void loadOlderMessages()
+        }
         if (nearBottom) {
           // Only reset user sticky scroll if we're actually near bottom
           // Give a small delay to allow programmatic scrolls
@@ -3477,7 +3577,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       el.removeEventListener('scroll', onScroll)
       if (raf) cancelAnimationFrame(raf)
     }
-  }, [activeId])
+  }, [activeId, loadOlderMessages])
 
   // detect wide area to left-align all messages
   useEffect(() => {
@@ -5496,6 +5596,19 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               display: 'block',
             }}
           >
+            {activeId && !(activeConversation?.isSecret && (!secretSessionReady || secretInactive)) && (olderMeta.hasMore || olderLoading) && (
+              <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0 14px' }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={!olderMeta.hasMore || olderLoading}
+                  onClick={() => { void loadOlderMessages() }}
+                  style={{ opacity: olderLoading ? 0.85 : 1 }}
+                >
+                  {olderLoading ? 'Загружаем…' : 'Показать более ранние'}
+                </button>
+              </div>
+            )}
             {!activeId ? (
               <div className="messages-empty">Сообщения появятся здесь</div>
             ) : (activeConversation?.isSecret && (!secretSessionReady || secretInactive)) ? (
@@ -5552,6 +5665,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   const receipts = (m.receipts || []) as Array<any>
                   const readByAny = isMe && otherIds.some((uid) => receipts.some((r) => r.userId === uid && (r.status === 'READ' || r.status === 'SEEN')))
                   const ticks = isMe ? (readByAny ? '✓' : '') : ''
+                  const isRecentMessage = i >= fullList.length - 28
                       const openMenuAt = (clientX: number, clientY: number) => {
                         setContextMenu({ open: true, x: clientX, y: clientY, messageId: m.id })
                       }
@@ -5911,9 +6025,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                       </div>
                                     )}
                                     {resolvedUrl && !decryptError && (
-                                      <img
+                                      <LazyImage
                                         src={resolvedUrl}
                                         alt="img"
+                                        rootRef={messagesRef as any}
+                                        rootMargin="900px 0px"
+                                        priority={isRecentMessage ? 'high' : 'low'}
                                         style={{
                                           maxWidth: '100%',
                                           maxHeight: targetH,
@@ -5922,8 +6039,10 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                           objectFit: 'contain',
                                           borderRadius: 10,
                                           cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in',
-                                          opacity: att.__pending ? 0.85 : 1,
-                                          display: isLoaded ? 'block' : 'none',
+                                          // Keep element in layout so IntersectionObserver can trigger loading.
+                                          // We hide visually until onLoad to avoid flashing broken image icon.
+                                          opacity: isLoaded ? (att.__pending ? 0.85 : 1) : 0.001,
+                                          display: 'block',
                                           position: 'relative',
                                           zIndex: 0,
                                           background: 'var(--surface-100)',
@@ -6019,9 +6138,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                     }}
                                   >
                                     {resolvedUrl && (
-                                      <img
+                                      <LazyImage
                                         src={resolvedUrl}
                                         alt="img"
+                                        rootRef={messagesRef as any}
+                                        rootMargin="900px 0px"
+                                        priority={isRecentMessage ? 'high' : 'low'}
                                         style={{ opacity: isLoaded && !showPending ? 1 : 0.001 }}
                                         onLoad={(e) => {
                                           const img = e.target as HTMLImageElement

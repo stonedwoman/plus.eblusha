@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../lib/prisma";
 import { deleteS3ObjectsByUrls } from "../lib/storageDeletion";
+import { extractFirstUrl, getLinkPreview } from "../lib/linkPreview";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 
@@ -26,19 +27,13 @@ router.get("/:messageId/preview", async (req, res) => {
 
   const message = await prisma.message.findUnique({
     where: { id: messageId },
-    select: {
-      id: true,
-      content: true,
-      conversationId: true,
-      senderId: true,
-      createdAt: true,
-      attachments: {
-        select: {
-          id: true,
-          type: true,
-        },
-      },
-    },
+    include: {
+      sender: { select: { id: true, username: true, displayName: true } },
+      attachments: true,
+      reactions: true,
+      receipts: true,
+      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+    }
   });
 
   if (!message) {
@@ -55,7 +50,74 @@ router.get("/:messageId/preview", async (req, res) => {
     return;
   }
 
-  res.json({ message });
+  // Do not generate previews for secret chats (privacy).
+  const conv = await prisma.conversation.findUnique({
+    where: { id: message.conversationId },
+    select: { isSecret: true, secretStatus: true },
+  });
+  const isSecret = Boolean((conv as any)?.isSecret) && (conv as any)?.secretStatus !== "CANCELLED";
+
+  const meta = (message as any).metadata && typeof (message as any).metadata === "object" ? (message as any).metadata : null;
+  const existingPreview = meta?.linkPreview ?? null;
+  if (existingPreview || isSecret || message.type !== "TEXT" || typeof message.content !== "string") {
+    res.json({ message, preview: existingPreview, disabled: isSecret });
+    return;
+  }
+
+  const firstUrl = extractFirstUrl(message.content);
+  if (!firstUrl) {
+    // Mark attempt to avoid repeated fetches
+    const updated = await prisma.message.update({
+      where: { id: messageId },
+      data: {
+        metadata: {
+          ...(meta && typeof meta === "object" ? meta : {}),
+          linkPreviewAttemptedAt: new Date().toISOString(),
+          linkPreviewUrl: null,
+        } as any,
+      },
+      include: {
+        sender: { select: { id: true, username: true, displayName: true } },
+        attachments: true,
+        reactions: true,
+        receipts: true,
+        replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+      },
+    });
+    res.json({ message: updated, preview: null });
+    return;
+  }
+
+  const preview = await getLinkPreview(firstUrl);
+  const updated = await prisma.message.update({
+    where: { id: messageId },
+    data: {
+      metadata: {
+        ...(meta && typeof meta === "object" ? meta : {}),
+        linkPreviewAttemptedAt: new Date().toISOString(),
+        linkPreviewUrl: firstUrl,
+        ...(preview ? { linkPreview: preview } : {}),
+      } as any,
+    },
+    include: {
+      sender: { select: { id: true, username: true, displayName: true } },
+      attachments: true,
+      reactions: true,
+      receipts: true,
+      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+    },
+  });
+
+  if (preview) {
+    getIO()?.to(message.conversationId).emit("message:update", {
+      conversationId: message.conversationId,
+      messageId,
+      reason: "link_preview",
+      message: updated,
+    });
+  }
+
+  res.json({ message: updated, preview });
 });
 
 const updateStatusSchema = z.object({

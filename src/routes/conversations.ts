@@ -6,6 +6,7 @@ import { deleteS3ObjectsByUrls } from "../lib/storageDeletion";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 import env from "../config/env";
+import { extractFirstUrl, getLinkPreview } from "../lib/linkPreview";
 
 const router = Router();
 
@@ -904,13 +905,19 @@ router.delete("/:id", async (req, res) => {
 router.get("/:id/messages", async (req, res) => {
   const { id } = req.params;
   const userId = (req as AuthedRequest).user!.id;
-  const schema = z.object({ cursor: z.string().optional() });
+  const schema = z.object({
+    cursor: z.string().optional(),
+    // New pagination param (backwards compatible): fetch up to `limit` newest items per request.
+    // If omitted, we keep the legacy behavior (500).
+    limit: z.coerce.number().int().min(1).max(500).optional(),
+  });
   const parsed = schema.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ message: "Invalid query" });
     return;
   }
-  const { cursor } = parsed.data;
+  const { cursor, limit: limitRaw } = parsed.data;
+  const limit = typeof limitRaw === "number" ? limitRaw : 500;
 
   const membership = await prisma.conversationParticipant.findFirst({
     where: { conversationId: id, userId },
@@ -920,6 +927,13 @@ router.get("/:id/messages", async (req, res) => {
     res.status(403).json({ message: "Forbidden" });
     return;
   }
+
+  // Link preview generation is disabled for secret conversations.
+  const convMeta = await prisma.conversation.findUnique({
+    where: { id },
+    select: { isSecret: true, secretStatus: true },
+  });
+  const isSecretConversation = Boolean((convMeta as any)?.isSecret) && (convMeta as any)?.secretStatus !== "CANCELLED";
 
   const now = new Date();
 
@@ -932,8 +946,8 @@ router.get("/:id/messages", async (req, res) => {
       ],
     },
     orderBy: { createdAt: "desc" as const },
-    // Возвращаем до 500 последних сообщений, чтобы не обрезать историю при прокрутке
-    take: 500,
+    // Fetch `limit + 1` to detect whether there are more items.
+    take: limit + 1,
     include: {
       sender: { select: { id: true, username: true, displayName: true } },
       attachments: true,
@@ -946,9 +960,76 @@ router.get("/:id/messages", async (req, res) => {
     query.skip = 1;
     query.cursor = { id: cursor } as any;
   }
-  const messages = await prisma.message.findMany(query);
+  let messages = await prisma.message.findMany(query);
+  const hasMore = messages.length > limit;
+  if (hasMore) {
+    messages = messages.slice(0, limit);
+  }
+  const last = messages.at(-1);
+  const nextCursor = hasMore && last ? last.id : null;
 
-  res.json({ messages });
+  // Telegram-like unfurl for older messages: fetch previews lazily when messages are requested.
+  // We do it in background, rate-limited, and mark attempts in metadata to avoid repeated work.
+  if (!isSecretConversation) {
+    try {
+      const MAX_PREVIEWS_PER_FETCH = 3;
+      const RETRY_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+      const candidates = (messages as any[])
+        .filter((m) => m && m.type === "TEXT" && typeof m.content === "string" && m.content && !m.deletedAt)
+        .filter((m) => {
+          const meta = (m.metadata && typeof m.metadata === "object") ? (m.metadata as any) : null;
+          if (meta?.linkPreview) return false;
+          const attemptedAt = typeof meta?.linkPreviewAttemptedAt === "string" ? meta.linkPreviewAttemptedAt : null;
+          if (!attemptedAt) return true;
+          const t = Date.parse(attemptedAt);
+          if (Number.isNaN(t)) return true;
+          return Date.now() - t > RETRY_AFTER_MS;
+        })
+        .slice(0, MAX_PREVIEWS_PER_FETCH);
+
+      for (const m of candidates) {
+        const firstUrl = extractFirstUrl(m.content);
+        if (!firstUrl) continue;
+        void (async () => {
+          const preview = await getLinkPreview(firstUrl);
+          const nowISO = new Date().toISOString();
+          const existing = (m.metadata && typeof m.metadata === "object") ? (m.metadata as any) : {};
+          const nextMeta: any = {
+            ...(existing && typeof existing === "object" ? existing : {}),
+            linkPreviewAttemptedAt: nowISO,
+            linkPreviewUrl: firstUrl,
+            ...(preview ? { linkPreview: preview } : {}),
+          };
+
+          const updated = await prisma.message.update({
+            where: { id: m.id },
+            data: { metadata: nextMeta as any },
+            include: {
+              sender: { select: { id: true, username: true, displayName: true } },
+              attachments: true,
+              reactions: true,
+              receipts: true,
+              replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+            },
+          });
+
+          // Only push updates when we actually have a preview to show.
+          if (preview) {
+            getIO()?.to(id).emit("message:update", {
+              conversationId: id,
+              messageId: m.id,
+              reason: "link_preview",
+              message: updated,
+            });
+          }
+        })();
+      }
+    } catch {
+      // ignore preview errors
+    }
+  }
+
+  res.json({ messages, hasMore, nextCursor });
 });
 
 const sendMessageSchema = z.object({
@@ -1085,6 +1166,48 @@ router.post("/send", async (req, res) => {
         message,
       });
     }
+  }
+
+  // Link preview (Telegram-like unfurl): fetch in background and update message metadata.
+  // Disabled for secret conversations to avoid metadata leaks.
+  try {
+    const isSecret = Boolean((conv as any).isSecret);
+    const contentForPreview = type === "TEXT" ? (content ?? null) : null;
+    const firstUrl = !isSecret ? extractFirstUrl(contentForPreview) : null;
+    if (firstUrl) {
+      void (async () => {
+        const preview = await getLinkPreview(firstUrl);
+        if (!preview) return;
+        const existing = (message as any).metadata ?? {};
+        if (existing && typeof existing === "object" && (existing as any).linkPreview) return;
+        const updated = await prisma.message.update({
+          where: { id: message.id },
+          data: {
+            metadata: {
+              ...(existing && typeof existing === "object" ? existing : {}),
+              linkPreview: preview,
+              linkPreviewUrl: preview.url,
+            } as any,
+          },
+          include: {
+            sender: { select: { id: true, username: true, displayName: true } },
+            attachments: true,
+            reactions: true,
+            receipts: true,
+            replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+          },
+        });
+        // Push update to active viewers (room subscribers); others will see it on next fetch.
+        getIO()?.to(conversationId).emit("message:update", {
+          conversationId,
+          messageId: message.id,
+          reason: "link_preview",
+          message: updated,
+        });
+      })();
+    }
+  } catch {
+    // ignore preview errors
   }
 
   res.status(201).json({ message });

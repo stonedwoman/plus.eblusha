@@ -1,7 +1,15 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { convertToProxyUrl } from '../../utils/media'
+import { Gamepad2 } from 'lucide-react'
 
-type Props = { name: string; size?: number; id?: string; presence?: 'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | 'IN_CALL'; avatarUrl?: string | null }
+type Props = {
+  name: string
+  size?: number
+  id?: string
+  presence?: 'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | 'IN_CALL' | 'PLAYING'
+  inCall?: boolean
+  avatarUrl?: string | null
+}
 
 function colorFromId(id: string) {
   let hash = 0
@@ -16,7 +24,7 @@ function colorFromId(id: string) {
 const MAX_RETRIES = 3
 const RETRY_DELAYS = [500, 1500, 3000] // delays in ms for each retry
 
-export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Props) {
+export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl }: Props) {
   const bg = colorFromId(id)
   const initial = (name || '?').trim().charAt(0).toUpperCase()
   const isEmoji = !!avatarUrl?.startsWith('emoji:')
@@ -59,13 +67,12 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
     switch (presence) {
       case 'ONLINE':
         return '#22c55e'
-      case 'IN_CALL':
-        // Red to make "in call" clearly distinguishable from regular ONLINE
-        return '#ef4444'
       case 'BACKGROUND':
         return '#facc15'
       case 'AWAY':
         return '#f59e0b'
+      case 'PLAYING':
+        return null
       default:
         return '#9ca3af'
     }
@@ -167,20 +174,75 @@ export function Avatar({ name, size = 40, id = name, presence, avatarUrl }: Prop
       ) : (
         initial
       )}
-      {presenceColor && (
-        <span
-          style={{
-            position: 'absolute',
-            right: -2,
-            bottom: -2,
-            width: Math.max(8, Math.floor(size * 0.28)),
-            height: Math.max(8, Math.floor(size * 0.28)),
-            borderRadius: '50%',
-            boxShadow: '0 0 0 2px var(--surface-200)',
-            background: presenceColor,
-          }}
-        />
-      )}
+      {(() => {
+        const showPlaying = presence === 'PLAYING'
+        const showInCall = !!inCall || presence === 'IN_CALL'
+        const dotSize = Math.max(8, Math.floor(size * 0.28))
+        if (!showPlaying && !showInCall && !presenceColor) return null
+
+        // If user is playing, render a gamepad badge.
+        // If also in call, keep badge background as usual but make the gamepad red
+        // (so we don't change the dot background logic and still signal both states).
+        if (showPlaying) {
+          const bg = 'var(--surface-100)'
+          const fg = showInCall ? '#ef4444' : '#22c55e'
+          const title = showInCall ? 'Играет и в звонке' : 'Играет'
+          return (
+            <span
+              title={title}
+              style={{
+                position: 'absolute',
+                right: -2,
+                bottom: -2,
+                width: 17,
+                height: 17,
+                borderRadius: 999,
+                boxShadow: '0 0 0 2px var(--surface-200)',
+                background: bg,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Gamepad2 width={17} height={17} color={fg} />
+            </span>
+          )
+        }
+
+        // In-call only badge (red dot)
+        if (showInCall) {
+          return (
+            <span
+              title="В звонке"
+              style={{
+                position: 'absolute',
+                right: -2,
+                bottom: -2,
+                width: dotSize,
+                height: dotSize,
+                borderRadius: '50%',
+                boxShadow: '0 0 0 2px var(--surface-200)',
+                background: '#ef4444',
+              }}
+            />
+          )
+        }
+
+        return (
+          <span
+            style={{
+              position: 'absolute',
+              right: -2,
+              bottom: -2,
+              width: dotSize,
+              height: dotSize,
+              borderRadius: '50%',
+              boxShadow: '0 0 0 2px var(--surface-200)',
+              background: presenceColor ?? undefined,
+            }}
+          />
+        )
+      })()}
     </div>
   )
 }
