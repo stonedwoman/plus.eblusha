@@ -7,8 +7,8 @@
   "theme_color": "#0b0b0f",
   "icons": [
     {
-      "src": "/icon.png",
-      "sizes": "192x192",
+      "src": "https://ru.eblusha.org/icon.png",
+      "sizes": "256x256",
       "type": "image/png"
     }
   ]
