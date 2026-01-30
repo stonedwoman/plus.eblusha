@@ -226,7 +226,12 @@ function LinkPreviewCard({ preview }: { preview: any }) {
   })()
   const finalTitle = title || fallbackTitle
   const hasImage = !!imageUrl
-  const aspectRatio = imageWidth && imageHeight ? `${imageWidth} / ${imageHeight}` : (hasImage ? '16 / 9' : undefined)
+  const aspectRatio =
+    imageWidth && imageHeight
+      ? `${imageWidth} / ${imageHeight}`
+      : (measured?.w && measured?.h)
+        ? `${measured.w} / ${measured.h}`
+        : (hasImage ? '16 / 9' : undefined)
   const isMediaProvider = (() => {
     const label = (siteLabel || '').toLowerCase()
     if (label.includes('youtube') || label.includes('spotify')) return true
