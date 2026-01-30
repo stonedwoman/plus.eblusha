@@ -62,19 +62,19 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
     }
   }, [avatarUrl, isEmoji])
 
-  const avatarIdentityUrl = useMemo(() => {
-    // We only want to re-load the avatar image when the underlying identity changes.
-    // In practice, avatarUrl can be a presigned URL whose query params change often,
-    // which causes flicker if we treat it as a new image each time.
+  const avatarSrcBase = useMemo(() => {
+    // Important: for our proxy endpoint, the query string may come from a presigned URL and
+    // can change frequently. The proxy does not need those params to locate the object key,
+    // and keeping them prevents browser caching (different URL => cache miss).
     if (!resolvedAvatarUrl || isEmoji) return resolvedAvatarUrl ?? null
     try {
       const u = new URL(
         resolvedAvatarUrl,
         typeof window !== 'undefined' ? window.location.origin : 'http://localhost',
       )
-      // For our proxy endpoint, treat only the pathname as identity (ignore volatile query params).
+      // For our proxy endpoint, always use only pathname as the stable src.
       if (u.pathname.startsWith('/api/files/')) return u.pathname
-      // For other URLs, keep full string.
+      // For other URLs, keep full string (query may be meaningful).
       return resolvedAvatarUrl
     } catch {
       // Best-effort: strip query/hash for proxy path.
@@ -108,34 +108,17 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
       clearTimeout(retryTimeoutRef.current)
       retryTimeoutRef.current = null
     }
-  }, [avatarIdentityUrl])
+  }, [avatarSrcBase])
   
   // Update current image URL when resolved URL changes
   useEffect(() => {
     if (resolvedAvatarUrl && !isEmoji) {
-      // Avoid reloading when only volatile query params changed for the same identity.
-      if (!currentImageUrl) {
-        setCurrentImageUrl(resolvedAvatarUrl)
-        return
-      }
-      const currentIdentity = (() => {
-        try {
-          const u = new URL(
-            currentImageUrl,
-            typeof window !== 'undefined' ? window.location.origin : 'http://localhost',
-          )
-          if (u.pathname.startsWith('/api/files/')) return u.pathname
-          return currentImageUrl
-        } catch {
-          if (currentImageUrl.startsWith('/api/files/')) return currentImageUrl.split('?')[0].split('#')[0]
-          return currentImageUrl
-        }
-      })()
-      if (avatarIdentityUrl && currentIdentity !== avatarIdentityUrl) {
-        setCurrentImageUrl(resolvedAvatarUrl)
+      // Use stable src for proxy avatars to maximize browser caching.
+      if (!currentImageUrl || currentImageUrl !== avatarSrcBase) {
+        setCurrentImageUrl(avatarSrcBase)
       }
     }
-  }, [resolvedAvatarUrl, isEmoji, avatarIdentityUrl, currentImageUrl])
+  }, [resolvedAvatarUrl, isEmoji, avatarSrcBase, currentImageUrl])
   
   const handleImageError = () => {
     if (retryCount < MAX_RETRIES && resolvedAvatarUrl && !isEmoji) {
@@ -152,7 +135,8 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
             // resolvedAvatarUrl can be a relative proxy URL like "/api/files/...".
             // new URL(relative) throws, so always provide a base in the browser.
             const url = new URL(
-              resolvedAvatarUrl,
+              // For proxy urls, base path is enough; we add our retry params ourselves.
+              avatarSrcBase || resolvedAvatarUrl,
               typeof window !== 'undefined' ? window.location.origin : undefined,
             )
             url.searchParams.set('_retry', String(retryCount + 1))
