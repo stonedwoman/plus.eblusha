@@ -460,10 +460,22 @@ async function fetchOpenGraphWithRedirects(initialUrl: string): Promise<LinkPrev
     const html = await readBodyUpTo(res, MAX_HTML_BYTES);
     if (!html) return null;
 
-    // Some sites return bot protection pages (Cloudflare/recaptcha) with misleading titles
-    // like "Just a moment..." or "Captcha". Don't persist those as previews.
+    // Some sites return bot protection pages (Cloudflare/recaptcha).
+    // Mark as blocked so the UI can stop "loading" immediately and show a plain link instead.
     const titleTag = readTitle(html);
-    if (looksLikeBotWall(html, titleTag)) return null;
+    if (looksLikeBotWall(html, titleTag)) {
+      return {
+        url: current.toString(),
+        title: null,
+        description: null,
+        imageUrl: null,
+        imageWidth: null,
+        imageHeight: null,
+        siteName: current.hostname,
+        fetchedAtISO: new Date().toISOString(),
+        blockedReason: "bot_wall",
+      } as any;
+    }
 
     const parsed = parseOpenGraph(html, current.toString());
     if (!parsed) return null;

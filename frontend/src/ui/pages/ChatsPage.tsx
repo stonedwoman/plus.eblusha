@@ -204,20 +204,11 @@ function LinkPreviewCard({ preview }: { preview: any }) {
   const imageHeight = typeof preview.imageHeight === 'number' && preview.imageHeight > 0 ? preview.imageHeight : null
   const siteName = typeof preview.siteName === 'string' ? preview.siteName : null
   const isLoading = (preview as any).__loading === true
+  const blockedReason = typeof (preview as any).blockedReason === 'string' ? (preview as any).blockedReason : null
   if (!url) return null
 
   const [showEmbed, setShowEmbed] = useState(false)
   const [measured, setMeasured] = useState<{ w: number; h: number } | null>(null)
-  const [loadingExpired, setLoadingExpired] = useState(false)
-
-  useEffect(() => {
-    if (!isLoading) {
-      setLoadingExpired(false)
-      return
-    }
-    const t = window.setTimeout(() => setLoadingExpired(true), 8000)
-    return () => window.clearTimeout(t)
-  }, [isLoading, url])
 
   const siteLabel = siteName || (() => {
     try { return new URL(url).hostname } catch { return null }
@@ -258,7 +249,7 @@ function LinkPreviewCard({ preview }: { preview: any }) {
         ? ({ kind: 'spotify' as const, url: spotifyEmbed.url, height: spotifyEmbed.height })
         : null
 
-  const loading = isLoading && !loadingExpired
+  const loading = isLoading && !blockedReason
 
   const effectiveW = imageWidth ?? measured?.w ?? null
   const maxCardW = (() => {
