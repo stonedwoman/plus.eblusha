@@ -61,6 +61,27 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
       return avatarUrl
     }
   }, [avatarUrl, isEmoji])
+
+  const avatarIdentityUrl = useMemo(() => {
+    // We only want to re-load the avatar image when the underlying identity changes.
+    // In practice, avatarUrl can be a presigned URL whose query params change often,
+    // which causes flicker if we treat it as a new image each time.
+    if (!resolvedAvatarUrl || isEmoji) return resolvedAvatarUrl ?? null
+    try {
+      const u = new URL(
+        resolvedAvatarUrl,
+        typeof window !== 'undefined' ? window.location.origin : 'http://localhost',
+      )
+      // For our proxy endpoint, treat only the pathname as identity (ignore volatile query params).
+      if (u.pathname.startsWith('/api/files/')) return u.pathname
+      // For other URLs, keep full string.
+      return resolvedAvatarUrl
+    } catch {
+      // Best-effort: strip query/hash for proxy path.
+      if (resolvedAvatarUrl.startsWith('/api/files/')) return resolvedAvatarUrl.split('?')[0].split('#')[0]
+      return resolvedAvatarUrl
+    }
+  }, [resolvedAvatarUrl, isEmoji])
   
   const presenceColor = useMemo(() => {
     if (!presence) return null
@@ -78,7 +99,7 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
     }
   }, [presence])
   
-  // Reset error state and retry count when avatarUrl changes
+  // Reset error state and retry count when avatar identity changes (not on every volatile URL change)
   useEffect(() => {
     setImageError(false)
     setRetryCount(0)
@@ -87,14 +108,34 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
       clearTimeout(retryTimeoutRef.current)
       retryTimeoutRef.current = null
     }
-  }, [avatarUrl])
+  }, [avatarIdentityUrl])
   
   // Update current image URL when resolved URL changes
   useEffect(() => {
     if (resolvedAvatarUrl && !isEmoji) {
-      setCurrentImageUrl(resolvedAvatarUrl)
+      // Avoid reloading when only volatile query params changed for the same identity.
+      if (!currentImageUrl) {
+        setCurrentImageUrl(resolvedAvatarUrl)
+        return
+      }
+      const currentIdentity = (() => {
+        try {
+          const u = new URL(
+            currentImageUrl,
+            typeof window !== 'undefined' ? window.location.origin : 'http://localhost',
+          )
+          if (u.pathname.startsWith('/api/files/')) return u.pathname
+          return currentImageUrl
+        } catch {
+          if (currentImageUrl.startsWith('/api/files/')) return currentImageUrl.split('?')[0].split('#')[0]
+          return currentImageUrl
+        }
+      })()
+      if (avatarIdentityUrl && currentIdentity !== avatarIdentityUrl) {
+        setCurrentImageUrl(resolvedAvatarUrl)
+      }
     }
-  }, [resolvedAvatarUrl, isEmoji])
+  }, [resolvedAvatarUrl, isEmoji, avatarIdentityUrl, currentImageUrl])
   
   const handleImageError = () => {
     if (retryCount < MAX_RETRIES && resolvedAvatarUrl && !isEmoji) {
