@@ -44,6 +44,16 @@ const MESSAGES_PAGE_SIZE = 80
 const URL_RE = /((?:(?:https?:\/\/)|www\.)[^\s<]+|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})(?::\d{2,5})?(?:\/[^\s<]*)?)/gi
 const TRAILING_PUNCT_RE = /[)\]}.,!?;:]+$/
 
+function decodeUrlForDisplay(raw: string) {
+  // decodeURI keeps reserved characters (/, ?, #, &) intact while decoding %XX sequences.
+  // This is ideal for showing human-readable paths like /wiki/Трофей:...
+  try {
+    return decodeURI(raw)
+  } catch {
+    return raw
+  }
+}
+
 function normalizeLinkHref(raw: string) {
   const trimmed = raw.trim()
   if (!trimmed) return null
@@ -86,16 +96,17 @@ function renderLinkifiedText(value: unknown) {
           const href = normalizeLinkHref(core)
 
           if (href) {
+            const displayText = decodeUrlForDisplay(core)
             nodes.push(
               <a
                 key={`u-${lineIdx}-${start}`}
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer nofollow"
-                style={{ color: 'inherit', textDecoration: 'underline' }}
+                style={{ color: 'inherit', textDecoration: 'underline', overflowWrap: 'anywhere', wordBreak: 'break-word' }}
                 onMouseDown={(e) => e.stopPropagation()}
               >
-                {core}
+                {displayText}
               </a>,
             )
           } else {
@@ -196,6 +207,17 @@ function LinkPreviewCard({ preview }: { preview: any }) {
   if (!url) return null
 
   const [showEmbed, setShowEmbed] = useState(false)
+  const [measured, setMeasured] = useState<{ w: number; h: number } | null>(null)
+  const [loadingExpired, setLoadingExpired] = useState(false)
+
+  useEffect(() => {
+    if (!isLoading) {
+      setLoadingExpired(false)
+      return
+    }
+    const t = window.setTimeout(() => setLoadingExpired(true), 8000)
+    return () => window.clearTimeout(t)
+  }, [isLoading, url])
 
   const siteLabel = siteName || (() => {
     try { return new URL(url).hostname } catch { return null }
@@ -204,7 +226,8 @@ function LinkPreviewCard({ preview }: { preview: any }) {
     try {
       const u = new URL(url)
       const host = u.hostname
-      const path = (u.pathname && u.pathname !== '/' ? u.pathname : '')
+      const pathRaw = (u.pathname && u.pathname !== '/' ? u.pathname : '')
+      const path = pathRaw ? decodeUrlForDisplay(pathRaw) : ''
       return (host + path).slice(0, 160)
     } catch {
       return url.slice(0, 160)
@@ -235,6 +258,19 @@ function LinkPreviewCard({ preview }: { preview: any }) {
         ? ({ kind: 'spotify' as const, url: spotifyEmbed.url, height: spotifyEmbed.height })
         : null
 
+  const loading = isLoading && !loadingExpired
+
+  const effectiveW = imageWidth ?? measured?.w ?? null
+  const maxCardW = (() => {
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
+    // Keep within bubble's max-width (92% viewport) and existing 720px cap.
+    return Math.min(720, Math.floor(vw * 0.92) - 24)
+  })()
+  const targetW =
+    effectiveW ??
+    (embed?.kind === 'youtube' ? 560 : embed?.kind === 'spotify' ? 520 : null)
+  const cardW = typeof targetW === 'number' && targetW > 0 ? Math.min(maxCardW, targetW) : null
+
   return (
     <div
       role="link"
@@ -242,7 +278,9 @@ function LinkPreviewCard({ preview }: { preview: any }) {
       onMouseDown={(e) => e.stopPropagation()}
       onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
       style={{
-        display: 'block',
+        display: cardW ? 'inline-block' : 'block',
+        width: cardW ? cardW : undefined,
+        maxWidth: '100%',
         marginTop: 8,
         borderRadius: 12,
         overflow: 'hidden',
@@ -289,7 +327,7 @@ function LinkPreviewCard({ preview }: { preview: any }) {
             {description}
           </div>
         )}
-        {!description && isLoading && (
+        {!description && loading && (
           <div
             style={{
               marginTop: 6,
@@ -347,7 +385,7 @@ function LinkPreviewCard({ preview }: { preview: any }) {
           )}
         </div>
       )}
-      {!showEmbed && (imageUrl || (isLoading && embed)) && (
+      {!showEmbed && (imageUrl || (loading && embed)) && (
         <div style={{ padding: '0 12px 12px 12px' }}>
           <div
             style={{
@@ -371,6 +409,12 @@ function LinkPreviewCard({ preview }: { preview: any }) {
                 style={{ width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', display: 'block', objectFit: imageFit, objectPosition: 'center' }}
                 loading="lazy"
                 referrerPolicy="no-referrer"
+                onLoad={(e) => {
+                  const img = e.currentTarget
+                  const w = img.naturalWidth
+                  const h = img.naturalHeight
+                  if (w > 0 && h > 0 && !measured) setMeasured({ w, h })
+                }}
                 onError={(e) => {
                   const el = e.currentTarget
                   el.style.display = 'none'
@@ -650,6 +694,7 @@ export default function ChatsPage() {
   const audioUnlockingRef = useRef<boolean>(false)
   // dialing sound
   const dialingAudioRef = useRef<HTMLAudioElement | null>(null)
+  const dialingToneStopRef = useRef<null | (() => void)>(null)
   // end call sound
   const endCallAudioRef = useRef<HTMLAudioElement | null>(null)
   const [typing, setTyping] = useState(false)
@@ -3242,15 +3287,117 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return dialingAudioRef.current
   }, [])
 
+  function startMelodicDialingTone(): null | { stop: () => void } {
+    if (typeof window === 'undefined') return null
+    const AudioContextCtor = (window.AudioContext || (window as any).webkitAudioContext) as
+      | (new () => AudioContext)
+      | undefined
+    if (!AudioContextCtor) return null
+
+    // Create a short, pleasant 3-note "chime" motif that repeats.
+    // This avoids shipping a new binary audio file and lets us control volume/cadence.
+    const ctx = new AudioContextCtor()
+    const master = ctx.createGain()
+    master.gain.value = 0.08
+    master.connect(ctx.destination)
+
+    let stopped = false
+    let timer: number | null = null
+    const oscillators = new Set<OscillatorNode>()
+
+    const scheduleOnce = () => {
+      if (stopped) return
+      // Ensure playback starts even if context begins suspended (common on Safari/iOS).
+      void ctx.resume().catch(() => {})
+
+      const t0 = ctx.currentTime + 0.02
+      const notes: Array<{ f: number; dur: number; gapAfter: number }> = [
+        { f: 523.25, dur: 0.18, gapAfter: 0.08 }, // C5
+        { f: 659.25, dur: 0.22, gapAfter: 0.12 }, // E5
+        { f: 783.99, dur: 0.18, gapAfter: 1.20 }, // G5, then pause
+      ]
+
+      let t = t0
+      for (const n of notes) {
+        const osc = ctx.createOscillator()
+        const g = ctx.createGain()
+
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(n.f, t)
+
+        // Gentle envelope to avoid clicks.
+        g.gain.setValueAtTime(0, t)
+        g.gain.linearRampToValueAtTime(1, t + 0.01)
+        g.gain.exponentialRampToValueAtTime(0.0001, t + n.dur)
+
+        osc.connect(g)
+        g.connect(master)
+
+        try {
+          osc.start(t)
+          osc.stop(t + n.dur + 0.03)
+        } catch {}
+
+        oscillators.add(osc)
+        osc.onended = () => {
+          oscillators.delete(osc)
+          try {
+            osc.disconnect()
+            g.disconnect()
+          } catch {}
+        }
+
+        t += n.dur + n.gapAfter
+      }
+
+      timer = window.setTimeout(scheduleOnce, Math.max(300, Math.round((t - t0) * 1000)))
+    }
+
+    scheduleOnce()
+
+    return {
+      stop: () => {
+        if (stopped) return
+        stopped = true
+        if (timer !== null) {
+          window.clearTimeout(timer)
+          timer = null
+        }
+        for (const osc of Array.from(oscillators)) {
+          try {
+            osc.onended = null
+            osc.stop(0)
+          } catch {}
+        }
+        oscillators.clear()
+        try {
+          master.disconnect()
+        } catch {}
+        try {
+          void ctx.close()
+        } catch {}
+      },
+    }
+  }
+
   function startDialingSound() {
     try {
-      const audio = ensureDialingAudio()
-      if (audio) {
-        audio.currentTime = 0
-        audio.loop = true
-        audio.volume = 0.7
-        void audio.play().catch(() => {})
+      // Stop any previous tone/audio to avoid overlaps.
+      stopDialingSound()
+
+      // Prefer a generated "melodic" ringback. Fallback to the existing mp3 if WebAudio isn't available.
+      const tone = startMelodicDialingTone()
+      if (tone) {
+        dialingToneStopRef.current = tone.stop
+        return
       }
+
+      const audio = ensureDialingAudio()
+      if (!audio) return
+      audio.currentTime = 0
+      audio.loop = true
+      audio.volume = 0.7
+      void audio.play().catch(() => {})
     } catch (err) {
       console.error('Error starting dialing sound:', err)
     }
@@ -3258,6 +3405,12 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
 
   function stopDialingSound() {
     try {
+      if (dialingToneStopRef.current) {
+        try {
+          dialingToneStopRef.current()
+        } catch {}
+        dialingToneStopRef.current = null
+      }
       if (dialingAudioRef.current) {
         try {
           dialingAudioRef.current.pause()
@@ -5651,7 +5804,19 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   const rowClass = `${baseRow} ${spacingClass}`
                   const baseBubble = leftAlignAll ? 'msg-bubble left' : (isMe ? 'msg-bubble me' : 'msg-bubble them')
                   const bubbleClass = isLastOfRun ? `${baseBubble} ${isMe && !leftAlignAll ? 'tail-right' : 'tail-left'}` : baseBubble
-                  const hasAnyLink = typeof m.content === 'string' ? !!extractFirstUrlFromText(m.content) : false
+                  const firstUrl = typeof m.content === 'string' ? extractFirstUrlFromText(m.content) : null
+                  const hasAnyLink = !!firstUrl
+                  const previewMedia = (() => {
+                    const p = (m as any)?.metadata?.linkPreview
+                    if (p && typeof p === 'object' && typeof p.imageUrl === 'string' && p.imageUrl.trim()) return true
+                    if (!firstUrl) return false
+                    try {
+                      const host = new URL(firstUrl).hostname.toLowerCase()
+                      return host.includes('youtube.com') || host === 'youtu.be' || host.includes('spotify.com') || host === 'spoti.fi'
+                    } catch {
+                      return false
+                    }
+                  })()
                   const senderUser = usersById[m.senderId]
                   const avatarName = senderUser?.displayName ?? senderUser?.username ?? (isMe ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
                   const avatarId = senderUser?.id ?? (isMe ? (me?.id ?? 'me') : 'user')
@@ -5709,7 +5874,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         <div className="avatar-spacer" />
                       ))}
                       <div
-                        className={hasAnyLink ? `${bubbleClass} has-link-preview` : bubbleClass}
+                        className={hasAnyLink ? `${bubbleClass} has-link-preview${previewMedia ? ' has-link-preview-media' : ''}` : bubbleClass}
                         data-mid={m.id}
                         ref={(el) => {
                           if (!el) { nodesByMessageId.current.delete(m.id); return }
@@ -5812,7 +5977,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           </div>
                         )}
                         <>
-                          <div style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                          <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                             {renderLinkifiedText(m.content)}
                           </div>
                           {(() => {

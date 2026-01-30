@@ -460,6 +460,11 @@ async function fetchOpenGraphWithRedirects(initialUrl: string): Promise<LinkPrev
     const html = await readBodyUpTo(res, MAX_HTML_BYTES);
     if (!html) return null;
 
+    // Some sites return bot protection pages (Cloudflare/recaptcha) with misleading titles
+    // like "Just a moment..." or "Captcha". Don't persist those as previews.
+    const titleTag = readTitle(html);
+    if (looksLikeBotWall(html, titleTag)) return null;
+
     const parsed = parseOpenGraph(html, current.toString());
     if (!parsed) return null;
 
@@ -601,6 +606,28 @@ function mapOEmbedToPreview(url: string, data: any): LinkPreview | null {
     siteName: provider,
     fetchedAtISO: new Date().toISOString(),
   };
+}
+
+function looksLikeBotWall(html: string, title: string | null): boolean {
+  const t = (title || "").toLowerCase();
+  const h = html.toLowerCase();
+
+  // Common Cloudflare interstitials
+  if (t.includes("just a moment") || t.includes("checking your browser") || t.includes("attention required")) return true;
+  if (h.includes("cf-browser-verification") || h.includes("/cdn-cgi/") || h.includes("cloudflare")) {
+    if (h.includes("just a moment") || h.includes("checking your browser") || h.includes("attention required")) return true;
+    if (h.includes("enable javascript") || h.includes("ddos protection")) return true;
+  }
+
+  // Captcha pages
+  if (t.includes("captcha")) return true;
+  if (h.includes("captcha") && (h.includes("recaptcha") || h.includes("hcaptcha") || h.includes("turnstile"))) return true;
+  if (h.includes("g-recaptcha") || h.includes("hcaptcha") || h.includes("cf-turnstile")) return true;
+
+  // Generic access blocks
+  if (t.includes("access denied") || t.includes("request blocked") || t.includes("temporarily unavailable")) return true;
+
+  return false;
 }
 
 async function readBodyUpTo(res: Response, maxBytes: number): Promise<string | null> {

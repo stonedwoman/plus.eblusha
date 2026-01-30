@@ -68,7 +68,6 @@ export function LazyImage({
       src={shouldLoad ? (src ?? undefined) : undefined}
       loading={loading ?? 'lazy'}
       decoding={decoding ?? 'async'}
-      // @ts-expect-error: fetchPriority is supported by modern browsers/React but may be missing in some TS DOM libs
       fetchPriority={priority}
       {...rest}
     />

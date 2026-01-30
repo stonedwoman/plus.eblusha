@@ -419,6 +419,15 @@ a {
 .msg-bubble.has-link-preview {
   max-width: min(92%, 720px);
 }
+.msg-bubble.has-link-preview-media {
+  display: inline-block;
+  width: fit-content;
+  flex: 0 1 auto;
+}
+.msg-bubble.has-link-preview-media a {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .msg-menu { position: absolute; z-index: 50; background: var(--surface-200); border: 1px solid var(--surface-border); border-radius: 10px; box-shadow: var(--shadow-sharp); padding: 6px; display: flex; flex-direction: column; min-width: 160px; color: #ffffff; }
 .msg-menu button { background: transparent; border: 0; text-align: left; padding: 8px 10px; border-radius: 8px; cursor: pointer; color: #ffffff; }
 .msg-menu button:hover { background: var(--surface-100); }
