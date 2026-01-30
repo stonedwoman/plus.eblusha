@@ -3778,9 +3778,30 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     } catch { setSendingInvite(false) }
   }
 
+  function canAutoMarkRead() {
+    try {
+      return document.visibilityState === 'visible' && document.hasFocus()
+    } catch {
+      return false
+    }
+  }
+
+  function markConversationReadNow() {
+    if (!activeId) return
+    if (!canAutoMarkRead()) return
+    // mark conversation read on server to zero unreadCount
+    api.post('/messages/mark-conversation-read', { conversationId: activeId }).catch(() => {})
+    // Optimistically zero unread locally
+    client.setQueryData(['conversations'], (old: any) => {
+      if (!old) return old
+      return old.map((row: any) => row.conversation.id === activeId ? { ...row, unreadCount: 0 } : row)
+    })
+  }
+
   // Simplified: mark all messages as READ if chat is open and window focused
   function markAllReadNow() {
     if (!activeId || !messagesQuery.data || !me?.id) return
+    if (!canAutoMarkRead()) return
     const unreadIds = (messagesQuery.data as Array<any>)
       .filter((m) => m.senderId !== me.id)
       .filter((m) => !(m.receipts || []).some((r: any) => r.userId === me.id && (r.status === 'READ' || r.status === 'SEEN')))
@@ -3792,27 +3813,32 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
   }
 
   useEffect(() => {
-    if (document.hasFocus()) markAllReadNow()
-    if (activeId) {
-      // also mark conversation read on server to zero unreadCount
-      api.post('/messages/mark-conversation-read', { conversationId: activeId }).catch(() => {})
-      // Optimistically zero unread locally
-      client.setQueryData(['conversations'], (old: any) => {
-        if (!old) return old
-        return old.map((row: any) => row.conversation.id === activeId ? { ...row, unreadCount: 0 } : row)
-      })
+    if (canAutoMarkRead()) {
+      markAllReadNow()
+      markConversationReadNow()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId])
 
   useEffect(() => {
-    if (document.hasFocus()) markAllReadNow()
+    if (canAutoMarkRead()) {
+      markAllReadNow()
+      markConversationReadNow()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messagesQuery.data])
 
   useEffect(() => {
-    const onFocus = () => markAllReadNow()
-    const onVis = () => { if (document.visibilityState === 'visible') markAllReadNow() }
+    const onFocus = () => {
+      if (!canAutoMarkRead()) return
+      markAllReadNow()
+      markConversationReadNow()
+    }
+    const onVis = () => {
+      if (!canAutoMarkRead()) return
+      markAllReadNow()
+      markConversationReadNow()
+    }
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onVis)
     return () => {
@@ -3845,7 +3871,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (!entry.isIntersecting || entry.intersectionRatio < 0.6) continue
-        if (!(document.hasFocus() || document.visibilityState === 'visible')) continue
+        if (!canAutoMarkRead()) continue
         const el = entry.target as HTMLElement
         const mid = el.dataset.mid
         if (!mid) continue
@@ -5825,7 +5851,50 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   const otherIds: string[] = (activeConversation?.participants || []).map((p: any) => p.user.id).filter((id: string) => (currentUserId ? id !== currentUserId : true))
                   const receipts = (m.receipts || []) as Array<any>
                   const readByAny = isMe && otherIds.some((uid) => receipts.some((r) => r.userId === uid && (r.status === 'READ' || r.status === 'SEEN')))
-                  const ticks = isMe ? (readByAny ? '✓' : '') : ''
+                  const isPendingMessage = (() => {
+                    try {
+                      if (typeof (m as any)?.__pending === 'boolean') return (m as any).__pending
+                      if (typeof m.id === 'string' && m.id.startsWith('tmp-')) return true
+                      const atts = (m as any)?.attachments
+                      if (Array.isArray(atts) && atts.some((a: any) => !!a?.__pending)) return true
+                      return false
+                    } catch {
+                      return false
+                    }
+                  })()
+                  const ackedOnServer = isMe && !!m.id && !isPendingMessage
+                  const tickVariant: 'none' | 'ack' | 'read' = isMe ? (readByAny ? 'read' : (ackedOnServer ? 'ack' : 'none')) : 'none'
+                  const renderTicks = (opts?: { withLeftMargin?: boolean }) => {
+                    if (tickVariant === 'none') return null
+                    const color = tickVariant === 'read' ? '#d97706' : '#9aa0a8'
+                    const withLeftMargin = opts?.withLeftMargin ?? false
+                    const common: React.CSSProperties = {
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color,
+                      marginLeft: withLeftMargin ? 6 : 0,
+                      lineHeight: 0,
+                      transform: 'translateY(1px)',
+                      flexShrink: 0,
+                    }
+                    // Match the look from the screenshot: rounded caps, slightly thicker stroke.
+                    const strokeWidth = 2.2
+                    return (
+                      <span style={common} aria-label={tickVariant === 'read' ? 'Read' : 'Sent'}>
+                        {tickVariant === 'read' ? (
+                          <svg width="18" height="12" viewBox="0 0 18 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 6.5L4.5 10L11.5 1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M7 6.5L10.5 10L17.5 1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        ) : (
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 6.5L4.5 10L11 1.5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </span>
+                    )
+                  }
                   const isRecentMessage = i >= fullList.length - 28
                       const openMenuAt = (clientX: number, clientY: number) => {
                         setContextMenu({ open: true, x: clientX, y: clientY, messageId: m.id })
@@ -6090,7 +6159,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                     {imageOnly && (
                                       <div className="msg-media-meta">
                                         <span>{timeLabel}</span>
-                                        {!!ticks && <span>{ticks}</span>}
+                                        {renderTicks()}
                                       </div>
                                     )}
                                     {showPending && (
@@ -6360,7 +6429,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                   {imageOnly && (
                                     <div className="msg-media-meta">
                                       <span>{timeLabel}</span>
-                                      {!!ticks && <span>{ticks}</span>}
+                                      {renderTicks()}
                                     </div>
                                   )}
                                   {visible.length === 2 && (() => {
@@ -6508,7 +6577,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           if (imageOnly) return null
                           return (
                             <div className="msg-meta" style={{ color: '#9aa0a8' }}>
-                              {timeLabel} {ticks}
+                              <span>{timeLabel}</span>
+                              {renderTicks({ withLeftMargin: true })}
                             </div>
                           )
                         })()}
