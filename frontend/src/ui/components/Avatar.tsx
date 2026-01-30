@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from 'react'
+import { useMemo, useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { convertToProxyUrl } from '../../utils/media'
 import { Gamepad2 } from 'lucide-react'
 
@@ -103,22 +103,23 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
   useEffect(() => {
     setImageError(false)
     setRetryCount(0)
-    setCurrentImageUrl(null)
     if (retryTimeoutRef.current) {
       clearTimeout(retryTimeoutRef.current)
       retryTimeoutRef.current = null
     }
   }, [avatarSrcBase])
-  
-  // Update current image URL when resolved URL changes
-  useEffect(() => {
-    if (resolvedAvatarUrl && !isEmoji) {
-      // Use stable src for proxy avatars to maximize browser caching.
-      if (!currentImageUrl || currentImageUrl !== avatarSrcBase) {
-        setCurrentImageUrl(avatarSrcBase)
-      }
+
+  // Sync image src before paint to avoid placeholder flash on re-mounts.
+  useLayoutEffect(() => {
+    if (isEmoji) return
+    if (!avatarSrcBase) {
+      if (currentImageUrl !== null) setCurrentImageUrl(null)
+      return
     }
-  }, [resolvedAvatarUrl, isEmoji, avatarSrcBase, currentImageUrl])
+    if (currentImageUrl !== avatarSrcBase) {
+      setCurrentImageUrl(avatarSrcBase)
+    }
+  }, [avatarSrcBase, isEmoji, currentImageUrl])
   
   const handleImageError = () => {
     if (retryCount < MAX_RETRIES && resolvedAvatarUrl && !isEmoji) {
