@@ -9,6 +9,13 @@ export type LinkPreview = {
   imageWidth?: number | null;
   imageHeight?: number | null;
   siteName?: string | null;
+  youtube?: {
+    videoId: string;
+    channelTitle?: string | null;
+    durationIso?: string | null;
+    durationText?: string | null;
+    viewCount?: string | null;
+  } | null;
   fetchedAtISO: string;
 };
 
@@ -67,6 +74,22 @@ type CacheEntry = { value: LinkPreview | null; expiresAt: number };
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<LinkPreview | null>>();
 
+type YouTubeMeta = {
+  videoId: string;
+  title: string | null;
+  channelTitle: string | null;
+  description: string | null;
+  thumbnailUrl: string | null;
+  thumbnailWidth: number | null;
+  thumbnailHeight: number | null;
+  durationIso: string | null;
+  durationText: string | null;
+  viewCount: string | null;
+};
+type YouTubeCacheEntry = { value: YouTubeMeta | null; expiresAt: number };
+const youtubeCache = new Map<string, YouTubeCacheEntry>();
+const youtubeInflight = new Map<string, Promise<YouTubeMeta | null>>();
+
 export function extractFirstUrl(text: unknown): string | null {
   if (typeof text !== "string") return null;
   URL_RE.lastIndex = 0;
@@ -120,12 +143,8 @@ async function fetchOEmbedIfSupported(urlString: string): Promise<LinkPreview | 
   }
   const host = u.hostname.toLowerCase();
   if (host === "youtu.be" || host.endsWith(".youtube.com") || host === "youtube.com") {
-    // Prefer official API if configured; oEmbed often returns 401/403; HTML parsing is a last resort.
-    const api = await fetchYouTubeDataApiPreview(urlString);
-    if (api) return api;
-    const oembed = await fetchYouTubeOEmbed(urlString);
-    if (oembed) return oembed;
-    return await fetchYouTubeHtmlFallback(urlString);
+    // YouTube: metadata only via Data API + ytimg (no HTML parsing, no watch-page fetching).
+    return await fetchYouTubeDataApiPreview(urlString);
   }
   if (host === "open.spotify.com" || host.endsWith(".spotify.com") || host === "spotify.com" || host === "spoti.fi") {
     return await fetchSpotifyOEmbed(urlString);
@@ -142,234 +161,158 @@ function getYouTubeApiKey(): string | null {
 
 async function fetchYouTubeDataApiPreview(videoUrl: string): Promise<LinkPreview | null> {
   const apiKey = getYouTubeApiKey();
+  const videoId = parseYouTubeVideoId(videoUrl);
+  if (!videoId) return null;
   if (!apiKey) return null;
 
-  const videoId = extractYouTubeVideoId(videoUrl);
-  if (!videoId) return null;
+  const meta = await fetchYouTubeMeta(videoId, apiKey);
+  if (!meta) return null;
 
-  const endpoint = new URL("https://www.googleapis.com/youtube/v3/videos");
-  endpoint.searchParams.set("part", "snippet");
-  endpoint.searchParams.set("id", videoId);
-  endpoint.searchParams.set("key", apiKey);
-
-  const res = await fetchWithTimeout(endpoint.toString(), {
-    method: "GET",
-    redirect: "manual",
-    headers: {
-      "user-agent": "EblushaLinkPreview/1.0",
-      accept: "application/json",
-    },
-  });
-  if (!res.ok) return null;
-
-  const data = (await res.json().catch(() => null)) as any;
-  const item = Array.isArray(data?.items) && data.items.length ? data.items[0] : null;
-  const sn = item?.snippet;
-  if (!sn || typeof sn !== "object") return null;
-
-  const title = typeof sn.title === "string" && sn.title.trim() ? sn.title.trim() : null;
-  const channelTitle =
-    typeof sn.channelTitle === "string" && sn.channelTitle.trim() ? sn.channelTitle.trim() : null;
-  const descRaw = typeof sn.description === "string" ? sn.description.trim() : "";
-  const description =
-    descRaw ? descRaw.slice(0, 200) : (channelTitle ? `Provided to YouTube by ${channelTitle}` : null);
-
-  const thumbs = sn.thumbnails && typeof sn.thumbnails === "object" ? sn.thumbnails : null;
-  const pick = (k: string) =>
-    thumbs && thumbs[k] && typeof thumbs[k] === "object" ? thumbs[k] : null;
-  const t =
-    pick("maxres") ??
-    pick("standard") ??
-    pick("high") ??
-    pick("medium") ??
-    pick("default") ??
-    null;
-
-  const imageUrl = typeof t?.url === "string" && t.url.trim() ? t.url.trim() : null;
-  const imageWidth = typeof t?.width === "number" ? t.width : null;
-  const imageHeight = typeof t?.height === "number" ? t.height : null;
-
-  if (!title && !imageUrl && !description) return null;
+  if (!meta.title && !meta.thumbnailUrl && !meta.description) return null;
   return {
     url: videoUrl,
-    title,
-    description,
-    imageUrl,
-    imageWidth,
-    imageHeight,
+    title: meta.title,
+    description: meta.description ? meta.description.slice(0, 200) : (meta.channelTitle ? `Provided to YouTube by ${meta.channelTitle}` : null),
+    imageUrl: meta.thumbnailUrl,
+    imageWidth: meta.thumbnailWidth,
+    imageHeight: meta.thumbnailHeight,
     siteName: "YouTube",
-    fetchedAtISO: new Date().toISOString(),
-  };
-}
-
-async function fetchYouTubeOEmbed(videoUrl: string): Promise<LinkPreview | null> {
-  // YouTube often doesn't expose og:* tags in the HTML we can safely fetch.
-  // oEmbed is lightweight and gives title + thumbnail.
-  const endpoint = new URL("https://www.youtube.com/oembed");
-  endpoint.searchParams.set("format", "json");
-  endpoint.searchParams.set("url", videoUrl);
-
-  const res = await fetchWithTimeout(endpoint.toString(), {
-    method: "GET",
-    redirect: "manual",
-    headers: {
-      "user-agent": "EblushaLinkPreview/1.0",
-      accept: "application/json",
+    youtube: {
+      videoId,
+      channelTitle: meta.channelTitle,
+      durationIso: meta.durationIso,
+      durationText: meta.durationText,
+      viewCount: meta.viewCount,
     },
-  });
-  if (!res.ok) return null;
-  const contentType = (res.headers.get("content-type") || "").toLowerCase();
-  if (!contentType.includes("application/json")) {
-    // Some providers might return text/json; allow it.
-    if (!contentType.includes("json")) return null;
-  }
-  const data = (await res.json().catch(() => null)) as any;
-  if (!data || typeof data !== "object") return null;
-
-  const title = typeof data.title === "string" && data.title.trim() ? data.title.trim() : null;
-  const thumb = typeof data.thumbnail_url === "string" && data.thumbnail_url.trim() ? data.thumbnail_url.trim() : null;
-  const provider = typeof data.provider_name === "string" && data.provider_name.trim() ? data.provider_name.trim() : "YouTube";
-  const author = typeof data.author_name === "string" && data.author_name.trim() ? data.author_name.trim() : null;
-  const tw = typeof data.thumbnail_width === "number" ? data.thumbnail_width : null;
-  const th = typeof data.thumbnail_height === "number" ? data.thumbnail_height : null;
-
-  if (!title && !thumb) return null;
-  return {
-    url: videoUrl,
-    title,
-    description: author ? `Provided to ${provider} by ${author}` : null,
-    imageUrl: thumb,
-    imageWidth: tw,
-    imageHeight: th,
-    siteName: provider,
     fetchedAtISO: new Date().toISOString(),
   };
 }
 
-async function fetchYouTubeHtmlFallback(videoUrl: string): Promise<LinkPreview | null> {
-  // Fetch the HTML and extract ytInitialPlayerResponse JSON.
-  // This works for many cases where oEmbed is blocked.
-  const { finalUrl, html } = await fetchHtmlWithRedirects(videoUrl, 1_600_000);
-  if (!html) return null;
-
-  // Derive videoId for a reliable thumbnail URL
-  const vid = extractYouTubeVideoId(finalUrl || videoUrl);
-  const fallbackThumb = vid ? `https://i.ytimg.com/vi/${vid}/hqdefault.jpg` : null;
-  const fallbackThumbW = fallbackThumb ? 480 : null;
-  const fallbackThumbH = fallbackThumb ? 360 : null;
-
-  // 1) Try ytInitialPlayerResponse (sometimes has videoDetails)
-  const playerJson = extractYouTubeInitialPlayerResponse(html);
-  const player = playerJson ? safeJsonParse(playerJson) : null;
-  const vd = player && typeof player === "object" ? (player as any).videoDetails : null;
-  const title1 = typeof vd?.title === "string" && vd.title.trim() ? vd.title.trim() : null;
-  const author1 = typeof vd?.author === "string" && vd.author.trim() ? vd.author.trim() : null;
-  const shortDesc1 = typeof vd?.shortDescription === "string" && vd.shortDescription.trim() ? vd.shortDescription.trim() : null;
-  const thumbs1 = (vd?.thumbnail?.thumbnails as any[]) ?? [];
-  const best1 = Array.isArray(thumbs1) && thumbs1.length ? thumbs1[thumbs1.length - 1] : null;
-
-  // 2) Try ytInitialData (usually has playerOverlayVideoDetailsRenderer with title/channel)
-  const initialDataJson = extractYouTubeInitialData(html);
-  const initial = initialDataJson ? safeJsonParse(initialDataJson) : null;
-  const podvr = initial && typeof initial === "object" ? findFirstByKey(initial, "playerOverlayVideoDetailsRenderer") : null;
-  const title2 =
-    typeof podvr?.title?.simpleText === "string"
-      ? podvr.title.simpleText
-      : Array.isArray(podvr?.title?.runs)
-        ? podvr.title.runs.map((r: any) => r?.text).filter(Boolean).join("")
-        : null;
-  const channel2 =
-    Array.isArray(podvr?.subtitle?.runs) && podvr.subtitle.runs[0]?.text
-      ? String(podvr.subtitle.runs[0].text)
-      : null;
-
-  const title = title1 || title2 || null;
-  const author = author1 || channel2 || null;
-  const imageUrl =
-    (typeof best1?.url === "string" && best1.url) ? best1.url :
-    fallbackThumb;
-  const derivedDims = (() => {
-    const u = imageUrl || "";
-    // YouTube default thumbs have predictable sizes.
-    if (/ytimg\.com\/vi\/.+\/hqdefault\.jpg/i.test(u)) return { w: 480, h: 360 };
-    if (/ytimg\.com\/vi\/.+\/mqdefault\.jpg/i.test(u)) return { w: 320, h: 180 };
-    if (/ytimg\.com\/vi\/.+\/sddefault\.jpg/i.test(u)) return { w: 640, h: 480 };
-    if (/ytimg\.com\/vi\/.+\/maxresdefault\.jpg/i.test(u)) return { w: 1280, h: 720 };
-    return null;
-  })();
-  const imageWidth =
-    typeof best1?.width === "number"
-      ? best1.width
-      : (fallbackThumbW ?? derivedDims?.w ?? null);
-  const imageHeight =
-    typeof best1?.height === "number"
-      ? best1.height
-      : (fallbackThumbH ?? derivedDims?.h ?? null);
-  const shortDesc = shortDesc1 || null;
-
-  if (!title && !imageUrl && !author && !shortDesc) return null;
-  return {
-    url: finalUrl || videoUrl,
-    title,
-    description: author ? `Provided to YouTube by ${author}` : (shortDesc ? shortDesc.slice(0, 200) : null),
-    imageUrl,
-    imageWidth,
-    imageHeight,
-    siteName: "YouTube",
-    fetchedAtISO: new Date().toISOString(),
-  };
-}
-
-function extractYouTubeInitialPlayerResponse(html: string): string | null {
-  const marker = "ytInitialPlayerResponse";
-  const idx = html.indexOf(marker);
-  if (idx === -1) return null;
-  // Find the first '{' after marker
-  const braceStart = html.indexOf("{", idx);
-  if (braceStart === -1) return null;
-  return extractJsonObject(html, braceStart);
-}
-
-function extractYouTubeInitialData(html: string): string | null {
-  const marker = "ytInitialData";
-  const idx = html.indexOf(marker);
-  if (idx === -1) return null;
-  const braceStart = html.indexOf("{", idx);
-  if (braceStart === -1) return null;
-  return extractJsonObject(html, braceStart);
-}
-
-function findFirstByKey(obj: any, key: string, depth = 0): any | null {
-  if (!obj || typeof obj !== "object") return null;
-  if (depth > 12) return null;
-  if (Object.prototype.hasOwnProperty.call(obj, key)) return (obj as any)[key];
-  if (Array.isArray(obj)) {
-    for (const item of obj) {
-      const found = findFirstByKey(item, key, depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-  for (const v of Object.values(obj)) {
-    const found = findFirstByKey(v, key, depth + 1);
-    if (found) return found;
-  }
-  return null;
-}
-
-function extractYouTubeVideoId(urlString: string): string | null {
+function parseYouTubeVideoId(urlString: string): string | null {
   try {
     const u = new URL(urlString);
     const host = u.hostname.toLowerCase();
-    if (host === "youtu.be") {
-      const id = u.pathname.replace(/^\//, "").split("/")[0];
+    if (host === "youtu.be" || host.endsWith(".youtu.be")) {
+      const id = u.pathname.replace(/^\//, "").split("/")[0] || "";
       return id || null;
     }
-    const v = u.searchParams.get("v");
-    return v || null;
+    if (host === "youtube.com" || host.endsWith(".youtube.com")) {
+      // /watch?v=ID
+      const v = u.searchParams.get("v");
+      if (v) return v;
+      // /shorts/ID, /embed/ID, /v/ID
+      const parts = u.pathname.split("/").filter(Boolean);
+      const head = parts[0] || "";
+      const id = parts[1] || "";
+      if (head === "shorts" || head === "embed" || head === "v") return id || null;
+    }
+    return null;
   } catch {
     return null;
   }
+}
+
+async function fetchYouTubeMeta(videoId: string, apiKey: string): Promise<YouTubeMeta | null> {
+  const key = videoId.trim();
+  if (!key) return null;
+
+  const cached = youtubeCache.get(key);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const inflightExisting = youtubeInflight.get(key);
+  if (inflightExisting) return inflightExisting;
+
+  const promise = (async () => {
+    try {
+      const endpoint = new URL("https://www.googleapis.com/youtube/v3/videos");
+      endpoint.searchParams.set("part", "snippet,contentDetails,statistics");
+      endpoint.searchParams.set("id", key);
+      endpoint.searchParams.set("key", apiKey);
+
+      const res = await fetchWithTimeout(endpoint.toString(), {
+        method: "GET",
+        redirect: "manual",
+        headers: {
+          "user-agent": "EblushaLinkPreview/1.0",
+          accept: "application/json",
+        },
+      });
+      if (!res.ok) return null;
+
+      const data = (await res.json().catch(() => null)) as any;
+      const item = Array.isArray(data?.items) && data.items.length ? data.items[0] : null;
+      const sn = item?.snippet;
+      const cd = item?.contentDetails;
+      const st = item?.statistics;
+      if (!sn || typeof sn !== "object") return null;
+
+      const title = typeof sn.title === "string" && sn.title.trim() ? sn.title.trim() : null;
+      const channelTitle =
+        typeof sn.channelTitle === "string" && sn.channelTitle.trim() ? sn.channelTitle.trim() : null;
+      const descRaw = typeof sn.description === "string" ? sn.description.trim() : "";
+      const description = descRaw ? descRaw : null;
+
+      const durationIso = typeof cd?.duration === "string" ? cd.duration : null;
+      const durationText = durationIso ? formatYouTubeDuration(durationIso) : null;
+      const viewCount = typeof st?.viewCount === "string" ? st.viewCount : null;
+
+      const thumbs = sn.thumbnails && typeof sn.thumbnails === "object" ? sn.thumbnails : null;
+      const pick = (k: string) => (thumbs && thumbs[k] && typeof thumbs[k] === "object" ? thumbs[k] : null);
+      const t =
+        pick("maxres") ??
+        pick("standard") ??
+        pick("high") ??
+        pick("medium") ??
+        pick("default") ??
+        null;
+
+      const thumbnailUrl = typeof t?.url === "string" && t.url.trim()
+        ? t.url.trim()
+        : `https://i.ytimg.com/vi/${key}/hqdefault.jpg`;
+      const thumbnailWidth = typeof t?.width === "number" ? t.width : 480;
+      const thumbnailHeight = typeof t?.height === "number" ? t.height : 360;
+
+      return {
+        videoId: key,
+        title,
+        channelTitle,
+        description,
+        thumbnailUrl,
+        thumbnailWidth,
+        thumbnailHeight,
+        durationIso,
+        durationText,
+        viewCount,
+      };
+    } catch {
+      return null;
+    } finally {
+      youtubeInflight.delete(key);
+    }
+  })();
+
+  youtubeInflight.set(key, promise);
+  const value = await promise;
+  youtubeCache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+  return value;
+}
+
+function formatYouTubeDuration(iso: string): string | null {
+  // PT#H#M#S -> hh:mm:ss or m:ss
+  const m = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i.exec(iso);
+  if (!m) return null;
+  const h = m[1] ? Number(m[1]) : 0;
+  const min = m[2] ? Number(m[2]) : 0;
+  const s = m[3] ? Number(m[3]) : 0;
+  if (![h, min, s].every((n) => Number.isFinite(n) && n >= 0)) return null;
+  const total = h * 3600 + min * 60 + s;
+  if (total <= 0) return "0:00";
+  const hh = Math.floor(total / 3600);
+  const mm = Math.floor((total % 3600) / 60);
+  const ss = total % 60;
+  if (hh > 0) return `${hh}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  return `${mm}:${String(ss).padStart(2, "0")}`;
 }
 
 function extractJsonObject(text: string, startAtBrace: number): string | null {
