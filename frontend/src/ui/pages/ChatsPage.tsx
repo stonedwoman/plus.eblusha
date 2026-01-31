@@ -140,37 +140,45 @@ function extractFirstUrlFromText(value: unknown) {
   return normalizeLinkHref(core)
 }
 
-function getYouTubeEmbedUrl(urlString: string): string | null {
+function parseYouTubeVideoId(urlString: string): string | null {
   try {
     const u = new URL(urlString)
     const host = u.hostname.toLowerCase()
-    let id: string | null = null
-    if (host === 'youtu.be') {
-      id = u.pathname.replace(/^\//, '').split('/')[0] || null
-    } else if (host.includes('youtube.com')) {
-      if (u.pathname.startsWith('/watch')) id = u.searchParams.get('v')
-      else if (u.pathname.startsWith('/shorts/')) id = u.pathname.split('/')[2] || null
-      else if (u.pathname.startsWith('/embed/')) id = u.pathname.split('/')[2] || null
+    if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
+      const id = u.pathname.replace(/^\//, '').split('/')[0] || null
+      return id
     }
-    if (!id) return null
-    // NOTE: Some environments (Capacitor/Electron/proxies) can break the player unless origin/referrer are sane.
-    // Using the regular domain is more compatible than youtube-nocookie for embeds.
-    const embed = new URL(`https://www.youtube.com/embed/${id}`)
-    embed.searchParams.set('modestbranding', '1')
-    embed.searchParams.set('rel', '0')
-    embed.searchParams.set('playsinline', '1')
-    embed.searchParams.set('fs', '1')
-    const origin =
-      typeof window !== 'undefined' &&
-      typeof window.location?.origin === 'string' &&
-      (window.location.origin.startsWith('http://') || window.location.origin.startsWith('https://'))
-        ? window.location.origin
-        : null
-    if (origin) embed.searchParams.set('origin', origin)
-    return embed.toString()
+    if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
+      const v = u.searchParams.get('v')
+      if (v) return v
+      const parts = u.pathname.split('/').filter(Boolean)
+      const head = parts[0] || ''
+      const id = parts[1] || ''
+      if (head === 'shorts' || head === 'embed' || head === 'v') return id || null
+    }
+    return null
   } catch {
     return null
   }
+}
+
+function getYouTubeEmbedUrl(videoId: string): string | null {
+  const id = (videoId || '').trim()
+  if (!id) return null
+  const embed = new URL(`https://www.youtube-nocookie.com/embed/${id}`)
+  embed.searchParams.set('autoplay', '0')
+  embed.searchParams.set('rel', '0')
+  embed.searchParams.set('modestbranding', '1')
+  embed.searchParams.set('playsinline', '1')
+  embed.searchParams.set('enablejsapi', '1')
+  const origin =
+    typeof window !== 'undefined' &&
+    typeof window.location?.origin === 'string' &&
+    (window.location.origin.startsWith('http://') || window.location.origin.startsWith('https://'))
+      ? window.location.origin
+      : null
+  if (origin) embed.searchParams.set('origin', origin)
+  return embed.toString()
 }
 
 function getSpotifyEmbed(urlString: string): { url: string; height: number } | null {
@@ -191,6 +199,127 @@ function getSpotifyEmbed(urlString: string): { url: string; height: number } | n
   } catch {
     return null
   }
+}
+
+type YouTubeOpenMode = 'embed' | 'external' | 'electron_session' | 'system_browser'
+
+function getDefaultYouTubeOpenMode(): YouTubeOpenMode {
+  // Mobile native wrappers should prefer system browser components.
+  const isCapacitor =
+    typeof window !== 'undefined' &&
+    (window as any).Capacitor &&
+    ((window as any).Capacitor.isNativePlatform?.() || (window as any).Capacitor.getPlatform?.() !== 'web')
+  return isCapacitor ? 'system_browser' : 'embed'
+}
+
+function getYouTubeOpenMode(): YouTubeOpenMode {
+  try {
+    const raw =
+      (typeof localStorage !== 'undefined' ? localStorage.getItem('youtubeOpenMode') : null) ||
+      null
+    const v = (raw || '').trim()
+    if (v === 'embed' || v === 'external' || v === 'electron_session' || v === 'system_browser') return v
+  } catch {}
+  return getDefaultYouTubeOpenMode()
+}
+
+async function openUrlSystemBrowser(url: string) {
+  // Best-effort: Capacitor Browser plugin if present; fallback to window.open.
+  const w: any = typeof window !== 'undefined' ? window : null
+  const cap = w?.Capacitor
+  const browser = cap?.Plugins?.Browser
+  if (browser?.open) {
+    try {
+      await browser.open({ url })
+      return
+    } catch {}
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+function YouTubePlayerEmbed({ videoId, openUrl, debug }: { videoId: string; openUrl: string; debug: boolean }) {
+  const src = getYouTubeEmbedUrl(videoId)
+  const [ready, setReady] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    setReady(false)
+    setFailed(false)
+  }, [videoId])
+
+  useEffect(() => {
+    if (!src) return
+    const t = window.setTimeout(() => {
+      if (!ready) setFailed(true)
+    }, 9000)
+    return () => window.clearTimeout(t)
+  }, [src, ready])
+
+  useEffect(() => {
+    if (!src) return
+    const handler = (ev: MessageEvent) => {
+      const origin = (ev.origin || '').toLowerCase()
+      if (!origin.includes('youtube') && !origin.includes('ytimg') && !origin.includes('youtube-nocookie')) return
+      const data = ev.data
+      // The player sometimes sends stringified JSON.
+      const obj = (() => {
+        if (!data) return null
+        if (typeof data === 'string') {
+          try { return JSON.parse(data) } catch { return null }
+        }
+        if (typeof data === 'object') return data
+        return null
+      })() as any
+      const eventName = typeof obj?.event === 'string' ? obj.event : null
+      if (!eventName) return
+      if (debug) {
+        // eslint-disable-next-line no-console
+        console.log('[YOUTUBE_DEBUG] iframe:message', { origin, event: eventName })
+      }
+      if (eventName === 'onReady') setReady(true)
+      if (eventName === 'onError') setFailed(true)
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [src, debug])
+
+  if (!src) {
+    return (
+      <div style={{ padding: 12 }}>
+        <button className="btn btn-secondary" type="button" onClick={() => window.open(openUrl, '_blank', 'noopener,noreferrer')}>
+          Открыть в браузере
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ position: 'relative', width: '100%', aspectRatio: '16 / 9', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.18)' }}>
+      <iframe
+        src={src}
+        title="YouTube"
+        allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+        allowFullScreen
+        loading="lazy"
+        style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
+      />
+      {failed && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, background: 'rgba(0,0,0,0.55)', color: '#fff', textAlign: 'center' }}>
+          <div style={{ maxWidth: 420 }}>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>Не удалось встроить YouTube</div>
+            <div style={{ opacity: 0.9, fontSize: 13, lineHeight: 1.25, marginBottom: 12 }}>
+              YouTube может требовать подтверждение/вход. Откройте видео в браузере.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" type="button" onClick={() => window.open(openUrl, '_blank', 'noopener,noreferrer')}>
+                Открыть в браузере
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function LinkPreviewCard({ preview }: { preview: any }) {
@@ -253,22 +382,13 @@ function LinkPreviewCard({ preview }: { preview: any }) {
   // Never crop: show the whole image, let the container grow by aspect ratio.
   const imageFit: React.CSSProperties['objectFit'] = 'contain'
 
-  const youTubeEmbedUrl = getYouTubeEmbedUrl(url)
   const spotifyEmbed = getSpotifyEmbed(url)
-  // YouTube embed can trigger anti-bot/login challenges in in-app contexts.
-  // Default behavior: open externally. Opt-in embed via localStorage.YOUTUBE_EMBED=1 or ?YOUTUBE_EMBED=1.
-  const allowYouTubeEmbed =
-    typeof window !== 'undefined' &&
-    (
-      (typeof localStorage !== 'undefined' && localStorage.getItem('YOUTUBE_EMBED') === '1') ||
-      (typeof location !== 'undefined' && location.search.includes('YOUTUBE_EMBED=1'))
-    )
+  const youTubeId = url ? parseYouTubeVideoId(url) : null
+  const youTubeMode = getYouTubeOpenMode()
   const embed =
-    (allowYouTubeEmbed && youTubeEmbedUrl)
-      ? ({ kind: 'youtube' as const, url: youTubeEmbedUrl, aspectRatio: '16 / 9' })
-      : spotifyEmbed
-        ? ({ kind: 'spotify' as const, url: spotifyEmbed.url, height: spotifyEmbed.height })
-        : null
+    spotifyEmbed
+      ? ({ kind: 'spotify' as const, url: spotifyEmbed.url, height: spotifyEmbed.height })
+      : null
 
   const loading = isLoading && !blockedReason
 
@@ -280,7 +400,7 @@ function LinkPreviewCard({ preview }: { preview: any }) {
   })()
   const targetW =
     effectiveW ??
-    (embed?.kind === 'youtube' ? 560 : embed?.kind === 'spotify' ? 520 : null)
+    (youTubeId ? 560 : embed?.kind === 'spotify' ? 520 : null)
   const cardW = typeof targetW === 'number' && targetW > 0 ? Math.min(maxCardW, targetW) : null
 
   return (
@@ -359,60 +479,46 @@ function LinkPreviewCard({ preview }: { preview: any }) {
           />
         )}
       </div>
-      {showEmbed && embed && (
+      {showEmbed && (youTubeId || embed) && (
         <div style={{ padding: '0 12px 12px 12px' }} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-          {embed.kind === 'youtube' ? (
-            <div
-              style={{
-                width: '100%',
-                aspectRatio: embed.aspectRatio,
-                borderRadius: 10,
-                overflow: 'hidden',
-                background: 'rgba(0,0,0,0.18)',
-                border: '1px solid rgba(255,255,255,0.08)',
-              }}
-            >
-              <iframe
-                src={embed.url}
-                title={finalTitle}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowFullScreen
-                loading="lazy"
-                style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
-              />
-            </div>
+          {youTubeId ? (
+            <YouTubePlayerEmbed videoId={youTubeId} openUrl={url} debug={YOUTUBE_DEBUG} />
           ) : (
-            <div
-              style={{
-                width: '100%',
-                height: embed.height,
-                borderRadius: 10,
-                overflow: 'hidden',
-                background: 'rgba(0,0,0,0.18)',
-                border: '1px solid rgba(255,255,255,0.08)',
-              }}
-            >
-              <iframe
-                src={embed.url}
-                title={finalTitle}
-                allow="encrypted-media"
-                loading="lazy"
-                style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
-              />
-            </div>
+            (() => {
+              const sEmbed = embed as { kind: 'spotify'; url: string; height: number } | null
+              if (!sEmbed) return null
+              return (
+                <div
+                  style={{
+                    width: '100%',
+                    height: sEmbed.height,
+                    borderRadius: 10,
+                    overflow: 'hidden',
+                    background: 'rgba(0,0,0,0.18)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                  }}
+                >
+                  <iframe
+                    src={sEmbed.url}
+                    title={finalTitle}
+                    allow="encrypted-media"
+                    loading="lazy"
+                    style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
+                  />
+                </div>
+              )
+            })()
           )}
         </div>
       )}
-      {!showEmbed && (imageUrl || (loading && embed)) && (
+      {!showEmbed && (imageUrl || loading) && (
         <div style={{ padding: '0 12px 12px 12px' }}>
           <div
             style={{
               width: '100%',
-              ...(embed?.kind === 'youtube'
-                ? { aspectRatio: embed.aspectRatio }
-                : embed?.kind === 'spotify'
-                  ? { height: embed.height }
-                  : (aspectRatio ? { aspectRatio } : {})),
+              ...(embed?.kind === 'spotify'
+                ? { height: embed.height }
+                : (youTubeId ? { aspectRatio: '16 / 9' } : (aspectRatio ? { aspectRatio } : {}))),
               borderRadius: 10,
               overflow: 'hidden',
               background: isMediaProvider ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.18)',
@@ -450,23 +556,47 @@ function LinkPreviewCard({ preview }: { preview: any }) {
                 }}
               />
             )}
-            {embed && (
+            {(youTubeId || embed) && (
               <button
                 type="button"
                 onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.preventDefault()
                   e.stopPropagation()
-                  if (YOUTUBE_DEBUG) {
-                    // eslint-disable-next-line no-console
-                    console.log('[YOUTUBE_DEBUG] ui:embed:show', { url, embedUrl: embed.url })
-                  }
-                  // For YouTube: default is external open (embed is opt-in).
-                  if (embed.kind === 'youtube' && !allowYouTubeEmbed) {
-                    window.open(url, '_blank', 'noopener,noreferrer')
+                  if (youTubeId) {
+                    if (YOUTUBE_DEBUG) {
+                      // eslint-disable-next-line no-console
+                      console.log('[YOUTUBE_DEBUG] ui:youtube:play', { url, videoId: youTubeId, mode: youTubeMode })
+                    }
+                    if (youTubeMode === 'external') {
+                      window.open(url, '_blank', 'noopener,noreferrer')
+                      return
+                    }
+                    if (youTubeMode === 'system_browser') {
+                      await openUrlSystemBrowser(url)
+                      return
+                    }
+                    if (youTubeMode === 'electron_session') {
+                      const embedUrl = getYouTubeEmbedUrl(youTubeId)
+                      const w: any = window as any
+                      if (embedUrl && typeof w?.__openYouTubeWindow === 'function') {
+                        try { w.__openYouTubeWindow(embedUrl) } catch {}
+                        return
+                      }
+                      window.open(url, '_blank', 'noopener,noreferrer')
+                      return
+                    }
+                    // embed (default)
+                    setShowEmbed(true)
                     return
                   }
-                  setShowEmbed(true)
+                  if (embed) {
+                    if (YOUTUBE_DEBUG) {
+                      // eslint-disable-next-line no-console
+                      console.log('[YOUTUBE_DEBUG] ui:embed:show', { url, embedUrl: embed.url })
+                    }
+                    setShowEmbed(true)
+                  }
                 }}
                 style={{
                   position: 'absolute',
