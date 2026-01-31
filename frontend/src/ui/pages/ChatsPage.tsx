@@ -207,6 +207,14 @@ function LinkPreviewCard({ preview }: { preview: any }) {
   const blockedReason = typeof (preview as any).blockedReason === 'string' ? (preview as any).blockedReason : null
   if (!url) return null
 
+  const YOUTUBE_DEBUG =
+    typeof window !== 'undefined' &&
+    (
+      (window as any).__YOUTUBE_DEBUG === true ||
+      (typeof localStorage !== 'undefined' && localStorage.getItem('YOUTUBE_DEBUG') === '1') ||
+      (typeof location !== 'undefined' && location.search.includes('YOUTUBE_DEBUG=1'))
+    )
+
   const [showEmbed, setShowEmbed] = useState(false)
   const [measured, setMeasured] = useState<{ w: number; h: number } | null>(null)
 
@@ -272,7 +280,13 @@ function LinkPreviewCard({ preview }: { preview: any }) {
       role="link"
       tabIndex={0}
       onMouseDown={(e) => e.stopPropagation()}
-      onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
+      onClick={() => {
+        if (YOUTUBE_DEBUG) {
+          // eslint-disable-next-line no-console
+          console.log('[YOUTUBE_DEBUG] ui:open', { url })
+        }
+        window.open(url, '_blank', 'noopener,noreferrer')
+      }}
       style={{
         display: cardW ? 'inline-block' : 'block',
         width: cardW ? cardW : undefined,
@@ -435,6 +449,10 @@ function LinkPreviewCard({ preview }: { preview: any }) {
                 onClick={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
+                  if (YOUTUBE_DEBUG) {
+                    // eslint-disable-next-line no-console
+                    console.log('[YOUTUBE_DEBUG] ui:embed:show', { url, embedUrl: embed.url })
+                  }
                   setShowEmbed(true)
                 }}
                 style={{

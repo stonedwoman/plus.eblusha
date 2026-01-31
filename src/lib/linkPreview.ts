@@ -25,6 +25,44 @@ const TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 5;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+const YOUTUBE_DEBUG = process.env.YOUTUBE_DEBUG === "1";
+const YOUTUBE_DEBUG_HOSTS = new Set([
+  "youtube.com",
+  "www.youtube.com",
+  "m.youtube.com",
+  "youtu.be",
+  "youtube-nocookie.com",
+  "www.youtube-nocookie.com",
+  "googlevideo.com",
+  "ytimg.com",
+  "googleusercontent.com",
+  "www.googleapis.com",
+]);
+
+function isYouTubeRelatedUrl(urlString: string): boolean {
+  try {
+    const u = new URL(urlString);
+    const host = u.hostname.toLowerCase();
+    if (YOUTUBE_DEBUG_HOSTS.has(host)) return true;
+    for (const h of YOUTUBE_DEBUG_HOSTS) {
+      if (host === h || host.endsWith(`.${h}`)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function ytDebug(event: string, details: Record<string, unknown>) {
+  if (!YOUTUBE_DEBUG) return;
+  try {
+    // eslint-disable-next-line no-console
+    console.log("[YOUTUBE_DEBUG]", event, details);
+  } catch {
+    // ignore
+  }
+}
+
 type CacheEntry = { value: LinkPreview | null; expiresAt: number };
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<LinkPreview | null>>();
@@ -505,7 +543,23 @@ async function fetchWithTimeout(url: string, init: RequestInit) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
-    return await fetch(url, { ...init, signal: ac.signal });
+    if (YOUTUBE_DEBUG && isYouTubeRelatedUrl(url)) {
+      ytDebug("fetch:start", {
+        url,
+        method: (init.method || "GET").toString(),
+        redirect: (init.redirect || "follow").toString(),
+      });
+    }
+    const res = await fetch(url, { ...init, signal: ac.signal });
+    if (YOUTUBE_DEBUG && isYouTubeRelatedUrl(url)) {
+      ytDebug("fetch:done", {
+        url,
+        status: res.status,
+        contentType: res.headers.get("content-type"),
+        location: res.headers.get("location"),
+      });
+    }
+    return res;
   } finally {
     clearTimeout(t);
   }
