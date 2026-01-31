@@ -255,8 +255,16 @@ function LinkPreviewCard({ preview }: { preview: any }) {
 
   const youTubeEmbedUrl = getYouTubeEmbedUrl(url)
   const spotifyEmbed = getSpotifyEmbed(url)
+  // YouTube embed can trigger anti-bot/login challenges in in-app contexts.
+  // Default behavior: open externally. Opt-in embed via localStorage.YOUTUBE_EMBED=1 or ?YOUTUBE_EMBED=1.
+  const allowYouTubeEmbed =
+    typeof window !== 'undefined' &&
+    (
+      (typeof localStorage !== 'undefined' && localStorage.getItem('YOUTUBE_EMBED') === '1') ||
+      (typeof location !== 'undefined' && location.search.includes('YOUTUBE_EMBED=1'))
+    )
   const embed =
-    youTubeEmbedUrl
+    (allowYouTubeEmbed && youTubeEmbedUrl)
       ? ({ kind: 'youtube' as const, url: youTubeEmbedUrl, aspectRatio: '16 / 9' })
       : spotifyEmbed
         ? ({ kind: 'spotify' as const, url: spotifyEmbed.url, height: spotifyEmbed.height })
@@ -452,6 +460,11 @@ function LinkPreviewCard({ preview }: { preview: any }) {
                   if (YOUTUBE_DEBUG) {
                     // eslint-disable-next-line no-console
                     console.log('[YOUTUBE_DEBUG] ui:embed:show', { url, embedUrl: embed.url })
+                  }
+                  // For YouTube: default is external open (embed is opt-in).
+                  if (embed.kind === 'youtube' && !allowYouTubeEmbed) {
+                    window.open(url, '_blank', 'noopener,noreferrer')
+                    return
                   }
                   setShowEmbed(true)
                 }}
