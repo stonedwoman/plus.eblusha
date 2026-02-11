@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
-import { Phone, Video, Play, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square, Send } from 'lucide-react'
+import { Phone, Video, Play, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square, Send, Bold, Italic, Strikethrough, Code, Quote, Link2 } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -4587,6 +4587,98 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [])
 
+  const applyComposerSelection = useCallback(
+    (builder: (selected: string) => { inserted: string; selectFrom: number; selectTo: number }) => {
+      const el = inputRef.current
+      if (!el) return
+      const start = el.selectionStart ?? 0
+      const end = el.selectionEnd ?? 0
+      let nextSelStart = start
+      let nextSelEnd = end
+      setMessageText((prev) => {
+        const selected = (prev || '').slice(start, end)
+        const built = builder(selected)
+        nextSelStart = start + built.selectFrom
+        nextSelEnd = start + built.selectTo
+        return `${(prev || '').slice(0, start)}${built.inserted}${(prev || '').slice(end)}`
+      })
+      notifyTyping()
+      requestAnimationFrame(() => {
+        try {
+          el.focus()
+          el.setSelectionRange(nextSelStart, nextSelEnd)
+        } catch {}
+      })
+    },
+    [notifyTyping],
+  )
+
+  const applyWrapFormatting = useCallback(
+    (wrap: string, placeholder: string) => {
+      applyComposerSelection((selected) => {
+        const inner = selected || placeholder
+        const inserted = `${wrap}${inner}${wrap}`
+        const selectFrom = wrap.length
+        const selectTo = wrap.length + inner.length
+        return { inserted, selectFrom, selectTo }
+      })
+    },
+    [applyComposerSelection],
+  )
+
+  const applyInlineCode = useCallback(() => {
+    applyComposerSelection((selected) => {
+      const inner = selected || 'код'
+      const inserted = `\`${inner}\``
+      return { inserted, selectFrom: 1, selectTo: 1 + inner.length }
+    })
+  }, [applyComposerSelection])
+
+  const applyCodeBlock = useCallback(() => {
+    applyComposerSelection((selected) => {
+      const inner = selected || ''
+      const inserted = `\n\`\`\`\n${inner}\n\`\`\`\n`
+      // Put caret inside the code block if empty, otherwise keep selection of inner.
+      const selectFrom = `\n\`\`\`\n`.length
+      const selectTo = selectFrom + inner.length
+      return { inserted, selectFrom, selectTo }
+    })
+  }, [applyComposerSelection])
+
+  const applyQuote = useCallback(() => {
+    applyComposerSelection((selected) => {
+      const inner = (selected || 'цитата').split('\n').map((line) => (line.startsWith('> ') ? line : `> ${line}`)).join('\n')
+      const inserted = `\n${inner}\n`
+      // Select just the quoted text (without surrounding newlines).
+      const selectFrom = 1
+      const selectTo = 1 + inner.length
+      return { inserted, selectFrom, selectTo }
+    })
+  }, [applyComposerSelection])
+
+  const applyLink = useCallback(() => {
+    applyComposerSelection((selected) => {
+      const s = (selected || '').trim()
+      const isUrl = /^https?:\/\/\S+$/i.test(s)
+      if (!s) {
+        const inserted = `[текст](https://example.com)`
+        const selectFrom = inserted.indexOf('https://')
+        const selectTo = inserted.length - 1
+        return { inserted, selectFrom, selectTo }
+      }
+      if (isUrl) {
+        const inserted = `[ссылка](${s})`
+        const selectFrom = 1
+        const selectTo = 1 + 'ссылка'.length
+        return { inserted, selectFrom, selectTo }
+      }
+      const inserted = `[${s}](https://example.com)`
+      const selectFrom = inserted.indexOf('https://')
+      const selectTo = inserted.length - 1
+      return { inserted, selectFrom, selectTo }
+    })
+  }, [applyComposerSelection])
+
   // Auto-grow composer like in messengers: 1 line min, expand with newlines.
   useLayoutEffect(() => {
     resizeComposer()
@@ -7797,6 +7889,46 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 </div>
               </div>
             )}
+            {!isMobile && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 10,
+                  padding: '6px 8px',
+                  borderRadius: 10,
+                  background: 'var(--surface-100)',
+                  border: '1px solid var(--surface-border)',
+                }}
+              >
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWrapFormatting('**', 'текст')} aria-label="Жирный (Ctrl+B)" title="Жирный (Ctrl+B)">
+                  <Bold size={16} />
+                </button>
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWrapFormatting('*', 'текст')} aria-label="Курсив (Ctrl+I)" title="Курсив (Ctrl+I)">
+                  <Italic size={16} />
+                </button>
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWrapFormatting('~~', 'текст')} aria-label="Зачёркнутый (Ctrl+Shift+X)" title="Зачёркнутый (Ctrl+Shift+X)">
+                  <Strikethrough size={16} />
+                </button>
+                <div style={{ width: 1, height: 20, background: 'var(--surface-border)', margin: '0 4px' }} />
+                <button type="button" className="btn btn-icon btn-ghost" onClick={applyInlineCode} aria-label="Код" title="Код">
+                  <Code size={16} />
+                </button>
+                <button type="button" className="btn btn-icon btn-ghost" onClick={applyCodeBlock} aria-label="Блок кода" title="Блок кода">
+                  <Code size={16} style={{ transform: 'scale(0.92)' }} />
+                </button>
+                <button type="button" className="btn btn-icon btn-ghost" onClick={applyQuote} aria-label="Цитата" title="Цитата">
+                  <Quote size={16} />
+                </button>
+                <button type="button" className="btn btn-icon btn-ghost" onClick={applyLink} aria-label="Ссылка" title="Ссылка">
+                  <Link2 size={16} />
+                </button>
+                <div style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+                  Markdown
+                </div>
+              </div>
+            )}
             <form autoComplete="off" onSubmit={async (e) => {
                     e.preventDefault()
               if (!activeId) return
@@ -7915,41 +8047,34 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     // Fallback for older browsers
                     form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }))
                   }
-                  if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
-                    e.preventDefault()
-                    const el = e.currentTarget
-                    const start = el.selectionStart ?? 0
-                    const end = el.selectionEnd ?? 0
-                    const before = el.value.slice(0, start)
-                    const selected = el.value.slice(start, end) || 'текст'
-                    const after = el.value.slice(end)
-                    const next = `${before}**${selected}**${after}`
-                    setMessageText(next)
-                    requestAnimationFrame(() => {
-                      try {
-                        const pos = start + 2 + selected.length + 2
-                        el.setSelectionRange(pos, pos)
-                      } catch {}
-                    })
-                    return
-                  }
-                  if ((e.ctrlKey || e.metaKey) && (e.key === 'i' || e.key === 'I')) {
-                    e.preventDefault()
-                    const el = e.currentTarget
-                    const start = el.selectionStart ?? 0
-                    const end = el.selectionEnd ?? 0
-                    const before = el.value.slice(0, start)
-                    const selected = el.value.slice(start, end) || 'текст'
-                    const after = el.value.slice(end)
-                    const next = `${before}*${selected}*${after}`
-                    setMessageText(next)
-                    requestAnimationFrame(() => {
-                      try {
-                        const pos = start + 1 + selected.length + 1
-                        el.setSelectionRange(pos, pos)
-                      } catch {}
-                    })
-                    return
+                  // Formatting hotkeys (PC): Ctrl/Cmd + B/I/K, Ctrl/Cmd + Shift+X.
+                  if (e.ctrlKey || e.metaKey) {
+                    const key = (e.key || '').toLowerCase()
+                    if (key === 'b') {
+                      e.preventDefault()
+                      applyWrapFormatting('**', 'текст')
+                      return
+                    }
+                    if (key === 'i') {
+                      e.preventDefault()
+                      applyWrapFormatting('*', 'текст')
+                      return
+                    }
+                    if (key === 'k') {
+                      e.preventDefault()
+                      applyLink()
+                      return
+                    }
+                    if (e.shiftKey && key === 'x') {
+                      e.preventDefault()
+                      applyWrapFormatting('~~', 'текст')
+                      return
+                    }
+                    if (key === '`') {
+                      e.preventDefault()
+                      applyInlineCode()
+                      return
+                    }
                   }
                 }}
                 onPaste={(e) => {

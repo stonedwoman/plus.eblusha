@@ -28,6 +28,8 @@ export function renderChatMarkdownToHtml(text: string): string {
       'br',
       'strong',
       'em',
+      's',
+      'del',
       'code',
       'pre',
       'blockquote',
