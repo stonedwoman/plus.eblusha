@@ -1201,6 +1201,7 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const [attachUploading, setAttachUploading] = useState(false)
   const [attachProgress, setAttachProgress] = useState(0)
   const [attachDragOver, setAttachDragOver] = useState(false)
+  const attachDragDepthRef = useRef(0)
   const [callPermissionError, setCallPermissionError] = useState<string | null>(null)
   const [pendingByConv, setPendingByConv] = useState<Record<string, PendingMessage[]>>({})
   const [attachmentDecryptMap, setAttachmentDecryptMap] = useState<Record<string, AttachmentDecryptionEntry>>({})
@@ -4565,6 +4566,36 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return () => ro.disconnect()
   }, [syncComposerBarHeightVar])
 
+  const eventHasFiles = useCallback((e: React.DragEvent) => {
+    try {
+      const dt = e.dataTransfer
+      if (!dt) return false
+      if (dt.types && Array.from(dt.types).includes('Files')) return true
+      if (dt.items && Array.from(dt.items).some((it) => it.kind === 'file')) return true
+      return false
+    } catch {
+      return false
+    }
+  }, [])
+
+  const handleChatDropFiles = useCallback(
+    async (files: File[]) => {
+      if (!activeId || !files.length) return
+      if (editState) return
+      const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+      const otherFiles = files.filter((file) => !file.type.startsWith('image/'))
+      imageFiles.forEach((file) => addComposerImage(file, 'upload'))
+      if (otherFiles.length) {
+        await uploadAndSendAttachments(otherFiles)
+      }
+      // Focus composer after drop to allow adding a caption quickly.
+      requestAnimationFrame(() => {
+        try { inputRef.current?.focus() } catch {}
+      })
+    },
+    [activeId, addComposerImage, editState, uploadAndSendAttachments],
+  )
+
   // Ensure we always send typing_stop on conversation switch/unmount.
   useEffect(() => {
     const convId = activeId
@@ -6415,7 +6446,59 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             )}
           </div>
         )}
-        <div className="messages-container" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
+        <div
+          className="messages-container"
+          style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}
+          onDragEnter={(e) => {
+            if (!eventHasFiles(e)) return
+            e.preventDefault()
+            attachDragDepthRef.current += 1
+            setAttachDragOver(true)
+          }}
+          onDragOver={(e) => {
+            if (!eventHasFiles(e)) return
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'copy'
+            setAttachDragOver(true)
+          }}
+          onDragLeave={(e) => {
+            if (!eventHasFiles(e)) return
+            e.preventDefault()
+            attachDragDepthRef.current = Math.max(0, attachDragDepthRef.current - 1)
+            if (attachDragDepthRef.current === 0) setAttachDragOver(false)
+          }}
+          onDrop={async (e) => {
+            if (!eventHasFiles(e)) return
+            e.preventDefault()
+            e.stopPropagation()
+            attachDragDepthRef.current = 0
+            setAttachDragOver(false)
+            const files = Array.from(e.dataTransfer.files || [])
+            if (!files.length) return
+            await handleChatDropFiles(files)
+          }}
+        >
+          {attachDragOver && !editState && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 10,
+                borderRadius: 14,
+                border: '2px dashed var(--surface-border-strong)',
+                background: 'rgba(217,119,6,0.06)',
+                zIndex: 30,
+                pointerEvents: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--text-muted)',
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
+              Отпустите файлы, чтобы прикрепить
+            </div>
+          )}
           <div style={{
             position: 'absolute',
             top: 0,
@@ -7363,27 +7446,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           <div className="msg-input-bar"
             ref={composerBarRef}
             style={{ flexShrink: 0 }}
-            onDragOver={(e) => { e.preventDefault(); setAttachDragOver(true) }}
-            onDragLeave={() => setAttachDragOver(false)}
-          onDrop={async (e) => {
-            e.preventDefault()
-            setAttachDragOver(false)
-            const files = Array.from(e.dataTransfer.files || [])
-            if (!files.length || !activeId) return
-            if (editState) return
-            const imageFiles = files.filter((file) => file.type.startsWith('image/'))
-            const otherFiles = files.filter((file) => !file.type.startsWith('image/'))
-            imageFiles.forEach((file) => addComposerImage(file, 'upload'))
-            if (otherFiles.length) {
-              await uploadAndSendAttachments(otherFiles)
-            }
-          }}
           >
-            {attachDragOver && !editState && (
-              <div style={{ marginBottom: 10, padding: '10px 12px', borderRadius: 10, border: '1px dashed var(--surface-border-strong)', background: 'rgba(217,119,6,0.08)', color: 'var(--text-muted)', fontSize: 12 }}>
-                Отпустите файлы, чтобы прикрепить
-              </div>
-            )}
             {activeConversation?.isSecret && (!secretSessionReady || secretInactive) ? (
               <div style={{ padding: 12, borderRadius: 8, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
                 {secretBlockedText}
