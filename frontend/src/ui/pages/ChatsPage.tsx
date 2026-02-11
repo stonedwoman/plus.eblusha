@@ -7319,6 +7319,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             setAttachDragOver(false)
             const files = Array.from(e.dataTransfer.files || [])
             if (!files.length || !activeId) return
+            if (editState) return
             const imageFiles = files.filter((file) => file.type.startsWith('image/'))
             const otherFiles = files.filter((file) => !file.type.startsWith('image/'))
             imageFiles.forEach((file) => addComposerImage(file, 'upload'))
@@ -7327,6 +7328,11 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             }
           }}
           >
+            {attachDragOver && !editState && (
+              <div style={{ marginBottom: 10, padding: '10px 12px', borderRadius: 10, border: '1px dashed var(--surface-border-strong)', background: 'rgba(217,119,6,0.08)', color: 'var(--text-muted)', fontSize: 12 }}>
+                Отпустите файлы, чтобы прикрепить
+              </div>
+            )}
             {activeConversation?.isSecret && (!secretSessionReady || secretInactive) ? (
               <div style={{ padding: 12, borderRadius: 8, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
                 {secretBlockedText}
