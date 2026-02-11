@@ -7518,7 +7518,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 </button>
               </div>
             ) : (
-            {(() => {
+              <>
+                {(() => {
               const ids = Object.keys(typingByUserId)
               if (!ids.length) return null
               const names = ids
@@ -7819,6 +7820,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 {!isMobile && <span>{editState ? (editBusy ? 'Сохраняем...' : 'Сохранить') : 'Отправить'}</span>}
               </button>
             </form>
+              </>
             )}
             {attachUploading && (
               <div style={{ height: 6, background: 'var(--surface-100)', borderRadius: 3, overflow: 'hidden', marginTop: 10 }}>

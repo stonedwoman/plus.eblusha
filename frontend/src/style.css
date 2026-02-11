@@ -1,3 +1,5 @@
+@import "./ui/style/chat-markdown.css";
+
 :root {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
   color: #f1f3f6;
@@ -68,9 +70,6 @@ body {
 a {
   color: inherit;
 }
-
-/* Chat markdown styles */
-@import "./ui/style/chat-markdown.css";
 
 #app {
   height: 100svh;
