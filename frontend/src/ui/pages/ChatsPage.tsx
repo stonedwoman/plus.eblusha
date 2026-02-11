@@ -4515,6 +4515,31 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     }, 2100)
   }, [activeId, emitTyping])
 
+  const resizeComposer = useCallback(() => {
+    const el = inputRef.current
+    if (!el) return
+    try {
+      const cs = window.getComputedStyle(el)
+      const minHRaw = cs.getPropertyValue('--control-h').trim()
+      const maxHRaw = cs.getPropertyValue('--composer-max-h').trim()
+      const minH = Number.parseInt(minHRaw || '46', 10) || 46
+      const maxH = Number.parseInt(maxHRaw || '140', 10) || 140
+
+      // Reset height to measure correct scrollHeight (allows shrinking).
+      el.style.height = '0px'
+      const next = Math.min(el.scrollHeight, maxH)
+      el.style.height = `${Math.max(next, minH)}px`
+      el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  // Auto-grow composer like in messengers: 1 line min, expand with newlines.
+  useLayoutEffect(() => {
+    resizeComposer()
+  }, [messageText, resizeComposer])
+
   // Ensure we always send typing_stop on conversation switch/unmount.
   useEffect(() => {
     const convId = activeId
@@ -7605,7 +7630,14 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   setReplyTo(null)
                 } catch (err: any) {
                   console.error('Failed to update message:', err)
-                  const msg = err?.response?.data?.message || err?.message || 'Не удалось сохранить изменения'
+                  const status = err?.response?.status
+                  const serverMsg = err?.response?.data?.message
+                  const msg =
+                    typeof serverMsg === 'string' && serverMsg.trim()
+                      ? serverMsg
+                      : status === 404
+                        ? 'Сервер не поддерживает редактирование сообщений (обновите/перезапустите backend после сборки).'
+                        : err?.message || 'Не удалось сохранить изменения'
                   alert(msg)
                   setEditState(null)
                 } finally {
@@ -7656,6 +7688,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 placeholder={pendingImages.length > 0 ? "Добавьте подпись к изображениям..." : "Напишите сообщение..."}
                 value={messageText}
                 onChange={(e) => { setMessageText(e.target.value); notifyTyping() }}
+                onInput={() => resizeComposer()}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape' && editState) {
                     e.preventDefault()
@@ -7774,9 +7807,10 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   fontSize: 16,
                   minHeight: 'var(--control-h)',
                   maxHeight: 'var(--composer-max-h)',
+                  height: 'var(--control-h)',
                   lineHeight: '20px',
                   resize: 'none',
-                  overflowY: 'auto',
+                  overflowY: 'hidden',
                 }}
               />
               <button
