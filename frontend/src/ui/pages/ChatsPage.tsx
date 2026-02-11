@@ -23,6 +23,7 @@ import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { getWaveform } from '../../utils/audioWaveform'
 import { unlockAppAudio } from '../../utils/audioUnlock'
 import { detectLinks, extractFirstPreviewableUrl } from '../../js/link-detect'
+import { renderChatMarkdownToHtml } from '../lib/chatMarkdown'
 
 declare global {
   interface Window {
@@ -104,6 +105,31 @@ function renderLinkifiedText(value: unknown) {
     })
   }
   return <>{out}</>
+}
+
+function isMarkdownLike(text: string): boolean {
+  const s = text || ''
+  if (!s) return false
+  // Keep this intentionally small: we only switch renderer when user clearly uses markers.
+  return (
+    s.includes('```') ||
+    s.includes('`') ||
+    s.includes('**') ||
+    // italic marker is ambiguous; require space+* or *_ to avoid false positives
+    /(^|\s)\*(\S)/.test(s) ||
+    /(^|\n)>\s/.test(s) ||
+    /\[[^\]]+\]\((https?:\/\/[^\s)]+)\)/.test(s)
+  )
+}
+
+function renderMessageText(value: unknown) {
+  if (typeof value !== 'string') return value as any
+  const s = value || ''
+  if (!s) return s
+  if (!isMarkdownLike(s)) return renderLinkifiedText(s)
+  const html = renderChatMarkdownToHtml(s)
+  // eslint-disable-next-line react/no-danger
+  return <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />
 }
 
 function parseYouTubeVideoId(urlString: string): string | null {
@@ -6399,7 +6425,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           fontStyle: 'italic',
                           opacity: 0.8
                         }}>
-                          {renderLinkifiedText(m.content)}
+                          {renderMessageText(m.content)}
                         </div>
                       </div>
                     )
@@ -6634,7 +6660,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                         )}
                         <>
                           <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                            {renderLinkifiedText(m.content)}
+                            {renderMessageText(m.content)}
                           </div>
                           {(() => {
                             const firstUrl = extractFirstPreviewableUrl(m.content)
@@ -7661,6 +7687,42 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     }
                     // Fallback for older browsers
                     form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }))
+                  }
+                  if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
+                    e.preventDefault()
+                    const el = e.currentTarget
+                    const start = el.selectionStart ?? 0
+                    const end = el.selectionEnd ?? 0
+                    const before = el.value.slice(0, start)
+                    const selected = el.value.slice(start, end) || 'текст'
+                    const after = el.value.slice(end)
+                    const next = `${before}**${selected}**${after}`
+                    setMessageText(next)
+                    requestAnimationFrame(() => {
+                      try {
+                        const pos = start + 2 + selected.length + 2
+                        el.setSelectionRange(pos, pos)
+                      } catch {}
+                    })
+                    return
+                  }
+                  if ((e.ctrlKey || e.metaKey) && (e.key === 'i' || e.key === 'I')) {
+                    e.preventDefault()
+                    const el = e.currentTarget
+                    const start = el.selectionStart ?? 0
+                    const end = el.selectionEnd ?? 0
+                    const before = el.value.slice(0, start)
+                    const selected = el.value.slice(start, end) || 'текст'
+                    const after = el.value.slice(end)
+                    const next = `${before}*${selected}*${after}`
+                    setMessageText(next)
+                    requestAnimationFrame(() => {
+                      try {
+                        const pos = start + 1 + selected.length + 1
+                        el.setSelectionRange(pos, pos)
+                      } catch {}
+                    })
+                    return
                   }
                 }}
                 onPaste={(e) => {
