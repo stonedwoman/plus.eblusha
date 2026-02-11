@@ -1,5 +1,22 @@
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
+import TurndownService from 'turndown'
+
+// HTML → Markdown for WYSIWYG composer (getComposerValue).
+const turndownService = new TurndownService({ headingStyle: 'atx' })
+turndownService.addRule('strikethrough', {
+  filter: ['del', 's', 'strike'],
+  replacement: (content: string) => `~~${content}~~`,
+})
+
+export function htmlToMarkdown(html: string): string {
+  if (!html || typeof html !== 'string') return ''
+  try {
+    return turndownService.turndown(html).trim()
+  } catch {
+    return ''
+  }
+}
 
 // Markdown-lite renderer for chat messages.
 // UI remains ours; this module only provides safe HTML rendering.

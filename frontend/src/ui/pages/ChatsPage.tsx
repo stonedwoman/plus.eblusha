@@ -23,7 +23,7 @@ import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { getWaveform } from '../../utils/audioWaveform'
 import { unlockAppAudio } from '../../utils/audioUnlock'
 import { detectLinks, extractFirstPreviewableUrl } from '../../js/link-detect'
-import { renderChatMarkdownToHtml } from '../lib/chatMarkdown'
+import { renderChatMarkdownToHtml, htmlToMarkdown } from '../lib/chatMarkdown'
 
 declare global {
   interface Window {
@@ -1072,14 +1072,15 @@ export default function ChatsPage() {
   const outgoingCallRef = useRef<typeof outgoingCall>(null)
   useEffect(() => { outgoingCallRef.current = outgoingCall }, [outgoingCall])
   const outgoingCallTimerRef = useRef<number | null>(null)
-  const [messageText, setMessageText] = useState('')
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
   const [editState, setEditState] = useState<{
     messageId: string
     originalText: string
   } | null>(null)
   const [editBusy, setEditBusy] = useState(false)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const [composerEmpty, setComposerEmpty] = useState(true)
+  const [composerFocused, setComposerFocused] = useState(false)
+  const composerEditorRef = useRef<HTMLDivElement | null>(null)
   const composerBarRef = useRef<HTMLDivElement | null>(null)
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const ringTimerRef = useRef<number | null>(null)
@@ -4158,7 +4159,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!el) return
     const handleVV = () => {
       const active = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
-      if (active && active === inputRef.current) {
+      if (active && active === composerEditorRef.current) {
         el.scrollTop = el.scrollHeight
         nearBottomRef.current = true
         userStickyScrollRef.current = false
@@ -4493,18 +4494,65 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     st.convId = conversationId
   }, [emitTyping])
 
+  function moveCursorToEnd(el: HTMLDivElement | null) {
+    if (!el) return
+    try {
+      const sel = window.getSelection()
+      if (!sel) return
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      range.collapse(false)
+      sel.removeAllRanges()
+      sel.addRange(range)
+    } catch {}
+  }
+
+  const resizeComposer = useCallback(() => {
+    const el = composerEditorRef.current
+    if (!el) return
+    try {
+      const cs = window.getComputedStyle(el)
+      const minHRaw = cs.getPropertyValue('--control-h').trim()
+      const maxHRaw = cs.getPropertyValue('--composer-max-h').trim()
+      const minH = Number.parseInt(minHRaw || '46', 10) || 46
+      const maxH = Number.parseInt(maxHRaw || '140', 10) || 140
+      el.style.height = '0px'
+      const next = Math.min(el.scrollHeight, maxH)
+      el.style.height = `${Math.max(next, minH)}px`
+      el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const getComposerValue = useCallback((): string => {
+    const el = composerEditorRef.current
+    if (!el) return ''
+    return htmlToMarkdown(el.innerHTML)
+  }, [])
+
+  const setComposerValue = useCallback((md: string) => {
+    const el = composerEditorRef.current
+    const html = (md || '').trim() ? renderChatMarkdownToHtml(md) : ''
+    if (el) {
+      el.innerHTML = html || '<br>'
+      moveCursorToEnd(el)
+      requestAnimationFrame(() => resizeComposer())
+    }
+    setComposerEmpty(!(md || '').trim())
+  }, [resizeComposer])
+
   const cancelEdit = useCallback(() => {
     setEditState(null)
     setEditBusy(false)
-    setMessageText('')
+    setComposerValue('')
     setReplyTo(null)
-    // Keep pending images as-is; entering edit mode is only allowed when composer is empty.
     requestAnimationFrame(() => {
       try {
-        inputRef.current?.focus()
+        composerEditorRef.current?.focus()
       } catch {}
     })
-  }, [])
+  }, [setComposerValue])
 
   const startEdit = useCallback(
     (msg: any) => {
@@ -4513,24 +4561,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       if (msg.deletedAt) return
       if ((msg.type || 'TEXT') !== 'TEXT') return
       const atts = Array.isArray(msg.attachments) ? msg.attachments : []
-      // Avoid mixing editing with attachment flows for now.
       if (atts.length > 0) return
       const text = typeof msg.content === 'string' ? msg.content : ''
       setReplyTo(null)
       setEditBusy(false)
       setEditState({ messageId: msg.id, originalText: text })
-      setMessageText(text)
+      setComposerValue(text)
       requestAnimationFrame(() => {
         try {
-          const el = inputRef.current
-          if (!el) return
-          el.focus()
-          const end = el.value.length
-          el.setSelectionRange(end, end)
+          composerEditorRef.current?.focus()
+          moveCursorToEnd(composerEditorRef.current)
         } catch {}
       })
     },
-    [me?.id],
+    [me?.id, setComposerValue],
   )
 
   const notifyTyping = useCallback(() => {
@@ -4567,118 +4611,53 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }, 2100)
   }, [activeId, emitTyping])
 
-  const resizeComposer = useCallback(() => {
-    const el = inputRef.current
-    if (!el) return
-    try {
-      const cs = window.getComputedStyle(el)
-      const minHRaw = cs.getPropertyValue('--control-h').trim()
-      const maxHRaw = cs.getPropertyValue('--composer-max-h').trim()
-      const minH = Number.parseInt(minHRaw || '46', 10) || 46
-      const maxH = Number.parseInt(maxHRaw || '140', 10) || 140
-
-      // Reset height to measure correct scrollHeight (allows shrinking).
-      el.style.height = '0px'
-      const next = Math.min(el.scrollHeight, maxH)
-      el.style.height = `${Math.max(next, minH)}px`
-      el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
-    } catch {
-      // ignore
-    }
-  }, [])
-
-  const applyComposerSelection = useCallback(
-    (builder: (selected: string) => { inserted: string; selectFrom: number; selectTo: number }) => {
-      const el = inputRef.current
-      if (!el) return
-      const start = el.selectionStart ?? 0
-      const end = el.selectionEnd ?? 0
-      const currentValue = el.value
-      const selected = currentValue.slice(start, end)
-      const built = builder(selected)
-      const newText = currentValue.slice(0, start) + built.inserted + currentValue.slice(end)
-      const nextSelStart = start + built.selectFrom
-      const nextSelEnd = start + built.selectTo
-      el.value = newText
-      el.setSelectionRange(nextSelStart, nextSelEnd)
-      el.focus()
-      setMessageText(newText)
+  const applyWysiwygFormat = useCallback(
+    (cmd: string, value?: string) => {
+      composerEditorRef.current?.focus()
+      document.execCommand(cmd, false, value ?? '')
       notifyTyping()
       resizeComposer()
     },
     [notifyTyping, resizeComposer],
   )
 
-  const applyWrapFormatting = useCallback(
-    (wrap: string, placeholder: string) => {
-      applyComposerSelection((selected) => {
-        const inner = selected || placeholder
-        const inserted = `${wrap}${inner}${wrap}`
-        const selectFrom = wrap.length
-        const selectTo = wrap.length + inner.length
-        return { inserted, selectFrom, selectTo }
-      })
-    },
-    [applyComposerSelection],
-  )
+  const applyWysiwygCode = useCallback(() => {
+    const el = composerEditorRef.current
+    if (!el) return
+    el.focus()
+    const sel = window.getSelection()
+    const text = (sel?.toString() || 'код').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    document.execCommand('insertHTML', false, `<code>${text}</code>`)
+    notifyTyping()
+    resizeComposer()
+  }, [notifyTyping, resizeComposer])
 
-  const applyInlineCode = useCallback(() => {
-    applyComposerSelection((selected) => {
-      const inner = selected || 'код'
-      const inserted = `\`${inner}\``
-      return { inserted, selectFrom: 1, selectTo: 1 + inner.length }
-    })
-  }, [applyComposerSelection])
+  const applyWysiwygCodeBlock = useCallback(() => {
+    const el = composerEditorRef.current
+    if (!el) return
+    el.focus()
+    const sel = window.getSelection()?.toString() || ''
+    const escaped = sel.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    document.execCommand('insertHTML', false, `<pre><code>${escaped || '\n'}</code></pre>`)
+    notifyTyping()
+    resizeComposer()
+  }, [notifyTyping, resizeComposer])
 
-  const applyCodeBlock = useCallback(() => {
-    applyComposerSelection((selected) => {
-      const inner = selected || ''
-      const inserted = `\n\`\`\`\n${inner}\n\`\`\`\n`
-      // Put caret inside the code block if empty, otherwise keep selection of inner.
-      const selectFrom = `\n\`\`\`\n`.length
-      const selectTo = selectFrom + inner.length
-      return { inserted, selectFrom, selectTo }
-    })
-  }, [applyComposerSelection])
+  const applyWysiwygLink = useCallback(() => {
+    const url = window.prompt('URL ссылки:', 'https://')
+    if (url != null && url.trim()) applyWysiwygFormat('createLink', url.trim())
+  }, [applyWysiwygFormat])
 
-  const applyQuote = useCallback(() => {
-    applyComposerSelection((selected) => {
-      const inner = (selected || 'цитата').split('\n').map((line) => (line.startsWith('> ') ? line : `> ${line}`)).join('\n')
-      const inserted = `\n${inner}\n`
-      // Select just the quoted text (without surrounding newlines).
-      const selectFrom = 1
-      const selectTo = 1 + inner.length
-      return { inserted, selectFrom, selectTo }
-    })
-  }, [applyComposerSelection])
-
-  const applyLink = useCallback(() => {
-    applyComposerSelection((selected) => {
-      const s = (selected || '').trim()
-      const isUrl = /^https?:\/\/\S+$/i.test(s)
-      if (!s) {
-        const inserted = `[текст](https://example.com)`
-        const selectFrom = inserted.indexOf('https://')
-        const selectTo = inserted.length - 1
-        return { inserted, selectFrom, selectTo }
-      }
-      if (isUrl) {
-        const inserted = `[ссылка](${s})`
-        const selectFrom = 1
-        const selectTo = 1 + 'ссылка'.length
-        return { inserted, selectFrom, selectTo }
-      }
-      const inserted = `[${s}](https://example.com)`
-      const selectFrom = inserted.indexOf('https://')
-      const selectTo = inserted.length - 1
-      return { inserted, selectFrom, selectTo }
-    })
-  }, [applyComposerSelection])
-
-  // Auto-grow composer like in messengers: 1 line min, expand with newlines.
   useLayoutEffect(() => {
     resizeComposer()
-  }, [messageText, resizeComposer])
+  }, [composerEmpty, resizeComposer])
+
+  useEffect(() => {
+    const el = composerEditorRef.current
+    if (el && !el.textContent?.trim()) {
+      el.innerHTML = '<br>'
+    }
+  }, [])
 
   const syncComposerBarHeightVar = useCallback(() => {
     const bar = composerBarRef.current
@@ -4693,7 +4672,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   useLayoutEffect(() => {
     syncComposerBarHeightVar()
-  }, [messageText, pendingImages.length, pendingFiles.length, replyTo?.id, editState?.messageId, attachUploading, syncComposerBarHeightVar])
+  }, [composerEmpty, pendingImages.length, pendingFiles.length, replyTo?.id, editState?.messageId, attachUploading, syncComposerBarHeightVar])
 
   // Keep CSS var in sync for any layout changes (e.g. fonts/viewport).
   useEffect(() => {
@@ -4726,7 +4705,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       otherFiles.forEach((file) => addComposerFile(file, 'drop'))
       // Focus composer after drop to allow adding a caption quickly.
       requestAnimationFrame(() => {
-        try { inputRef.current?.focus() } catch {}
+        try { composerEditorRef.current?.focus() } catch {}
       })
     },
     [activeId, addComposerFile, addComposerImage, editState],
@@ -7879,13 +7858,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   <button type="button" className="btn btn-ghost" onClick={cancelEdit} disabled={editBusy}>
                     Отмена
                   </button>
-                  <button type="button" className="btn btn-primary" disabled={editBusy} onClick={() => { (inputRef.current?.form as any)?.requestSubmit?.() }}>
+                  <button type="button" className="btn btn-primary" disabled={editBusy} onClick={() => { (composerEditorRef.current?.closest('form') as HTMLFormElement)?.requestSubmit?.() }}>
                     {editBusy ? 'Сохраняем...' : 'Сохранить'}
                   </button>
                 </div>
               </div>
             )}
-            {!isMobile && (
+            {!isMobile && (composerFocused || !composerEmpty) && (
               <div
                 style={{
                   display: 'flex',
@@ -7898,30 +7877,30 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   border: '1px solid var(--surface-border)',
                 }}
               >
-                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWrapFormatting('**', 'текст')} aria-label="Жирный (Ctrl+B)" title="Жирный (Ctrl+B)">
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWysiwygFormat('bold')} aria-label="Жирный (Ctrl+B)" title="Жирный (Ctrl+B)">
                   <Bold size={16} />
                 </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWrapFormatting('*', 'текст')} aria-label="Курсив (Ctrl+I)" title="Курсив (Ctrl+I)">
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWysiwygFormat('italic')} aria-label="Курсив (Ctrl+I)" title="Курсив (Ctrl+I)">
                   <Italic size={16} />
                 </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWrapFormatting('~~', 'текст')} aria-label="Зачёркнутый (Ctrl+Shift+X)" title="Зачёркнутый (Ctrl+Shift+X)">
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWysiwygFormat('strikeThrough')} aria-label="Зачёркнутый (Ctrl+Shift+X)" title="Зачёркнутый (Ctrl+Shift+X)">
                   <Strikethrough size={16} />
                 </button>
                 <div style={{ width: 1, height: 20, background: 'var(--surface-border)', margin: '0 4px' }} />
-                <button type="button" className="btn btn-icon btn-ghost" onClick={applyInlineCode} aria-label="Код" title="Код">
+                <button type="button" className="btn btn-icon btn-ghost" onClick={applyWysiwygCode} aria-label="Код" title="Код">
                   <Code size={16} />
                 </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={applyCodeBlock} aria-label="Блок кода" title="Блок кода">
+                <button type="button" className="btn btn-icon btn-ghost" onClick={applyWysiwygCodeBlock} aria-label="Блок кода" title="Блок кода">
                   <Code size={16} style={{ transform: 'scale(0.92)' }} />
                 </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={applyQuote} aria-label="Цитата" title="Цитата">
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => { composerEditorRef.current?.focus(); document.execCommand('formatBlock', false, 'blockquote'); notifyTyping(); resizeComposer(); }} aria-label="Цитата" title="Цитата">
                   <Quote size={16} />
                 </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={applyLink} aria-label="Ссылка" title="Ссылка">
+                <button type="button" className="btn btn-icon btn-ghost" onClick={applyWysiwygLink} aria-label="Ссылка" title="Ссылка">
                   <Link2 size={16} />
                 </button>
                 <div style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
-                  Markdown
+                  WYSIWYG
                 </div>
               </div>
             )}
@@ -7930,16 +7909,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               if (!activeId) return
               stopTyping(activeId)
               if (editBusy) return
-              const trimmed = messageText.trim()
+              const value = getComposerValue().trim()
 
               if (editState) {
                 const mid = editState.messageId
-                if (!trimmed) return
+                if (!value) return
                 setEditBusy(true)
                 try {
-                  await api.post('/messages/update', { messageId: mid, content: messageText })
+                  await api.post('/messages/update', { messageId: mid, content: value })
                   setEditState(null)
-                  setMessageText('')
+                  setComposerValue('')
                   setReplyTo(null)
                 } catch (err: any) {
                   console.error('Failed to update message:', err)
@@ -7959,7 +7938,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 return
               }
 
-              const value = trimmed
               if (pendingImages.length > 0 || pendingFiles.length > 0) {
                 const imagesSnapshot = pendingImages.map((img) => ({ file: img.file, previewUrl: img.previewUrl }))
                 const filesSnapshot = pendingFiles.map((f) => f.file)
@@ -7968,11 +7946,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 setEditingImageId(null)
                 imagesSnapshot.forEach((entry) => releasePreviewUrl(entry.previewUrl))
                 await uploadAndSendAttachments([...imagesSnapshot.map((entry) => entry.file), ...filesSnapshot], value || '', replyTo?.id)
-                setMessageText('')
+                setComposerValue('')
                 setReplyTo(null)
               } else if (value) {
                     await sendMessageToConversation(activeConversation, { type: 'TEXT', content: value, replyToId: replyTo?.id })
-                    setMessageText('')
+                    setComposerValue('')
                     setReplyTo(null)
               }
                     client.invalidateQueries({ queryKey: ['messages', activeId] })
@@ -7999,128 +7977,158 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 <Paperclip size={16} />
                 {!isMobile && <span>Загрузить</span>}
               </button>
-              <textarea
-                placeholder={(pendingImages.length > 0 || pendingFiles.length > 0) ? "Добавьте подпись к вложениям..." : "Напишите сообщение..."}
-                value={messageText}
-                onChange={(e) => { setMessageText(e.target.value); notifyTyping() }}
-                onInput={() => resizeComposer()}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape' && editState) {
-                    e.preventDefault()
-                    cancelEdit()
-                    return
-                  }
-                  if (e.key === 'ArrowUp' && !editState) {
-                    const el = e.currentTarget
-                    const isEmpty = (el.value || '').length === 0
-                    const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0
-                    const noAttachments = pendingImages.length === 0 && pendingFiles.length === 0
-                    if (isEmpty && caretAtStart && noAttachments) {
-                      const list = (displayedMessages ? [...displayedMessages] : [])
-                        .filter((m: any) => !m?.deletedAt)
-                        .sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
-                      const last = list[list.length - 1]
-                      if (last && last.senderId === me?.id && (last.type || 'TEXT') === 'TEXT' && (!last.attachments || last.attachments.length === 0)) {
+              <div style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}>
+                {composerEmpty && (
+                  <div
+                    aria-hidden
+                    style={{
+                      position: 'absolute',
+                      left: 16,
+                      top: 12,
+                      right: 16,
+                      pointerEvents: 'none',
+                      color: 'var(--text-muted)',
+                      fontSize: 16,
+                      lineHeight: '20px',
+                    }}
+                  >
+                    {(pendingImages.length > 0 || pendingFiles.length > 0) ? 'Добавьте подпись к вложениям...' : 'Напишите сообщение...'}
+                  </div>
+                )}
+                <div
+                  ref={composerEditorRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  role="textbox"
+                  aria-multiline="true"
+                  aria-placeholder={(pendingImages.length > 0 || pendingFiles.length > 0) ? 'Добавьте подпись к вложениям...' : 'Напишите сообщение...'}
+                  onFocus={() => setComposerFocused(true)}
+                  onBlur={() => {
+                    setComposerFocused(false)
+                    if (activeId) stopTyping(activeId)
+                  }}
+                  onInput={() => {
+                    const el = composerEditorRef.current
+                    const empty = !el || !el.innerText?.trim()
+                    setComposerEmpty(empty)
+                    notifyTyping()
+                    resizeComposer()
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape' && editState) {
+                      e.preventDefault()
+                      cancelEdit()
+                      return
+                    }
+                    if (e.key === 'ArrowUp' && !editState) {
+                      const noAttachments = pendingImages.length === 0 && pendingFiles.length === 0
+                      if (composerEmpty && noAttachments) {
+                        const list = (displayedMessages ? [...displayedMessages] : [])
+                          .filter((m: any) => !m?.deletedAt)
+                          .sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+                        const last = list[list.length - 1]
+                        if (last && last.senderId === me?.id && (last.type || 'TEXT') === 'TEXT' && (!last.attachments || last.attachments.length === 0)) {
+                          e.preventDefault()
+                          startEdit(last)
+                          return
+                        }
+                      }
+                    }
+                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault()
+                      if (activeId) stopTyping(activeId)
+                      const form = (e.currentTarget as HTMLElement).closest('form') as HTMLFormElement | null
+                      if (!form) return
+                      if (typeof (form as any).requestSubmit === 'function') {
+                        (form as any).requestSubmit()
+                      } else {
+                        form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }))
+                      }
+                      return
+                    }
+                    if (e.ctrlKey || e.metaKey) {
+                      const key = (e.key || '').toLowerCase()
+                      if (key === 'b') {
                         e.preventDefault()
-                        startEdit(last)
+                        applyWysiwygFormat('bold')
+                        return
+                      }
+                      if (key === 'i') {
+                        e.preventDefault()
+                        applyWysiwygFormat('italic')
+                        return
+                      }
+                      if (key === 'k') {
+                        e.preventDefault()
+                        applyWysiwygLink()
+                        return
+                      }
+                      if (e.shiftKey && key === 'x') {
+                        e.preventDefault()
+                        applyWysiwygFormat('strikeThrough')
+                        return
+                      }
+                      if (key === '`') {
+                        e.preventDefault()
+                        applyWysiwygCode()
                         return
                       }
                     }
-                  }
-                  // Keep familiar behavior: Enter sends, Shift+Enter inserts newline.
-                  // This also enables multi-line paste without collapsing line breaks.
-                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault()
-                    if (activeId) stopTyping(activeId)
-                    // Trigger <form onSubmit />
-                    const form = e.currentTarget.form as HTMLFormElement | null
-                    if (!form) return
-                    const anyForm = form as any
-                    if (typeof anyForm.requestSubmit === 'function') {
-                      anyForm.requestSubmit()
-                      return
+                  }}
+                  onPaste={(e) => {
+                    if (!activeId) return
+                    const items = e.clipboardData?.items
+                    if (!items) return
+                    let hasText = false
+                    let text = ''
+                    try {
+                      text = e.clipboardData?.getData('text/plain') ?? ''
+                      hasText = !!text.length
+                    } catch {
+                      hasText = false
                     }
-                    // Fallback for older browsers
-                    form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }))
-                  }
-                  // Formatting hotkeys (PC): Ctrl/Cmd + B/I/K, Ctrl/Cmd + Shift+X.
-                  if (e.ctrlKey || e.metaKey) {
-                    const key = (e.key || '').toLowerCase()
-                    if (key === 'b') {
-                      e.preventDefault()
-                      applyWrapFormatting('**', 'текст')
-                      return
-                    }
-                    if (key === 'i') {
-                      e.preventDefault()
-                      applyWrapFormatting('*', 'текст')
-                      return
-                    }
-                    if (key === 'k') {
-                      e.preventDefault()
-                      applyLink()
-                      return
-                    }
-                    if (e.shiftKey && key === 'x') {
-                      e.preventDefault()
-                      applyWrapFormatting('~~', 'текст')
-                      return
-                    }
-                    if (key === '`') {
-                      e.preventDefault()
-                      applyInlineCode()
-                      return
-                    }
-                  }
-                }}
-                onPaste={(e) => {
-                  if (!activeId) return
-                  const items = e.clipboardData?.items
-                  if (!items) return
-                  let hasText = false
-                  try {
-                    const text = e.clipboardData?.getData('text/plain')
-                    hasText = !!(text && text.length)
-                  } catch {
-                    hasText = false
-                  }
-                  let pastedImage = false
-                  for (let i = 0; i < items.length; i++) {
-                    const item = items[i]
-                    if (item.type.indexOf('image') !== -1) {
-                      const file = item.getAsFile()
-                      if (file) {
-                        addComposerImage(file, 'paste')
+                    let pastedImage = false
+                    for (let i = 0; i < items.length; i++) {
+                      const item = items[i]
+                      if (item.type.indexOf('image') !== -1) {
+                        const file = item.getAsFile()
+                        if (file) addComposerImage(file, 'paste')
+                        pastedImage = true
+                        break
                       }
-                      pastedImage = true
-                      break
                     }
-                  }
-                  // If clipboard contains only an image, prevent any stray paste artifacts.
-                  // If it contains text too, keep native text paste (incl. newlines) and also attach the image.
-                  if (pastedImage && !hasText) {
-                    e.preventDefault()
-                  }
-                }}
-                onBlur={() => { if (activeId) stopTyping(activeId) }}
-                ref={inputRef}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  padding: '12px 16px',
-                  borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--surface-border)',
-                  background: 'var(--surface-100)',
-                  color: 'var(--text-primary)',
-                  fontSize: 16,
-                  minHeight: 'var(--control-h)',
-                  maxHeight: 'var(--composer-max-h)',
-                  height: 'var(--control-h)',
-                  lineHeight: '20px',
-                  resize: 'none',
-                  overflowY: 'hidden',
-                }}
-              />
+                    if (pastedImage && !hasText) {
+                      e.preventDefault()
+                      return
+                    }
+                    if (hasText) {
+                      e.preventDefault()
+                      const html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
+                      document.execCommand('insertHTML', false, html)
+                      setComposerEmpty(false)
+                      notifyTyping()
+                      resizeComposer()
+                    }
+                  }}
+                  className="chat-md"
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: '12px 16px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--surface-border)',
+                    background: 'var(--surface-100)',
+                    color: 'var(--text-primary)',
+                    fontSize: 16,
+                    minHeight: 'var(--control-h)',
+                    maxHeight: 'var(--composer-max-h)',
+                    height: 'var(--control-h)',
+                    lineHeight: '20px',
+                    overflowY: 'hidden',
+                    outline: 'none',
+                  }}
+                />
+              </div>
               <button
                 type="button"
                 className="btn btn-secondary"
