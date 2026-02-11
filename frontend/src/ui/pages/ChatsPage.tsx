@@ -1038,7 +1038,7 @@ export default function ChatsPage() {
   const outgoingCallTimerRef = useRef<number | null>(null)
   const [messageText, setMessageText] = useState('')
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const ringTimerRef = useRef<number | null>(null)
   const ringingConvIdRef = useRef<string | null>(null)
@@ -7364,25 +7364,54 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 <Paperclip size={16} />
                 {!isMobile && <span>Загрузить</span>}
               </button>
-              <input
-                type="text"
+              <textarea
                 placeholder={pendingImages.length > 0 ? "Добавьте подпись к изображениям..." : "Напишите сообщение..."}
                 value={messageText}
                 onChange={(e) => setMessageText(e.target.value)}
+                onKeyDown={(e) => {
+                  // Keep familiar behavior: Enter sends, Shift+Enter inserts newline.
+                  // This also enables multi-line paste without collapsing line breaks.
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    // Trigger <form onSubmit />
+                    const form = e.currentTarget.form as HTMLFormElement | null
+                    if (!form) return
+                    const anyForm = form as any
+                    if (typeof anyForm.requestSubmit === 'function') {
+                      anyForm.requestSubmit()
+                      return
+                    }
+                    // Fallback for older browsers
+                    form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }))
+                  }
+                }}
                 onPaste={(e) => {
                   if (!activeId) return
                   const items = e.clipboardData?.items
                   if (!items) return
+                  let hasText = false
+                  try {
+                    const text = e.clipboardData?.getData('text/plain')
+                    hasText = !!(text && text.length)
+                  } catch {
+                    hasText = false
+                  }
+                  let pastedImage = false
                   for (let i = 0; i < items.length; i++) {
                     const item = items[i]
                     if (item.type.indexOf('image') !== -1) {
-                      e.preventDefault()
                       const file = item.getAsFile()
                       if (file) {
                         addComposerImage(file, 'paste')
                       }
+                      pastedImage = true
                       break
                     }
+                  }
+                  // If clipboard contains only an image, prevent any stray paste artifacts.
+                  // If it contains text too, keep native text paste (incl. newlines) and also attach the image.
+                  if (pastedImage && !hasText) {
+                    e.preventDefault()
                   }
                 }}
                 ref={inputRef}
@@ -7395,9 +7424,11 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   background: 'var(--surface-100)',
                   color: 'var(--text-primary)',
                   fontSize: 16,
-                  height: 46,
                   minHeight: 46,
+                  maxHeight: 140,
                   lineHeight: '20px',
+                  resize: 'none',
+                  overflowY: 'auto',
                 }}
               />
               <button
