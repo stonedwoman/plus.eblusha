@@ -7331,7 +7331,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           const imageOnly = hasImages && !hasText && !hasNonImage
                           if (imageOnly) return null
                           return (
-                            <div className="msg-meta" style={{ color: '#9aa0a8', display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div className="msg-meta" style={{ color: '#9aa0a8' }}>
                               <span>{timeLabel}</span>
                               {isEdited && <span style={{ fontSize: 11, opacity: 0.9 }}>изменено</span>}
                               {renderTicks({ withLeftMargin: false })}
