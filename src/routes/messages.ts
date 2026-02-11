@@ -273,6 +273,85 @@ router.post("/delete", async (req, res) => {
   res.json({ success: true });
 });
 
+const updateMessageSchema = z.object({
+  messageId: z.string().cuid(),
+  content: z
+    .string()
+    .max(8000)
+    .refine((v) => v.trim().length > 0, "Message content cannot be empty"),
+});
+
+router.post("/update", async (req, res) => {
+  const parsed = updateMessageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid update payload" });
+    return;
+  }
+
+  const { messageId, content } = parsed.data;
+  const userId = (req as AuthedRequest).user!.id;
+
+  const existing = await prisma.message.findUnique({
+    where: { id: messageId },
+    select: { id: true, conversationId: true, senderId: true, deletedAt: true, type: true, metadata: true },
+  });
+  if (!existing) {
+    res.status(404).json({ message: "Message not found" });
+    return;
+  }
+  if (existing.senderId !== userId) {
+    res.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  if (existing.deletedAt) {
+    res.status(409).json({ message: "Message was deleted" });
+    return;
+  }
+  if (existing.type !== "TEXT") {
+    res.status(409).json({ message: "Only text messages can be edited" });
+    return;
+  }
+
+  const membership = await prisma.conversationParticipant.findFirst({
+    where: { conversationId: existing.conversationId, userId },
+  });
+  if (!membership) {
+    res.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  const meta =
+    existing.metadata && typeof existing.metadata === "object" ? (existing.metadata as Record<string, unknown>) : {};
+  const prevVer = typeof (meta as any).editVersion === "number" ? ((meta as any).editVersion as number) : 0;
+  const editedAt = new Date().toISOString();
+  const nextMeta = {
+    ...meta,
+    editedAt,
+    editVersion: prevVer + 1,
+  } as any;
+
+  const updated = await prisma.message.update({
+    where: { id: messageId },
+    data: { content, metadata: nextMeta },
+    include: {
+      sender: { select: { id: true, username: true, displayName: true } },
+      attachments: true,
+      reactions: true,
+      receipts: true,
+      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+    },
+  });
+
+  getIO()?.to(existing.conversationId).emit("message:update", {
+    conversationId: existing.conversationId,
+    messageId,
+    reason: "edited",
+    message: updated,
+  });
+
+  res.json({ message: updated });
+});
+
 // Mark an entire conversation as READ for current user
 const markConversationSchema = z.object({ conversationId: z.string().cuid() });
 
