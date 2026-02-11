@@ -1038,6 +1038,11 @@ export default function ChatsPage() {
   const outgoingCallTimerRef = useRef<number | null>(null)
   const [messageText, setMessageText] = useState('')
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
+  const [editState, setEditState] = useState<{
+    messageId: string
+    originalText: string
+  } | null>(null)
+  const [editBusy, setEditBusy] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const ringTimerRef = useRef<number | null>(null)
@@ -4410,6 +4415,46 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     st.convId = conversationId
   }, [emitTyping])
 
+  const cancelEdit = useCallback(() => {
+    setEditState(null)
+    setEditBusy(false)
+    setMessageText('')
+    setReplyTo(null)
+    // Keep pending images as-is; entering edit mode is only allowed when composer is empty.
+    requestAnimationFrame(() => {
+      try {
+        inputRef.current?.focus()
+      } catch {}
+    })
+  }, [])
+
+  const startEdit = useCallback(
+    (msg: any) => {
+      if (!msg || typeof msg.id !== 'string') return
+      if (msg.senderId !== me?.id) return
+      if (msg.deletedAt) return
+      if ((msg.type || 'TEXT') !== 'TEXT') return
+      const atts = Array.isArray(msg.attachments) ? msg.attachments : []
+      // Avoid mixing editing with attachment flows for now.
+      if (atts.length > 0) return
+      const text = typeof msg.content === 'string' ? msg.content : ''
+      setReplyTo(null)
+      setEditBusy(false)
+      setEditState({ messageId: msg.id, originalText: text })
+      setMessageText(text)
+      requestAnimationFrame(() => {
+        try {
+          const el = inputRef.current
+          if (!el) return
+          el.focus()
+          const end = el.value.length
+          el.setSelectionRange(end, end)
+        } catch {}
+      })
+    },
+    [me?.id],
+  )
+
   const notifyTyping = useCallback(() => {
     if (!activeId) return
     const st = typingEmitRef.current
@@ -6392,6 +6437,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   const showSpacer = leftAlignAll
                   const createdAt = m.createdAt ? new Date(m.createdAt) : null
                   const timeLabel = createdAt ? createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+                  const editedAtRaw = (m as any)?.metadata?.editedAt
+                  const isEdited = typeof editedAtRaw === 'string' && editedAtRaw.length > 0
                   const otherIds: string[] = (activeConversation?.participants || []).map((p: any) => p.user.id).filter((id: string) => (currentUserId ? id !== currentUserId : true))
                   const receipts = (m.receipts || []) as Array<any>
                   const readByAny = isMe && otherIds.some((uid) => receipts.some((r) => r.userId === uid && (r.status === 'READ' || r.status === 'SEEN')))
@@ -7208,9 +7255,10 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                           const imageOnly = hasImages && !hasText && !hasNonImage
                           if (imageOnly) return null
                           return (
-                            <div className="msg-meta" style={{ color: '#9aa0a8' }}>
+                            <div className="msg-meta" style={{ color: '#9aa0a8', display: 'flex', alignItems: 'center', gap: 6 }}>
                               <span>{timeLabel}</span>
-                              {renderTicks({ withLeftMargin: true })}
+                              {isEdited && <span style={{ fontSize: 11, opacity: 0.9 }}>изменено</span>}
+                              {renderTicks({ withLeftMargin: false })}
                             </div>
                           )
                         })()}
@@ -7474,11 +7522,66 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 </div>
               )
             })()}
+            {editState && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  padding: '10px 12px',
+                  background: 'var(--surface-100)',
+                  border: '1px solid var(--surface-border)',
+                  borderRadius: 10,
+                  marginBottom: 10,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: 13, lineHeight: '18px' }}>
+                    Редактирование сообщения
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    Esc — отмена · Enter — сохранить · Shift+Enter — перенос строки
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                  <button type="button" className="btn btn-ghost" onClick={cancelEdit} disabled={editBusy}>
+                    Отмена
+                  </button>
+                  <button type="button" className="btn btn-primary" disabled={editBusy} onClick={() => { (inputRef.current?.form as any)?.requestSubmit?.() }}>
+                    {editBusy ? 'Сохраняем...' : 'Сохранить'}
+                  </button>
+                </div>
+              </div>
+            )}
             <form autoComplete="off" onSubmit={async (e) => {
                     e.preventDefault()
               if (!activeId) return
               stopTyping(activeId)
-                    const value = messageText.trim()
+              if (editBusy) return
+              const trimmed = messageText.trim()
+
+              if (editState) {
+                const mid = editState.messageId
+                if (!trimmed) return
+                setEditBusy(true)
+                try {
+                  await api.post('/messages/update', { messageId: mid, content: messageText })
+                  setEditState(null)
+                  setMessageText('')
+                  setReplyTo(null)
+                } catch (err: any) {
+                  console.error('Failed to update message:', err)
+                  const msg = err?.response?.data?.message || err?.message || 'Не удалось сохранить изменения'
+                  alert(msg)
+                  setEditState(null)
+                } finally {
+                  setEditBusy(false)
+                }
+                return
+              }
+
+              const value = trimmed
               if (pendingImages.length > 0) {
                 const imagesSnapshot = pendingImages.map((img) => ({ file: img.file, previewUrl: img.previewUrl }))
                 setPendingImages([])
@@ -7499,6 +7602,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               type="button"
               className="btn btn-secondary"
               onClick={() => attachInputRef.current?.click()}
+              disabled={!!editState}
               style={{
                 flexShrink: 0,
                 display: 'inline-flex',
@@ -7520,6 +7624,28 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 value={messageText}
                 onChange={(e) => { setMessageText(e.target.value); notifyTyping() }}
                 onKeyDown={(e) => {
+                  if (e.key === 'Escape' && editState) {
+                    e.preventDefault()
+                    cancelEdit()
+                    return
+                  }
+                  if (e.key === 'ArrowUp' && !editState) {
+                    const el = e.currentTarget
+                    const isEmpty = (el.value || '').length === 0
+                    const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0
+                    const noAttachments = pendingImages.length === 0
+                    if (isEmpty && caretAtStart && noAttachments) {
+                      const list = (displayedMessages ? [...displayedMessages] : [])
+                        .filter((m: any) => !m?.deletedAt)
+                        .sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+                      const last = list[list.length - 1]
+                      if (last && last.senderId === me?.id && (last.type || 'TEXT') === 'TEXT' && (!last.attachments || last.attachments.length === 0)) {
+                        e.preventDefault()
+                        startEdit(last)
+                        return
+                      }
+                    }
+                  }
                   // Keep familiar behavior: Enter sends, Shift+Enter inserts newline.
                   // This also enables multi-line paste without collapsing line breaks.
                   if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -7588,6 +7714,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 type="button"
                 className="btn btn-secondary"
                 onClick={startVoiceRecording}
+                disabled={!!editState}
                 style={{
                   flexShrink: 0,
                   display: 'inline-flex',
@@ -7607,6 +7734,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               <button
                 type="submit"
                 className="btn btn-primary"
+                disabled={editBusy}
                 style={{
                   flexShrink: 0,
                   whiteSpace: 'nowrap',
@@ -7620,7 +7748,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 }}
               >
                 <Send size={16} />
-                {!isMobile && <span>Отправить</span>}
+                {!isMobile && <span>{editState ? (editBusy ? 'Сохраняем...' : 'Сохранить') : 'Отправить'}</span>}
               </button>
             </form>
             )}
@@ -9145,6 +9273,23 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             setReplyTo({ id: mid, preview: (found?.content ?? '').slice(0, 100) })
             setContextMenu({ open: false, x: 0, y: 0, messageId: null })
           }}>Цитировать</button>
+          {(() => {
+            const mid = contextMenu.messageId!
+            const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+            const canEdit =
+              !!found &&
+              found?.senderId === me?.id &&
+              !found?.deletedAt &&
+              (found?.type || 'TEXT') === 'TEXT' &&
+              (!found?.attachments || found.attachments.length === 0)
+            if (!canEdit) return null
+            return (
+              <button style={{ color: '#ffffff' }} onClick={() => {
+                startEdit(found)
+                setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+              }}>Редактировать</button>
+            )
+          })()}
           {(() => {
             const mid = contextMenu.messageId!
             const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
