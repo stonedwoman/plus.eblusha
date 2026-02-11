@@ -42,6 +42,8 @@
   --kb: 0px;
   /* Jump button spacing - расстояние от краев (отступ от правого края и от разделителя поля ввода) */
   --jump-button-spacing: 12px;
+  /* Real composer bar height (JS-updated) */
+  --composer-bar-h: 68px;
 }
 
 button, input, select, textarea { font-family: inherit; }
@@ -390,7 +392,7 @@ a {
   .jump-bottom { 
     position: fixed;
     right: var(--jump-button-spacing); 
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 68px + var(--jump-button-spacing)); /* Высота поля ввода (68px) + отступ от разделителя (такой же как от правого края) */
+    bottom: calc(env(safe-area-inset-bottom, 0px) + var(--composer-bar-h) + var(--jump-button-spacing)); /* Высота панели ввода + отступ */
   }
 }
 
@@ -697,7 +699,7 @@ a {
 .jump-bottom { 
   position: absolute;
   right: var(--jump-button-spacing); 
-  bottom: calc(68px + var(--jump-button-spacing)); /* Высота поля ввода (68px) + отступ от разделителя (такой же как от правого края) */
+  bottom: calc(var(--composer-bar-h) + var(--jump-button-spacing)); /* Высота панели ввода + отступ */
   width: 44px;
   height: 44px;
   border-radius: 50%;

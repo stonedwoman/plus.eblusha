@@ -1070,6 +1070,7 @@ export default function ChatsPage() {
   } | null>(null)
   const [editBusy, setEditBusy] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const composerBarRef = useRef<HTMLDivElement | null>(null)
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const ringTimerRef = useRef<number | null>(null)
   const ringingConvIdRef = useRef<string | null>(null)
@@ -4540,6 +4541,30 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     resizeComposer()
   }, [messageText, resizeComposer])
 
+  const syncComposerBarHeightVar = useCallback(() => {
+    const bar = composerBarRef.current
+    if (!bar) return
+    try {
+      const h = Math.max(1, Math.round(bar.getBoundingClientRect().height))
+      document.documentElement.style.setProperty('--composer-bar-h', `${h}px`)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    syncComposerBarHeightVar()
+  }, [messageText, pendingImages.length, replyTo?.id, editState?.messageId, attachUploading, syncComposerBarHeightVar])
+
+  // Keep CSS var in sync for any layout changes (e.g. fonts/viewport).
+  useEffect(() => {
+    const bar = composerBarRef.current
+    if (!bar || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => syncComposerBarHeightVar())
+    ro.observe(bar)
+    return () => ro.disconnect()
+  }, [syncComposerBarHeightVar])
+
   // Ensure we always send typing_stop on conversation switch/unmount.
   useEffect(() => {
     const convId = activeId
@@ -7336,6 +7361,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
             </button>
           )}
           <div className="msg-input-bar"
+            ref={composerBarRef}
             style={{ flexShrink: 0 }}
             onDragOver={(e) => { e.preventDefault(); setAttachDragOver(true) }}
             onDragLeave={() => setAttachDragOver(false)}
