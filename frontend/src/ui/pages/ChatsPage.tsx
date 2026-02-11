@@ -4593,24 +4593,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       if (!el) return
       const start = el.selectionStart ?? 0
       const end = el.selectionEnd ?? 0
-      let nextSelStart = start
-      let nextSelEnd = end
-      setMessageText((prev) => {
-        const selected = (prev || '').slice(start, end)
-        const built = builder(selected)
-        nextSelStart = start + built.selectFrom
-        nextSelEnd = start + built.selectTo
-        return `${(prev || '').slice(0, start)}${built.inserted}${(prev || '').slice(end)}`
-      })
+      const currentValue = el.value
+      const selected = currentValue.slice(start, end)
+      const built = builder(selected)
+      const newText = currentValue.slice(0, start) + built.inserted + currentValue.slice(end)
+      const nextSelStart = start + built.selectFrom
+      const nextSelEnd = start + built.selectTo
+      el.value = newText
+      el.setSelectionRange(nextSelStart, nextSelEnd)
+      el.focus()
+      setMessageText(newText)
       notifyTyping()
-      requestAnimationFrame(() => {
-        try {
-          el.focus()
-          el.setSelectionRange(nextSelStart, nextSelEnd)
-        } catch {}
-      })
+      resizeComposer()
     },
-    [notifyTyping],
+    [notifyTyping, resizeComposer],
   )
 
   const applyWrapFormatting = useCallback(
