@@ -7642,8 +7642,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 justifyContent: 'center',
                 gap: isMobile ? 0 : 6,
                 whiteSpace: 'nowrap',
-                height: 46,
-                minHeight: 46,
+                height: 'var(--control-h)',
+                minHeight: 'var(--control-h)',
                 padding: '0 12px',
               }}
               aria-label="Прикрепить файлы"
@@ -7766,13 +7766,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   flex: 1,
                   minWidth: 0,
                   padding: '12px 16px',
-                  borderRadius: 8,
+                  borderRadius: 'var(--radius-sm)',
                   border: '1px solid var(--surface-border)',
                   background: 'var(--surface-100)',
                   color: 'var(--text-primary)',
                   fontSize: 16,
-                  minHeight: 46,
-                  maxHeight: 140,
+                  minHeight: 'var(--control-h)',
+                  maxHeight: 'var(--composer-max-h)',
                   lineHeight: '20px',
                   resize: 'none',
                   overflowY: 'auto',
@@ -7790,8 +7790,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   justifyContent: 'center',
                   gap: isMobile ? 0 : 6,
                   whiteSpace: 'nowrap',
-                  height: 46,
-                  minHeight: 46,
+                  height: 'var(--control-h)',
+                  minHeight: 'var(--control-h)',
                   padding: '0 12px',
                 }}
                 aria-label="Записать голосовое сообщение"
@@ -7810,8 +7810,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: isMobile ? 0 : 6,
-                  height: 46,
-                  minHeight: 46,
+                  height: 'var(--control-h)',
+                  minHeight: 'var(--control-h)',
                   padding: '0 12px',
                 }}
               >
