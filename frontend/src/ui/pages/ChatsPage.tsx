@@ -1055,10 +1055,19 @@ export default function ChatsPage() {
   const dialingToneStopRef = useRef<null | (() => void)>(null)
   // end call sound
   const endCallAudioRef = useRef<HTMLAudioElement | null>(null)
-  const [typing, setTyping] = useState(false)
+  const [typingByUserId, setTypingByUserId] = useState<Record<string, number>>({})
   const [typingDots, setTypingDots] = useState(1)
   const [leftAlignAll, setLeftAlignAll] = useState(false)
-  const typingTimer = useRef<number | null>(null)
+  // Outgoing typing emitter (per active conversation)
+  const typingEmitRef = useRef<{
+    convId: string | null
+    startTimer: number | null
+    stopTimer: number | null
+    lastSentTyping: boolean
+    lastSentAt: number
+  }>({ convId: null, startTimer: null, stopTimer: null, lastSentTyping: false, lastSentAt: 0 })
+  // Incoming typing cleanup (expire stale entries)
+  const typingCleanupTimerRef = useRef<number | null>(null)
   const tm = useRef<{ pinTimer: number | null }>({ pinTimer: null })
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; messageId: string | null }>(() => ({ open: false, x: 0, y: 0, messageId: null }))
   const [convMenu, setConvMenu] = useState<{ open: boolean; x: number; y: number; conversationId: string | null }>(() => ({ open: false, x: 0, y: 0, conversationId: null }))
@@ -3907,10 +3916,22 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       messagesQuery.refetch()
     }
     const onTyping = (p: any) => {
+      if (!p) return
       if (p.conversationId !== activeId) return
-      setTyping(true)
-      if (typingTimer.current) window.clearTimeout(typingTimer.current)
-      typingTimer.current = window.setTimeout(() => setTyping(false), 2000)
+      const uid = typeof p.userId === 'string' ? p.userId : null
+      if (!uid) return
+      // Ignore our own typing echoes (defense-in-depth)
+      if (uid === me?.id) return
+      const isTyping = !!p.typing
+      setTypingByUserId((prev) => {
+        if (!isTyping) {
+          if (!prev[uid]) return prev
+          const next = { ...prev }
+          delete next[uid]
+          return next
+        }
+        return { ...prev, [uid]: Date.now() }
+      })
     }
     const onReaction = (payload: { conversationId: string; messageId: string; message?: any }) => {
       if (!activeId || payload.conversationId !== activeId) {
@@ -3945,7 +3966,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       socket.off('message:update', onUpdate as any)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId])
+  }, [activeId, me?.id])
 
   // Unified handler for message:notify - handles both active and inactive chats
   useEffect(() => {
@@ -4088,7 +4109,8 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
 
   // animate typing dots and keep view pinned to bottom when typing shown (только на мобильных)
   useEffect(() => {
-    if (!typing || !isMobileRef.current) return
+    const isSomeoneTyping = Object.keys(typingByUserId).length > 0
+    if (!isSomeoneTyping || !isMobileRef.current) return
     const el = messagesRef.current
     const id = window.setInterval(() => {
       setTypingDots((d) => (d % 3) + 1)
@@ -4098,7 +4120,41 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       }
     }, 500)
     return () => window.clearInterval(id)
-  }, [typing])
+  }, [typingByUserId])
+
+  // Expire incoming typing users automatically (defense in depth; server doesn't send periodic stops).
+  useEffect(() => {
+    // Reset typing state on chat switch to avoid stale "typing..." from previous conversation.
+    setTypingByUserId({})
+    if (typingCleanupTimerRef.current) {
+      window.clearInterval(typingCleanupTimerRef.current)
+      typingCleanupTimerRef.current = null
+    }
+    typingCleanupTimerRef.current = window.setInterval(() => {
+      const now = Date.now()
+      setTypingByUserId((prev) => {
+        const keys = Object.keys(prev)
+        if (!keys.length) return prev
+        let changed = false
+        const next: Record<string, number> = {}
+        for (const uid of keys) {
+          const ts = prev[uid]
+          if (typeof ts === 'number' && now - ts < 2600) {
+            next[uid] = ts
+          } else {
+            changed = true
+          }
+        }
+        return changed ? next : prev
+      })
+    }, 800)
+    return () => {
+      if (typingCleanupTimerRef.current) {
+        window.clearInterval(typingCleanupTimerRef.current)
+        typingCleanupTimerRef.current = null
+      }
+    }
+  }, [activeId])
 
   // Show jump-to-bottom button when user scrolls up
   useEffect(() => {
@@ -4328,15 +4384,73 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     return () => window.removeEventListener('resize', measure)
   }, [activeId])
 
-  // send typing indicator with debounce
-  function notifyTyping() {
+  const emitTyping = useCallback((conversationId: string, typing: boolean) => {
+    if (!conversationId) return
+    try {
+      if (!socket.connected) {
+        connectSocket()
+      }
+    } catch {
+      // ignore connect errors; emit may still succeed later
+    }
+    socket.emit('conversation:typing', { conversationId, typing })
+  }, [])
+
+  const stopTyping = useCallback((conversationId: string | null) => {
+    const st = typingEmitRef.current
+    if (st.startTimer) window.clearTimeout(st.startTimer)
+    if (st.stopTimer) window.clearTimeout(st.stopTimer)
+    st.startTimer = null
+    st.stopTimer = null
+    if (conversationId && st.lastSentTyping) {
+      emitTyping(conversationId, false)
+    }
+    st.lastSentTyping = false
+    st.lastSentAt = 0
+    st.convId = conversationId
+  }, [emitTyping])
+
+  const notifyTyping = useCallback(() => {
     if (!activeId) return
-    socket.emit('conversation:typing', { conversationId: activeId, typing: true })
-    typingTimer.current && clearTimeout(typingTimer.current)
-    typingTimer.current = window.setTimeout(() => {
-      socket.emit('conversation:typing', { conversationId: activeId!, typing: false })
-    }, 1500)
-  }
+    const st = typingEmitRef.current
+    // If conversation changed while timers pending, best-effort stop old one.
+    if (st.convId && st.convId !== activeId && st.lastSentTyping) {
+      emitTyping(st.convId, false)
+      st.lastSentTyping = false
+    }
+    st.convId = activeId
+
+    if (st.startTimer) window.clearTimeout(st.startTimer)
+    // Debounce typing_start
+    st.startTimer = window.setTimeout(() => {
+      const now = Date.now()
+      // Throttle re-sending "typing=true" to keep remote indicator alive without spamming.
+      if (!st.lastSentTyping || now - st.lastSentAt > 2000) {
+        emitTyping(activeId, true)
+        st.lastSentTyping = true
+        st.lastSentAt = now
+      }
+    }, 420)
+
+    if (st.stopTimer) window.clearTimeout(st.stopTimer)
+    // Send typing_stop on idle
+    st.stopTimer = window.setTimeout(() => {
+      if (!st.convId) return
+      if (st.lastSentTyping) {
+        emitTyping(st.convId, false)
+      }
+      st.lastSentTyping = false
+      st.lastSentAt = Date.now()
+    }, 2100)
+  }, [activeId, emitTyping])
+
+  // Ensure we always send typing_stop on conversation switch/unmount.
+  useEffect(() => {
+    const convId = activeId
+    return () => {
+      stopTyping(convId)
+    }
+  }, [activeId, stopTyping])
 
   async function uploadAndSendAttachments(files: File[], textContent: string = '', replyToId?: string) {
     if (!activeId || files.length === 0) return
@@ -7324,9 +7438,46 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 </button>
               </div>
             ) : (
+            {(() => {
+              const ids = Object.keys(typingByUserId)
+              if (!ids.length) return null
+              const names = ids
+                .filter((uid) => uid !== me?.id)
+                .map((uid) => {
+                  const u = usersById[uid]
+                  return (u?.displayName ?? u?.username ?? 'Пользователь') as string
+                })
+                .filter(Boolean)
+              if (!names.length) return null
+              const label =
+                names.length === 1
+                  ? `Печатает: ${names[0]}`
+                  : `Печатают: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` и ещё ${names.length - 3}` : ''}`
+              return (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '0 2px 8px',
+                    color: 'var(--text-muted)',
+                    fontSize: 12,
+                    userSelect: 'none',
+                    minHeight: 18,
+                  }}
+                  aria-live="polite"
+                >
+                  <span>{label}</span>
+                  <span aria-hidden style={{ letterSpacing: 2, opacity: 0.9 }}>
+                    {'.'.repeat(typingDots)}
+                  </span>
+                </div>
+              )
+            })()}
             <form autoComplete="off" onSubmit={async (e) => {
                     e.preventDefault()
               if (!activeId) return
+              stopTyping(activeId)
                     const value = messageText.trim()
               if (pendingImages.length > 0) {
                 const imagesSnapshot = pendingImages.map((img) => ({ file: img.file, previewUrl: img.previewUrl }))
@@ -7367,12 +7518,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               <textarea
                 placeholder={pendingImages.length > 0 ? "Добавьте подпись к изображениям..." : "Напишите сообщение..."}
                 value={messageText}
-                onChange={(e) => setMessageText(e.target.value)}
+                onChange={(e) => { setMessageText(e.target.value); notifyTyping() }}
                 onKeyDown={(e) => {
                   // Keep familiar behavior: Enter sends, Shift+Enter inserts newline.
                   // This also enables multi-line paste without collapsing line breaks.
                   if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault()
+                    if (activeId) stopTyping(activeId)
                     // Trigger <form onSubmit />
                     const form = e.currentTarget.form as HTMLFormElement | null
                     if (!form) return
@@ -7414,6 +7566,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     e.preventDefault()
                   }
                 }}
+                onBlur={() => { if (activeId) stopTyping(activeId) }}
                 ref={inputRef}
                 style={{
                   flex: 1,
