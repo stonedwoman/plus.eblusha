@@ -37,6 +37,7 @@ declare global {
 const LAST_ACTIVE_CONVERSATION_KEY = 'eblusha:last-active-conversation'
 const MIN_OUTGOING_CALL_DURATION_MS = 30_000
 const MAX_PENDING_IMAGES = 10
+const MAX_PENDING_FILES = 10
 const MESSAGES_PAGE_SIZE = 80
 
 function decodeUrlForDisplay(raw: string) {
@@ -1046,6 +1047,15 @@ type PendingComposerImage = {
   source: 'paste' | 'upload'
 }
 
+type PendingComposerFile = {
+  id: string
+  file: File
+  fileName: string
+  size: number
+  mime: string
+  source: 'drop' | 'upload'
+}
+
 type PendingMessage = {
   id: string
   createdAt: number
@@ -1210,6 +1220,7 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const attachmentDecryptInProgressRef = useRef<Set<string>>(new Set())
   const attachmentHeadInfoInFlightRef = useRef<Set<string>>(new Set())
   const [pendingImages, setPendingImages] = useState<PendingComposerImage[]>([])
+  const [pendingFiles, setPendingFiles] = useState<PendingComposerFile[]>([])
   const [editingImageId, setEditingImageId] = useState<string | null>(null)
   const [e2eeVersion, setE2eeVersion] = useState(0)
   const voiceRecorderRef = useRef<VoiceRecorder | null>(null)
@@ -1259,6 +1270,8 @@ useEffect(() => { activeConversationIdRef.current = activeId }, [activeId])
   }, [availabilityContext, activeId])
 const pendingImagesRef = useRef<PendingComposerImage[]>([])
 useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
+const pendingFilesRef = useRef<PendingComposerFile[]>([])
+useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const releasePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url) return
     try {
@@ -1275,6 +1288,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       return []
     })
   }, [releasePreviewUrl, setEditingImageId])
+  const clearPendingFiles = useCallback(() => {
+    setPendingFiles([])
+  }, [])
   const addComposerImage = useCallback((file: File, source: 'paste' | 'upload') => {
     if (!file || !file.type.startsWith('image/')) return
     setPendingImages((prev) => {
@@ -1297,6 +1313,28 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       return [...prev, entry]
     })
   }, [])
+  const addComposerFile = useCallback((file: File, source: 'drop' | 'upload') => {
+    if (!file) return
+    if (file.type && file.type.startsWith('image/')) return
+    setPendingFiles((prev) => {
+      if (prev.length >= MAX_PENDING_FILES) {
+        alert('Можно прикрепить не более 10 файлов за раз.')
+        return prev
+      }
+      const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `file-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const entry: PendingComposerFile = {
+        id,
+        file,
+        fileName: file.name || 'Файл',
+        size: typeof file.size === 'number' ? file.size : 0,
+        mime: file.type || 'application/octet-stream',
+        source,
+      }
+      return [...prev, entry]
+    })
+  }, [])
   const removeComposerImage = useCallback((id: string) => {
     setPendingImages((prev) => {
       const target = prev.find((img) => img.id === id)
@@ -1305,6 +1343,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     })
     setEditingImageId((prev) => (prev === id ? null : prev))
   }, [releasePreviewUrl, setEditingImageId])
+  const removeComposerFile = useCallback((id: string) => {
+    setPendingFiles((prev) => prev.filter((f) => f.id !== id))
+  }, [])
   const applyComposerImageEdit = useCallback((id: string, file: File, previewUrl: string) => {
     setPendingImages((prev) =>
       prev.map((img) => {
@@ -1835,6 +1876,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     if (pendingImagesRef.current.length) {
       clearPendingImages()
     }
+    if (pendingFilesRef.current.length) {
+      clearPendingFiles()
+    }
   }
 
   async function ensureLocalDevice(): Promise<{ deviceId: string; publicKey: string } | null> {
@@ -2059,6 +2103,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     }
     if (pendingImagesRef.current.length) {
       clearPendingImages()
+    }
+    if (pendingFilesRef.current.length) {
+      clearPendingFiles()
     }
   }
 
@@ -3026,6 +3073,9 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         setShowJump(false)
         if (pendingImagesRef.current.length) {
           clearPendingImages()
+        }
+        if (pendingFilesRef.current.length) {
+          clearPendingFiles()
         }
         if (isMobileRef.current) {
           setMobileView('list')
@@ -4555,7 +4605,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
 
   useLayoutEffect(() => {
     syncComposerBarHeightVar()
-  }, [messageText, pendingImages.length, replyTo?.id, editState?.messageId, attachUploading, syncComposerBarHeightVar])
+  }, [messageText, pendingImages.length, pendingFiles.length, replyTo?.id, editState?.messageId, attachUploading, syncComposerBarHeightVar])
 
   // Keep CSS var in sync for any layout changes (e.g. fonts/viewport).
   useEffect(() => {
@@ -4585,15 +4635,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       const imageFiles = files.filter((file) => file.type.startsWith('image/'))
       const otherFiles = files.filter((file) => !file.type.startsWith('image/'))
       imageFiles.forEach((file) => addComposerImage(file, 'upload'))
-      if (otherFiles.length) {
-        await uploadAndSendAttachments(otherFiles)
-      }
+      otherFiles.forEach((file) => addComposerFile(file, 'drop'))
       // Focus composer after drop to allow adding a caption quickly.
       requestAnimationFrame(() => {
         try { inputRef.current?.focus() } catch {}
       })
     },
-    [activeId, addComposerImage, editState, uploadAndSendAttachments],
+    [activeId, addComposerFile, addComposerImage, editState],
   )
 
   // Ensure we always send typing_stop on conversation switch/unmount.
@@ -7509,15 +7557,63 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 </div>
               </div>
             )}
+            {pendingFiles.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Файлы перед отправкой</div>
+                <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
+                  {pendingFiles.map((f) => (
+                    <div
+                      key={f.id}
+                      style={{
+                        position: 'relative',
+                        flexShrink: 0,
+                        minWidth: 220,
+                        maxWidth: 320,
+                        background: 'var(--surface-100)',
+                        borderRadius: 12,
+                        border: '1px solid var(--surface-border)',
+                        padding: '10px 12px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                      }}
+                    >
+                      <button
+                        className="btn btn-icon btn-ghost"
+                        style={{ position: 'absolute', top: 4, right: 4 }}
+                        onClick={() => removeComposerFile(f.id)}
+                        aria-label="Удалить файл"
+                        type="button"
+                      >
+                        <X size={14} />
+                      </button>
+                      <div style={{ width: 32, height: 32, borderRadius: 10, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <Paperclip size={16} color="var(--text-muted)" />
+                      </div>
+                      <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <div style={{ fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {f.fileName}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          {formatAttachmentFileSize(f.size) || '—'}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <input type="file" multiple style={{ display: 'none' }} ref={attachInputRef} onChange={async (e) => {
               const files = Array.from(e.target.files || [])
               if (!activeId || files.length === 0) return
+              if (editState) {
+                e.target.value = ''
+                return
+              }
               const imageFiles = files.filter((file) => file.type.startsWith('image/'))
               const otherFiles = files.filter((file) => !file.type.startsWith('image/'))
               imageFiles.forEach((file) => addComposerImage(file, 'upload'))
-              if (otherFiles.length) {
-                await uploadAndSendAttachments(otherFiles)
-              }
+              otherFiles.forEach((file) => addComposerFile(file, 'upload'))
               e.target.value = ''
             }} />
             {voiceRecording ? (
@@ -7736,12 +7832,14 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
               }
 
               const value = trimmed
-              if (pendingImages.length > 0) {
+              if (pendingImages.length > 0 || pendingFiles.length > 0) {
                 const imagesSnapshot = pendingImages.map((img) => ({ file: img.file, previewUrl: img.previewUrl }))
+                const filesSnapshot = pendingFiles.map((f) => f.file)
                 setPendingImages([])
+                setPendingFiles([])
                 setEditingImageId(null)
                 imagesSnapshot.forEach((entry) => releasePreviewUrl(entry.previewUrl))
-                await uploadAndSendAttachments(imagesSnapshot.map((entry) => entry.file), value || '', replyTo?.id)
+                await uploadAndSendAttachments([...imagesSnapshot.map((entry) => entry.file), ...filesSnapshot], value || '', replyTo?.id)
                 setMessageText('')
                 setReplyTo(null)
               } else if (value) {
@@ -7774,7 +7872,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                 {!isMobile && <span>Загрузить</span>}
               </button>
               <textarea
-                placeholder={pendingImages.length > 0 ? "Добавьте подпись к изображениям..." : "Напишите сообщение..."}
+                placeholder={(pendingImages.length > 0 || pendingFiles.length > 0) ? "Добавьте подпись к вложениям..." : "Напишите сообщение..."}
                 value={messageText}
                 onChange={(e) => { setMessageText(e.target.value); notifyTyping() }}
                 onInput={() => resizeComposer()}
@@ -7788,7 +7886,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                     const el = e.currentTarget
                     const isEmpty = (el.value || '').length === 0
                     const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0
-                    const noAttachments = pendingImages.length === 0
+                    const noAttachments = pendingImages.length === 0 && pendingFiles.length === 0
                     if (isEmpty && caretAtStart && noAttachments) {
                       const list = (displayedMessages ? [...displayedMessages] : [])
                         .filter((m: any) => !m?.deletedAt)
