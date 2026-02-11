@@ -1,5 +1,6 @@
 import { lookup } from "node:dns/promises";
 import net from "node:net";
+import { extractFirstPreviewableUrl } from "./link-detect";
 
 export type LinkPreview = {
   url: string;
@@ -18,14 +19,6 @@ export type LinkPreview = {
   } | null;
   fetchedAtISO: string;
 };
-
-// Matches:
-// - https://example.com/...
-// - www.example.com/...
-// - example.com/... (bare domains)
-const URL_RE =
-  /((?:(?:https?:\/\/)|www\.)[^\s<]+|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})(?::\d{2,5})?(?:\/[^\s<]*)?)/gi;
-const TRAILING_PUNCT_RE = /[)\]}.,!?;:]+$/;
 
 const MAX_HTML_BYTES = 512_000;
 const TIMEOUT_MS = 10_000;
@@ -91,15 +84,7 @@ const youtubeCache = new Map<string, YouTubeCacheEntry>();
 const youtubeInflight = new Map<string, Promise<YouTubeMeta | null>>();
 
 export function extractFirstUrl(text: unknown): string | null {
-  if (typeof text !== "string") return null;
-  URL_RE.lastIndex = 0;
-  const m = URL_RE.exec(text);
-  if (!m) return null;
-  const raw = m[1] ?? "";
-  const trailing = raw.match(TRAILING_PUNCT_RE)?.[0] ?? "";
-  const core = trailing ? raw.slice(0, -trailing.length) : raw;
-  const href = normalizeLinkHref(core);
-  return href;
+  return extractFirstPreviewableUrl(text);
 }
 
 export async function getLinkPreview(urlString: string): Promise<LinkPreview | null> {
@@ -435,8 +420,10 @@ async function fetchOpenGraphWithRedirects(initialUrl: string): Promise<LinkPrev
       continue;
     }
 
+    // Network-level guard: only 200-399 and only text/html before parsing metadata.
+    if (res.status < 200 || res.status >= 400) return null;
     const contentType = (res.headers.get("content-type") || "").toLowerCase();
-    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) return null;
+    if (!contentType.includes("text/html")) return null;
 
     const html = await readBodyUpTo(res, MAX_HTML_BYTES);
     if (!html) return null;
@@ -559,9 +546,10 @@ async function fetchHtmlWithRedirects(initialUrl: string, maxBytes: number = MAX
       continue;
     }
 
-    if (!res.ok) return { finalUrl: current.toString(), html: null };
+    // Only accept 200-399 responses; at this point redirects already handled above.
+    if (res.status < 200 || res.status >= 400) return { finalUrl: current.toString(), html: null };
     const contentType = (res.headers.get("content-type") || "").toLowerCase();
-    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
+    if (!contentType.includes("text/html")) {
       return { finalUrl: current.toString(), html: null };
     }
     const html = await readBodyUpTo(res, maxBytes);

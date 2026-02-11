@@ -22,6 +22,7 @@ import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
 import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { getWaveform } from '../../utils/audioWaveform'
 import { unlockAppAudio } from '../../utils/audioUnlock'
+import { detectLinks, extractFirstPreviewableUrl } from '../../js/link-detect'
 
 declare global {
   interface Window {
@@ -37,13 +38,6 @@ const MIN_OUTGOING_CALL_DURATION_MS = 30_000
 const MAX_PENDING_IMAGES = 10
 const MESSAGES_PAGE_SIZE = 80
 
-// Matches:
-// - https://example.com/...
-// - www.example.com/...
-// - example.com/... (bare domains)
-const URL_RE = /((?:(?:https?:\/\/)|www\.)[^\s<]+|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})(?::\d{2,5})?(?:\/[^\s<]*)?)/gi
-const TRAILING_PUNCT_RE = /[)\]}.,!?;:]+$/
-
 function decodeUrlForDisplay(raw: string) {
   // decodeURI keeps reserved characters (/, ?, #, &) intact while decoding %XX sequences.
   // This is ideal for showing human-readable paths like /wiki/Трофей:...
@@ -54,90 +48,62 @@ function decodeUrlForDisplay(raw: string) {
   }
 }
 
-function normalizeLinkHref(raw: string) {
-  const trimmed = raw.trim()
-  if (!trimmed) return null
-  const lower = trimmed.toLowerCase()
-  const withScheme =
-    lower.startsWith('http://') || lower.startsWith('https://')
-      ? trimmed
-      : lower.startsWith('www.')
-        ? `https://${trimmed}`
-        : `https://${trimmed}`
-  try {
-    const url = new URL(withScheme)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-    return url.toString()
-  } catch {
-    return null
-  }
-}
-
 function renderLinkifiedText(value: unknown) {
   if (typeof value !== 'string') return value as any
   if (!value) return value
 
-  const lines = value.split('\n')
-  return (
-    <>
-      {lines.map((line, lineIdx) => {
-        const nodes: any[] = []
-        let lastIndex = 0
-        URL_RE.lastIndex = 0
-        let match: RegExpExecArray | null
-        while ((match = URL_RE.exec(line)) !== null) {
-          const raw = match[1]
-          const start = match.index
-          const end = start + raw.length
-          if (start > lastIndex) nodes.push(line.slice(lastIndex, start))
-
-          const trailing = (raw.match(TRAILING_PUNCT_RE)?.[0] ?? '')
-          const core = trailing ? raw.slice(0, -trailing.length) : raw
-          const href = normalizeLinkHref(core)
-
-          if (href) {
-            const displayText = decodeUrlForDisplay(core)
-            nodes.push(
-              <a
-                key={`u-${lineIdx}-${start}`}
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer nofollow"
-                style={{ color: 'inherit', textDecoration: 'underline', overflowWrap: 'anywhere', wordBreak: 'break-word' }}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                {displayText}
-              </a>,
-            )
-          } else {
-            nodes.push(raw)
-          }
-
-          if (trailing) nodes.push(trailing)
-          lastIndex = end
-        }
-        if (lastIndex < line.length) nodes.push(line.slice(lastIndex))
-
-        return (
-          <Fragment key={`l-${lineIdx}`}>
-            {nodes}
-            {lineIdx < lines.length - 1 ? <br /> : null}
+  const links = detectLinks(value)
+  if (!links.length) {
+    // Preserve newlines
+    const lines = value.split('\n')
+    return (
+      <>
+        {lines.map((line, idx) => (
+          <Fragment key={`t-${idx}`}>
+            {line}
+            {idx < lines.length - 1 ? <br /> : null}
           </Fragment>
-        )
-      })}
-    </>
-  )
-}
+        ))}
+      </>
+    )
+  }
 
-function extractFirstUrlFromText(value: unknown) {
-  if (typeof value !== 'string') return null
-  URL_RE.lastIndex = 0
-  const m = URL_RE.exec(value)
-  if (!m) return null
-  const raw = m[1] ?? ''
-  const trailing = (raw.match(TRAILING_PUNCT_RE)?.[0] ?? '')
-  const core = trailing ? raw.slice(0, -trailing.length) : raw
-  return normalizeLinkHref(core)
+  const nodes: any[] = []
+  let last = 0
+  for (const l of links) {
+    if (l.start > last) nodes.push(value.slice(last, l.start))
+    const displayText = decodeUrlForDisplay(value.slice(l.start, l.end))
+    nodes.push(
+      <a
+        key={`u-${l.start}-${l.end}`}
+        href={l.href}
+        target="_blank"
+        rel="noopener noreferrer nofollow"
+        style={{ color: 'inherit', textDecoration: 'underline', overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        {displayText}
+      </a>,
+    )
+    last = l.end
+  }
+  if (last < value.length) nodes.push(value.slice(last))
+
+  // Convert \n into <br/> while keeping anchors intact.
+  const out: any[] = []
+  let key = 0
+  for (const part of nodes) {
+    if (typeof part !== 'string') {
+      out.push(<Fragment key={`p-${key++}`}>{part}</Fragment>)
+      continue
+    }
+    const lines = part.split('\n')
+    lines.forEach((line, idx) => {
+      out.push(<Fragment key={`s-${key++}`}>{line}</Fragment>)
+      if (idx < lines.length - 1) out.push(<br key={`br-${key++}`} />)
+    })
+  }
+  return <>{out}</>
 }
 
 function parseYouTubeVideoId(urlString: string): string | null {
@@ -199,6 +165,234 @@ function getSpotifyEmbed(urlString: string): { url: string; height: number } | n
   } catch {
     return null
   }
+}
+
+type AttachmentFileKind =
+  | 'document'
+  | 'spreadsheet'
+  | 'presentation'
+  | 'image'
+  | 'audio'
+  | 'video'
+  | 'archive'
+  | 'code'
+  | 'data'
+  | 'binary'
+
+type AttachmentFileInfo = {
+  description: string
+  kind: AttachmentFileKind
+  badge?: string
+}
+
+const FILE_KIND_UI: Record<
+  AttachmentFileKind,
+  { badge: string; bg: string; fg: string }
+> = {
+  document: { badge: 'DOC', bg: '#f59e0b', fg: '#0b1220' },
+  spreadsheet: { badge: 'XLS', bg: '#22c55e', fg: '#0b1220' },
+  presentation: { badge: 'PPT', bg: '#fb923c', fg: '#0b1220' },
+  image: { badge: 'IMG', bg: '#3b82f6', fg: '#f8fafc' },
+  audio: { badge: 'AUD', bg: '#a855f7', fg: '#f8fafc' },
+  video: { badge: 'VID', bg: '#ef4444', fg: '#f8fafc' },
+  archive: { badge: 'ZIP', bg: '#14b8a6', fg: '#0b1220' },
+  code: { badge: 'CODE', bg: '#6366f1', fg: '#f8fafc' },
+  data: { badge: 'DATA', bg: '#64748b', fg: '#f8fafc' },
+  binary: { badge: 'FILE', bg: '#64748b', fg: '#f8fafc' },
+}
+
+const FILE_EXTENSION_INFO: Record<string, AttachmentFileInfo> = {
+  pdf: { description: 'PDF-документ', kind: 'document', badge: 'PDF' },
+  doc: { description: 'Документ Word', kind: 'document', badge: 'DOC' },
+  docx: { description: 'Документ Word', kind: 'document', badge: 'DOCX' },
+  odt: { description: 'Текстовый документ OpenDocument', kind: 'document', badge: 'ODT' },
+  rtf: { description: 'Форматированный текст', kind: 'document', badge: 'RTF' },
+  txt: { description: 'Текстовый файл', kind: 'document', badge: 'TXT' },
+  md: { description: 'Markdown-документ', kind: 'document', badge: 'MD' },
+
+  xls: { description: 'Таблица Excel', kind: 'spreadsheet', badge: 'XLS' },
+  xlsx: { description: 'Таблица Excel', kind: 'spreadsheet', badge: 'XLSX' },
+  ods: { description: 'Таблица OpenDocument', kind: 'spreadsheet', badge: 'ODS' },
+  csv: { description: 'CSV-таблица', kind: 'spreadsheet', badge: 'CSV' },
+  tsv: { description: 'TSV-таблица', kind: 'spreadsheet', badge: 'TSV' },
+
+  ppt: { description: 'Презентация PowerPoint', kind: 'presentation', badge: 'PPT' },
+  pptx: { description: 'Презентация PowerPoint', kind: 'presentation', badge: 'PPTX' },
+  odp: { description: 'Презентация OpenDocument', kind: 'presentation', badge: 'ODP' },
+  key: { description: 'Презентация Keynote', kind: 'presentation', badge: 'KEY' },
+
+  jpg: { description: 'Изображение JPEG', kind: 'image', badge: 'JPG' },
+  jpeg: { description: 'Изображение JPEG', kind: 'image', badge: 'JPG' },
+  png: { description: 'Изображение PNG', kind: 'image', badge: 'PNG' },
+  gif: { description: 'Изображение GIF', kind: 'image', badge: 'GIF' },
+  webp: { description: 'Изображение WebP', kind: 'image', badge: 'WEBP' },
+  svg: { description: 'Векторное изображение SVG', kind: 'image', badge: 'SVG' },
+  heic: { description: 'Изображение HEIC', kind: 'image', badge: 'HEIC' },
+  bmp: { description: 'Изображение BMP', kind: 'image', badge: 'BMP' },
+  tiff: { description: 'Изображение TIFF', kind: 'image', badge: 'TIFF' },
+
+  mp3: { description: 'Аудиофайл MP3', kind: 'audio', badge: 'MP3' },
+  wav: { description: 'Аудиофайл WAV', kind: 'audio', badge: 'WAV' },
+  ogg: { description: 'Аудиофайл OGG', kind: 'audio', badge: 'OGG' },
+  m4a: { description: 'Аудиофайл M4A', kind: 'audio', badge: 'M4A' },
+  flac: { description: 'Аудиофайл FLAC', kind: 'audio', badge: 'FLAC' },
+  aac: { description: 'Аудиофайл AAC', kind: 'audio', badge: 'AAC' },
+
+  mp4: { description: 'Видеофайл MP4', kind: 'video', badge: 'MP4' },
+  mov: { description: 'Видеофайл MOV', kind: 'video', badge: 'MOV' },
+  avi: { description: 'Видеофайл AVI', kind: 'video', badge: 'AVI' },
+  mkv: { description: 'Видеофайл MKV', kind: 'video', badge: 'MKV' },
+  webm: { description: 'Видеофайл WebM', kind: 'video', badge: 'WEBM' },
+  m4v: { description: 'Видеофайл M4V', kind: 'video', badge: 'M4V' },
+
+  zip: { description: 'Архив ZIP', kind: 'archive', badge: 'ZIP' },
+  rar: { description: 'Архив RAR', kind: 'archive', badge: 'RAR' },
+  '7z': { description: 'Архив 7Z', kind: 'archive', badge: '7Z' },
+  tar: { description: 'Архив TAR', kind: 'archive', badge: 'TAR' },
+  gz: { description: 'Архив GZ', kind: 'archive', badge: 'GZ' },
+  bz2: { description: 'Архив BZ2', kind: 'archive', badge: 'BZ2' },
+
+  json: { description: 'JSON-файл данных', kind: 'data', badge: 'JSON' },
+  xml: { description: 'XML-файл данных', kind: 'data', badge: 'XML' },
+  yaml: { description: 'YAML-файл данных', kind: 'data', badge: 'YAML' },
+  yml: { description: 'YAML-файл данных', kind: 'data', badge: 'YAML' },
+
+  html: { description: 'HTML-документ', kind: 'code', badge: 'HTML' },
+  css: { description: 'CSS-стили', kind: 'code', badge: 'CSS' },
+  js: { description: 'JavaScript-файл', kind: 'code', badge: 'JS' },
+  jsx: { description: 'React JSX-файл', kind: 'code', badge: 'JSX' },
+  ts: { description: 'TypeScript-файл', kind: 'code', badge: 'TS' },
+  tsx: { description: 'React TSX-файл', kind: 'code', badge: 'TSX' },
+
+  apk: { description: 'Android-приложение (APK)', kind: 'binary', badge: 'APK' },
+  exe: { description: 'Исполняемый файл Windows', kind: 'binary', badge: 'EXE' },
+  msi: { description: 'Установщик Windows', kind: 'binary', badge: 'MSI' },
+  dmg: { description: 'Образ macOS', kind: 'binary', badge: 'DMG' },
+}
+
+function formatAttachmentFileSize(value: unknown): string | null {
+  const bytes = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(bytes) || bytes <= 0) return null
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = bytes
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  if (unitIndex === 0) return `${Math.round(size)} B`
+  return `${size.toFixed(1)} ${units[unitIndex]}`
+}
+
+function extractFilenameFromUrl(rawUrl: string | null | undefined): string | null {
+  if (!rawUrl) return null
+  const clean = rawUrl.split('?')[0]?.split('#')[0] || rawUrl
+  const name = clean.split('/').filter(Boolean).pop() || ''
+  if (!name) return null
+  try {
+    return decodeURIComponent(name)
+  } catch {
+    return name
+  }
+}
+
+function resolveAttachmentFileName(att: any, metadata: any): string {
+  const candidates = [
+    metadata?.originalName,
+    metadata?.fileName,
+    metadata?.filename,
+    metadata?.name,
+    metadata?.e2ee?.originalName,
+  ]
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) {
+      return c.trim()
+    }
+  }
+  const fromUrl = extractFilenameFromUrl(att?.url)
+  if (fromUrl && !fromUrl.toLowerCase().endsWith('.eblusha')) return fromUrl
+  return 'Файл'
+}
+
+function getAttachmentFilePresentation(att: any, metadata: any) {
+  const fileName = resolveAttachmentFileName(att, metadata)
+  const dot = fileName.lastIndexOf('.')
+  let ext = dot > 0 ? fileName.slice(dot + 1).toLowerCase() : ''
+
+  const mime =
+    (typeof metadata?.mime === 'string' && metadata.mime.trim()) ||
+    (typeof metadata?.contentType === 'string' && metadata.contentType.trim()) ||
+    (typeof metadata?.e2ee?.originalType === 'string' && metadata.e2ee.originalType.trim()) ||
+    ''
+
+  const mimeToExt: Record<string, string> = {
+    'application/pdf': 'pdf',
+    'application/msword': 'doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'application/vnd.ms-excel': 'xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+    'application/vnd.ms-powerpoint': 'ppt',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+    'text/plain': 'txt',
+    'text/markdown': 'md',
+    'text/csv': 'csv',
+    'application/json': 'json',
+    'application/xml': 'xml',
+    'text/xml': 'xml',
+    'application/zip': 'zip',
+    'application/x-7z-compressed': '7z',
+    'application/x-rar-compressed': 'rar',
+    'application/x-tar': 'tar',
+    'application/gzip': 'gz',
+    'audio/mpeg': 'mp3',
+    'audio/wav': 'wav',
+    'audio/ogg': 'ogg',
+    'audio/mp4': 'm4a',
+    'video/mp4': 'mp4',
+    'video/webm': 'webm',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/svg+xml': 'svg',
+  }
+  if (!ext && mime) {
+    const base = mime.toLowerCase().split(';')[0]?.trim()
+    ext = (base && mimeToExt[base]) || ''
+  }
+
+  const info = ext ? FILE_EXTENSION_INFO[ext] : undefined
+  const kind: AttachmentFileKind = info?.kind ?? 'binary'
+  const ui = FILE_KIND_UI[kind]
+  const unknownExtBadge =
+    ext && !info
+      ? `.${ext.toUpperCase().slice(0, 3)}`
+      : null
+  const badge = (info?.badge || unknownExtBadge || ui.badge).slice(0, 4).toUpperCase()
+  const description = info?.description || (ext ? `Файл ${ext.toUpperCase()}` : 'Неизвестный формат')
+  const sizeText = formatAttachmentFileSize(att?.size ?? metadata?.size ?? metadata?.e2ee?.originalSize)
+  const displayName = fileName === 'Файл' && ext ? `${fileName}.${ext}` : fileName
+  return { fileName: displayName, description, sizeText, badge, ui }
+}
+
+function parseContentDispositionFilename(headerValue: string | null): string | null {
+  const v = (headerValue || '').trim()
+  if (!v) return null
+  const star = v.match(/filename\*\s*=\s*([^;]+)/i)?.[1]?.trim()
+  if (star) {
+    const m = star.match(/^(?:UTF-8''|utf-8'')[\"]?(.+?)[\"]?$/)
+    const raw = (m?.[1] || star).replace(/^"+|"+$/g, '')
+    try {
+      return decodeURIComponent(raw)
+    } catch {
+      return raw
+    }
+  }
+  const fn = v.match(/filename\s*=\s*([^;]+)/i)?.[1]?.trim()
+  if (!fn) return null
+  const raw = fn.replace(/^"+|"+$/g, '')
+  return raw || null
 }
 
 type YouTubeOpenMode = 'embed' | 'external' | 'electron_session' | 'system_browser'
@@ -798,6 +992,7 @@ function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }
 type PendingAttachment = {
   url: string
   type: 'IMAGE' | 'FILE'
+  size?: number
   width?: number
   height?: number
   progress?: number
@@ -808,6 +1003,12 @@ type PendingAttachment = {
 type AttachmentDecryptionEntry = {
   status: 'pending' | 'ready' | 'error'
   url?: string
+}
+
+type AttachmentHeadInfo = {
+  fileName?: string
+  mime?: string
+  size?: number
 }
 
 type PendingComposerImage = {
@@ -962,8 +1163,10 @@ useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const [callPermissionError, setCallPermissionError] = useState<string | null>(null)
   const [pendingByConv, setPendingByConv] = useState<Record<string, PendingMessage[]>>({})
   const [attachmentDecryptMap, setAttachmentDecryptMap] = useState<Record<string, AttachmentDecryptionEntry>>({})
+  const [attachmentHeadInfoMap, setAttachmentHeadInfoMap] = useState<Record<string, AttachmentHeadInfo>>({})
   const attachmentDecryptUrlsRef = useRef<Set<string>>(new Set())
   const attachmentDecryptInProgressRef = useRef<Set<string>>(new Set())
+  const attachmentHeadInfoInFlightRef = useRef<Set<string>>(new Set())
   const [pendingImages, setPendingImages] = useState<PendingComposerImage[]>([])
   const [editingImageId, setEditingImageId] = useState<string | null>(null)
   const [e2eeVersion, setE2eeVersion] = useState(0)
@@ -1940,7 +2143,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
       .filter((m) => !(m as any)?.metadata?.linkPreview)
       .filter((m) => {
         if (requestedPreviewsRef.current.has(m.id)) return false
-        return !!extractFirstUrlFromText(m.content)
+        return !!extractFirstPreviewableUrl(m.content)
       })
       .slice(0, 2)
 
@@ -2325,6 +2528,57 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
     conversationSecretSessionReady,
     decryptAttachment,
   ])
+
+  // Retro: if message attachment metadata lacks originalName/mime/size, enrich FILE cards via proxy HEAD headers.
+  useEffect(() => {
+    const atts = (displayedMessages || []).flatMap((m: any) => m.attachments || [])
+    const fileAtts = atts.filter((a: any) => a?.type === 'FILE' && typeof a?.url === 'string' && a.url)
+    if (!fileAtts.length) return
+
+    let cancelled = false
+    for (const att of fileAtts) {
+      const meta = att?.metadata ?? {}
+      const existing = attachmentHeadInfoMap[att.url]
+      const hasName = typeof meta?.originalName === 'string' && meta.originalName.trim()
+      const hasMime = typeof meta?.mime === 'string' && meta.mime.trim()
+      const hasSize = typeof att?.size === 'number' && att.size > 0
+      if (hasName && (hasMime || hasSize)) continue
+      if (existing?.fileName && existing?.mime) continue
+      if (attachmentHeadInfoInFlightRef.current.has(att.url)) continue
+
+      attachmentHeadInfoInFlightRef.current.add(att.url)
+      const href = convertToProxyUrl(att.url) || att.url
+      fetch(href, { method: 'HEAD', credentials: 'omit' })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HEAD ${r.status}`)
+          const cd = r.headers.get('content-disposition')
+          const ct = r.headers.get('content-type')
+          const cl = r.headers.get('content-length')
+          const fileName = parseContentDispositionFilename(cd)
+          const size = cl ? Number(cl) : undefined
+          if (cancelled) return
+          setAttachmentHeadInfoMap((prev) => ({
+            ...prev,
+            [att.url]: {
+              ...(prev[att.url] || {}),
+              ...(fileName ? { fileName } : {}),
+              ...(ct ? { mime: ct } : {}),
+              ...(Number.isFinite(size) && (size as number) > 0 ? { size: size as number } : {}),
+            },
+          }))
+        })
+        .catch(() => {
+          // ignore
+        })
+        .finally(() => {
+          attachmentHeadInfoInFlightRef.current.delete(att.url)
+        })
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [displayedMessages, attachmentHeadInfoMap])
 
   useEffect(() => {
     const pendingIds = new Set(
@@ -4111,7 +4365,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           const { width, height } = await getImageSize(blobUrl)
           pendingAttachments.push({ url: blobUrl, type: 'IMAGE', width, height, progress: 0, __pending: true })
         } else {
-          pendingAttachments.push({ url: f.name, type: 'FILE', __pending: true, progress: 0 })
+          pendingAttachments.push({ url: f.name, type: 'FILE', size: f.size, __pending: true, progress: 0 })
         }
       }
       setPendingByConv((prev) => ({
@@ -4122,7 +4376,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         ],
       }))
 
-      const uploaded: Array<{ url: string; type: 'IMAGE' | 'FILE'; metadata?: Record<string, any> }> = []
+      const uploaded: Array<{ url: string; type: 'IMAGE' | 'FILE'; size?: number; metadata?: Record<string, any> }> = []
       let done = 0
       for (let i = 0; i < files.length; i++) {
         const f = files[i]
@@ -4145,6 +4399,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         }
         const form = new FormData()
         form.append('file', uploadBlob, isSecretConversation ? `${f.name || 'file'}.enc` : f.name)
+        if (f.name) form.append('originalFileName', f.name)
         const url = await new Promise<string>((resolve, reject) => {
           const xhr = new XMLHttpRequest()
           xhr.open('POST', '/api/upload')
@@ -4175,11 +4430,15 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
           }
           xhr.send(form)
         })
-        const uploadItem: { url: string; type: 'IMAGE' | 'FILE'; metadata?: Record<string, any> } = { 
+        const uploadItem: { url: string; type: 'IMAGE' | 'FILE'; size?: number; metadata?: Record<string, any> } = {
           url,
           type: f.type.startsWith('image/') ? 'IMAGE' : 'FILE',
+          size: f.size,
         }
         const metadataPayload: Record<string, any> = {}
+        if (f.name) metadataPayload.originalName = f.name
+        if (f.type) metadataPayload.mime = f.type
+        if (Number.isFinite(f.size) && f.size > 0) metadataPayload.size = f.size
         if (pendingAtt && pendingAtt.type === 'IMAGE' && pendingAtt.width && pendingAtt.height) {
           metadataPayload.width = pendingAtt.width
           metadataPayload.height = pendingAtt.height
@@ -4352,6 +4611,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
 
       const form = new FormData()
       form.append('file', uploadBlob, isSecretConversation ? `${audioFile.name}.enc` : audioFile.name)
+      if (audioFile.name) form.append('originalFileName', audioFile.name)
 
       const url = await new Promise<string>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
@@ -4383,11 +4643,20 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
         xhr.send(form)
       })
 
+      const audioAttachmentMeta: Record<string, any> = {
+        originalName: audioFile.name,
+        mime: audioFile.type || 'audio/webm',
+        size: audioFile.size,
+      }
+      if (encryptedMeta) {
+        audioAttachmentMeta.e2ee = encryptedMeta
+      }
+
       const attachment = {
         url,
         type: 'AUDIO' as const,
         size: audioFile.size,
-        ...(encryptedMeta ? { metadata: { e2ee: encryptedMeta } } : {}),
+        metadata: audioAttachmentMeta,
       }
 
       // Send directly (like uploadAndSendAttachments does for attachments)
@@ -5987,7 +6256,7 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                   const rowClass = `${baseRow} ${spacingClass}`
                   const baseBubble = leftAlignAll ? 'msg-bubble left' : (isMe ? 'msg-bubble me' : 'msg-bubble them')
                   const bubbleClass = isLastOfRun ? `${baseBubble} ${isMe && !leftAlignAll ? 'tail-right' : 'tail-left'}` : baseBubble
-                  const firstUrl = typeof m.content === 'string' ? extractFirstUrlFromText(m.content) : null
+                  const firstUrl = typeof m.content === 'string' ? extractFirstPreviewableUrl(m.content) : null
                   const hasAnyLink = !!firstUrl
                   const previewMedia = (() => {
                     const p = (m as any)?.metadata?.linkPreview
@@ -6207,15 +6476,22 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                             {renderLinkifiedText(m.content)}
                           </div>
                           {(() => {
-                            const firstUrl = extractFirstUrlFromText(m.content)
+                            const firstUrl = extractFirstPreviewableUrl(m.content)
                             if (!firstUrl) return null
                             const preview = (m as any)?.metadata?.linkPreview
+                            const attemptedAt = typeof (m as any)?.metadata?.linkPreviewAttemptedAt === 'string'
+                              ? (m as any).metadata.linkPreviewAttemptedAt
+                              : null
+                            const attemptedUrl = typeof (m as any)?.metadata?.linkPreviewUrl === 'string'
+                              ? (m as any).metadata.linkPreviewUrl
+                              : null
+                            const attempted = !!attemptedAt && attemptedUrl === firstUrl
                             // In secret chats: show only minimal (derived from URL), never fetch/render rich metadata.
                             if (activeConversation?.isSecret) {
                               return <LinkPreviewCard preview={{ url: firstUrl }} />
                             }
                             // Non-secret: rich if available, otherwise minimal while loading.
-                            return <LinkPreviewCard preview={preview ? { ...preview, url: preview.url || firstUrl } : { url: firstUrl, __loading: true }} />
+                            return <LinkPreviewCard preview={preview ? { ...preview, url: preview.url || firstUrl } : (attempted ? { url: firstUrl } : { url: firstUrl, __loading: true })} />
                           })()}
                           {(() => {
                             const attachments = (m.attachments || []) as any[]
@@ -6666,6 +6942,13 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                   const att = item.att
                                   const idx = item.idx
                                   const metadata = att.metadata ?? {}
+                                  const headInfo = attachmentHeadInfoMap[att.url]
+                                  const mergedMeta = {
+                                    ...metadata,
+                                    ...(headInfo?.fileName ? { originalName: headInfo.fileName } : {}),
+                                    ...(headInfo?.mime ? { mime: headInfo.mime } : {}),
+                                    ...(headInfo?.size ? { size: headInfo.size } : {}),
+                                  }
                                   const resolvedUrl = resolveAttachmentUrl(att)
                                   const needsDecrypt = Boolean(
                                     activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext',
@@ -6674,8 +6957,6 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                   const decryptPending =
                                     needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
                                   const decryptError = needsDecrypt && decryptState?.status === 'error'
-                                  const fileLabel = metadata?.e2ee?.originalName || att.url?.split('/').pop() || 'вложение'
-
                                   if (att.type === 'AUDIO') {
                                     const duration = m.metadata?.duration || 0
                                     const audioUrl = resolvedUrl || att.url
@@ -6697,25 +6978,101 @@ useEffect(() => { pendingImagesRef.current = pendingImages }, [pendingImages])
                                     )
                                   }
 
+                                  // Секрет: только blob (E2EE). Обычный чат: всегда прокси /api/files, чтобы сервер расшифровал хранилище
+                                  const fileHref = activeConversation?.isSecret
+                                    ? resolvedUrl
+                                    : (convertToProxyUrl(att.url) || resolvedUrl || att.url)
+                                  const filePresentation = getAttachmentFilePresentation(att, mergedMeta)
+                                  const baseSubtitle = filePresentation.sizeText
+                                    ? `${filePresentation.description} · ${filePresentation.sizeText}`
+                                    : filePresentation.description
+                                  const renderFileCard = (statusText?: string) => {
+                                    const subtitle = statusText
+                                      ? `${baseSubtitle}${baseSubtitle ? ' · ' : ''}${statusText}`
+                                      : baseSubtitle
+                                    return (
+                                      <div
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 10,
+                                          padding: '10px 12px',
+                                          borderRadius: 14,
+                                          border: '1px solid var(--surface-border)',
+                                          background: 'var(--surface-100)',
+                                          minWidth: 220,
+                                          maxWidth: 360,
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            width: 40,
+                                            height: 40,
+                                            borderRadius: 999,
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            flexShrink: 0,
+                                            fontSize: 11,
+                                            fontWeight: 800,
+                                            letterSpacing: 0.3,
+                                            textTransform: 'uppercase',
+                                            background: filePresentation.ui.bg,
+                                            color: filePresentation.ui.fg,
+                                          }}
+                                        >
+                                          {filePresentation.badge}
+                                        </div>
+                                        <div style={{ minWidth: 0 }}>
+                                          <div
+                                            style={{
+                                              fontSize: 14,
+                                              fontWeight: 600,
+                                              color: 'var(--text)',
+                                              whiteSpace: 'nowrap',
+                                              overflow: 'hidden',
+                                              textOverflow: 'ellipsis',
+                                            }}
+                                            title={filePresentation.fileName}
+                                          >
+                                            {filePresentation.fileName}
+                                          </div>
+                                          <div
+                                            style={{
+                                              marginTop: 3,
+                                              fontSize: 12,
+                                              color: 'var(--text-muted)',
+                                              whiteSpace: 'nowrap',
+                                              overflow: 'hidden',
+                                              textOverflow: 'ellipsis',
+                                            }}
+                                            title={subtitle}
+                                          >
+                                            {subtitle}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )
+                                  }
+
                                   return (
                                     <div key={`${att.url}-${idx}-${renderIdx}`} style={{ marginTop: 8 }}>
                                       {att.__pending || decryptPending ? (
-                                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#6b7280' }}>
-                                          Файл: {fileLabel}
-                                          {decryptPending && ' (расшифровка...)'}
-                                        </div>
+                                        renderFileCard(decryptPending ? 'Расшифровка...' : 'Загрузка...')
                                       ) : decryptError ? (
                                         <div style={{ color: '#f87171', fontSize: 12 }}>Не удалось расшифровать файл</div>
-                                      ) : (
+                                      ) : fileHref ? (
                                         <a
-                                          href={resolvedUrl || att.url}
+                                          href={fileHref}
                                           target="_blank"
                                           rel="noreferrer"
-                                          download={fileLabel}
-                                          style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                                          download={filePresentation.fileName}
+                                          style={{ display: 'inline-block', textDecoration: 'none', color: 'inherit' }}
                                         >
-                                          Файл: {fileLabel}
+                                          {renderFileCard()}
                                         </a>
+                                      ) : (
+                                        renderFileCard('Расшифровка...')
                                       )}
                                       {typeof att.progress === 'number' && att.progress < 100 && (
                                         <div style={{ height: 6, background: '#e5e7eb', borderRadius: 6, overflow: 'hidden', marginTop: 6 }}>
