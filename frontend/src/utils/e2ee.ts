@@ -63,7 +63,7 @@ export async function createE2eeRoomOptions(keyBase64: string): Promise<{
   return { options, keyProvider, worker }
 }
 
-export async function enableE2ee(room: Room, _keyProvider: ExternalE2EEKeyProvider): Promise<void> {
+export async function enableE2ee(room: Room): Promise<void> {
   // Room must be created with RoomOptions.encryption for this to work.
   await room.setE2EEEnabled(true)
 }

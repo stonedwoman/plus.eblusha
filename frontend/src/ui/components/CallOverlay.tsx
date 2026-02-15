@@ -1802,9 +1802,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const shouldUseE2ee = !isGroup && e2ee1to1FlagEnabled && !forcePlainFor1to1
   const e2eeRoomRef = useRef<Room | null>(null)
   const e2eeWorkerRef = useRef<Worker | null>(null)
+  const e2eeEnableStartedRef = useRef(false)
   const [e2eeRoom, setE2eeRoom] = useState<Room | null>(null)
   const [e2eeError, setE2eeError] = useState<string | null>(null)
   const [e2eePreparing, setE2eePreparing] = useState(false)
+  const [e2eeEnabled, setE2eeEnabled] = useState(false)
 
   const closingRef = useRef(false)
   const manualCloseRef = useRef(false)
@@ -1866,7 +1868,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       // ignore
     }
     e2eeWorkerRef.current = null
+    e2eeEnableStartedRef.current = false
     setE2eeRoom(null)
+    setE2eeEnabled(false)
   }, [])
   const videoContainCss = `
     /* Force videos to fit tile without cropping on all layouts */
@@ -2301,9 +2305,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   // Reset any "fallback to plain" override when switching calls.
   useEffect(() => {
     setForcePlainFor1to1(false)
+    setE2eeEnabled(false)
+    e2eeEnableStartedRef.current = false
   }, [conversationId])
 
-  // 1:1 E2EE setup (must happen before room.connect / track publish).
+  // 1:1 E2EE setup (key/provider/worker must be ready before connect).
   useEffect(() => {
     let cancelled = false
     let createdWorker: Worker | null = null
@@ -2319,16 +2325,17 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
 
       setE2eePreparing(true)
       setE2eeError(null)
+      setE2eeEnabled(false)
+      e2eeEnableStartedRef.current = false
 
       try {
         const keyBase64 = await fetchE2eeKey(conversationId)
         if (cancelled) return
 
-        const { options, keyProvider, worker } = await createE2eeRoomOptions(keyBase64)
+        const { options, worker } = await createE2eeRoomOptions(keyBase64)
         createdWorker = worker
 
         createdRoom = new Room(options)
-        await enableE2ee(createdRoom, keyProvider)
         if (cancelled) return
 
         // Replace any existing E2EE room resources.
@@ -2388,6 +2395,116 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       cleanupE2eeResources()
     }
   }, [cleanupE2eeResources])
+
+  const waitForLocalE2eeEnabled = useCallback((room: Room, timeoutMs: number) => {
+    if (room.isE2EEEnabled) return Promise.resolve()
+    return new Promise<void>((resolve, reject) => {
+      let done = false
+      const timer = setTimeout(() => {
+        if (done) return
+        done = true
+        cleanup()
+        reject(new Error('E2EE enable timeout'))
+      }, timeoutMs)
+
+      const onStatus = (enabled: boolean, participant: any) => {
+        try {
+          if (!enabled) return
+          const localId = room.localParticipant.identity
+          if (!localId) return
+          if (participant?.identity !== localId) return
+          if (done) return
+          done = true
+          cleanup()
+          resolve()
+        } catch (e) {
+          if (done) return
+          done = true
+          cleanup()
+          reject(e as any)
+        }
+      }
+
+      const onError = (error: Error) => {
+        if (done) return
+        done = true
+        cleanup()
+        reject(error)
+      }
+
+      const cleanup = () => {
+        clearTimeout(timer)
+        room.off(RoomEvent.ParticipantEncryptionStatusChanged, onStatus as any)
+        room.off(RoomEvent.EncryptionError, onError as any)
+      }
+
+      room.on(RoomEvent.ParticipantEncryptionStatusChanged, onStatus as any)
+      room.on(RoomEvent.EncryptionError, onError as any)
+    })
+  }, [])
+
+  const enableE2eeAndPublishAfterConnect = useCallback(() => {
+    if (!shouldUseE2ee) return
+    if (e2eeEnabled) return
+    if (e2eeEnableStartedRef.current) return
+    const room = e2eeRoomRef.current
+    if (!room) return
+
+    e2eeEnableStartedRef.current = true
+
+    void (async () => {
+      try {
+        // Required order: connect → setE2EEEnabled(true) → publish.
+        await enableE2ee(room)
+        await waitForLocalE2eeEnabled(room, 10_000)
+        setE2eeEnabled(true)
+
+        // Only publish after E2EE is confirmed enabled.
+        await Promise.all([
+          room.localParticipant.setMicrophoneEnabled(!muted),
+          room.localParticipant.setCameraEnabled(!!camera),
+        ])
+      } catch (err) {
+        const msg = describeE2eeSetupError(err)
+        if (allowE2eeFallback) {
+          setForcePlainFor1to1(true)
+          cleanupE2eeResources()
+          return
+        }
+        setE2eeError(msg)
+        cleanupE2eeResources()
+      }
+    })()
+  }, [allowE2eeFallback, camera, cleanupE2eeResources, e2eeEnabled, muted, shouldUseE2ee, waitForLocalE2eeEnabled])
+
+  // Guardrail: for 1:1 calls with E2EE required, never allow local encryption to silently turn off.
+  useEffect(() => {
+    if (!shouldUseE2ee) return
+    if (!e2eeRoom) return
+    const room = e2eeRoom
+    const onStatus = (enabled: boolean, participant: any) => {
+      try {
+        const localId = room.localParticipant.identity
+        if (!localId) return
+        if (participant?.identity !== localId) return
+        if (enabled) {
+          if (!e2eeEnabled) setE2eeEnabled(true)
+          return
+        }
+        // If E2EE was already enabled and got disabled, stop the call.
+        if (e2eeEnabled) {
+          setE2eeError('E2EE отключилось во время звонка. Продолжить без шифрования нельзя.')
+          cleanupE2eeResources()
+        }
+      } catch {
+        // ignore
+      }
+    }
+    room.on(RoomEvent.ParticipantEncryptionStatusChanged, onStatus as any)
+    return () => {
+      room.off(RoomEvent.ParticipantEncryptionStatusChanged, onStatus as any)
+    }
+  }, [cleanupE2eeResources, e2eeEnabled, e2eeRoom, shouldUseE2ee])
 
   // Sync initial media flags on every open
   useEffect(() => {
@@ -3026,67 +3143,141 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         visibility: minimized ? 'hidden' : 'visible',
       }} className="call-container">
         <style>{videoContainCss}</style>
-        {shouldUseE2ee && (e2eeError || !e2eeRoom) ? (
-          <div
-            style={{
-              width: '100%',
-              height: '100%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: 24,
-            }}
-          >
-            <div style={{ maxWidth: 560 }}>
-              {e2eeError ? (
-                <>
-                  <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Защищённый звонок недоступен</div>
-                  <div style={{ opacity: 0.85, marginBottom: 16 }}>{e2eeError}</div>
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    {allowE2eeFallback && (
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={() => {
-                          setE2eeError(null)
-                          setForcePlainFor1to1(true)
-                        }}
-                      >
-                        Продолжить без E2EE
-                      </button>
-                    )}
-                    <button type="button" className="btn btn-primary" onClick={() => handleClose({ manual: true })}>
-                      Закрыть
+        {shouldUseE2ee ? (
+          e2eeError ? (
+            <div
+              style={{
+                width: '100%',
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 24,
+              }}
+            >
+              <div style={{ maxWidth: 560 }}>
+                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Защищённый звонок недоступен</div>
+                <div style={{ opacity: 0.85, marginBottom: 16 }}>{e2eeError}</div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  {allowE2eeFallback && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        setE2eeError(null)
+                        setForcePlainFor1to1(true)
+                        cleanupE2eeResources()
+                      }}
+                    >
+                      Продолжить без E2EE
+                    </button>
+                  )}
+                  <button type="button" className="btn btn-primary" onClick={() => handleClose({ manual: true })}>
+                    Закрыть
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : !e2eeRoom ? (
+            <div
+              style={{
+                width: '100%',
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 24,
+              }}
+            >
+              <div style={{ maxWidth: 560 }}>
+                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Включаем защищённый звонок…</div>
+                <div style={{ opacity: 0.85, marginBottom: 16 }}>
+                  Подготавливаем шифрование (E2EE). Это может занять пару секунд.
+                </div>
+                <button type="button" className="btn btn-secondary" onClick={() => handleClose({ manual: true })}>
+                  Отмена
+                </button>
+              </div>
+            </div>
+          ) : (
+            <LiveKitRoom
+              room={e2eeRoom}
+              serverUrl={serverUrl}
+              token={token}
+              connect
+              // IMPORTANT: never publish tracks before E2EE is enabled.
+              video={e2eeEnabled ? camera : false}
+              audio={e2eeEnabled ? !muted : false}
+              onEncryptionError={(_error) => {
+                setE2eeError('Не удалось продолжить звонок: ошибка E2EE. Попробуйте начать звонок заново.')
+                cleanupE2eeResources()
+              }}
+              onConnected={() => {
+                setWasConnected(true)
+                enableE2eeAndPublishAfterConnect()
+              }}
+              onDisconnected={(reason) => {
+                if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
+                  // eslint-disable-next-line no-console
+                  console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup, 'minimized:', minimized)
+                }
+                const hadConnection = wasConnected
+                setWasConnected(false)
+                const manual = reason === 1 || manualCloseRef.current
+                // Если оверлей минимизирован, не закрываем его при отключении - это может быть временное отключение
+                if (minimized) {
+                  return
+                }
+                // Для 1:1 звонков закрываем только при явном ручном закрытии
+                // Временные отключения обрабатываются через call:ended событие с сервера
+                if (manual) {
+                  handleClose({ manual: true })
+                } else {
+                  // If we were connected and got disconnected while E2EE is required, keep overlay open;
+                  // reconnect logic will run inside LiveKit.
+                  if (hadConnection) return
+                }
+              }}
+            >
+              {!e2eeEnabled ? (
+                <div
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: 24,
+                  }}
+                >
+                  <div style={{ maxWidth: 560 }}>
+                    <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Подключаемся и включаем E2EE…</div>
+                    <div style={{ opacity: 0.85, marginBottom: 16 }}>
+                      Сначала подключаемся к комнате, затем включаем шифрование и только после этого публикуем микрофон/камеру.
+                    </div>
+                    <button type="button" className="btn btn-secondary" onClick={() => handleClose({ manual: true })}>
+                      Отмена
                     </button>
                   </div>
-                </>
+                </div>
               ) : (
-                <>
-                  <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Включаем защищённый звонок…</div>
-                  <div style={{ opacity: 0.85, marginBottom: 16 }}>
-                    Подготавливаем шифрование (E2EE). Это может занять пару секунд.
-                  </div>
-                  <button type="button" className="btn btn-secondary" onClick={() => handleClose({ manual: true })}>
-                    Отмена
-                  </button>
-                </>
+                <div style={{ width: '100%', height: '100%' }}>
+                  <ConnectionStatusBadge />
+                  <DefaultMicrophoneSetter />
+                  <PingDisplayUpdater localUserId={localUserId} />
+                  <ParticipantVolumeUpdater />
+                  <VideoConference SettingsComponent={CallSettings} />
+                </div>
               )}
-            </div>
-          </div>
+            </LiveKitRoom>
+          )
         ) : (
           <LiveKitRoom
-            room={shouldUseE2ee ? (e2eeRoom ?? undefined) : undefined}
             serverUrl={serverUrl}
             token={token}
             connect
             video={camera}
             audio={!muted}
-            onEncryptionError={(_error) => {
-              if (shouldUseE2ee) {
-                setE2eeError('Не удалось продолжить звонок: ошибка E2EE. Попробуйте начать звонок заново.')
-                cleanupE2eeResources()
-              }
-            }}
             onConnected={() => {
               setWasConnected(true)
               try {
