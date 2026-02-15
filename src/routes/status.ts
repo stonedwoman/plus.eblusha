@@ -4,12 +4,27 @@ import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 import { z } from "zod";
 import { getMetricsSnapshot } from "../obs/metrics";
+import env from "../config/env";
 
 const router = Router();
 
-router.use(authenticate);
-
 type AuthedRequest = Request & { user?: { id: string } };
+
+function requireMetricsToken(req: Request, res: any, next: any) {
+  const auth = req.get("authorization") || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!env.METRICS_TOKEN || token !== env.METRICS_TOKEN) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+  next();
+}
+
+router.get("/metrics", requireMetricsToken, (_req, res) => {
+  res.json(getMetricsSnapshot());
+});
+
+router.use(authenticate);
 
 router.get("/me", async (req, res) => {
   const userId = (req as AuthedRequest).user!.id;
@@ -40,10 +55,6 @@ router.get("/me", async (req, res) => {
   });
 
   res.json({ user });
-});
-
-router.get("/metrics", (_req, res) => {
-  res.json(getMetricsSnapshot());
 });
 
 router.patch("/me", async (req, res) => {

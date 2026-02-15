@@ -63,7 +63,8 @@ async function connectSocket(baseUrl: string, token: string): Promise<Socket> {
 }
 
 async function main() {
-  const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
+  // Prefer 127.0.0.1 to avoid IPv6 localhost (::1) issues with Docker port publishing.
+  const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
   const DATABASE_URL = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/eblusha";
 
   const commonEnv = {
@@ -134,23 +135,33 @@ async function main() {
       assert.equal(typingSeen, true, "typing event should cross instances via Redis adapter");
 
       // Link preview smoke: send message with URL, wait for message:update.
-      const sendResp = await api.post(
-        "/conversations/send",
-        { conversationId, type: "TEXT", content: "check https://example.com" },
-        { headers: { Authorization: `Bearer ${tokenA}` } }
-      );
-      const messageId = sendResp.data.message.id as string;
-      assert.ok(messageId);
+      const seenUpdates = new Set<string>();
+      let messageId = "";
 
-      const previewUpdated = await new Promise<boolean>((resolve) => {
+      const previewUpdatedPromise = new Promise<boolean>((resolve) => {
         const t = setTimeout(() => resolve(false), 15_000);
         socketA.on("message:update", (p: any) => {
-          if (p?.conversationId === conversationId && p?.messageId === messageId && p?.reason === "link_preview") {
+          if (p?.conversationId !== conversationId) return;
+          if (p?.reason !== "link_preview") return;
+          if (typeof p?.messageId === "string" && p.messageId) {
+            seenUpdates.add(p.messageId);
+          }
+          if (messageId && p?.messageId === messageId) {
             clearTimeout(t);
             resolve(true);
           }
         });
       });
+
+      const sendResp = await api.post(
+        "/conversations/send",
+        { conversationId, type: "TEXT", content: "check http://example.com" },
+        { headers: { Authorization: `Bearer ${tokenA}` } }
+      );
+      messageId = sendResp.data.message.id as string;
+      assert.ok(messageId);
+
+      const previewUpdated = seenUpdates.has(messageId) ? true : await previewUpdatedPromise;
       assert.equal(previewUpdated, true, "link preview worker should emit message:update");
     } finally {
       socketA.close();

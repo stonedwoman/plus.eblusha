@@ -113,14 +113,53 @@ async function writeTypingRedis(conversationId: string, userId: string, typing: 
 }
 
 function parseHandshakeDeviceId(handshake: any): string | null {
-  const raw =
-    (handshake?.auth && typeof handshake.auth === "object" ? (handshake.auth as any).deviceId : undefined) ??
-    (handshake?.query && typeof handshake.query === "object" ? (handshake.query as any).deviceId : undefined);
+  const raw = handshake?.auth && typeof handshake.auth === "object" ? (handshake.auth as any).deviceId : undefined;
   if (typeof raw !== "string") return null;
   const v = raw.trim();
   if (!v) return null;
   if (v.length > 128) return null;
   return v;
+}
+
+function parseHandshakeDeviceIdFromQueryDevOnly(handshake: any): string | null {
+  // Security: query params are not a trusted source of truth. This is a dev-only escape hatch.
+  if (env.NODE_ENV !== "development") return null;
+  if (!env.ALLOW_DEVICE_QUERY) return null;
+  const raw = handshake?.query && typeof handshake.query === "object" ? (handshake.query as any).deviceId : undefined;
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  if (!v) return null;
+  if (v.length > 128) return null;
+  return v;
+}
+
+async function resolveDeviceId(socket: any, userId: string, jwtDid: string | null): Promise<string | null> {
+  const candidates: Array<{ source: string; deviceId: string }> = [];
+  if (jwtDid) candidates.push({ source: "jwt.did", deviceId: jwtDid });
+
+  const fromAuth = parseHandshakeDeviceId(socket.handshake);
+  if (fromAuth) candidates.push({ source: "handshake.auth.deviceId", deviceId: fromAuth });
+
+  const fromQueryDev = parseHandshakeDeviceIdFromQueryDevOnly(socket.handshake);
+  if (fromQueryDev) candidates.push({ source: "handshake.query.deviceId(dev_only)", deviceId: fromQueryDev });
+
+  for (const c of candidates) {
+    try {
+      const device = await prisma.userDevice.findUnique({
+        where: { id: c.deviceId },
+        select: { id: true, userId: true, revokedAt: true },
+      });
+      if (!device || device.userId !== userId || device.revokedAt) {
+        logger.warn({ userId, deviceId: c.deviceId, source: c.source }, "Socket deviceId rejected");
+        continue;
+      }
+      return c.deviceId;
+    } catch (error) {
+      logger.warn({ error, userId, deviceId: c.deviceId, source: c.source }, "Socket deviceId verification failed");
+      continue;
+    }
+  }
+  return null;
 }
 
 let ioInstance: Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData> | null = null;
@@ -400,10 +439,11 @@ export async function initSocket(
         return;
       }
 
-      const payload = verifyAccessToken<{ sub: string }>(token);
+      const payload = verifyAccessToken<{ sub: string; did?: string }>(token);
       socket.data.userId = payload.sub;
-      const claimedDeviceId = parseHandshakeDeviceId(socket.handshake);
-      if (claimedDeviceId) socket.data.deviceId = claimedDeviceId;
+      const did = typeof (payload as any).did === "string" ? ((payload as any).did as string).trim() : "";
+      const verifiedDeviceId = await resolveDeviceId(socket, payload.sub, did ? did : null);
+      if (verifiedDeviceId) socket.data.deviceId = verifiedDeviceId;
       next();
     } catch (error) {
       logger.warn({ error }, "Socket auth failed");
@@ -421,19 +461,10 @@ export async function initSocket(
     void recomputePresence(io, userId);
 
     // Join device room if a verified deviceId is available (extension point for secret transport).
-    const claimedDeviceId = socket.data.deviceId;
-    if (claimedDeviceId) {
-      void (async () => {
-        try {
-          const device = await prisma.userDevice.findUnique({
-            where: { id: claimedDeviceId },
-            select: { id: true, userId: true, revokedAt: true },
-          });
-          if (!device || device.userId !== userId || device.revokedAt) return;
-          socket.join(deviceRoom(claimedDeviceId));
-          logger.info({ userId, deviceId: claimedDeviceId }, "Socket joined device room");
-        } catch {}
-      })();
+    const verifiedDeviceId = socket.data.deviceId;
+    if (verifiedDeviceId) {
+      socket.join(deviceRoom(verifiedDeviceId));
+      logger.info({ userId, deviceId: verifiedDeviceId }, "Socket joined device room");
     }
 
     // Redis presence TTL heartbeat (ephemeral).

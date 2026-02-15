@@ -25,6 +25,10 @@ const envSchema = z.object({
   LIVEKIT_API_KEY: z.string(),
   LIVEKIT_API_SECRET: z.string(),
   REDIS_URL: z.string().url(),
+  // Allow reading deviceId from socket handshake query (dev-only escape hatch). Default: false.
+  ALLOW_DEVICE_QUERY: z.coerce.boolean().default(false),
+  // Protect /api/status/metrics (Bearer token). Required in production.
+  METRICS_TOKEN: z.string().min(8).optional(),
   // Default TTL for secret messages on the server (in seconds)
   SECRET_MESSAGE_TTL_SECONDS: z.coerce.number().default(3600),
   STORAGE_S3_ENDPOINT: z.string().url().optional(),
@@ -45,6 +49,10 @@ const envSchema = z.object({
 });
 
 const env = envSchema.parse(process.env);
+
+if (env.NODE_ENV === "production" && !env.METRICS_TOKEN) {
+  throw new Error("METRICS_TOKEN is required in production");
+}
 
 export default env;
 
