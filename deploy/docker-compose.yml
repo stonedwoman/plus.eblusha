@@ -1,5 +1,16 @@
-version: "3.9"
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Backend runs on host (systemd), so publish on loopback.
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
   postgres:
     image: postgres:16
     restart: unless-stopped
@@ -10,8 +21,10 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Use existing volume that contains production data.
+      - eblusha-plus_postgres-data:/var/lib/postgresql/data
 volumes:
-  pgdata:
+  eblusha-plus_postgres-data:
+    external: true
 
 
