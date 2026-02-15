@@ -55,6 +55,90 @@ function dbg(...args: any[]) {
   console.log('[SocketDbg]', ...args)
 }
 
+export type PresenceVisibility = 'visible' | 'hidden'
+export type PresenceSource = 'web' | 'electron' | 'mobile'
+export type PresenceStatePayload = { active: boolean; visibility: PresenceVisibility; source: PresenceSource }
+
+const PRESENCE_STATE_DEBOUNCE_MS = 180
+const PRESENCE_SYNC_FLAG = '__ebPresenceStateSyncInstalled'
+
+let presenceSyncTimer: number | null = null
+let lastSentPresenceState: PresenceStatePayload | null = null
+
+function detectPresenceSource(): PresenceSource {
+  try {
+    // If we're running inside a native wrapper, treat as mobile.
+    if (Capacitor.isNativePlatform()) return 'mobile'
+  } catch {}
+  try {
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+    if (/Electron/i.test(ua)) return 'electron'
+  } catch {}
+  return 'web'
+}
+
+function computePresenceState(): { active: boolean; visibility: PresenceVisibility } {
+  if (typeof document === 'undefined') return { active: true, visibility: 'visible' }
+  const visibility: PresenceVisibility = document.visibilityState === 'visible' ? 'visible' : 'hidden'
+  const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true
+  const active = visibility === 'visible' && hasFocus
+  return { active, visibility }
+}
+
+function emitPresenceStateNow(opts?: { force?: boolean }) {
+  if (!socket.connected) return
+  const { active, visibility } = computePresenceState()
+  const payload: PresenceStatePayload = { active, visibility, source: detectPresenceSource() }
+
+  if (!opts?.force && lastSentPresenceState) {
+    if (
+      lastSentPresenceState.active === payload.active &&
+      lastSentPresenceState.visibility === payload.visibility &&
+      lastSentPresenceState.source === payload.source
+    ) {
+      return
+    }
+  }
+
+  lastSentPresenceState = payload
+  dbg('presence:state ->', payload)
+  socket.emit('presence:state', payload)
+}
+
+function scheduleEmitPresenceState(opts?: { force?: boolean }) {
+  if (typeof window === 'undefined') return
+  if (presenceSyncTimer) window.clearTimeout(presenceSyncTimer)
+  presenceSyncTimer = window.setTimeout(() => {
+    presenceSyncTimer = null
+    emitPresenceStateNow(opts)
+  }, PRESENCE_STATE_DEBOUNCE_MS)
+}
+
+export function initPresenceStateSync() {
+  // Make it resilient to HMR / multiple entrypoints
+  if (typeof window !== 'undefined') {
+    if ((window as any)[PRESENCE_SYNC_FLAG]) return
+    ;(window as any)[PRESENCE_SYNC_FLAG] = true
+  }
+
+  if (typeof window === 'undefined' || typeof document === 'undefined') return
+
+  const onVis = () => scheduleEmitPresenceState()
+  const onFocus = () => scheduleEmitPresenceState()
+  const onBlur = () => scheduleEmitPresenceState()
+
+  document.addEventListener('visibilitychange', onVis)
+  window.addEventListener('focus', onFocus)
+  window.addEventListener('blur', onBlur)
+
+  // Initial state immediately after connect (auth already complete at this point).
+  const onConnect = () => scheduleEmitPresenceState({ force: true })
+  socket.on('connect', onConnect)
+
+  // If we're already connected (edge-case), send once.
+  if (socket.connected) scheduleEmitPresenceState({ force: true })
+}
+
 // Expose socket globally for Electron overlay bridge
 if (typeof window !== 'undefined') {
   // Prevent overwriting if already exists
@@ -69,6 +153,8 @@ export function connectSocket() {
     console.log('[Socket] Skipping JS socket connection on Android (using native socket)')
     return
   }
+  // Ensure presence state sync is installed BEFORE connecting
+  initPresenceStateSync()
   const token = useAppStore.getState().session?.accessToken
   if (!token) return
   socket.auth = { token }

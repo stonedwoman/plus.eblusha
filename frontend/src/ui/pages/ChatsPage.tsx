@@ -4306,7 +4306,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               })()
 
               const directStatus = isMeInAnyCall ? 'IN_CALL' : (myPresence ?? (meInfoQuery.data as any)?.status)
-              const fallbackStatus = isSocketOnline ? 'ONLINE' : 'OFFLINE'
+              // Socket connection alone means "connected/online", but NOT necessarily "active/in-focus".
+              // Until we receive a presence:update derived from presence:state, treat connected as "BACKGROUND".
+              const fallbackStatus = isSocketOnline ? 'BACKGROUND' : 'OFFLINE'
               const normalized = (directStatus ?? fallbackStatus ?? 'OFFLINE').toString().toUpperCase()
               const allowedPresence = ['ONLINE', 'AWAY', 'BACKGROUND', 'IN_CALL', 'OFFLINE'] as const
               type KnownPresence = (typeof allowedPresence)[number]
@@ -5739,12 +5741,25 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                               ? (m as any).metadata.linkPreviewUrl
                               : null
                             const attempted = !!attemptedAt && attemptedUrl === firstUrl
+                            const attemptAgeMs = (() => {
+                              if (!attemptedAt) return null
+                              const ts = Date.parse(attemptedAt)
+                              if (!Number.isFinite(ts)) return null
+                              return Date.now() - ts
+                            })()
+                            const isProbablyInFlight = attempted && !preview && typeof attemptAgeMs === 'number' && attemptAgeMs >= 0 && attemptAgeMs < 25_000
                             // In secret chats: show only minimal (derived from URL), never fetch/render rich metadata.
                             if (activeConversation?.isSecret) {
                               return <LinkPreviewCard preview={{ url: firstUrl }} />
                             }
-                            // Non-secret: rich if available, otherwise minimal while loading.
-                            return <LinkPreviewCard preview={preview ? { ...preview, url: preview.url || firstUrl } : (attempted ? { url: firstUrl } : { url: firstUrl, __loading: true })} />
+                            // Non-secret: rich if available, otherwise skeleton while worker fetches, then compact fallback.
+                            const placeholder =
+                              isProbablyInFlight
+                                ? { url: firstUrl, __loading: true }
+                                : attempted
+                                  ? { url: firstUrl }
+                                  : { url: firstUrl, __loading: true }
+                            return <LinkPreviewCard preview={preview ? { ...preview, url: preview.url || firstUrl } : placeholder} />
                           })()}
                           {(() => {
                             const attachments = (m.attachments || []) as any[]
