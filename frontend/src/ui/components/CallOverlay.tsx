@@ -1797,9 +1797,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const me = useAppStore((s) => s.session?.user)
 
   const e2ee1to1FlagEnabled = useMemo(() => readEnvBool((import.meta as any).env?.VITE_E2EE_1TO1), [])
-  const allowE2eeFallback = useMemo(() => readEnvBool((import.meta as any).env?.VITE_E2EE_1TO1_FALLBACK), [])
-  const [forcePlainFor1to1, setForcePlainFor1to1] = useState(false)
-  const shouldUseE2ee = !isGroup && e2ee1to1FlagEnabled && !forcePlainFor1to1
+  const shouldUseE2ee = !isGroup && e2ee1to1FlagEnabled
   const e2eeRoomRef = useRef<Room | null>(null)
   const e2eeWorkerRef = useRef<Worker | null>(null)
   const e2eeEnableStartedRef = useRef(false)
@@ -2302,9 +2300,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     }
   }, [open, conversationId])
 
-  // Reset any "fallback to plain" override when switching calls.
   useEffect(() => {
-    setForcePlainFor1to1(false)
     setE2eeEnabled(false)
     e2eeEnableStartedRef.current = false
   }, [conversationId])
@@ -2350,11 +2346,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       } catch (err) {
         if (cancelled) return
         const msg = describeE2eeSetupError(err)
-        if (allowE2eeFallback) {
-          setForcePlainFor1to1(true)
-        } else {
-          setE2eeError(msg)
-        }
+        setE2eeError(msg)
       } finally {
         if (!cancelled) {
           setE2eePreparing(false)
@@ -2387,7 +2379,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         // ignore
       }
     }
-  }, [open, conversationId, token, serverUrl, shouldUseE2ee, allowE2eeFallback, cleanupE2eeResources])
+  }, [open, conversationId, token, serverUrl, shouldUseE2ee, cleanupE2eeResources])
 
   // Ensure we always cleanup E2EE resources on unmount.
   useEffect(() => {
@@ -2466,16 +2458,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         ])
       } catch (err) {
         const msg = describeE2eeSetupError(err)
-        if (allowE2eeFallback) {
-          setForcePlainFor1to1(true)
-          cleanupE2eeResources()
-          return
-        }
         setE2eeError(msg)
         cleanupE2eeResources()
       }
     })()
-  }, [allowE2eeFallback, camera, cleanupE2eeResources, e2eeEnabled, muted, shouldUseE2ee, waitForLocalE2eeEnabled])
+  }, [camera, cleanupE2eeResources, e2eeEnabled, muted, shouldUseE2ee, waitForLocalE2eeEnabled])
 
   // Guardrail: for 1:1 calls with E2EE required, never allow local encryption to silently turn off.
   useEffect(() => {
@@ -3159,19 +3146,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                 <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Защищённый звонок недоступен</div>
                 <div style={{ opacity: 0.85, marginBottom: 16 }}>{e2eeError}</div>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  {allowE2eeFallback && (
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => {
-                        setE2eeError(null)
-                        setForcePlainFor1to1(true)
-                        cleanupE2eeResources()
-                      }}
-                    >
-                      Продолжить без E2EE
-                    </button>
-                  )}
                   <button type="button" className="btn btn-primary" onClick={() => handleClose({ manual: true })}>
                     Закрыть
                   </button>
