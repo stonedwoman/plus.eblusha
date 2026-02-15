@@ -323,29 +323,40 @@ enum CallType {
 }
 
 model UserDevice {
-  id          String        @id
-  userId      String
-  name        String
-  platform    String?
-  publicKey   String
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  lastSeenAt  DateTime?
-  revokedAt   DateTime?
-  user        User          @relation(fields: [userId], references: [id])
-  prekeys     DevicePrekey[]
+  id                  String        @id
+  userId              String
+  name                String
+  platform            String?
+  publicKey           String
+  identityPublicKey   String?
+  signedPreKeyId      String?
+  signedPreKeyPublic  String?
+  signedPreKeySignature String?
+  signedPreKeyExpiresAt DateTime?
+  keyVersion          Int           @default(1)
+  keyAlg              String        @default("x25519+ed25519")
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  lastSeenAt          DateTime?
+  revokedAt           DateTime?
+  user                User          @relation(fields: [userId], references: [id])
+  prekeys             DevicePrekey[]
 
   @@index([userId])
 }
 
 model DevicePrekey {
-  id         String      @id @default(cuid())
-  deviceId   String
-  keyId      String
-  publicKey  String
-  createdAt  DateTime    @default(now())
-  consumedAt DateTime?
-  device     UserDevice  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  id                String      @id @default(cuid())
+  deviceId          String
+  keyId             String
+  publicKey         String
+  oneTimePreKeyId   String?
+  oneTimePreKeyPublic String?
+  version           Int         @default(1)
+  alg               String      @default("x25519")
+  createdAt         DateTime    @default(now())
+  consumedAt        DateTime?
+  device            UserDevice  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@unique([deviceId, keyId])
   @@index([deviceId, consumedAt])

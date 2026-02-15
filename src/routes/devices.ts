@@ -15,11 +15,26 @@ const registerSchema = z.object({
   name: z.string().min(1),
   platform: z.string().optional(),
   publicKey: z.string().min(16),
+  identityPublicKey: z.string().min(16).optional(),
+  signedPreKey: z
+    .object({
+      id: z.string().min(1),
+      publicKey: z.string().min(16),
+      signature: z.string().min(16),
+      expiresAt: z.string().datetime().optional(),
+    })
+    .optional(),
+  version: z.number().int().min(1).optional(),
+  alg: z.string().min(1).optional(),
   prekeys: z
     .array(
       z.object({
         keyId: z.string().min(1),
         publicKey: z.string().min(16),
+        oneTimePreKeyId: z.string().min(1).optional(),
+        oneTimePreKeyPublic: z.string().min(16).optional(),
+        version: z.number().int().min(1).optional(),
+        alg: z.string().min(1).optional(),
       })
     )
     .max(200)
@@ -51,8 +66,65 @@ router.get("/", async (req, res) => {
       lastSeenAt: d.lastSeenAt,
       revokedAt: d.revokedAt,
       publicKey: d.publicKey,
+      identityPublicKey: d.identityPublicKey,
+      signedPreKey: d.signedPreKeyPublic
+        ? {
+            id: d.signedPreKeyId,
+            publicKey: d.signedPreKeyPublic,
+            signature: d.signedPreKeySignature,
+            expiresAt: d.signedPreKeyExpiresAt,
+          }
+        : null,
+      version: d.keyVersion,
+      alg: d.keyAlg,
       availablePrekeys: d._count.prekeys,
     })),
+  });
+});
+
+router.get("/:userId/prekey-bundles", async (req, res) => {
+  const { userId } = req.params;
+  const devices = await prisma.userDevice.findMany({
+    where: {
+      userId,
+      revokedAt: null,
+    },
+    orderBy: { createdAt: "asc" },
+    include: {
+      prekeys: {
+        where: { consumedAt: null },
+        orderBy: { createdAt: "asc" },
+        take: 1,
+      },
+    },
+  });
+
+  res.json({
+    userId,
+    bundles: devices.map((d) => {
+      const prekey = d.prekeys[0] ?? null;
+      return {
+        deviceId: d.id,
+        identityPublicKey: d.identityPublicKey ?? d.publicKey,
+        signedPreKey: d.signedPreKeyPublic
+          ? {
+              id: d.signedPreKeyId,
+              publicKey: d.signedPreKeyPublic,
+              signature: d.signedPreKeySignature,
+              expiresAt: d.signedPreKeyExpiresAt,
+            }
+          : null,
+        oneTimePreKey: prekey
+          ? {
+              id: prekey.oneTimePreKeyId ?? prekey.keyId,
+              publicKey: prekey.oneTimePreKeyPublic ?? prekey.publicKey,
+              consumedAt: prekey.consumedAt,
+            }
+          : null,
+        version: d.keyVersion,
+        alg: d.keyAlg,
+      };
+    }),
   });
 });
 
@@ -67,6 +139,13 @@ router.get("/:deviceId", async (req, res) => {
       name: true,
       platform: true,
       publicKey: true,
+      identityPublicKey: true,
+      signedPreKeyId: true,
+      signedPreKeyPublic: true,
+      signedPreKeySignature: true,
+      signedPreKeyExpiresAt: true,
+      keyVersion: true,
+      keyAlg: true,
       revokedAt: true,
     },
   });
@@ -86,7 +165,8 @@ router.post(
     res.status(400).json({ message: "Invalid device payload" });
     return;
   }
-  const { deviceId, name, platform, publicKey, prekeys } = parsed.data;
+  const { deviceId, name, platform, publicKey, identityPublicKey, signedPreKey, version, alg, prekeys } =
+    parsed.data;
   const userId = (req as AuthedRequest).user!.id;
 
   const existing = await prisma.userDevice.findUnique({ where: { id: deviceId } });
@@ -101,6 +181,13 @@ router.post(
       name,
       platform: platform ?? existing?.platform ?? null,
       publicKey,
+      identityPublicKey: identityPublicKey ?? publicKey,
+      signedPreKeyId: signedPreKey?.id ?? null,
+      signedPreKeyPublic: signedPreKey?.publicKey ?? null,
+      signedPreKeySignature: signedPreKey?.signature ?? null,
+      signedPreKeyExpiresAt: signedPreKey?.expiresAt ? new Date(signedPreKey.expiresAt) : null,
+      keyVersion: version ?? 1,
+      keyAlg: alg ?? "x25519+ed25519",
       lastSeenAt: new Date(),
       revokedAt: null,
     },
@@ -110,6 +197,13 @@ router.post(
       name,
       platform: platform ?? null,
       publicKey,
+      identityPublicKey: identityPublicKey ?? publicKey,
+      signedPreKeyId: signedPreKey?.id ?? null,
+      signedPreKeyPublic: signedPreKey?.publicKey ?? null,
+      signedPreKeySignature: signedPreKey?.signature ?? null,
+      signedPreKeyExpiresAt: signedPreKey?.expiresAt ? new Date(signedPreKey.expiresAt) : null,
+      keyVersion: version ?? 1,
+      keyAlg: alg ?? "x25519+ed25519",
       lastSeenAt: new Date(),
     },
   });
@@ -120,6 +214,10 @@ router.post(
         deviceId,
         keyId: pk.keyId,
         publicKey: pk.publicKey,
+        oneTimePreKeyId: pk.oneTimePreKeyId ?? pk.keyId,
+        oneTimePreKeyPublic: pk.oneTimePreKeyPublic ?? pk.publicKey,
+        version: pk.version ?? version ?? 1,
+        alg: pk.alg ?? alg ?? "x25519",
       })),
       skipDuplicates: true,
     });
@@ -135,6 +233,10 @@ const publishSchema = z.object({
       z.object({
         keyId: z.string().min(1),
         publicKey: z.string().min(16),
+        oneTimePreKeyId: z.string().min(1).optional(),
+        oneTimePreKeyPublic: z.string().min(16).optional(),
+        version: z.number().int().min(1).optional(),
+        alg: z.string().min(1).optional(),
       })
     )
     .min(1)
@@ -170,6 +272,10 @@ router.post(
       deviceId,
       keyId: pk.keyId,
       publicKey: pk.publicKey,
+      oneTimePreKeyId: pk.oneTimePreKeyId ?? pk.keyId,
+      oneTimePreKeyPublic: pk.oneTimePreKeyPublic ?? pk.publicKey,
+      version: pk.version ?? 1,
+      alg: pk.alg ?? "x25519",
     })),
     skipDuplicates: true,
   });
@@ -213,11 +319,21 @@ router.post(
 
   res.json({
     deviceId,
-    identityKey: device.publicKey,
+    identityKey: device.identityPublicKey ?? device.publicKey,
+    signedPreKey: device.signedPreKeyPublic
+      ? {
+          id: device.signedPreKeyId,
+          publicKey: device.signedPreKeyPublic,
+          signature: device.signedPreKeySignature,
+          expiresAt: device.signedPreKeyExpiresAt,
+        }
+      : null,
     prekey: {
-      keyId: prekey.keyId,
-      publicKey: prekey.publicKey,
+      keyId: prekey.oneTimePreKeyId ?? prekey.keyId,
+      publicKey: prekey.oneTimePreKeyPublic ?? prekey.publicKey,
     },
+    version: device.keyVersion,
+    alg: device.keyAlg,
   });
   }
 );

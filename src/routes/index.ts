@@ -8,6 +8,7 @@ import statusRouter from "./status";
 import uploadRouter from "./upload";
 import devicesRouter from "./devices";
 import filesRouter from "./files";
+import secretRouter from "./secret";
 
 const router = Router();
 
@@ -20,6 +21,7 @@ router.use("/status", statusRouter);
 router.use("/upload", uploadRouter);
 router.use("/devices", devicesRouter);
 router.use("/files", filesRouter);
+router.use("/secret", secretRouter);
 
 router.get("/", (_req, res) => {
   res.json({ message: "Eblusha API" });

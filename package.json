@@ -13,6 +13,7 @@
     "format": "prettier --write .",
     "test:link-detect": "ts-node test/link-detect.test.ts",
     "test:ssrf": "ts-node test/ssrf-guard.test.ts",
+    "test:comms": "ts-node test/comms.integration.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "docker:db": "docker compose up -d postgres",

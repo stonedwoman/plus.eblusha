@@ -1,10 +1,70 @@
 import { Router, type Request } from "express";
-import { AccessToken } from "livekit-server-sdk";
+import { AccessToken, WebhookReceiver } from "livekit-server-sdk";
 import { z } from "zod";
 import env from "../config/env";
 import { authenticate } from "../middlewares/auth";
+import { getRedisClient } from "../lib/redis";
+import prisma from "../lib/prisma";
+import { applyLivekitFactsEvent } from "../lib/livekitFacts";
 
 const router = Router();
+const webhookReceiver = new WebhookReceiver(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
+const LIVEKIT_EVENT_KEY_PREFIX = "livekit_webhook_event:";
+const LIVEKIT_EVENT_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+router.post("/webhook", async (req, res) => {
+  const rawBodyBuffer = (req as Request & { rawBody?: Buffer }).rawBody;
+  if (!rawBodyBuffer || rawBodyBuffer.length === 0) {
+    res.status(400).json({ message: "Missing webhook body" });
+    return;
+  }
+  const rawBody = rawBodyBuffer.toString("utf8");
+  const authHeader = req.get("Authorization") ?? undefined;
+
+  let event;
+  try {
+    event = await webhookReceiver.receive(rawBody, authHeader);
+  } catch {
+    res.status(401).json({ message: "Invalid LiveKit webhook signature" });
+    return;
+  }
+
+  const eventId = (event.id || "").trim();
+  if (!eventId) {
+    res.status(400).json({ message: "Webhook event id is required" });
+    return;
+  }
+
+  const redis = await getRedisClient();
+  const dedupeKey = `${LIVEKIT_EVENT_KEY_PREFIX}${eventId}`;
+  const dedupeInserted = await redis.set(dedupeKey, "1", {
+    NX: true,
+    EX: LIVEKIT_EVENT_TTL_SECONDS,
+  });
+  if (dedupeInserted !== "OK") {
+    res.json({ ok: true, duplicate: true });
+    return;
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await applyLivekitFactsEvent(tx, {
+        id: eventId,
+        event: event.event,
+        roomName: event.room?.name ?? null,
+        participantIdentity: event.participant?.identity ?? null,
+        createdAtSeconds: event.createdAt,
+      });
+    });
+  } catch {
+    // Allow retry if DB write failed.
+    await redis.del(dedupeKey);
+    res.status(500).json({ message: "Failed to persist webhook event" });
+    return;
+  }
+
+  res.json({ ok: true });
+});
 
 router.use(authenticate);
 

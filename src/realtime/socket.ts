@@ -52,6 +52,7 @@ type ServerToClientEvents = {
   "call:status:bulk": (payload: { statuses: Record<string, { active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }> }) => void;
   "secret:chat:offer": (payload: { conversationId: string; from: { id: string; name: string; deviceId?: string | null } }) => void;
   "secret:chat:accepted": (payload: { conversationId: string; peerDeviceId: string }) => void;
+  "secret:notify": (payload: { toDeviceId: string; msgId: string }) => void;
 };
 
 type ClientToServerEvents = {
