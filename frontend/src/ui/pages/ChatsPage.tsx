@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
-import { Phone, Video, Play, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Square, Send, Bold, Italic, Strikethrough, Code, Quote, Link2 } from 'lucide-react'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2 } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -20,10 +20,15 @@ import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '.
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
 import { VoiceRecorder } from '../../utils/voiceRecorder'
-import { getWaveform } from '../../utils/audioWaveform'
-import { unlockAppAudio } from '../../utils/audioUnlock'
-import { detectLinks, extractFirstPreviewableUrl } from '../../js/link-detect'
+import { extractFirstPreviewableUrl } from '../../js/link-detect'
 import { renderChatMarkdownToHtml, htmlToMarkdown } from '../lib/chatMarkdown'
+import { renderMessageText } from './chats/chatsTextRender'
+import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
+import { VoiceMessagePlayer } from './chats/components/VoiceMessagePlayer'
+import { useChatAudio } from './chats/hooks/useChatAudio'
+import { useChatSocketSubscriptions } from './chats/hooks/useChatSocketSubscriptions'
+import { useChatTyping } from './chats/hooks/useChatTyping'
+import { useChatsResponsive } from './chats/hooks/useChatsResponsive'
 
 declare global {
   interface Window {
@@ -39,160 +44,6 @@ const MIN_OUTGOING_CALL_DURATION_MS = 30_000
 const MAX_PENDING_IMAGES = 10
 const MAX_PENDING_FILES = 10
 const MESSAGES_PAGE_SIZE = 80
-
-function decodeUrlForDisplay(raw: string) {
-  // decodeURI keeps reserved characters (/, ?, #, &) intact while decoding %XX sequences.
-  // This is ideal for showing human-readable paths like /wiki/Трофей:...
-  try {
-    return decodeURI(raw)
-  } catch {
-    return raw
-  }
-}
-
-function renderLinkifiedText(value: unknown) {
-  if (typeof value !== 'string') return value as any
-  if (!value) return value
-
-  const links = detectLinks(value)
-  if (!links.length) {
-    // Preserve newlines
-    const lines = value.split('\n')
-    return (
-      <>
-        {lines.map((line, idx) => (
-          <Fragment key={`t-${idx}`}>
-            {line}
-            {idx < lines.length - 1 ? <br /> : null}
-          </Fragment>
-        ))}
-      </>
-    )
-  }
-
-  const nodes: any[] = []
-  let last = 0
-  for (const l of links) {
-    if (l.start > last) nodes.push(value.slice(last, l.start))
-    const displayText = decodeUrlForDisplay(value.slice(l.start, l.end))
-    nodes.push(
-      <a
-        key={`u-${l.start}-${l.end}`}
-        href={l.href}
-        target="_blank"
-        rel="noopener noreferrer nofollow"
-        style={{ color: 'inherit', textDecoration: 'underline', overflowWrap: 'anywhere', wordBreak: 'break-word' }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {displayText}
-      </a>,
-    )
-    last = l.end
-  }
-  if (last < value.length) nodes.push(value.slice(last))
-
-  // Convert \n into <br/> while keeping anchors intact.
-  const out: any[] = []
-  let key = 0
-  for (const part of nodes) {
-    if (typeof part !== 'string') {
-      out.push(<Fragment key={`p-${key++}`}>{part}</Fragment>)
-      continue
-    }
-    const lines = part.split('\n')
-    lines.forEach((line, idx) => {
-      out.push(<Fragment key={`s-${key++}`}>{line}</Fragment>)
-      if (idx < lines.length - 1) out.push(<br key={`br-${key++}`} />)
-    })
-  }
-  return <>{out}</>
-}
-
-function isMarkdownLike(text: string): boolean {
-  const s = text || ''
-  if (!s) return false
-  // Keep this intentionally small: we only switch renderer when user clearly uses markers.
-  return (
-    s.includes('```') ||
-    s.includes('`') ||
-    s.includes('**') ||
-    // italic marker is ambiguous; require space+* or *_ to avoid false positives
-    /(^|\s)\*(\S)/.test(s) ||
-    /(^|\n)>\s/.test(s) ||
-    /\[[^\]]+\]\((https?:\/\/[^\s)]+)\)/.test(s)
-  )
-}
-
-function renderMessageText(value: unknown) {
-  if (typeof value !== 'string') return value as any
-  const s = value || ''
-  if (!s) return s
-  if (!isMarkdownLike(s)) return renderLinkifiedText(s)
-  const html = renderChatMarkdownToHtml(s)
-  // eslint-disable-next-line react/no-danger
-  return <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />
-}
-
-function parseYouTubeVideoId(urlString: string): string | null {
-  try {
-    const u = new URL(urlString)
-    const host = u.hostname.toLowerCase()
-    if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
-      const id = u.pathname.replace(/^\//, '').split('/')[0] || null
-      return id
-    }
-    if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
-      const v = u.searchParams.get('v')
-      if (v) return v
-      const parts = u.pathname.split('/').filter(Boolean)
-      const head = parts[0] || ''
-      const id = parts[1] || ''
-      if (head === 'shorts' || head === 'embed' || head === 'v') return id || null
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-function getYouTubeEmbedUrl(videoId: string): string | null {
-  const id = (videoId || '').trim()
-  if (!id) return null
-  const embed = new URL(`https://www.youtube-nocookie.com/embed/${id}`)
-  embed.searchParams.set('autoplay', '0')
-  embed.searchParams.set('rel', '0')
-  embed.searchParams.set('modestbranding', '1')
-  embed.searchParams.set('playsinline', '1')
-  embed.searchParams.set('enablejsapi', '1')
-  const origin =
-    typeof window !== 'undefined' &&
-    typeof window.location?.origin === 'string' &&
-    (window.location.origin.startsWith('http://') || window.location.origin.startsWith('https://'))
-      ? window.location.origin
-      : null
-  if (origin) embed.searchParams.set('origin', origin)
-  return embed.toString()
-}
-
-function getSpotifyEmbed(urlString: string): { url: string; height: number } | null {
-  try {
-    const u = new URL(urlString)
-    const host = u.hostname.toLowerCase()
-    if (!host.includes('spotify.com') && host !== 'spoti.fi') return null
-    if (host === 'spoti.fi') return null // short links require a HEAD/redirect; skip for now
-    const parts = u.pathname.split('/').filter(Boolean)
-    const type = parts[0]
-    const id = parts[1]
-    if (!type || !id) return null
-    const allow = new Set(['track', 'album', 'playlist', 'episode', 'show', 'artist'])
-    if (!allow.has(type)) return null
-    const embedUrl = `https://open.spotify.com/embed/${type}/${id}`
-    const height = type === 'track' ? 152 : 352
-    return { url: embedUrl, height }
-  } catch {
-    return null
-  }
-}
 
 type AttachmentFileKind =
   | 'document'
@@ -422,600 +273,6 @@ function parseContentDispositionFilename(headerValue: string | null): string | n
   return raw || null
 }
 
-type YouTubeOpenMode = 'embed' | 'external' | 'electron_session' | 'system_browser'
-
-function getDefaultYouTubeOpenMode(): YouTubeOpenMode {
-  // Mobile native wrappers should prefer system browser components.
-  const isCapacitor =
-    typeof window !== 'undefined' &&
-    (window as any).Capacitor &&
-    ((window as any).Capacitor.isNativePlatform?.() || (window as any).Capacitor.getPlatform?.() !== 'web')
-  return isCapacitor ? 'system_browser' : 'embed'
-}
-
-function getYouTubeOpenMode(): YouTubeOpenMode {
-  try {
-    const raw =
-      (typeof localStorage !== 'undefined' ? localStorage.getItem('youtubeOpenMode') : null) ||
-      null
-    const v = (raw || '').trim()
-    if (v === 'embed' || v === 'external' || v === 'electron_session' || v === 'system_browser') return v
-  } catch {}
-  return getDefaultYouTubeOpenMode()
-}
-
-async function openUrlSystemBrowser(url: string) {
-  // Best-effort: Capacitor Browser plugin if present; fallback to window.open.
-  const w: any = typeof window !== 'undefined' ? window : null
-  const cap = w?.Capacitor
-  const browser = cap?.Plugins?.Browser
-  if (browser?.open) {
-    try {
-      await browser.open({ url })
-      return
-    } catch {}
-  }
-  window.open(url, '_blank', 'noopener,noreferrer')
-}
-
-function YouTubePlayerEmbed({ videoId, openUrl, debug }: { videoId: string; openUrl: string; debug: boolean }) {
-  const src = getYouTubeEmbedUrl(videoId)
-  const [ready, setReady] = useState(false)
-  const [failed, setFailed] = useState(false)
-
-  useEffect(() => {
-    setReady(false)
-    setFailed(false)
-  }, [videoId])
-
-  useEffect(() => {
-    if (!src) return
-    const t = window.setTimeout(() => {
-      if (!ready) setFailed(true)
-    }, 9000)
-    return () => window.clearTimeout(t)
-  }, [src, ready])
-
-  useEffect(() => {
-    if (!src) return
-    const handler = (ev: MessageEvent) => {
-      const origin = (ev.origin || '').toLowerCase()
-      if (!origin.includes('youtube') && !origin.includes('ytimg') && !origin.includes('youtube-nocookie')) return
-      const data = ev.data
-      // The player sometimes sends stringified JSON.
-      const obj = (() => {
-        if (!data) return null
-        if (typeof data === 'string') {
-          try { return JSON.parse(data) } catch { return null }
-        }
-        if (typeof data === 'object') return data
-        return null
-      })() as any
-      const eventName = typeof obj?.event === 'string' ? obj.event : null
-      if (!eventName) return
-      if (debug) {
-        // eslint-disable-next-line no-console
-        console.log('[YOUTUBE_DEBUG] iframe:message', { origin, event: eventName })
-      }
-      if (eventName === 'onReady') setReady(true)
-      if (eventName === 'onError') setFailed(true)
-    }
-    window.addEventListener('message', handler)
-    return () => window.removeEventListener('message', handler)
-  }, [src, debug])
-
-  if (!src) {
-    return (
-      <div style={{ padding: 12 }}>
-        <button className="btn btn-secondary" type="button" onClick={() => window.open(openUrl, '_blank', 'noopener,noreferrer')}>
-          Открыть в браузере
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <div style={{ position: 'relative', width: '100%', aspectRatio: '16 / 9', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.18)' }}>
-      <iframe
-        src={src}
-        title="YouTube"
-        allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-        allowFullScreen
-        loading="lazy"
-        style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
-      />
-      {failed && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, background: 'rgba(0,0,0,0.55)', color: '#fff', textAlign: 'center' }}>
-          <div style={{ maxWidth: 420 }}>
-            <div style={{ fontWeight: 800, marginBottom: 8 }}>Не удалось встроить YouTube</div>
-            <div style={{ opacity: 0.9, fontSize: 13, lineHeight: 1.25, marginBottom: 12 }}>
-              YouTube может требовать подтверждение/вход. Откройте видео в браузере.
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" type="button" onClick={() => window.open(openUrl, '_blank', 'noopener,noreferrer')}>
-                Открыть в браузере
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function LinkPreviewCard({ preview }: { preview: any }) {
-  // Full preview when metadata exists, but still show a minimal card (domain + url) when it doesn't.
-  if (!preview || typeof preview !== 'object') return null
-  const url = typeof preview.url === 'string' ? preview.url : null
-  const title = typeof preview.title === 'string' ? preview.title : null
-  const description = typeof preview.description === 'string' ? preview.description : null
-  const imageUrl = typeof preview.imageUrl === 'string' ? preview.imageUrl : null
-  const imageWidth = typeof preview.imageWidth === 'number' && preview.imageWidth > 0 ? preview.imageWidth : null
-  const imageHeight = typeof preview.imageHeight === 'number' && preview.imageHeight > 0 ? preview.imageHeight : null
-  const siteName = typeof preview.siteName === 'string' ? preview.siteName : null
-  const isLoading = (preview as any).__loading === true
-  const blockedReason = typeof (preview as any).blockedReason === 'string' ? (preview as any).blockedReason : null
-  if (!url) return null
-
-  const YOUTUBE_DEBUG =
-    typeof window !== 'undefined' &&
-    (
-      (window as any).__YOUTUBE_DEBUG === true ||
-      (typeof localStorage !== 'undefined' && localStorage.getItem('YOUTUBE_DEBUG') === '1') ||
-      (typeof location !== 'undefined' && location.search.includes('YOUTUBE_DEBUG=1'))
-    )
-
-  const [showEmbed, setShowEmbed] = useState(false)
-  const [measured, setMeasured] = useState<{ w: number; h: number } | null>(null)
-
-  const siteLabel = siteName || (() => {
-    try { return new URL(url).hostname } catch { return null }
-  })()
-  const fallbackTitle = (() => {
-    try {
-      const u = new URL(url)
-      const host = u.hostname
-      const pathRaw = (u.pathname && u.pathname !== '/' ? u.pathname : '')
-      const path = pathRaw ? decodeUrlForDisplay(pathRaw) : ''
-      return (host + path).slice(0, 160)
-    } catch {
-      return url.slice(0, 160)
-    }
-  })()
-  const finalTitle = title || fallbackTitle
-  const hasImage = !!imageUrl
-  const aspectRatio =
-    imageWidth && imageHeight
-      ? `${imageWidth} / ${imageHeight}`
-      : (measured?.w && measured?.h)
-        ? `${measured.w} / ${measured.h}`
-        : (hasImage ? '16 / 9' : undefined)
-  const isMediaProvider = (() => {
-    const label = (siteLabel || '').toLowerCase()
-    if (label.includes('youtube') || label.includes('spotify')) return true
-    try {
-      const host = new URL(url).hostname.toLowerCase()
-      return host.includes('youtube.com') || host === 'youtu.be' || host.includes('spotify.com') || host === 'spoti.fi'
-    } catch {
-      return false
-    }
-  })()
-  // Never crop: show the whole image, let the container grow by aspect ratio.
-  const imageFit: React.CSSProperties['objectFit'] = 'contain'
-
-  const spotifyEmbed = getSpotifyEmbed(url)
-  const youTubeId = url ? parseYouTubeVideoId(url) : null
-  const youTubeMode = getYouTubeOpenMode()
-  const embed =
-    spotifyEmbed
-      ? ({ kind: 'spotify' as const, url: spotifyEmbed.url, height: spotifyEmbed.height })
-      : null
-
-  const loading = isLoading && !blockedReason
-
-  const effectiveW = imageWidth ?? measured?.w ?? null
-  const maxCardW = (() => {
-    const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
-    // Keep within bubble's max-width (92% viewport) and existing 720px cap.
-    return Math.min(720, Math.floor(vw * 0.92) - 24)
-  })()
-  const targetW =
-    effectiveW ??
-    (youTubeId ? 560 : embed?.kind === 'spotify' ? 520 : null)
-  const cardW = typeof targetW === 'number' && targetW > 0 ? Math.min(maxCardW, targetW) : null
-
-  return (
-    <div
-      role="link"
-      tabIndex={0}
-      onMouseDown={(e) => e.stopPropagation()}
-      onClick={() => {
-        if (YOUTUBE_DEBUG) {
-          // eslint-disable-next-line no-console
-          console.log('[YOUTUBE_DEBUG] ui:open', { url })
-        }
-        window.open(url, '_blank', 'noopener,noreferrer')
-      }}
-      style={{
-        display: cardW ? 'inline-block' : 'block',
-        width: cardW ? cardW : undefined,
-        maxWidth: '100%',
-        marginTop: 8,
-        borderRadius: 12,
-        overflow: 'hidden',
-        border: '1px solid var(--surface-border)',
-        background: 'rgba(0,0,0,0.10)',
-        boxShadow: '0 6px 18px rgba(0,0,0,0.25)',
-        position: 'relative',
-        textDecoration: 'none',
-        color: 'inherit',
-        cursor: 'pointer',
-      }}
-    >
-      <div style={{ padding: hasImage ? '12px 12px 10px 12px' : '12px 12px 12px 12px' }}>
-        {siteLabel && (
-          <div
-            style={{
-              fontSize: 12,
-              fontWeight: 700,
-              color: 'var(--brand)',
-              marginBottom: 6,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {siteLabel}
-          </div>
-        )}
-        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: description ? 6 : 0, lineHeight: 1.25 }}>
-          {finalTitle}
-        </div>
-        {!!description && (
-          <div
-            style={{
-              fontSize: 13,
-              opacity: 0.9,
-              lineHeight: 1.25,
-              display: '-webkit-box',
-              WebkitLineClamp: hasImage ? 2 : 3,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-            }}
-          >
-            {description}
-          </div>
-        )}
-        {!description && loading && (
-          <div
-            style={{
-              marginTop: 6,
-              height: 30,
-              borderRadius: 8,
-              background:
-                'linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.12) 37%, rgba(255,255,255,0.06) 63%)',
-              backgroundSize: '400% 100%',
-              animation: 'eb-shimmer 1.2s ease-in-out infinite',
-            }}
-          />
-        )}
-      </div>
-      {showEmbed && (youTubeId || embed) && (
-        <div style={{ padding: '0 12px 12px 12px' }} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-          {youTubeId ? (
-            <YouTubePlayerEmbed videoId={youTubeId} openUrl={url} debug={YOUTUBE_DEBUG} />
-          ) : (
-            (() => {
-              const sEmbed = embed as { kind: 'spotify'; url: string; height: number } | null
-              if (!sEmbed) return null
-              return (
-                <div
-                  style={{
-                    width: '100%',
-                    height: sEmbed.height,
-                    borderRadius: 10,
-                    overflow: 'hidden',
-                    background: 'rgba(0,0,0,0.18)',
-                    border: '1px solid rgba(255,255,255,0.08)',
-                  }}
-                >
-                  <iframe
-                    src={sEmbed.url}
-                    title={finalTitle}
-                    allow="encrypted-media"
-                    loading="lazy"
-                    style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
-                  />
-                </div>
-              )
-            })()
-          )}
-        </div>
-      )}
-      {!showEmbed && (imageUrl || loading) && (
-        <div style={{ padding: '0 12px 12px 12px' }}>
-          <div
-            style={{
-              width: '100%',
-              ...(embed?.kind === 'spotify'
-                ? { height: embed.height }
-                : (youTubeId ? { aspectRatio: '16 / 9' } : (aspectRatio ? { aspectRatio } : {}))),
-              borderRadius: 10,
-              overflow: 'hidden',
-              background: isMediaProvider ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.18)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              position: 'relative',
-            }}
-          >
-            {imageUrl ? (
-              <img
-                src={imageUrl}
-                alt=""
-                style={{ width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', display: 'block', objectFit: imageFit, objectPosition: 'center' }}
-                loading="lazy"
-                referrerPolicy="no-referrer"
-                onLoad={(e) => {
-                  const img = e.currentTarget
-                  const w = img.naturalWidth
-                  const h = img.naturalHeight
-                  if (w > 0 && h > 0 && !measured) setMeasured({ w, h })
-                }}
-                onError={(e) => {
-                  const el = e.currentTarget
-                  el.style.display = 'none'
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  background:
-                    'linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.12) 37%, rgba(255,255,255,0.06) 63%)',
-                  backgroundSize: '400% 100%',
-                  animation: 'eb-shimmer 1.2s ease-in-out infinite',
-                }}
-              />
-            )}
-            {(youTubeId || embed) && (
-              <button
-                type="button"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={async (e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  if (youTubeId) {
-                    if (YOUTUBE_DEBUG) {
-                      // eslint-disable-next-line no-console
-                      console.log('[YOUTUBE_DEBUG] ui:youtube:play', { url, videoId: youTubeId, mode: youTubeMode })
-                    }
-                    if (youTubeMode === 'external') {
-                      window.open(url, '_blank', 'noopener,noreferrer')
-                      return
-                    }
-                    if (youTubeMode === 'system_browser') {
-                      await openUrlSystemBrowser(url)
-                      return
-                    }
-                    if (youTubeMode === 'electron_session') {
-                      const embedUrl = getYouTubeEmbedUrl(youTubeId)
-                      const w: any = window as any
-                      if (embedUrl && typeof w?.__openYouTubeWindow === 'function') {
-                        try { w.__openYouTubeWindow(embedUrl) } catch {}
-                        return
-                      }
-                      window.open(url, '_blank', 'noopener,noreferrer')
-                      return
-                    }
-                    // embed (default)
-                    setShowEmbed(true)
-                    return
-                  }
-                  if (embed) {
-                    if (YOUTUBE_DEBUG) {
-                      // eslint-disable-next-line no-console
-                      console.log('[YOUTUBE_DEBUG] ui:embed:show', { url, embedUrl: embed.url })
-                    }
-                    setShowEmbed(true)
-                  }
-                }}
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  border: 'none',
-                  background: 'linear-gradient(180deg, rgba(0,0,0,0.05), rgba(0,0,0,0.25))',
-                  color: '#fff',
-                  cursor: 'pointer',
-                }}
-                aria-label="Play"
-              >
-                <span
-                  style={{
-                    width: 56,
-                    height: 56,
-                    borderRadius: 999,
-                    background: 'rgba(0,0,0,0.55)',
-                    border: '1px solid rgba(255,255,255,0.18)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backdropFilter: 'blur(6px)',
-                  }}
-                >
-                  <Play size={24} />
-                </span>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function VoiceMessagePlayer({ url, duration }: { url: string; duration: number }) {
-  const [playing, setPlaying] = useState(false)
-  const [currentTime, setCurrentTime] = useState(0)
-  const [waveform, setWaveform] = useState<number[]>([])
-  const [loadingWaveform, setLoadingWaveform] = useState(true)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  
-  // Convert to proxy URL if needed
-  const proxyUrl = convertToProxyUrl(url) || url
-
-  // Генерируем waveform при загрузке
-  useEffect(() => {
-    let cancelled = false
-    setLoadingWaveform(true)
-    getWaveform(proxyUrl, 60)
-      .then((data) => {
-        if (!cancelled) {
-          setWaveform(data)
-          setLoadingWaveform(false)
-        }
-      })
-      .catch((err) => {
-        console.error('Failed to load waveform:', err)
-        if (!cancelled) {
-          setLoadingWaveform(false)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [proxyUrl])
-
-  useEffect(() => {
-    const audio = audioRef.current
-    if (!audio) return
-
-    const updateTime = () => setCurrentTime(audio.currentTime)
-    const handleEnded = () => {
-      setPlaying(false)
-      setCurrentTime(0)
-    }
-    const handlePlay = () => setPlaying(true)
-    const handlePause = () => setPlaying(false)
-
-    audio.addEventListener('timeupdate', updateTime)
-    audio.addEventListener('ended', handleEnded)
-    audio.addEventListener('play', handlePlay)
-    audio.addEventListener('pause', handlePause)
-
-    return () => {
-      audio.removeEventListener('timeupdate', updateTime)
-      audio.removeEventListener('ended', handleEnded)
-      audio.removeEventListener('play', handlePlay)
-      audio.removeEventListener('pause', handlePause)
-    }
-  }, [])
-
-  const togglePlay = () => {
-    const audio = audioRef.current
-    if (!audio) return
-
-    if (playing) {
-      audio.pause()
-    } else {
-      audio.play().catch((err) => {
-        console.error('Failed to play audio:', err)
-      })
-    }
-  }
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
-
-  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
-  const currentBarIndex = waveform.length > 0 ? Math.floor((currentTime / duration) * waveform.length) : 0
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)' }}>
-      <audio ref={audioRef} src={proxyUrl} preload="metadata" />
-      <button
-        type="button"
-        onClick={togglePlay}
-        style={{
-          width: 40,
-          height: 40,
-          borderRadius: '50%',
-          border: 'none',
-          background: 'var(--brand)',
-          color: '#fff',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          flexShrink: 0,
-        }}
-        aria-label={playing ? 'Пауза' : 'Воспроизвести'}
-      >
-        {playing ? (
-          <Square size={16} fill="currentColor" />
-        ) : (
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M5 3l8 5-8 5V3z" />
-          </svg>
-        )}
-      </button>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {loadingWaveform ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, height: 24 }}>
-            {Array(20).fill(0).map((_, i) => (
-              <div
-                key={i}
-                style={{
-                  width: 2,
-                  height: 12,
-                  background: 'var(--surface-border)',
-                  borderRadius: 1,
-                  animation: 'pulse 1.5s ease-in-out infinite',
-                  animationDelay: `${i * 0.1}s`,
-                }}
-              />
-            ))}
-          </div>
-        ) : waveform.length > 0 ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 2, height: 24, marginBottom: 4 }}>
-            {waveform.map((amplitude, index) => {
-              const isActive = index <= currentBarIndex
-              const height = Math.max(4, (amplitude / 100) * 20)
-              return (
-                <div
-                  key={index}
-                  style={{
-                    width: 2,
-                    height: `${height}px`,
-                    background: isActive ? 'var(--brand)' : 'var(--surface-border)',
-                    borderRadius: 1,
-                    transition: 'background 0.2s ease',
-                    alignSelf: 'flex-end',
-                  }}
-                />
-              )
-            })}
-          </div>
-        ) : (
-          <div style={{ height: 24, display: 'flex', alignItems: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
-            Загрузка...
-          </div>
-        )}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            {formatTime(currentTime)} / {formatTime(duration)}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 type PendingAttachment = {
   url: string
   type: 'IMAGE' | 'FILE'
@@ -1080,37 +337,32 @@ export default function ChatsPage() {
   const [editBusy, setEditBusy] = useState(false)
   const [composerEmpty, setComposerEmpty] = useState(true)
   const [composerFocused, setComposerFocused] = useState(false)
+  const [composerFmt, setComposerFmt] = useState<{ bold: boolean; italic: boolean; strike: boolean }>({ bold: false, italic: false, strike: false })
   const composerEditorRef = useRef<HTMLDivElement | null>(null)
   const composerBarRef = useRef<HTMLDivElement | null>(null)
   const attachInputRef = useRef<HTMLInputElement | null>(null)
-  const ringTimerRef = useRef<number | null>(null)
-  const ringingConvIdRef = useRef<string | null>(null)
-  const ringAudioRef = useRef<HTMLAudioElement | null>(null)
-  const ringUnlockedRef = useRef<boolean>(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
-  // notify sound
-  const notifyAudioRef = useRef<HTMLAudioElement | null>(null)
-  const notifyUnlockedRef = useRef<boolean>(false)
-  const [showAudioUnlock, setShowAudioUnlock] = useState(false)
-  const audioUnlockingRef = useRef<boolean>(false)
-  // dialing sound
-  const dialingAudioRef = useRef<HTMLAudioElement | null>(null)
-  const dialingToneStopRef = useRef<null | (() => void)>(null)
-  // end call sound
-  const endCallAudioRef = useRef<HTMLAudioElement | null>(null)
-  const [typingByUserId, setTypingByUserId] = useState<Record<string, number>>({})
-  const [typingDots, setTypingDots] = useState(1)
+
+  const { isMobile, isMobileRef, isNarrowHeaderButtons, mobileView, setMobileView } = useChatsResponsive(activeId)
+
+  const {
+    showAudioUnlock,
+    setShowAudioUnlock,
+    ringingConvIdRef,
+    ringTimerRef,
+    notifyUnlockedRef,
+    ringUnlockedRef,
+    ensureNotifyAudio,
+    ensureRingAudio,
+    performAudioUnlock,
+    stopRingtone,
+    startDialingSound,
+    stopDialingSound,
+    playEndCallSound,
+    playNotifySoundIfAllowed,
+  } = useChatAudio()
+
   const [leftAlignAll, setLeftAlignAll] = useState(false)
-  // Outgoing typing emitter (per active conversation)
-  const typingEmitRef = useRef<{
-    convId: string | null
-    startTimer: number | null
-    stopTimer: number | null
-    lastSentTyping: boolean
-    lastSentAt: number
-  }>({ convId: null, startTimer: null, stopTimer: null, lastSentTyping: false, lastSentAt: 0 })
-  // Incoming typing cleanup (expire stale entries)
-  const typingCleanupTimerRef = useRef<number | null>(null)
   const tm = useRef<{ pinTimer: number | null }>({ pinTimer: null })
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; messageId: string | null }>(() => ({ open: false, x: 0, y: 0, messageId: null }))
   const [convMenu, setConvMenu] = useState<{ open: boolean; x: number; y: number; conversationId: string | null }>(() => ({ open: false, x: 0, y: 0, conversationId: null }))
@@ -1144,11 +396,6 @@ export default function ChatsPage() {
   const addParticipantsSearchTokenRef = useRef(0)
   const [convHasTopFade, setConvHasTopFade] = useState(false)
   const [convHasBottomFade, setConvHasBottomFade] = useState(false)
-  const [isMobile, setIsMobile] = useState(false)
-  const isMobileRef = useRef(isMobile)
-  const [isNarrowHeaderButtons, setIsNarrowHeaderButtons] = useState(false)
-  const [mobileView, setMobileView] = useState<'list' | 'conversation'>('list')
-useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   const [showJump, setShowJump] = useState(false)
   const visibleObserver = useRef<IntersectionObserver | null>(null)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
@@ -1407,6 +654,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [me?.id])
   const currentUserId = me?.id ?? storedUserIdRef.current ?? null
+
+  const { typingByUserId, typingDots, onIncomingTyping, notifyTyping, stopTyping } = useChatTyping({
+    activeId,
+    meId: currentUserId,
+    isMobileRef,
+    messagesRef,
+  })
+
   const callStore = useCallStore()
   const client = useQueryClient()
   const activePendingMessages = useMemo<PendingMessage[]>(() => {
@@ -1655,32 +910,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return () => window.clearTimeout(timer)
   }, [callPermissionError])
 
-  useEffect(() => {
-    const update = () => {
-      const mobile = window.innerWidth <= 768
-      setIsMobile(mobile)
-      isMobileRef.current = mobile
-      // Narrow desktop header: shrink ONLY call buttons to icons.
-      setIsNarrowHeaderButtons(!mobile && window.innerWidth <= 1300)
-      if (!mobile) {
-        setMobileView('conversation')
-      } else if (!activeId) {
-        setMobileView('list')
-      }
-    }
-    update()
-    window.addEventListener('resize', update)
-    return () => window.removeEventListener('resize', update)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId])
-
-  useEffect(() => {
-    if (!isMobile) return
-    if (activeId) setMobileView('conversation')
-    else setMobileView('list')
-  }, [isMobile, activeId])
-
-
   // Initialize/subscribe to server call status for group calls
   useEffect(() => {
     const debugCallStatus = (() => {
@@ -1871,7 +1100,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       }
         return id
       })
-    if (isMobile) {
+    // Use ref to avoid race: `isMobile` state can be stale on first tap.
+    if (isMobileRef.current) {
       setMobileView('conversation')
     }
     if (pendingImagesRef.current.length) {
@@ -2300,7 +1530,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (activeId) return
     const rows = conversationsQuery.data
     if (!rows || rows.length === 0) return
-    if (isMobileRef.current && mobileView !== 'conversation') return
     try {
       const stored = window.localStorage.getItem(LAST_ACTIVE_CONVERSATION_KEY)
       if (!stored) return
@@ -3723,371 +2952,18 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [groupAvatarPreviewUrl, groupCrop.scale, groupCrop.x, groupCrop.y])
 
-  const ensureNotifyAudio = useCallback(() => {
-    if (typeof window === 'undefined') return null
-    if (!notifyAudioRef.current) {
-      const audio = new Audio('/notify.mp3')
-      audio.preload = 'auto'
-      audio.volume = 0.9
-      notifyAudioRef.current = audio
-    }
-    return notifyAudioRef.current
-  }, [])
-
-  const ensureRingAudio = useCallback(() => {
-    if (typeof window === 'undefined') return null
-    if (!ringAudioRef.current) {
-      const audio = new Audio('/ring.mp3')
-      audio.preload = 'auto'
-      audio.loop = true
-      audio.volume = 0.9
-      ringAudioRef.current = audio
-    }
-    return ringAudioRef.current
-  }, [])
-
-  const performAudioUnlock = async () => {
-    if (audioUnlockingRef.current) {
-      return notifyUnlockedRef.current && ringUnlockedRef.current
-    }
-    audioUnlockingRef.current = true
-    try {
-      ensureNotifyAudio()
-      ensureRingAudio()
-      const played = await unlockAppAudio()
-      if (played) {
-        notifyUnlockedRef.current = true
-        ringUnlockedRef.current = true
-        setShowAudioUnlock(false)
-      }
-    } catch {}
-    audioUnlockingRef.current = false
-    return notifyUnlockedRef.current && ringUnlockedRef.current
-  }
-
-  function stopRingtone() {
-    try {
-      ringTimerRef.current && clearTimeout(ringTimerRef.current)
-      ringTimerRef.current = null
-      if (ringAudioRef.current) {
-        try {
-          ringAudioRef.current.pause()
-          ringAudioRef.current.currentTime = 0
-        } catch {}
-      }
-      ringingConvIdRef.current = null
-    } catch {}
-  }
-
-  const ensureDialingAudio = useCallback(() => {
-    if (typeof window === 'undefined') return null
-    if (!dialingAudioRef.current) {
-      const audio = new Audio('/dialing.mp3')
-      audio.preload = 'auto'
-      audio.loop = true
-      audio.volume = 0.7
-      dialingAudioRef.current = audio
-    }
-    return dialingAudioRef.current
-  }, [])
-
-  function startMelodicDialingTone(): null | { stop: () => void } {
-    if (typeof window === 'undefined') return null
-    const AudioContextCtor = (window.AudioContext || (window as any).webkitAudioContext) as
-      | (new () => AudioContext)
-      | undefined
-    if (!AudioContextCtor) return null
-
-    // Create a short, pleasant 3-note "chime" motif that repeats.
-    // This avoids shipping a new binary audio file and lets us control volume/cadence.
-    const ctx = new AudioContextCtor()
-    const master = ctx.createGain()
-    master.gain.value = 0.08
-    master.connect(ctx.destination)
-
-    let stopped = false
-    let timer: number | null = null
-    const oscillators = new Set<OscillatorNode>()
-
-    const scheduleOnce = () => {
-      if (stopped) return
-      // Ensure playback starts even if context begins suspended (common on Safari/iOS).
-      void ctx.resume().catch(() => {})
-
-      const t0 = ctx.currentTime + 0.02
-      const notes: Array<{ f: number; dur: number; gapAfter: number }> = [
-        { f: 523.25, dur: 0.18, gapAfter: 0.08 }, // C5
-        { f: 659.25, dur: 0.22, gapAfter: 0.12 }, // E5
-        { f: 783.99, dur: 0.18, gapAfter: 1.20 }, // G5, then pause
-      ]
-
-      let t = t0
-      for (const n of notes) {
-        const osc = ctx.createOscillator()
-        const g = ctx.createGain()
-
-        osc.type = 'sine'
-        osc.frequency.setValueAtTime(n.f, t)
-
-        // Gentle envelope to avoid clicks.
-        g.gain.setValueAtTime(0, t)
-        g.gain.linearRampToValueAtTime(1, t + 0.01)
-        g.gain.exponentialRampToValueAtTime(0.0001, t + n.dur)
-
-        osc.connect(g)
-        g.connect(master)
-
-        try {
-          osc.start(t)
-          osc.stop(t + n.dur + 0.03)
-        } catch {}
-
-        oscillators.add(osc)
-        osc.onended = () => {
-          oscillators.delete(osc)
-          try {
-            osc.disconnect()
-            g.disconnect()
-          } catch {}
-        }
-
-        t += n.dur + n.gapAfter
-      }
-
-      timer = window.setTimeout(scheduleOnce, Math.max(300, Math.round((t - t0) * 1000)))
-    }
-
-    scheduleOnce()
-
-    return {
-      stop: () => {
-        if (stopped) return
-        stopped = true
-        if (timer !== null) {
-          window.clearTimeout(timer)
-          timer = null
-        }
-        for (const osc of Array.from(oscillators)) {
-          try {
-            osc.onended = null
-            osc.stop(0)
-          } catch {}
-        }
-        oscillators.clear()
-        try {
-          master.disconnect()
-        } catch {}
-        try {
-          void ctx.close()
-        } catch {}
-      },
-    }
-  }
-
-  function startDialingSound() {
-    try {
-      // Stop any previous tone/audio to avoid overlaps.
-      stopDialingSound()
-
-      // Prefer a generated "melodic" ringback. Fallback to the existing mp3 if WebAudio isn't available.
-      const tone = startMelodicDialingTone()
-      if (tone) {
-        dialingToneStopRef.current = tone.stop
-        return
-      }
-
-      const audio = ensureDialingAudio()
-      if (!audio) return
-      audio.currentTime = 0
-      audio.loop = true
-      audio.volume = 0.7
-      void audio.play().catch(() => {})
-    } catch (err) {
-      console.error('Error starting dialing sound:', err)
-    }
-  }
-
-  function stopDialingSound() {
-    try {
-      if (dialingToneStopRef.current) {
-        try {
-          dialingToneStopRef.current()
-        } catch {}
-        dialingToneStopRef.current = null
-      }
-      if (dialingAudioRef.current) {
-        try {
-          dialingAudioRef.current.pause()
-          dialingAudioRef.current.currentTime = 0
-        } catch {}
-      }
-    } catch {}
-  }
-
-  const ensureEndCallAudio = useCallback(() => {
-    if (typeof window === 'undefined') return null
-    if (!endCallAudioRef.current) {
-      const audio = new Audio('/notify.mp3')
-      audio.preload = 'auto'
-      audio.volume = 0.6
-      endCallAudioRef.current = audio
-    }
-    return endCallAudioRef.current
-  }, [])
-
-  function playEndCallSound() {
-    try {
-      const audio = ensureEndCallAudio()
-      if (audio) {
-        audio.currentTime = 0
-        audio.volume = 0.6
-        void audio.play().catch(() => {})
-      }
-    } catch (err) {
-      console.error('Error playing end call sound:', err)
-    }
-  }
-
-  // Join/leave rooms on active chat change
-  // Унифицированная логика обновления сообщений для всех типов бесед (1:1 и группы)
-  useEffect(() => {
-    const onNew = async (payload: any) => {
-      const conversationId = payload.conversationId
-      const isActive = conversationId === activeId
-      
-      // Для неактивных чатов: инвалидируем список бесед, чтобы получить актуальный unreadCount с сервера
-      if (!isActive) {
-        client.invalidateQueries({ queryKey: ['conversations'] })
-        return
-      }
-      
-      // Для активного чата: обновляем сообщения
-      if (!activeId) return
-      const incoming = payload.message ?? payload
-      if (incoming && incoming.id) {
-        // Remove any pending messages that might match this one (by sender and attachments)
-        setPendingByConv((prev) => {
-          const convPending = prev[activeId] || []
-          if (convPending.length === 0) return prev
-          // Check if this message matches any pending by comparing attachments
-          const incomingAttachments = (incoming.attachments || []).map((a: any) => a.url).sort()
-          const filtered = convPending.filter((pending) => {
-            if (pending.senderId !== incoming.senderId) return true
-            const pendingAttachments = pending.attachments.map((a) => a.url).sort()
-            // If attachments match (or both have same number), remove pending
-            if (pendingAttachments.length === incomingAttachments.length) {
-              // For images, compare by checking if URLs match or are similar
-              const match = pendingAttachments.every((pUrl, idx) => {
-                const iUrl = incomingAttachments[idx]
-                // If pending has blob URL and incoming has real URL, it's likely the same message
-                return pUrl === iUrl || (pUrl.startsWith('blob:') && iUrl && !iUrl.startsWith('blob:'))
-              })
-              return !match
-            }
-            return true
-          })
-          if (filtered.length === convPending.length) return prev
-          if (filtered.length === 0) {
-            const { [activeId]: _, ...rest } = prev
-            return rest
-          }
-          return { ...prev, [activeId]: filtered }
-        })
-        // Оптимистичное обновление кэша (работает для всех типов бесед)
-        appendMessageToCache(activeId, incoming)
-      }
-      // Всегда делаем refetch для получения актуальных данных (как для 1:1, так и для групп)
-      messagesQuery.refetch()
-    }
-    const onTyping = (p: any) => {
-      if (!p) return
-      if (p.conversationId !== activeId) return
-      const uid = typeof p.userId === 'string' ? p.userId : null
-      if (!uid) return
-      // Ignore our own typing echoes (defense-in-depth)
-      if (uid === me?.id) return
-      const isTyping = !!p.typing
-      setTypingByUserId((prev) => {
-        if (!isTyping) {
-          if (!prev[uid]) return prev
-          const next = { ...prev }
-          delete next[uid]
-          return next
-        }
-        return { ...prev, [uid]: Date.now() }
-      })
-    }
-    const onReaction = (payload: { conversationId: string; messageId: string; message?: any }) => {
-      if (!activeId || payload.conversationId !== activeId) {
-        client.invalidateQueries({ queryKey: ['conversations'] })
-        return
-      }
-      if (payload.message) {
-        updateMessageInCache(activeId, payload.message)
-      } else {
-        messagesQuery.refetch()
-      }
-    }
-    const onUpdate = (payload: any) => {
-      if (!payload) return
-      const conversationId = payload.conversationId
-      if (!activeId || conversationId !== activeId) return
-      if (payload.message && payload.message.id) {
-        updateMessageInCache(activeId, payload.message, { preserveScroll: payload.reason === 'link_preview' })
-      } else if (payload.messageId) {
-        messagesQuery.refetch().catch(() => {})
-      }
-    }
-
-    socket.on('message:new', onNew)
-    socket.on('conversation:typing', onTyping)
-    socket.on('message:reaction', onReaction)
-    socket.on('message:update', onUpdate)
-    return () => {
-      socket.off('message:new', onNew as any)
-      socket.off('conversation:typing', onTyping as any)
-      socket.off('message:reaction', onReaction as any)
-      socket.off('message:update', onUpdate as any)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, me?.id])
-
-  // Unified handler for message:notify - handles both active and inactive chats
-  useEffect(() => {
-    const handler = async (p: { conversationId: string; messageId: string; senderId: string; message?: any }) => {
-      if (isSecretBlockedForDevice(p.conversationId)) {
-        return
-      }
-      const isMine = p.senderId === me?.id
-      const isViewing = p.conversationId === activeId
-      const visible = document.visibilityState === 'visible'
-      
-      // Воспроизводим звук уведомления, если нужно
-      if (!isMine && (!isViewing || !visible)) {
-        if (notifyAudioRef.current && notifyUnlockedRef.current) {
-          notifyAudioRef.current.currentTime = 0
-          notifyAudioRef.current.play().catch(() => {})
-        }
-      }
-      
-      // Если это текущий чат, обновляем сообщения немедленно
-      if (isViewing) {
-        // Если есть полное сообщение в payload, используем оптимистичное обновление
-        if (p.message && p.message.id) {
-          appendMessageToCache(activeId, p.message)
-        }
-        // Всегда делаем refetch для получения актуальных данных
-        messagesQuery.refetch().catch(() => {})
-        return
-      }
-      
-      // Для неактивных чатов: НЕ увеличиваем счетчик локально
-      // Вместо этого полагаемся на refetch из message:new события
-      // Это предотвращает двойное увеличение счетчика
-    }
-    socket.on('message:notify', handler)
-    return () => { socket.off('message:notify', handler) }
-  }, [activeId, me?.id, messagesQuery, isSecretBlockedForDevice])
+  useChatSocketSubscriptions({
+    activeId,
+    meId: currentUserId,
+    client,
+    messagesQuery,
+    appendMessageToCache,
+    updateMessageInCache,
+    setPendingByConv,
+    isSecretBlockedForDevice,
+    onIncomingTyping,
+    playNotifySoundIfAllowed,
+  })
 
   // Auto-stick to bottom when new messages render (but respect manual scroll)
   useLayoutEffect(() => {
@@ -4129,27 +3005,35 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   // autoscroll to bottom when chat opens (агрессивно только на мобильных)
   useEffect(() => {
     if (!activeId) return
-    const el = messagesRef.current
-    if (!el) return
+    // When we enter a conversation, we always start in "stick to bottom" mode.
+    // Otherwise the first async render (messages/preview/toolbars) can leave us above the bottom
+    // until the second interaction.
+    nearBottomRef.current = true
+    userStickyScrollRef.current = false
+    setShowJump(false)
+
     const scrollToBottom = () => {
-      if (el) {
-        el.scrollTop = el.scrollHeight
-        nearBottomRef.current = true
-        userStickyScrollRef.current = false
-      }
+      const el = messagesRef.current
+      if (!el) return
+      el.scrollTop = el.scrollHeight
+      nearBottomRef.current = true
+      userStickyScrollRef.current = false
     }
-    if (isMobileRef.current) {
-      scrollToBottom()
-      const t1 = window.setTimeout(scrollToBottom, 50)
-      const t2 = window.setTimeout(scrollToBottom, 200)
-      return () => {
-        window.clearTimeout(t1)
-        window.clearTimeout(t2)
-      }
-    }
-    // На десктопе достаточно одного вызова при открытии
+
+    // Do several attempts to cover: async message fetch, image decode, font/layout settling,
+    // and composer height animations.
     scrollToBottom()
-    return
+    requestAnimationFrame(scrollToBottom)
+    const t0 = window.setTimeout(scrollToBottom, 0)
+    const t1 = window.setTimeout(scrollToBottom, 50)
+    const t2 = window.setTimeout(scrollToBottom, 200)
+    const t3 = window.setTimeout(scrollToBottom, 600)
+    return () => {
+      window.clearTimeout(t0)
+      window.clearTimeout(t1)
+      window.clearTimeout(t2)
+      window.clearTimeout(t3)
+    }
   }, [activeId])
 
   // keep pinned to bottom while keyboard is opening/moving on mobile (iOS visualViewport)
@@ -4190,55 +3074,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   }, [])
 
   // автопрокрутка по новым сообщениям отключена, чтобы не мешать ручному скроллу
-
-  // animate typing dots and keep view pinned to bottom when typing shown (только на мобильных)
-  useEffect(() => {
-    const isSomeoneTyping = Object.keys(typingByUserId).length > 0
-    if (!isSomeoneTyping || !isMobileRef.current) return
-    const el = messagesRef.current
-    const id = window.setInterval(() => {
-      setTypingDots((d) => (d % 3) + 1)
-      if (el) {
-        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-        if (nearBottom) el.scrollTop = el.scrollHeight
-      }
-    }, 500)
-    return () => window.clearInterval(id)
-  }, [typingByUserId])
-
-  // Expire incoming typing users automatically (defense in depth; server doesn't send periodic stops).
-  useEffect(() => {
-    // Reset typing state on chat switch to avoid stale "typing..." from previous conversation.
-    setTypingByUserId({})
-    if (typingCleanupTimerRef.current) {
-      window.clearInterval(typingCleanupTimerRef.current)
-      typingCleanupTimerRef.current = null
-    }
-    typingCleanupTimerRef.current = window.setInterval(() => {
-      const now = Date.now()
-      setTypingByUserId((prev) => {
-        const keys = Object.keys(prev)
-        if (!keys.length) return prev
-        let changed = false
-        const next: Record<string, number> = {}
-        for (const uid of keys) {
-          const ts = prev[uid]
-          if (typeof ts === 'number' && now - ts < 2600) {
-            next[uid] = ts
-          } else {
-            changed = true
-          }
-        }
-        return changed ? next : prev
-      })
-    }, 800)
-    return () => {
-      if (typingCleanupTimerRef.current) {
-        window.clearInterval(typingCleanupTimerRef.current)
-        typingCleanupTimerRef.current = null
-      }
-    }
-  }, [activeId])
 
   // Show jump-to-bottom button when user scrolls up
   useEffect(() => {
@@ -4468,32 +3303,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return () => window.removeEventListener('resize', measure)
   }, [activeId])
 
-  const emitTyping = useCallback((conversationId: string, typing: boolean) => {
-    if (!conversationId) return
-    try {
-      if (!socket.connected) {
-        connectSocket()
-      }
-    } catch {
-      // ignore connect errors; emit may still succeed later
-    }
-    socket.emit('conversation:typing', { conversationId, typing })
-  }, [])
-
-  const stopTyping = useCallback((conversationId: string | null) => {
-    const st = typingEmitRef.current
-    if (st.startTimer) window.clearTimeout(st.startTimer)
-    if (st.stopTimer) window.clearTimeout(st.stopTimer)
-    st.startTimer = null
-    st.stopTimer = null
-    if (conversationId && st.lastSentTyping) {
-      emitTyping(conversationId, false)
-    }
-    st.lastSentTyping = false
-    st.lastSentAt = 0
-    st.convId = conversationId
-  }, [emitTyping])
-
   function moveCursorToEnd(el: HTMLDivElement | null) {
     if (!el) return
     try {
@@ -4577,40 +3386,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     [me?.id, setComposerValue],
   )
 
-  const notifyTyping = useCallback(() => {
-    if (!activeId) return
-    const st = typingEmitRef.current
-    // If conversation changed while timers pending, best-effort stop old one.
-    if (st.convId && st.convId !== activeId && st.lastSentTyping) {
-      emitTyping(st.convId, false)
-      st.lastSentTyping = false
-    }
-    st.convId = activeId
-
-    if (st.startTimer) window.clearTimeout(st.startTimer)
-    // Debounce typing_start
-    st.startTimer = window.setTimeout(() => {
-      const now = Date.now()
-      // Throttle re-sending "typing=true" to keep remote indicator alive without spamming.
-      if (!st.lastSentTyping || now - st.lastSentAt > 2000) {
-        emitTyping(activeId, true)
-        st.lastSentTyping = true
-        st.lastSentAt = now
-      }
-    }, 420)
-
-    if (st.stopTimer) window.clearTimeout(st.stopTimer)
-    // Send typing_stop on idle
-    st.stopTimer = window.setTimeout(() => {
-      if (!st.convId) return
-      if (st.lastSentTyping) {
-        emitTyping(st.convId, false)
-      }
-      st.lastSentTyping = false
-      st.lastSentAt = Date.now()
-    }, 2100)
-  }, [activeId, emitTyping])
-
   const applyWysiwygFormat = useCallback(
     (cmd: string, value?: string) => {
       composerEditorRef.current?.focus()
@@ -4620,6 +3395,45 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     },
     [notifyTyping, resizeComposer],
   )
+
+  const updateComposerFmt = useCallback(() => {
+    const editor = composerEditorRef.current
+    if (!editor) return
+    try {
+      const sel = window.getSelection()
+      const anchor = sel?.anchorNode as any
+      const inEditor = !!(anchor && editor.contains(anchor))
+      const active = document.activeElement === editor || (composerFocused && inEditor)
+      if (!active) {
+        setComposerFmt({ bold: false, italic: false, strike: false })
+        return
+      }
+      setComposerFmt({
+        bold: !!document.queryCommandState?.('bold'),
+        italic: !!document.queryCommandState?.('italic'),
+        strike: !!document.queryCommandState?.('strikeThrough'),
+      })
+    } catch {
+      // ignore
+    }
+  }, [composerFocused])
+
+  const composerFormatVisible = !isMobile && (composerFocused || !composerEmpty)
+
+  useEffect(() => {
+    if (!composerFocused) return
+    const handler = () => updateComposerFmt()
+    document.addEventListener('selectionchange', handler)
+    window.addEventListener('mouseup', handler, { passive: true } as any)
+    window.addEventListener('keyup', handler, { passive: true } as any)
+    // sync immediately on focus
+    updateComposerFmt()
+    return () => {
+      document.removeEventListener('selectionchange', handler)
+      window.removeEventListener('mouseup', handler as any)
+      window.removeEventListener('keyup', handler as any)
+    }
+  }, [composerFocused, updateComposerFmt])
 
   const applyWysiwygCode = useCallback(() => {
     const el = composerEditorRef.current
@@ -4678,7 +3492,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   useEffect(() => {
     const bar = composerBarRef.current
     if (!bar || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => syncComposerBarHeightVar())
+    const ro = new ResizeObserver(() => {
+      syncComposerBarHeightVar()
+      // If the user was at the bottom, keep the view pinned when composer grows/shrinks
+      // (e.g. toolbar appears, attachments preview, reply/edit bars).
+      const el = messagesRef.current
+      if (el && nearBottomRef.current) {
+        try { el.scrollTop = el.scrollHeight } catch {}
+      }
+    })
     ro.observe(bar)
     return () => ro.disconnect()
   }, [syncComposerBarHeightVar])
@@ -4710,14 +3532,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     },
     [activeId, addComposerFile, addComposerImage, editState],
   )
-
-  // Ensure we always send typing_stop on conversation switch/unmount.
-  useEffect(() => {
-    const convId = activeId
-    return () => {
-      stopTyping(convId)
-    }
-  }, [activeId, stopTyping])
 
   async function uploadAndSendAttachments(files: File[], textContent: string = '', replyToId?: string) {
     if (!activeId || files.length === 0) return
@@ -4781,6 +3595,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         const form = new FormData()
         form.append('file', uploadBlob, isSecretConversation ? `${f.name || 'file'}.enc` : f.name)
         if (f.name) form.append('originalFileName', f.name)
+        // Used by the server to encrypt non-secret chat uploads with the per-conversation DEK.
+        try { form.append('conversationId', activeId) } catch {}
         const url = await new Promise<string>((resolve, reject) => {
           const xhr = new XMLHttpRequest()
           xhr.open('POST', '/api/upload')
@@ -4993,6 +3809,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const form = new FormData()
       form.append('file', uploadBlob, isSecretConversation ? `${audioFile.name}.enc` : audioFile.name)
       if (audioFile.name) form.append('originalFileName', audioFile.name)
+      // Used by the server to encrypt non-secret chat uploads with the per-conversation DEK.
+      try { form.append('conversationId', activeId) } catch {}
 
       const url = await new Promise<string>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
@@ -7546,7 +6364,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           {activeId && (
             <button
               className={showJump ? 'jump-bottom jump-bottom--visible' : 'jump-bottom'}
-              onClick={() => {
+              onMouseDown={(e) => {
+                // Prevent composer blur (toolbar collapse) from swallowing the click.
+                e.preventDefault()
+                if (messagesRef.current) {
+                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
+                }
+                nearBottomRef.current = true
+                userStickyScrollRef.current = false
+                setShowJump(false)
+              }}
+              onClick={(e) => {
+                // Keyboard activation: click has detail===0 (mouse is handled above).
+                if ((e as any)?.detail > 0) return
                 if (messagesRef.current) {
                   messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
                 }
@@ -7558,9 +6388,63 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               ↓
             </button>
           )}
+          <div ref={composerBarRef} style={{ flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+          {!isMobile && (
+            <div
+              className={`composer-format-wrap${composerFormatVisible ? ' is-visible' : ''}`}
+              aria-hidden={!composerFormatVisible}
+            >
+              <div className="composer-format-row">
+                <div className="composer-format-grid">
+                <button
+                  type="button"
+                  className={`btn composer-format-btn${composerFmt.bold ? ' is-active' : ''}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { applyWysiwygFormat('bold'); requestAnimationFrame(updateComposerFmt) }}
+                  aria-label="Жирный (Ctrl+B)"
+                  title="Жирный (Ctrl+B)"
+                  tabIndex={composerFormatVisible ? 0 : -1}
+                >
+                  <span style={{ fontWeight: 800 }}>Жирный</span>
+                </button>
+                <button
+                  type="button"
+                  className={`btn composer-format-btn${composerFmt.italic ? ' is-active' : ''}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { applyWysiwygFormat('italic'); requestAnimationFrame(updateComposerFmt) }}
+                  aria-label="Курсив (Ctrl+I)"
+                  title="Курсив (Ctrl+I)"
+                  tabIndex={composerFormatVisible ? 0 : -1}
+                >
+                  <span style={{ fontStyle: 'italic' }}>Курсив</span>
+                </button>
+                <button
+                  type="button"
+                  className={`btn composer-format-btn${composerFmt.strike ? ' is-active' : ''}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { applyWysiwygFormat('strikeThrough'); requestAnimationFrame(updateComposerFmt) }}
+                  aria-label="Зачёркнутый (Ctrl+Shift+X)"
+                  title="Зачёркнутый (Ctrl+Shift+X)"
+                  tabIndex={composerFormatVisible ? 0 : -1}
+                >
+                  <span style={{ textDecoration: 'line-through' }}>Зачёркнутый</span>
+                </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="msg-input-bar"
-            ref={composerBarRef}
-            style={{ flexShrink: 0 }}
+            style={{
+              flexShrink: 0,
+              // Keep composer visible even if CSS bundle changes.
+              position: 'sticky',
+              bottom: 0,
+              background: 'var(--surface-200)',
+              zIndex: 5,
+              padding: '12px 16px',
+              paddingBottom: 'max(12px, env(safe-area-inset-bottom, 0px))',
+              borderTop: '1px solid var(--surface-border)',
+            }}
           >
             {activeConversation?.isSecret && (!secretSessionReady || secretInactive) ? (
               <div style={{ padding: 12, borderRadius: 8, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
@@ -7864,46 +6748,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 </div>
               </div>
             )}
-            {!isMobile && (composerFocused || !composerEmpty) && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  marginBottom: 10,
-                  padding: '6px 8px',
-                  borderRadius: 10,
-                  background: 'var(--surface-100)',
-                  border: '1px solid var(--surface-border)',
-                }}
-              >
-                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWysiwygFormat('bold')} aria-label="Жирный (Ctrl+B)" title="Жирный (Ctrl+B)">
-                  <Bold size={16} />
-                </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWysiwygFormat('italic')} aria-label="Курсив (Ctrl+I)" title="Курсив (Ctrl+I)">
-                  <Italic size={16} />
-                </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={() => applyWysiwygFormat('strikeThrough')} aria-label="Зачёркнутый (Ctrl+Shift+X)" title="Зачёркнутый (Ctrl+Shift+X)">
-                  <Strikethrough size={16} />
-                </button>
-                <div style={{ width: 1, height: 20, background: 'var(--surface-border)', margin: '0 4px' }} />
-                <button type="button" className="btn btn-icon btn-ghost" onClick={applyWysiwygCode} aria-label="Код" title="Код">
-                  <Code size={16} />
-                </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={applyWysiwygCodeBlock} aria-label="Блок кода" title="Блок кода">
-                  <Code size={16} style={{ transform: 'scale(0.92)' }} />
-                </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={() => { composerEditorRef.current?.focus(); document.execCommand('formatBlock', false, 'blockquote'); notifyTyping(); resizeComposer(); }} aria-label="Цитата" title="Цитата">
-                  <Quote size={16} />
-                </button>
-                <button type="button" className="btn btn-icon btn-ghost" onClick={applyWysiwygLink} aria-label="Ссылка" title="Ссылка">
-                  <Link2 size={16} />
-                </button>
-                <div style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
-                  WYSIWYG
-                </div>
-              </div>
-            )}
             <form autoComplete="off" onSubmit={async (e) => {
                     e.preventDefault()
               if (!activeId) return
@@ -8051,26 +6895,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       if (key === 'b') {
                         e.preventDefault()
                         applyWysiwygFormat('bold')
+                        requestAnimationFrame(updateComposerFmt)
                         return
                       }
                       if (key === 'i') {
                         e.preventDefault()
                         applyWysiwygFormat('italic')
-                        return
-                      }
-                      if (key === 'k') {
-                        e.preventDefault()
-                        applyWysiwygLink()
+                        requestAnimationFrame(updateComposerFmt)
                         return
                       }
                       if (e.shiftKey && key === 'x') {
                         e.preventDefault()
                         applyWysiwygFormat('strikeThrough')
-                        return
-                      }
-                      if (key === '`') {
-                        e.preventDefault()
-                        applyWysiwygCode()
+                        requestAnimationFrame(updateComposerFmt)
                         return
                       }
                     }
@@ -8179,6 +7016,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             )}
             </>
             )}
+          </div>
           </div>
         </div>
         <Suspense fallback={null}>

@@ -67,6 +67,8 @@ model Conversation {
   isGroup        Boolean                   @default(false)
   /// Marks a conversation as secret (ephemeral 1:1 chats, end-to-end friendly)
   isSecret       Boolean                   @default(false)
+  /// Wrapped per-conversation DEK (base64) for server-side encryption in NON-secret chats
+  nonSecretDekWrapped String?              @db.Text
   /// Optional message TTL in seconds for secret conversations; null means use default
   secretTtlSeconds Int?
   secretStatus   SecretConversationStatus  @default(ACTIVE)
@@ -173,6 +175,8 @@ model Message {
   senderId       String
   type           MessageType     @default(TEXT)
   content        String?
+  /// 0 = plaintext, 1 = encrypted (non-secret chats server-side encryption)
+  contentEncV    Int             @default(0)
   metadata       Json?
   replyToId      String?
   replyTo        Message?        @relation("MessageReplies", fields: [replyToId], references: [id])
@@ -187,6 +191,7 @@ model Message {
   receipts       MessageReceipt[]
 
   @@index([conversationId, createdAt])
+  @@index([conversationId, contentEncV])
   @@index([replyToId])
 }
 

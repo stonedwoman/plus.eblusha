@@ -39,6 +39,9 @@ const envSchema = z.object({
   STORAGE_S3_SSE: z.string().default("AES256"),
   // Optional symmetric key (base64 or hex, 32 bytes) for server-side encryption
   STORAGE_ENC_KEY: z.string().optional(),
+  // Optional KEK (base64 or hex, 32 bytes) for server-side encryption of NON-secret chat DEKs
+  // If unset, non-secret chat encryption helpers will throw when used.
+  CHAT_ENC_KEK: z.string().optional(),
 });
 
 const env = envSchema.parse(process.env);
