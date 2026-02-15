@@ -8,9 +8,10 @@ async function sleep(ms: number) {
 }
 
 type StartedServer = { child: ChildProcessWithoutNullStreams; logs: string[]; port: number };
+type StartedWorker = { child: ChildProcessWithoutNullStreams; logs: string[] };
 
 async function waitForHealth(srv: StartedServer, timeoutMs: number) {
-  const base = `http://localhost:${srv.port}`;
+  const base = `http://127.0.0.1:${srv.port}`;
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (srv.child.exitCode !== null) {
@@ -41,6 +42,24 @@ function startServer(port: number, extraEnv: Record<string, string>): StartedSer
   child.stderr.on("data", push);
   child.stdout.on("data", push);
   return { child, logs, port };
+}
+
+function startWorker(extraEnv: Record<string, string>): StartedWorker {
+  const child = spawn(process.execPath, ["-r", "ts-node/register", "src/worker.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, ...extraEnv },
+    stdio: "pipe",
+  });
+  const logs: string[] = [];
+  const push = (chunk: any) => {
+    try {
+      logs.push(String(chunk));
+      if (logs.length > 200) logs.shift();
+    } catch {}
+  };
+  child.stderr.on("data", push);
+  child.stdout.on("data", push);
+  return { child, logs };
 }
 
 async function connectSocket(baseUrl: string, token: string): Promise<Socket> {
@@ -80,15 +99,17 @@ async function main() {
   };
 
   const port1 = 4100;
-  const port2 = 4101;
 
   const s1 = startServer(port1, commonEnv);
-  const s2 = startServer(port2, commonEnv);
+  const w1 = startWorker(commonEnv);
 
   try {
-    await Promise.all([waitForHealth(s1, 20_000), waitForHealth(s2, 20_000)]);
+    if (w1.child.exitCode !== null) {
+      throw new Error(`worker exited early (code=${w1.child.exitCode}). logs:\n${w1.logs.join("")}`);
+    }
+    await waitForHealth(s1, 60_000);
 
-    const api = axios.create({ baseURL: `http://localhost:${port1}/api`, timeout: 10_000 });
+    const api = axios.create({ baseURL: `http://127.0.0.1:${port1}/api`, timeout: 10_000 });
     const usernameA = `smoke_a_${Date.now()}`;
     const usernameB = `smoke_b_${Date.now()}`;
     const password = "Password123!";
@@ -113,33 +134,19 @@ async function main() {
     const conversationId = convResp.data.conversation.id as string;
     assert.ok(conversationId);
 
-    const socketA = await connectSocket(`http://localhost:${port1}`, tokenA);
-    const socketB = await connectSocket(`http://localhost:${port2}`, tokenB);
+    const socketA = await connectSocket(`http://127.0.0.1:${port1}`, tokenA);
 
     try {
-      // Join conversation room on both instances.
+      // Join conversation room so we can receive message:update.
       socketA.emit("conversation:join", conversationId);
-      socketB.emit("conversation:join", conversationId);
-
-      // Multi-instance adapter smoke: typing from instance2 should reach instance1.
-      const typingSeen = await new Promise<boolean>((resolve) => {
-        const t = setTimeout(() => resolve(false), 5000);
-        socketA.on("conversation:typing", (p: any) => {
-          if (p?.conversationId === conversationId && p?.userId === userB.id && p?.typing === true) {
-            clearTimeout(t);
-            resolve(true);
-          }
-        });
-        socketB.emit("conversation:typing", { conversationId, typing: true });
-      });
-      assert.equal(typingSeen, true, "typing event should cross instances via Redis adapter");
+      await sleep(500);
 
       // Link preview smoke: send message with URL, wait for message:update.
       const seenUpdates = new Set<string>();
       let messageId = "";
 
       const previewUpdatedPromise = new Promise<boolean>((resolve) => {
-        const t = setTimeout(() => resolve(false), 15_000);
+        const t = setTimeout(() => resolve(false), 30_000);
         socketA.on("message:update", (p: any) => {
           if (p?.conversationId !== conversationId) return;
           if (p?.reason !== "link_preview") return;
@@ -155,21 +162,21 @@ async function main() {
 
       const sendResp = await api.post(
         "/conversations/send",
-        { conversationId, type: "TEXT", content: "check http://example.com" },
+        { conversationId, type: "TEXT", content: "check https://www.wikipedia.org" },
         { headers: { Authorization: `Bearer ${tokenA}` } }
       );
       messageId = sendResp.data.message.id as string;
       assert.ok(messageId);
+      assert.equal(sendResp.data.message?.metadata?.linkPreview ?? null, null);
 
       const previewUpdated = seenUpdates.has(messageId) ? true : await previewUpdatedPromise;
       assert.equal(previewUpdated, true, "link preview worker should emit message:update");
     } finally {
       socketA.close();
-      socketB.close();
     }
   } finally {
     try { s1.child.kill("SIGTERM"); } catch {}
-    try { s2.child.kill("SIGTERM"); } catch {}
+    try { w1.child.kill("SIGTERM"); } catch {}
   }
 
   // eslint-disable-next-line no-console

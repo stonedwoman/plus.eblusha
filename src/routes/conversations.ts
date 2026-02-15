@@ -993,7 +993,10 @@ router.get("/:id/messages", async (req, res) => {
       for (const m of candidates) {
         const firstUrl = extractFirstUrl(m.content);
         if (!firstUrl) continue;
-        void enqueueLinkPreview({ messageId: m.id, conversationId: id, url: firstUrl }).catch(() => {});
+        void enqueueLinkPreview(
+          { messageId: m.id, conversationId: id, url: firstUrl },
+          { userId, conversationId: id }
+        ).catch(() => {});
       }
     } catch {
       // ignore preview errors
@@ -1149,7 +1152,10 @@ router.post(
     const contentForPreview = type === "TEXT" ? (content ?? null) : null;
     const firstUrl = !isSecret ? extractFirstUrl(contentForPreview) : null;
     if (firstUrl) {
-      void enqueueLinkPreview({ messageId: message.id, conversationId, url: firstUrl }).catch(() => {});
+      void enqueueLinkPreview(
+        { messageId: message.id, conversationId, url: firstUrl },
+        { userId, conversationId }
+      ).catch(() => {});
     }
   } catch {}
 

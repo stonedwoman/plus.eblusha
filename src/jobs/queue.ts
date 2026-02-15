@@ -8,6 +8,14 @@ export type LinkPreviewJob = {
   url: string;
 };
 
+type LinkPreviewEnqueueContext = {
+  userId: string;
+  conversationId: string;
+};
+
+const PREVIEW_ENQUEUE_WINDOW_SEC = 60;
+const PREVIEW_ENQUEUE_MAX_PER_USER_CHAT = 12;
+
 let connection: IORedis | null = null;
 let linkPreviewQueue: Queue<LinkPreviewJob> | null = null;
 
@@ -32,7 +40,32 @@ export function getLinkPreviewQueue(): Queue<LinkPreviewJob> {
   return linkPreviewQueue;
 }
 
-export async function enqueueLinkPreview(job: LinkPreviewJob): Promise<void> {
+function sanitizeRateKeyPart(v: string): string {
+  return v.replace(/[^a-zA-Z0-9:_-]/g, "_");
+}
+
+async function canEnqueueLinkPreview(ctx: LinkPreviewEnqueueContext): Promise<boolean> {
+  const redis = getConnection();
+  const user = sanitizeRateKeyPart(ctx.userId);
+  const conv = sanitizeRateKeyPart(ctx.conversationId);
+  const key = `rate:preview-enqueue:u:${user}:c:${conv}`;
+
+  const count = await redis.incr(key);
+  if (count === 1) {
+    await redis.expire(key, PREVIEW_ENQUEUE_WINDOW_SEC);
+  }
+  return count <= PREVIEW_ENQUEUE_MAX_PER_USER_CHAT;
+}
+
+export async function enqueueLinkPreview(
+  job: LinkPreviewJob,
+  ctx?: LinkPreviewEnqueueContext
+): Promise<boolean> {
+  if (ctx) {
+    const allowed = await canEnqueueLinkPreview(ctx);
+    if (!allowed) return false;
+  }
+
   const queue = getLinkPreviewQueue();
   // Deduplicate per messageId (idempotent enqueue).
   await queue.add("linkPreview", job, {
@@ -40,6 +73,7 @@ export async function enqueueLinkPreview(job: LinkPreviewJob): Promise<void> {
     attempts: 3,
     backoff: { type: "exponential", delay: 1000 },
   });
+  return true;
 }
 
 export async function getLinkPreviewQueueDepth(): Promise<number> {

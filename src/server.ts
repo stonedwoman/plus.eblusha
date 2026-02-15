@@ -6,7 +6,6 @@ import app from "./app";
 import env from "./config/env";
 import logger from "./config/logger";
 import { initSocket } from "./realtime/socket";
-import { startLinkPreviewWorker } from "./jobs/workers/linkPreview.worker";
 
 const port = env.PORT;
 
@@ -65,7 +64,6 @@ if (localUploadsEnabled) {
 async function main() {
   const httpServer = http.createServer(app);
   await initSocket(httpServer);
-  startLinkPreviewWorker();
 
   httpServer.listen(port, () => {
     logger.info(`Server listening on port ${port}`);

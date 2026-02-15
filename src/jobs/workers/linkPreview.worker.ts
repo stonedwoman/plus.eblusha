@@ -5,8 +5,8 @@ import logger from "../../config/logger";
 import prisma from "../../lib/prisma";
 import type { LinkPreview } from "../../lib/linkPreview";
 import { ssrfFetch } from "../../security/ssrf";
-import { getIO } from "../../realtime/socket";
 import { incCounter, setGauge } from "../../obs/metrics";
+import { publishMessageUpdate } from "../../realtime/events";
 import { getLinkPreviewQueueDepth, type LinkPreviewJob } from "../queue";
 
 let workerInstance: Worker<LinkPreviewJob> | null = null;
@@ -250,17 +250,15 @@ export function startLinkPreviewWorker() {
         },
       });
 
-      if (preview) {
-        incCounter("link_preview_success", 1);
-        getIO()?.to(conversationId).emit("message:update", {
-          conversationId,
-          messageId,
-          reason: "link_preview",
-          message: updated,
-        });
-      } else {
-        incCounter("link_preview_fail", 1);
-      }
+      if (preview) incCounter("link_preview_success", 1);
+      else incCounter("link_preview_fail", 1);
+
+      await publishMessageUpdate({
+        conversationId,
+        messageId,
+        reason: "link_preview",
+        message: updated,
+      });
 
       return { ok: true, preview: !!preview };
     },

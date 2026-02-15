@@ -4,6 +4,7 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import prisma from "../lib/prisma";
 import env from "../config/env";
 import { createDedicatedRedisClient, getRedisClient } from "../lib/redis";
+import { MESSAGE_UPDATE_CHANNEL } from "./events";
 import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
 import { decGauge, incGauge } from "../obs/metrics";
@@ -373,6 +374,28 @@ export async function initSocket(
   await subClient.connect();
   io.adapter(createAdapter(pubClient, subClient));
   logger.info({ redisUrl: env.REDIS_URL }, "Socket.IO Redis adapter enabled");
+
+  // Bridge worker-originated message updates into Socket.IO rooms.
+  const eventsSub = await createDedicatedRedisClient();
+  await eventsSub.subscribe(MESSAGE_UPDATE_CHANNEL, (raw) => {
+    try {
+      const payload = JSON.parse(raw || "{}") as {
+        conversationId?: string;
+        messageId?: string;
+        reason?: string;
+        message?: unknown;
+      };
+      if (!payload.conversationId || !payload.messageId || !payload.reason) return;
+      io.to(payload.conversationId).emit("message:update", {
+        conversationId: payload.conversationId,
+        messageId: payload.messageId,
+        reason: payload.reason,
+        ...(payload.message !== undefined ? { message: payload.message } : {}),
+      });
+    } catch {
+      // ignore malformed payloads
+    }
+  });
 
   // Helper function to format time as "в HH:mm" in server's local timezone
   // Uses system timezone or TZ environment variable if set

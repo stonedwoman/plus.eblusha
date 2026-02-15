@@ -94,8 +94,14 @@ router.get(
   }
 
   // Enqueue preview generation (API does not wait).
+  let enqueued = false;
+  let softLimited = false;
   try {
-    await enqueueLinkPreview({ messageId, conversationId: message.conversationId, url: firstUrl });
+    enqueued = await enqueueLinkPreview(
+      { messageId, conversationId: message.conversationId, url: firstUrl },
+      { userId, conversationId: message.conversationId }
+    );
+    softLimited = !enqueued;
   } catch {}
 
   const updated = await prisma.message.update({
@@ -116,7 +122,7 @@ router.get(
     },
   });
 
-  res.json({ message: updated, preview: null, enqueued: true });
+  res.json({ message: updated, preview: null, enqueued, softLimited });
   }
 );
 
