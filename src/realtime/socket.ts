@@ -4,6 +4,7 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import prisma from "../lib/prisma";
 import env from "../config/env";
 import { createDedicatedRedisClient, getRedisClient } from "../lib/redis";
+import { deleteCallE2eeKey, generateCallE2eeSharedKeyBase64, getCallE2eeKey, setCallE2eeKey } from "../lib/callE2ee";
 import { MESSAGE_UPDATE_CHANNEL } from "./events";
 import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
@@ -971,6 +972,17 @@ export async function initSocket(
       const startedAt = Date.now();
       callState.set(conversationId, { inviterId: userId, accepted: false, video, startedAt });
 
+      // 1:1 calls: generate a fresh shared E2EE key per call start (stored in Redis with TTL).
+      // Do NOT log the key value.
+      if (!isGroup && env.E2EE_1TO1) {
+        try {
+          const sharedKey = generateCallE2eeSharedKeyBase64();
+          await setCallE2eeKey(conversationId, sharedKey);
+        } catch (error) {
+          logger.error({ error, conversationId, userId }, "Failed to generate/store call E2EE key");
+        }
+      }
+
       if (isGroup) {
         const callInfo = activeGroupCalls.get(conversationId);
         if (!callInfo) {
@@ -1054,6 +1066,17 @@ export async function initSocket(
       // and wire it into presence so everyone sees "IN_CALL" reliably (even though the web client
       // does not emit call:room:join for 1:1).
       if (!isGroup) {
+        // Ensure E2EE key exists (defense-in-depth).
+        if (env.E2EE_1TO1) {
+          try {
+            const existing = await getCallE2eeKey(conversationId);
+            if (!existing) {
+              await setCallE2eeKey(conversationId, generateCallE2eeSharedKeyBase64());
+            }
+          } catch (error) {
+            logger.error({ error, conversationId, userId }, "Failed to ensure call E2EE key");
+          }
+        }
         const startedAt = st?.startedAt ?? Date.now();
         const info = activeDirectCalls.get(conversationId) ?? { startedAt, participantsByUser: new Map<string, Set<string>>() };
         info.startedAt = startedAt;
@@ -1141,6 +1164,11 @@ export async function initSocket(
 
       // Direct (1:1): clear any active-direct-call state and recompute presence for both sides.
       activeDirectCalls.delete(conversationId);
+      if (env.E2EE_1TO1) {
+        void deleteCallE2eeKey(conversationId).catch((error) => {
+          logger.warn({ error, conversationId }, "Failed to delete call E2EE key (decline)");
+        });
+      }
       if (st?.inviterId) emitEffectivePresence(io, st.inviterId);
       emitEffectivePresence(io, userId);
 
@@ -1238,6 +1266,11 @@ export async function initSocket(
 
       // Direct (1:1): clear active call presence state
       activeDirectCalls.delete(conversationId);
+      if (env.E2EE_1TO1) {
+        void deleteCallE2eeKey(conversationId).catch((error) => {
+          logger.warn({ error, conversationId }, "Failed to delete call E2EE key (end)");
+        });
+      }
       if (st?.inviterId) emitEffectivePresence(io, st.inviterId);
       emitEffectivePresence(io, userId);
 
@@ -1424,7 +1457,14 @@ export async function initSocket(
       const isGroup = !!groupInfo;
       if (remainingUsers === 0) {
         if (isGroup) activeGroupCalls.delete(conversationId);
-        else activeDirectCalls.delete(conversationId);
+        else {
+          activeDirectCalls.delete(conversationId);
+          if (env.E2EE_1TO1) {
+            void deleteCallE2eeKey(conversationId).catch((error) => {
+              logger.warn({ error, conversationId }, "Failed to delete call E2EE key (room:leave)");
+            });
+          }
+        }
         if (isGroup) {
           try {
             const st = callState.get(conversationId);
@@ -1535,6 +1575,11 @@ export async function initSocket(
           removeParticipant(callInfo, userId, socket.id);
           if (callInfo.participantsByUser.size === 0) {
             activeDirectCalls.delete(conversationId);
+            if (env.E2EE_1TO1) {
+              void deleteCallE2eeKey(conversationId).catch((error) => {
+                logger.warn({ error, conversationId }, "Failed to delete call E2EE key (disconnecting)");
+              });
+            }
           }
         }
       }

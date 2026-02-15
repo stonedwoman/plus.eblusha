@@ -24,6 +24,9 @@ const envSchema = z.object({
   LIVEKIT_URL: z.string().url({ message: "LIVEKIT_URL must be a valid ws(s) URL" }),
   LIVEKIT_API_KEY: z.string(),
   LIVEKIT_API_SECRET: z.string(),
+  // Feature flags
+  // Enable LiveKit E2EE for 1:1 calls (web/electron). Defaults to false.
+  E2EE_1TO1: z.coerce.boolean().default(false),
   REDIS_URL: z.string().url(),
   // Allow reading deviceId from socket handshake query (dev-only escape hatch). Default: false.
   ALLOW_DEVICE_QUERY: z.coerce.boolean().default(false),

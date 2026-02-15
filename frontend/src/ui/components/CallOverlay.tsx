@@ -61,7 +61,32 @@ import { convertToProxyUrl } from '../../utils/media'
 import { api } from '../../utils/api'
 import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../utils/socket'
 import { useAppStore } from '../../domain/store/appStore'
-import { ConnectionState, LogLevel, RoomEvent, setLogLevel, Track, RemoteAudioTrack } from 'livekit-client'
+import { ConnectionState, LogLevel, Room, RoomEvent, setLogLevel, Track, RemoteAudioTrack } from 'livekit-client'
+import { createE2eeRoomOptions, enableE2ee, fetchE2eeKey } from '../../utils/e2ee'
+
+function readEnvBool(v: unknown): boolean {
+  const raw = String(v ?? '').trim().toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on'
+}
+
+function describeE2eeSetupError(err: unknown): string {
+  const status = (err as any)?.response?.status as number | undefined
+  if (status === 403) return 'Нет доступа к ключу E2EE для этого звонка.'
+  if (status === 404) return 'Не удалось получить ключ E2EE для этого звонка. Попробуйте начать звонок заново.'
+
+  const msg = err instanceof Error ? err.message : String(err ?? '')
+  const lower = msg.toLowerCase()
+  if (
+    lower.includes('unsupported') ||
+    lower.includes('not supported') ||
+    lower.includes('deviceunsupported') ||
+    lower.includes('secure context')
+  ) {
+    return 'Этот браузер/окружение не поддерживает E2EE.'
+  }
+
+  return 'Не удалось включить E2EE для звонка. Попробуйте обновить страницу или использовать другой браузер.'
+}
 
 // Silence LiveKit internal info/debug logs (e.g. "publishing track") in production.
 // Keep warnings/errors; you can still debug via localStorage flags.
@@ -1771,6 +1796,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const [wasConnected, setWasConnected] = useState(false)
   const me = useAppStore((s) => s.session?.user)
 
+  const e2ee1to1FlagEnabled = useMemo(() => readEnvBool((import.meta as any).env?.VITE_E2EE_1TO1), [])
+  const allowE2eeFallback = useMemo(() => readEnvBool((import.meta as any).env?.VITE_E2EE_1TO1_FALLBACK), [])
+  const [forcePlainFor1to1, setForcePlainFor1to1] = useState(false)
+  const shouldUseE2ee = !isGroup && e2ee1to1FlagEnabled && !forcePlainFor1to1
+  const e2eeRoomRef = useRef<Room | null>(null)
+  const e2eeWorkerRef = useRef<Worker | null>(null)
+  const [e2eeRoom, setE2eeRoom] = useState<Room | null>(null)
+  const [e2eeError, setE2eeError] = useState<string | null>(null)
+  const [e2eePreparing, setE2eePreparing] = useState(false)
+
   const closingRef = useRef(false)
   const manualCloseRef = useRef(false)
   const myAvatar = useMemo(() => me?.avatarUrl ?? null, [me?.avatarUrl])
@@ -1817,6 +1852,22 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     const effectiveOptions = manualCloseRef.current ? { ...(options ?? {}), manual: true } : options
     onClose(effectiveOptions)
   }, [conversationId, isGroup, onClose])
+
+  const cleanupE2eeResources = useCallback(() => {
+    try {
+      e2eeRoomRef.current?.disconnect()
+    } catch {
+      // ignore
+    }
+    e2eeRoomRef.current = null
+    try {
+      e2eeWorkerRef.current?.terminate()
+    } catch {
+      // ignore
+    }
+    e2eeWorkerRef.current = null
+    setE2eeRoom(null)
+  }, [])
   const videoContainCss = `
     /* Force videos to fit tile without cropping on all layouts */
     .call-container video { object-fit: contain !important; object-position: center !important; background: #000 !important; }
@@ -2246,6 +2297,97 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       setServerUrl(null)
     }
   }, [open, conversationId])
+
+  // Reset any "fallback to plain" override when switching calls.
+  useEffect(() => {
+    setForcePlainFor1to1(false)
+  }, [conversationId])
+
+  // 1:1 E2EE setup (must happen before room.connect / track publish).
+  useEffect(() => {
+    let cancelled = false
+    let createdWorker: Worker | null = null
+    let createdRoom: Room | null = null
+
+    async function setup() {
+      if (!open || !conversationId || !token || !serverUrl || !shouldUseE2ee) {
+        setE2eePreparing(false)
+        setE2eeError(null)
+        cleanupE2eeResources()
+        return
+      }
+
+      setE2eePreparing(true)
+      setE2eeError(null)
+
+      try {
+        const keyBase64 = await fetchE2eeKey(conversationId)
+        if (cancelled) return
+
+        const { options, keyProvider, worker } = await createE2eeRoomOptions(keyBase64)
+        createdWorker = worker
+
+        createdRoom = new Room(options)
+        await enableE2ee(createdRoom, keyProvider)
+        if (cancelled) return
+
+        // Replace any existing E2EE room resources.
+        cleanupE2eeResources()
+
+        e2eeRoomRef.current = createdRoom
+        e2eeWorkerRef.current = createdWorker
+        setE2eeRoom(createdRoom)
+
+        createdRoom = null
+        createdWorker = null
+      } catch (err) {
+        if (cancelled) return
+        const msg = describeE2eeSetupError(err)
+        if (allowE2eeFallback) {
+          setForcePlainFor1to1(true)
+        } else {
+          setE2eeError(msg)
+        }
+      } finally {
+        if (!cancelled) {
+          setE2eePreparing(false)
+        }
+        try {
+          createdRoom?.disconnect()
+        } catch {
+          // ignore
+        }
+        try {
+          createdWorker?.terminate()
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    setup()
+
+    return () => {
+      cancelled = true
+      try {
+        createdRoom?.disconnect()
+      } catch {
+        // ignore
+      }
+      try {
+        createdWorker?.terminate()
+      } catch {
+        // ignore
+      }
+    }
+  }, [open, conversationId, token, serverUrl, shouldUseE2ee, allowE2eeFallback, cleanupE2eeResources])
+
+  // Ensure we always cleanup E2EE resources on unmount.
+  useEffect(() => {
+    return () => {
+      cleanupE2eeResources()
+    }
+  }, [cleanupE2eeResources])
 
   // Sync initial media flags on every open
   useEffect(() => {
@@ -2884,67 +3026,123 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         visibility: minimized ? 'hidden' : 'visible',
       }} className="call-container">
         <style>{videoContainCss}</style>
-        <LiveKitRoom 
-          serverUrl={serverUrl} 
-          token={token} 
-          connect 
-          video={camera} 
-          audio={!muted} 
-          onConnected={() => { 
-            setWasConnected(true)
-            try { 
-              if (conversationId && isGroup) { 
-                if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
-                  // eslint-disable-next-line no-console
-                console.log('[CallOverlay] joinCallRoom emit', { conversationId, video: initialVideo })
-                }
-                joinCallRoom(conversationId, initialVideo)
-                requestCallStatuses([conversationId]) 
-              } 
-            } catch (err) {
-              console.error('Error joining call room:', err)
-            }
-          }}
-          onDisconnected={(reason) => {
-            if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
-              // eslint-disable-next-line no-console
-            console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup, 'minimized:', minimized)
-            }
-            const hadConnection = wasConnected
-            setWasConnected(false)
-            const manual = reason === 1 || manualCloseRef.current
-            // Если оверлей минимизирован, не закрываем его при отключении - это может быть временное отключение
-            if (minimized) {
-              return
-            }
-            // Для 1:1 звонков закрываем только при ручном закрытии (когда пользователь нажал "Leave")
-            // Для временных отключений полагаемся на события с сервера (call:ended)
-            if (isGroup) {
-              // Для групповых звонков НЕ закрываем оверлей на не-ручных отключениях:
-              // на мобильных/при смене устройств возможны краткие дисконнекты.
-              // Закрываем только при явном "Выйти" / ручном закрытии.
-              if (hadConnection && manual) {
-                handleClose({ manual: true })
-              }
-            } else {
-              // Для 1:1 звонков закрываем только при явном ручном закрытии
-              // Временные отключения обрабатываются через call:ended событие с сервера
-              if (manual) {
-                handleClose({ manual: true })
-              }
-              // Если не было подключения и это не ручное закрытие, не закрываем
-              // (может быть ошибка подключения, но звонок еще активен на сервере)
-            }
-          }}
-        >
-          <div style={{ width: '100%', height: '100%' }}>
-            <ConnectionStatusBadge />
-            <DefaultMicrophoneSetter />
-            <PingDisplayUpdater localUserId={localUserId} />
-            <ParticipantVolumeUpdater />
-            <VideoConference SettingsComponent={CallSettings} />
+        {shouldUseE2ee && (e2eeError || !e2eeRoom) ? (
+          <div
+            style={{
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 24,
+            }}
+          >
+            <div style={{ maxWidth: 560 }}>
+              {e2eeError ? (
+                <>
+                  <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Защищённый звонок недоступен</div>
+                  <div style={{ opacity: 0.85, marginBottom: 16 }}>{e2eeError}</div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    {allowE2eeFallback && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => {
+                          setE2eeError(null)
+                          setForcePlainFor1to1(true)
+                        }}
+                      >
+                        Продолжить без E2EE
+                      </button>
+                    )}
+                    <button type="button" className="btn btn-primary" onClick={() => handleClose({ manual: true })}>
+                      Закрыть
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Включаем защищённый звонок…</div>
+                  <div style={{ opacity: 0.85, marginBottom: 16 }}>
+                    Подготавливаем шифрование (E2EE). Это может занять пару секунд.
+                  </div>
+                  <button type="button" className="btn btn-secondary" onClick={() => handleClose({ manual: true })}>
+                    Отмена
+                  </button>
+                </>
+              )}
+            </div>
           </div>
-        </LiveKitRoom>
+        ) : (
+          <LiveKitRoom
+            room={shouldUseE2ee ? (e2eeRoom ?? undefined) : undefined}
+            serverUrl={serverUrl}
+            token={token}
+            connect
+            video={camera}
+            audio={!muted}
+            onEncryptionError={(_error) => {
+              if (shouldUseE2ee) {
+                setE2eeError('Не удалось продолжить звонок: ошибка E2EE. Попробуйте начать звонок заново.')
+                cleanupE2eeResources()
+              }
+            }}
+            onConnected={() => {
+              setWasConnected(true)
+              try {
+                if (conversationId && isGroup) {
+                  if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
+                    // eslint-disable-next-line no-console
+                    console.log('[CallOverlay] joinCallRoom emit', { conversationId, video: initialVideo })
+                  }
+                  joinCallRoom(conversationId, initialVideo)
+                  requestCallStatuses([conversationId])
+                }
+              } catch (err) {
+                console.error('Error joining call room:', err)
+              }
+            }}
+            onDisconnected={(reason) => {
+              if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
+                // eslint-disable-next-line no-console
+                console.log('[CallOverlay] onDisconnected:', reason, 'wasConnected:', wasConnected, 'isGroup:', isGroup, 'minimized:', minimized)
+              }
+              const hadConnection = wasConnected
+              setWasConnected(false)
+              const manual = reason === 1 || manualCloseRef.current
+              // Если оверлей минимизирован, не закрываем его при отключении - это может быть временное отключение
+              if (minimized) {
+                return
+              }
+              // Для 1:1 звонков закрываем только при ручном закрытии (когда пользователь нажал "Leave")
+              // Для временных отключений полагаемся на события с сервера (call:ended)
+              if (isGroup) {
+                // Для групповых звонков НЕ закрываем оверлей на не-ручных отключениях:
+                // на мобильных/при смене устройств возможны краткие дисконнекты.
+                // Закрываем только при явном "Выйти" / ручном закрытии.
+                if (hadConnection && manual) {
+                  handleClose({ manual: true })
+                }
+              } else {
+                // Для 1:1 звонков закрываем только при явном ручном закрытии
+                // Временные отключения обрабатываются через call:ended событие с сервера
+                if (manual) {
+                  handleClose({ manual: true })
+                }
+                // Если не было подключения и это не ручное закрытие, не закрываем
+                // (может быть ошибка подключения, но звонок еще активен на сервере)
+              }
+            }}
+          >
+            <div style={{ width: '100%', height: '100%' }}>
+              <ConnectionStatusBadge />
+              <DefaultMicrophoneSetter />
+              <PingDisplayUpdater localUserId={localUserId} />
+              <ParticipantVolumeUpdater />
+              <VideoConference SettingsComponent={CallSettings} />
+            </div>
+          </LiveKitRoom>
+        )}
         {/* avatar overlay removed; avatars are injected into placeholders */}
       </div>
     </div>

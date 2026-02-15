@@ -9,6 +9,7 @@ import uploadRouter from "./upload";
 import devicesRouter from "./devices";
 import filesRouter from "./files";
 import secretRouter from "./secret";
+import callsRouter from "./calls";
 
 const router = Router();
 
@@ -16,6 +17,7 @@ router.use("/auth", authRouter);
 router.use("/contacts", contactsRouter);
 router.use("/conversations", conversationsRouter);
 router.use("/livekit", livekitRouter);
+router.use("/calls", callsRouter);
 router.use("/messages", messagesRouter);
 router.use("/status", statusRouter);
 router.use("/upload", uploadRouter);
