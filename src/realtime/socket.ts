@@ -1,8 +1,12 @@
 import type { Server as HttpServer } from "http";
 import { Server } from "socket.io";
+import { createAdapter } from "@socket.io/redis-adapter";
 import prisma from "../lib/prisma";
+import env from "../config/env";
+import { createDedicatedRedisClient, getRedisClient } from "../lib/redis";
 import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
+import { decGauge, incGauge } from "../obs/metrics";
 
 type PresenceGame = {
   discordAppId: string;
@@ -71,7 +75,53 @@ type ClientToServerEvents = {
 };
 
 type InterServerEvents = Record<string, never>;
-type SocketData = { userId: string };
+type SocketData = { userId: string; deviceId?: string };
+
+const userRoom = (userId: string) => `user:${userId}`;
+const deviceRoom = (deviceId: string) => `device:${deviceId}`;
+
+const PRESENCE_TTL_SECONDS = 90;
+const PRESENCE_HEARTBEAT_MS = 27_000;
+const TYPING_TTL_SECONDS = 8;
+
+async function writePresenceRedis(userId: string, status: string) {
+  try {
+    const redis = await getRedisClient();
+    const key = `presence:${userId}`;
+    if (status === "OFFLINE") {
+      await redis.del(key);
+    } else {
+      await redis.set(key, status, { EX: PRESENCE_TTL_SECONDS });
+    }
+  } catch {
+    // ignore redis failures (presence is best-effort)
+  }
+}
+
+async function writeTypingRedis(conversationId: string, userId: string, typing: boolean) {
+  try {
+    const redis = await getRedisClient();
+    const key = `typing:${conversationId}:${userId}`;
+    if (typing) {
+      await redis.set(key, "1", { EX: TYPING_TTL_SECONDS });
+    } else {
+      await redis.del(key);
+    }
+  } catch {
+    // ignore redis failures
+  }
+}
+
+function parseHandshakeDeviceId(handshake: any): string | null {
+  const raw =
+    (handshake?.auth && typeof handshake.auth === "object" ? (handshake.auth as any).deviceId : undefined) ??
+    (handshake?.query && typeof handshake.query === "object" ? (handshake.query as any).deviceId : undefined);
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  if (!v) return null;
+  if (v.length > 128) return null;
+  return v;
+}
 
 let ioInstance: Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData> | null = null;
 // Track call state per conversation to detect missed calls
@@ -90,6 +140,8 @@ const socketFocusByUser: Map<string, Map<string, boolean>> = new Map();
 const persistedPresenceByUser: Map<string, PresenceStatus> = new Map();
 const broadcastedPresenceByUser: Map<string, BroadcastPresenceStatus> = new Map();
 const presenceUpdateQueue: Map<string, Promise<void>> = new Map();
+const lastPresenceDbWriteAtByUser: Map<string, number> = new Map();
+const PRESENCE_DB_MIN_INTERVAL_MS = 2 * 60 * 1000;
 
 const PRESENCE_GAME_TTL_MS = 60_000;
 const presenceGameByUser: Map<string, { game: PresenceGame; ts: number; timeout: NodeJS.Timeout }> = new Map();
@@ -213,27 +265,35 @@ function computePresenceStatus(userId: string): PresenceStatus {
 
 async function persistPresence(io: Server, userId: string, status: PresenceStatus) {
   const previous = persistedPresenceByUser.get(userId);
-  if (previous === status) {
-    return;
-  }
-  if (status === "OFFLINE") {
-    persistedPresenceByUser.delete(userId);
-  } else {
-    persistedPresenceByUser.set(userId, status);
-  }
+  if (previous === status) return;
+
+  // Keep in-memory base presence for realtime immediately.
+  if (status === "OFFLINE") persistedPresenceByUser.delete(userId);
+  else persistedPresenceByUser.set(userId, status);
+
+  // Broadcast effective status (IN_CALL overrides base ONLINE/BACKGROUND) even if we skip DB write.
+  emitEffectivePresence(io, userId, status);
+
+  // Reduce Postgres writes: only persist on OFFLINE, on OFFLINE->ONLINE transitions,
+  // or at most once per interval for ONLINE/BACKGROUND flips.
+  const now = Date.now();
+  const lastWriteAt = lastPresenceDbWriteAtByUser.get(userId) ?? 0;
+  const shouldWrite =
+    status === "OFFLINE" ||
+    previous === undefined ||
+    previous === "OFFLINE" ||
+    now - lastWriteAt > PRESENCE_DB_MIN_INTERVAL_MS;
+  if (!shouldWrite) return;
+
   const data: { status: PresenceStatus; lastSeenAt?: Date } = { status };
-  data.lastSeenAt = new Date();
+  if (status === "OFFLINE") data.lastSeenAt = new Date();
+
   try {
-    await prisma.user.update({
-      where: { id: userId },
-      data,
-    });
+    await prisma.user.update({ where: { id: userId }, data });
+    lastPresenceDbWriteAtByUser.set(userId, now);
   } catch (error) {
     logger.warn({ error, userId, status }, "Failed to persist presence state");
-    return;
   }
-  // Broadcast effective status (IN_CALL overrides base ONLINE/BACKGROUND), but keep DB persisted base presence.
-  emitEffectivePresence(io, userId, status);
 }
 
 function recomputePresence(io: Server, userId: string): Promise<void> {
@@ -242,6 +302,7 @@ function recomputePresence(io: Server, userId: string): Promise<void> {
     .catch(() => {})
     .then(async () => {
       const status = computePresenceStatus(userId);
+      void writePresenceRedis(userId, status);
       await persistPresence(io, userId, status);
     });
   presenceUpdateQueue.set(userId, nextTask);
@@ -252,17 +313,27 @@ function recomputePresence(io: Server, userId: string): Promise<void> {
   });
 }
 
-export function initSocket(
+export async function initSocket(
   server: HttpServer
-): Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData> {
+): Promise<Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>> {
   const io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(server, {
     cors: {
-      origin: process.env.CLIENT_URL ?? true,
+      origin: env.CLIENT_URL ?? true,
       credentials: true,
     },
   });
 
   ioInstance = io;
+
+  // Multi-instance Socket.IO: Redis adapter is required.
+  const pubClient = await createDedicatedRedisClient();
+  const subClient = pubClient.duplicate();
+  subClient.on("error", (err) => {
+    logger.error({ err }, "Redis (sub) error");
+  });
+  await subClient.connect();
+  io.adapter(createAdapter(pubClient, subClient));
+  logger.info({ redisUrl: env.REDIS_URL }, "Socket.IO Redis adapter enabled");
 
   // Helper function to format time as "в HH:mm" in server's local timezone
   // Uses system timezone or TZ environment variable if set
@@ -331,6 +402,8 @@ export function initSocket(
 
       const payload = verifyAccessToken<{ sub: string }>(token);
       socket.data.userId = payload.sub;
+      const claimedDeviceId = parseHandshakeDeviceId(socket.handshake);
+      if (claimedDeviceId) socket.data.deviceId = claimedDeviceId;
       next();
     } catch (error) {
       logger.warn({ error }, "Socket auth failed");
@@ -342,9 +415,34 @@ export function initSocket(
     const userId = socket.data.userId;
     logger.info({ userId }, "Socket connected");
     // Join personal room to receive direct events
-    socket.join(userId);
+    socket.join(userRoom(userId));
+    incGauge("sockets_connected", 1);
     setSocketFocus(userId, socket.id, true);
     void recomputePresence(io, userId);
+
+    // Join device room if a verified deviceId is available (extension point for secret transport).
+    const claimedDeviceId = socket.data.deviceId;
+    if (claimedDeviceId) {
+      void (async () => {
+        try {
+          const device = await prisma.userDevice.findUnique({
+            where: { id: claimedDeviceId },
+            select: { id: true, userId: true, revokedAt: true },
+          });
+          if (!device || device.userId !== userId || device.revokedAt) return;
+          socket.join(deviceRoom(claimedDeviceId));
+          logger.info({ userId, deviceId: claimedDeviceId }, "Socket joined device room");
+        } catch {}
+      })();
+    }
+
+    // Redis presence TTL heartbeat (ephemeral).
+    const heartbeat = setInterval(() => {
+      const status = computePresenceStatus(userId);
+      void writePresenceRedis(userId, status);
+    }, PRESENCE_HEARTBEAT_MS);
+    // initial write
+    void writePresenceRedis(userId, computePresenceStatus(userId));
 
     // Snapshot: if there are active calls right now, inform this socket so it can render "IN_CALL" immediately.
     try {
@@ -410,7 +508,7 @@ export function initSocket(
                   select: { displayName: true, username: true },
                 });
                 const name = inviter?.displayName ?? inviter?.username ?? "пользователь";
-                io.to(userId).emit("call:incoming", {
+                io.to(userRoom(userId)).emit("call:incoming", {
                   conversationId: conv.id,
                   from: { id: callSt.inviterId, name },
                   video: callSt.video,
@@ -526,6 +624,7 @@ export function initSocket(
     });
 
     socket.on("conversation:typing", ({ conversationId, typing }) => {
+      void writeTypingRedis(conversationId, userId, !!typing);
       socket
         .to(conversationId)
         .emit("conversation:typing", { conversationId, userId, typing });
@@ -560,11 +659,11 @@ export function initSocket(
         });
         const participantIds = updated.participants.map((p) => p.userId);
         for (const pid of participantIds) {
-          io.to(pid).emit("secret:chat:accepted", {
+          io.to(userRoom(pid)).emit("secret:chat:accepted", {
             conversationId,
             peerDeviceId: deviceId,
           });
-          io.to(pid).emit("conversations:updated", {
+          io.to(userRoom(pid)).emit("conversations:updated", {
             conversationId,
             conversation: updated,
           });
@@ -594,7 +693,7 @@ export function initSocket(
 
         const recipients = conv.participants.map((p) => p.userId);
         for (const rid of recipients) {
-          io.to(rid).emit("conversations:deleted", { conversationId });
+          io.to(userRoom(rid)).emit("conversations:deleted", { conversationId });
         }
       } catch (error) {
         logger.error({ error, conversationId, userId }, "Failed to decline secret chat");
@@ -632,7 +731,7 @@ export function initSocket(
           select: { displayName: true, username: true },
         });
         const name = caller?.displayName ?? caller?.username ?? "пользователь";
-        io.to(recipient.userId).emit("secret:chat:offer", {
+        io.to(userRoom(recipient.userId)).emit("secret:chat:offer", {
           conversationId,
           from: { id: userId, name, deviceId: (conv as any).secretInitiatorDeviceId ?? null },
         });
@@ -710,7 +809,7 @@ export function initSocket(
           });
           // Также отправляем message:notify для каждого участника отдельно (кроме отправителя)
           for (const rid of recipients) {
-            io.to(rid).emit("message:notify", {
+            io.to(userRoom(rid)).emit("message:notify", {
               conversationId,
               messageId: msg.id,
               senderId: userId,
@@ -731,7 +830,7 @@ export function initSocket(
       if (!isGroup) {
         const incomingPayload = { conversationId, from: { id: userId, name }, video };
         for (const rid of recipients) {
-          io.to(rid).emit("call:incoming", incomingPayload);
+          io.to(userRoom(rid)).emit("call:incoming", incomingPayload);
         }
       }
 
@@ -770,11 +869,11 @@ export function initSocket(
       }
       // Отправляем call:accepted получателям звонка
       for (const rid of recipients) {
-        io.to(rid).emit("call:accepted", { conversationId, by: { id: userId }, video });
+        io.to(userRoom(rid)).emit("call:accepted", { conversationId, by: { id: userId }, video });
       }
       // Также отправляем call:accepted самому пользователю на другие его устройства
       // Это нужно, чтобы прекратить входящий звонок на других устройствах
-      socket.to(userId).emit("call:accepted", { conversationId, by: { id: userId }, video });
+      socket.to(userRoom(userId)).emit("call:accepted", { conversationId, by: { id: userId }, video });
     });
 
     socket.on("call:decline", async ({ conversationId }) => {
@@ -802,7 +901,7 @@ export function initSocket(
         return { elapsedMs, durationText };
       };
       for (const rid of recipients) {
-        io.to(rid).emit("call:declined", { conversationId, by: { id: userId } });
+        io.to(userRoom(rid)).emit("call:declined", { conversationId, by: { id: userId } });
       }
       if (isGroup) {
         const { elapsedMs, durationText } = computeDuration();
@@ -826,7 +925,7 @@ export function initSocket(
             message: msg,
           });
           for (const rid of recipients) {
-            io.to(rid).emit("message:notify", {
+            io.to(userRoom(rid)).emit("message:notify", {
               conversationId,
               messageId: msg.id,
               senderId,
@@ -881,7 +980,7 @@ export function initSocket(
       if (!conv) return;
       const recipients = conv.participants.map((p) => p.userId).filter((id) => id !== userId);
       for (const rid of recipients) {
-        io.to(rid).emit("call:ended", { conversationId, by: { id: userId } });
+        io.to(userRoom(rid)).emit("call:ended", { conversationId, by: { id: userId } });
       }
       
       const isGroup = !!conv.isGroup;
@@ -921,7 +1020,7 @@ export function initSocket(
             message: msg,
           });
           for (const rid of recipients) {
-            io.to(rid).emit("message:notify", {
+            io.to(userRoom(rid)).emit("message:notify", {
               conversationId,
               messageId: msg.id,
               senderId: userId,
@@ -989,7 +1088,7 @@ export function initSocket(
             message: msg,
           });
           for (const rid of recipients) {
-            io.to(rid).emit("message:notify", {
+            io.to(userRoom(rid)).emit("message:notify", {
               conversationId,
               messageId: msg.id,
               senderId: userId,
@@ -1066,7 +1165,7 @@ export function initSocket(
               // Также отправляем message:notify для всех участников (кроме отправителя)
               for (const p of conv.participants) {
                 if (p.userId !== userId) {
-                  io.to(p.userId).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                  io.to(userRoom(p.userId)).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
                 }
               }
               logger.info({ conversationId, userId, video: callVideo, messageId: msg.id }, "Call started message created in call:room:join (no callState)");
@@ -1158,7 +1257,7 @@ export function initSocket(
             if (conv) {
               for (const p of conv.participants) {
                 if (p.userId !== userId) {
-                  io.to(p.userId).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                  io.to(userRoom(p.userId)).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
                 }
               }
             }
@@ -1215,6 +1314,9 @@ export function initSocket(
     // как сокет покинет все комнаты (disconnect срабатывает после выхода из комнат)
     socket.on("disconnecting", async (reason) => {
       logger.info({ userId, reason }, "Socket disconnecting");
+      try {
+        clearInterval(heartbeat);
+      } catch {}
       
       // Удаляем пользователя из всех активных звонков
       for (const [conversationId, callInfo] of activeGroupCalls.entries()) {
@@ -1250,6 +1352,7 @@ export function initSocket(
     
     socket.on("disconnect", (reason) => {
       logger.info({ userId, reason }, "Socket disconnected");
+      decGauge("sockets_connected", 1);
     });
   });
 

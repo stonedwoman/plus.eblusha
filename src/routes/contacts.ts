@@ -5,6 +5,7 @@ import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 
 const router = Router();
+const userRoom = (userId: string) => `user:${userId}`;
 
 router.use(authenticate);
 
@@ -119,7 +120,7 @@ router.post("/add", async (req, res) => {
   });
 
   // notify addressee
-  getIO()?.to(target.id).emit("contacts:request:new", {
+  getIO()?.to(userRoom(target.id)).emit("contacts:request:new", {
     contactId: contact.id,
     from: { id: (req as any).user!.id, username: (req as any).user!.username },
   });
@@ -159,7 +160,7 @@ router.post("/respond", async (req, res) => {
   }
   if (action === "block") {
     const updated = await prisma.contact.update({ where: { id: contactId }, data: { status: "BLOCKED" } });
-    getIO()?.to(contact.requesterId).emit("contacts:request:blocked", { contactId });
+    getIO()?.to(userRoom(contact.requesterId)).emit("contacts:request:blocked", { contactId });
     res.json({ contact: updated });
     return;
   }
@@ -183,10 +184,10 @@ router.post("/respond", async (req, res) => {
         participants: { create: [{ userId: contact.requesterId }, { userId: contact.addresseeId }] },
       },
     });
-    getIO()?.to(contact.requesterId).emit("conversations:new", { conversationId: conv.id });
-    getIO()?.to(contact.addresseeId).emit("conversations:new", { conversationId: conv.id });
+    getIO()?.to(userRoom(contact.requesterId)).emit("conversations:new", { conversationId: conv.id });
+    getIO()?.to(userRoom(contact.addresseeId)).emit("conversations:new", { conversationId: conv.id });
   }
-  getIO()?.to(contact.requesterId).emit("contacts:request:accepted", { contactId });
+  getIO()?.to(userRoom(contact.requesterId)).emit("contacts:request:accepted", { contactId });
   res.json({ contact: updated });
 });
 
@@ -239,8 +240,8 @@ router.post("/remove", async (req, res) => {
 
   await prisma.contact.delete({ where: { id: contactId } });
   // notify both sides
-  getIO()?.to(contact.requesterId).emit("contacts:removed", { contactId });
-  getIO()?.to(contact.addresseeId).emit("contacts:removed", { contactId });
+  getIO()?.to(userRoom(contact.requesterId)).emit("contacts:removed", { contactId });
+  getIO()?.to(userRoom(contact.addresseeId)).emit("contacts:removed", { contactId });
   res.json({ success: true });
 });
 

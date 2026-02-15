@@ -3,9 +3,11 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../lib/prisma";
 import { deleteS3ObjectsByUrls } from "../lib/storageDeletion";
-import { extractFirstUrl, getLinkPreview } from "../lib/linkPreview";
+import { extractFirstUrl } from "../lib/linkPreview";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
+import { enqueueLinkPreview } from "../jobs/queue";
+import { rateLimit } from "../middlewares/rateLimit";
 
 const router = Router();
 
@@ -15,7 +17,10 @@ router.use(authenticate);
 
 const previewParamsSchema = z.object({ messageId: z.string().cuid() });
 
-router.get("/:messageId/preview", async (req, res) => {
+router.get(
+  "/:messageId/preview",
+  rateLimit({ name: "preview_enqueue", windowMs: 60_000, max: 30 }),
+  async (req, res) => {
   const parsedParams = previewParamsSchema.safeParse(req.params);
   if (!parsedParams.success) {
     res.status(400).json({ message: "Invalid message id" });
@@ -88,7 +93,11 @@ router.get("/:messageId/preview", async (req, res) => {
     return;
   }
 
-  const preview = await getLinkPreview(firstUrl);
+  // Enqueue preview generation (API does not wait).
+  try {
+    await enqueueLinkPreview({ messageId, conversationId: message.conversationId, url: firstUrl });
+  } catch {}
+
   const updated = await prisma.message.update({
     where: { id: messageId },
     data: {
@@ -96,7 +105,6 @@ router.get("/:messageId/preview", async (req, res) => {
         ...(meta && typeof meta === "object" ? meta : {}),
         linkPreviewAttemptedAt: new Date().toISOString(),
         linkPreviewUrl: firstUrl,
-        ...(preview ? { linkPreview: preview } : {}),
       } as any,
     },
     include: {
@@ -108,17 +116,9 @@ router.get("/:messageId/preview", async (req, res) => {
     },
   });
 
-  if (preview) {
-    getIO()?.to(message.conversationId).emit("message:update", {
-      conversationId: message.conversationId,
-      messageId,
-      reason: "link_preview",
-      message: updated,
-    });
+  res.json({ message: updated, preview: null, enqueued: true });
   }
-
-  res.json({ message: updated, preview });
-});
+);
 
 const updateStatusSchema = z.object({
   messageIds: z.array(z.string().cuid()).min(1),

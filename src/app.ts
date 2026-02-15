@@ -3,14 +3,20 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import compression from "compression";
-import morgan from "morgan";
 import env from "./config/env";
 import routes from "./routes";
+import { requestIdMiddleware } from "./middlewares/requestId";
+import { httpLoggerMiddleware } from "./middlewares/httpLogger";
 
 const app = express();
 
 // Respect reverse proxy headers (X-Forwarded-*) so we can generate correct absolute URLs
 app.set("trust proxy", true);
+
+// request_id baseline: attach id early, always return it in headers
+app.use(requestIdMiddleware);
+// structured baseline logs
+app.use(httpLoggerMiddleware);
 
 app.use(
   helmet({
@@ -45,7 +51,6 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use(morgan(env.NODE_ENV === "development" ? "dev" : "combined"));
 
 app.use("/api", routes);
 

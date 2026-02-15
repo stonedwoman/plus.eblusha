@@ -13,6 +13,7 @@ import {
 import { authenticate } from "../middlewares/auth";
 import env from "../config/env";
 import logger from "../config/logger";
+import { rateLimit } from "../middlewares/rateLimit";
 import {
   encryptBuffer,
   parseStorageEncKey,
@@ -128,7 +129,7 @@ const resolveServerSideEncryption = (
 
 router.use(authenticate);
 
-router.post("/", upload.single("file"), async (req: Request, res) => {
+router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), upload.single("file"), async (req: Request, res) => {
   const file = (req as any).file as Express.Multer.File | undefined;
   if (!file) {
     res.status(400).json({ message: "No file" });

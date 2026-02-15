@@ -24,7 +24,7 @@ const envSchema = z.object({
   LIVEKIT_URL: z.string().url({ message: "LIVEKIT_URL must be a valid ws(s) URL" }),
   LIVEKIT_API_KEY: z.string(),
   LIVEKIT_API_SECRET: z.string(),
-  REDIS_URL: z.string().url().optional(),
+  REDIS_URL: z.string().url(),
   // Default TTL for secret messages on the server (in seconds)
   SECRET_MESSAGE_TTL_SECONDS: z.coerce.number().default(3600),
   STORAGE_S3_ENDPOINT: z.string().url().optional(),

@@ -9,6 +9,7 @@ import {
   verifyRefreshToken,
 } from "../utils/jwt";
 import env from "../config/env";
+import { rateLimit } from "../middlewares/rateLimit";
 
 const router = Router();
 
@@ -64,7 +65,10 @@ router.post("/register", async (req, res) => {
   res.status(201).json({ user });
 });
 
-router.post("/login", async (req, res) => {
+router.post(
+  "/login",
+  rateLimit({ name: "auth_login", windowMs: 60_000, max: 10 }),
+  async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ message: "Invalid credentials" });
@@ -128,9 +132,13 @@ router.post("/login", async (req, res) => {
     },
     ...(includeRefresh ? { refreshToken: refreshTokenValue } : {}),
   });
-});
+  }
+);
 
-router.post("/refresh", async (req, res) => {
+router.post(
+  "/refresh",
+  rateLimit({ name: "auth_refresh", windowMs: 60_000, max: 30 }),
+  async (req, res) => {
   // Try to get refresh token from cookie first, then from body (for backward compatibility)
   const token = req.cookies?.refreshToken || req.body?.refreshToken;
   if (typeof token !== "string") {
@@ -193,7 +201,8 @@ router.post("/refresh", async (req, res) => {
     });
     res.status(401).json({ message: "Invalid refresh token" });
   }
-});
+  }
+);
 
 router.post("/logout", async (req, res) => {
   const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;

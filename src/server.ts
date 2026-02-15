@@ -6,6 +6,7 @@ import app from "./app";
 import env from "./config/env";
 import logger from "./config/logger";
 import { initSocket } from "./realtime/socket";
+import { startLinkPreviewWorker } from "./jobs/workers/linkPreview.worker";
 
 const port = env.PORT;
 
@@ -61,24 +62,32 @@ if (localUploadsEnabled) {
   );
 }
 
-const httpServer = http.createServer(app);
-initSocket(httpServer);
+async function main() {
+  const httpServer = http.createServer(app);
+  await initSocket(httpServer);
+  startLinkPreviewWorker();
 
-httpServer.listen(port, () => {
-  logger.info(`Server listening on port ${port}`);
-});
-
-process.on("SIGTERM", () => {
-  httpServer.close(() => {
-    logger.info("SIGTERM received: shutting down gracefully");
-    process.exit(0);
+  httpServer.listen(port, () => {
+    logger.info(`Server listening on port ${port}`);
   });
-});
 
-process.on("SIGINT", () => {
-  httpServer.close(() => {
-    logger.info("SIGINT received: shutting down gracefully");
-    process.exit(0);
+  process.on("SIGTERM", () => {
+    httpServer.close(() => {
+      logger.info("SIGTERM received: shutting down gracefully");
+      process.exit(0);
+    });
   });
+
+  process.on("SIGINT", () => {
+    httpServer.close(() => {
+      logger.info("SIGINT received: shutting down gracefully");
+      process.exit(0);
+    });
+  });
+}
+
+main().catch((error) => {
+  logger.error({ error }, "Server failed to start");
+  process.exit(1);
 });
 

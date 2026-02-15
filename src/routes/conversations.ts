@@ -6,9 +6,12 @@ import { deleteS3ObjectsByUrls } from "../lib/storageDeletion";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 import env from "../config/env";
-import { extractFirstUrl, getLinkPreview } from "../lib/linkPreview";
+import { extractFirstUrl } from "../lib/linkPreview";
+import { enqueueLinkPreview } from "../jobs/queue";
+import { rateLimit } from "../middlewares/rateLimit";
 
 const router = Router();
+const userRoom = (userId: string) => `user:${userId}`;
 
 router.use(authenticate);
 
@@ -167,7 +170,7 @@ router.put("/:id/availability/me", async (req, res) => {
     });
     const participantIds = conv?.participants.map((p) => p.userId) ?? [];
     for (const pid of participantIds) {
-      io?.to(pid).emit("availability:updated", { conversationId: id, userId });
+      io?.to(userRoom(pid)).emit("availability:updated", { conversationId: id, userId });
     }
   } catch {}
 
@@ -275,7 +278,7 @@ router.post("/:id/availability/proposals", async (req, res) => {
     const conv = await prisma.conversation.findUnique({ where: { id }, include: { participants: true } });
     const participantIds = conv?.participants.map((p) => p.userId) ?? [];
     for (const pid of participantIds) {
-      io?.to(pid).emit("availability:proposals:updated", { conversationId: id, proposalId: created.id });
+      io?.to(userRoom(pid)).emit("availability:proposals:updated", { conversationId: id, proposalId: created.id });
     }
 
     res.status(201).json({
@@ -332,7 +335,7 @@ router.delete("/:id/availability/proposals/:proposalId", async (req, res) => {
 
     const io = getIO();
     io?.to(id).emit("availability:proposals:updated", { conversationId: id, proposalId });
-    io?.to(userId).emit("availability:proposals:updated", { conversationId: id, proposalId });
+    io?.to(userRoom(userId)).emit("availability:proposals:updated", { conversationId: id, proposalId });
     res.json({ success: true });
   } catch (err) {
     if (handleAvailabilityDbError(res, err)) return;
@@ -386,7 +389,7 @@ router.put("/:id/availability/proposals/:proposalId/reaction", async (req, res) 
     const conv = await prisma.conversation.findUnique({ where: { id }, include: { participants: true } });
     const participantIds = conv?.participants.map((p) => p.userId) ?? [];
     for (const pid of participantIds) {
-      io?.to(pid).emit("availability:proposals:updated", { conversationId: id, proposalId });
+      io?.to(userRoom(pid)).emit("availability:proposals:updated", { conversationId: id, proposalId });
     }
 
     res.json({ success: true });
@@ -525,7 +528,7 @@ router.post("/", async (req, res) => {
             select: { displayName: true, username: true },
           });
           const name = initiatorUser?.displayName ?? initiatorUser?.username ?? "пользователь";
-          io?.to(recipient.userId).emit("secret:chat:offer", {
+          io?.to(userRoom(recipient.userId)).emit("secret:chat:offer", {
             conversationId: existing.id,
             from: { id: userId, name, deviceId: offerDeviceId },
           });
@@ -584,7 +587,7 @@ router.post("/", async (req, res) => {
   // Notify all participants about the new conversation
   const io = getIO();
   for (const pid of uniqueParticipantIds) {
-    io?.to(pid).emit("conversations:new", { conversationId: conversation.id });
+    io?.to(userRoom(pid)).emit("conversations:new", { conversationId: conversation.id });
   }
 
   if (isSecret && initiatorDevice) {
@@ -595,7 +598,7 @@ router.post("/", async (req, res) => {
         select: { displayName: true, username: true },
       });
       const name = initiatorUser?.displayName ?? initiatorUser?.username ?? "пользователь";
-      io?.to(recipient.userId).emit("secret:chat:offer", {
+      io?.to(userRoom(recipient.userId)).emit("secret:chat:offer", {
         conversationId: conversation.id,
         from: { id: userId, name, deviceId: initiatorDevice.id },
       });
@@ -708,7 +711,7 @@ router.post("/:id/participants", async (req, res) => {
       const allParticipants = updated?.participants.map((p) => p.userId) ?? [];
       for (const pid of allParticipants) {
         if (pid !== userId) {
-          io?.to(pid).emit("message:notify", { conversationId: id, messageId: systemMessage.id, senderId: userId });
+          io?.to(userRoom(pid)).emit("message:notify", { conversationId: id, messageId: systemMessage.id, senderId: userId });
         }
       }
     } catch (error) {
@@ -720,12 +723,12 @@ router.post("/:id/participants", async (req, res) => {
   // Notify new participants
   const io = getIO();
   for (const pid of newIds) {
-    io?.to(pid).emit("conversations:new", { conversationId: id });
+    io?.to(userRoom(pid)).emit("conversations:new", { conversationId: id });
   }
   // Notify existing participants
   for (const p of conv.participants) {
     if (p.userId !== userId) {
-      io?.to(p.userId).emit("conversations:updated", { conversationId: id, conversation: updated });
+      io?.to(userRoom(p.userId)).emit("conversations:updated", { conversationId: id, conversation: updated });
     }
   }
 
@@ -832,7 +835,7 @@ router.delete("/:id/participants/me", async (req, res) => {
     const allParticipants = conv.participants.map((p) => p.userId);
     for (const pid of allParticipants) {
       if (pid !== userId) {
-        io?.to(pid).emit("message:notify", { conversationId: id, messageId: systemMessage.id, senderId: userId });
+        io?.to(userRoom(pid)).emit("message:notify", { conversationId: id, messageId: systemMessage.id, senderId: userId });
       }
     }
   } catch (error) {
@@ -852,10 +855,10 @@ router.delete("/:id/participants/me", async (req, res) => {
   const io = getIO();
   const remainingParticipants = conv.participants.filter((p) => p.userId !== userId);
   for (const p of remainingParticipants) {
-    io?.to(p.userId).emit("conversations:updated", { conversationId: id });
+    io?.to(userRoom(p.userId)).emit("conversations:updated", { conversationId: id });
   }
   // Уведомляем текущего пользователя об удалении (чтобы беседа исчезла из списка)
-  io?.to(userId).emit("conversations:deleted", { conversationId: id });
+  io?.to(userRoom(userId)).emit("conversations:deleted", { conversationId: id });
 
   res.json({ success: true });
 });
@@ -897,7 +900,7 @@ router.delete("/:id", async (req, res) => {
   // Notify participants
   const recipients = conv.participants.map((p) => p.userId);
   const io = getIO();
-  for (const rid of recipients) io?.to(rid).emit("conversations:deleted", { conversationId: id });
+  for (const rid of recipients) io?.to(userRoom(rid)).emit("conversations:deleted", { conversationId: id });
 
   res.json({ success: true });
 });
@@ -968,8 +971,8 @@ router.get("/:id/messages", async (req, res) => {
   const last = messages.at(-1);
   const nextCursor = hasMore && last ? last.id : null;
 
-  // Telegram-like unfurl for older messages: fetch previews lazily when messages are requested.
-  // We do it in background, rate-limited, and mark attempts in metadata to avoid repeated work.
+  // Telegram-like unfurl for older messages: enqueue preview jobs lazily when messages are requested.
+  // Actual fetching/parsing is done ONLY by the worker.
   if (!isSecretConversation) {
     try {
       const MAX_PREVIEWS_PER_FETCH = 3;
@@ -990,39 +993,7 @@ router.get("/:id/messages", async (req, res) => {
       for (const m of candidates) {
         const firstUrl = extractFirstUrl(m.content);
         if (!firstUrl) continue;
-        void (async () => {
-          const preview = await getLinkPreview(firstUrl);
-          const nowISO = new Date().toISOString();
-          const existing = (m.metadata && typeof m.metadata === "object") ? (m.metadata as any) : {};
-          const nextMeta: any = {
-            ...(existing && typeof existing === "object" ? existing : {}),
-            linkPreviewAttemptedAt: nowISO,
-            linkPreviewUrl: firstUrl,
-            ...(preview ? { linkPreview: preview } : {}),
-          };
-
-          const updated = await prisma.message.update({
-            where: { id: m.id },
-            data: { metadata: nextMeta as any },
-            include: {
-              sender: { select: { id: true, username: true, displayName: true } },
-              attachments: true,
-              reactions: true,
-              receipts: true,
-              replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
-            },
-          });
-
-          // Only push updates when we actually have a preview to show.
-          if (preview) {
-            getIO()?.to(id).emit("message:update", {
-              conversationId: id,
-              messageId: m.id,
-              reason: "link_preview",
-              message: updated,
-            });
-          }
-        })();
+        void enqueueLinkPreview({ messageId: m.id, conversationId: id, url: firstUrl }).catch(() => {});
       }
     } catch {
       // ignore preview errors
@@ -1064,7 +1035,10 @@ const sendMessageSchema = z.object({
     .optional(),
 });
 
-router.post("/send", async (req, res) => {
+router.post(
+  "/send",
+  rateLimit({ name: "send_message", windowMs: 60_000, max: 60 }),
+  async (req, res) => {
   const parsed = sendMessageSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ message: "Invalid message data" });
@@ -1159,7 +1133,7 @@ router.post("/send", async (req, res) => {
 
   for (const rid of recipients) {
     if (rid !== userId) {
-      io?.to(rid).emit("message:notify", {
+      io?.to(userRoom(rid)).emit("message:notify", {
         conversationId,
         messageId: message.id,
         senderId: userId,
@@ -1168,50 +1142,20 @@ router.post("/send", async (req, res) => {
     }
   }
 
-  // Link preview (Telegram-like unfurl): fetch in background and update message metadata.
+  // Link preview (Telegram-like unfurl): enqueue job and return immediately.
   // Disabled for secret conversations to avoid metadata leaks.
   try {
     const isSecret = Boolean((conv as any).isSecret);
     const contentForPreview = type === "TEXT" ? (content ?? null) : null;
     const firstUrl = !isSecret ? extractFirstUrl(contentForPreview) : null;
     if (firstUrl) {
-      void (async () => {
-        const preview = await getLinkPreview(firstUrl);
-        if (!preview) return;
-        const existing = (message as any).metadata ?? {};
-        if (existing && typeof existing === "object" && (existing as any).linkPreview) return;
-        const updated = await prisma.message.update({
-          where: { id: message.id },
-          data: {
-            metadata: {
-              ...(existing && typeof existing === "object" ? existing : {}),
-              linkPreview: preview,
-              linkPreviewUrl: preview.url,
-            } as any,
-          },
-          include: {
-            sender: { select: { id: true, username: true, displayName: true } },
-            attachments: true,
-            reactions: true,
-            receipts: true,
-            replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
-          },
-        });
-        // Push update to active viewers (room subscribers); others will see it on next fetch.
-        getIO()?.to(conversationId).emit("message:update", {
-          conversationId,
-          messageId: message.id,
-          reason: "link_preview",
-          message: updated,
-        });
-      })();
+      void enqueueLinkPreview({ messageId: message.id, conversationId, url: firstUrl }).catch(() => {});
     }
-  } catch {
-    // ignore preview errors
-  }
+  } catch {}
 
   res.status(201).json({ message });
-});
+  }
+);
 
 export default router;
 

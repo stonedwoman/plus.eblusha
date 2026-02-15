@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma";
 import { authenticate } from "../middlewares/auth";
+import { rateLimit } from "../middlewares/rateLimit";
 
 const router = Router();
 
@@ -76,7 +77,10 @@ router.get("/:deviceId", async (req, res) => {
   res.json({ device });
 });
 
-router.post("/register", async (req, res) => {
+router.post(
+  "/register",
+  rateLimit({ name: "device_register", windowMs: 60_000, max: 30 }),
+  async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ message: "Invalid device payload" });
@@ -122,7 +126,8 @@ router.post("/register", async (req, res) => {
   }
 
   res.json({ device });
-});
+  }
+);
 
 const publishSchema = z.object({
   prekeys: z
@@ -136,8 +141,15 @@ const publishSchema = z.object({
     .max(200),
 });
 
-router.post("/:deviceId/prekeys", async (req, res) => {
-  const { deviceId } = req.params;
+router.post(
+  "/:deviceId/prekeys",
+  rateLimit({ name: "secret_prekeys_publish", windowMs: 60_000, max: 30 }),
+  async (req, res) => {
+  const deviceId = req.params.deviceId;
+  if (!deviceId) {
+    res.status(400).json({ message: "Missing deviceId" });
+    return;
+  }
   const parsed = publishSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ message: "Invalid prekeys payload" });
@@ -162,9 +174,13 @@ router.post("/:deviceId/prekeys", async (req, res) => {
     skipDuplicates: true,
   });
   res.json({ success: true });
-});
+  }
+);
 
-router.post("/prekeys/claim", async (req, res) => {
+router.post(
+  "/prekeys/claim",
+  rateLimit({ name: "secret_prekeys_claim", windowMs: 60_000, max: 60 }),
+  async (req, res) => {
   const claimSchema = z.object({
     deviceId: z.string().min(8),
   });
@@ -203,7 +219,8 @@ router.post("/prekeys/claim", async (req, res) => {
       publicKey: prekey.publicKey,
     },
   });
-});
+  }
+);
 
 router.delete("/:deviceId", async (req, res) => {
   const { deviceId } = req.params;

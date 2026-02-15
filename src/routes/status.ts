@@ -3,6 +3,7 @@ import prisma from "../lib/prisma";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 import { z } from "zod";
+import { getMetricsSnapshot } from "../obs/metrics";
 
 const router = Router();
 
@@ -39,6 +40,10 @@ router.get("/me", async (req, res) => {
   });
 
   res.json({ user });
+});
+
+router.get("/metrics", (_req, res) => {
+  res.json(getMetricsSnapshot());
 });
 
 router.patch("/me", async (req, res) => {
