@@ -5,6 +5,8 @@ import { io as ioClient } from "socket.io-client";
 import { AccessToken } from "livekit-server-sdk";
 import app from "../src/app";
 import prisma from "../src/lib/prisma";
+import { getRedisClient } from "../src/lib/redis";
+import { SECRET_INBOX_LIST_KEY_PREFIX, SECRET_MESSAGE_KEY_PREFIX } from "../src/lib/secretInbox";
 import { initSocket } from "../src/realtime/socket";
 import { signAccessToken } from "../src/utils/jwt";
 import env from "../src/config/env";
@@ -67,6 +69,25 @@ async function apiJson<T>(
   return json as T;
 }
 
+async function apiRaw(
+  baseUrl: string,
+  path: string,
+  method: "GET" | "POST",
+  body?: unknown,
+  token?: string,
+  headers?: Record<string, string>
+) {
+  return fetch(`${baseUrl}${path}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(headers ?? {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
 async function postLivekitWebhook(baseUrl: string, payload: Record<string, unknown>) {
   const body = JSON.stringify(payload);
   const token = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
@@ -115,6 +136,24 @@ async function runCallsWebhookTest(baseUrl: string) {
     room: { name: roomId },
     participant: { identity: bob.id },
   };
+
+  const invalidWebhook = await apiRaw(
+    baseUrl,
+    "/api/livekit/webhook",
+    "POST",
+    {
+      id: `evt-invalid-${randomUUID()}`,
+      event: "room_started",
+      createdAt: startedTs,
+      ...baseEvent,
+    },
+    undefined,
+    { Authorization: "Bearer invalid-signature" }
+  );
+  assert.ok(
+    invalidWebhook.status === 401 || invalidWebhook.status === 403,
+    `invalid signature should be rejected, got ${invalidWebhook.status}`
+  );
 
   await postLivekitWebhook(baseUrl, {
     id: `evt-room-started-${randomUUID()}`,
@@ -169,6 +208,56 @@ async function runCallsWebhookTest(baseUrl: string) {
   assert.equal(participant.userId, bob.id);
   assert.equal(Math.floor(participant.joinedAt.getTime() / 1000), joinedTs);
   assert.equal(Math.floor((participant.leftAt ?? new Date(0)).getTime() / 1000), leftTs);
+}
+
+async function runConcurrentPrekeyClaimTest(baseUrl: string) {
+  const owner = await createUser(`prekey_owner_${Date.now()}`);
+  const deviceId = `claim-device-${randomUUID()}`;
+  const ownerToken = signAccessToken({
+    sub: owner.id,
+    tokenId: `tok-${randomUUID()}`,
+    did: deviceId,
+  });
+
+  await prisma.userDevice.create({
+    data: {
+      id: deviceId,
+      userId: owner.id,
+      name: "claim-device",
+      publicKey: `pk-${randomUUID()}`,
+      identityPublicKey: `ipk-${randomUUID()}`,
+    },
+  });
+
+  const prekeyCount = 4;
+  await prisma.devicePrekey.createMany({
+    data: Array.from({ length: prekeyCount }).map((_, idx) => ({
+      deviceId,
+      keyId: `k-${idx}-${randomUUID()}`,
+      publicKey: `pk-${idx}-${randomUUID()}`,
+      oneTimePreKeyId: `otk-${idx}-${randomUUID()}`,
+      oneTimePreKeyPublic: `otpk-${idx}-${randomUUID()}`,
+    })),
+  });
+
+  const claims = await Promise.all(
+    Array.from({ length: 10 }).map(() =>
+      apiRaw(baseUrl, "/api/devices/prekeys/claim", "POST", { deviceId }, ownerToken)
+    )
+  );
+
+  const successfulPayloads: Array<{ prekey: { keyId: string } }> = [];
+  for (const resp of claims) {
+    if (resp.status === 200) {
+      successfulPayloads.push((await resp.json()) as { prekey: { keyId: string } });
+    } else {
+      assert.equal(resp.status, 404, `unexpected status for concurrent claim: ${resp.status}`);
+    }
+  }
+
+  assert.equal(successfulPayloads.length, prekeyCount, "must claim exactly available prekeys");
+  const claimedIds = successfulPayloads.map((p) => p.prekey.keyId);
+  assert.equal(new Set(claimedIds).size, prekeyCount, "claimed prekeys must be unique");
 }
 
 async function runSecretRelayTest(baseUrl: string) {
@@ -252,6 +341,12 @@ async function runSecretRelayTest(baseUrl: string) {
     senderToken
   );
 
+  const redis = await getRedisClient();
+  const inboxEntries = await redis.lRange(`${SECRET_INBOX_LIST_KEY_PREFIX}${recipientDeviceId}`, 0, -1);
+  assert.ok(inboxEntries.includes(msgId), "inbox list should contain inserted msgId");
+  const rawPayload = await redis.get(`${SECRET_MESSAGE_KEY_PREFIX}${recipientDeviceId}:${msgId}`);
+  assert.ok(!!rawPayload, "message payload key should exist after enqueue");
+
   const notify = await notifyPromise;
   assert.equal(notify.toDeviceId, recipientDeviceId);
   assert.equal(notify.msgId, msgId);
@@ -297,6 +392,7 @@ async function main() {
   const { baseUrl, server } = await startServer();
   try {
     await runCallsWebhookTest(baseUrl);
+    await runConcurrentPrekeyClaimTest(baseUrl);
     await runSecretRelayTest(baseUrl);
   } finally {
     await stopServer(server);

@@ -72,9 +72,12 @@ export async function applyLivekitFactsEvent(tx: TxLike, evt: LivekitEventInput)
     }
     case "room_finished": {
       if (!roomName) return;
-      const session = await findActiveSession(tx, roomName);
+      const session =
+        (await findActiveSession(tx, roomName)) ??
+        (await tx.callSession.findFirst({ where: { roomName }, orderBy: { startedAt: "desc" } }));
       if (!session) return;
-      await tx.callSession.update({ where: { id: session.id }, data: { endedAt: at } });
+      const nextEndedAt = session.endedAt && session.endedAt > at ? session.endedAt : at;
+      await tx.callSession.update({ where: { id: session.id }, data: { endedAt: nextEndedAt } });
       return;
     }
     case "participant_joined": {
@@ -89,7 +92,7 @@ export async function applyLivekitFactsEvent(tx: TxLike, evt: LivekitEventInput)
       } else {
         await tx.callParticipant.update({
           where: { id: existing.id },
-          data: { joinedAt: existing.joinedAt > at ? at : existing.joinedAt, leftAt: null },
+          data: { joinedAt: existing.joinedAt > at ? at : existing.joinedAt },
         });
       }
       return;

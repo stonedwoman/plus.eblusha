@@ -44,6 +44,13 @@ type RedisLike = {
   mGet: (keys: string[]) => Promise<(string | null)[]>;
   del: (keys: string | string[]) => Promise<number>;
   lRem: (key: string, count: number, element: string) => Promise<number>;
+  eval: (
+    script: string,
+    options?: {
+      keys?: string[];
+      arguments?: string[];
+    }
+  ) => Promise<unknown>;
 };
 
 export type SecretInboxSendResult = {
@@ -94,6 +101,15 @@ export async function enqueueSecretMessages(
   redis: RedisLike,
   messages: SealedSecretMessageInput[]
 ): Promise<SecretInboxSendResult[]> {
+  const enqueueLua = `
+local setOk = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2])
+if not setOk then
+  return 0
+end
+redis.call('RPUSH', KEYS[2], ARGV[3])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+return 1
+`;
   const out: SecretInboxSendResult[] = [];
   for (const msg of messages) {
     const ttlSeconds = resolveTtlSeconds(msg.ttlSeconds);
@@ -109,11 +125,16 @@ export async function enqueueSecretMessages(
     const msgKey = messageKey(msg.toDeviceId, msg.msgId);
     const inboxKey = inboxListKey(msg.toDeviceId);
 
-    const inserted = (await redis.set(msgKey, JSON.stringify(payload), { EX: ttlSeconds, NX: true })) === "OK";
-    if (inserted) {
-      await redis.rPush(inboxKey, msg.msgId);
-    }
-    await redis.expire(inboxKey, DEFAULT_SECRET_INBOX_TTL_SECONDS);
+    const evalResult = await redis.eval(enqueueLua, {
+      keys: [msgKey, inboxKey],
+      arguments: [
+        JSON.stringify(payload),
+        String(ttlSeconds),
+        msg.msgId,
+        String(DEFAULT_SECRET_INBOX_TTL_SECONDS),
+      ],
+    });
+    const inserted = Number(evalResult) === 1;
     out.push({
       toDeviceId: msg.toDeviceId,
       msgId: msg.msgId,

@@ -303,19 +303,41 @@ router.post(
     res.status(404).json({ message: "Device not available" });
     return;
   }
-  const prekey = await prisma.devicePrekey.findFirst({
-    where: { deviceId, consumedAt: null },
-    orderBy: { createdAt: "asc" },
-  });
+  const now = new Date();
+  const claimedRows = await prisma.$queryRaw<
+    Array<{
+      id: string;
+      keyId: string;
+      publicKey: string;
+      oneTimePreKeyId: string | null;
+      oneTimePreKeyPublic: string | null;
+    }>
+  >`
+    WITH picked AS (
+      SELECT "id"
+      FROM "DevicePrekey"
+      WHERE "deviceId" = ${deviceId}
+        AND "consumedAt" IS NULL
+      ORDER BY "createdAt" ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT 1
+    )
+    UPDATE "DevicePrekey" AS dp
+    SET "consumedAt" = ${now}
+    FROM picked
+    WHERE dp."id" = picked."id"
+    RETURNING
+      dp."id",
+      dp."keyId",
+      dp."publicKey",
+      dp."oneTimePreKeyId",
+      dp."oneTimePreKeyPublic"
+  `;
+  const prekey = claimedRows[0];
   if (!prekey) {
     res.status(404).json({ message: "No prekeys available" });
     return;
   }
-
-  await prisma.devicePrekey.update({
-    where: { id: prekey.id },
-    data: { consumedAt: new Date() },
-  });
 
   res.json({
     deviceId,
