@@ -61,10 +61,20 @@ export function setSecretThreadKey(threadId: string, keyBase64: string, opts?: {
   if (bytes.length !== 32) return
 
   const store = loadStore()
+  const existing = store[id]?.key ? String(store[id]!.key) : ''
+  if (existing && existing !== key) {
+    // Never clobber an existing key implicitly: that would break decryption for already stored ciphertexts.
+    // If keys ever diverge, user must explicitly "Continue without history" or link device to recover.
+    try {
+      // eslint-disable-next-line no-console
+      console.warn('[secretThreadKeyStore] refusing to overwrite existing thread key', { threadId: id })
+    } catch {}
+    return
+  }
   store[id] = {
     key,
-    createdAt: typeof opts?.createdAt === 'number' ? opts!.createdAt : Date.now(),
-    version: typeof opts?.version === 'number' ? opts!.version : 1,
+    createdAt: typeof opts?.createdAt === 'number' ? opts!.createdAt : (store[id]?.createdAt ?? Date.now()),
+    version: typeof opts?.version === 'number' ? opts!.version : (store[id]?.version ?? 1),
   }
   saveStore(store)
   notifyUpdated()
@@ -103,10 +113,15 @@ export function importSecretThreadKeys(payload: any, opts?: { merge?: boolean })
     if (!id || !key) continue
     const bytes = base64ToBytes(key)
     if (bytes.length !== 32) continue
+    const existing = base[id]?.key ? String(base[id]!.key) : ''
+    if (existing && existing !== key) {
+      // Keep current key on conflict to avoid breaking decryption of already stored ciphertexts.
+      continue
+    }
     base[id] = {
       key,
-      createdAt: typeof (rec as any)?.createdAt === 'number' ? (rec as any).createdAt : Date.now(),
-      version: typeof (rec as any)?.version === 'number' ? (rec as any).version : 1,
+      createdAt: typeof (rec as any)?.createdAt === 'number' ? (rec as any).createdAt : (base[id]?.createdAt ?? Date.now()),
+      version: typeof (rec as any)?.version === 'number' ? (rec as any).version : (base[id]?.version ?? 1),
     }
   }
 

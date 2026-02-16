@@ -1165,25 +1165,36 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
       const resp = await api.post('/threads/secret', { peerUserId: targetUserId })
       const threadId = String(resp.data?.threadId ?? resp.data?.thread?.id ?? '').trim()
+      const created = !!resp.data?.created
+      const createdById = String(resp.data?.thread?.createdById ?? '').trim()
       client.invalidateQueries({ queryKey: ['conversations'] })
       if (threadId) {
-        // Ensure local key exists immediately (READY is local-key-only).
-        ensureSecretThreadKey(threadId)
+        const amCreator = created || (!!me?.id && createdById === me.id)
+        // Only the creator generates and shares the thread key.
+        // The other side must wait for the incoming key package (otherwise we'd create conflicting keys).
+        if (amCreator) {
+          ensureSecretThreadKey(threadId)
+        }
         if (secretDebug) {
           // eslint-disable-next-line no-console
           console.log('[secret] start thread', {
             threadId,
             peerUserId: targetUserId,
+            created,
+            createdById,
+            amCreator,
             hasKey: hasSecretThreadKey(threadId),
             localDeviceId: device.deviceId,
           })
         }
         selectConversation(threadId)
-        // Create a thread key locally and share it to all devices (A & B) in background.
-        void createAndShareSecretThreadKey(threadId, targetUserId).catch((err) => {
-          console.warn('[secret] createAndShareSecretThreadKey failed', err)
-          setSecretComposerInlineError('Не удалось расшарить ключи для секретного чата. Проверьте сеть и попробуйте ещё раз.')
-        })
+        if (amCreator) {
+          // Create a thread key locally and share it to all devices (A & B) in background.
+          void createAndShareSecretThreadKey(threadId, targetUserId).catch((err) => {
+            console.warn('[secret] createAndShareSecretThreadKey failed', err)
+            setSecretComposerInlineError('Не удалось расшарить ключи для секретного чата. Проверьте сеть и попробуйте ещё раз.')
+          })
+        }
       }
     } catch (err: any) {
       console.error('Failed to start secret conversation:', err)
