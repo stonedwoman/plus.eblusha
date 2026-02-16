@@ -1,34 +1,19 @@
 export const SECRET_INBOX_LIST_KEY_PREFIX = "secret_inbox:";
 export const SECRET_MESSAGE_KEY_PREFIX = "secret_msg:";
+export const SECRET_SEEN_KEY_PREFIX = "secret_seen:";
 export const DEFAULT_SECRET_INBOX_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const DEFAULT_SECRET_MESSAGE_TTL_SECONDS = 3600;
 export const SECRET_MESSAGE_TTL_MIN_SECONDS = 60;
 export const SECRET_MESSAGE_TTL_MAX_SECONDS = 7 * 24 * 60 * 60;
 
-export type SecretAttachmentEnvelope = {
-  objectKey: string;
-  size: number;
-  hash: string;
-  wrappedContentKeysByDevice: Record<string, string>;
-};
-
-export type SealedSecretMessageInput = {
+export type SecretInboxEnvelopeInput = {
   toDeviceId: string;
   msgId: string;
-  ciphertext: string;
-  createdAt: string;
+  payload: Record<string, unknown>;
   ttlSeconds?: number;
-  attachment?: SecretAttachmentEnvelope;
 };
 
-export type StoredSecretMessage = {
-  toDeviceId: string;
-  msgId: string;
-  ciphertext: string;
-  createdAt: string;
-  expiresAt: string;
-  attachment?: SecretAttachmentEnvelope;
-};
+export type StoredSecretEnvelope = Record<string, unknown> & { msgId: string; toDeviceId?: string; expiresAt?: string };
 
 type RedisLike = {
   set: (
@@ -70,8 +55,12 @@ function inboxListKey(deviceId: string): string {
   return `${SECRET_INBOX_LIST_KEY_PREFIX}${deviceId}`;
 }
 
-function messageKey(deviceId: string, msgId: string): string {
-  return `${SECRET_MESSAGE_KEY_PREFIX}${deviceId}:${msgId}`;
+function messageKey(msgId: string): string {
+  return `${SECRET_MESSAGE_KEY_PREFIX}${msgId}`;
+}
+
+function seenKey(deviceId: string, msgId: string): string {
+  return `${SECRET_SEEN_KEY_PREFIX}${deviceId}:${msgId}`;
 }
 
 function clampIntSeconds(v: number, min: number, max: number): number {
@@ -92,10 +81,10 @@ function resolveTtlSeconds(raw?: number): number {
   return clampIntSeconds(chosen, SECRET_MESSAGE_TTL_MIN_SECONDS, SECRET_MESSAGE_TTL_MAX_SECONDS);
 }
 
-function parseStoredSecretMessage(raw: string | null): StoredSecretMessage | null {
+function parseStoredSecretEnvelope(raw: string | null): StoredSecretEnvelope | null {
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as StoredSecretMessage;
+    return JSON.parse(raw) as StoredSecretEnvelope;
   } catch {
     return null;
   }
@@ -110,13 +99,16 @@ function parseStoredSecretMessage(raw: string | null): StoredSecretMessage | nul
  */
 export async function enqueueSecretMessages(
   redis: RedisLike,
-  messages: SealedSecretMessageInput[]
+  messages: SecretInboxEnvelopeInput[]
 ): Promise<SecretInboxSendResult[]> {
   const enqueueLua = `
-local setOk = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2])
-if not setOk then
+-- Dedup per (deviceId, msgId): only enqueue once per receiver device.
+local seenOk = redis.call('SET', KEYS[3], '1', 'NX', 'EX', ARGV[5])
+if not seenOk then
   return 0
 end
+-- Cache payload (best-effort; may already exist for other devices).
+redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2])
 redis.call('RPUSH', KEYS[2], ARGV[3])
 redis.call('EXPIRE', KEYS[2], ARGV[4])
 return 1
@@ -125,23 +117,23 @@ return 1
   for (const msg of messages) {
     const ttlSeconds = resolveTtlSeconds(msg.ttlSeconds);
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
-    const payload: StoredSecretMessage = {
+    const payload: StoredSecretEnvelope = {
+      ...msg.payload,
       toDeviceId: msg.toDeviceId,
       msgId: msg.msgId,
-      ciphertext: msg.ciphertext,
-      createdAt: msg.createdAt,
       expiresAt,
-      ...(msg.attachment ? { attachment: msg.attachment } : {}),
     };
-    const msgKey = messageKey(msg.toDeviceId, msg.msgId);
+    const msgKey = messageKey(msg.msgId);
     const inboxKey = inboxListKey(msg.toDeviceId);
+    const seen = seenKey(msg.toDeviceId, msg.msgId);
 
     const evalResult = await redis.eval(enqueueLua, {
-      keys: [msgKey, inboxKey],
+      keys: [msgKey, inboxKey, seen],
       arguments: [
         JSON.stringify(payload),
         String(ttlSeconds),
         msg.msgId,
+        String(DEFAULT_SECRET_INBOX_TTL_SECONDS),
         String(DEFAULT_SECRET_INBOX_TTL_SECONDS),
       ],
     });
@@ -156,31 +148,15 @@ return 1
   return out;
 }
 
-export async function pullSecretInbox(
+export async function pullSecretInboxIds(
   redis: RedisLike,
   deviceId: string,
   limit: number
-): Promise<StoredSecretMessage[]> {
+): Promise<string[]> {
   const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
   const inboxKey = inboxListKey(deviceId);
   const msgIds = await redis.lRange(inboxKey, 0, safeLimit - 1);
-  if (msgIds.length === 0) return [];
-
-  const payloads = await redis.mGet(msgIds.map((msgId) => messageKey(deviceId, msgId)));
-  const out: StoredSecretMessage[] = [];
-
-  for (let i = 0; i < msgIds.length; i += 1) {
-    const msgId = msgIds[i];
-    if (!msgId) continue;
-    const parsed = parseStoredSecretMessage(payloads[i] ?? null);
-    if (parsed) {
-      out.push(parsed);
-      continue;
-    }
-    // Cleanup stale list entries when payload already expired or malformed.
-    await redis.lRem(inboxKey, 0, msgId);
-  }
-  return out;
+  return msgIds.filter(Boolean);
 }
 
 export async function ackSecretInbox(
@@ -191,12 +167,45 @@ export async function ackSecretInbox(
   const inboxKey = inboxListKey(deviceId);
   const out: SecretInboxAckResult[] = [];
   for (const msgId of msgIds) {
-    await redis.del(messageKey(deviceId, msgId));
     const removed = await redis.lRem(inboxKey, 0, msgId);
     out.push({
       msgId,
       removedFromListCount: removed,
     });
+  }
+  return out;
+}
+
+export async function getSecretPayloads(
+  redis: RedisLike,
+  msgIds: string[]
+): Promise<(StoredSecretEnvelope | null)[]> {
+  if (!msgIds.length) return [];
+  const raw = await redis.mGet(msgIds.map((id) => messageKey(id)));
+  return raw.map((v) => parseStoredSecretEnvelope(v ?? null));
+}
+
+export async function setSecretPayloadCache(
+  redis: RedisLike,
+  msgId: string,
+  payload: Record<string, unknown>,
+  ttlSeconds?: number
+): Promise<boolean> {
+  const ttl = resolveTtlSeconds(ttlSeconds);
+  const ok = await redis.set(messageKey(msgId), JSON.stringify(payload), { NX: true, EX: ttl });
+  return ok === "OK";
+}
+
+export async function markSecretSeen(
+  redis: RedisLike,
+  deviceId: string,
+  msgIds: string[],
+  ttlSeconds = DEFAULT_SECRET_INBOX_TTL_SECONDS
+): Promise<Record<string, boolean>> {
+  const out: Record<string, boolean> = {};
+  for (const msgId of msgIds) {
+    const ok = await redis.set(seenKey(deviceId, msgId), "1", { NX: true, EX: ttlSeconds });
+    out[msgId] = ok === "OK";
   }
   return out;
 }

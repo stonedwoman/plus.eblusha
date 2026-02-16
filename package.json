@@ -17,6 +17,7 @@
     "test:link-preview-ssrf": "ts-node test/link-preview-ssrf.test.ts",
     "test:secret-inbox-ttl": "ts-node test/secret-inbox-ttl.test.ts",
     "test:comms": "ts-node test/comms.integration.test.ts",
+    "test:secret-threads": "ts-node test/secret-threads.integration.test.ts",
     "test:presence-multi-instance": "ts-node test/presence-multi-instance.integration.test.ts",
     "test:storage-enc-key": "ts-node test/storage-enc-key.smoke.test.ts",
     "prisma:generate": "prisma generate",

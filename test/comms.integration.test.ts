@@ -314,7 +314,7 @@ async function runSecretRelayTest(baseUrl: string) {
     });
   });
 
-  const msgId = `msg-${randomUUID()}`;
+  const msgId = randomUUID();
   await apiJson<{ results: Array<{ inserted: boolean }> }>(
     baseUrl,
     "/api/secret/send",
@@ -344,7 +344,7 @@ async function runSecretRelayTest(baseUrl: string) {
   const redis = await getRedisClient();
   const inboxEntries = await redis.lRange(`${SECRET_INBOX_LIST_KEY_PREFIX}${recipientDeviceId}`, 0, -1);
   assert.ok(inboxEntries.includes(msgId), "inbox list should contain inserted msgId");
-  const rawPayload = await redis.get(`${SECRET_MESSAGE_KEY_PREFIX}${recipientDeviceId}:${msgId}`);
+  const rawPayload = await redis.get(`${SECRET_MESSAGE_KEY_PREFIX}${msgId}`);
   assert.ok(!!rawPayload, "message payload key should exist after enqueue");
 
   const notify = await notifyPromise;
@@ -353,7 +353,7 @@ async function runSecretRelayTest(baseUrl: string) {
 
   const pull = await apiJson<{
     messages: Array<{ msgId: string; attachment?: { objectKey: string }; expiresAt: string }>;
-  }>(baseUrl, "/api/secret/inbox/pull", "POST", { limit: 50 }, recipientToken);
+  }>(baseUrl, "/api/secret/inbox/pull", "POST", { limit: 50 }, recipientToken, { "X-Device-Id": recipientDeviceId });
   assert.equal(pull.messages.length, 1);
   assert.equal(pull.messages[0]?.msgId, msgId);
   assert.equal(pull.messages[0]?.attachment?.objectKey?.startsWith("secret/"), true);
@@ -364,7 +364,8 @@ async function runSecretRelayTest(baseUrl: string) {
     "/api/secret/inbox/ack",
     "POST",
     { msgIds: [msgId] },
-    recipientToken
+    recipientToken,
+    { "X-Device-Id": recipientDeviceId }
   );
   assert.equal(firstAck.acked[0]?.removedFromListCount, 1);
 
@@ -373,7 +374,8 @@ async function runSecretRelayTest(baseUrl: string) {
     "/api/secret/inbox/ack",
     "POST",
     { msgIds: [msgId] },
-    recipientToken
+    recipientToken,
+    { "X-Device-Id": recipientDeviceId }
   );
   assert.equal(secondAck.acked[0]?.removedFromListCount, 0, "Repeated ack should be safe");
 

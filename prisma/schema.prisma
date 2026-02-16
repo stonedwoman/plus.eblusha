@@ -62,6 +62,8 @@ model Conversation {
   id             String                    @id @default(cuid())
   createdAt      DateTime                  @default(now())
   updatedAt      DateTime                  @updatedAt
+  /// Conversation storage/encryption mode
+  type           ConversationType          @default(CLOUD)
   title          String?
   avatarUrl      String?
   isGroup        Boolean                   @default(false)
@@ -82,6 +84,11 @@ model Conversation {
   callSessions   CallSession[]
   availabilityIntervals ConversationAvailabilityInterval[]
   availabilityProposals ConversationAvailabilityProposal[]
+}
+
+enum ConversationType {
+  CLOUD
+  SECRET
 }
 
 model ConversationParticipant {
@@ -366,4 +373,60 @@ enum SecretConversationStatus {
   ACTIVE
   PENDING
   CANCELLED
+}
+
+/// Durable ciphertext storage for SECRET threads + per-device delivery.
+/// Source of truth is Postgres; Redis is only an inbox/cache accelerator.
+model SecretMessage {
+  msgId          String   @id @default(uuid()) @map("msgId")
+  threadId       String?  @map("threadId")
+  senderUserId   String   @map("senderUserId")
+  senderDeviceId String?  @map("senderDeviceId")
+  createdAt      DateTime @default(now()) @map("createdAt")
+  headerJson     Json     @map("headerJson")
+  ciphertextBlob Bytes    @map("ciphertextBlob")
+  contentType    String   @map("contentType")
+  schemaVersion  Int      @default(1) @map("schemaVersion")
+
+  deliveries     SecretDelivery[]
+
+  @@index([threadId, createdAt])
+  @@index([senderUserId, createdAt])
+  @@map("messages_secret")
+}
+
+enum SecretDeliveryStatus {
+  PENDING
+  DELIVERED
+  READ
+}
+
+model SecretDelivery {
+  msgId            String              @map("msgId")
+  receiverDeviceId String              @map("receiverDeviceId")
+  status           SecretDeliveryStatus @default(PENDING) @map("status")
+  deliveredAt      DateTime?           @map("deliveredAt")
+  readAt           DateTime?           @map("readAt")
+
+  message          SecretMessage        @relation(fields: [msgId], references: [msgId], onDelete: Cascade)
+
+  @@id([msgId, receiverDeviceId])
+  @@index([receiverDeviceId, status])
+  @@map("deliveries_secret")
+}
+
+/// One-time pairing token for linking a new device to an existing trusted device.
+model DevicePairing {
+  token            String    @id
+  userId           String
+  newDeviceId      String
+  code             String
+  createdAt        DateTime  @default(now())
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  consumedByDeviceId String?
+
+  @@index([userId, expiresAt])
+  @@index([newDeviceId, expiresAt])
+  @@map("device_pairings")
 }

@@ -10,6 +10,8 @@ import devicesRouter from "./devices";
 import filesRouter from "./files";
 import secretRouter from "./secret";
 import callsRouter from "./calls";
+import threadsRouter from "./threads";
+import e2eeRouter from "./e2ee";
 
 const router = Router();
 
@@ -24,6 +26,8 @@ router.use("/upload", uploadRouter);
 router.use("/devices", devicesRouter);
 router.use("/files", filesRouter);
 router.use("/secret", secretRouter);
+router.use("/threads", threadsRouter);
+router.use("/e2ee", e2eeRouter);
 
 router.get("/", (_req, res) => {
   res.json({ message: "Eblusha API" });

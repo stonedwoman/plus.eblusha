@@ -28,8 +28,7 @@ async function getTtlSecondsFromEnqueue(envValue?: string, rawTtlSeconds?: numbe
       {
         toDeviceId: "dev1",
         msgId: "m1",
-        ciphertext: "x",
-        createdAt: new Date("2026-01-01T00:00:00.000Z").toISOString(),
+        payload: { kind: "test", v: 1 },
         ...(typeof rawTtlSeconds === "number" ? { ttlSeconds: rawTtlSeconds } : {}),
       },
     ]);

@@ -3,12 +3,29 @@ import { z } from "zod";
 import prisma from "../lib/prisma";
 import { authenticate } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rateLimit";
+import crypto from "crypto";
 
 const router = Router();
 
 router.use(authenticate);
 
-type AuthedRequest = Request & { user?: { id: string } };
+type AuthedRequest = Request & { user?: { id: string }; deviceId?: string };
+
+async function resolveCurrentDeviceId(req: Request): Promise<string | null> {
+  const r = req as AuthedRequest;
+  const candidate =
+    (r.deviceId?.trim() ||
+      (typeof (req.headers["x-device-id"] as any) === "string" ? String(req.headers["x-device-id"]).trim() : "") ||
+      (typeof (req.query as any)?.deviceId === "string" ? String((req.query as any).deviceId).trim() : "") ||
+      (typeof (req.body as any)?.deviceId === "string" ? String((req.body as any).deviceId).trim() : "")) || "";
+  if (!candidate) return null;
+  const device = await prisma.userDevice.findUnique({
+    where: { id: candidate },
+    select: { id: true, userId: true, revokedAt: true },
+  });
+  if (!device || device.userId !== r.user?.id || device.revokedAt) return null;
+  return device.id;
+}
 
 const registerSchema = z.object({
   deviceId: z.string().min(8),
@@ -374,6 +391,131 @@ router.delete("/:deviceId", async (req, res) => {
   });
   res.json({ success: true });
 });
+
+// Pairing flow (Link device)
+const PAIRING_TTL_MS = 5 * 60 * 1000;
+
+router.post(
+  "/pairing/start",
+  rateLimit({ name: "device_pairing_start", windowMs: 60_000, max: 20 }),
+  async (req, res) => {
+    const userId = (req as AuthedRequest).user!.id;
+    const currentDeviceId = await resolveCurrentDeviceId(req);
+    if (!currentDeviceId) {
+      res.status(400).json({ message: "Current device is required (token did claim)" });
+      return;
+    }
+    const now = Date.now();
+    const expiresAt = new Date(now + PAIRING_TTL_MS);
+    const token = crypto.randomBytes(32).toString("base64url");
+    const code = crypto.randomBytes(5).toString("hex").toUpperCase(); // 10 chars fallback
+
+    await prisma.devicePairing.create({
+      data: {
+        token,
+        userId,
+        newDeviceId: currentDeviceId,
+        code,
+        expiresAt,
+      },
+    });
+
+    res.json({
+      token,
+      code,
+      newDeviceId: currentDeviceId,
+      expiresAt: expiresAt.toISOString(),
+    });
+  }
+);
+
+router.post(
+  "/pairing/resolve",
+  rateLimit({ name: "device_pairing_resolve", windowMs: 60_000, max: 60 }),
+  async (req, res) => {
+    const userId = (req as AuthedRequest).user!.id;
+    const schema = z.object({
+      token: z.string().min(8).optional(),
+      code: z.string().min(6).max(16).optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid payload" });
+      return;
+    }
+    const token = parsed.data.token?.trim() || null;
+    const code = parsed.data.code?.trim().toUpperCase() || null;
+    if (!token && !code) {
+      res.status(400).json({ message: "token or code is required" });
+      return;
+    }
+    const now = new Date();
+    const pairing = await prisma.devicePairing.findFirst({
+      where: {
+        userId,
+        consumedAt: null,
+        expiresAt: { gt: now },
+        ...(token ? { token } : {}),
+        ...(code ? { code } : {}),
+      },
+    });
+    if (!pairing) {
+      res.status(404).json({ message: "Pairing request not found or expired" });
+      return;
+    }
+    const device = await prisma.userDevice.findUnique({
+      where: { id: pairing.newDeviceId },
+      select: { id: true, name: true, platform: true, publicKey: true, identityPublicKey: true, createdAt: true },
+    });
+    if (!device) {
+      res.status(404).json({ message: "Target device not found" });
+      return;
+    }
+    res.json({
+      token: pairing.token,
+      code: pairing.code,
+      newDevice: {
+        id: device.id,
+        name: device.name,
+        platform: device.platform,
+        identityPublicKey: device.identityPublicKey ?? device.publicKey,
+        createdAt: device.createdAt.toISOString(),
+      },
+      expiresAt: pairing.expiresAt.toISOString(),
+    });
+  }
+);
+
+router.post(
+  "/pairing/consume",
+  rateLimit({ name: "device_pairing_consume", windowMs: 60_000, max: 60 }),
+  async (req, res) => {
+    const userId = (req as AuthedRequest).user!.id;
+    const currentDeviceId = await resolveCurrentDeviceId(req);
+    if (!currentDeviceId) {
+      res.status(400).json({ message: "Current device is required (token did claim)" });
+      return;
+    }
+    const schema = z.object({ token: z.string().min(8) });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid payload" });
+      return;
+    }
+    const token = parsed.data.token.trim();
+    const now = new Date();
+    const pairing = await prisma.devicePairing.findUnique({ where: { token } });
+    if (!pairing || pairing.userId !== userId || pairing.consumedAt || pairing.expiresAt <= now) {
+      res.status(404).json({ message: "Pairing request not found or expired" });
+      return;
+    }
+    await prisma.devicePairing.update({
+      where: { token },
+      data: { consumedAt: now, consumedByDeviceId: currentDeviceId },
+    });
+    res.json({ success: true });
+  }
+);
 
 export default router;
 
