@@ -149,6 +149,7 @@ export function SecretInboxPump() {
         // Ensure device keys exist before we attempt to decrypt key packages.
         const bootstrapRes = await (bootstrapReadyRef.current ?? Promise.resolve(null))
         const bootstrapReady = !!bootstrapRes
+        if (!bootstrapReady) return
 
         const resp = await api.get('/secret/inbox/pull', {
           params: { limit: 50 },

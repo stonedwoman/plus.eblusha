@@ -121,13 +121,16 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
         try {
           const desiredName = detectDeviceName()
           const desiredPlatform = detectPlatform()
+          // IMPORTANT: always upsert the device server-side.
+          // If the server lost/never had this device row (DB restore, proxy issues, old builds),
+          // we must re-register it; otherwise /devices/:id/prekeys → 404 and /secret/inbox/pull → 400.
+          await api.post('/devices/register', {
+            deviceId: storedInfo.deviceId,
+            name: desiredName,
+            platform: desiredPlatform,
+            publicKey: storedInfo.publicKey,
+          })
           if (storedInfo.name !== desiredName || storedInfo.platform !== desiredPlatform) {
-            await api.post('/devices/register', {
-              deviceId: storedInfo.deviceId,
-              name: desiredName,
-              platform: desiredPlatform,
-              publicKey: storedInfo.publicKey,
-            })
             saveDeviceInfo({
               ...storedInfo,
               name: desiredName,
