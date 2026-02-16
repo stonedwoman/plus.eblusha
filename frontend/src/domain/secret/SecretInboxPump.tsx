@@ -19,6 +19,17 @@ type InboxItem = {
   schemaVersion?: number
 }
 
+function secretDebugEnabled(): boolean {
+  try {
+    if (typeof window === 'undefined') return false
+    const q = String(window.location?.search ?? '')
+    if (q.includes('SECRET_DEBUG=1')) return true
+    return window.localStorage.getItem('eb_secret_debug') === '1'
+  } catch {
+    return false
+  }
+}
+
 function toMessageObject(threadId: string, item: InboxItem, decryptedContent: string | null) {
   const header = item.headerJson ?? {}
   const nonce = typeof header?.nonce === 'string' ? header.nonce : null
@@ -59,16 +70,28 @@ function toMessageObject(threadId: string, item: InboxItem, decryptedContent: st
 export function SecretInboxPump() {
   const client = useQueryClient()
   const pullingRef = useRef(false)
+  const bootstrapReadyRef = useRef<Promise<any> | null>(null)
 
   useEffect(() => {
     let mounted = true
-    void ensureDeviceBootstrap().catch(() => {})
+    if (!bootstrapReadyRef.current) {
+      bootstrapReadyRef.current = ensureDeviceBootstrap().catch((err) => {
+        if (secretDebugEnabled()) {
+          // eslint-disable-next-line no-console
+          console.warn('[SecretInboxPump] ensureDeviceBootstrap failed', err)
+        }
+        return null
+      })
+    }
 
     const pullOnce = async () => {
       if (!mounted) return
       if (pullingRef.current) return
       pullingRef.current = true
       try {
+        // Ensure device keys exist before we attempt to decrypt key packages.
+        await (bootstrapReadyRef.current ?? Promise.resolve(null))
+
         const resp = await api.get('/secret/inbox/pull', { params: { limit: 200 } })
         const items = (resp.data?.messages ?? []) as InboxItem[]
         if (!items.length) return
@@ -77,7 +100,8 @@ export function SecretInboxPump() {
 
         for (const item of items) {
           if (!item?.msgId) continue
-          ackIds.push(item.msgId)
+          const header = item.headerJson ?? {}
+          const isKeyPackage = header && typeof header === 'object' && String((header as any).kind ?? '') === 'key_package'
 
           // Key packages (device-link / thread-key share) arrive via direct inbox (threadId null).
           const maybePkg = tryDecryptIncomingKeyPackage(item)
@@ -89,6 +113,7 @@ export function SecretInboxPump() {
               // Refetch history on next render; keep it cheap.
               client.invalidateQueries({ queryKey: ['messages', threadId] })
             }
+            ackIds.push(item.msgId)
             continue
           }
           if (maybePkg?.kind === 'device_link_keys') {
@@ -100,15 +125,29 @@ export function SecretInboxPump() {
               window.dispatchEvent(new Event('eb:deviceLinked'))
             } catch {}
             client.invalidateQueries({ queryKey: ['conversations'] })
+            ackIds.push(item.msgId)
+            continue
+          }
+          if (isKeyPackage) {
+            // Do NOT ack key packages we couldn't decrypt yet (bootstrap timing / missing prekey secret),
+            // otherwise we'd drop the only chance to import the thread key.
+            if (secretDebugEnabled()) {
+              // eslint-disable-next-line no-console
+              console.warn('[SecretInboxPump] key package not decrypted yet; keeping in inbox', {
+                msgId: item.msgId,
+                initiatorDeviceId: (header as any)?.initiatorDeviceId,
+                prekeyId: (header as any)?.prekeyId,
+              })
+            }
             continue
           }
 
           // Secret thread message
           const threadId = item.threadId ? String(item.threadId).trim() : ''
           if (!threadId) continue
+          ackIds.push(item.msgId)
 
           const keyRec = getSecretThreadKey(threadId)
-          const header = item.headerJson ?? {}
           const nonce = typeof header?.nonce === 'string' ? header.nonce : null
 
           const decrypted =

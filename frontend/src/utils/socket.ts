@@ -270,30 +270,6 @@ export function onConversationMemberRemoved(cb: (payload: any) => void) {
   socket.on('conversations:member:removed', cb)
 }
 
-// Secret chat helpers
-export function offerSecretChat(conversationId: string) {
-  if (!socket.connected) {
-    connectSocket()
-  }
-  socket.emit('secret:chat:offer', { conversationId })
-}
-export function onSecretChatOffer(cb: (payload: { conversationId: string; from: { id: string; name: string; deviceId?: string | null } }) => void) {
-  const handler = (payload: { conversationId: string; from: { id: string; name: string; deviceId?: string | null } }) => cb(payload)
-  socket.on('secret:chat:offer', handler)
-  return () => socket.off('secret:chat:offer', handler)
-}
-export function acceptSecretChat(conversationId: string, deviceId: string) {
-  socket.emit('secret:chat:accept', { conversationId, deviceId })
-}
-export function declineSecretChat(conversationId: string) {
-  socket.emit('secret:chat:decline', { conversationId })
-}
-export function onSecretChatAccepted(cb: (payload: { conversationId: string; peerDeviceId: string }) => void) {
-  const handler = (payload: { conversationId: string; peerDeviceId: string }) => cb(payload)
-  socket.on('secret:chat:accepted', handler)
-  return () => socket.off('secret:chat:accepted', handler)
-}
-
 export function onReceiptsUpdate(cb: (payload: { conversationId: string; messageIds: string[] }) => void) {
   socket.on('receipts:update', cb)
 }

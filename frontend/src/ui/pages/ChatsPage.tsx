@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
-import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, onSecretChatOffer, acceptSecretChat, declineSecretChat, onSecretChatAccepted, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
 import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2 } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
@@ -633,12 +633,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({})
   const [imageDimensions, setImageDimensions] = useState<Record<string, { width: number; height: number }>>({})
   const [endSecretModalOpen, setEndSecretModalOpen] = useState(false)
-  const [pendingSecretOffers, setPendingSecretOffers] = useState<Record<string, { from: { id: string; name: string; deviceId?: string | null } }>>({})
   const [secretRequestLoading, setSecretRequestLoading] = useState(false)
-  const [secretActionLoading, setSecretActionLoading] = useState(false)
   const [secretHistoryGate, setSecretHistoryGate] = useState<{ open: boolean; threadId: string | null }>({ open: false, threadId: null })
   const [linkDeviceModalOpen, setLinkDeviceModalOpen] = useState(false)
   const [secretKeysVersion, setSecretKeysVersion] = useState(0)
+  const [secretBootQueueVersion, setSecretBootQueueVersion] = useState(0)
+  const [secretComposerInlineError, setSecretComposerInlineError] = useState<string | null>(null)
+  const secretBootStartedAtRef = useRef<Record<string, number>>({})
+  const secretBootQueueRef = useRef<
+    Record<string, Array<{ pendingId: string; peerUserId: string; text: string; replyToId?: string | null }>>
+  >({})
+  const secretBootFlushInFlightRef = useRef<Record<string, boolean>>({})
   const menuRef = useRef<HTMLDivElement | null>(null)
   const me = useAppStore((s) => s.session?.user)
   const storedUserIdRef = useRef<string | null>(null)
@@ -669,6 +674,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     } catch {}
     return () => {
       try { window.removeEventListener('eb:secretKeysUpdated', handler as any) } catch {}
+    }
+  }, [])
+
+  const secretDebug = useMemo(() => {
+    try {
+      const q = typeof window !== 'undefined' ? String(window.location?.search ?? '') : ''
+      if (q.includes('SECRET_DEBUG=1')) return true
+      return typeof window !== 'undefined' && window.localStorage.getItem('eb_secret_debug') === '1'
+    } catch {
+      return false
     }
   }, [])
 
@@ -1152,9 +1167,23 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const threadId = String(resp.data?.threadId ?? resp.data?.thread?.id ?? '').trim()
       client.invalidateQueries({ queryKey: ['conversations'] })
       if (threadId) {
+        // Ensure local key exists immediately (READY is local-key-only).
+        ensureSecretThreadKey(threadId)
+        if (secretDebug) {
+          // eslint-disable-next-line no-console
+          console.log('[secret] start thread', {
+            threadId,
+            peerUserId: targetUserId,
+            hasKey: hasSecretThreadKey(threadId),
+            localDeviceId: device.deviceId,
+          })
+        }
         selectConversation(threadId)
         // Create a thread key locally and share it to all devices (A & B) in background.
-        void createAndShareSecretThreadKey(threadId, targetUserId).catch(() => {})
+        void createAndShareSecretThreadKey(threadId, targetUserId).catch((err) => {
+          console.warn('[secret] createAndShareSecretThreadKey failed', err)
+          setSecretComposerInlineError('Не удалось расшарить ключи для секретного чата. Проверьте сеть и попробуйте ещё раз.')
+        })
       }
     } catch (err: any) {
       console.error('Failed to start secret conversation:', err)
@@ -1165,45 +1194,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }
 
-  const handleDeclinePendingSecret = async (conversationId: string) => {
-    setSecretActionLoading(true)
-    try {
-      declineSecretChat(conversationId)
-      setPendingSecretOffers((prev) => {
-        const copy = { ...prev }
-        delete copy[conversationId]
-        return copy
-      })
-      client.invalidateQueries({ queryKey: ['conversations'] })
-    } finally {
-      setSecretActionLoading(false)
-    }
-  }
-
-  const handleAcceptPendingSecret = async (conversationId: string) => {
-    setSecretActionLoading(true)
-    try {
-      const device = await ensureLocalDevice()
-      if (!device) {
-        alert('Не удалось инициализировать устройство для секретного чата')
-        return
-      }
-      acceptSecretChat(conversationId, device.deviceId)
-      client.invalidateQueries({ queryKey: ['conversations'] })
-      selectConversation(conversationId)
-    } catch (err) {
-      console.error('Failed to accept secret chat:', err)
-      alert('Не удалось принять секретный чат')
-    } finally {
-      setSecretActionLoading(false)
-    }
-  }
+  type SendOutcome = 'sent' | 'queued' | 'blocked'
 
   async function sendMessageToConversation(
     conversation: any | null | undefined,
     payload: { type: string; content?: string | null; metadata?: Record<string, any>; replyToId?: string; attachments?: Array<any> },
-  ) {
-    if (!conversation) return
+  ): Promise<{ outcome: SendOutcome }> {
+    if (!conversation) return { outcome: 'blocked' }
     // Normalize null content to undefined
     const normalizedPayload = { ...payload, content: payload.content ?? undefined }
     const isSecretV2 = String(conversation?.type ?? '').toUpperCase() === 'SECRET'
@@ -1213,14 +1210,36 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         conversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user?.id ?? null
       if (!threadId || !peerUserId) {
         alert('Не удалось определить участника секретного чата')
-        return
-      }
-      if (!hasSecretThreadKey(threadId)) {
-        setSecretHistoryGate({ open: true, threadId })
-        return
+        return { outcome: 'blocked' }
       }
       const text = String(normalizedPayload.content ?? '').trim()
-      if (!text) return
+      if (!text) return { outcome: 'blocked' }
+      setSecretComposerInlineError(null)
+      if (!hasSecretThreadKey(threadId)) {
+        // Non-blocking bootstrapping: queue locally, render as pending bubble, flush when keys arrive.
+        const pendingId = `pending_secret_${typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Date.now())}`
+        setPendingByConv((prev) => ({
+          ...prev,
+          [threadId]: [
+            ...(prev[threadId] || []),
+            {
+              id: pendingId,
+              createdAt: Date.now(),
+              senderId: currentUserId ?? 'me',
+              attachments: [],
+              content: text,
+            },
+          ],
+        }))
+        secretBootQueueRef.current[threadId] = [
+          ...(secretBootQueueRef.current[threadId] || []),
+          { pendingId, peerUserId, text, replyToId: normalizedPayload.replyToId ?? null },
+        ]
+        setSecretBootQueueVersion((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
+        // Keep Link Device gate behavior, but do not block sending UI.
+        if (!secretHistoryGate.open) setSecretHistoryGate({ open: true, threadId })
+        return { outcome: 'queued' }
+      }
       const { localMessage } = await sendSecretThreadText({
         threadId,
         peerUserId,
@@ -1233,16 +1252,83 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         senderId: currentUserId,
         sender: { id: currentUserId },
       })
-      return
+      return { outcome: 'sent' }
     }
 
     if (conversation.isSecret) {
-      const encrypted = await e2eeManager.encryptPayload(conversation, normalizedPayload)
-      await api.post('/conversations/send', encrypted)
-      return
+      try {
+        // Legacy secret chats: never block UI with banners; show inline hint if session isn't ready yet.
+        if (!e2eeManager.hasSession(conversation.id)) {
+          setSecretComposerInlineError('🔒 Настраивается… сообщение можно отправить через пару секунд.')
+          return { outcome: 'blocked' }
+        }
+        const encrypted = await e2eeManager.encryptPayload(conversation, normalizedPayload)
+        await api.post('/conversations/send', encrypted)
+        return { outcome: 'sent' }
+      } catch (err) {
+        console.warn('Failed to send legacy secret message:', err)
+        setSecretComposerInlineError('Не удалось отправить в секретный чат. Попробуйте ещё раз.')
+        return { outcome: 'blocked' }
+      }
     }
     await api.post('/conversations/send', { conversationId: conversation.id, ...normalizedPayload })
+    return { outcome: 'sent' }
   }
+
+  const flushSecretBootQueue = useCallback(async () => {
+    const entries = secretBootQueueRef.current
+    const threadIds = Object.keys(entries)
+    for (const threadId of threadIds) {
+      const q = entries[threadId]
+      if (!q || q.length === 0) {
+        delete entries[threadId]
+        continue
+      }
+      if (!hasSecretThreadKey(threadId)) continue
+      if (secretBootFlushInFlightRef.current[threadId]) continue
+
+      secretBootFlushInFlightRef.current[threadId] = true
+      try {
+        while (entries[threadId] && entries[threadId]!.length > 0) {
+          const item = entries[threadId]![0]!
+          const { localMessage } = await sendSecretThreadText({
+            threadId,
+            peerUserId: item.peerUserId,
+            text: item.text,
+            allowGenerateKey: false,
+          })
+          appendMessageToCache(threadId, {
+            ...localMessage,
+            senderId: currentUserId,
+            sender: { id: currentUserId },
+          })
+          setPendingByConv((prev) => {
+            const list = prev[threadId] || []
+            if (!list.length) return prev
+            const nextList = list.filter((m) => m.id !== item.pendingId)
+            if (nextList.length === list.length) return prev
+            return { ...prev, [threadId]: nextList }
+          })
+          entries[threadId]!.shift()
+          setSecretBootQueueVersion((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
+        }
+        setSecretComposerInlineError(null)
+      } catch (err) {
+        console.warn('Failed to flush queued secret messages:', err)
+        setSecretComposerInlineError('Не удалось отправить сообщение в секретный чат. Проверьте подключение.')
+        // Keep remaining queue for retry on next key update / manual send.
+      } finally {
+        secretBootFlushInFlightRef.current[threadId] = false
+        if (!entries[threadId] || entries[threadId]!.length === 0) {
+          delete entries[threadId]
+        }
+      }
+    }
+  }, [currentUserId])
+
+  useEffect(() => {
+    void flushSecretBootQueue().catch(() => {})
+  }, [secretKeysVersion, flushSecretBootQueue])
 
   const closeAddParticipantsModal = () => {
     setAddParticipantsModal(false)
@@ -1769,6 +1855,66 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const endSecretLabel = secretBlockedByOtherDevice ? 'Завершить везде' : 'Завершить'
   const endSecretTitle = secretBlockedByOtherDevice ? 'Завершить везде' : 'Завершить секретный чат'
 
+  type SecretReadyState = 'ready' | 'bootstrapping' | 'error'
+  const activeSecretUiState = useMemo(() => {
+    if (!activeConversation?.isSecret) {
+      return { isSecret: false, readyState: 'ready' as SecretReadyState, error: null as string | null }
+    }
+    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+    if (isSecretV2) {
+      const threadId = String(activeConversation.id ?? '').trim()
+      const ready = !!(threadId && hasSecretThreadKey(threadId))
+      return { isSecret: true, readyState: (ready ? 'ready' : 'bootstrapping') as SecretReadyState, error: null as string | null }
+    }
+    const status = String(activeConversation?.secretStatus ?? 'ACTIVE').toUpperCase()
+    if (status !== 'ACTIVE') {
+      return { isSecret: true, readyState: 'error' as SecretReadyState, error: null as string | null }
+    }
+    const ready = e2eeManager.hasSession(activeConversation.id)
+    return { isSecret: true, readyState: (ready ? 'ready' : 'bootstrapping') as SecretReadyState, error: null as string | null }
+  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.secretStatus, secretKeysVersion, e2eeVersion])
+
+  const activeSecretQueuedCount = useMemo(() => {
+    const threadId = String(activeConversation?.id ?? '').trim()
+    if (!threadId) return 0
+    const q = secretBootQueueRef.current[threadId]
+    return Array.isArray(q) ? q.length : 0
+  }, [activeConversation?.id, secretBootQueueVersion])
+
+  useEffect(() => {
+    if (!activeConversation?.isSecret) return
+    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+    if (!isSecretV2) return
+    const threadId = String(activeConversation.id ?? '').trim()
+    if (!threadId) return
+    const hasKey = hasSecretThreadKey(threadId)
+    if (secretDebug) {
+      // eslint-disable-next-line no-console
+      console.log('[secret] open thread', {
+        threadId,
+        peerUserId:
+          activeConversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user?.id ?? null,
+        hasKey,
+        queued: (secretBootQueueRef.current[threadId] || []).length,
+      })
+    }
+    if (hasKey) {
+      delete secretBootStartedAtRef.current[threadId]
+      return
+    }
+    if (!secretBootStartedAtRef.current[threadId]) {
+      secretBootStartedAtRef.current[threadId] = Date.now()
+    }
+    const startedAt = secretBootStartedAtRef.current[threadId]
+    const t = window.setTimeout(() => {
+      // If still no key after 120s, show inline error + CTA (no banners).
+      if (!hasSecretThreadKey(threadId)) {
+        setSecretComposerInlineError('Не удалось получить ключи для секретного чата. Привяжите устройство или попробуйте позже.')
+      }
+    }, Math.max(0, 120_000 - (Date.now() - startedAt)))
+    return () => window.clearTimeout(t)
+  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, secretKeysVersion, currentUserId, secretDebug])
+
   useEffect(() => {
     if (!activeConversation?.isSecret) return
     if (activeConversation.secretStatus !== 'ACTIVE') return
@@ -1971,49 +2117,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       cancelled = true
     }
   }, [displayedMessages, attachmentHeadInfoMap])
-
-  useEffect(() => {
-    const pendingIds = new Set(
-      (conversationsQuery.data || [])
-        .map((r: any) => r.conversation)
-        .filter((conv: any) => conv?.isSecret && (conv.secretStatus ?? 'ACTIVE') === 'PENDING')
-        .map((conv: any) => conv.id)
-    )
-    setPendingSecretOffers((prev) => {
-      let changed = false
-      const copy = { ...prev }
-      for (const id of Object.keys(copy)) {
-        if (!pendingIds.has(id)) {
-          delete copy[id]
-          changed = true
-        }
-      }
-      return changed ? copy : prev
-    })
-  }, [conversationsQuery.data])
-
-  const pendingSecretContext = useMemo(() => {
-    if (!activeConversation || activeConversation.isGroup || activeConversation.isSecret) return null
-    if (!me?.id) return null
-    const activeKey = makeParticipantsKey(activeConversation.participants || [])
-    if (!activeKey) return null
-    const rows = conversationsQuery.data || []
-    for (const row of rows) {
-      const conv = row.conversation
-      if (!conv?.isSecret) continue
-      if ((conv.secretStatus ?? 'ACTIVE') !== 'PENDING') continue
-      const convKey = makeParticipantsKey(conv.participants || [])
-      if (convKey !== activeKey) continue
-      const initiatorUser = (conv.participants || []).find((p: any) => p.user.id === conv.createdById)?.user
-      const initiatorName = pendingSecretOffers[conv.id]?.from?.name ?? initiatorUser?.displayName ?? initiatorUser?.username ?? 'Собеседник'
-      return {
-        conversationId: conv.id,
-        isInitiator: conv.createdById === me.id,
-        initiatorName,
-      }
-    }
-    return null
-  }, [activeConversation, conversationsQuery.data, me?.id, pendingSecretOffers])
 
   const usersById = useMemo(() => {
     const map: Record<string, any> = {}
@@ -2352,12 +2455,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         conversationsQuery.refetch()
         return
       }
-      setPendingSecretOffers((prev) => {
-        if (!prev[convId]) return prev
-        const copy = { ...prev }
-        delete copy[convId]
-        return copy
-      })
       setPendingByConv((prev) => {
         if (!prev[convId]) return prev
         const copy = { ...prev }
@@ -2388,19 +2485,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     })
     onConversationUpdated(() => { conversationsQuery.refetch() })
     onConversationMemberRemoved(() => { conversationsQuery.refetch() })
-    const offSecretOffer = onSecretChatOffer((payload) => {
-      setPendingSecretOffers((prev) => ({ ...prev, [payload.conversationId]: payload }))
-      conversationsQuery.refetch()
-    })
-    const offSecretAccepted = onSecretChatAccepted((payload) => {
-      setPendingSecretOffers((prev) => {
-        const copy = { ...prev }
-        delete copy[payload.conversationId]
-        return copy
-      })
-      client.invalidateQueries({ queryKey: ['conversations'] })
-      selectConversation(payload.conversationId)
-    })
     onIncomingCall(({ conversationId, from, video }) => {
       // debounce duplicate incoming for same conv
       if (ringingConvIdRef.current && ringingConvIdRef.current === conversationId) return
@@ -2674,8 +2758,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     } catch {}
     return () => {
       detachUnlockListeners?.()
-      offSecretOffer?.()
-      offSecretAccepted?.()
     }
   }, [])
   // live update contacts tiles
@@ -4442,20 +4524,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   function renderMessagesPane(mobile: boolean) {
     const sectionClass = mobile ? 'messages-pane slider-panel' : 'messages-pane'
-    const secretInactive = conversationSecretInactive
-    const secretSessionReady = conversationSecretSessionReady
-    let secretBlockedText = ''
-    if (activeConversation?.isSecret) {
-      if (secretInactive) {
-        secretBlockedText = 'Секретный чат станет доступен после подтверждения собеседника.'
-      } else if (secretBlockedByOtherDevice) {
-        secretBlockedText = connectedDeviceName
-          ? `Секретный чат подключён на устройстве «${connectedDeviceName}»`
-          : 'Секретный чат подключён на другом устройстве.'
-      } else if (!secretSessionReady) {
-        secretBlockedText = 'Готовим защищённое подключение...'
-      }
-    }
     return (
       <section className={sectionClass}>
         <header
@@ -4702,8 +4770,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                   if (isSecretV2) {
                                     return hasSecretThreadKey(activeConversation.id) ? '🔒 Защищено' : '🔒 Настраивается…'
                                   }
-                                  if (secretInactive) return '🔒 Настраивается…'
-                                  if (!secretSessionReady) return '🔒 Настраивается…'
+                                  if (activeSecretUiState.readyState !== 'ready') return '🔒 Настраивается…'
                                   return '🔒 Защищено'
                                 })()}
                               </span>
@@ -5436,63 +5503,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 )
           })()}
         </header>
-        {!activeConversation?.isSecret && pendingSecretContext && (
-          <div
-            style={{
-              margin: '12px 12px 0',
-              padding: '12px 16px',
-              borderRadius: 12,
-              border: '1px solid rgba(20,184,166,0.4)',
-              background: 'linear-gradient(135deg, rgba(13,148,136,0.15), rgba(6,95,70,0.25))',
-              color: '#ccfbf1',
-              display: 'flex',
-              flexDirection: isMobile ? 'column' : 'row',
-              gap: 12,
-              alignItems: isMobile ? 'stretch' : 'center',
-            }}
-          >
-            {pendingSecretContext.isInitiator ? (
-              <>
-                <div style={{ flex: 1 }}>
-                  Ждём подтверждения собеседника, чтобы начать секретный чат.
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => handleDeclinePendingSecret(pendingSecretContext.conversationId)}
-                    disabled={secretActionLoading}
-                    style={{ color: '#f87171' }}
-                  >
-                    Отменить
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div style={{ flex: 1 }}>
-                  {pendingSecretContext.initiatorName} предлагает начать секретный чат на этом устройстве.
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button
-                    className="btn btn-secondary"
-                    onClick={() => handleAcceptPendingSecret(pendingSecretContext.conversationId)}
-                    disabled={secretActionLoading}
-                  >
-                    Принять
-                  </button>
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => handleDeclinePendingSecret(pendingSecretContext.conversationId)}
-                    disabled={secretActionLoading}
-                    style={{ color: '#bae6fd' }}
-                  >
-                    Отказаться
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        )}
         <div
           className="messages-container"
           style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}
@@ -5566,7 +5576,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               display: 'block',
             }}
           >
-            {activeId && !(activeConversation?.isSecret && (!secretSessionReady || secretInactive)) && (olderMeta.hasMore || olderLoading) && (
+            {activeId && (olderMeta.hasMore || olderLoading) && (
               <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0 14px' }}>
                 <button
                   type="button"
@@ -5581,8 +5591,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             )}
             {!activeId ? (
               <div className="messages-empty">Сообщения появятся здесь</div>
-            ) : (activeConversation?.isSecret && (!secretSessionReady || secretInactive)) ? (
-              <div className="messages-empty">{secretBlockedText}</div>
             ) : (
               (() => {
                 const list = (displayedMessages ? [...displayedMessages] : []).
@@ -6573,12 +6581,59 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               borderTop: '1px solid var(--surface-border)',
             }}
           >
-            {activeConversation?.isSecret && (!secretSessionReady || secretInactive) ? (
-              <div style={{ padding: 12, borderRadius: 8, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
-                {secretBlockedText}
-              </div>
-            ) : (
             <>
+            {activeConversation?.isSecret && activeSecretUiState.readyState !== 'ready' && (
+              <div
+                style={{
+                  marginBottom: 10,
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  border: '1px solid var(--surface-border)',
+                  background: 'rgba(13,148,136,0.10)',
+                  color: 'var(--text-primary)',
+                  fontSize: 13,
+                  lineHeight: 1.25,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  {activeSecretUiState.readyState === 'bootstrapping'
+                    ? (activeSecretQueuedCount > 0
+                        ? `🔒 Настраивается… ${activeSecretQueuedCount} сообщ. в очереди, отправим автоматически.`
+                        : '🔒 Настраивается… можно писать, отправим как только защита будет готова.')
+                    : '⚠️ Секретный чат недоступен на этом устройстве.'}
+                </div>
+                {activeSecretUiState.readyState === 'bootstrapping' && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => setLinkDeviceModalOpen(true)}
+                    style={{ flexShrink: 0 }}
+                  >
+                    Привязать устройство
+                  </button>
+                )}
+              </div>
+            )}
+            {secretComposerInlineError && (
+              <div
+                style={{
+                  marginBottom: 10,
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  border: '1px solid rgba(239,68,68,0.25)',
+                  background: 'rgba(239,68,68,0.08)',
+                  color: '#fca5a5',
+                  fontSize: 13,
+                  lineHeight: 1.25,
+                }}
+              >
+                {secretComposerInlineError}
+              </div>
+            )}
             {replyTo && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, background: 'var(--surface-100)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
                 <Reply size={16} color="var(--text-muted)" />
@@ -6920,11 +6975,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 setComposerValue('')
                 setReplyTo(null)
               } else if (value) {
-                    await sendMessageToConversation(activeConversation, { type: 'TEXT', content: value, replyToId: replyTo?.id })
+                    const r = await sendMessageToConversation(activeConversation, { type: 'TEXT', content: value, replyToId: replyTo?.id })
+                    if (r?.outcome === 'blocked') return
                     setComposerValue('')
                     setReplyTo(null)
               }
-                    client.invalidateQueries({ queryKey: ['messages', activeId] })
+                    if (activeId) {
+                      client.invalidateQueries({ queryKey: ['messages', activeId] })
+                    }
                     setTimeout(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight }, 0)
             }} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <button
@@ -7142,7 +7200,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </div>
             )}
             </>
-            )}
           </div>
           </div>
         </div>
@@ -8722,8 +8779,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   const mid = forwardModal.messageId!
                   const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
                   if (!found) return
-                  await sendMessageToConversation(c, { type: 'TEXT', content: `↪ ${found.content ?? ''}`, replyToId: undefined })
-                  setForwardModal({ open: false, messageId: null })
+                  const r = await sendMessageToConversation(c, { type: 'TEXT', content: `↪ ${found.content ?? ''}`, replyToId: undefined })
+                  if (r?.outcome !== 'blocked') {
+                    setForwardModal({ open: false, messageId: null })
+                  }
                 }}>
                   <div style={{ fontWeight: 600 }}>{title}</div>
                 </div>

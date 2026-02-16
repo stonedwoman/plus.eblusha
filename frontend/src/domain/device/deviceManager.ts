@@ -5,6 +5,7 @@ import { api } from '../../utils/api'
 const DEVICE_INFO_KEY = 'eb_device_info_v1'
 const DEVICE_SECRET_KEY = 'eb_device_secret_v1'
 const DEFAULT_PREKEY_BATCH = 50
+const MIN_SERVER_PREKEY_RESERVE = 20
 
 type StoredDeviceInfo = {
   deviceId: string
@@ -34,6 +35,49 @@ export type DeviceBootstrapResult = {
 }
 
 let bootstrapPromise: Promise<DeviceBootstrapResult | null> | null = null
+
+function secretDebugEnabled(): boolean {
+  try {
+    if (typeof window === 'undefined') return false
+    const q = String(window.location?.search ?? '')
+    if (q.includes('SECRET_DEBUG=1')) return true
+    return window.localStorage.getItem('eb_secret_debug') === '1'
+  } catch {
+    return false
+  }
+}
+
+async function maybeReplenishPrekeys(deviceId: string) {
+  try {
+    const resp = await api.get('/devices')
+    const devices = (resp.data?.devices ?? []) as any[]
+    const me = devices.find((d) => String(d?.id ?? '') === deviceId)
+    const available = typeof me?.availablePrekeys === 'number' ? me.availablePrekeys : null
+    if (available != null && available >= MIN_SERVER_PREKEY_RESERVE) return
+
+    const secrets = loadDeviceSecrets()
+    if (!secrets || secrets.deviceId !== deviceId) return
+
+    const prekeys = generatePrekeys(DEFAULT_PREKEY_BATCH)
+    for (const pk of prekeys) {
+      secrets.prekeys[pk.keyId] = pk.secretKey
+    }
+    saveDeviceSecrets(secrets)
+
+    await api.post(`/devices/${deviceId}/prekeys`, {
+      prekeys: prekeys.map((pk) => ({ keyId: pk.keyId, publicKey: pk.publicKey })),
+    })
+    if (secretDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.log('[deviceManager] replenished prekeys', { deviceId, published: prekeys.length, previousAvailable: available })
+    }
+  } catch (err) {
+    if (secretDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.warn('[deviceManager] prekey replenish failed', err)
+    }
+  }
+}
 
 export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
   if (bootstrapPromise) return bootstrapPromise
@@ -67,6 +111,8 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
           console.warn('Device metadata sync failed:', metadataError)
         }
       }
+      // Best-effort: keep some OPKs on server so other devices can encrypt key packages to us.
+      void maybeReplenishPrekeys(storedInfo.deviceId)
       return {
         deviceId: storedInfo.deviceId,
         publicKey: storedInfo.publicKey,
@@ -114,6 +160,9 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
           return acc
         }, {}),
       })
+
+      // Fire-and-forget replenish check (should be already >= reserve after register, but keep it robust).
+      void maybeReplenishPrekeys(deviceId)
 
       return { deviceId, publicKey: identityPublic, name: payload.name, platform: payload.platform ?? undefined }
     } catch (error) {

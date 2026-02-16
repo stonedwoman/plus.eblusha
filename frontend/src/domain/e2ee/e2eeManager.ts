@@ -8,7 +8,9 @@ import { consumePrekeySecret, getIdentityKeyPair, getStoredDeviceInfo } from '..
 type ConversationRef = {
   id: string
   isSecret?: boolean | null
-  secretStatus?: 'ACTIVE' | 'PENDING' | 'CANCELLED' | null
+  // Legacy field: treat anything other than ACTIVE as not-ready/disabled.
+  // We intentionally do not model pending/accept flows in the client anymore.
+  secretStatus?: string | null
   secretInitiatorDeviceId?: string | null
   secretPeerDeviceId?: string | null
 }
@@ -48,7 +50,8 @@ class E2EEManager {
   }
 
   async ensureSession(conversation: ConversationRef): Promise<SessionRecord | null> {
-    if (!conversation.isSecret || conversation.secretStatus !== 'ACTIVE') {
+    const status = String(conversation.secretStatus ?? 'ACTIVE').toUpperCase()
+    if (!conversation.isSecret || status !== 'ACTIVE') {
       return null
     }
     const existing = this.sessions[conversation.id]
