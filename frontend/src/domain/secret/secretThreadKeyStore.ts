@@ -52,7 +52,11 @@ export function hasSecretThreadKey(threadId: string): boolean {
   return !!getSecretThreadKey(threadId)?.key
 }
 
-export function setSecretThreadKey(threadId: string, keyBase64: string, opts?: { createdAt?: number; version?: number }) {
+export function setSecretThreadKey(
+  threadId: string,
+  keyBase64: string,
+  opts?: { createdAt?: number; version?: number; overwrite?: boolean },
+) {
   const id = String(threadId ?? '').trim()
   const key = String(keyBase64 ?? '').trim()
   if (!id || !key) return
@@ -62,9 +66,9 @@ export function setSecretThreadKey(threadId: string, keyBase64: string, opts?: {
 
   const store = loadStore()
   const existing = store[id]?.key ? String(store[id]!.key) : ''
-  if (existing && existing !== key) {
+  if (existing && existing !== key && !opts?.overwrite) {
     // Never clobber an existing key implicitly: that would break decryption for already stored ciphertexts.
-    // If keys ever diverge, user must explicitly "Continue without history" or link device to recover.
+    // If keys ever diverge, user must explicitly link device / reset, or accept a trusted overwrite.
     try {
       // eslint-disable-next-line no-console
       console.warn('[secretThreadKeyStore] refusing to overwrite existing thread key', { threadId: id })

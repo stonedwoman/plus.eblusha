@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import { socket, connectSocket } from '../../utils/socket'
-import { ensureDeviceBootstrap } from '../device/deviceManager'
+import { ensureDeviceBootstrap, forcePublishPrekeys } from '../device/deviceManager'
 import { getSecretThreadKey, importSecretThreadKeys, setSecretThreadKey } from './secretThreadKeyStore'
 import { decryptSecretThreadText } from './secretThreadCrypto'
 import { tryDecryptIncomingKeyPackage } from './secretKeyPackages'
@@ -28,6 +28,62 @@ function secretDebugEnabled(): boolean {
   } catch {
     return false
   }
+}
+
+type InboxAttemptRec = { count: number; firstAt: number; lastAt: number; rootCause?: string; prekeyId?: string }
+const ATTEMPTS_KEY = 'eb_secret_inbox_attempts_v1'
+const LAST_ROOT_CAUSE_KEY = 'eb_secret_last_root_cause_v1'
+const ATTEMPT_TTL_MS = 30 * 60_000
+const POISON_THRESHOLD = 20
+
+function loadAttempts(): Record<string, InboxAttemptRec> {
+  try {
+    const raw = localStorage.getItem(ATTEMPTS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as any
+    if (!parsed || typeof parsed !== 'object') return {}
+    return parsed
+  } catch {
+    return {}
+  }
+}
+function saveAttempts(next: Record<string, InboxAttemptRec>) {
+  try {
+    localStorage.setItem(ATTEMPTS_KEY, JSON.stringify(next))
+  } catch {}
+}
+function bumpAttempt(msgId: string, info?: { rootCause?: string; prekeyId?: string }) {
+  const id = String(msgId ?? '').trim()
+  if (!id) return { count: 0, poisoned: false }
+  const now = Date.now()
+  const store = loadAttempts()
+  // cleanup
+  for (const [k, v] of Object.entries(store)) {
+    if (!v || typeof v !== 'object') {
+      delete store[k]
+      continue
+    }
+    const lastAt = typeof (v as any).lastAt === 'number' ? (v as any).lastAt : 0
+    if (lastAt && now - lastAt > ATTEMPT_TTL_MS) delete store[k]
+  }
+  const prev = store[id]
+  const next: InboxAttemptRec = {
+    count: (prev?.count ?? 0) + 1,
+    firstAt: prev?.firstAt ?? now,
+    lastAt: now,
+    ...(info?.rootCause ? { rootCause: info.rootCause } : {}),
+    ...(info?.prekeyId ? { prekeyId: info.prekeyId } : {}),
+  }
+  store[id] = next
+  saveAttempts(store)
+  const poisoned = next.count > POISON_THRESHOLD || now - next.firstAt > ATTEMPT_TTL_MS
+  return { count: next.count, poisoned }
+}
+
+function setLastRootCause(code: string, details?: Record<string, any>) {
+  try {
+    localStorage.setItem(LAST_ROOT_CAUSE_KEY, JSON.stringify({ code, at: Date.now(), ...(details ? { details } : {}) }))
+  } catch {}
 }
 
 function toMessageObject(threadId: string, item: InboxItem, decryptedContent: string | null) {
@@ -71,6 +127,7 @@ export function SecretInboxPump() {
   const client = useQueryClient()
   const pullingRef = useRef(false)
   const bootstrapReadyRef = useRef<Promise<any> | null>(null)
+  const lastSelfHealAtRef = useRef<number>(0)
 
   useEffect(() => {
     let mounted = true
@@ -90,9 +147,14 @@ export function SecretInboxPump() {
       pullingRef.current = true
       try {
         // Ensure device keys exist before we attempt to decrypt key packages.
-        await (bootstrapReadyRef.current ?? Promise.resolve(null))
+        const bootstrapRes = await (bootstrapReadyRef.current ?? Promise.resolve(null))
+        const bootstrapReady = !!bootstrapRes
 
-        const resp = await api.get('/secret/inbox/pull', { params: { limit: 200 } })
+        const resp = await api.get('/secret/inbox/pull', {
+          params: { limit: 50 },
+          // Avoid conditional caching (If-None-Match → 304) for polling endpoints.
+          headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+        })
         const items = (resp.data?.messages ?? []) as InboxItem[]
         if (!items.length) return
 
@@ -104,28 +166,97 @@ export function SecretInboxPump() {
           const isKeyPackage = header && typeof header === 'object' && String((header as any).kind ?? '') === 'key_package'
 
           // Key packages (device-link / thread-key share) arrive via direct inbox (threadId null).
-          const maybePkg = tryDecryptIncomingKeyPackage(item)
-          if (maybePkg?.kind === 'thread_key') {
-            const threadId = String(maybePkg.payload?.threadId ?? '').trim()
-            const key = String(maybePkg.payload?.key ?? '').trim()
-            if (threadId && key) {
-              setSecretThreadKey(threadId, key)
-              // Refetch history on next render; keep it cheap.
-              client.invalidateQueries({ queryKey: ['messages', threadId] })
+          const attempt = isKeyPackage ? tryDecryptIncomingKeyPackage(item) : null
+          if (attempt && attempt.ok) {
+            if (attempt.kind === 'thread_key') {
+              const threadId = String(attempt.payload?.threadId ?? '').trim()
+              const key = String(attempt.payload?.key ?? '').trim()
+              const importOk = !!(threadId && key)
+              if (secretDebugEnabled()) {
+                // eslint-disable-next-line no-console
+                console.log('[SecretInboxPump] key_package thread_key', {
+                  msgId: item.msgId,
+                  threadId,
+                  prekeyId: attempt.debug.prekeyId,
+                  bootstrapReady,
+                  opkSecretFound: attempt.debug.opkSecretFound,
+                  decryptOk: attempt.debug.decryptOk,
+                  importOk,
+                })
+              }
+              if (importOk) {
+                setSecretThreadKey(threadId, key, { overwrite: true })
+                client.invalidateQueries({ queryKey: ['messages', threadId] })
+                ackIds.push(item.msgId)
+              }
+              continue
             }
-            ackIds.push(item.msgId)
-            continue
+            if (attempt.kind === 'device_link_keys') {
+              let importOk = false
+              try {
+                importSecretThreadKeys(attempt.payload?.threadKeys, { merge: true })
+                importOk = true
+              } catch {}
+              if (secretDebugEnabled()) {
+                // eslint-disable-next-line no-console
+                console.log('[SecretInboxPump] key_package device_link_keys', {
+                  msgId: item.msgId,
+                  prekeyId: attempt.debug.prekeyId,
+                  bootstrapReady,
+                  opkSecretFound: attempt.debug.opkSecretFound,
+                  decryptOk: attempt.debug.decryptOk,
+                  importOk,
+                })
+              }
+              try {
+                localStorage.setItem('eb_device_link_last_success', String(Date.now()))
+                window.dispatchEvent(new Event('eb:deviceLinked'))
+              } catch {}
+              client.invalidateQueries({ queryKey: ['conversations'] })
+              if (importOk) ackIds.push(item.msgId)
+              continue
+            }
           }
-          if (maybePkg?.kind === 'device_link_keys') {
-            try {
-              importSecretThreadKeys(maybePkg.payload?.threadKeys, { merge: true })
-            } catch {}
-            try {
-              localStorage.setItem('eb_device_link_last_success', String(Date.now()))
-              window.dispatchEvent(new Event('eb:deviceLinked'))
-            } catch {}
-            client.invalidateQueries({ queryKey: ['conversations'] })
-            ackIds.push(item.msgId)
+          if (attempt && !attempt.ok) {
+            const { count, poisoned } = bumpAttempt(item.msgId, {
+              rootCause: attempt.rootCause,
+              prekeyId: attempt.debug.prekeyId,
+            })
+            setLastRootCause(attempt.rootCause, {
+              msgId: item.msgId,
+              prekeyId: attempt.debug.prekeyId,
+              count,
+            })
+            if (secretDebugEnabled()) {
+              // eslint-disable-next-line no-console
+              console.warn('[SecretInboxPump] key_package decrypt failed', {
+                msgId: item.msgId,
+                rootCause: attempt.rootCause,
+                prekeyId: attempt.debug.prekeyId,
+                bootstrapReady,
+                opkSecretFound: attempt.debug.opkSecretFound,
+                decryptOk: attempt.debug.decryptOk,
+                attemptCount: count,
+                poisoned,
+              })
+            }
+            if (attempt.rootCause === 'OPK_SECRET_MISS') {
+              // Self-heal: ensure we have fresh OPKs on the server so creator can resend a key package.
+              const now = Date.now()
+              if (now - lastSelfHealAtRef.current > 30_000) {
+                lastSelfHealAtRef.current = now
+                try {
+                  void forcePublishPrekeys({ reason: 'opk_secret_miss' }).catch(() => {})
+                } catch {}
+              }
+            }
+            if (poisoned) {
+              // Prevent head-of-line blocking: acknowledge poisoned items so newer messages can flow.
+              ackIds.push(item.msgId)
+              try {
+                window.dispatchEvent(new CustomEvent('eb:secretPoisonedInbox', { detail: { msgId: item.msgId, rootCause: attempt.rootCause } }))
+              } catch {}
+            }
             continue
           }
           if (isKeyPackage) {
@@ -174,8 +305,14 @@ export function SecretInboxPump() {
         if (ackIds.length) {
           void api.post('/secret/inbox/ack', { msgIds: ackIds }).catch(() => {})
         }
-      } catch {
-        // ignore transient failures
+      } catch (err: any) {
+        if (secretDebugEnabled()) {
+          // eslint-disable-next-line no-console
+          console.warn('[SecretInboxPump] pullOnce failed', {
+            status: err?.response?.status,
+            message: String(err?.response?.data?.message ?? err?.message ?? ''),
+          })
+        }
       } finally {
         pullingRef.current = false
       }

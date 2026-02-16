@@ -479,8 +479,25 @@ function AppRoot() {
               console.warn('[Main] NativeSocket plugin not available:', error)
             })
             
-            // Для Capacitor используем URL из конфигурации или ru.eblusha.org
-            const wsUrl = 'https://ru.eblusha.org'
+            // Для Capacitor нужен абсолютный origin для нативного сокета.
+            // Берём из VITE_WS_URL (если задан) → иначе из origin API baseURL → иначе window.location.origin.
+            let wsUrl: string = ''
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const envWs = String((import.meta as any).env?.VITE_WS_URL ?? '').trim()
+              if (envWs) {
+                wsUrl = envWs
+              } else {
+                const originFallback =
+                  typeof window !== 'undefined' ? window.location.origin : 'https://ru.eblusha.org'
+                const apiOrigin = api.defaults.baseURL
+                  ? new URL(api.defaults.baseURL, originFallback).origin
+                  : originFallback
+                wsUrl = apiOrigin
+              }
+            } catch {
+              wsUrl = 'https://ru.eblusha.org'
+            }
             console.log('[Main] Connecting native Socket.IO to:', wsUrl)
             
             initializeSocketConnection(wsUrl, session.accessToken)

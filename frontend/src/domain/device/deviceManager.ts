@@ -6,6 +6,7 @@ const DEVICE_INFO_KEY = 'eb_device_info_v1'
 const DEVICE_SECRET_KEY = 'eb_device_secret_v1'
 const DEFAULT_PREKEY_BATCH = 50
 const MIN_SERVER_PREKEY_RESERVE = 20
+const PREKEY_PUBLISH_COOLDOWN_MS = 15_000
 
 type StoredDeviceInfo = {
   deviceId: string
@@ -35,6 +36,7 @@ export type DeviceBootstrapResult = {
 }
 
 let bootstrapPromise: Promise<DeviceBootstrapResult | null> | null = null
+let lastForcePublishAt = 0
 
 function secretDebugEnabled(): boolean {
   try {
@@ -47,6 +49,46 @@ function secretDebugEnabled(): boolean {
   }
 }
 
+function isDeviceBelongsToAnotherUserConflict(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) return false
+  if (err.response?.status !== 409) return false
+  const msg = String((err.response?.data as any)?.message ?? err.message ?? '').toLowerCase()
+  return msg.includes('another user') || msg.includes('друг') || msg.includes('чуж')
+}
+
+async function publishPrekeysBatch(deviceId: string, count: number, opts?: { reason?: string }) {
+  const id = String(deviceId ?? '').trim()
+  if (!id) return
+  const n = Math.max(1, Math.min(200, Math.floor(count || DEFAULT_PREKEY_BATCH)))
+  const secrets = loadDeviceSecrets()
+  if (!secrets || secrets.deviceId !== id) return
+
+  const prekeys = generatePrekeys(n)
+  for (const pk of prekeys) {
+    secrets.prekeys[pk.keyId] = pk.secretKey
+  }
+  saveDeviceSecrets(secrets)
+
+  await api.post(`/devices/${id}/prekeys`, {
+    prekeys: prekeys.map((pk) => ({ keyId: pk.keyId, publicKey: pk.publicKey })),
+  })
+
+  if (secretDebugEnabled()) {
+    // eslint-disable-next-line no-console
+    console.log('[deviceManager] published prekeys', { deviceId: id, published: prekeys.length, reason: opts?.reason ?? null })
+  }
+}
+
+export async function forcePublishPrekeys(opts?: { count?: number; reason?: string }) {
+  const now = Date.now()
+  if (now - lastForcePublishAt < PREKEY_PUBLISH_COOLDOWN_MS) return
+  lastForcePublishAt = now
+  const boot = await ensureDeviceBootstrap()
+  const deviceId = boot?.deviceId
+  if (!deviceId) return
+  await publishPrekeysBatch(deviceId, opts?.count ?? DEFAULT_PREKEY_BATCH, { reason: opts?.reason })
+}
+
 async function maybeReplenishPrekeys(deviceId: string) {
   try {
     const resp = await api.get('/devices')
@@ -55,21 +97,10 @@ async function maybeReplenishPrekeys(deviceId: string) {
     const available = typeof me?.availablePrekeys === 'number' ? me.availablePrekeys : null
     if (available != null && available >= MIN_SERVER_PREKEY_RESERVE) return
 
-    const secrets = loadDeviceSecrets()
-    if (!secrets || secrets.deviceId !== deviceId) return
-
-    const prekeys = generatePrekeys(DEFAULT_PREKEY_BATCH)
-    for (const pk of prekeys) {
-      secrets.prekeys[pk.keyId] = pk.secretKey
-    }
-    saveDeviceSecrets(secrets)
-
-    await api.post(`/devices/${deviceId}/prekeys`, {
-      prekeys: prekeys.map((pk) => ({ keyId: pk.keyId, publicKey: pk.publicKey })),
-    })
+    await publishPrekeysBatch(deviceId, DEFAULT_PREKEY_BATCH, { reason: 'reserve_low' })
     if (secretDebugEnabled()) {
       // eslint-disable-next-line no-console
-      console.log('[deviceManager] replenished prekeys', { deviceId, published: prekeys.length, previousAvailable: available })
+      console.log('[deviceManager] replenished prekeys', { deviceId, published: DEFAULT_PREKEY_BATCH, previousAvailable: available })
     }
   } catch (err) {
     if (secretDebugEnabled()) {
@@ -83,88 +114,103 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
   if (bootstrapPromise) return bootstrapPromise
   bootstrapPromise = (async () => {
     try {
-      const storedInfo = loadDeviceInfo()
-      const storedSecret = loadDeviceSecrets()
+      let storedInfo = loadDeviceInfo()
+      let storedSecret = loadDeviceSecrets()
+
       if (storedInfo && storedSecret && storedInfo.deviceId === storedSecret.deviceId) {
-      try {
-        const desiredName = detectDeviceName()
-        const desiredPlatform = detectPlatform()
-        if (storedInfo.name !== desiredName || storedInfo.platform !== desiredPlatform) {
-          await api.post('/devices/register', {
+        try {
+          const desiredName = detectDeviceName()
+          const desiredPlatform = detectPlatform()
+          if (storedInfo.name !== desiredName || storedInfo.platform !== desiredPlatform) {
+            await api.post('/devices/register', {
+              deviceId: storedInfo.deviceId,
+              name: desiredName,
+              platform: desiredPlatform,
+              publicKey: storedInfo.publicKey,
+            })
+            saveDeviceInfo({
+              ...storedInfo,
+              name: desiredName,
+              platform: desiredPlatform,
+            })
+            storedInfo.name = desiredName
+            storedInfo.platform = desiredPlatform
+          }
+        } catch (metadataError) {
+          // CRITICAL: If this stored deviceId belongs to another user (e.g. browser reused localStorage across accounts),
+          // we must wipe local device material and bootstrap a fresh device.
+          if (isDeviceBelongsToAnotherUserConflict(metadataError)) {
+            console.warn('[deviceManager] stored device belongs to another user; re-bootstrapping this device')
+            clearStoredDevice()
+            storedInfo = null
+            storedSecret = null
+          } else {
+            console.warn('Device metadata sync failed:', metadataError)
+          }
+        }
+
+        if (storedInfo && storedSecret && storedInfo.deviceId === storedSecret.deviceId) {
+          // Best-effort: keep some OPKs on server so other devices can encrypt key packages to us.
+          void maybeReplenishPrekeys(storedInfo.deviceId)
+          return {
             deviceId: storedInfo.deviceId,
-            name: desiredName,
-            platform: desiredPlatform,
             publicKey: storedInfo.publicKey,
-          })
-          saveDeviceInfo({
-            ...storedInfo,
-            name: desiredName,
-            platform: desiredPlatform,
-          })
-          storedInfo.name = desiredName
-          storedInfo.platform = desiredPlatform
-        }
-      } catch (metadataError) {
-        if (axios.isAxiosError(metadataError) && metadataError.response?.status === 409) {
-          console.debug('[deviceManager] Device metadata already up to date')
-        } else {
-          console.warn('Device metadata sync failed:', metadataError)
+            name: storedInfo.name,
+            platform: storedInfo.platform,
+          }
         }
       }
-      // Best-effort: keep some OPKs on server so other devices can encrypt key packages to us.
-      void maybeReplenishPrekeys(storedInfo.deviceId)
-      return {
-        deviceId: storedInfo.deviceId,
-        publicKey: storedInfo.publicKey,
-        name: storedInfo.name,
-        platform: storedInfo.platform,
-      }
-      }
 
-      const deviceId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
-      const identityPair = nacl.box.keyPair()
-      const identityPublic = toBase64(identityPair.publicKey)
-      const identitySecret = toBase64(identityPair.secretKey)
-      const prekeys = generatePrekeys(DEFAULT_PREKEY_BATCH)
+      // Fresh bootstrap: generate new deviceId + identity + OPKs, and publish them.
+      // If we still hit a 409 (deviceId belongs to another user), retry with a new deviceId.
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const deviceId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+        const identityPair = nacl.box.keyPair()
+        const identityPublic = toBase64(identityPair.publicKey)
+        const identitySecret = toBase64(identityPair.secretKey)
+        const prekeys = generatePrekeys(DEFAULT_PREKEY_BATCH)
 
-      const payload = {
-        deviceId,
-        name: detectDeviceName(),
-        platform: detectPlatform(),
-        publicKey: identityPublic,
-        prekeys: prekeys.map((pk) => ({ keyId: pk.keyId, publicKey: pk.publicKey })),
-      }
+        const payload = {
+          deviceId,
+          name: detectDeviceName(),
+          platform: detectPlatform(),
+          publicKey: identityPublic,
+          prekeys: prekeys.map((pk) => ({ keyId: pk.keyId, publicKey: pk.publicKey })),
+        }
 
-      try {
-        await api.post('/devices/register', payload)
-      } catch (registerError) {
-        if (axios.isAxiosError(registerError) && registerError.response?.status === 409) {
-          console.debug('[deviceManager] Device already registered, reusing local keys')
-        } else {
+        try {
+          await api.post('/devices/register', payload)
+        } catch (registerError) {
+          if (isDeviceBelongsToAnotherUserConflict(registerError)) {
+            console.warn('[deviceManager] deviceId conflict (belongs to another user), retrying', { attempt })
+            continue
+          }
           throw registerError
         }
+
+        saveDeviceInfo({
+          deviceId,
+          name: payload.name,
+          platform: payload.platform,
+          publicKey: identityPublic,
+          registeredAt: Date.now(),
+        })
+        saveDeviceSecrets({
+          deviceId,
+          identitySecret,
+          prekeys: prekeys.reduce<Record<string, string>>((acc, pk) => {
+            acc[pk.keyId] = pk.secretKey
+            return acc
+          }, {}),
+        })
+
+        // Fire-and-forget replenish check (should be already >= reserve after register, but keep it robust).
+        void maybeReplenishPrekeys(deviceId)
+
+        return { deviceId, publicKey: identityPublic, name: payload.name, platform: payload.platform ?? undefined }
       }
 
-      saveDeviceInfo({
-        deviceId,
-        name: payload.name,
-        platform: payload.platform,
-        publicKey: identityPublic,
-        registeredAt: Date.now(),
-      })
-      saveDeviceSecrets({
-        deviceId,
-        identitySecret,
-        prekeys: prekeys.reduce<Record<string, string>>((acc, pk) => {
-          acc[pk.keyId] = pk.secretKey
-          return acc
-        }, {}),
-      })
-
-      // Fire-and-forget replenish check (should be already >= reserve after register, but keep it robust).
-      void maybeReplenishPrekeys(deviceId)
-
-      return { deviceId, publicKey: identityPublic, name: payload.name, platform: payload.platform ?? undefined }
+      throw new Error('DEVICE_REGISTER_CONFLICT')
     } catch (error) {
       console.error('Device bootstrap failed:', error)
       return null

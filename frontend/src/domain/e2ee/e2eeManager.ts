@@ -114,6 +114,12 @@ class E2EEManager {
   transformMessage(conversationId: string, message: any): any {
     if (!message) return message
     const meta = (message.metadata ?? {}) as Record<string, any>
+    // Secret chat v2 (thread-key + secret inbox) already decrypts/locks content elsewhere.
+    // Do NOT attempt legacy per-conversation E2EE here, otherwise we overwrite plaintext with "🔐 Зашифровано".
+    const secretV2 = (meta as any)?.secretV2
+    if (secretV2 && typeof secretV2 === 'object') {
+      return message
+    }
     const e2eeMeta = meta.e2ee
     if (!e2eeMeta || e2eeMeta.kind !== 'ciphertext') {
       return message

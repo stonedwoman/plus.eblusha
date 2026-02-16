@@ -157,7 +157,41 @@ export async function createEncryptedKeyPackageToDevice(opts: {
   }
 }
 
-export function tryDecryptIncomingKeyPackage(msg: any): { kind: string; payload: any } | null {
+export type KeyPackageRootCause =
+  | 'BAD_HEADER'
+  | 'OPK_SECRET_MISS'
+  | 'DECRYPT_FAIL'
+  | 'DECRYPT_ERROR'
+  | 'JSON_ERROR'
+
+export type KeyPackageDecryptAttempt =
+  | {
+      ok: true
+      kind: string
+      payload: any
+      debug: {
+        prekeyId: string
+        opkSecretFound: true
+        decryptOk: true
+        recipientDeviceId?: string
+        initiatorDeviceId?: string
+        packageKind?: string
+      }
+    }
+  | {
+      ok: false
+      rootCause: KeyPackageRootCause
+      debug: {
+        prekeyId?: string
+        opkSecretFound: boolean
+        decryptOk: boolean
+        recipientDeviceId?: string
+        initiatorDeviceId?: string
+        packageKind?: string
+      }
+    }
+
+export function tryDecryptIncomingKeyPackage(msg: any): KeyPackageDecryptAttempt | null {
   const header = (msg?.headerJson ?? msg?.header ?? msg?.metadata?.headerJson) as any
   if (!header || header.kind !== 'key_package') return null
   const prekeyId = String(header.prekeyId ?? '').trim()
@@ -165,10 +199,20 @@ export function tryDecryptIncomingKeyPackage(msg: any): { kind: string; payload:
   const handshakeSalt = String(header.handshakeSalt ?? '').trim()
   const hkdfInfo = String(header.hkdfInfo ?? '').trim()
   const nonceB64 = String(header.nonce ?? '').trim()
-  if (!prekeyId || !initiatorIdentityKey || !handshakeSalt || !hkdfInfo || !nonceB64) return null
+  const baseDebug = {
+    prekeyId: prekeyId || undefined,
+    recipientDeviceId: typeof header.recipientDeviceId === 'string' ? header.recipientDeviceId : undefined,
+    initiatorDeviceId: typeof header.initiatorDeviceId === 'string' ? header.initiatorDeviceId : undefined,
+    packageKind: typeof header.packageKind === 'string' ? header.packageKind : undefined,
+  }
+  if (!prekeyId || !initiatorIdentityKey || !handshakeSalt || !hkdfInfo || !nonceB64) {
+    return { ok: false, rootCause: 'BAD_HEADER', debug: { ...baseDebug, opkSecretFound: false, decryptOk: false } }
+  }
 
   const prekeySecret = getPrekeySecret(prekeyId)
-  if (!prekeySecret) return null
+  if (!prekeySecret) {
+    return { ok: false, rootCause: 'OPK_SECRET_MISS', debug: { ...baseDebug, opkSecretFound: false, decryptOk: false } }
+  }
 
   try {
     const sharedSecret = nacl.scalarMult(base64ToBytes(prekeySecret), base64ToBytes(initiatorIdentityKey))
@@ -176,13 +220,25 @@ export function tryDecryptIncomingKeyPackage(msg: any): { kind: string; payload:
     const cipher = base64ToBytes(String(msg?.ciphertext ?? msg?.ciphertextBase64 ?? msg?.cipher ?? ''))
     const nonce = base64ToBytes(nonceB64)
     const plain = nacl.secretbox.open(cipher, nonce, sessionKey)
-    if (!plain) return null
+    if (!plain) {
+      return { ok: false, rootCause: 'DECRYPT_FAIL', debug: { ...baseDebug, opkSecretFound: true, decryptOk: false } }
+    }
     // Consume OPK only after successful decrypt (prevents permanent loss on bootstrap timing).
     consumePrekeySecret(prekeyId)
-    const decoded = JSON.parse(bytesToUtf8(plain))
-    return { kind: String(decoded?.kind ?? header.packageKind ?? ''), payload: decoded }
+    let decoded: any
+    try {
+      decoded = JSON.parse(bytesToUtf8(plain))
+    } catch {
+      return { ok: false, rootCause: 'JSON_ERROR', debug: { ...baseDebug, opkSecretFound: true, decryptOk: true } }
+    }
+    return {
+      ok: true,
+      kind: String(decoded?.kind ?? header.packageKind ?? ''),
+      payload: decoded,
+      debug: { ...baseDebug, prekeyId, opkSecretFound: true, decryptOk: true },
+    }
   } catch {
-    return null
+    return { ok: false, rootCause: 'DECRYPT_ERROR', debug: { ...baseDebug, opkSecretFound: true, decryptOk: false } }
   }
 }
 

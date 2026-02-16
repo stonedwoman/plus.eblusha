@@ -2,18 +2,53 @@ import axios, { AxiosError, AxiosHeaders } from 'axios'
 import { useAppStore, type SessionState } from '../domain/store/appStore'
 import { isNativePlatform } from './platform'
 
-// Определяем базовый URL для API: из переменной окружения, либо умный fallback
-let baseURL: string | undefined = (import.meta as any).env?.VITE_API_URL
-if (!baseURL) {
+function isTruthyEnv(v: unknown): boolean {
+  const s = String(v ?? '').trim().toLowerCase()
+  return s === '1' || s === 'true' || s === 'yes'
+}
+
+// Определяем базовый URL для API: из переменной окружения, либо умный fallback.
+//
+// Важно: по умолчанию НЕ позволяем случайно использовать кросс-ориджин absolute URL в проде.
+// Это защищает от ситуации, когда стейдж/плюс фронт внезапно стучится в ru.eblusha.org и ловит 502.
+function computeApiBaseUrl(): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const env = (import.meta as any).env ?? {}
+  let baseURL: string | undefined = typeof env?.VITE_API_URL === 'string' ? env.VITE_API_URL : undefined
+  baseURL = baseURL ? baseURL.trim() : undefined
+
+  const allowCrossOrigin = isTruthyEnv(env?.VITE_ALLOW_CROSS_ORIGIN_API)
+
+  // If env URL is absolute and points to another origin, ignore it unless explicitly allowed
+  if (baseURL && /^https?:\/\//i.test(baseURL)) {
+    try {
+      const targetOrigin = new URL(baseURL).origin
+      const currentOrigin = typeof window !== 'undefined' ? window.location.origin : null
+      const isLocalhost =
+        typeof window !== 'undefined' &&
+        (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+
+      if (currentOrigin && targetOrigin !== currentOrigin && !allowCrossOrigin && !isLocalhost) {
+        baseURL = undefined
+      }
+    } catch {
+      baseURL = undefined
+    }
+  }
+
+  if (baseURL) return baseURL
+
   try {
     const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
     const port = location.port
     // Если фронт запущен не на 5173 (прокси Vite может не работать), бьём напрямую на backend
-    baseURL = isLocalhost && port && port !== '5173' ? 'http://localhost:4000/api' : '/api'
+    return isLocalhost && port && port !== '5173' ? 'http://localhost:4000/api' : '/api'
   } catch {
-    baseURL = '/api'
+    return '/api'
   }
 }
+
+const baseURL = computeApiBaseUrl()
 
 export const api = axios.create({
   baseURL,

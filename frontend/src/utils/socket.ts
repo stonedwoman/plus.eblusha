@@ -2,9 +2,37 @@ import { io } from 'socket.io-client'
 import { useAppStore } from '../domain/store/appStore'
 import { Capacitor } from '@capacitor/core'
 
+function isTruthyEnv(v: unknown): boolean {
+  const s = String(v ?? '').trim().toLowerCase()
+  return s === '1' || s === 'true' || s === 'yes'
+}
+
 function computeWsUrl() {
-  const envUrl = (import.meta as any).env?.VITE_WS_URL as string | undefined
-  if (envUrl) return envUrl
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const env = (import.meta as any).env ?? {}
+  const envUrl = (typeof env?.VITE_WS_URL === 'string' ? env.VITE_WS_URL : undefined)?.trim()
+  const allowCrossOrigin = isTruthyEnv(env?.VITE_ALLOW_CROSS_ORIGIN_WS)
+  if (envUrl) {
+    // If env URL is absolute and points to another origin, ignore it unless explicitly allowed.
+    if (/^https?:\/\//i.test(envUrl)) {
+      try {
+        const targetOrigin = new URL(envUrl).origin
+        const currentOrigin = typeof window !== 'undefined' ? window.location.origin : null
+        const isLocalhost =
+          typeof window !== 'undefined' &&
+          (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+        if (currentOrigin && targetOrigin !== currentOrigin && !allowCrossOrigin && !isLocalhost) {
+          // Fall through to same-origin default.
+        } else {
+          return envUrl
+        }
+      } catch {
+        // Fall through
+      }
+    } else {
+      return envUrl
+    }
+  }
   try {
     const { hostname, port } = window.location
     // Разработка через Vite: используем прокси на /socket.io

@@ -17,7 +17,7 @@ import { ImageLightbox } from '../components/ImageLightbox'
 import { LazyImage } from '../components/LazyImage'
 import { LinkDeviceModal } from '../components/LinkDeviceModal'
 import { useCallStore } from '../../domain/store/callStore'
-import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
+import { ensureDeviceBootstrap, forcePublishPrekeys, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
 import { createAndShareSecretThreadKey } from '../../domain/secret/secretThreadSetup'
@@ -620,6 +620,21 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       return response.data.devices as Array<{ id: string; name?: string; platform?: string | null; userId: string }>
     },
   })
+  // For "Link device" UX we must know the CURRENT device id; otherwise we can mistakenly
+  // think the user has "another" device while bootstrap hasn't completed yet.
+  let localDeviceIdForLinking: string | null = null
+  try {
+    localDeviceIdForLinking = getStoredDeviceInfo()?.deviceId ?? null
+  } catch {
+    localDeviceIdForLinking = null
+  }
+  const hasOtherTrustedDevice = useMemo(() => {
+    const current = String(localDeviceIdForLinking ?? '').trim()
+    if (!current) return false
+    const active = (devicesQuery.data || []).filter((d: any) => !d?.revokedAt)
+    if (!active.length) return false
+    return active.some((d: any) => String(d?.id ?? '').trim() && String(d.id).trim() !== current)
+  }, [devicesQuery.data, localDeviceIdForLinking])
   const [pingMs, setPingMs] = useState<number | null>(null)
   const [isSocketOnline, setIsSocketOnline] = useState<boolean>(() => socket.connected)
   const [myPresence, setMyPresence] = useState<'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | 'IN_CALL' | null>(null)
@@ -1247,8 +1262,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           { pendingId, peerUserId, text, replyToId: normalizedPayload.replyToId ?? null },
         ]
         setSecretBootQueueVersion((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
-        // Keep Link Device gate behavior, but do not block sending UI.
-        if (!secretHistoryGate.open) setSecretHistoryGate({ open: true, threadId })
+        // IMPORTANT: Do not auto-open any modal here.
+        // Missing thread key is expected while waiting for key package delivery.
+        // "Link device" is an explicit action from the user (Settings or inline CTA after timeout).
         return { outcome: 'queued' }
       }
       const { localMessage } = await sendSecretThreadText({
@@ -1771,9 +1787,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       }
       return
     }
-    if (!secretHistoryGate.open) {
-      setSecretHistoryGate({ open: true, threadId: activeConversation.id })
-    }
+    // IMPORTANT: Do NOT auto-open link-device gate when key is missing.
+    // Missing key can be normal while waiting for the peer's key package, and on the first device
+    // there may be no other trusted device to link from.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeConversation?.id, activeConversation?.type, secretKeysVersion])
 
@@ -1920,15 +1936,32 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const t = window.setTimeout(() => {
       // If still no key after 120s, show inline error + CTA (no banners).
       if (!hasSecretThreadKey(threadId)) {
-        setSecretComposerInlineError('Не удалось получить ключи для секретного чата. Привяжите устройство или попробуйте позже.')
+        try {
+          const raw = localStorage.getItem('eb_secret_last_root_cause_v1')
+          if (raw) {
+            const parsed = JSON.parse(raw) as any
+            const code = typeof parsed?.code === 'string' ? parsed.code : ''
+            if (code) {
+              // eslint-disable-next-line no-console
+              console.log(`ROOT_CAUSE=${code}`)
+            }
+          }
+        } catch {}
+        setSecretComposerInlineError(
+          hasOtherTrustedDevice
+            ? 'Не удалось получить ключи для секретного чата. Привяжите устройство или попробуйте позже.'
+            : 'Не удалось получить ключи для секретного чата. Проверь сеть и подожди: ключи должны прийти от собеседника.',
+        )
       }
     }, Math.max(0, 120_000 - (Date.now() - startedAt)))
     return () => window.clearTimeout(t)
-  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, secretKeysVersion, currentUserId, secretDebug])
+  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, secretKeysVersion, currentUserId, secretDebug, hasOtherTrustedDevice])
 
   useEffect(() => {
     if (!activeConversation?.isSecret) return
     if (activeConversation.secretStatus !== 'ACTIVE') return
+    // Secret chat v2 does NOT use legacy per-conversation E2EE sessions.
+    if (String((activeConversation as any)?.type ?? '').toUpperCase() === 'SECRET') return
     let cancelled = false
     e2eeManager.ensureSession(activeConversation).then((session) => {
       if (!cancelled && session) {
@@ -1945,6 +1978,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   useEffect(() => {
     if (!activeConversation?.isSecret) return
     if (!messagesQuery.data || messagesQuery.data.length === 0) return
+    // Secret chat v2 does NOT use legacy per-conversation handshake processing.
+    if (String((activeConversation as any)?.type ?? '').toUpperCase() === 'SECRET') return
     const updated = e2eeManager.processHandshakes(activeConversation, messagesQuery.data)
     if (updated) {
       setE2eeVersion((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
@@ -1955,6 +1990,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!messagesQuery.data) return []
     if (!activeConversation?.isSecret) {
       return messagesQuery.data
+    }
+    // Secret chat v2: messages are already decrypted (or explicitly locked) via secret thread key store.
+    // Do NOT run legacy e2eeManager.transformMessage here.
+    if (String((activeConversation as any)?.type ?? '').toUpperCase() === 'SECRET') {
+      return messagesQuery.data.filter((msg: any) => {
+        const meta = (msg?.metadata ?? {}) as Record<string, any>
+        const e2eeMeta = meta.e2ee
+        return !(e2eeMeta && e2eeMeta.kind === 'handshake')
+      })
     }
     return messagesQuery.data
       .filter((msg: any) => {
@@ -1968,6 +2012,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const decryptAttachment = useCallback(
     (att: any) => {
       if (!activeConversation?.id) return
+      // Secret chat v2 does not support legacy attachment E2EE sessions.
+      if (String((activeConversation as any)?.type ?? '').toUpperCase() === 'SECRET') return
       const meta = att?.metadata?.e2ee
       if (!meta || meta.kind !== 'ciphertext' || !meta.nonce) return
       
@@ -2043,6 +2089,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const baseUrl = convertToProxyUrl(att.url)
       
       if (!activeConversation?.isSecret) return baseUrl
+      // Secret chat v2: do not apply legacy encrypted-attachment gating here.
+      if (String((activeConversation as any)?.type ?? '').toUpperCase() === 'SECRET') {
+        return baseUrl
+      }
       
       const meta = att.metadata?.e2ee
       if (!meta || meta.kind !== 'ciphertext') {
@@ -6619,13 +6669,25 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 }}
               >
                 <div style={{ minWidth: 0 }}>
-                  {activeSecretUiState.readyState === 'bootstrapping'
-                    ? (activeSecretQueuedCount > 0
+                  {(() => {
+                    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+                    if (activeSecretUiState.readyState === 'bootstrapping') {
+                      // v2 bootstrapping is typically "waiting for key package from the peer/creator"
+                      if (isSecretV2) {
+                        return activeSecretQueuedCount > 0
+                          ? `🔒 Настраивается… ждём ключи от собеседника. ${activeSecretQueuedCount} сообщ. в очереди — отправим автоматически.`
+                          : '🔒 Настраивается… ждём ключи от собеседника. Можно писать — отправим автоматически.'
+                      }
+                      return activeSecretQueuedCount > 0
                         ? `🔒 Настраивается… ${activeSecretQueuedCount} сообщ. в очереди, отправим автоматически.`
-                        : '🔒 Настраивается… можно писать, отправим как только защита будет готова.')
-                    : '⚠️ Секретный чат недоступен на этом устройстве.'}
+                        : '🔒 Настраивается… можно писать, отправим как только защита будет готова.'
+                    }
+                    return '⚠️ Секретный чат недоступен на этом устройстве.'
+                  })()}
                 </div>
-                {activeSecretUiState.readyState === 'bootstrapping' && (
+                {activeSecretUiState.readyState === 'bootstrapping' &&
+                  hasOtherTrustedDevice &&
+                  String(activeConversation?.type ?? '').toUpperCase() !== 'SECRET' && (
                   <button
                     type="button"
                     className="btn btn-ghost"
@@ -6650,7 +6712,46 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   lineHeight: 1.25,
                 }}
               >
-                {secretComposerInlineError}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <div style={{ minWidth: 0 }}>{secretComposerInlineError}</div>
+                  {String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' ? (
+                    <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          void forcePublishPrekeys({ reason: 'timeout_cta' }).catch(() => {})
+                        }}
+                      >
+                        Обновить ключи
+                      </button>
+                      {hasOtherTrustedDevice ? (
+                        <button type="button" className="btn btn-ghost" onClick={() => setLinkDeviceModalOpen(true)}>
+                          Привязать устройство
+                        </button>
+                      ) : null}
+                      {secretDebug ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() => {
+                            try {
+                              const threadId = String(activeConversation?.id ?? '').trim()
+                              const peerUserId =
+                                activeConversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user
+                                  ?.id ?? null
+                              if (threadId && peerUserId && (window as any).__ebResendSecretThreadKey) {
+                                void (window as any).__ebResendSecretThreadKey(threadId, peerUserId)
+                              }
+                            } catch {}
+                          }}
+                        >
+                          Переотправить ключ
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             )}
             {replyTo && (
@@ -9549,15 +9650,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   setSecretHistoryGate({ open: false, threadId: null })
                   return
                 }
-                // Generate a fresh key epoch locally (explicit "no history" path)
-                ensureSecretThreadKey(threadId)
-                const row = (conversationsQuery.data || []).find((r: any) => r?.conversation?.id === threadId)
-                const conv = row?.conversation
-                const peerUserId =
-                  conv?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user?.id ?? null
-                if (peerUserId) {
-                  void createAndShareSecretThreadKey(threadId, peerUserId).catch(() => {})
-                }
+                // "Continue without history" MUST NOT rotate/generate a new thread key.
+                // Rotating key without epochs would cause A and B to diverge and stop decrypting each other.
+                // We simply dismiss the gate; messages will still queue until keys arrive (Link Device / key package).
+                try {
+                  localStorage.setItem(`eb_secret_history_dismissed:${threadId}`, String(Date.now()))
+                } catch {}
                 setSecretHistoryGate({ open: false, threadId: null })
                 client.invalidateQueries({ queryKey: ['messages', threadId] })
               }}
