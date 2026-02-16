@@ -6,6 +6,9 @@ import { ensureDeviceBootstrap, forcePublishPrekeys } from '../device/deviceMana
 import { getSecretThreadKey, importSecretThreadKeys, setSecretThreadKey } from './secretThreadKeyStore'
 import { decryptSecretThreadText } from './secretThreadCrypto'
 import { tryDecryptIncomingKeyPackage } from './secretKeyPackages'
+import { isSecretControlHeader, sendSecretControl } from './secretControl'
+import { markKeyReceipt, markKeyShareSent } from './secretKeyShareState'
+import { createEncryptedKeyPackageToDevice } from './secretKeyPackages'
 
 type InboxItem = {
   msgId: string
@@ -33,6 +36,7 @@ function secretDebugEnabled(): boolean {
 type InboxAttemptRec = { count: number; firstAt: number; lastAt: number; rootCause?: string; prekeyId?: string }
 const ATTEMPTS_KEY = 'eb_secret_inbox_attempts_v1'
 const LAST_ROOT_CAUSE_KEY = 'eb_secret_last_root_cause_v1'
+const ROOT_CAUSE_COUNTS_KEY = 'eb_secret_root_cause_counts_v1'
 const ATTEMPT_TTL_MS = 30 * 60_000
 const POISON_THRESHOLD = 20
 
@@ -83,6 +87,14 @@ function bumpAttempt(msgId: string, info?: { rootCause?: string; prekeyId?: stri
 function setLastRootCause(code: string, details?: Record<string, any>) {
   try {
     localStorage.setItem(LAST_ROOT_CAUSE_KEY, JSON.stringify({ code, at: Date.now(), ...(details ? { details } : {}) }))
+  } catch {}
+  try {
+    const raw = localStorage.getItem(ROOT_CAUSE_COUNTS_KEY)
+    const parsed = raw ? (JSON.parse(raw) as any) : {}
+    const obj = parsed && typeof parsed === 'object' ? parsed : {}
+    const prev = typeof obj[code] === 'number' ? obj[code] : 0
+    obj[code] = prev + 1
+    localStorage.setItem(ROOT_CAUSE_COUNTS_KEY, JSON.stringify(obj))
   } catch {}
 }
 
@@ -165,6 +177,57 @@ export function SecretInboxPump() {
           if (!item?.msgId) continue
           const header = item.headerJson ?? {}
           const isKeyPackage = header && typeof header === 'object' && String((header as any).kind ?? '') === 'key_package'
+          const isControl = header && typeof header === 'object' && String((header as any).kind ?? '') === 'control'
+
+          if (isControl && isSecretControlHeader(header)) {
+            const type = String((header as any).type ?? '')
+            const threadId = String((header as any).threadId ?? '').trim()
+            if (type === 'key_receipt') {
+              const fromDeviceId = String((header as any).fromDeviceId ?? '').trim()
+              if (threadId && fromDeviceId) {
+                markKeyReceipt(threadId, fromDeviceId)
+              }
+              ackIds.push(item.msgId)
+              continue
+            }
+            if (type === 'key_request') {
+              const requesterDeviceId = String((header as any).requesterDeviceId ?? '').trim()
+              if (threadId && requesterDeviceId) {
+                const keyRec = getSecretThreadKey(threadId)
+                if (keyRec?.key) {
+                  try {
+                    const env = await createEncryptedKeyPackageToDevice({
+                      toDeviceId: requesterDeviceId,
+                      kind: 'thread_key',
+                      payload: { threadId, key: keyRec.key },
+                      ttlSeconds: 60 * 60,
+                    })
+                    markKeyShareSent(threadId, requesterDeviceId, String(env.msgId))
+                    await api.post('/secret/send', { messages: [env] })
+                    if (secretDebugEnabled()) {
+                      // eslint-disable-next-line no-console
+                      console.log('[SecretInboxPump] handled key_request: resent thread_key', {
+                        threadId,
+                        toDeviceId: requesterDeviceId,
+                        msgId: env.msgId,
+                      })
+                    }
+                  } catch (e: any) {
+                    if (secretDebugEnabled()) {
+                      // eslint-disable-next-line no-console
+                      console.warn('[SecretInboxPump] failed to handle key_request', {
+                        threadId,
+                        requesterDeviceId,
+                        message: String(e?.response?.data?.message ?? e?.message ?? ''),
+                      })
+                    }
+                  }
+                }
+              }
+              ackIds.push(item.msgId)
+              continue
+            }
+          }
 
           // Key packages (device-link / thread-key share) arrive via direct inbox (threadId null).
           const attempt = isKeyPackage ? tryDecryptIncomingKeyPackage(item) : null
@@ -189,6 +252,18 @@ export function SecretInboxPump() {
                 setSecretThreadKey(threadId, key, { overwrite: true })
                 client.invalidateQueries({ queryKey: ['messages', threadId] })
                 ackIds.push(item.msgId)
+                // Send a lightweight receipt back to initiator device so it can stop resends.
+                try {
+                  const initiatorDeviceId = String((item.headerJson as any)?.initiatorDeviceId ?? attempt.debug.initiatorDeviceId ?? '').trim()
+                  const fromDeviceId = String((bootstrapRes as any)?.deviceId ?? '').trim()
+                  if (initiatorDeviceId && fromDeviceId) {
+                    void sendSecretControl(
+                      initiatorDeviceId,
+                      { type: 'key_receipt', threadId, fromDeviceId, ts: Date.now() },
+                      { ttlSeconds: 10 * 60 },
+                    ).catch(() => {})
+                  }
+                } catch {}
               }
               continue
             }
@@ -250,6 +325,21 @@ export function SecretInboxPump() {
                   void forcePublishPrekeys({ reason: 'opk_secret_miss' }).catch(() => {})
                 } catch {}
               }
+            }
+            // Ask the initiator to resend (control msg) after a few failed decrypt attempts.
+            if ((attempt.rootCause === 'OPK_SECRET_MISS' || attempt.rootCause === 'DECRYPT_FAIL') && count === 3) {
+              try {
+                const initiatorDeviceId = String((item.headerJson as any)?.initiatorDeviceId ?? attempt.debug.initiatorDeviceId ?? '').trim()
+                const threadIdMeta = String((item.headerJson as any)?.threadId ?? '').trim()
+                const requesterDeviceId = String((bootstrapRes as any)?.deviceId ?? '').trim()
+                if (initiatorDeviceId && threadIdMeta && requesterDeviceId) {
+                  void sendSecretControl(
+                    initiatorDeviceId,
+                    { type: 'key_request', threadId: threadIdMeta, requesterDeviceId, fromDeviceId: requesterDeviceId, ts: Date.now(), reasonCode: attempt.rootCause },
+                    { ttlSeconds: 10 * 60 },
+                  ).catch(() => {})
+                }
+              } catch {}
             }
             if (poisoned) {
               // Prevent head-of-line blocking: acknowledge poisoned items so newer messages can flow.

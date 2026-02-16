@@ -2,6 +2,7 @@ import { api } from '../../utils/api'
 import { ensureSecretThreadKey } from './secretThreadKeyStore'
 import { createEncryptedKeyPackageToDevice } from './secretKeyPackages'
 import { getStoredDeviceInfo } from '../device/deviceManager'
+import { filterUnackedTargets, getPendingAttempts, markKeyShareSent } from './secretKeyShareState'
 
 type ShareRootCause = 'NO_TARGETS' | 'NO_PREKEYS' | 'SEND_FAILED' | 'CLAIM_FAILED'
 
@@ -35,6 +36,8 @@ function backoffMs(attempt: number): number {
   const steps = [0, 5_000, 15_000, 45_000, 90_000]
   return steps[Math.min(Math.max(attempt, 1), steps.length) - 1] ?? 90_000
 }
+
+const scheduledResends = new Map<string, number[]>()
 
 export async function createAndShareSecretThreadKey(threadId: string, peerUserId: string): Promise<void> {
   const local = getStoredDeviceInfo()
@@ -89,6 +92,7 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
         })
         envelopes.push(env)
         byMsgId.set(String(env.msgId), toDeviceId)
+        markKeyShareSent(threadId, toDeviceId, String(env.msgId))
         log('claim ok', { toDeviceId, msgId: env.msgId, prekeyId: env?.headerJson?.prekeyId })
       } catch (err: any) {
         const info = classifyShareError(err)
@@ -142,6 +146,31 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
   if (pending.length) {
     log('ROOT_CAUSE=NO_PREKEYS', { threadId, pending })
   }
+
+  // Hard reliability: schedule automatic resends for devices that didn't confirm import.
+  // This addresses OPK_SECRET_MISS / decrypt failures / transient notify/poll issues without user action.
+  try {
+    if (!scheduledResends.has(threadId)) {
+      const timers: number[] = []
+      const schedule = (delayMs: number, tag: string) => {
+        const t = window.setTimeout(async () => {
+          try {
+            const { targets: allTargets } = await fetchTargets()
+            const unacked = filterUnackedTargets(threadId, allTargets).filter((d) => getPendingAttempts(threadId, d) < 4)
+            if (!unacked.length) return
+            log('auto-resend', { tag, threadId, unackedCount: unacked.length, unacked })
+            await attemptShareDevices(99, unacked)
+          } catch (e: any) {
+            log('auto-resend failed', { tag, message: String(e?.message ?? e) })
+          }
+        }, delayMs)
+        timers.push(t)
+      }
+      schedule(12_000, 't+12s')
+      schedule(24_000, 't+24s')
+      scheduledResends.set(threadId, timers)
+    }
+  } catch {}
 }
 
 // Dev helper: allow manual resend without exposing UI banners.
