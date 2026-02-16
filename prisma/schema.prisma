@@ -415,6 +415,24 @@ model SecretDelivery {
   @@map("deliveries_secret")
 }
 
+/// Metadata-only refs for ciphertext attachments in SECRET threads.
+/// No plaintext keys/content are stored server-side.
+model SecretAttachmentRef {
+  id          String   @id @default(cuid())
+  threadId    String   @map("threadId")
+  objectKey   String   @map("objectKey")
+  ownerUserId String   @map("ownerUserId")
+  createdAt   DateTime @default(now()) @map("createdAt")
+  expiresAt   DateTime? @map("expiresAt")
+  deletedAt   DateTime? @map("deletedAt")
+
+  @@unique([threadId, objectKey])
+  @@index([threadId, deletedAt])
+  @@index([ownerUserId, deletedAt])
+  @@index([expiresAt, deletedAt])
+  @@map("secret_attachment_refs")
+}
+
 /// One-time pairing token for linking a new device to an existing trusted device.
 model DevicePairing {
   token            String    @id

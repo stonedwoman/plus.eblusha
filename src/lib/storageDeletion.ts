@@ -29,6 +29,16 @@ function isSafeKey(key: string) {
   return true;
 }
 
+function uniqueSafeKeys(keys: string[]): string[] {
+  return Array.from(
+    new Set(
+      (keys || [])
+        .map((k) => String(k || "").trim().replace(/^\//, ""))
+        .filter(isSafeKey)
+    )
+  );
+}
+
 function stripLeadingBucketSegment(decodedPath: string, bucket: string, prefix: string) {
   const segments = splitSegments(decodedPath);
   if (segments.length === 0) return decodedPath;
@@ -165,6 +175,52 @@ export async function deleteS3ObjectsByUrls(urls: string[], opts?: { reason?: st
   });
 
   logger.info({ deleted, candidates: keys.length, reason: opts?.reason }, "S3 delete completed");
+  return { ok: true as const, deleted, candidates: keys.length };
+}
+
+export async function deleteS3ObjectsByKeys(keysInput: string[], opts?: { reason?: string }) {
+  const bucket = env.STORAGE_S3_BUCKET;
+  const endpoint = env.STORAGE_S3_ENDPOINT;
+  const region = env.STORAGE_S3_REGION;
+
+  if (!bucket || !endpoint || !region) {
+    return { ok: false as const, reason: "s3_not_configured" as const };
+  }
+
+  const keys = uniqueSafeKeys(keysInput);
+  if (!keys.length) {
+    return { ok: true as const, deleted: 0, skipped: 0 };
+  }
+
+  const s3 = new S3Client({
+    region,
+    endpoint,
+    forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
+    ...(env.STORAGE_S3_ACCESS_KEY && env.STORAGE_S3_SECRET_KEY
+      ? {
+          credentials: {
+            accessKeyId: env.STORAGE_S3_ACCESS_KEY,
+            secretAccessKey: env.STORAGE_S3_SECRET_KEY,
+          },
+        }
+      : {}),
+  });
+
+  const results = await Promise.allSettled(
+    keys.map((Key) => s3.send(new DeleteObjectCommand({ Bucket: bucket, Key })))
+  );
+
+  let deleted = 0;
+  results.forEach((r, i) => {
+    const key = keys[i] ?? "(unknown)";
+    if (r.status === "fulfilled") {
+      deleted += 1;
+      return;
+    }
+    logger.warn({ err: r.reason, key, reason: opts?.reason }, "Failed to delete S3 object by key");
+  });
+
+  logger.info({ deleted, candidates: keys.length, reason: opts?.reason }, "S3 delete by keys completed");
   return { ok: true as const, deleted, candidates: keys.length };
 }
 

@@ -13,6 +13,7 @@ import {
   markSecretSeen,
 } from "../lib/secretInbox";
 import { getIO } from "../realtime/socket";
+import { deleteS3ObjectsByKeys } from "../lib/storageDeletion";
 
 const router = Router();
 router.use(authenticate);
@@ -441,8 +442,159 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
     io?.to(`device:${r.toDeviceId}`).emit("secret:notify", { toDeviceId: r.toDeviceId, msgId: r.msgId });
   }
 
+  // Best-effort: if message is an attachment reference, persist metadata-only ref for GC/delete workflows.
+  try {
+    const header = parsed.data.headerJson as any;
+    const objectKey = String(header?.attachment?.objectKey ?? "").trim();
+    const expiresAtRaw = typeof header?.expiresAt === "string" ? String(header.expiresAt).trim() : "";
+    const expiresAt = expiresAtRaw ? new Date(expiresAtRaw) : null;
+    const expiresValid = !!(expiresAt && !Number.isNaN(expiresAt.getTime()));
+    if (parsed.data.contentType === "attachment" && objectKey) {
+      await prisma.secretAttachmentRef.upsert({
+        where: { threadId_objectKey: { threadId, objectKey } } as any,
+        update: {
+          ownerUserId: userId,
+          deletedAt: null,
+          ...(expiresValid ? { expiresAt } : {}),
+        },
+        create: {
+          threadId,
+          objectKey,
+          ownerUserId: userId,
+          ...(expiresValid ? { expiresAt } : {}),
+        },
+      });
+    }
+  } catch {
+    // never break delivery path on metadata upsert
+  }
+
   res.status(inserted ? 201 : 200).json({ msgId: parsed.data.msgId, deliveries: results });
 });
+
+const attachmentRefSchema = z.object({
+  threadId: z.string().min(1),
+  objectKey: z.string().min(1),
+  expiresAt: z.string().datetime().optional(),
+});
+
+router.post(
+  "/attachments/ref",
+  rateLimit({ name: "secret_attachment_ref", windowMs: 60_000, max: 120 }),
+  async (req, res) => {
+    const userId = (req as AuthedRequest).user!.id;
+    const parsed = attachmentRefSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid attachment ref payload" });
+      return;
+    }
+    const threadId = parsed.data.threadId.trim();
+    const objectKey = parsed.data.objectKey.trim().replace(/^\//, "");
+    const membership = await prisma.conversationParticipant.findFirst({
+      where: { conversationId: threadId, userId },
+      select: { conversationId: true },
+    });
+    if (!membership) {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+    const conv = await prisma.conversation.findUnique({
+      where: { id: threadId },
+      select: { id: true, type: true },
+    });
+    if (!conv || (conv as any).type !== "SECRET") {
+      res.status(409).json({ message: "Thread is not SECRET" });
+      return;
+    }
+    const expiresAt = parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null;
+    await prisma.secretAttachmentRef.upsert({
+      where: { threadId_objectKey: { threadId, objectKey } } as any,
+      update: {
+        ownerUserId: userId,
+        deletedAt: null,
+        ...(expiresAt ? { expiresAt } : {}),
+      },
+      create: {
+        threadId,
+        objectKey,
+        ownerUserId: userId,
+        ...(expiresAt ? { expiresAt } : {}),
+      },
+    });
+    res.status(201).json({ ok: true, threadId, objectKey });
+  }
+);
+
+const attachmentDeleteSchema = z
+  .object({
+    threadId: z.string().min(1),
+    objectKeys: z.array(z.string().min(1)).max(500).optional(),
+    deleteAllThread: z.boolean().optional(),
+  })
+  .refine((v) => !!v.deleteAllThread || !!(v.objectKeys && v.objectKeys.length > 0), {
+    message: "Either objectKeys or deleteAllThread is required",
+    path: ["objectKeys"],
+  });
+
+router.post(
+  "/attachments/delete",
+  rateLimit({ name: "secret_attachment_delete", windowMs: 60_000, max: 60 }),
+  async (req, res) => {
+    const userId = (req as AuthedRequest).user!.id;
+    const parsed = attachmentDeleteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid attachment delete payload" });
+      return;
+    }
+    const threadId = parsed.data.threadId.trim();
+    const membership = await prisma.conversationParticipant.findFirst({
+      where: { conversationId: threadId, userId },
+      select: { conversationId: true },
+    });
+    if (!membership) {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+    const conv = await prisma.conversation.findUnique({
+      where: { id: threadId },
+      select: { id: true, type: true },
+    });
+    if (!conv || (conv as any).type !== "SECRET") {
+      res.status(409).json({ message: "Thread is not SECRET" });
+      return;
+    }
+
+    const objectKeys = (parsed.data.objectKeys ?? [])
+      .map((k) => String(k).trim().replace(/^\//, ""))
+      .filter(Boolean);
+    const refs = await prisma.secretAttachmentRef.findMany({
+      where: {
+        threadId,
+        deletedAt: null,
+        ...(parsed.data.deleteAllThread ? {} : { objectKey: { in: objectKeys } }),
+      },
+      select: { id: true, objectKey: true },
+      take: 1000,
+    });
+    const keys = refs.map((r) => r.objectKey);
+    const now = new Date();
+    if (refs.length) {
+      await prisma.secretAttachmentRef.updateMany({
+        where: { id: { in: refs.map((r) => r.id) } },
+        data: { deletedAt: now },
+      });
+    }
+    const delResult = keys.length
+      ? await deleteS3ObjectsByKeys(keys, { reason: "secret_attachment_delete" })
+      : { ok: true, deleted: 0 };
+    res.json({
+      ok: true,
+      threadId,
+      affectedRefs: refs.length,
+      storage: delResult,
+    });
+  }
+);
 
 // GET /secret/history?threadId=...&cursor=...&limit=...
 router.get("/history", async (req, res) => {

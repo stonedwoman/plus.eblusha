@@ -26,6 +26,7 @@
     "smoke:local": "ts-node test/local-smoke.ts",
     "smoke:test": "ts-node test/platform-smoke.ts",
     "smoke": "ts-node test/run-smoke.ts",
+    "gc:secret-attachments": "ts-node src/scripts/gcSecretAttachments.ts",
     "migrate:uploads": "ts-node src/scripts/migrateUploads.ts",
     "encrypt:s3": "ts-node src/scripts/encryptS3Objects.ts",
     "migrate:eblusha-keys": "ts-node src/scripts/migrateKeysToEblusha.ts"
