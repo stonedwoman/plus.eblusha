@@ -145,6 +145,9 @@ export async function createEncryptedKeyPackageToDevice(opts: {
       kind: 'key_package',
       v: 1,
       packageKind: opts.kind,
+      ...(opts.kind === 'thread_key' && typeof (opts.payload as any)?.threadId === 'string'
+        ? { threadId: String((opts.payload as any).threadId) }
+        : {}),
       recipientDeviceId: opts.toDeviceId,
       initiatorDeviceId: localInfo.deviceId,
       initiatorIdentityKey: identity.publicKey,

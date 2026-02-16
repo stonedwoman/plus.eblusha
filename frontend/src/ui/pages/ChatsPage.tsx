@@ -17,7 +17,8 @@ import { ImageLightbox } from '../components/ImageLightbox'
 import { LazyImage } from '../components/LazyImage'
 import { LinkDeviceModal } from '../components/LinkDeviceModal'
 import { useCallStore } from '../../domain/store/callStore'
-import { ensureDeviceBootstrap, forcePublishPrekeys, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
+import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
+import { fixSecretChat } from '../../domain/secret/secretChatFix'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
 import { createAndShareSecretThreadKey } from '../../domain/secret/secretThreadSetup'
@@ -1883,6 +1884,46 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const endSecretTitle = secretBlockedByOtherDevice ? 'Завершить везде' : 'Завершить секретный чат'
 
   type SecretReadyState = 'ready' | 'bootstrapping' | 'error'
+
+  const SECRET_V2_ERROR_KEY = 'eb_secret_v2_thread_error_v1'
+  const getSecretV2ErrorCode = (threadId: string): string | null => {
+    try {
+      const raw = localStorage.getItem(SECRET_V2_ERROR_KEY)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as any
+      const rec = parsed && typeof parsed === 'object' ? parsed[String(threadId)] : null
+      const code = typeof rec?.code === 'string' ? rec.code : null
+      const at = typeof rec?.at === 'number' ? rec.at : 0
+      if (!code) return null
+      // expire after 1 hour
+      if (at && Date.now() - at > 60 * 60_000) return null
+      return code
+    } catch {
+      return null
+    }
+  }
+  const setSecretV2ErrorCode = (threadId: string, code: string) => {
+    try {
+      const raw = localStorage.getItem(SECRET_V2_ERROR_KEY)
+      const parsed = raw ? (JSON.parse(raw) as any) : {}
+      const obj = parsed && typeof parsed === 'object' ? parsed : {}
+      obj[String(threadId)] = { code: String(code), at: Date.now() }
+      localStorage.setItem(SECRET_V2_ERROR_KEY, JSON.stringify(obj))
+    } catch {}
+  }
+  const clearSecretV2ErrorCode = (threadId: string) => {
+    try {
+      const raw = localStorage.getItem(SECRET_V2_ERROR_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as any
+      const obj = parsed && typeof parsed === 'object' ? parsed : {}
+      if (obj[String(threadId)]) {
+        delete obj[String(threadId)]
+        localStorage.setItem(SECRET_V2_ERROR_KEY, JSON.stringify(obj))
+      }
+    } catch {}
+  }
+
   const activeSecretUiState = useMemo(() => {
     if (!activeConversation?.isSecret) {
       return { isSecret: false, readyState: 'ready' as SecretReadyState, error: null as string | null }
@@ -1891,7 +1932,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (isSecretV2) {
       const threadId = String(activeConversation.id ?? '').trim()
       const ready = !!(threadId && hasSecretThreadKey(threadId))
-      return { isSecret: true, readyState: (ready ? 'ready' : 'bootstrapping') as SecretReadyState, error: null as string | null }
+      if (ready) return { isSecret: true, readyState: 'ready' as SecretReadyState, error: null as string | null }
+      const code = threadId ? getSecretV2ErrorCode(threadId) : null
+      if (code) return { isSecret: true, readyState: 'error' as SecretReadyState, error: code }
+      return { isSecret: true, readyState: 'bootstrapping' as SecretReadyState, error: null as string | null }
     }
     const status = String(activeConversation?.secretStatus ?? 'ACTIVE').toUpperCase()
     if (status !== 'ACTIVE') {
@@ -1899,7 +1943,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     const ready = e2eeManager.hasSession(activeConversation.id)
     return { isSecret: true, readyState: (ready ? 'ready' : 'bootstrapping') as SecretReadyState, error: null as string | null }
-  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.secretStatus, secretKeysVersion, e2eeVersion])
+  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.secretStatus, secretKeysVersion, e2eeVersion, secretComposerInlineError])
 
   const activeSecretQueuedCount = useMemo(() => {
     const threadId = String(activeConversation?.id ?? '').trim()
@@ -1927,6 +1971,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     if (hasKey) {
       delete secretBootStartedAtRef.current[threadId]
+      clearSecretV2ErrorCode(threadId)
       return
     }
     if (!secretBootStartedAtRef.current[threadId]) {
@@ -1944,13 +1989,18 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             if (code) {
               // eslint-disable-next-line no-console
               console.log(`ROOT_CAUSE=${code}`)
+              setSecretV2ErrorCode(threadId, code)
+            } else {
+              setSecretV2ErrorCode(threadId, 'NO_KEYPACKAGE')
             }
+          } else {
+            setSecretV2ErrorCode(threadId, 'NO_KEYPACKAGE')
           }
         } catch {}
         setSecretComposerInlineError(
           hasOtherTrustedDevice
-            ? 'Не удалось получить ключи для секретного чата. Привяжите устройство или попробуйте позже.'
-            : 'Не удалось получить ключи для секретного чата. Проверь сеть и подожди: ключи должны прийти от собеседника.',
+            ? `Не удалось получить ключи для секретного чата (${getSecretV2ErrorCode(threadId) ?? 'NO_KEYPACKAGE'}).`
+            : `Не удалось получить ключи для секретного чата (${getSecretV2ErrorCode(threadId) ?? 'NO_KEYPACKAGE'}).`,
         )
       }
     }, Math.max(0, 120_000 - (Date.now() - startedAt)))
@@ -4837,7 +4887,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 {(() => {
                                   const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
                                   if (isSecretV2) {
-                                    return hasSecretThreadKey(activeConversation.id) ? '🔒 Защищено' : '🔒 Настраивается…'
+                                    if (activeSecretUiState.readyState === 'ready') return '🔒 Защищено'
+                                    if (activeSecretUiState.readyState === 'error') return '⚠️ Ошибка ключей'
+                                    return '🔒 Настраивается…'
                                   }
                                   if (activeSecretUiState.readyState !== 'ready') return '🔒 Настраивается…'
                                   return '🔒 Защищено'
@@ -6720,33 +6772,23 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         type="button"
                         className="btn btn-ghost"
                         onClick={() => {
-                          void forcePublishPrekeys({ reason: 'timeout_cta' }).catch(() => {})
+                          try {
+                            const threadId = String(activeConversation?.id ?? '').trim()
+                            const peerUserId =
+                              activeConversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user
+                                ?.id ?? null
+                            const amCreator = !!(me?.id && String(activeConversation?.createdById ?? '') === me.id)
+                            if (threadId && peerUserId) {
+                              void fixSecretChat({ threadId, peerUserId, amCreator }).catch(() => {})
+                            }
+                          } catch {}
                         }}
                       >
-                        Обновить ключи
+                        Восстановить
                       </button>
                       {hasOtherTrustedDevice ? (
                         <button type="button" className="btn btn-ghost" onClick={() => setLinkDeviceModalOpen(true)}>
                           Привязать устройство
-                        </button>
-                      ) : null}
-                      {secretDebug ? (
-                        <button
-                          type="button"
-                          className="btn btn-ghost"
-                          onClick={() => {
-                            try {
-                              const threadId = String(activeConversation?.id ?? '').trim()
-                              const peerUserId =
-                                activeConversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user
-                                  ?.id ?? null
-                              if (threadId && peerUserId && (window as any).__ebResendSecretThreadKey) {
-                                void (window as any).__ebResendSecretThreadKey(threadId, peerUserId)
-                              }
-                            } catch {}
-                          }}
-                        >
-                          Переотправить ключ
                         </button>
                       ) : null}
                     </div>
