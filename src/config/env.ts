@@ -34,6 +34,9 @@ const envSchema = z.object({
   METRICS_TOKEN: z.string().min(8).optional(),
   // Default TTL for secret messages on the server (in seconds)
   SECRET_MESSAGE_TTL_SECONDS: z.coerce.number().default(3600),
+  // Debug: allow clients to ship SAFE debug logs to server (Redis, TTL/capped).
+  // Keep disabled by default in production.
+  DEBUG_CLIENT_LOGS: z.coerce.boolean().default(false),
   STORAGE_S3_ENDPOINT: z.string().url().optional(),
   STORAGE_S3_REGION: z.string().optional(),
   STORAGE_S3_BUCKET: z.string().optional(),

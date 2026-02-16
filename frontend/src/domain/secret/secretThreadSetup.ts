@@ -3,6 +3,7 @@ import { ensureSecretThreadKey } from './secretThreadKeyStore'
 import { createEncryptedKeyPackageToDevice } from './secretKeyPackages'
 import { getStoredDeviceInfo } from '../device/deviceManager'
 import { filterUnackedTargets, getPendingAttempts, markKeyShareSent } from './secretKeyShareState'
+import { clientLog } from './secretClientLog'
 
 type ShareRootCause = 'NO_TARGETS' | 'NO_PREKEYS' | 'SEND_FAILED' | 'CLAIM_FAILED'
 
@@ -76,6 +77,7 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
   const attemptShareDevices = async (attempt: number, targetDeviceIds: string[]) => {
     if (!targetDeviceIds.length) return { envelopes: 0, failedNoPrekeys: [] as string[], failedOther: [] as string[] }
     log('share attempt', { attempt, threadId, peerUserId, localDeviceId, targetsCount: targetDeviceIds.length, targets: targetDeviceIds })
+    clientLog('secretThreadSetup', 'info', 'share attempt', { threadId, data: { attempt, targetsCount: targetDeviceIds.length } })
 
     const envelopes: any[] = []
     const byMsgId = new Map<string, string>()
@@ -94,11 +96,13 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
         byMsgId.set(String(env.msgId), toDeviceId)
         markKeyShareSent(threadId, toDeviceId, String(env.msgId))
         log('claim ok', { toDeviceId, msgId: env.msgId, prekeyId: env?.headerJson?.prekeyId })
+        clientLog('secretThreadSetup', 'info', 'claim ok', { threadId, msgId: String(env.msgId), data: { toDeviceId, prekeyId: env?.headerJson?.prekeyId } })
       } catch (err: any) {
         const info = classifyShareError(err)
         if (info.rootCause === 'NO_PREKEYS') failedNoPrekeys.push(toDeviceId)
         else failedOther.push(toDeviceId)
         log('claim failed', { toDeviceId, rootCause: info.rootCause, status: info.status, message: info.message })
+        clientLog('secretThreadSetup', 'warn', 'claim failed', { threadId, rootCause: info.rootCause, data: { toDeviceId, status: info.status, message: info.message } })
       }
     }
 
@@ -115,12 +119,14 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
           const toDeviceId = msgId ? (byMsgId.get(msgId) ?? null) : null
           if (!msgId || !toDeviceId) continue
           log('send result', { toDeviceId, msgId, inserted: !!r?.inserted, skippedSeen: !!r?.skippedSeen })
+          clientLog('secretThreadSetup', 'info', 'send result', { threadId, msgId, data: { toDeviceId, inserted: !!r?.inserted, skippedSeen: !!r?.skippedSeen } })
         }
         sent += batch.length
       }
     } catch (err: any) {
       const message = String(err?.response?.data?.message ?? err?.message ?? '')
       log('send failed', { attempt, sentSoFar: sent, message })
+      clientLog('secretThreadSetup', 'error', 'send failed', { threadId, data: { attempt, sentSoFar: sent, message } })
     }
 
     return { envelopes: envelopes.length, failedNoPrekeys, failedOther }
@@ -145,6 +151,7 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
 
   if (pending.length) {
     log('ROOT_CAUSE=NO_PREKEYS', { threadId, pending })
+    clientLog('secretThreadSetup', 'warn', 'ROOT_CAUSE=NO_PREKEYS', { threadId, rootCause: 'NO_PREKEYS', data: { pending } })
   }
 
   // Hard reliability: schedule automatic resends for devices that didn't confirm import.
@@ -159,9 +166,11 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
             const unacked = filterUnackedTargets(threadId, allTargets).filter((d) => getPendingAttempts(threadId, d) < 4)
             if (!unacked.length) return
             log('auto-resend', { tag, threadId, unackedCount: unacked.length, unacked })
+            clientLog('secretThreadSetup', 'info', 'auto-resend', { threadId, data: { tag, unackedCount: unacked.length, unacked } })
             await attemptShareDevices(99, unacked)
           } catch (e: any) {
             log('auto-resend failed', { tag, message: String(e?.message ?? e) })
+            clientLog('secretThreadSetup', 'warn', 'auto-resend failed', { threadId, data: { tag, message: String(e?.message ?? e) } })
           }
         }, delayMs)
         timers.push(t)
