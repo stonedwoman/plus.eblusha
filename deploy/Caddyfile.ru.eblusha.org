@@ -8,11 +8,33 @@ ru.eblusha.org {
 
     # ===== Проксирование API и файлов через backend (Express) =====
     handle /api/files/* {
-        reverse_proxy http://plus.eblusha.org:4000
+        # ВАЖНО: порт 4000 обычно НЕ открыт наружу (это внутренний upstream для nginx на plus).
+        # Поэтому проксируем на публичный HTTPS + правильный Host, чтобы попали в нужный vhost.
+        reverse_proxy https://plus.eblusha.org {
+            header_up Host plus.eblusha.org
+            header_up X-Forwarded-Host {host}
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+        }
     }
 
     handle /api/* {
-        reverse_proxy http://plus.eblusha.org:4000
+        reverse_proxy https://plus.eblusha.org {
+            header_up Host plus.eblusha.org
+            header_up X-Forwarded-Host {host}
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
+    # Socket.IO / WebSocket
+    handle /socket.io/* {
+        reverse_proxy https://plus.eblusha.org {
+            header_up Host plus.eblusha.org
+            header_up X-Forwarded-Host {host}
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+        }
     }
 
     # ===== Остальные запросы — SPA через plus.eblusha.org =====
