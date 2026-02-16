@@ -3,7 +3,7 @@ import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha256.js'
 import { api } from '../../utils/api'
 import { base64ToBytes, bytesToBase64, utf8ToBytes, bytesToUtf8 } from '../../utils/base64'
-import { consumePrekeySecret, getIdentityKeyPair, getStoredDeviceInfo } from '../device/deviceManager'
+import { consumePrekeySecret, getPrekeySecret, getIdentityKeyPair, getStoredDeviceInfo } from '../device/deviceManager'
 
 type ClaimResponse = {
   deviceId: string
@@ -11,6 +11,82 @@ type ClaimResponse = {
   prekey: { keyId: string; publicKey: string }
   alg?: string
   version?: number
+}
+
+function secretDebugEnabled(): boolean {
+  try {
+    if (typeof window === 'undefined') return false
+    const q = String(window.location?.search ?? '')
+    if (q.includes('SECRET_DEBUG=1')) return true
+    return window.localStorage.getItem('eb_secret_debug') === '1'
+  } catch {
+    return false
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms))
+}
+
+// The backend OPK claim endpoint is rate-limited. If a user has many active devices,
+// key-share fanout can easily exceed the limit and permanently stall bootstrapping.
+// We serialize OPK claims with a small delay to avoid 429 storms.
+const CLAIM_MIN_INTERVAL_MS = 1100
+let lastClaimAt = 0
+let claimChain: Promise<void> = Promise.resolve()
+const inFlightClaims = new Map<string, Promise<ClaimResponse>>()
+
+async function claimPrekeyRateLimited(deviceId: string): Promise<ClaimResponse> {
+  const id = String(deviceId ?? '').trim()
+  if (!id) throw new Error('Missing deviceId')
+  const existing = inFlightClaims.get(id)
+  if (existing) return existing
+
+  const p = (async () => {
+    // Ensure serialized scheduling (best-effort, in-tab).
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const prev = claimChain
+    claimChain = prev.then(() => gate)
+    await prev
+    try {
+      const now = Date.now()
+      const wait = Math.max(0, CLAIM_MIN_INTERVAL_MS - (now - lastClaimAt))
+      if (wait) await sleep(wait)
+
+      // Retry a few times on 429 with backoff.
+      let attempt = 0
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        attempt += 1
+        try {
+          const claim = await api.post<ClaimResponse>('/e2ee/prekeys/claim', { deviceId: id })
+          lastClaimAt = Date.now()
+          return claim.data as any
+        } catch (err: any) {
+          const status = err?.response?.status
+          if (status === 429 && attempt < 5) {
+            const ra = err?.response?.headers?.['retry-after']
+            const retryAfterMs =
+              typeof ra === 'string' && ra.trim() && Number.isFinite(Number(ra)) ? Number(ra) * 1000 : 1500
+            if (secretDebugEnabled()) {
+              // eslint-disable-next-line no-console
+              console.warn('[secretKeyPackages] OPK claim rate limited, backing off', { deviceId: id, attempt, retryAfterMs })
+            }
+            await sleep(retryAfterMs + attempt * 250)
+            continue
+          }
+          throw err
+        }
+      }
+    } finally {
+      release()
+      inFlightClaims.delete(id)
+    }
+  })()
+
+  inFlightClaims.set(id, p)
+  return p
 }
 
 export type SecretDirectEnvelope = {
@@ -40,8 +116,7 @@ export async function createEncryptedKeyPackageToDevice(opts: {
     throw new Error('Device keys are not ready')
   }
 
-  const claim = await api.post<ClaimResponse>('/e2ee/prekeys/claim', { deviceId: opts.toDeviceId })
-  const claimed = claim.data as any
+  const claimed = (await claimPrekeyRateLimited(opts.toDeviceId)) as any
   const prekeyId = claimed?.prekey?.keyId as string | undefined
   const prekeyPub = claimed?.prekey?.publicKey as string | undefined
   if (!prekeyId || !prekeyPub) {
@@ -92,7 +167,7 @@ export function tryDecryptIncomingKeyPackage(msg: any): { kind: string; payload:
   const nonceB64 = String(header.nonce ?? '').trim()
   if (!prekeyId || !initiatorIdentityKey || !handshakeSalt || !hkdfInfo || !nonceB64) return null
 
-  const prekeySecret = consumePrekeySecret(prekeyId)
+  const prekeySecret = getPrekeySecret(prekeyId)
   if (!prekeySecret) return null
 
   try {
@@ -102,6 +177,8 @@ export function tryDecryptIncomingKeyPackage(msg: any): { kind: string; payload:
     const nonce = base64ToBytes(nonceB64)
     const plain = nacl.secretbox.open(cipher, nonce, sessionKey)
     if (!plain) return null
+    // Consume OPK only after successful decrypt (prevents permanent loss on bootstrap timing).
+    consumePrekeySecret(prekeyId)
     const decoded = JSON.parse(bytesToUtf8(plain))
     return { kind: String(decoded?.kind ?? header.packageKind ?? ''), payload: decoded }
   } catch {

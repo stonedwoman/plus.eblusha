@@ -61,7 +61,9 @@ router.get("/prekeys/bundles", async (req, res) => {
 // POST /e2ee/prekeys/claim { deviceId }
 router.post(
   "/prekeys/claim",
-  rateLimit({ name: "e2ee_prekeys_claim", windowMs: 60_000, max: 60 }),
+  // Claim is called per target device during key-share fanout. Keep it protected,
+  // but allow reasonable bursts for multi-device users.
+  rateLimit({ name: "e2ee_prekeys_claim", windowMs: 60_000, max: 300 }),
   async (req, res) => {
     const claimSchema = z.object({ deviceId: z.string().min(8) });
     const parsed = claimSchema.safeParse(req.body);

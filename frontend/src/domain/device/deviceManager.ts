@@ -209,11 +209,17 @@ export async function rebootstrapDevice(): Promise<DeviceBootstrapResult | null>
   return ensureDeviceBootstrap()
 }
 
-export function consumePrekeySecret(keyId: string): string | null {
+export function getPrekeySecret(keyId: string): string | null {
   const secrets = loadDeviceSecrets()
   if (!secrets || !secrets.prekeys[keyId]) {
     return null
   }
+  return secrets.prekeys[keyId]
+}
+
+export function consumePrekeySecret(keyId: string): string | null {
+  const secrets = loadDeviceSecrets()
+  if (!secrets || !secrets.prekeys[keyId]) return null
   const secret = secrets.prekeys[keyId]
   delete secrets.prekeys[keyId]
   saveDeviceSecrets(secrets)

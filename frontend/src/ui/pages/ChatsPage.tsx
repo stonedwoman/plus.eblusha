@@ -3333,6 +3333,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   function markConversationReadNow() {
     if (!activeId) return
+    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+    if (isSecretV2) return
     if (!canAutoMarkRead()) return
     // mark conversation read on server to zero unreadCount
     api.post('/messages/mark-conversation-read', { conversationId: activeId }).catch(() => {})
@@ -3346,6 +3348,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   // Simplified: mark all messages as READ if chat is open and window focused
   function markAllReadNow() {
     if (!activeId || !messagesQuery.data || !me?.id) return
+    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+    if (isSecretV2) return
     if (!canAutoMarkRead()) return
     const unreadIds = (messagesQuery.data as Array<any>)
       .filter((m) => m.senderId !== me.id)
@@ -3402,6 +3406,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       batchTimer.current && clearTimeout(batchTimer.current)
       batchTimer.current = null
       if (!ids.length) return
+      const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+      if (isSecretV2) return
       api.post('/messages/receipts', { messageIds: ids, status: 'READ' })
         .then(() => { if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] }) })
         .catch(() => {})
@@ -3411,6 +3417,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   // Observe bubbles and mark as READ when visible in viewport and app focused/visible
   useEffect(() => {
     if (!activeId || !messagesQuery.data || !me?.id) return
+    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+    if (isSecretV2) return
     // Clean previous
     visibleObserver.current?.disconnect()
     const observer = new IntersectionObserver((entries) => {
