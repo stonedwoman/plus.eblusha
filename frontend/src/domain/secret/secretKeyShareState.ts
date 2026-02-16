@@ -46,7 +46,8 @@ function cleanup(state: State) {
       continue
     }
     for (const [deviceId, rec] of Object.entries(byDev as any)) {
-      const last = typeof rec?.lastSentAt === 'number' ? rec.lastSentAt : 0
+      const recAny = rec as { lastSentAt?: number } | null
+      const last = typeof recAny?.lastSentAt === 'number' ? recAny.lastSentAt : 0
       if (!last || now - last > MAX_AGE_MS) delete (byDev as any)[deviceId]
     }
     if (Object.keys(byDev).length === 0) delete (state.pending as any)[threadId]

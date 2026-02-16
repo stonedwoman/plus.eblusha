@@ -18,11 +18,12 @@ import { LazyImage } from '../components/LazyImage'
 import { LinkDeviceModal } from '../components/LinkDeviceModal'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
-import { fixSecretChat } from '../../domain/secret/secretChatFix'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
 import { createAndShareSecretThreadKey } from '../../domain/secret/secretThreadSetup'
 import { fetchSecretHistory, sendSecretThreadText, transformSecretHistoryItemToMessage } from '../../domain/secret/secretThreadMessaging'
+import { isSecretEngineV2Enabled } from '../../domain/secretV2/featureFlag'
+import { ensureReady as ensureSecretEngineReady, getThreadView as getSecretEngineThreadView, refreshKeysAndRetry, subscribeSecretThreadState, type SecretReasonCode } from '../../domain/secretV2'
 import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
 import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { extractFirstPreviewableUrl } from '../../js/link-detect'
@@ -653,6 +654,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const [secretHistoryGate, setSecretHistoryGate] = useState<{ open: boolean; threadId: string | null }>({ open: false, threadId: null })
   const [linkDeviceModalOpen, setLinkDeviceModalOpen] = useState(false)
   const [secretKeysVersion, setSecretKeysVersion] = useState(0)
+  const secretEngineV2Enabled = useMemo(() => isSecretEngineV2Enabled(), [])
+  const [secretEngineV2Version, setSecretEngineV2Version] = useState(0)
   const [secretBootQueueVersion, setSecretBootQueueVersion] = useState(0)
   const [secretComposerInlineError, setSecretComposerInlineError] = useState<string | null>(null)
   const secretBootStartedAtRef = useRef<Record<string, number>>({})
@@ -692,6 +695,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       try { window.removeEventListener('eb:secretKeysUpdated', handler as any) } catch {}
     }
   }, [])
+
+  useEffect(() => {
+    if (!secretEngineV2Enabled) return
+    return subscribeSecretThreadState(() => {
+      setSecretEngineV2Version((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
+    })
+  }, [secretEngineV2Enabled])
 
   const secretDebug = useMemo(() => {
     try {
@@ -1186,9 +1196,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       client.invalidateQueries({ queryKey: ['conversations'] })
       if (threadId) {
         const amCreator = created || (!!me?.id && createdById === me.id)
-        // Only the creator generates and shares the thread key.
-        // The other side must wait for the incoming key package (otherwise we'd create conflicting keys).
-        if (amCreator) {
+        // SecretEngine v2 path (feature flag): deterministic state machine + self-heal.
+        // Legacy path keeps previous behavior for safe rollback.
+        if (secretEngineV2Enabled) {
+          void ensureSecretEngineReady({ threadId, peerUserId: targetUserId, amCreator }).catch(() => {})
+        } else if (amCreator) {
+          // Only the creator generates and shares the thread key.
+          // The other side must wait for the incoming key package (otherwise we'd create conflicting keys).
           ensureSecretThreadKey(threadId)
         }
         if (secretDebug) {
@@ -1204,7 +1218,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           })
         }
         selectConversation(threadId)
-        if (amCreator) {
+        if (!secretEngineV2Enabled && amCreator) {
           // Create a thread key locally and share it to all devices (A & B) in background.
           void createAndShareSecretThreadKey(threadId, targetUserId).catch((err) => {
             console.warn('[secret] createAndShareSecretThreadKey failed', err)
@@ -1243,6 +1257,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       if (!text) return { outcome: 'blocked' }
       setSecretComposerInlineError(null)
       if (!hasSecretThreadKey(threadId)) {
+        if (secretEngineV2Enabled) {
+          const amCreator = !!(me?.id && String(conversation?.createdById ?? '') === me.id)
+          void ensureSecretEngineReady({ threadId, peerUserId, amCreator }).catch(() => {})
+        }
         // Non-blocking bootstrapping: queue locally, render as pending bubble, flush when keys arrive.
         const pendingId = `pending_secret_${typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Date.now())}`
         setPendingByConv((prev) => ({
@@ -1931,6 +1949,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
     if (isSecretV2) {
       const threadId = String(activeConversation.id ?? '').trim()
+      if (secretEngineV2Enabled) {
+        const view = getSecretEngineThreadView(threadId)
+        if (view.state === 'READY') {
+          return { isSecret: true, readyState: 'ready' as SecretReadyState, error: null as string | null }
+        }
+        if (view.state === 'ERROR') {
+          return { isSecret: true, readyState: 'error' as SecretReadyState, error: (view.reasonCode ?? null) as string | null }
+        }
+        return { isSecret: true, readyState: 'bootstrapping' as SecretReadyState, error: null as string | null }
+      }
       const ready = !!(threadId && hasSecretThreadKey(threadId))
       if (ready) return { isSecret: true, readyState: 'ready' as SecretReadyState, error: null as string | null }
       const code = threadId ? getSecretV2ErrorCode(threadId) : null
@@ -1943,7 +1971,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     const ready = e2eeManager.hasSession(activeConversation.id)
     return { isSecret: true, readyState: (ready ? 'ready' : 'bootstrapping') as SecretReadyState, error: null as string | null }
-  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.secretStatus, secretKeysVersion, e2eeVersion, secretComposerInlineError])
+  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.secretStatus, secretKeysVersion, secretEngineV2Version, secretEngineV2Enabled, e2eeVersion, secretComposerInlineError])
 
   const activeSecretQueuedCount = useMemo(() => {
     const threadId = String(activeConversation?.id ?? '').trim()
@@ -1959,12 +1987,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const threadId = String(activeConversation.id ?? '').trim()
     if (!threadId) return
     const hasKey = hasSecretThreadKey(threadId)
+    const peerUserId =
+      activeConversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user?.id ?? null
+    const amCreator = !!(me?.id && String(activeConversation?.createdById ?? '') === me.id)
     if (secretDebug) {
       // eslint-disable-next-line no-console
       console.log('[secret] open thread', {
         threadId,
-        peerUserId:
-          activeConversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user?.id ?? null,
+        peerUserId,
         hasKey,
         queued: (secretBootQueueRef.current[threadId] || []).length,
       })
@@ -1976,6 +2006,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     if (!secretBootStartedAtRef.current[threadId]) {
       secretBootStartedAtRef.current[threadId] = Date.now()
+    }
+    if (secretEngineV2Enabled && peerUserId) {
+      void ensureSecretEngineReady({ threadId, peerUserId, amCreator }).catch(() => {})
     }
     const startedAt = secretBootStartedAtRef.current[threadId]
     const t = window.setTimeout(() => {
@@ -2005,7 +2038,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       }
     }, Math.max(0, 120_000 - (Date.now() - startedAt)))
     return () => window.clearTimeout(t)
-  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, secretKeysVersion, currentUserId, secretDebug, hasOtherTrustedDevice])
+  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.createdById, secretKeysVersion, currentUserId, me?.id, secretDebug, hasOtherTrustedDevice, secretEngineV2Enabled])
 
   useEffect(() => {
     if (!activeConversation?.isSecret) return
@@ -6779,7 +6812,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 ?.id ?? null
                             const amCreator = !!(me?.id && String(activeConversation?.createdById ?? '') === me.id)
                             if (threadId && peerUserId) {
-                              void fixSecretChat({ threadId, peerUserId, amCreator }).catch(() => {})
+                              if (secretEngineV2Enabled) {
+                                void refreshKeysAndRetry({ threadId, peerUserId, amCreator }).catch(() => {})
+                              } else {
+                                void ensureSecretEngineReady({ threadId, peerUserId, amCreator }).catch(() => {})
+                              }
                             }
                           } catch {}
                         }}
