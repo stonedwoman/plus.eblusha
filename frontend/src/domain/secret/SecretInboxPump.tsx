@@ -263,6 +263,13 @@ export function SecretInboxPump() {
                 setSecretThreadKey(threadId, key, { overwrite: true })
                 client.invalidateQueries({ queryKey: ['messages', threadId] })
                 ackIds.push(item.msgId)
+                try {
+                  window.dispatchEvent(
+                    new CustomEvent('eb:secretV2:threadKeyImported', {
+                      detail: { threadId, msgId: item.msgId, prekeyId: attempt.debug.prekeyId },
+                    }),
+                  )
+                } catch {}
                 clientLog('SecretInboxPump', 'info', 'thread_key imported', {
                   threadId,
                   msgId: item.msgId,
@@ -311,6 +318,7 @@ export function SecretInboxPump() {
             }
           }
           if (attempt && !attempt.ok) {
+            const threadIdMeta = String((item.headerJson as any)?.threadId ?? '').trim()
             const { count, poisoned } = bumpAttempt(item.msgId, {
               rootCause: attempt.rootCause,
               prekeyId: attempt.debug.prekeyId,
@@ -324,9 +332,23 @@ export function SecretInboxPump() {
               msgId: item.msgId,
               kind: String((item.headerJson as any)?.packageKind ?? ''),
               rootCause: attempt.rootCause,
-              threadId: String((item.headerJson as any)?.threadId ?? '').trim() || undefined,
+              threadId: threadIdMeta || undefined,
               data: { prekeyId: attempt.debug.prekeyId, count, poisoned },
             })
+            try {
+              window.dispatchEvent(
+                new CustomEvent('eb:secretV2:keyPackageFailed', {
+                  detail: {
+                    msgId: item.msgId,
+                    threadId: threadIdMeta || null,
+                    rootCause: attempt.rootCause,
+                    prekeyId: attempt.debug.prekeyId ?? null,
+                    poisoned,
+                    count,
+                  },
+                }),
+              )
+            } catch {}
             if (secretDebugEnabled()) {
               // eslint-disable-next-line no-console
               console.warn('[SecretInboxPump] key_package decrypt failed', {
@@ -374,7 +396,11 @@ export function SecretInboxPump() {
               // Prevent head-of-line blocking: acknowledge poisoned items so newer messages can flow.
               ackIds.push(item.msgId)
               try {
-                window.dispatchEvent(new CustomEvent('eb:secretPoisonedInbox', { detail: { msgId: item.msgId, rootCause: attempt.rootCause } }))
+                window.dispatchEvent(
+                  new CustomEvent('eb:secretPoisonedInbox', {
+                    detail: { msgId: item.msgId, rootCause: attempt.rootCause, threadId: threadIdMeta || null },
+                  }),
+                )
               } catch {}
             }
             continue
@@ -390,6 +416,16 @@ export function SecretInboxPump() {
                 prekeyId: (header as any)?.prekeyId,
               })
             }
+            try {
+              const threadIdMeta = String((header as any)?.threadId ?? '').trim()
+              if (threadIdMeta) {
+                window.dispatchEvent(
+                  new CustomEvent('eb:secretV2:keyPackageSeen', {
+                    detail: { msgId: item.msgId, threadId: threadIdMeta, prekeyId: (header as any)?.prekeyId ?? null },
+                  }),
+                )
+              }
+            } catch {}
             continue
           }
 
