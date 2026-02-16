@@ -2,8 +2,6 @@ import { Router, type Request } from "express";
 import multer from "multer";
 import path from "path";
 import crypto from "crypto";
-import fs from "fs";
-import { promises as fsPromises } from "fs";
 import {
   S3Client,
   PutObjectCommand,
@@ -31,15 +29,13 @@ const upload = multer({
 const s3Config =
   env.STORAGE_S3_ENDPOINT &&
   env.STORAGE_S3_REGION &&
-  env.STORAGE_S3_BUCKET &&
-  env.STORAGE_PUBLIC_BASE_URL
+  env.STORAGE_S3_BUCKET
     ? {
         endpoint: env.STORAGE_S3_ENDPOINT,
         region: env.STORAGE_S3_REGION,
         bucket: env.STORAGE_S3_BUCKET,
         accessKeyId: env.STORAGE_S3_ACCESS_KEY || undefined,
         secretAccessKey: env.STORAGE_S3_SECRET_KEY || undefined,
-        publicBaseUrl: env.STORAGE_PUBLIC_BASE_URL.replace(/\/$/, ""),
       }
     : null;
 
@@ -69,7 +65,6 @@ if (s3Client && s3Config) {
       endpoint: s3Config.endpoint,
       region: s3Config.region,
       bucket: s3Config.bucket,
-      publicBaseUrl: s3Config.publicBaseUrl,
       forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
       objectPrefix,
     },
@@ -133,6 +128,11 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
   const file = (req as any).file as Express.Multer.File | undefined;
   if (!file) {
     res.status(400).json({ message: "No file" });
+    return;
+  }
+
+  if (!encKey) {
+    res.status(503).json({ message: "Storage encryption key is not configured" });
     return;
   }
 
@@ -205,12 +205,8 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
     await s3Client.send(command);
     
     const encodedKey = encodeKeyForUrl(key);
-    // If encrypted, direct S3 URL is useless (ciphertext). Return proxy URL so client always hits server.
-    const publicUrl = encKey
-      ? `/api/files/${encodedKey}`
-      : `${s3Config.publicBaseUrl}/${encodedKey}`;
-    
-    res.json({ url: publicUrl, path: key, publicUrl });
+    const proxyUrl = `/api/files/${encodedKey}`;
+    res.json({ url: proxyUrl, path: key, publicUrl: proxyUrl });
   } catch (error) {
     logger.error({ err: error }, "Failed to upload file to S3");
     res.status(500).json({ message: "Upload failed" });

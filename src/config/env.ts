@@ -45,7 +45,7 @@ const envSchema = z.object({
   STORAGE_S3_ACL: z.string().optional(),
   STORAGE_S3_SSE: z.string().default("AES256"),
   // Optional symmetric key (base64 or hex, 32 bytes) for server-side encryption
-  STORAGE_ENC_KEY: z.string().optional(),
+  STORAGE_ENC_KEY: z.string().min(1).optional(),
   // Optional KEK (base64 or hex, 32 bytes) for server-side encryption of NON-secret chat DEKs
   // If unset, non-secret chat encryption helpers will throw when used.
   CHAT_ENC_KEK: z.string().optional(),
@@ -55,6 +55,10 @@ const env = envSchema.parse(process.env);
 
 if (env.NODE_ENV === "production" && !env.METRICS_TOKEN) {
   throw new Error("METRICS_TOKEN is required in production");
+}
+
+if (env.NODE_ENV === "production" && !env.STORAGE_ENC_KEY) {
+  throw new Error("STORAGE_ENC_KEY is required in production");
 }
 
 export default env;

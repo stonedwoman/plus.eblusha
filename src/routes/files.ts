@@ -221,6 +221,11 @@ router.use(async (req: Request, res: Response, next) => {
     return;
   }
 
+  if (!encKey) {
+    res.status(503).json({ message: "Storage encryption key is not configured" });
+    return;
+  }
+
   // Extract path from request (everything after /api/files/)
   // req.path will be like "/files/uploads/file.jpg" when mounted at /api
   const urlPath = req.path.replace(/^\//, "");
@@ -287,10 +292,7 @@ router.use(async (req: Request, res: Response, next) => {
           false;
 
         if (isEncrypted) {
-          if (!encKey) {
-            res.status(500).json({ message: "Storage encryption key is not configured" });
-            return;
-          }
+          // encKey validated above
           const encryptedBuf = await readBodyToBuffer(response.Body);
           const decrypted = isEncryptedPayload(encryptedBuf)
             ? decryptBuffer(encryptedBuf, encKey, { aad: key })

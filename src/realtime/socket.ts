@@ -103,7 +103,16 @@ type PresenceSource = "web" | "electron" | "mobile";
 type RedisPresenceRecord = { online: true; lastPingAt: number };
 type RedisActivityRecord = { active: boolean; visibility: PresenceVisibility; updatedAt: number };
 
-async function writePresenceOnlineRedis(userId: string) {
+const redisPresenceSockKey = (userId: string, socketId: string) =>
+  `presence_sock:${userId}:${socketId}`;
+const redisActivitySockKey = (userId: string, socketId: string) =>
+  `activity_sock:${userId}:${socketId}`;
+const redisPresenceSocksKey = (userId: string) => `presence_socks:${userId}`;
+const redisActiveSocksKey = (userId: string) => `active_socks:${userId}`;
+
+async function writeAggregatedPresenceRedis(userId: string) {
+  // Backward-compat / convenience key (NOT a source of truth).
+  // Truth is derived from presence_socks/active_socks.
   try {
     const redis = await getRedisClient();
     const key = `presence:${userId}`;
@@ -114,16 +123,8 @@ async function writePresenceOnlineRedis(userId: string) {
   }
 }
 
-async function deletePresenceOnlineRedis(userId: string) {
-  try {
-    const redis = await getRedisClient();
-    await redis.del(`presence:${userId}`);
-  } catch {
-    // ignore redis failures
-  }
-}
-
-async function writeActivityRedis(userId: string, activity: RedisActivityRecord) {
+async function writeAggregatedActivityRedis(userId: string, activity: RedisActivityRecord) {
+  // Backward-compat / convenience key (NOT a source of truth).
   try {
     const redis = await getRedisClient();
     const key = `activity:${userId}`;
@@ -133,21 +134,93 @@ async function writeActivityRedis(userId: string, activity: RedisActivityRecord)
   }
 }
 
-async function expireActivityRedis(userId: string) {
+async function deleteAggregatedPresenceRedis(userId: string) {
   try {
     const redis = await getRedisClient();
-    await redis.expire(`activity:${userId}`, ACTIVITY_TTL_SECONDS);
+    await redis.del(`presence:${userId}`);
   } catch {
     // ignore redis failures
   }
 }
 
-async function deleteActivityRedis(userId: string) {
+async function deleteAggregatedActivityRedis(userId: string) {
   try {
     const redis = await getRedisClient();
     await redis.del(`activity:${userId}`);
   } catch {
     // ignore redis failures
+  }
+}
+
+async function addSocketPresenceRedis(userId: string, socketId: string) {
+  const redis = await getRedisClient();
+  await redis
+    .multi()
+    .sAdd(redisPresenceSocksKey(userId), socketId)
+    .expire(redisPresenceSocksKey(userId), PRESENCE_TTL_SECONDS)
+    .set(redisPresenceSockKey(userId, socketId), "1", { EX: PRESENCE_TTL_SECONDS })
+    .exec();
+}
+
+async function refreshSocketPresenceRedis(userId: string, socketId: string) {
+  const redis = await getRedisClient();
+  await redis
+    .multi()
+    .expire(redisPresenceSocksKey(userId), PRESENCE_TTL_SECONDS)
+    .expire(redisPresenceSockKey(userId, socketId), PRESENCE_TTL_SECONDS)
+    .exec();
+}
+
+async function upsertSocketActivityRedis(
+  userId: string,
+  socketId: string,
+  activity: { active: boolean; visibility: PresenceVisibility; source: PresenceSource; updatedAt: number }
+) {
+  const redis = await getRedisClient();
+  const activeSetKey = redisActiveSocksKey(userId);
+  const activityKey = redisActivitySockKey(userId, socketId);
+  const payload: RedisActivityRecord = { active: !!activity.active, visibility: activity.visibility, updatedAt: activity.updatedAt };
+  const raw = JSON.stringify({ ...payload, source: activity.source });
+  const tx = redis.multi();
+  if (payload.active) tx.sAdd(activeSetKey, socketId);
+  else tx.sRem(activeSetKey, socketId);
+  tx.expire(activeSetKey, ACTIVITY_TTL_SECONDS);
+  tx.set(activityKey, raw, { EX: ACTIVITY_TTL_SECONDS });
+  await tx.exec();
+}
+
+async function removeSocketPresenceAndActivityRedis(userId: string, socketId: string) {
+  const redis = await getRedisClient();
+  const presenceSetKey = redisPresenceSocksKey(userId);
+  const activeSetKey = redisActiveSocksKey(userId);
+  const replies = await redis
+    .multi()
+    .sRem(presenceSetKey, socketId)
+    .sRem(activeSetKey, socketId)
+    .del(redisPresenceSockKey(userId, socketId))
+    .del(redisActivitySockKey(userId, socketId))
+    .sCard(presenceSetKey)
+    .sCard(activeSetKey)
+    .exec();
+
+  const onlineCount = Number((replies as any)?.[4] ?? 0);
+  const activeCount = Number((replies as any)?.[5] ?? 0);
+  return { onlineCount, activeCount };
+}
+
+async function readPresenceAggregateCountsRedis(userId: string): Promise<{ onlineCount: number; activeCount: number } | null> {
+  try {
+    const redis = await getRedisClient();
+    const replies = await redis
+      .multi()
+      .sCard(redisPresenceSocksKey(userId))
+      .sCard(redisActiveSocksKey(userId))
+      .exec();
+    const onlineCount = Number((replies as any)?.[0] ?? 0);
+    const activeCount = Number((replies as any)?.[1] ?? 0);
+    return { onlineCount, activeCount };
+  } catch {
+    return null;
   }
 }
 
@@ -228,19 +301,10 @@ let statusInterval: NodeJS.Timeout | null = null;
 type PresenceStatus = "ONLINE" | "OFFLINE" | "BACKGROUND";
 type BroadcastPresenceStatus = PresenceStatus | "IN_CALL";
 
-type SocketActivityState = {
-  active: boolean;
-  visibility: PresenceVisibility;
-  updatedAt: number;
-  source?: PresenceSource;
-  hasState: boolean;
-};
-
-const socketActivityByUser: Map<string, Map<string, SocketActivityState>> = new Map();
-const persistedPresenceByUser: Map<string, PresenceStatus> = new Map();
 const broadcastedPresenceByUser: Map<string, BroadcastPresenceStatus> = new Map();
 const presenceUpdateQueue: Map<string, Promise<void>> = new Map();
 const lastPresenceDbWriteAtByUser: Map<string, number> = new Map();
+const lastObservedPresenceByUser: Map<string, PresenceStatus> = new Map();
 const PRESENCE_DB_MIN_INTERVAL_MS = 2 * 60 * 1000;
 
 const PRESENCE_GAME_TTL_MS = 60_000;
@@ -286,11 +350,12 @@ function clearPresenceGame(io: Server, userId: string, reason: PresenceGameClear
   broadcastPresenceGame(io, { userId, ts: Date.now(), game: null, reason });
 }
 
-function addAllCurrentSockets(info: ActiveCallInfo, userId: string) {
-  const sockets = socketActivityByUser.get(userId);
-  if (!sockets || sockets.size === 0) return;
-  for (const socketId of sockets.keys()) {
-    addParticipant(info, userId, socketId);
+function addAllLocalSockets(io: Server, info: ActiveCallInfo, userId: string) {
+  // Local-only enumeration (safe for per-process call maps).
+  for (const [socketId, s] of io.sockets.sockets) {
+    if ((s as any)?.data?.userId === userId) {
+      addParticipant(info, userId, socketId);
+    }
   }
 }
 
@@ -331,71 +396,33 @@ function computeBroadcastPresence(userId: string, base: PresenceStatus): Broadca
   return base;
 }
 
-function emitEffectivePresence(io: Server, userId: string, baseOverride?: PresenceStatus) {
-  const base = baseOverride ?? (persistedPresenceByUser.get(userId) ?? computePresenceStatus(userId));
+function presenceStatusFromCounts(onlineCount: number, activeCount: number): { online: boolean; active: boolean; status: PresenceStatus } {
+  const online = onlineCount > 0;
+  const active = activeCount > 0;
+  const status: PresenceStatus = !online ? "OFFLINE" : active ? "ONLINE" : "BACKGROUND";
+  return { online, active, status };
+}
+
+async function computePresenceStatusFromRedis(userId: string): Promise<{ online: boolean; active: boolean; status: PresenceStatus } | null> {
+  const counts = await readPresenceAggregateCountsRedis(userId);
+  if (!counts) return null;
+  return presenceStatusFromCounts(counts.onlineCount, counts.activeCount);
+}
+
+async function emitEffectivePresence(io: Server, userId: string, baseOverride?: PresenceStatus) {
+  const base =
+    baseOverride ??
+    (await (async () => {
+      const agg = await computePresenceStatusFromRedis(userId);
+      return agg?.status;
+    })());
+  if (!base) return;
   const effective = computeBroadcastPresence(userId, base);
   const prev = broadcastedPresenceByUser.get(userId);
   if (prev === effective) return;
   if (effective === "OFFLINE") broadcastedPresenceByUser.delete(userId);
   else broadcastedPresenceByUser.set(userId, effective);
   io.emit("presence:update", { userId, status: effective });
-}
-
-function setSocketActivityConnected(userId: string, socketId: string) {
-  const current = socketActivityByUser.get(userId) ?? new Map<string, SocketActivityState>();
-  if (!current.has(socketId)) {
-    current.set(socketId, { active: false, visibility: "hidden", updatedAt: Date.now(), hasState: false });
-  }
-  socketActivityByUser.set(userId, current);
-}
-
-function setSocketActivityState(userId: string, socketId: string, next: Omit<SocketActivityState, "hasState"> & { hasState?: boolean }) {
-  const current = socketActivityByUser.get(userId) ?? new Map<string, SocketActivityState>();
-  current.set(socketId, {
-    active: !!next.active,
-    visibility: next.visibility === "visible" ? "visible" : "hidden",
-    updatedAt: typeof next.updatedAt === "number" && Number.isFinite(next.updatedAt) ? next.updatedAt : Date.now(),
-    ...(next.source ? { source: next.source } : {}),
-    hasState: next.hasState ?? true,
-  });
-  socketActivityByUser.set(userId, current);
-}
-
-function removeSocketActivity(userId: string, socketId: string) {
-  const current = socketActivityByUser.get(userId);
-  if (!current) return;
-  current.delete(socketId);
-  if (current.size === 0) {
-    socketActivityByUser.delete(userId);
-  }
-}
-
-function computePresenceStatus(userId: string): PresenceStatus {
-  const entries = socketActivityByUser.get(userId);
-  if (!entries || entries.size === 0) return "OFFLINE";
-  const hasActive = Array.from(entries.values()).some((v) => !!v.active);
-  return hasActive ? "ONLINE" : "BACKGROUND";
-}
-
-function computeAggregatedActivity(userId: string): RedisActivityRecord | null {
-  const entries = socketActivityByUser.get(userId);
-  if (!entries || entries.size === 0) return null;
-  let active = false;
-  let visibility: PresenceVisibility = "hidden";
-  let updatedAt = 0;
-  for (const v of entries.values()) {
-    if (v.active) active = true;
-    if (v.visibility === "visible") visibility = "visible";
-    if (typeof v.updatedAt === "number" && v.updatedAt > updatedAt) updatedAt = v.updatedAt;
-  }
-  if (!updatedAt) updatedAt = Date.now();
-  return { active, visibility, updatedAt };
-}
-
-function hasAnyExplicitActivityState(userId: string): boolean {
-  const entries = socketActivityByUser.get(userId);
-  if (!entries || entries.size === 0) return false;
-  return Array.from(entries.values()).some((v) => !!v.hasState);
 }
 
 function normalizePresenceVisibility(v: unknown): PresenceVisibility | null {
@@ -418,29 +445,10 @@ function normalizePresenceStatePayload(raw: unknown): { active: boolean; visibil
   return { active, visibility, source };
 }
 
-function applyPresenceState(io: Server, userId: string, socketId: string, state: { active: boolean; visibility: PresenceVisibility; source: PresenceSource }) {
-  const now = Date.now();
-  setSocketActivityState(userId, socketId, { ...state, updatedAt: now, hasState: true });
-  const agg = computeAggregatedActivity(userId);
-  if (agg) {
-    void writeActivityRedis(userId, { active: agg.active, visibility: agg.visibility, updatedAt: now });
-  } else {
-    // Shouldn't happen (we have at least this socket), but keep behavior safe.
-    void writeActivityRedis(userId, { active: state.active, visibility: state.visibility, updatedAt: now });
-  }
-  void recomputePresence(io, userId);
-}
-
-async function persistPresence(io: Server, userId: string, status: PresenceStatus) {
-  const previous = persistedPresenceByUser.get(userId);
+async function persistPresenceToDb(userId: string, status: PresenceStatus) {
+  const previous = lastObservedPresenceByUser.get(userId);
   if (previous === status) return;
-
-  // Keep in-memory base presence for realtime immediately.
-  if (status === "OFFLINE") persistedPresenceByUser.delete(userId);
-  else persistedPresenceByUser.set(userId, status);
-
-  // Broadcast effective status (IN_CALL overrides base ONLINE/BACKGROUND) even if we skip DB write.
-  emitEffectivePresence(io, userId, status);
+  lastObservedPresenceByUser.set(userId, status);
 
   // Reduce Postgres writes: only persist on OFFLINE, on OFFLINE->ONLINE transitions,
   // or at most once per interval for ONLINE/BACKGROUND flips.
@@ -464,21 +472,35 @@ async function persistPresence(io: Server, userId: string, status: PresenceStatu
   }
 }
 
-function recomputePresence(io: Server, userId: string): Promise<void> {
+function recomputePresenceFromRedis(
+  io: Server,
+  userId: string,
+  opts?: { allowOfflineCleanup?: boolean }
+): Promise<void> {
   const previousTask = presenceUpdateQueue.get(userId) ?? Promise.resolve();
   const nextTask = previousTask
     .catch(() => {})
     .then(async () => {
-      const status = computePresenceStatus(userId);
-      if (status === "OFFLINE") {
-        void deletePresenceOnlineRedis(userId);
-        void deleteActivityRedis(userId);
-      } else {
-        void writePresenceOnlineRedis(userId);
-        // Best-effort: keep activity TTL alive if it exists (so it doesn't expire while connected)
-        void expireActivityRedis(userId);
+      const agg = await computePresenceStatusFromRedis(userId);
+      if (!agg) return;
+
+      // Always emit based on Redis aggregate (never in-memory).
+      await emitEffectivePresence(io, userId, agg.status);
+
+      // Maintain convenience aggregate keys. Only delete them when we KNOW the user is offline.
+      if (agg.online) {
+        void writeAggregatedPresenceRedis(userId);
+        void writeAggregatedActivityRedis(userId, {
+          active: agg.active,
+          visibility: agg.active ? "visible" : "hidden",
+          updatedAt: Date.now(),
+        });
+      } else if (opts?.allowOfflineCleanup) {
+        void deleteAggregatedPresenceRedis(userId);
+        void deleteAggregatedActivityRedis(userId);
       }
-      await persistPresence(io, userId, status);
+
+      await persistPresenceToDb(userId, agg.status);
     });
   presenceUpdateQueue.set(userId, nextTask);
   return nextTask.finally(() => {
@@ -615,9 +637,18 @@ export async function initSocket(
     // Join personal room to receive direct events
     socket.join(userRoom(userId));
     incGauge("sockets_connected", 1);
-    // Presence semantics: connection implies `presence.online=true`, but active/in-focus is NOT assumed.
-    setSocketActivityConnected(userId, socket.id);
-    void recomputePresence(io, userId);
+    // Presence semantics (multi-instance):
+    // - online is derived from Redis presence_socks/presence_sock keys (NOT in-memory)
+    // - active is derived from Redis active_socks/activity_sock keys (NOT in-memory)
+    void (async () => {
+      try {
+        await addSocketPresenceRedis(userId, socket.id);
+        void writeAggregatedPresenceRedis(userId);
+      } catch (error) {
+        logger.warn({ error, userId }, "Failed to write socket presence to Redis");
+      }
+      void recomputePresenceFromRedis(io, userId);
+    })();
 
     // Join device room if a verified deviceId is available (extension point for secret transport).
     const verifiedDeviceId = socket.data.deviceId;
@@ -628,11 +659,17 @@ export async function initSocket(
 
     // Redis presence TTL heartbeat (ephemeral).
     const heartbeat = setInterval(() => {
-      void writePresenceOnlineRedis(userId);
-      void expireActivityRedis(userId);
+      void (async () => {
+        try {
+          await refreshSocketPresenceRedis(userId, socket.id);
+          void writeAggregatedPresenceRedis(userId);
+        } catch {
+          // ignore heartbeat failures
+        }
+      })();
     }, PRESENCE_HEARTBEAT_MS);
-    // initial write
-    void writePresenceOnlineRedis(userId);
+    // initial heartbeat write (best-effort)
+    void writeAggregatedPresenceRedis(userId);
 
     // Snapshot: if there are active calls right now, inform this socket so it can render "IN_CALL" immediately.
     try {
@@ -644,8 +681,7 @@ export async function initSocket(
         for (const uid of info.participantsByUser.keys()) inCallUsers.add(uid);
       }
       for (const uid of inCallUsers) {
-        const base = persistedPresenceByUser.get(uid) ?? computePresenceStatus(uid);
-        const effective = computeBroadcastPresence(uid, base);
+        const effective = computeBroadcastPresence(uid, "ONLINE");
         if (effective === "IN_CALL") {
           socket.emit("presence:update", { userId: uid, status: "IN_CALL" });
         }
@@ -716,7 +752,15 @@ export async function initSocket(
       try {
         const normalized = normalizePresenceStatePayload(payload);
         if (!normalized) return;
-        applyPresenceState(io, userId, socket.id, normalized);
+        void (async () => {
+          const now = Date.now();
+          try {
+            await upsertSocketActivityRedis(userId, socket.id, { ...normalized, updatedAt: now });
+          } catch (error) {
+            logger.warn({ error, userId }, "Failed to update socket activity in Redis");
+          }
+          void recomputePresenceFromRedis(io, userId);
+        })();
       } catch (error) {
         logger.warn({ error, userId }, "Failed to handle presence:state");
       }
@@ -725,7 +769,15 @@ export async function initSocket(
     socket.on("presence:focus", ({ focused }) => {
       // Legacy clients only report focus boolean. Map it into the new activity model.
       const normalized = { active: !!focused, visibility: focused ? ("visible" as const) : ("hidden" as const), source: "web" as const };
-      applyPresenceState(io, userId, socket.id, normalized);
+      void (async () => {
+        const now = Date.now();
+        try {
+          await upsertSocketActivityRedis(userId, socket.id, { ...normalized, updatedAt: now });
+        } catch (error) {
+          logger.warn({ error, userId }, "Failed to update socket activity in Redis (presence:focus)");
+        }
+        void recomputePresenceFromRedis(io, userId);
+      })();
     });
 
     socket.on("presence:game:update", ({ game }) => {
@@ -994,7 +1046,7 @@ export async function initSocket(
           addParticipant(callInfo, userId, socket.id);
         }
         // Update global presence for inviter (IN_CALL override)
-        emitEffectivePresence(io, userId);
+        void emitEffectivePresence(io, userId);
       }
       
       // Создаем системное сообщение о начале звонка только для групповых бесед
@@ -1082,13 +1134,13 @@ export async function initSocket(
         info.startedAt = startedAt;
         // Add all currently connected sockets for both parties (works for multi-tab / multi-device).
         if (st?.inviterId) {
-          addAllCurrentSockets(info, st.inviterId);
+          addAllLocalSockets(io, info, st.inviterId);
         }
-        addAllCurrentSockets(info, userId);
+        addAllLocalSockets(io, info, userId);
         activeDirectCalls.set(conversationId, info);
         // Broadcast effective presence for both participants.
-        if (st?.inviterId) emitEffectivePresence(io, st.inviterId);
-        emitEffectivePresence(io, userId);
+        if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
+        void emitEffectivePresence(io, userId);
       }
       // Отправляем call:accepted получателям звонка
       for (const rid of recipients) {
@@ -1169,8 +1221,8 @@ export async function initSocket(
           logger.warn({ error, conversationId }, "Failed to delete call E2EE key (decline)");
         });
       }
-      if (st?.inviterId) emitEffectivePresence(io, st.inviterId);
-      emitEffectivePresence(io, userId);
+      if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
+      void emitEffectivePresence(io, userId);
 
       // treat as missed call if not accepted yet (1:1)
       if (st && !st.accepted) {
@@ -1271,8 +1323,8 @@ export async function initSocket(
           logger.warn({ error, conversationId }, "Failed to delete call E2EE key (end)");
         });
       }
-      if (st?.inviterId) emitEffectivePresence(io, st.inviterId);
-      emitEffectivePresence(io, userId);
+      if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
+      void emitEffectivePresence(io, userId);
 
       const caller = await prisma.user.findUnique({ where: { id: userId }, select: { displayName: true, username: true } });
       const name = caller?.displayName ?? caller?.username ?? "пользователь";
@@ -1430,7 +1482,7 @@ export async function initSocket(
         broadcastCallStatus(conversationId);
       }
       // Update global presence (IN_CALL override) for joining user
-      emitEffectivePresence(io, userId);
+      void emitEffectivePresence(io, userId);
     });
 
     socket.on("call:room:leave", async ({ conversationId }) => {
@@ -1521,7 +1573,7 @@ export async function initSocket(
       }
 
       // Update global presence for leaving user
-      emitEffectivePresence(io, userId);
+      void emitEffectivePresence(io, userId);
     });
 
     socket.on("call:status:request", async ({ conversationIds }) => {
@@ -1584,28 +1636,14 @@ export async function initSocket(
         }
       }
 
-      removeSocketActivity(userId, socket.id);
-      const remainingConnections = socketActivityByUser.get(userId)?.size ?? 0;
-      if (remainingConnections > 0) {
-        // If an active socket disconnected, aggregated activity may have changed.
-        // Keep Redis `activity:{userId}` consistent with the current aggregated state.
-        if (hasAnyExplicitActivityState(userId)) {
-          const agg = computeAggregatedActivity(userId);
-          if (agg) {
-            void writeActivityRedis(userId, { active: agg.active, visibility: agg.visibility, updatedAt: Date.now() });
-          }
-        } else {
-          // No explicit state from remaining sockets → avoid stale activity records.
-          void deleteActivityRedis(userId);
-        }
+      try {
+        await removeSocketPresenceAndActivityRedis(userId, socket.id);
+      } catch (error) {
+        logger.warn({ error, userId }, "Failed to cleanup socket presence/activity in Redis on disconnect");
       }
-      await recomputePresence(io, userId);
-      if (remainingConnections === 0) {
-        logger.info({ userId }, "User status set to OFFLINE (no active connections)");
-      } else {
-        const aggregatedStatus = computePresenceStatus(userId);
-        logger.info({ userId, activeConnections: remainingConnections, aggregatedStatus }, "User still has active connections, status recomputed");
-      }
+
+      // Important: OFFLINE is allowed only if Redis aggregate shows zero live sockets.
+      await recomputePresenceFromRedis(io, userId, { allowOfflineCleanup: true });
     });
     
     socket.on("disconnect", (reason) => {
