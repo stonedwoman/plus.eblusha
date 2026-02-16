@@ -32,7 +32,7 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
   const [imageError, setImageError] = useState(false)
   const [retryCount, setRetryCount] = useState(0)
   const [currentImageUrl, setCurrentImageUrl] = useState<string | null>(null)
-  const retryTimeoutRef = useRef<number | null>(null)
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   
   const resolvedAvatarUrl = useMemo(() => {
     if (!avatarUrl || isEmoji) return avatarUrl ?? null

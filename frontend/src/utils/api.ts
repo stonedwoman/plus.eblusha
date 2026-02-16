@@ -89,6 +89,19 @@ api.interceptors.request.use((config) => {
     config.headers = config.headers ?? {}
     config.headers.Authorization = `Bearer ${token}`
   }
+  // Best-effort deviceId propagation for multi-device E2EE flows.
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem('eb_device_info_v1') : null
+    if (raw) {
+      const parsed = JSON.parse(raw) as any
+      const did = typeof parsed?.deviceId === 'string' ? parsed.deviceId.trim() : ''
+      if (did) {
+        config.headers = config.headers ?? {}
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(config.headers as any)['X-Device-Id'] = did
+      }
+    }
+  } catch {}
   return config
 })
 

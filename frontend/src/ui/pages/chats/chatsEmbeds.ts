@@ -1,22 +1,89 @@
 export type YouTubeOpenMode = 'embed' | 'external' | 'electron_session' | 'system_browser'
 
-export function parseYouTubeVideoId(urlString: string): string | null {
-  try {
-    const u = new URL(urlString)
-    const host = u.hostname.toLowerCase()
-    if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
-      const id = u.pathname.replace(/^\//, '').split('/')[0] || null
-      return id
+const YOUTUBE_HOSTS = new Set([
+  'youtube.com',
+  'www.youtube.com',
+  'm.youtube.com',
+  'music.youtube.com',
+  'gaming.youtube.com',
+  'youtu.be',
+])
+
+const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/
+
+function sanitizeVideoId(candidate: string | null | undefined): string | null {
+  if (!candidate) return null
+  const id = (candidate.trim().split(/[?&#/]/)[0] || '')
+  return VIDEO_ID_RE.test(id) ? id : null
+}
+
+function isYouTubeHost(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  if (YOUTUBE_HOSTS.has(host)) return true
+  return host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be' || host.endsWith('.youtu.be')
+}
+
+function decodeMaybeTwice(value: string): string {
+  let out = value
+  for (let i = 0; i < 2; i++) {
+    try {
+      const decoded = decodeURIComponent(out)
+      if (decoded === out) break
+      out = decoded
+    } catch {
+      break
     }
-    if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
-      const v = u.searchParams.get('v')
+  }
+  return out
+}
+
+export function parseYouTubeVideoId(urlString: string): string | null {
+  const extract = (value: string, depth: number): string | null => {
+    if (depth > 3) return null
+    const direct = sanitizeVideoId(value)
+    if (direct) return direct
+
+    let u: URL
+    try {
+      u = new URL(value)
+    } catch {
+      try {
+        u = new URL(value, 'https://www.youtube.com')
+      } catch {
+        const rx = /(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/|embed\/|v\/))([A-Za-z0-9_-]{11})/i.exec(value)
+        return sanitizeVideoId(rx?.[1] || null)
+      }
+    }
+
+    const host = u.hostname.toLowerCase()
+    if (isYouTubeHost(host)) {
+      if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
+        const id = sanitizeVideoId(u.pathname.split('/').filter(Boolean)[0] || null)
+        if (id) return id
+      }
+
+      const v = sanitizeVideoId(u.searchParams.get('v'))
       if (v) return v
+      const vi = sanitizeVideoId(u.searchParams.get('vi'))
+      if (vi) return vi
+
       const parts = u.pathname.split('/').filter(Boolean)
-      const head = parts[0] || ''
-      const id = parts[1] || ''
-      if (head === 'shorts' || head === 'embed' || head === 'v') return id || null
+      const head = (parts[0] || '').toLowerCase()
+      const fromPath = sanitizeVideoId(parts[1] || null)
+      if ((head === 'shorts' || head === 'live' || head === 'embed' || head === 'v') && fromPath) return fromPath
+    }
+
+    for (const key of ['url', 'u', 'q', 'target', 'dest', 'destination', 'redirect', 'redir', 'link', 'href']) {
+      const raw = u.searchParams.get(key)
+      if (!raw) continue
+      const nested = extract(decodeMaybeTwice(raw), depth + 1)
+      if (nested) return nested
     }
     return null
+  }
+
+  try {
+    return extract(urlString, 0)
   } catch {
     return null
   }
@@ -24,7 +91,7 @@ export function parseYouTubeVideoId(urlString: string): string | null {
 
 export function getYouTubeEmbedUrl(videoId: string): string | null {
   const id = (videoId || '').trim()
-  if (!id) return null
+  if (!VIDEO_ID_RE.test(id)) return null
   const embed = new URL(`https://www.youtube-nocookie.com/embed/${id}`)
   embed.searchParams.set('autoplay', '0')
   embed.searchParams.set('rel', '0')

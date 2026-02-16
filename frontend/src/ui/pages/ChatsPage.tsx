@@ -15,9 +15,13 @@ import { Avatar } from '../components/Avatar'
 import { ImageEditorModal } from '../components/ImageEditorModal'
 import { ImageLightbox } from '../components/ImageLightbox'
 import { LazyImage } from '../components/LazyImage'
+import { LinkDeviceModal } from '../components/LinkDeviceModal'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
+import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
+import { createAndShareSecretThreadKey } from '../../domain/secret/secretThreadSetup'
+import { fetchSecretHistory, sendSecretThreadText, transformSecretHistoryItemToMessage } from '../../domain/secret/secretThreadMessaging'
 import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
 import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { extractFirstPreviewableUrl } from '../../js/link-detect'
@@ -632,6 +636,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const [pendingSecretOffers, setPendingSecretOffers] = useState<Record<string, { from: { id: string; name: string; deviceId?: string | null } }>>({})
   const [secretRequestLoading, setSecretRequestLoading] = useState(false)
   const [secretActionLoading, setSecretActionLoading] = useState(false)
+  const [secretHistoryGate, setSecretHistoryGate] = useState<{ open: boolean; threadId: string | null }>({ open: false, threadId: null })
+  const [linkDeviceModalOpen, setLinkDeviceModalOpen] = useState(false)
+  const [secretKeysVersion, setSecretKeysVersion] = useState(0)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const me = useAppStore((s) => s.session?.user)
   const storedUserIdRef = useRef<string | null>(null)
@@ -654,6 +661,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [me?.id])
   const currentUserId = me?.id ?? storedUserIdRef.current ?? null
+
+  useEffect(() => {
+    const handler = () => setSecretKeysVersion((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
+    try {
+      window.addEventListener('eb:secretKeysUpdated', handler as any)
+    } catch {}
+    return () => {
+      try { window.removeEventListener('eb:secretKeysUpdated', handler as any) } catch {}
+    }
+  }, [])
 
   const { typingByUserId, typingDots, onIncomingTyping, notifyTyping, stopTyping } = useChatTyping({
     activeId,
@@ -1124,53 +1141,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   async function initiateSecretChat(targetUserId: string) {
     if (secretRequestLoading) return
     setSecretRequestLoading(true)
-    const MAX_REBOOT_ATTEMPTS = 2
-    let rebootAttempts = 0
-    const tryRebootstrap = async () => {
-      if (rebootAttempts >= MAX_REBOOT_ATTEMPTS) {
-        throw new Error('Не удалось подготовить устройство для секретного чата. Попробуйте позже.')
-      }
-      rebootAttempts += 1
-      await rebootstrapDevice()
-    }
     try {
-      while (true) {
-        const device = await ensureLocalDevice()
-        if (!device) {
-          alert('Не удалось инициализировать устройство для секретного чата')
-          return
-        }
-        try {
-          const payload = {
-            participantIds: [targetUserId],
-            isGroup: false,
-            isSecret: true,
-            initiatorDeviceId: device.deviceId,
-          }
-          console.log('[SecretChat] Creating with payload:', payload)
-          await api.post('/conversations', payload)
-          client.invalidateQueries({ queryKey: ['conversations'] })
-          return
-        } catch (err: any) {
-          console.error('[SecretChat] Creation error:', err?.response?.data || err)
-          const message = err?.response?.data?.message
-          const errors = err?.response?.data?.errors
-          if (errors) {
-            console.error('[SecretChat] Validation errors:', errors)
-          }
-          const isInvalidDevice =
-            err?.response?.status === 400 &&
-            typeof message === 'string' &&
-            message.toLowerCase().includes('invalid initiator device')
-          if (isInvalidDevice) {
-            await tryRebootstrap()
-            continue
-          }
-          const errorMsg = errors
-            ? `Ошибка валидации: ${errors.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ')}`
-            : message || 'Не удалось отправить запрос на секретный чат'
-          throw new Error(errorMsg)
-        }
+      const device = await ensureLocalDevice()
+      if (!device) {
+        alert('Не удалось инициализировать устройство для секретного чата')
+        return
+      }
+
+      const resp = await api.post('/threads/secret', { peerUserId: targetUserId })
+      const threadId = String(resp.data?.threadId ?? resp.data?.thread?.id ?? '').trim()
+      client.invalidateQueries({ queryKey: ['conversations'] })
+      if (threadId) {
+        selectConversation(threadId)
+        // Create a thread key locally and share it to all devices (A & B) in background.
+        void createAndShareSecretThreadKey(threadId, targetUserId).catch(() => {})
       }
     } catch (err: any) {
       console.error('Failed to start secret conversation:', err)
@@ -1222,6 +1206,36 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!conversation) return
     // Normalize null content to undefined
     const normalizedPayload = { ...payload, content: payload.content ?? undefined }
+    const isSecretV2 = String(conversation?.type ?? '').toUpperCase() === 'SECRET'
+    if (isSecretV2) {
+      const threadId = String(conversation.id ?? '').trim()
+      const peerUserId =
+        conversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user?.id ?? null
+      if (!threadId || !peerUserId) {
+        alert('Не удалось определить участника секретного чата')
+        return
+      }
+      if (!hasSecretThreadKey(threadId)) {
+        setSecretHistoryGate({ open: true, threadId })
+        return
+      }
+      const text = String(normalizedPayload.content ?? '').trim()
+      if (!text) return
+      const { localMessage } = await sendSecretThreadText({
+        threadId,
+        peerUserId,
+        text,
+        allowGenerateKey: false,
+      })
+      // optimistic cache insert
+      appendMessageToCache(threadId, {
+        ...localMessage,
+        senderId: currentUserId,
+        sender: { id: currentUserId },
+      })
+      return
+    }
+
     if (conversation.isSecret) {
       const encrypted = await e2eeManager.encryptPayload(conversation, normalizedPayload)
       await api.post('/conversations/send', encrypted)
@@ -1365,12 +1379,31 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     queryKey: ['messages', activeId],
     enabled: !!activeId,
     queryFn: async () => {
-      const conversationId = activeId
-      const response = await api.get(`/conversations/${conversationId}/messages`, { params: { limit: MESSAGES_PAGE_SIZE } })
-      const fetched = (response.data?.messages || []) as Array<any>
-      const sortedFetched = [...fetched].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
-      const nextCursor = (response.data?.nextCursor ?? null) as string | null
-      const hasMore = !!response.data?.hasMore
+      const conversationId = activeId as string
+      const row = (conversationsQuery.data || []).find((r: any) => r?.conversation?.id === conversationId)
+      const conv = row?.conversation
+      const isSecretV2 = String(conv?.type ?? '').toUpperCase() === 'SECRET'
+
+      const fetchedResult = isSecretV2
+        ? await fetchSecretHistory(conversationId, { limit: MESSAGES_PAGE_SIZE })
+        : await (async () => {
+            const response = await api.get(`/conversations/${conversationId}/messages`, { params: { limit: MESSAGES_PAGE_SIZE } })
+            return {
+              items: (response.data?.messages || []) as Array<any>,
+              nextCursor: (response.data?.nextCursor ?? null) as string | null,
+              hasMore: !!response.data?.hasMore,
+            }
+          })()
+
+      const fetched = (fetchedResult.items || []) as Array<any>
+      const normalizedFetched = isSecretV2
+        ? fetched.map((it: any) => transformSecretHistoryItemToMessage(conversationId, it))
+        : fetched
+      const sortedFetched = [...normalizedFetched].sort(
+        (a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
+      )
+      const nextCursor = (fetchedResult.nextCursor ?? null) as string | null
+      const hasMore = !!fetchedResult.hasMore
       // Keep older pages already loaded when refetching.
       const existing = client.getQueryData(['messages', conversationId]) as Array<any> | undefined
       const merged = (() => {
@@ -1411,13 +1444,32 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     olderLoadingRef.current = true
     setOlderLoading(true)
     try {
-      const resp = await api.get(`/conversations/${conversationId}/messages`, {
-        params: { cursor: meta.nextCursor, limit: MESSAGES_PAGE_SIZE },
-      })
-      const fetched = (resp.data?.messages || []) as Array<any>
-      const sortedFetched = [...fetched].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
-      const nextCursor = (resp.data?.nextCursor ?? null) as string | null
-      const hasMore = !!resp.data?.hasMore
+      const row = (conversationsQuery.data || []).find((r: any) => r?.conversation?.id === conversationId)
+      const conv = row?.conversation
+      const isSecretV2 = String(conv?.type ?? '').toUpperCase() === 'SECRET'
+
+      const fetchedResult = isSecretV2
+        ? await fetchSecretHistory(conversationId, { cursor: meta.nextCursor, limit: MESSAGES_PAGE_SIZE })
+        : await (async () => {
+            const resp = await api.get(`/conversations/${conversationId}/messages`, {
+              params: { cursor: meta.nextCursor, limit: MESSAGES_PAGE_SIZE },
+            })
+            return {
+              items: (resp.data?.messages || []) as Array<any>,
+              nextCursor: (resp.data?.nextCursor ?? null) as string | null,
+              hasMore: !!resp.data?.hasMore,
+            }
+          })()
+
+      const fetched = (fetchedResult.items || []) as Array<any>
+      const normalizedFetched = isSecretV2
+        ? fetched.map((it: any) => transformSecretHistoryItemToMessage(conversationId, it))
+        : fetched
+      const sortedFetched = [...normalizedFetched].sort(
+        (a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
+      )
+      const nextCursor = (fetchedResult.nextCursor ?? null) as string | null
+      const hasMore = !!fetchedResult.hasMore
 
       client.setQueryData(['messages', conversationId], (old: any) => {
         const existing = Array.isArray(old) ? old : []
@@ -1611,6 +1663,24 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   }, [conversationsQuery.data, activeId])
 
   useEffect(() => {
+    const isSecretV2 = Boolean(activeConversation?.id && String(activeConversation?.type ?? '').toUpperCase() === 'SECRET')
+    if (!isSecretV2) return
+    if (!activeConversation?.id) return
+    const hasKey = hasSecretThreadKey(activeConversation.id)
+    if (hasKey) {
+      // Auto-close gate if the key arrived (e.g. via linked device / key package).
+      if (secretHistoryGate.open && secretHistoryGate.threadId === activeConversation.id) {
+        setSecretHistoryGate({ open: false, threadId: null })
+      }
+      return
+    }
+    if (!secretHistoryGate.open) {
+      setSecretHistoryGate({ open: true, threadId: activeConversation.id })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation?.id, activeConversation?.type, secretKeysVersion])
+
+  useEffect(() => {
     return () => {
       attachmentDecryptUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
       attachmentDecryptUrlsRef.current.clear()
@@ -1636,7 +1706,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   const resolveConversationDeviceId = useCallback(
     (conversation: any | null | undefined) => {
-      if (!conversation?.isSecret) return null
+      const isSecretV2 = String(conversation?.type ?? '').toUpperCase() === 'SECRET'
+      if (!conversation?.isSecret || isSecretV2) return null
       const ids = [conversation.secretInitiatorDeviceId, conversation.secretPeerDeviceId]
       for (const deviceId of ids) {
         if (!deviceId) continue
@@ -1674,19 +1745,21 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     (conversationId: string) => {
       if (!conversationId) return false
       const conv = (conversationsQuery.data || []).find((row: any) => row?.conversation?.id === conversationId)?.conversation
-      if (!conv?.isSecret) return false
+      const isSecretV2 = String(conv?.type ?? '').toUpperCase() === 'SECRET'
+      if (!conv?.isSecret || isSecretV2) return false
       const convDeviceId = resolveConversationDeviceId(conv)
       return Boolean(convDeviceId && localDeviceId && convDeviceId !== localDeviceId)
     },
     [conversationsQuery.data, localDeviceId, resolveConversationDeviceId],
   )
-  const conversationSecretInactive = !!(activeConversation?.isSecret && (activeConversation.secretStatus ?? 'ACTIVE') !== 'ACTIVE')
+  const isLegacySecret = Boolean(activeConversation?.isSecret && String(activeConversation?.type ?? '').toUpperCase() !== 'SECRET')
+  const conversationSecretInactive = !!(isLegacySecret && (activeConversation.secretStatus ?? 'ACTIVE') !== 'ACTIVE')
   const conversationSecretSessionReady = useMemo(() => {
-    if (!activeConversation?.isSecret) return true
+    if (!isLegacySecret) return true
     return e2eeManager.hasSession(activeConversation.id)
-  }, [activeConversation?.id, activeConversation?.isSecret, e2eeVersion])
+  }, [activeConversation?.id, isLegacySecret, e2eeVersion])
   const secretBlockedByOtherDevice = Boolean(
-    activeConversation?.isSecret &&
+    isLegacySecret &&
     !conversationSecretInactive &&
     !conversationSecretSessionReady &&
     myConversationDeviceId &&
@@ -3535,8 +3608,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   async function uploadAndSendAttachments(files: File[], textContent: string = '', replyToId?: string) {
     if (!activeId || files.length === 0) return
-    const isSecretConversation = !!activeConversation?.isSecret
-    if (isSecretConversation) {
+    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+    const isLegacySecretConversation = !!activeConversation?.isSecret && !isSecretV2
+    if (isSecretV2) {
+      alert('Вложения в секретных чатах пока не поддерживаются на этом устройстве. Обновление уже в пути.')
+      return
+    }
+    const isSecretConversation = isLegacySecretConversation
+    if (isLegacySecretConversation) {
       if (conversationSecretInactive) {
         alert('Секретный чат больше не активен, отправка вложений отключена.')
         return
@@ -3768,9 +3847,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   const sendVoiceMessage = async (audioBlob: Blob, duration: number) => {
     if (!activeId) return
-    const isSecretConversation = !!activeConversation?.isSecret
+    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+    const isLegacySecretConversation = !!activeConversation?.isSecret && !isSecretV2
+    const isSecretConversation = isLegacySecretConversation
 
-    if (isSecretConversation) {
+    if (isSecretV2) {
+      alert('Голосовые в секретных чатах пока не поддерживаются на этом устройстве.')
+      return
+    }
+
+    if (isLegacySecretConversation) {
       if (conversationSecretInactive) {
         alert('Секретный чат больше не активен, отправка голосовых сообщений отключена.')
         return
@@ -4596,6 +4682,32 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                               lineHeight: 1.15,
                             }}
                           >
+                            {isSecret && (
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 6,
+                                  padding: '4px 8px',
+                                  borderRadius: 999,
+                                  border: '1px solid rgba(245,158,11,0.24)',
+                                  background: 'rgba(245,158,11,0.10)',
+                                  color: 'var(--text-primary)',
+                                  fontWeight: 700,
+                                  letterSpacing: 0.1,
+                                }}
+                              >
+                                {(() => {
+                                  const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+                                  if (isSecretV2) {
+                                    return hasSecretThreadKey(activeConversation.id) ? '🔒 Защищено' : '🔒 Настраивается…'
+                                  }
+                                  if (secretInactive) return '🔒 Настраивается…'
+                                  if (!secretSessionReady) return '🔒 Настраивается…'
+                                  return '🔒 Защищено'
+                                })()}
+                              </span>
+                            )}
                             {(() => {
                               const isMinimized = minimizedCallConvId === activeId
 
@@ -9316,6 +9428,83 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         onClose={() => setAvailabilityContext(null)}
       />
     )}
+
+    {secretHistoryGate.open && (
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 110,
+          background: 'rgba(10,12,16,0.62)',
+          backdropFilter: 'blur(8px) saturate(120%)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 16,
+        }}
+        onClick={() => setSecretHistoryGate({ open: false, threadId: null })}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            width: 520,
+            maxWidth: '96vw',
+            borderRadius: 18,
+            border: '1px solid var(--surface-border)',
+            background: 'linear-gradient(180deg, var(--surface-200), var(--surface-100))',
+            boxShadow: 'var(--shadow-medium)',
+            padding: 18,
+          }}
+        >
+          <div style={{ fontWeight: 900, fontSize: 18, color: 'var(--text-primary)', marginBottom: 6 }}>
+            Секретные чаты защищены
+          </div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 14, lineHeight: '18px', marginBottom: 16 }}>
+            Чтобы читать прошлые сообщения на этом устройстве, привяжи его к одному из доверенных устройств.
+          </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={async () => {
+                const threadId = secretHistoryGate.threadId
+                if (!threadId) {
+                  setSecretHistoryGate({ open: false, threadId: null })
+                  return
+                }
+                // Generate a fresh key epoch locally (explicit "no history" path)
+                ensureSecretThreadKey(threadId)
+                const row = (conversationsQuery.data || []).find((r: any) => r?.conversation?.id === threadId)
+                const conv = row?.conversation
+                const peerUserId =
+                  conv?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user?.id ?? null
+                if (peerUserId) {
+                  void createAndShareSecretThreadKey(threadId, peerUserId).catch(() => {})
+                }
+                setSecretHistoryGate({ open: false, threadId: null })
+                client.invalidateQueries({ queryKey: ['messages', threadId] })
+              }}
+            >
+              Продолжить без истории
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setSecretHistoryGate({ open: false, threadId: secretHistoryGate.threadId })
+                setLinkDeviceModalOpen(true)
+              }}
+            >
+              Привязать устройство
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    <LinkDeviceModal
+      open={linkDeviceModalOpen}
+      onClose={() => setLinkDeviceModalOpen(false)}
+      mode="new"
+    />
     </>
   )
 }

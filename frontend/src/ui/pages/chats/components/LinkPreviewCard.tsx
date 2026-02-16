@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { Play } from 'lucide-react'
 import { decodeUrlForDisplay } from '../chatsTextRender'
 import { getSpotifyEmbed, getYouTubeEmbedUrl, getYouTubeOpenMode, openUrlSystemBrowser, parseYouTubeVideoId } from '../chatsEmbeds'
@@ -26,7 +26,6 @@ export function LinkPreviewCard({ preview }: { preview: any }) {
       (typeof location !== 'undefined' && location.search.includes('YOUTUBE_DEBUG=1'))
     )
 
-  const [showEmbed, setShowEmbed] = useState(false)
   const [measured, setMeasured] = useState<{ w: number; h: number } | null>(null)
 
   const siteLabel = siteName || (() => {
@@ -65,8 +64,22 @@ export function LinkPreviewCard({ preview }: { preview: any }) {
   const imageFit: CSSProperties['objectFit'] = 'contain'
 
   const spotifyEmbed = getSpotifyEmbed(url)
-  const youTubeId = url ? parseYouTubeVideoId(url) : null
+  const youTubeIdFromPreview =
+    typeof (preview as any)?.youtube?.videoId === 'string' ? (preview as any).youtube.videoId : null
+  const youTubeId = youTubeIdFromPreview || (url ? parseYouTubeVideoId(url) : null)
   const youTubeMode = getYouTubeOpenMode()
+  const looksLikeYouTubeProvider = (() => {
+    const sn = (siteName || '').toLowerCase()
+    if (sn.includes('youtube')) return true
+    return false
+  })()
+  // Auto-expand YouTube embeds when preview comes from backend (non-secret),
+  // but only in "embed" mode to respect user preference and native wrappers.
+  const shouldAutoEmbedYouTube = !!youTubeId && (looksLikeYouTubeProvider || !!youTubeIdFromPreview) && youTubeMode === 'embed'
+  const [showEmbed, setShowEmbed] = useState(() => shouldAutoEmbedYouTube)
+  useEffect(() => {
+    if (shouldAutoEmbedYouTube) setShowEmbed(true)
+  }, [shouldAutoEmbedYouTube])
   const embed =
     spotifyEmbed
       ? ({ kind: 'spotify' as const, url: spotifyEmbed.url, height: spotifyEmbed.height })

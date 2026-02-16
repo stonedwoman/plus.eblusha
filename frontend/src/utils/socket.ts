@@ -157,7 +157,16 @@ export function connectSocket() {
   initPresenceStateSync()
   const token = useAppStore.getState().session?.accessToken
   if (!token) return
-  socket.auth = { token }
+  let deviceId: string | undefined
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem('eb_device_info_v1') : null
+    if (raw) {
+      const parsed = JSON.parse(raw) as any
+      const did = typeof parsed?.deviceId === 'string' ? parsed.deviceId.trim() : ''
+      if (did) deviceId = did
+    }
+  } catch {}
+  socket.auth = { token, ...(deviceId ? { deviceId } : {}) }
   // дублируем токен в query на случай прокси/нестандартных клиентов
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(socket.io.opts as any).query = { token }
@@ -172,7 +181,16 @@ if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== 'android') {
   socket.io.on('reconnect_attempt', () => {
     const token = useAppStore.getState().session?.accessToken
     if (token) {
-      socket.auth = { token }
+      let deviceId: string | undefined
+      try {
+        const raw = typeof window !== 'undefined' ? window.localStorage.getItem('eb_device_info_v1') : null
+        if (raw) {
+          const parsed = JSON.parse(raw) as any
+          const did = typeof parsed?.deviceId === 'string' ? parsed.deviceId.trim() : ''
+          if (did) deviceId = did
+        }
+      } catch {}
+      socket.auth = { token, ...(deviceId ? { deviceId } : {}) }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(socket.io.opts as any).query = { token }
     }

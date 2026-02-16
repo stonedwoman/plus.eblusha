@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { type FormEvent } from 'react'
+import { type FormEvent, useState } from 'react'
 import { api } from '../../utils/api'
+import { LinkDeviceModal } from '../components/LinkDeviceModal'
 
 export default function SettingsPage() {
   const meQuery = useQuery({
@@ -8,6 +9,14 @@ export default function SettingsPage() {
     queryFn: async () => {
       const response = await api.get('/status/me')
       return response.data.user
+    },
+  })
+
+  const devicesQuery = useQuery({
+    queryKey: ['my-devices-settings'],
+    queryFn: async () => {
+      const r = await api.get('/devices')
+      return (r.data?.devices ?? []) as any[]
     },
   })
 
@@ -33,6 +42,7 @@ export default function SettingsPage() {
 
   const user = meQuery.data
   const normalizedStatus = user?.status === 'BACKGROUND' ? 'ONLINE' : (user?.status ?? 'ONLINE')
+  const [linkOpen, setLinkOpen] = useState(false)
 
   return (
     <div className="settings-page">
@@ -59,6 +69,63 @@ export default function SettingsPage() {
           Сохранить
         </button>
       </form>
+
+      <div style={{ height: 24 }} />
+      <h2>Устройства</h2>
+      <div style={{ display: 'grid', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+            Привязанные устройства получают доступ к секретной истории.
+          </div>
+          <button className="btn btn-primary" onClick={() => setLinkOpen(true)}>
+            Привязать новое устройство
+          </button>
+        </div>
+
+        <div
+          style={{
+            border: '1px solid var(--surface-border)',
+            borderRadius: 14,
+            background: 'var(--surface-100)',
+            overflow: 'hidden',
+          }}
+        >
+          {(devicesQuery.data || []).map((d: any) => (
+            <div
+              key={d.id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                padding: '12px 14px',
+                borderBottom: '1px solid var(--surface-border)',
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>{d.name ?? d.id}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {d.platform ? String(d.platform) : '—'} · {d.lastSeenAt ? `last seen ${new Date(d.lastSeenAt).toLocaleString()}` : 'never'}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={async () => {
+                    if (!confirm('Отключить устройство?')) return
+                    await api.delete(`/devices/${d.id}`)
+                    devicesQuery.refetch()
+                  }}
+                >
+                  Отключить
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <LinkDeviceModal open={linkOpen} onClose={() => setLinkOpen(false)} mode="trusted" />
     </div>
   )
 }
