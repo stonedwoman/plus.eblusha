@@ -95,10 +95,48 @@ async function testSsrfFetchRedirectLimitAndFinalUrl() {
   );
 }
 
-async function testSsrfFetchTooManyRedirects() {
+async function testSsrfFetchExactlyMaxRedirectsOk() {
   await withFetchMock(
     async (input) => {
       const url = String(input);
+      if (url.endsWith("/r0")) {
+        return new Response(null, { status: 302, headers: { location: "https://8.8.8.8/r1" } });
+      }
+      if (url.endsWith("/r1")) {
+        return new Response(null, { status: 302, headers: { location: "https://8.8.8.8/r2" } });
+      }
+      if (url.endsWith("/r2")) {
+        return new Response(null, { status: 302, headers: { location: "https://8.8.8.8/r3" } });
+      }
+      return new Response("<html>ok</html>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    },
+    async () => {
+      const result = await ssrfFetch(
+        "https://8.8.8.8/r0",
+        { method: "GET" },
+        {
+          maxRedirects: 3,
+          timeoutMs: 5_000,
+          maxBodyBytes: 512 * 1024,
+          allowedContentTypes: ["text/html"],
+        }
+      );
+      assert.equal(result.status, 200);
+      assert.equal(result.finalUrl, "https://8.8.8.8/r3");
+      assert.equal(result.body.toString("utf8"), "<html>ok</html>");
+    }
+  );
+}
+
+async function testSsrfFetchTooManyRedirects() {
+  const calls: string[] = [];
+  await withFetchMock(
+    async (input) => {
+      const url = String(input);
+      calls.push(url);
       const m = /\/r(\d+)$/.exec(url);
       const idx = m ? Number(m[1]) : 0;
       return new Response(null, {
@@ -121,6 +159,9 @@ async function testSsrfFetchTooManyRedirects() {
           ),
         /too_many_redirects/
       );
+      // With maxRedirects=3, the 4th redirect response must be rejected.
+      assert.equal(calls.length, 4);
+      assert.equal(calls[calls.length - 1], "https://8.8.8.8/r3");
     }
   );
 }
@@ -218,6 +259,7 @@ async function main() {
   testBlockedIps();
   await testAssertSafeUrl();
   await testSsrfFetchRedirectLimitAndFinalUrl();
+  await testSsrfFetchExactlyMaxRedirectsOk();
   await testSsrfFetchTooManyRedirects();
   await testSsrfFetchContentTypeBlock();
   await testSsrfFetchBodyTooLarge();

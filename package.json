@@ -14,6 +14,8 @@
     "test:link-detect": "ts-node test/link-detect.test.ts",
     "test:youtube-link-preview": "ts-node test/youtube-link-preview.test.ts",
     "test:ssrf": "ts-node test/ssrf-guard.test.ts",
+    "test:link-preview-ssrf": "ts-node test/link-preview-ssrf.test.ts",
+    "test:secret-inbox-ttl": "ts-node test/secret-inbox-ttl.test.ts",
     "test:comms": "ts-node test/comms.integration.test.ts",
     "test:presence-multi-instance": "ts-node test/presence-multi-instance.integration.test.ts",
     "test:storage-enc-key": "ts-node test/storage-enc-key.smoke.test.ts",

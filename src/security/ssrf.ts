@@ -119,7 +119,8 @@ export async function ssrfFetch(
   init: RequestInit,
   opts: SsrfFetchOptions = {}
 ): Promise<{ finalUrl: string; status: number; headers: Headers; body: Buffer }> {
-  const maxRedirects = typeof opts.maxRedirects === "number" ? opts.maxRedirects : 3;
+  const maxRedirectsRaw = typeof opts.maxRedirects === "number" ? opts.maxRedirects : 3;
+  const maxRedirects = Math.max(0, Math.floor(maxRedirectsRaw));
   const timeoutMs = typeof opts.timeoutMs === "number" ? opts.timeoutMs : 5_000;
   const maxBodyBytes = typeof opts.maxBodyBytes === "number" ? opts.maxBodyBytes : 512 * 1024;
   const allowedContentTypes = opts.allowedContentTypes ?? DEFAULT_ALLOWED_CONTENT_TYPES;
@@ -131,7 +132,8 @@ export async function ssrfFetch(
     throw new Error("invalid_url");
   }
 
-  for (let i = 0; i <= maxRedirects; i++) {
+  // Follow up to maxRedirects redirects, then make one final request that must be non-redirect.
+  for (let i = 0; i < maxRedirects; i++) {
     await assertSafeUrl(current);
 
     const ac = new AbortController();
@@ -163,6 +165,30 @@ export async function ssrfFetch(
     return { finalUrl: current.toString(), status: res.status, headers: res.headers, body };
   }
 
-  throw new Error("too_many_redirects");
+  await assertSafeUrl(current);
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(current.toString(), {
+      ...init,
+      redirect: "manual",
+      signal: ac.signal,
+    });
+  } finally {
+    clearTimeout(t);
+  }
+
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error("too_many_redirects");
+  }
+
+  const ct = res.headers.get("content-type");
+  if (!contentTypeOk(ct, allowedContentTypes)) {
+    throw new Error("content_type_blocked");
+  }
+
+  const body = await readBodyUpTo(res, maxBodyBytes);
+  return { finalUrl: current.toString(), status: res.status, headers: res.headers, body };
 }
 

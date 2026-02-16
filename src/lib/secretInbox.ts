@@ -1,8 +1,9 @@
-import env from "../config/env";
-
 export const SECRET_INBOX_LIST_KEY_PREFIX = "secret_inbox:";
 export const SECRET_MESSAGE_KEY_PREFIX = "secret_msg:";
 export const DEFAULT_SECRET_INBOX_TTL_SECONDS = 7 * 24 * 60 * 60;
+export const DEFAULT_SECRET_MESSAGE_TTL_SECONDS = 3600;
+export const SECRET_MESSAGE_TTL_MIN_SECONDS = 60;
+export const SECRET_MESSAGE_TTL_MAX_SECONDS = 7 * 24 * 60 * 60;
 
 export type SecretAttachmentEnvelope = {
   objectKey: string;
@@ -73,13 +74,22 @@ function messageKey(deviceId: string, msgId: string): string {
   return `${SECRET_MESSAGE_KEY_PREFIX}${deviceId}:${msgId}`;
 }
 
+function clampIntSeconds(v: number, min: number, max: number): number {
+  const n = Math.floor(v);
+  if (!Number.isFinite(n)) return min;
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
+}
+
 function resolveTtlSeconds(raw?: number): number {
-  const fallback = DEFAULT_SECRET_INBOX_TTL_SECONDS;
-  const fromEnv = Number.isFinite(env.SECRET_MESSAGE_TTL_SECONDS)
-    ? Math.max(1, Math.floor(env.SECRET_MESSAGE_TTL_SECONDS))
-    : fallback;
-  if (!Number.isFinite(raw)) return Math.max(fromEnv, fallback);
-  return Math.max(1, Math.floor(raw!));
+  const fallback = DEFAULT_SECRET_MESSAGE_TTL_SECONDS;
+  const envRaw = process.env.SECRET_MESSAGE_TTL_SECONDS;
+  const envNum = typeof envRaw === "string" && envRaw.trim() ? Number(envRaw) : NaN;
+  const fromEnv = Number.isFinite(envNum) ? envNum : fallback;
+
+  const chosen = Number.isFinite(raw) ? (raw as number) : fromEnv;
+  return clampIntSeconds(chosen, SECRET_MESSAGE_TTL_MIN_SECONDS, SECRET_MESSAGE_TTL_MAX_SECONDS);
 }
 
 function parseStoredSecretMessage(raw: string | null): StoredSecretMessage | null {
@@ -95,7 +105,8 @@ function parseStoredSecretMessage(raw: string | null): StoredSecretMessage | nul
  * Delivery semantics:
  * - At-least-once delivery (messages stay in inbox list until explicit ack).
  * - Client must be idempotent by msgId.
- * - Message payload key has TTL; default server TTL is 7 days.
+ * - Message payload key has TTL; default server TTL is 1 hour (can be overridden by env).
+ * - Inbox list key has a longer TTL to avoid unbounded growth.
  */
 export async function enqueueSecretMessages(
   redis: RedisLike,
