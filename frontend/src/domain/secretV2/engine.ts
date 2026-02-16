@@ -2,6 +2,7 @@ import { refreshSecretPrekeys, ensureSecretBootstrap } from './bootstrap'
 import {
   clearThreadError,
   getThreadState,
+  hasSeenKeyPackage,
   markThreadError,
   markThreadOpened,
   markThreadReady,
@@ -13,6 +14,7 @@ import {
   listPeerActiveDeviceIds,
   localThreadHasKey,
   requestResendFromPeer,
+  sendKeyResendRequestToUserDevices,
 } from './keyShare'
 import { hasSecretThreadKey } from '../secret/secretThreadKeyStore'
 
@@ -25,6 +27,7 @@ type SendQueueItem = {
 }
 
 const queueByThread = new Map<string, SendQueueItem[]>()
+const resendRequestTimersByThread = new Map<string, number[]>()
 
 function nextQueueId() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -36,6 +39,39 @@ function mapErrorToReason(message: string): SecretReasonCode {
   if (msg.includes('network') || msg.includes('timeout')) return 'NETWORK_ERROR'
   if (msg.includes('bootstrap')) return 'BOOTSTRAP_FAILED'
   return 'SERVER_REJECTED'
+}
+
+function getCurrentUserId(): string | null {
+  try {
+    const raw = typeof window !== 'undefined' ? localStorage.getItem('eb_user') : null
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as any
+    if (parsed && typeof parsed.id === 'string') return parsed.id
+    return null
+  } catch {
+    return null
+  }
+}
+
+function scheduleResendRequests(opts: { threadId: string; creatorUserId: string; requesterUserId: string; requesterDeviceId: string }) {
+  const threadId = String(opts.threadId ?? '').trim()
+  if (!threadId) return
+  if (resendRequestTimersByThread.has(threadId)) return
+  const delays = [10_000, 20_000, 40_000]
+  const timers: number[] = []
+  for (const delay of delays) {
+    const t = window.setTimeout(() => {
+      try {
+        if (hasSecretThreadKey(threadId)) return
+        if (hasSeenKeyPackage(threadId)) return
+        const view = getThreadState(threadId)
+        if (view.state !== 'WAITING_KEY_PACKAGE') return
+        void sendKeyResendRequestToUserDevices(opts).catch(() => {})
+      } catch {}
+    }, delay)
+    timers.push(t)
+  }
+  resendRequestTimersByThread.set(threadId, timers)
 }
 
 export async function ensureReady(opts: {
@@ -70,6 +106,17 @@ export async function ensureReady(opts: {
       if (!peers.length) {
         markThreadError(threadId, 'NO_PEER_DEVICES')
       } else {
+        // Hotfix: if no key_package arrives soon, ask creator devices to resend key.
+        const requesterUserId = getCurrentUserId()
+        const requesterDeviceId = String((bootstrap as any)?.deviceId ?? '').trim()
+        if (requesterUserId && requesterDeviceId) {
+          scheduleResendRequests({
+            threadId,
+            creatorUserId: opts.peerUserId,
+            requesterUserId,
+            requesterDeviceId,
+          })
+        }
         const rr = await requestResendFromPeer({ threadId, peerUserId: opts.peerUserId })
         if (!rr.ok) markThreadError(threadId, rr.reasonCode)
       }

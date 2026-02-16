@@ -10,6 +10,7 @@ import { isSecretControlHeader, sendSecretControl } from './secretControl'
 import { markKeyReceipt, markKeyShareSent } from './secretKeyShareState'
 import { createEncryptedKeyPackageToDevice } from './secretKeyPackages'
 import { clientLog } from './secretClientLog'
+import { createAndShareSecretThreadKey } from './secretThreadSetup'
 
 type InboxItem = {
   msgId: string
@@ -22,6 +23,9 @@ type InboxItem = {
   contentType?: string
   schemaVersion?: number
 }
+
+const RESEND_REQUEST_THROTTLE_MS = 30_000
+const lastResendHandledAt = new Map<string, number>()
 
 function secretDebugEnabled(): boolean {
   try {
@@ -144,6 +148,8 @@ export function SecretInboxPump() {
 
   useEffect(() => {
     let mounted = true
+    // Expose a best-effort manual pull hook for SecretEngine v2 hotfix loops.
+    let pullNowFn: (() => Promise<void>) | null = null
     if (!bootstrapReadyRef.current) {
       bootstrapReadyRef.current = ensureDeviceBootstrap().catch((err) => {
         if (secretDebugEnabled()) {
@@ -179,6 +185,8 @@ export function SecretInboxPump() {
           const header = item.headerJson ?? {}
           const isKeyPackage = header && typeof header === 'object' && String((header as any).kind ?? '') === 'key_package'
           const isControl = header && typeof header === 'object' && String((header as any).kind ?? '') === 'control'
+          const isResendRequest =
+            header && typeof header === 'object' && String((header as any).kind ?? '') === 'key_resend_request'
 
           if (isControl && isSecretControlHeader(header)) {
             const type = String((header as any).type ?? '')
@@ -238,6 +246,42 @@ export function SecretInboxPump() {
               ackIds.push(item.msgId)
               continue
             }
+          }
+
+          if (isResendRequest) {
+            const threadId = String((header as any).threadId ?? '').trim()
+            const requesterUserId = String((header as any).requesterUserId ?? '').trim()
+            const requesterDeviceId = String((header as any).requesterDeviceId ?? '').trim()
+            if (threadId && requesterUserId) {
+              const keyRec = getSecretThreadKey(threadId)
+              const canResend = !!keyRec?.key
+              const key = `${threadId}:${requesterDeviceId || requesterUserId}`
+              const now = Date.now()
+              const last = lastResendHandledAt.get(key) ?? 0
+              if (canResend && now - last > RESEND_REQUEST_THROTTLE_MS) {
+                lastResendHandledAt.set(key, now)
+                if (secretDebugEnabled()) {
+                  // eslint-disable-next-line no-console
+                  console.log('[SecretInboxPump] key_resend_request: resending thread key', {
+                    threadId,
+                    requesterUserId,
+                    requesterDeviceId: requesterDeviceId || null,
+                  })
+                }
+                void createAndShareSecretThreadKey(threadId, requesterUserId).catch(() => {})
+              } else if (secretDebugEnabled()) {
+                // eslint-disable-next-line no-console
+                console.log('[SecretInboxPump] key_resend_request: skip', {
+                  threadId,
+                  requesterUserId,
+                  requesterDeviceId: requesterDeviceId || null,
+                  canResend,
+                  throttled: now - last <= RESEND_REQUEST_THROTTLE_MS,
+                })
+              }
+            }
+            ackIds.push(item.msgId)
+            continue
           }
 
           // Key packages (device-link / thread-key share) arrive via direct inbox (threadId null).
@@ -474,6 +518,13 @@ export function SecretInboxPump() {
       }
     }
 
+    pullNowFn = pullOnce
+    try {
+      if (typeof window !== 'undefined') {
+        ;(window as any).__ebSecretInboxPullNow = pullOnce
+      }
+    } catch {}
+
     // Periodic pull (offline-friendly)
     const t = window.setInterval(() => {
       void pullOnce()
@@ -495,6 +546,11 @@ export function SecretInboxPump() {
       mounted = false
       window.clearInterval(t)
       socket.off('secret:notify', onNotify as any)
+      try {
+        if (typeof window !== 'undefined' && (window as any).__ebSecretInboxPullNow === pullNowFn) {
+          delete (window as any).__ebSecretInboxPullNow
+        }
+      } catch {}
     }
   }, [client])
 

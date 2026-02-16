@@ -43,6 +43,8 @@ const WAIT_TIMEOUT_MS = 120_000
 
 let cache: RuntimeStore | null = null
 const listeners = new Set<() => void>()
+// In-memory marker: used for peer resend_request decision.
+const seenKeyPackageForThread = new Map<string, number>()
 
 function now() {
   return Date.now()
@@ -130,7 +132,11 @@ export function markBootstrapReady(threadId: string, ready: boolean) {
 }
 
 export function markKeyPackageSeen(threadId: string) {
-  upsert(threadId, { lastKeyPackageAt: now() })
+  const id = String(threadId ?? '').trim()
+  if (!id) return
+  const t = now()
+  seenKeyPackageForThread.set(id, t)
+  upsert(id, { lastKeyPackageAt: t })
 }
 
 export function markThreadError(threadId: string, reasonCode: SecretReasonCode) {
@@ -185,6 +191,14 @@ export function getThreadState(threadId: string): SecretThreadView {
 
 export function getAllThreadRuntime(): Record<string, ThreadRuntime> {
   return { ...(loadStore().threads ?? {}) }
+}
+
+export function hasSeenKeyPackage(threadId: string): boolean {
+  const id = String(threadId ?? '').trim()
+  if (!id) return false
+  if (seenKeyPackageForThread.has(id)) return true
+  const rt = getRuntime(id)
+  return typeof rt?.lastKeyPackageAt === 'number' && rt.lastKeyPackageAt > 0
 }
 
 // Test helper

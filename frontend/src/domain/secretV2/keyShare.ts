@@ -3,6 +3,7 @@ import { requestSecretThreadKeyResend } from '../secret/secretChatFix'
 import { api } from '../../utils/api'
 import { ensureSecretThreadKey, hasSecretThreadKey } from '../secret/secretThreadKeyStore'
 import { markThreadError, markThreadOpened, type SecretReasonCode } from './state'
+import { bytesToBase64, utf8ToBytes } from '../../utils/base64'
 
 function mapShareError(err: any): SecretReasonCode {
   const status = err?.response?.status
@@ -60,5 +61,65 @@ export async function listPeerActiveDeviceIds(peerUserId: string): Promise<strin
 
 export function localThreadHasKey(threadId: string): boolean {
   return hasSecretThreadKey(String(threadId ?? '').trim())
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
+function nowIso() {
+  return new Date().toISOString()
+}
+
+function randomId(): string {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function controlCiphertextBase64(): string {
+  return bytesToBase64(utf8ToBytes('ctrl'))
+}
+
+export async function sendKeyResendRequestToUserDevices(opts: {
+  threadId: string
+  creatorUserId: string
+  requesterUserId: string
+  requesterDeviceId: string
+}): Promise<void> {
+  const threadId = String(opts.threadId ?? '').trim()
+  const creatorUserId = String(opts.creatorUserId ?? '').trim()
+  const requesterUserId = String(opts.requesterUserId ?? '').trim()
+  const requesterDeviceId = String(opts.requesterDeviceId ?? '').trim()
+  if (!threadId || !creatorUserId || !requesterUserId || !requesterDeviceId) return
+
+  const deviceIds = await listPeerActiveDeviceIds(creatorUserId)
+  const targets = Array.from(new Set(deviceIds)).slice(0, 200)
+  if (!targets.length) return
+
+  const createdAt = nowIso()
+  const ciphertext = controlCiphertextBase64()
+  const messages = targets.map((toDeviceId) => ({
+    toDeviceId,
+    msgId: randomId(),
+    createdAt,
+    ciphertext,
+    ttlSeconds: 10 * 60,
+    contentType: 'ref' as const,
+    schemaVersion: 1,
+    headerJson: {
+      kind: 'key_resend_request',
+      v: 1,
+      threadId,
+      requesterUserId,
+      requesterDeviceId,
+      ts: Date.now(),
+    },
+  }))
+
+  for (const batch of chunk(messages, 200)) {
+    if (!batch.length) continue
+    await api.post('/secret/send', { messages: batch })
+  }
 }
 

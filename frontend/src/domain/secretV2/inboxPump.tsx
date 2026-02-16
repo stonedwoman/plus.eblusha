@@ -1,14 +1,18 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { SecretInboxPump as LegacySecretInboxPump } from '../secret/SecretInboxPump'
 import {
   clearThreadError,
   getAllThreadRuntime,
+  getThreadState,
+  hasSeenKeyPackage,
   markKeyPackageSeen,
   markThreadError,
   markThreadReady,
+  subscribeSecretThreadState,
   type SecretReasonCode,
 } from './state'
 import { hasSecretThreadKey } from '../secret/secretThreadKeyStore'
+import { forcePublishPrekeys } from '../device/deviceManager'
 
 function mapRootCauseToReason(rootCause: string | null | undefined): SecretReasonCode {
   const rc = String(rootCause ?? '').trim().toUpperCase()
@@ -20,6 +24,7 @@ function mapRootCauseToReason(rootCause: string | null | undefined): SecretReaso
 }
 
 export function SecretV2InboxPump() {
+  const lastChanceByThreadRef = useRef<Record<string, number>>({})
   useEffect(() => {
     const onKeysUpdated = () => {
       const runtime = getAllThreadRuntime()
@@ -48,6 +53,8 @@ export function SecretV2InboxPump() {
       const threadId = String(d?.threadId ?? '').trim()
       const rootCause = String(d?.rootCause ?? '').trim()
       if (!threadId) return
+      // Seeing a key_package (even if decrypt fails) means "not NO_KEYPACKAGE".
+      markKeyPackageSeen(threadId)
       markThreadError(threadId, mapRootCauseToReason(rootCause))
     }
     const onPoisoned = (ev: Event) => {
@@ -69,6 +76,92 @@ export function SecretV2InboxPump() {
       window.removeEventListener('eb:secretV2:keyPackageSeen', onKeyPackageSeen as any)
       window.removeEventListener('eb:secretV2:keyPackageFailed', onKeyPackageFailed as any)
       window.removeEventListener('eb:secretPoisonedInbox', onPoisoned as any)
+    }
+  }, [])
+
+  // Peer hotfix: while waiting for key_package, pull inbox aggressively (2s)
+  // and do a last-chance self-heal (publish OPKs + pull) before NO_KEYPACKAGE.
+  useEffect(() => {
+    let mounted = true
+    let timer: number | null = null
+
+    const pullNow = async () => {
+      try {
+        const fn = typeof window !== 'undefined' ? (window as any).__ebSecretInboxPullNow : null
+        if (typeof fn === 'function') {
+          await fn()
+        }
+      } catch {}
+    }
+
+    const hasAnyWaiting = () => {
+      const runtime = getAllThreadRuntime()
+      for (const threadId of Object.keys(runtime)) {
+        const view = getThreadState(threadId)
+        if (view.state === 'WAITING_KEY_PACKAGE' && !hasSecretThreadKey(threadId)) return true
+      }
+      return false
+    }
+
+    const tick = async () => {
+      if (!mounted) return
+      const runtime = getAllThreadRuntime()
+      const now = Date.now()
+      let anyWaiting = false
+      for (const threadId of Object.keys(runtime)) {
+        const view = getThreadState(threadId)
+        if (view.state !== 'WAITING_KEY_PACKAGE') continue
+        if (hasSecretThreadKey(threadId)) continue
+        anyWaiting = true
+
+        // Last chance: ~2s before timeout, publish OPKs and pull once more.
+        const ws = view.waitingSince
+        if (ws && now - ws >= 118_000 && !hasSeenKeyPackage(threadId) && !lastChanceByThreadRef.current[threadId]) {
+          lastChanceByThreadRef.current[threadId] = now
+          try {
+            await forcePublishPrekeys({ reason: 'no_keypackage_last_chance' })
+          } catch {}
+          await pullNow()
+        }
+      }
+      if (anyWaiting) {
+        await pullNow()
+      }
+      // Stop timer once there is no waiting thread.
+      if (timer != null && !hasAnyWaiting()) {
+        window.clearInterval(timer)
+        timer = null
+      }
+    }
+
+    const ensureTimer = () => {
+      if (timer != null) return
+      if (!hasAnyWaiting()) return
+      timer = window.setInterval(() => {
+        void tick()
+      }, 2000)
+      void tick()
+    }
+
+    const onStateSignal = () => {
+      // Start/stop based on current state.
+      ensureTimer()
+    }
+
+    ensureTimer()
+    const unsub = subscribeSecretThreadState(onStateSignal)
+    window.addEventListener('eb:secretV2:threadKeyImported', onStateSignal as any)
+    window.addEventListener('eb:secretV2:keyPackageSeen', onStateSignal as any)
+    window.addEventListener('eb:secretV2:keyPackageFailed', onStateSignal as any)
+    window.addEventListener('eb:secretKeysUpdated', onStateSignal as any)
+    return () => {
+      mounted = false
+      if (timer != null) window.clearInterval(timer)
+      unsub()
+      window.removeEventListener('eb:secretV2:threadKeyImported', onStateSignal as any)
+      window.removeEventListener('eb:secretV2:keyPackageSeen', onStateSignal as any)
+      window.removeEventListener('eb:secretV2:keyPackageFailed', onStateSignal as any)
+      window.removeEventListener('eb:secretKeysUpdated', onStateSignal as any)
     }
   }, [])
 
