@@ -453,131 +453,48 @@ a {
   gap: 6px;
 }
 
-/* Composer formatting toggles (Жирный / Курсив / Зачёркнутый) */
-.composer-format-wrap {
+/* Composer selection toolbar (Ж / К / Ч) */
+.composer-sel-toolbar {
+  z-index: 1000;
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 999px;
   overflow: hidden;
-  max-height: 0;
-  opacity: 0;
-  transform: translateY(14px) scale(0.985);
-  filter: blur(2px);
-  visibility: hidden;
-  pointer-events: none;
-  will-change: max-height, opacity, transform, filter;
-  transition:
-    max-height 720ms cubic-bezier(.16, 1, .3, 1),
-    opacity 420ms cubic-bezier(.16, 1, .3, 1),
-    transform 720ms cubic-bezier(.16, 1, .3, 1),
-    filter 720ms cubic-bezier(.16, 1, .3, 1),
-    visibility 0s linear 720ms; /* hide after collapse finishes */
+  border: 1px solid var(--surface-border-strong, var(--surface-border));
+  background: rgba(27, 31, 39, 0.96);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  user-select: none;
 }
-.composer-format-wrap.is-visible {
-  max-height: 120px; /* > row height, enables smooth collapse/expand */
-  opacity: 1;
-  transform: translateY(0) scale(1);
-  filter: blur(0);
-  visibility: visible;
-  pointer-events: auto;
-  transition:
-    max-height 720ms cubic-bezier(.16, 1, .3, 1),
-    opacity 420ms cubic-bezier(.16, 1, .3, 1),
-    transform 720ms cubic-bezier(.16, 1, .3, 1),
-    filter 720ms cubic-bezier(.16, 1, .3, 1),
-    visibility 0s linear 0s;
-}
-.composer-format-row {
-  display: flex;
+.composer-sel-toolbar__btn {
+  -webkit-tap-highlight-color: transparent;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  width: 44px;
+  height: 36px;
+  display: inline-flex;
   align-items: center;
-  padding: 8px 16px;
-  background: var(--surface-200);
-  border-top: 1px solid var(--surface-border);
-  position: relative;
-  isolation: isolate;
-}
-.composer-format-row::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(900px 120px at 40% 0%, rgba(217,119,6,0.12), rgba(217,119,6,0) 60%),
-    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0));
-  opacity: 0.7;
-  pointer-events: none;
-  z-index: -1;
-}
-.composer-format-wrap.is-visible .composer-format-row::after {
-  content: '';
-  position: absolute;
-  top: -1px;
-  left: -30%;
-  width: 40%;
-  height: calc(100% + 2px);
-  background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.10), rgba(255,255,255,0));
-  transform: skewX(-18deg);
-  opacity: 0.0;
-  pointer-events: none;
-  z-index: 0;
-  animation: composer-format-sheen 1100ms cubic-bezier(.16, 1, .3, 1) 1;
-}
-@keyframes composer-format-sheen {
-  0% { transform: translateX(-30%) skewX(-18deg); opacity: 0; }
-  18% { opacity: 0.55; }
-  55% { opacity: 0.18; }
-  100% { transform: translateX(340%) skewX(-18deg); opacity: 0; }
-}
-.composer-format-grid {
-  width: 50%;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-.composer-format-btn {
-  /* base = .btn, override for toggle style */
-  height: var(--control-h);
-  min-height: var(--control-h);
-  width: 100%;
-  padding: 0 10px;
-  border-radius: 10px;
-  border-color: var(--surface-border);
-  background: var(--surface-100);
-  color: var(--text-muted);
-  box-shadow: none;
-  transform: none;
-  font-weight: 750;
-  font-size: 11px;
-  letter-spacing: 0.2px;
+  justify-content: center;
+  font-weight: 850;
+  font-size: 13px;
   line-height: 1;
-  white-space: nowrap;
-  transition: background .15s ease, border-color .15s ease, color .15s ease, transform .08s ease, box-shadow .15s ease;
+  cursor: pointer;
 }
-.composer-format-btn:hover {
-  transform: none;
-  background: var(--surface-300);
-  border-color: var(--surface-border-strong);
-  color: var(--text-primary);
-  box-shadow: none;
+.composer-sel-toolbar__btn + .composer-sel-toolbar__btn {
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
 }
-.composer-format-btn:active {
-  transform: none;
+.composer-sel-toolbar__btn:hover {
+  background: rgba(255, 255, 255, 0.06);
 }
-.composer-format-btn.is-active {
-  background: var(--surface-300);
-  border-color: var(--surface-border-strong);
-  color: var(--text-primary);
-  box-shadow: inset 0 2px 8px rgba(0,0,0,0.45);
+.composer-sel-toolbar__btn:active {
+  background: rgba(255, 255, 255, 0.10);
 }
-.composer-format-btn.is-active:hover {
-  background: var(--surface-300);
-  border-color: var(--surface-border-strong);
-  color: var(--text-primary);
-}
-.composer-format-btn:focus-visible {
-  outline: 3px solid rgba(217,119,6,.35);
-  outline-offset: 2px;
-}
-@media (prefers-reduced-motion: reduce) {
-  .composer-format-wrap { transition: none; }
-  .composer-format-wrap.is-visible .composer-format-row::after { animation: none; }
+.composer-sel-toolbar__btn:focus-visible {
+  outline: 3px solid rgba(217, 119, 6, 0.45);
+  outline-offset: -1px;
 }
 
 /* Modern controls */

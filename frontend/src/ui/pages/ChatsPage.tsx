@@ -345,9 +345,13 @@ export default function ChatsPage() {
   const [editBusy, setEditBusy] = useState(false)
   const [composerEmpty, setComposerEmpty] = useState(true)
   const [composerFocused, setComposerFocused] = useState(false)
-  const [composerFmt, setComposerFmt] = useState<{ bold: boolean; italic: boolean; strike: boolean }>({ bold: false, italic: false, strike: false })
   const composerEditorRef = useRef<HTMLDivElement | null>(null)
   const composerBarRef = useRef<HTMLDivElement | null>(null)
+  const composerSelectionRangeRef = useRef<Range | null>(null)
+  const composerSelectionToolbarRef = useRef<HTMLDivElement | null>(null)
+  const [composerSelectionAnchor, setComposerSelectionAnchor] = useState<null | { left: number; top: number; bottom: number; width: number }>(null)
+  const [composerSelectionActivated, setComposerSelectionActivated] = useState(false)
+  const [composerSelectionToolbarSize, setComposerSelectionToolbarSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const messagesRef = useRef<HTMLDivElement | null>(null)
 
@@ -3799,44 +3803,176 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     [notifyTyping, resizeComposer],
   )
 
-  const updateComposerFmt = useCallback(() => {
-    const editor = composerEditorRef.current
-    if (!editor) return
+  const closeComposerSelectionToolbar = useCallback((opts?: { collapseSelection?: boolean }) => {
+    setComposerSelectionAnchor(null)
+    setComposerSelectionActivated(false)
+    composerSelectionRangeRef.current = null
+    if (!opts?.collapseSelection) return
     try {
       const sel = window.getSelection()
-      const anchor = sel?.anchorNode as any
-      const inEditor = !!(anchor && editor.contains(anchor))
-      const active = document.activeElement === editor || (composerFocused && inEditor)
-      if (!active) {
-        setComposerFmt({ bold: false, italic: false, strike: false })
-        return
-      }
-      setComposerFmt({
-        bold: !!document.queryCommandState?.('bold'),
-        italic: !!document.queryCommandState?.('italic'),
-        strike: !!document.queryCommandState?.('strikeThrough'),
-      })
+      if (!sel || sel.rangeCount === 0) return
+      sel.collapseToEnd()
     } catch {
       // ignore
     }
-  }, [composerFocused])
+  }, [])
 
-  const composerFormatVisible = !isMobile && (composerFocused || !composerEmpty)
+  const getComposerSelectionAnchorFromRange = useCallback((range: Range): null | { left: number; top: number; bottom: number; width: number } => {
+    try {
+      const rects = Array.from(range.getClientRects?.() || [])
+      const fallback = range.getBoundingClientRect?.()
+      const base = (fallback && (fallback.width > 0 || fallback.height > 0)) ? [fallback] : rects
+      if (!base.length) return null
+      let left = Number.POSITIVE_INFINITY
+      let right = 0
+      let top = Number.POSITIVE_INFINITY
+      let bottom = 0
+      for (const r of base) {
+        left = Math.min(left, r.left)
+        right = Math.max(right, r.right)
+        top = Math.min(top, r.top)
+        bottom = Math.max(bottom, r.bottom)
+      }
+      const width = Math.max(0, right - left)
+      if (!Number.isFinite(left) || !Number.isFinite(top) || width <= 0) return null
+      return { left, top, bottom, width }
+    } catch {
+      return null
+    }
+  }, [])
+
+  const updateComposerSelectionToolbar = useCallback(() => {
+    const editor = composerEditorRef.current
+    if (!editor) return closeComposerSelectionToolbar()
+    try {
+      const sel = window.getSelection()
+      if (!sel || sel.rangeCount === 0) return closeComposerSelectionToolbar()
+      const selectedText = sel.toString() || ''
+      if (!selectedText || sel.isCollapsed) return closeComposerSelectionToolbar()
+      const anchorNode = sel.anchorNode
+      const focusNode = sel.focusNode
+      if (!anchorNode || !focusNode) return closeComposerSelectionToolbar()
+      if (!editor.contains(anchorNode) || !editor.contains(focusNode)) return closeComposerSelectionToolbar()
+      const range = sel.getRangeAt(0)
+      const anchor = getComposerSelectionAnchorFromRange(range)
+      if (!anchor) return closeComposerSelectionToolbar()
+      composerSelectionRangeRef.current = range.cloneRange()
+      setComposerSelectionAnchor(anchor)
+    } catch {
+      closeComposerSelectionToolbar()
+    }
+  }, [closeComposerSelectionToolbar, getComposerSelectionAnchorFromRange])
 
   useEffect(() => {
-    if (!composerFocused) return
-    const handler = () => updateComposerFmt()
+    const handler = () => updateComposerSelectionToolbar()
     document.addEventListener('selectionchange', handler)
     window.addEventListener('mouseup', handler, { passive: true } as any)
     window.addEventListener('keyup', handler, { passive: true } as any)
-    // sync immediately on focus
-    updateComposerFmt()
+    window.addEventListener('resize', handler, { passive: true } as any)
+    const editor = composerEditorRef.current
+    editor?.addEventListener('scroll', handler, { passive: true } as any)
     return () => {
       document.removeEventListener('selectionchange', handler)
       window.removeEventListener('mouseup', handler as any)
       window.removeEventListener('keyup', handler as any)
+      window.removeEventListener('resize', handler as any)
+      editor?.removeEventListener('scroll', handler as any)
     }
-  }, [composerFocused, updateComposerFmt])
+  }, [updateComposerSelectionToolbar])
+
+  useLayoutEffect(() => {
+    if (!composerSelectionAnchor) return
+    const el = composerSelectionToolbarRef.current
+    if (!el) return
+    const measure = () => {
+      try {
+        const r = el.getBoundingClientRect()
+        setComposerSelectionToolbarSize({ w: Math.round(r.width), h: Math.round(r.height) })
+      } catch {
+        // ignore
+      }
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => measure())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [composerSelectionAnchor])
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node | null
+      if (!t) return
+      if (composerSelectionToolbarRef.current?.contains(t)) return
+      if (composerEditorRef.current?.contains(t)) return
+      closeComposerSelectionToolbar()
+    }
+    document.addEventListener('mousedown', onDown, true)
+    return () => document.removeEventListener('mousedown', onDown, true)
+  }, [closeComposerSelectionToolbar])
+
+  const applyComposerSelectionFormat = useCallback((cmd: 'bold' | 'italic' | 'strikeThrough') => {
+    const editor = composerEditorRef.current
+    if (!editor) return
+    try {
+      editor.focus()
+    } catch {}
+    try {
+      const sel = window.getSelection()
+      if (sel && composerSelectionRangeRef.current) {
+        sel.removeAllRanges()
+        sel.addRange(composerSelectionRangeRef.current)
+      }
+    } catch {
+      // ignore
+    }
+    applyWysiwygFormat(cmd)
+    try {
+      const sel = window.getSelection()
+      if (sel && sel.rangeCount > 0) composerSelectionRangeRef.current = sel.getRangeAt(0).cloneRange()
+    } catch {
+      // ignore
+    }
+    setComposerEmpty(!editor.innerText?.trim())
+    requestAnimationFrame(() => updateComposerSelectionToolbar())
+  }, [applyWysiwygFormat, updateComposerSelectionToolbar])
+
+  const composerSelectionToolbarStyle = useMemo(() => {
+    if (!composerSelectionAnchor) return null
+    const margin = 8
+    const gap = 10
+    const vw = (typeof window !== 'undefined')
+      ? (window.innerWidth || document.documentElement.clientWidth || 0)
+      : 0
+    const vh = (typeof window !== 'undefined')
+      ? (window.innerHeight || document.documentElement.clientHeight || 0)
+      : 0
+    const w = composerSelectionToolbarSize.w
+    const h = composerSelectionToolbarSize.h
+
+    const xCenter = composerSelectionAnchor.left + composerSelectionAnchor.width / 2
+    let left = xCenter
+    if (vw > 0 && w > 0) {
+      left = Math.min(vw - margin - w / 2, Math.max(margin + w / 2, xCenter))
+    } else if (vw > 0) {
+      left = Math.min(vw - margin, Math.max(margin, xCenter))
+    }
+
+    const topPreferred = composerSelectionAnchor.top - gap - h
+    const bottomPreferred = composerSelectionAnchor.bottom + gap
+    let top = topPreferred
+    if (h > 0 && topPreferred < margin) top = bottomPreferred
+    if (h > 0 && vh > 0 && top + h > vh - margin && topPreferred >= margin) top = topPreferred
+    if (vh > 0 && h > 0) top = Math.min(vh - margin - h, Math.max(margin, top))
+
+    return {
+      position: 'fixed' as const,
+      left,
+      top,
+      transform: 'translateX(-50%)',
+      opacity: w > 0 ? 1 : 0,
+    }
+  }, [composerSelectionAnchor, composerSelectionToolbarSize])
 
   const applyWysiwygCode = useCallback(() => {
     const el = composerEditorRef.current
@@ -6798,49 +6934,47 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             </button>
           )}
           <div ref={composerBarRef} style={{ flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
-          {!isMobile && (
+          {composerSelectionActivated && composerSelectionAnchor && composerSelectionToolbarStyle && createPortal(
             <div
-              className={`composer-format-wrap${composerFormatVisible ? ' is-visible' : ''}`}
-              aria-hidden={!composerFormatVisible}
+              ref={composerSelectionToolbarRef}
+              className="composer-sel-toolbar"
+              style={composerSelectionToolbarStyle}
+              role="toolbar"
+              aria-label="Форматирование текста"
+              onMouseDown={(e) => e.preventDefault()}
             >
-              <div className="composer-format-row">
-                <div className="composer-format-grid">
-                <button
-                  type="button"
-                  className={`btn composer-format-btn${composerFmt.bold ? ' is-active' : ''}`}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { applyWysiwygFormat('bold'); requestAnimationFrame(updateComposerFmt) }}
-                  aria-label="Жирный (Ctrl+B)"
-                  title="Жирный (Ctrl+B)"
-                  tabIndex={composerFormatVisible ? 0 : -1}
-                >
-                  <span style={{ fontWeight: 800 }}>Жирный</span>
-                </button>
-                <button
-                  type="button"
-                  className={`btn composer-format-btn${composerFmt.italic ? ' is-active' : ''}`}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { applyWysiwygFormat('italic'); requestAnimationFrame(updateComposerFmt) }}
-                  aria-label="Курсив (Ctrl+I)"
-                  title="Курсив (Ctrl+I)"
-                  tabIndex={composerFormatVisible ? 0 : -1}
-                >
-                  <span style={{ fontStyle: 'italic' }}>Курсив</span>
-                </button>
-                <button
-                  type="button"
-                  className={`btn composer-format-btn${composerFmt.strike ? ' is-active' : ''}`}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { applyWysiwygFormat('strikeThrough'); requestAnimationFrame(updateComposerFmt) }}
-                  aria-label="Зачёркнутый (Ctrl+Shift+X)"
-                  title="Зачёркнутый (Ctrl+Shift+X)"
-                  tabIndex={composerFormatVisible ? 0 : -1}
-                >
-                  <span style={{ textDecoration: 'line-through' }}>Зачёркнутый</span>
-                </button>
-                </div>
-              </div>
-            </div>
+              <button
+                type="button"
+                className="composer-sel-toolbar__btn"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => applyComposerSelectionFormat('bold')}
+                aria-label="Жирный"
+                title="Жирный"
+              >
+                B
+              </button>
+              <button
+                type="button"
+                className="composer-sel-toolbar__btn"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => applyComposerSelectionFormat('italic')}
+                aria-label="Курсив"
+                title="Курсив"
+              >
+                I
+              </button>
+              <button
+                type="button"
+                className="composer-sel-toolbar__btn"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => applyComposerSelectionFormat('strikeThrough')}
+                aria-label="Зачёркнутый"
+                title="Зачёркнутый"
+              >
+                U
+              </button>
+            </div>,
+            document.body,
           )}
           <div className="msg-input-bar"
             style={{
@@ -7351,8 +7485,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   aria-multiline="true"
                   aria-placeholder={(pendingImages.length > 0 || pendingFiles.length > 0) ? 'Добавьте подпись к вложениям...' : 'Напишите сообщение...'}
                   onFocus={() => setComposerFocused(true)}
+                  onDoubleClick={() => {
+                    setComposerSelectionActivated(true)
+                    requestAnimationFrame(() => updateComposerSelectionToolbar())
+                  }}
                   onBlur={() => {
                     setComposerFocused(false)
+                    closeComposerSelectionToolbar()
                     if (activeId) stopTyping(activeId)
                   }}
                   onInput={() => {
@@ -7363,10 +7502,18 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     resizeComposer()
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Escape' && editState) {
-                      e.preventDefault()
-                      cancelEdit()
-                      return
+                    if (e.key === 'Escape') {
+                      if (editState) {
+                        e.preventDefault()
+                        closeComposerSelectionToolbar()
+                        cancelEdit()
+                        return
+                      }
+                      if (composerSelectionActivated && composerSelectionAnchor) {
+                        e.preventDefault()
+                        closeComposerSelectionToolbar({ collapseSelection: true })
+                        return
+                      }
                     }
                     if (e.key === 'ArrowUp' && !editState) {
                       const noAttachments = pendingImages.length === 0 && pendingFiles.length === 0
@@ -7399,19 +7546,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       if (key === 'b') {
                         e.preventDefault()
                         applyWysiwygFormat('bold')
-                        requestAnimationFrame(updateComposerFmt)
+                        requestAnimationFrame(() => updateComposerSelectionToolbar())
                         return
                       }
                       if (key === 'i') {
                         e.preventDefault()
                         applyWysiwygFormat('italic')
-                        requestAnimationFrame(updateComposerFmt)
+                        requestAnimationFrame(() => updateComposerSelectionToolbar())
                         return
                       }
                       if (e.shiftKey && key === 'x') {
                         e.preventDefault()
                         applyWysiwygFormat('strikeThrough')
-                        requestAnimationFrame(updateComposerFmt)
+                        requestAnimationFrame(() => updateComposerSelectionToolbar())
                         return
                       }
                     }

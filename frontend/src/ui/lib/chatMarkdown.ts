@@ -4,6 +4,14 @@ import TurndownService from 'turndown'
 
 // HTML → Markdown for WYSIWYG composer (getComposerValue).
 const turndownService = new TurndownService({ headingStyle: 'atx' })
+turndownService.addRule('bold', {
+  filter: ['b', 'strong'],
+  replacement: (content: string) => `**${content}**`,
+})
+turndownService.addRule('italic', {
+  filter: ['i', 'em'],
+  replacement: (content: string) => `_${content}_`,
+})
 turndownService.addRule('strikethrough', {
   filter: ['del', 's', 'strike'],
   replacement: (content: string) => `~~${content}~~`,
