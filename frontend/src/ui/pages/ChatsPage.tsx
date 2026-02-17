@@ -23,6 +23,7 @@ import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
 import { createAndShareSecretThreadKey } from '../../domain/secret/secretThreadSetup'
 import { fetchSecretHistory, sendSecretThreadText, transformSecretHistoryItemToMessage } from '../../domain/secret/secretThreadMessaging'
+import { getReceiptDeviceIds } from '../../domain/secret/secretKeyShareState'
 import { isSecretEngineV2Enabled } from '../../domain/secretV2/featureFlag'
 import { ensureReady as ensureSecretEngineReady, getThreadView as getSecretEngineThreadView, refreshKeysAndRetry, subscribeSecretThreadState, type SecretReasonCode } from '../../domain/secretV2'
 import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
@@ -705,6 +706,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       setSecretEngineV2Version((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
     })
   }, [secretEngineV2Enabled])
+
+  // Re-render when key receipts arrive (creator waiting state).
+  useEffect(() => {
+    const onReceipt = () => setSecretEngineV2Version((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
+    try {
+      window.addEventListener('eb:secretV2:keyReceipt', onReceipt as any)
+    } catch {}
+    return () => {
+      try { window.removeEventListener('eb:secretV2:keyReceipt', onReceipt as any) } catch {}
+    }
+  }, [])
 
   const secretDebug = useMemo(() => {
     try {
@@ -1982,6 +1994,24 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const ready = e2eeManager.hasSession(activeConversation.id)
     return { isSecret: true, readyState: (ready ? 'ready' : 'bootstrapping') as SecretReadyState, error: null as string | null }
   }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.secretStatus, secretKeysVersion, secretEngineV2Version, secretEngineV2Enabled, e2eeVersion, secretComposerInlineError])
+
+  const creatorAwaitPeerAccept = useMemo(() => {
+    const conv = activeConversation
+    if (!conv?.isSecret) return false
+    const isSecretV2 = String(conv?.type ?? '').toUpperCase() === 'SECRET'
+    if (!isSecretV2) return false
+    const threadId = String(conv.id ?? '').trim()
+    if (!threadId) return false
+    const amCreator = !!(me?.id && String(conv?.createdById ?? '') === me.id)
+    if (!amCreator) return false
+    // Only show this "await peer" state when our local key exists (we're ready),
+    // but peer hasn't confirmed import yet.
+    if (!hasSecretThreadKey(threadId)) return false
+    const myDeviceIds = new Set((devicesQuery.data || []).map((d: any) => String(d?.id ?? '').trim()).filter(Boolean))
+    const receiptIds = getReceiptDeviceIds(threadId)
+    const hasPeerReceipt = receiptIds.some((d) => d && !myDeviceIds.has(d))
+    return !hasPeerReceipt
+  }, [activeConversation?.id, activeConversation?.type, activeConversation?.isSecret, activeConversation?.createdById, me?.id, devicesQuery.data, secretEngineV2Version])
 
   // Show a short "done" checkmark pulse when bootstrapping finishes.
   useEffect(() => {
@@ -5779,7 +5809,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           {Boolean(
             activeSecretUiState?.isSecret &&
               String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
-              (activeSecretUiState.readyState === 'bootstrapping' || !!secretBootDonePulse)
+              (activeSecretUiState.readyState === 'bootstrapping' || !!secretBootDonePulse || creatorAwaitPeerAccept)
           ) && (
             <div
               style={{
@@ -5795,7 +5825,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, opacity: 0.95 }}>
                 <LoadingSpinner done={!!secretBootDonePulse && activeSecretUiState.readyState !== 'bootstrapping'} />
                 <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600 }}>
-                  {secretBootDonePulse ? 'Готово' : 'Настраиваем защиту…'}
+                  {secretBootDonePulse ? 'Готово' : (creatorAwaitPeerAccept ? 'Ждём подтверждение…' : 'Настраиваем защиту…')}
                 </div>
               </div>
             </div>

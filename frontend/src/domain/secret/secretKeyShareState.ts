@@ -76,6 +76,18 @@ export function hasKeyReceipt(threadId: string, deviceId: string): boolean {
   return typeof v === 'number' && Date.now() - v < MAX_AGE_MS
 }
 
+export function getReceiptDeviceIds(threadId: string): string[] {
+  const t = String(threadId ?? '').trim()
+  if (!t) return []
+  const state = load()
+  cleanup(state)
+  const byDev = state.receipts?.[t]
+  if (!byDev || typeof byDev !== 'object') return []
+  return Object.keys(byDev)
+    .map((d) => String(d ?? '').trim())
+    .filter(Boolean)
+}
+
 export function markKeyShareSent(threadId: string, toDeviceId: string, msgId?: string) {
   const t = String(threadId ?? '').trim()
   const d = String(toDeviceId ?? '').trim()

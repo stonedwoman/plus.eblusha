@@ -222,6 +222,9 @@ export function SecretInboxPump() {
               if (threadId && fromDeviceId) {
                 markKeyReceipt(threadId, fromDeviceId)
                 clientLog('SecretInboxPump', 'info', 'key_receipt received', { threadId, data: { fromDeviceId } })
+                try {
+                  window.dispatchEvent(new CustomEvent('eb:secretV2:keyReceipt', { detail: { threadId, fromDeviceId } }))
+                } catch {}
               }
               ackIds.push(item.msgId)
               continue
