@@ -1507,13 +1507,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const olderMetaRef = useRef<{ hasMore: boolean; nextCursor: string | null }>({ hasMore: false, nextCursor: null })
   useEffect(() => { olderMetaRef.current = olderMeta }, [olderMeta])
 
+  const activeConversationRow = useMemo(() => {
+    const id = activeId as string | null
+    if (!id) return null
+    return (conversationsQuery.data || []).find((r: any) => r?.conversation?.id === id) ?? null
+  }, [conversationsQuery.data, activeId])
+
   const messagesQuery = useQuery({
     queryKey: ['messages', activeId],
-    enabled: !!activeId,
+    // IMPORTANT: don't fetch messages until we know the conversation type.
+    // Otherwise SECRET chats may incorrectly hit /conversations/:id/messages and get 403.
+    enabled: !!activeId && !!activeConversationRow?.conversation?.id,
     queryFn: async () => {
       const conversationId = activeId as string
-      const row = (conversationsQuery.data || []).find((r: any) => r?.conversation?.id === conversationId)
-      const conv = row?.conversation
+      const conv = (activeConversationRow as any)?.conversation
       const isSecretV2 = String(conv?.type ?? '').toUpperCase() === 'SECRET'
 
       const fetchedResult = isSecretV2
@@ -1576,8 +1583,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     olderLoadingRef.current = true
     setOlderLoading(true)
     try {
-      const row = (conversationsQuery.data || []).find((r: any) => r?.conversation?.id === conversationId)
-      const conv = row?.conversation
+      const conv = (activeConversationRow as any)?.conversation
+      if (!conv) return
       const isSecretV2 = String(conv?.type ?? '').toUpperCase() === 'SECRET'
 
       const fetchedResult = isSecretV2
@@ -1629,7 +1636,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       olderLoadingRef.current = false
       setOlderLoading(false)
     }
-  }, [activeId, client])
+  }, [activeId, client, activeConversationRow])
 
   // Lazy link preview fetch for older messages (or when socket updates are missed).
   // Server persists preview in message.metadata and may broadcast message:update.
