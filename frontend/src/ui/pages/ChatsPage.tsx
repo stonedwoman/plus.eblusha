@@ -350,7 +350,7 @@ export default function ChatsPage() {
   const composerSelectionRangeRef = useRef<Range | null>(null)
   const composerSelectionToolbarRef = useRef<HTMLDivElement | null>(null)
   const [composerSelectionAnchor, setComposerSelectionAnchor] = useState<null | { left: number; top: number; bottom: number; width: number }>(null)
-  const [composerSelectionActivated, setComposerSelectionActivated] = useState(false)
+  const [composerSelectionFmt, setComposerSelectionFmt] = useState<{ bold: boolean; italic: boolean; strike: boolean }>({ bold: false, italic: false, strike: false })
   const [composerSelectionToolbarSize, setComposerSelectionToolbarSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const messagesRef = useRef<HTMLDivElement | null>(null)
@@ -3805,7 +3805,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   const closeComposerSelectionToolbar = useCallback((opts?: { collapseSelection?: boolean }) => {
     setComposerSelectionAnchor(null)
-    setComposerSelectionActivated(false)
     composerSelectionRangeRef.current = null
     if (!opts?.collapseSelection) return
     try {
@@ -3834,7 +3833,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         bottom = Math.max(bottom, r.bottom)
       }
       const width = Math.max(0, right - left)
-      if (!Number.isFinite(left) || !Number.isFinite(top) || width <= 0) return null
+      if (!Number.isFinite(left) || !Number.isFinite(top)) return null
+      if (left === 0 && right === 0 && top === 0 && bottom === 0) return null
       return { left, top, bottom, width }
     } catch {
       return null
@@ -3843,25 +3843,50 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   const updateComposerSelectionToolbar = useCallback(() => {
     const editor = composerEditorRef.current
-    if (!editor) return closeComposerSelectionToolbar()
+    if (!editor) {
+      setComposerSelectionFmt({ bold: false, italic: false, strike: false })
+      return closeComposerSelectionToolbar()
+    }
     try {
       const sel = window.getSelection()
-      if (!sel || sel.rangeCount === 0) return closeComposerSelectionToolbar()
-      const selectedText = sel.toString() || ''
-      if (!selectedText || sel.isCollapsed) return closeComposerSelectionToolbar()
+      if (!sel || sel.rangeCount === 0) {
+        setComposerSelectionFmt({ bold: false, italic: false, strike: false })
+        return closeComposerSelectionToolbar()
+      }
       const anchorNode = sel.anchorNode
       const focusNode = sel.focusNode
-      if (!anchorNode || !focusNode) return closeComposerSelectionToolbar()
-      if (!editor.contains(anchorNode) || !editor.contains(focusNode)) return closeComposerSelectionToolbar()
+      const inEditor = !!(anchorNode && focusNode && editor.contains(anchorNode) && editor.contains(focusNode))
+      const active = document.activeElement === editor || (composerFocused && inEditor)
+      if (!active || !inEditor) {
+        setComposerSelectionFmt({ bold: false, italic: false, strike: false })
+        return closeComposerSelectionToolbar()
+      }
+      const fmt = {
+        bold: !!document.queryCommandState?.('bold'),
+        italic: !!document.queryCommandState?.('italic'),
+        strike: !!document.queryCommandState?.('strikeThrough'),
+      }
+      setComposerSelectionFmt(fmt)
       const range = sel.getRangeAt(0)
+      const selectedText = sel.toString() || ''
+      const hasSelection = !sel.isCollapsed && !!selectedText.length
       const anchor = getComposerSelectionAnchorFromRange(range)
-      if (!anchor) return closeComposerSelectionToolbar()
       composerSelectionRangeRef.current = range.cloneRange()
-      setComposerSelectionAnchor(anchor)
+      if (hasSelection) {
+        if (!anchor) return closeComposerSelectionToolbar()
+        setComposerSelectionAnchor(anchor)
+        return
+      }
+      if (fmt.bold || fmt.italic || fmt.strike) {
+        setComposerSelectionAnchor((prev) => anchor || prev)
+        return
+      }
+      closeComposerSelectionToolbar()
     } catch {
+      setComposerSelectionFmt({ bold: false, italic: false, strike: false })
       closeComposerSelectionToolbar()
     }
-  }, [closeComposerSelectionToolbar, getComposerSelectionAnchorFromRange])
+  }, [closeComposerSelectionToolbar, composerFocused, getComposerSelectionAnchorFromRange])
 
   useEffect(() => {
     const handler = () => updateComposerSelectionToolbar()
@@ -6934,7 +6959,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             </button>
           )}
           <div ref={composerBarRef} style={{ flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
-          {composerSelectionActivated && composerSelectionAnchor && composerSelectionToolbarStyle && createPortal(
+          {composerSelectionAnchor && composerSelectionToolbarStyle && createPortal(
             <div
               ref={composerSelectionToolbarRef}
               className="composer-sel-toolbar"
@@ -6945,7 +6970,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             >
               <button
                 type="button"
-                className="composer-sel-toolbar__btn composer-sel-toolbar__btn--bold"
+                className={`composer-sel-toolbar__btn composer-sel-toolbar__btn--bold${composerSelectionFmt.bold ? ' is-active' : ''}`}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => applyComposerSelectionFormat('bold')}
                 aria-label="Жирный"
@@ -6955,7 +6980,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </button>
               <button
                 type="button"
-                className="composer-sel-toolbar__btn composer-sel-toolbar__btn--italic"
+                className={`composer-sel-toolbar__btn composer-sel-toolbar__btn--italic${composerSelectionFmt.italic ? ' is-active' : ''}`}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => applyComposerSelectionFormat('italic')}
                 aria-label="Курсив"
@@ -6965,7 +6990,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </button>
               <button
                 type="button"
-                className="composer-sel-toolbar__btn composer-sel-toolbar__btn--strike"
+                className={`composer-sel-toolbar__btn composer-sel-toolbar__btn--strike${composerSelectionFmt.strike ? ' is-active' : ''}`}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => applyComposerSelectionFormat('strikeThrough')}
                 aria-label="Зачёркнутый"
@@ -7485,10 +7510,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   aria-multiline="true"
                   aria-placeholder={(pendingImages.length > 0 || pendingFiles.length > 0) ? 'Добавьте подпись к вложениям...' : 'Напишите сообщение...'}
                   onFocus={() => setComposerFocused(true)}
-                  onDoubleClick={() => {
-                    setComposerSelectionActivated(true)
-                    requestAnimationFrame(() => updateComposerSelectionToolbar())
-                  }}
                   onBlur={() => {
                     setComposerFocused(false)
                     closeComposerSelectionToolbar()
@@ -7509,7 +7530,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         cancelEdit()
                         return
                       }
-                      if (composerSelectionActivated && composerSelectionAnchor) {
+                      if (composerSelectionAnchor) {
                         e.preventDefault()
                         closeComposerSelectionToolbar({ collapseSelection: true })
                         return
