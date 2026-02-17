@@ -2009,6 +2009,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (hasKey) {
       delete secretBootStartedAtRef.current[threadId]
       clearSecretV2ErrorCode(threadId)
+      setSecretComposerInlineError(null)
       return
     }
     if (!secretBootStartedAtRef.current[threadId]) {
@@ -2021,6 +2022,44 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const t = window.setTimeout(() => {
       // If still no key after 120s, show inline error + CTA (no banners).
       if (!hasSecretThreadKey(threadId)) {
+        // Last-chance: refresh/publish OPKs + request resend + pull once more,
+        // then give it a short grace window to avoid flashing NO_KEYPACKAGE right before the key arrives.
+        if (secretEngineV2Enabled && peerUserId) {
+          void (async () => {
+            try {
+              await refreshKeysAndRetry({ threadId, peerUserId, amCreator })
+            } catch {}
+            try {
+              const fn = (window as any).__ebSecretInboxPullNow
+              if (typeof fn === 'function') await fn()
+            } catch {}
+          })()
+          window.setTimeout(() => {
+            if (hasSecretThreadKey(threadId)) return
+            try {
+              const raw = localStorage.getItem('eb_secret_last_root_cause_v1')
+              if (raw) {
+                const parsed = JSON.parse(raw) as any
+                const code = typeof parsed?.code === 'string' ? parsed.code : ''
+                if (code) {
+                  // eslint-disable-next-line no-console
+                  console.log(`ROOT_CAUSE=${code}`)
+                  setSecretV2ErrorCode(threadId, code)
+                } else {
+                  setSecretV2ErrorCode(threadId, 'NO_KEYPACKAGE')
+                }
+              } else {
+                setSecretV2ErrorCode(threadId, 'NO_KEYPACKAGE')
+              }
+            } catch {}
+            setSecretComposerInlineError(
+              hasOtherTrustedDevice
+                ? `Не удалось получить ключи для секретного чата (${getSecretV2ErrorCode(threadId) ?? 'NO_KEYPACKAGE'}).`
+                : `Не удалось получить ключи для секретного чата (${getSecretV2ErrorCode(threadId) ?? 'NO_KEYPACKAGE'}).`,
+            )
+          }, 12_000)
+          return
+        }
         try {
           const raw = localStorage.getItem('eb_secret_last_root_cause_v1')
           if (raw) {
