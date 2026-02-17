@@ -21,10 +21,24 @@
   color: #e4e6eb;
   transform-style: preserve-3d;
   animation: eb-spin 2.4s linear infinite;
+  position: relative;
+}
+
+.eb-coin--done {
+  animation: none;
 }
 
 .eb-b {
   color: var(--brand);
+}
+
+.eb-check {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 74px;
+  height: 74px;
+  pointer-events: none;
 }
 
 @keyframes eb-spin {

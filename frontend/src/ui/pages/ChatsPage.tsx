@@ -659,6 +659,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const [secretEngineV2Version, setSecretEngineV2Version] = useState(0)
   const [secretBootQueueVersion, setSecretBootQueueVersion] = useState(0)
   const [secretComposerInlineError, setSecretComposerInlineError] = useState<string | null>(null)
+  const [secretBootDonePulse, setSecretBootDonePulse] = useState(0)
+  const prevSecretBootReadyRef = useRef<boolean>(false)
   const secretBootStartedAtRef = useRef<Record<string, number>>({})
   const secretBootQueueRef = useRef<
     Record<string, Array<{ pendingId: string; peerUserId: string; text: string; replyToId?: string | null }>>
@@ -1980,6 +1982,23 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const ready = e2eeManager.hasSession(activeConversation.id)
     return { isSecret: true, readyState: (ready ? 'ready' : 'bootstrapping') as SecretReadyState, error: null as string | null }
   }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.secretStatus, secretKeysVersion, secretEngineV2Version, secretEngineV2Enabled, e2eeVersion, secretComposerInlineError])
+
+  // Show a short "done" checkmark pulse when bootstrapping finishes.
+  useEffect(() => {
+    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+    const isBoot = !!(isSecretV2 && activeSecretUiState?.isSecret && activeSecretUiState.readyState === 'bootstrapping')
+    const isReady = !!(isSecretV2 && activeSecretUiState?.isSecret && activeSecretUiState.readyState === 'ready')
+    if (isReady && prevSecretBootReadyRef.current === false) {
+      setSecretBootDonePulse(Date.now())
+      const t = window.setTimeout(() => setSecretBootDonePulse(0), 700)
+      return () => window.clearTimeout(t)
+    }
+    prevSecretBootReadyRef.current = isReady
+    if (isBoot) {
+      // reset when entering bootstrapping
+      setSecretBootDonePulse(0)
+    }
+  }, [activeConversation?.id, activeConversation?.type, activeSecretUiState?.readyState, activeSecretUiState?.isSecret])
 
   const activeSecretQueuedCount = useMemo(() => {
     const threadId = String(activeConversation?.id ?? '').trim()
@@ -5760,7 +5779,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           {Boolean(
             activeSecretUiState?.isSecret &&
               String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
-              activeSecretUiState.readyState === 'bootstrapping'
+              (activeSecretUiState.readyState === 'bootstrapping' || !!secretBootDonePulse)
           ) && (
             <div
               style={{
@@ -5774,8 +5793,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               }}
             >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, opacity: 0.95 }}>
-                <LoadingSpinner />
-                <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600 }}>Настраиваем защиту…</div>
+                <LoadingSpinner done={!!secretBootDonePulse && activeSecretUiState.readyState !== 'bootstrapping'} />
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600 }}>
+                  {secretBootDonePulse ? 'Готово' : 'Настраиваем защиту…'}
+                </div>
               </div>
             </div>
           )}
