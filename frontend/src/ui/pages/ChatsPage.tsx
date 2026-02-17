@@ -3861,6 +3861,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         setComposerSelectionFmt({ bold: false, italic: false, strike: false })
         return closeComposerSelectionToolbar()
       }
+      // If the composer is fully empty, reset formatting state and hide the toolbar.
+      // execCommand formatting can remain "sticky" at caret even with no content.
+      const empty = !(editor.innerText || '').trim()
+      if (empty) {
+        setComposerSelectionFmt({ bold: false, italic: false, strike: false })
+        return closeComposerSelectionToolbar()
+      }
       const fmt = {
         bold: !!document.queryCommandState?.('bold'),
         italic: !!document.queryCommandState?.('italic'),
@@ -7521,6 +7528,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     setComposerEmpty(empty)
                     notifyTyping()
                     resizeComposer()
+                    requestAnimationFrame(() => updateComposerSelectionToolbar())
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Escape') {
