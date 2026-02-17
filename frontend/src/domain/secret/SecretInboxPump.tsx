@@ -270,7 +270,40 @@ export function SecretInboxPump() {
                     requesterDeviceId: requesterDeviceId || null,
                   })
                 }
-                void createAndShareSecretThreadKey(threadId, requesterUserId).catch(() => {})
+                // Prefer direct resend to the requesting device to avoid slow fanout
+                // (OPK claims are rate-limited and can take long if the user has many devices).
+                if (requesterDeviceId) {
+                  void (async () => {
+                    try {
+                      const env = await createEncryptedKeyPackageToDevice({
+                        toDeviceId: requesterDeviceId,
+                        kind: 'thread_key',
+                        payload: { threadId, key: keyRec.key },
+                        ttlSeconds: 60 * 60,
+                      })
+                      markKeyShareSent(threadId, requesterDeviceId, String(env.msgId))
+                      await api.post('/secret/send', { messages: [env] })
+                      clientLog('SecretInboxPump', 'info', 'key_resend_request handled: resent thread_key', {
+                        threadId,
+                        msgId: String(env.msgId),
+                        data: { toDeviceId: requesterDeviceId },
+                      })
+                    } catch (e: any) {
+                      if (secretDebugEnabled()) {
+                        // eslint-disable-next-line no-console
+                        console.warn('[SecretInboxPump] failed to handle key_resend_request direct send', {
+                          threadId,
+                          requesterDeviceId,
+                          message: String(e?.response?.data?.message ?? e?.message ?? ''),
+                        })
+                      }
+                      // Fallback to full fanout resend (best-effort)
+                      void createAndShareSecretThreadKey(threadId, requesterUserId).catch(() => {})
+                    }
+                  })()
+                } else {
+                  void createAndShareSecretThreadKey(threadId, requesterUserId).catch(() => {})
+                }
               } else if (secretDebugEnabled()) {
                 // eslint-disable-next-line no-console
                 console.log('[SecretInboxPump] key_resend_request: skip', {
