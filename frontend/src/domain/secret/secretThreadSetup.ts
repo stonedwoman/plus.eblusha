@@ -153,7 +153,7 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
       const batches = await chunk(envelopes, 50)
       for (const batch of batches) {
         if (!batch.length) continue
-        const resp = await api.post('/secret/send', { messages: batch })
+        const resp = await api.post('/secret/send', { messages: batch }, { timeout: 15_000 })
         const results = (resp.data?.results ?? []) as Array<any>
         for (const r of results) {
           const msgId = String(r?.msgId ?? '').trim()

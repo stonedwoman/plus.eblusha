@@ -32,6 +32,7 @@ function sleep(ms: number) {
 // key-share fanout can easily exceed the limit and permanently stall bootstrapping.
 // We serialize OPK claims with a small delay to avoid 429 storms.
 const CLAIM_MIN_INTERVAL_MS = 1100
+const CLAIM_HTTP_TIMEOUT_MS = 12_000
 let lastClaimAt = 0
 let claimChain: Promise<void> = Promise.resolve()
 const inFlightClaims = new Map<string, Promise<ClaimResponse>>()
@@ -60,7 +61,7 @@ async function claimPrekeyRateLimited(deviceId: string): Promise<ClaimResponse> 
       while (true) {
         attempt += 1
         try {
-          const claim = await api.post<ClaimResponse>('/e2ee/prekeys/claim', { deviceId: id })
+          const claim = await api.post<ClaimResponse>('/e2ee/prekeys/claim', { deviceId: id }, { timeout: CLAIM_HTTP_TIMEOUT_MS })
           lastClaimAt = Date.now()
           return claim.data as any
         } catch (err: any) {
