@@ -6945,7 +6945,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             >
               <button
                 type="button"
-                className="composer-sel-toolbar__btn"
+                className="composer-sel-toolbar__btn composer-sel-toolbar__btn--bold"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => applyComposerSelectionFormat('bold')}
                 aria-label="Жирный"
@@ -6955,7 +6955,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </button>
               <button
                 type="button"
-                className="composer-sel-toolbar__btn"
+                className="composer-sel-toolbar__btn composer-sel-toolbar__btn--italic"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => applyComposerSelectionFormat('italic')}
                 aria-label="Курсив"
@@ -6965,7 +6965,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </button>
               <button
                 type="button"
-                className="composer-sel-toolbar__btn"
+                className="composer-sel-toolbar__btn composer-sel-toolbar__btn--strike"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => applyComposerSelectionFormat('strikeThrough')}
                 aria-label="Зачёркнутый"
@@ -7486,6 +7486,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   aria-placeholder={(pendingImages.length > 0 || pendingFiles.length > 0) ? 'Добавьте подпись к вложениям...' : 'Напишите сообщение...'}
                   onFocus={() => setComposerFocused(true)}
                   onDoubleClick={() => {
+                    if (composerSelectionActivated || composerSelectionAnchor) {
+                      closeComposerSelectionToolbar({ collapseSelection: true })
+                      return
+                    }
                     setComposerSelectionActivated(true)
                     requestAnimationFrame(() => updateComposerSelectionToolbar())
                   }}
