@@ -82,11 +82,12 @@ async function publishPrekeysBatch(deviceId: string, count: number, opts?: { rea
 export async function forcePublishPrekeys(opts?: { count?: number; reason?: string }) {
   const now = Date.now()
   if (now - lastForcePublishAt < PREKEY_PUBLISH_COOLDOWN_MS) return
-  lastForcePublishAt = now
   const boot = await ensureDeviceBootstrap()
   const deviceId = boot?.deviceId
   if (!deviceId) return
   await publishPrekeysBatch(deviceId, opts?.count ?? DEFAULT_PREKEY_BATCH, { reason: opts?.reason })
+  // Only advance cooldown after a successful publish.
+  lastForcePublishAt = Date.now()
 }
 
 async function maybeReplenishPrekeys(deviceId: string) {

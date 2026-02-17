@@ -167,9 +167,9 @@ export function SecretInboxPump() {
         const boot = await (bootstrapReadyRef.current ?? Promise.resolve(null))
         if (!mounted || !boot) return
         const now = Date.now()
-        if (now - lastSelfHealAtRef.current > 30_000) {
-          lastSelfHealAtRef.current = now
+        if (now - lastSelfHealAtRef.current > 5_000) {
           await forcePublishPrekeys({ reason: 'secret_inbox_bootstrap_ready' })
+          lastSelfHealAtRef.current = Date.now()
         }
       } catch {}
     })()
@@ -188,9 +188,9 @@ export function SecretInboxPump() {
         // This removes multi-minute "No prekeys available" windows on fresh/idle clients.
         try {
           const now = Date.now()
-          if (now - lastSelfHealAtRef.current > 30_000) {
-            lastSelfHealAtRef.current = now
+          if (now - lastSelfHealAtRef.current > 5_000) {
             await forcePublishPrekeys({ reason: 'secret_inbox_pull_loop' })
+            lastSelfHealAtRef.current = Date.now()
           }
         } catch {}
 
