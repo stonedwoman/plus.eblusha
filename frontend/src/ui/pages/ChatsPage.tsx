@@ -7486,10 +7486,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   aria-placeholder={(pendingImages.length > 0 || pendingFiles.length > 0) ? 'Добавьте подпись к вложениям...' : 'Напишите сообщение...'}
                   onFocus={() => setComposerFocused(true)}
                   onDoubleClick={() => {
-                    if (composerSelectionActivated || composerSelectionAnchor) {
-                      closeComposerSelectionToolbar({ collapseSelection: true })
-                      return
-                    }
                     setComposerSelectionActivated(true)
                     requestAnimationFrame(() => updateComposerSelectionToolbar())
                   }}
