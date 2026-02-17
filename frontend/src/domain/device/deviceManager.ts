@@ -80,9 +80,10 @@ async function publishPrekeysBatch(deviceId: string, count: number, opts?: { rea
   }
 }
 
-export async function forcePublishPrekeys(opts?: { count?: number; reason?: string }) {
+export async function forcePublishPrekeys(opts?: { count?: number; reason?: string; force?: boolean }) {
   const now = Date.now()
-  if (now - lastForcePublishAt < PREKEY_PUBLISH_COOLDOWN_MS) return
+  const force = !!opts?.force
+  if (!force && now - lastForcePublishAt < PREKEY_PUBLISH_COOLDOWN_MS) return
   const boot = await ensureDeviceBootstrap()
   const deviceId = boot?.deviceId
   if (!deviceId) return

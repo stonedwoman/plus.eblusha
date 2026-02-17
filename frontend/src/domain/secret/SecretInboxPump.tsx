@@ -168,7 +168,7 @@ export function SecretInboxPump() {
         if (!mounted || !boot) return
         const now = Date.now()
         if (now - lastSelfHealAtRef.current > 5_000) {
-          await forcePublishPrekeys({ reason: 'secret_inbox_bootstrap_ready' })
+          await forcePublishPrekeys({ reason: 'secret_inbox_bootstrap_ready', count: 200 })
           lastSelfHealAtRef.current = Date.now()
         }
       } catch {}
@@ -315,7 +315,7 @@ export function SecretInboxPump() {
             // Creator can send this signal when OPK claim fails with "No prekeys available".
             // It does not reveal anything; it only asks the peer device to publish OPKs ASAP.
             try {
-              await forcePublishPrekeys({ reason: 'prekeys_needed' })
+              await forcePublishPrekeys({ reason: 'prekeys_needed', count: 200, force: true })
               if (secretDebugEnabled()) {
                 // eslint-disable-next-line no-console
                 console.log('[SecretInboxPump] prekeys_needed: published OPKs')

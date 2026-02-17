@@ -120,7 +120,7 @@ export function SecretV2InboxPump() {
         if (!hasSeenKeyPackage(threadId) && !initialPublishByThreadRef.current[threadId]) {
           initialPublishByThreadRef.current[threadId] = now
           try {
-            await forcePublishPrekeys({ reason: 'waiting_key_package' })
+            await forcePublishPrekeys({ reason: 'waiting_key_package', count: 200, force: true })
           } catch {}
         }
 
@@ -129,7 +129,7 @@ export function SecretV2InboxPump() {
         if (ws && now - ws >= 118_000 && !hasSeenKeyPackage(threadId) && !lastChanceByThreadRef.current[threadId]) {
           lastChanceByThreadRef.current[threadId] = now
           try {
-            await forcePublishPrekeys({ reason: 'no_keypackage_last_chance' })
+            await forcePublishPrekeys({ reason: 'no_keypackage_last_chance', count: 200, force: true })
           } catch {}
           await pullNow()
         }
@@ -149,7 +149,7 @@ export function SecretV2InboxPump() {
       if (!hasAnyWaiting()) return
       timer = window.setInterval(() => {
         void tick()
-      }, 2000)
+      }, 1000)
       void tick()
     }
 
