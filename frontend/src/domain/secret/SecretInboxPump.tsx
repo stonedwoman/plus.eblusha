@@ -187,6 +187,8 @@ export function SecretInboxPump() {
           const isControl = header && typeof header === 'object' && String((header as any).kind ?? '') === 'control'
           const isResendRequest =
             header && typeof header === 'object' && String((header as any).kind ?? '') === 'key_resend_request'
+          const isPrekeysNeeded =
+            header && typeof header === 'object' && String((header as any).kind ?? '') === 'prekeys_needed'
 
           if (isControl && isSecretControlHeader(header)) {
             const type = String((header as any).type ?? '')
@@ -277,6 +279,27 @@ export function SecretInboxPump() {
                   requesterDeviceId: requesterDeviceId || null,
                   canResend,
                   throttled: now - last <= RESEND_REQUEST_THROTTLE_MS,
+                })
+              }
+            }
+            ackIds.push(item.msgId)
+            continue
+          }
+
+          if (isPrekeysNeeded) {
+            // Creator can send this signal when OPK claim fails with "No prekeys available".
+            // It does not reveal anything; it only asks the peer device to publish OPKs ASAP.
+            try {
+              await forcePublishPrekeys({ reason: 'prekeys_needed' })
+              if (secretDebugEnabled()) {
+                // eslint-disable-next-line no-console
+                console.log('[SecretInboxPump] prekeys_needed: published OPKs')
+              }
+            } catch (e: any) {
+              if (secretDebugEnabled()) {
+                // eslint-disable-next-line no-console
+                console.warn('[SecretInboxPump] prekeys_needed: publish failed', {
+                  message: String(e?.response?.data?.message ?? e?.message ?? ''),
                 })
               }
             }

@@ -25,6 +25,7 @@ function mapRootCauseToReason(rootCause: string | null | undefined): SecretReaso
 
 export function SecretV2InboxPump() {
   const lastChanceByThreadRef = useRef<Record<string, number>>({})
+  const initialPublishByThreadRef = useRef<Record<string, number>>({})
   useEffect(() => {
     const onKeysUpdated = () => {
       const runtime = getAllThreadRuntime()
@@ -113,6 +114,15 @@ export function SecretV2InboxPump() {
         if (view.state !== 'WAITING_KEY_PACKAGE') continue
         if (hasSecretThreadKey(threadId)) continue
         anyWaiting = true
+
+        // Ensure our device has OPKs published so the creator can encrypt a key_package to us.
+        // This is critical when sockets are flaky and/or the device bootstrapped without publishing.
+        if (!hasSeenKeyPackage(threadId) && !initialPublishByThreadRef.current[threadId]) {
+          initialPublishByThreadRef.current[threadId] = now
+          try {
+            await forcePublishPrekeys({ reason: 'waiting_key_package' })
+          } catch {}
+        }
 
         // Last chance: ~2s before timeout, publish OPKs and pull once more.
         const ws = view.waitingSince

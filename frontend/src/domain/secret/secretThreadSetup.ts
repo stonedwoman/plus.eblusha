@@ -4,6 +4,7 @@ import { createEncryptedKeyPackageToDevice } from './secretKeyPackages'
 import { getStoredDeviceInfo } from '../device/deviceManager'
 import { filterUnackedTargets, getPendingAttempts, markKeyShareSent } from './secretKeyShareState'
 import { clientLog } from './secretClientLog'
+import { bytesToBase64, utf8ToBytes } from '../../utils/base64'
 
 type ShareRootCause = 'NO_TARGETS' | 'NO_PREKEYS' | 'SEND_FAILED' | 'CLAIM_FAILED'
 
@@ -34,11 +35,47 @@ function classifyShareError(err: any): { rootCause: ShareRootCause; status?: num
 
 function backoffMs(attempt: number): number {
   // attempt: 1..N
-  const steps = [0, 5_000, 15_000, 45_000, 90_000]
-  return steps[Math.min(Math.max(attempt, 1), steps.length) - 1] ?? 90_000
+  // Keep it aggressive: we want peer to become shareable within seconds after publishing OPKs.
+  const steps = [0, 1_000, 2_000, 4_000, 8_000]
+  return steps[Math.min(Math.max(attempt, 1), steps.length) - 1] ?? 8_000
 }
 
 const scheduledResends = new Map<string, number[]>()
+
+function nowIso() {
+  return new Date().toISOString()
+}
+
+function randomId(): string {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function controlCiphertextBase64(): string {
+  // Must be valid base64 for backend storage; plaintext is irrelevant (signal is in headerJson).
+  return bytesToBase64(utf8ToBytes('ctrl'))
+}
+
+async function nudgeDeviceToPublishPrekeys(toDeviceId: string, threadId: string) {
+  const to = String(toDeviceId ?? '').trim()
+  const t = String(threadId ?? '').trim()
+  if (!to || !t) return
+  try {
+    await api.post('/secret/send', {
+      messages: [
+        {
+          toDeviceId: to,
+          msgId: randomId(),
+          createdAt: nowIso(),
+          ciphertext: controlCiphertextBase64(),
+          ttlSeconds: 10 * 60,
+          contentType: 'ref',
+          schemaVersion: 1,
+          headerJson: { kind: 'prekeys_needed', v: 1, threadId: t, ts: Date.now() },
+        },
+      ],
+    })
+  } catch {}
+}
 
 export async function createAndShareSecretThreadKey(threadId: string, peerUserId: string): Promise<void> {
   const local = getStoredDeviceInfo()
@@ -99,7 +136,11 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
         clientLog('secretThreadSetup', 'info', 'claim ok', { threadId, msgId: String(env.msgId), data: { toDeviceId, prekeyId: env?.headerJson?.prekeyId } })
       } catch (err: any) {
         const info = classifyShareError(err)
-        if (info.rootCause === 'NO_PREKEYS') failedNoPrekeys.push(toDeviceId)
+        if (info.rootCause === 'NO_PREKEYS') {
+          failedNoPrekeys.push(toDeviceId)
+          // Best-effort: tell peer device to publish OPKs immediately (no encryption required).
+          void nudgeDeviceToPublishPrekeys(toDeviceId, threadId)
+        }
         else failedOther.push(toDeviceId)
         log('claim failed', { toDeviceId, rootCause: info.rootCause, status: info.status, message: info.message })
         clientLog('secretThreadSetup', 'warn', 'claim failed', { threadId, rootCause: info.rootCause, data: { toDeviceId, status: info.status, message: info.message } })
