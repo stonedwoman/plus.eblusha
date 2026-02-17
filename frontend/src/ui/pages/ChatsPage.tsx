@@ -4600,18 +4600,85 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             className="conversations-scroll-container"
             style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1, overflow: 'auto', paddingTop: '10px' }}
           >
-          {conversationsQuery.data?.slice().sort((a: any, b: any) => {
-            const la = a.conversation.messages?.[0]?.createdAt ? new Date(a.conversation.messages[0].createdAt).getTime() : 0
-            const lb = b.conversation.messages?.[0]?.createdAt ? new Date(b.conversation.messages[0].createdAt).getTime() : 0
-            return lb - la
-          }).filter((row: any) => {
-            const conv = row.conversation
-            if (conv.isSecret && (conv.secretStatus ?? 'ACTIVE') !== 'ACTIVE') {
-              return false
+          {(() => {
+            const rows = (conversationsQuery.data || []) as any[]
+            const visible = rows.filter((row: any) => {
+              const conv = row.conversation
+              if (conv.isSecret && (conv.secretStatus ?? 'ACTIVE') !== 'ACTIVE') return false
+              return true
+            })
+
+            const tsOf = (row: any): number => {
+              const t = row?.conversation?.messages?.[0]?.createdAt
+              return t ? new Date(t).getTime() : 0
             }
-            return true
-          }).map((row: any) => {
-            const c = row.conversation
+
+            const isGroupConv = (conv: any): boolean => !!(conv?.isGroup || (conv?.participants?.length ?? 0) > 2)
+
+            const peerKeyOf = (conv: any): string | null => {
+              try {
+                if (isGroupConv(conv)) return null
+                const othersArr = (conv.participants || [])
+                  .filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
+                  .map((p: any) => p.user)
+                const peer = othersArr[0]
+                const pid = peer?.id ? String(peer.id) : ''
+                return pid ? `peer:${pid}` : null
+              } catch {
+                return null
+              }
+            }
+
+            type Group = {
+              key: string
+              cloud: any | null
+              secret: any | null
+              other: any[]
+              sortTs: number
+            }
+
+            const byKey = new Map<string, Group>()
+            for (const row of visible) {
+              const conv = row?.conversation
+              if (!conv) continue
+              const peerKey = peerKeyOf(conv)
+              const key = peerKey ?? `conv:${String(conv.id)}`
+              const g =
+                byKey.get(key) ??
+                ({
+                  key,
+                  cloud: null,
+                  secret: null,
+                  other: [],
+                  sortTs: 0,
+                } as Group)
+
+              const isSecretV2 = String(conv?.type ?? '').toUpperCase() === 'SECRET'
+              if (peerKey && isSecretV2) g.secret = row
+              else if (peerKey && !isSecretV2) g.cloud = row
+              else g.other.push(row)
+
+              g.sortTs = Math.max(g.sortTs, tsOf(row))
+              byKey.set(key, g)
+            }
+
+            const groups = Array.from(byKey.values()).sort((a, b) => {
+              if (b.sortTs !== a.sortTs) return b.sortTs - a.sortTs
+              // Prefer groups that have a secret chat when timestamps tie.
+              const as = a.secret ? 1 : 0
+              const bs = b.secret ? 1 : 0
+              return bs - as
+            })
+
+            const flatten: Array<{ row: any; sub: 'cloud' | 'secret' | 'other' }> = []
+            for (const g of groups) {
+              if (g.cloud) flatten.push({ row: g.cloud, sub: 'cloud' })
+              if (g.secret) flatten.push({ row: g.secret, sub: 'secret' })
+              for (const r of g.other) flatten.push({ row: r, sub: 'other' })
+            }
+
+            return flatten.map(({ row, sub }) => {
+              const c = row.conversation
             const othersArr = c.participants
               .filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
               .map((p: any) => p.user)
@@ -4619,6 +4686,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             const title = c.title ?? fallbackName
             const isGroup = c.isGroup || c.participants.length > 2
             const isSecret = !!c.isSecret
+            const isSecretV2 = String(c?.type ?? '').toUpperCase() === 'SECRET'
             const participantsText = othersArr.map((u: any) => u.displayName ?? u.username).join(', ')
             const isActive = activeId === c.id
             const callEntry = activeCalls[c.id]
@@ -4644,6 +4712,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 onClick={() => selectConversation(c.id)}
                 className="tile"
                 style={{
+                  ...(sub === 'secret'
+                    ? {
+                        marginTop: -6,
+                        marginLeft: 14,
+                        background: 'linear-gradient(135deg, rgba(34,197,94,0.07) 0%, rgba(34,197,94,0.03) 100%)',
+                        borderColor: 'rgba(34,197,94,0.22)',
+                      }
+                    : {}),
                   ...(row.unreadCount > 0 ? { borderColor: 'var(--brand-600)', boxShadow: '0 3px 10px rgba(227,139,10,0.15)' } : {}),
                   ...(isActive ? { borderColor: 'var(--brand-600)', boxShadow: '0 4px 12px rgba(227,139,10,0.14)' } : {}),
                   ...(isCallActive
@@ -4693,7 +4769,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span>{title}</span>
-                    {!isGroup && isSecret && (
+                    {!isGroup && (isSecretV2 || isSecret) && (
                       <span
                         style={{
                           display: 'inline-flex',
@@ -4805,7 +4881,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 )}
               </div>
             )
-          })}
+            })
+          })()}
           </div>
           {convHasTopFade && (
             <div
