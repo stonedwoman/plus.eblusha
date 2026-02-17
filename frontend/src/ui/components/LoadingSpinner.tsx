@@ -6,13 +6,17 @@ export default function LoadingSpinner(props: { done?: boolean }) {
   return (
     <div className="eb-loader">
       <div className={`eb-coin ${done ? 'eb-coin--done' : ''}`}>
-        <span className="eb-e">Е</span>
-        <span className="eb-b">Б</span>
+        {!done && (
+          <>
+            <span className="eb-e">Е</span>
+            <span className="eb-b">Б</span>
+          </>
+        )}
         {done && (
-          <svg className="eb-check" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" className="eb-check" aria-hidden="true">
             <motion.path
               d="M5 13L9 17L19 7"
-              stroke="var(--brand)"
+              stroke="#3ee887"
               strokeWidth="3"
               strokeLinecap="round"
               strokeLinejoin="round"
