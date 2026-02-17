@@ -57,7 +57,8 @@ function scheduleResendRequests(opts: { threadId: string; creatorUserId: string;
   const threadId = String(opts.threadId ?? '').trim()
   if (!threadId) return
   if (resendRequestTimersByThread.has(threadId)) return
-  const delays = [10_000, 20_000, 40_000]
+  // Aggressive: if notify is broken, ask for resend early.
+  const delays = [3_000, 6_000, 12_000]
   const timers: number[] = []
   for (const delay of delays) {
     const t = window.setTimeout(() => {

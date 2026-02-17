@@ -6,7 +6,8 @@ const DEVICE_INFO_KEY = 'eb_device_info_v1'
 const DEVICE_SECRET_KEY = 'eb_device_secret_v1'
 const DEFAULT_PREKEY_BATCH = 50
 const MIN_SERVER_PREKEY_RESERVE = 20
-const PREKEY_PUBLISH_COOLDOWN_MS = 15_000
+// Keep this low: missing OPKs blocks key delivery. We still guard with rate limiting server-side.
+const PREKEY_PUBLISH_COOLDOWN_MS = 5_000
 
 type StoredDeviceInfo = {
   deviceId: string
