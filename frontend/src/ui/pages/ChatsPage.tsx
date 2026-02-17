@@ -16,6 +16,7 @@ import { ImageEditorModal } from '../components/ImageEditorModal'
 import { ImageLightbox } from '../components/ImageLightbox'
 import { LazyImage } from '../components/LazyImage'
 import { LinkDeviceModal } from '../components/LinkDeviceModal'
+import LoadingSpinner from '../components/LoadingSpinner'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
@@ -5754,6 +5755,28 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               }}
             >
               Отпустите файлы, чтобы прикрепить
+            </div>
+          )}
+          {Boolean(
+            activeSecretUiState?.isSecret &&
+              String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
+              activeSecretUiState.readyState === 'bootstrapping'
+          ) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 20,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                pointerEvents: 'none',
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, opacity: 0.95 }}>
+                <LoadingSpinner />
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600 }}>Настраиваем защиту…</div>
+              </div>
             </div>
           )}
           <div style={{
