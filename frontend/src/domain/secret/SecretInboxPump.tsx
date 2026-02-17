@@ -160,6 +160,20 @@ export function SecretInboxPump() {
       })
     }
 
+    // Publish OPKs as soon as device bootstrap is ready (do NOT wait for inbox pull success).
+    // This reduces long "No prekeys available" windows when the network is flaky.
+    void (async () => {
+      try {
+        const boot = await (bootstrapReadyRef.current ?? Promise.resolve(null))
+        if (!mounted || !boot) return
+        const now = Date.now()
+        if (now - lastSelfHealAtRef.current > 30_000) {
+          lastSelfHealAtRef.current = now
+          await forcePublishPrekeys({ reason: 'secret_inbox_bootstrap_ready' })
+        }
+      } catch {}
+    })()
+
     const pullOnce = async () => {
       if (!mounted) return
       if (pullingRef.current) return
@@ -176,7 +190,7 @@ export function SecretInboxPump() {
           const now = Date.now()
           if (now - lastSelfHealAtRef.current > 30_000) {
             lastSelfHealAtRef.current = now
-            await forcePublishPrekeys({ reason: 'secret_inbox_startup' })
+            await forcePublishPrekeys({ reason: 'secret_inbox_pull_loop' })
           }
         } catch {}
 

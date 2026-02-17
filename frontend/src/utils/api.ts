@@ -49,6 +49,7 @@ function computeApiBaseUrl(): string {
 }
 
 const baseURL = computeApiBaseUrl()
+const DEFAULT_API_TIMEOUT_MS = 15_000
 
 export const api = axios.create({
   baseURL,
@@ -59,6 +60,11 @@ const refreshClient = axios.create({
   baseURL,
   withCredentials: true,
 })
+
+// Set default timeout to avoid minute-long hangs.
+// Long-running endpoints override this in the request interceptor below.
+api.defaults.timeout = DEFAULT_API_TIMEOUT_MS
+refreshClient.defaults.timeout = DEFAULT_API_TIMEOUT_MS
 
 const isNativeClient = isNativePlatform()
 if (isNativeClient) {
@@ -145,8 +151,11 @@ api.interceptors.request.use((config) => {
     const hasExplicitTimeout = typeof (config as any).timeout === 'number'
     const isLongRunning =
       url.includes('/upload') || url.includes('/uploads') || url.includes('/files') || url.includes('/api/files')
-    if (!hasExplicitTimeout && !isLongRunning) {
-      ;(config as any).timeout = 15_000
+    if (!hasExplicitTimeout && isLongRunning) {
+      // allow long streams/downloads
+      ;(config as any).timeout = 0
+    } else if (!hasExplicitTimeout && !isLongRunning) {
+      ;(config as any).timeout = DEFAULT_API_TIMEOUT_MS
     }
   } catch {}
   return config
