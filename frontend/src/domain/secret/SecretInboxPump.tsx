@@ -170,6 +170,16 @@ export function SecretInboxPump() {
         const bootstrapReady = !!bootstrapRes
         if (!bootstrapReady) return
 
+        // Proactively publish OPKs so peers can encrypt key packages to this device.
+        // This removes multi-minute "No prekeys available" windows on fresh/idle clients.
+        try {
+          const now = Date.now()
+          if (now - lastSelfHealAtRef.current > 30_000) {
+            lastSelfHealAtRef.current = now
+            await forcePublishPrekeys({ reason: 'secret_inbox_startup' })
+          }
+        } catch {}
+
         const resp = await api.get('/secret/inbox/pull', {
           params: { limit: 50 },
           // Avoid conditional caching (If-None-Match → 304) for polling endpoints.

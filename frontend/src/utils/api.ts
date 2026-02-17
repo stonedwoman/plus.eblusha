@@ -137,6 +137,18 @@ api.interceptors.request.use((config) => {
       }
     }
   } catch {}
+
+  // Avoid "minute-long hangs" when network/proxy is half-dead.
+  // Set a sane default timeout for API calls, but DO NOT apply it to uploads/files streaming.
+  try {
+    const url = String(config.url ?? '')
+    const hasExplicitTimeout = typeof (config as any).timeout === 'number'
+    const isLongRunning =
+      url.includes('/upload') || url.includes('/uploads') || url.includes('/files') || url.includes('/api/files')
+    if (!hasExplicitTimeout && !isLongRunning) {
+      ;(config as any).timeout = 15_000
+    }
+  } catch {}
   return config
 })
 
