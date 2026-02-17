@@ -104,7 +104,16 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
       .map((b) => String(b?.deviceId ?? '').trim())
       .filter(Boolean)
 
-    const targets = Array.from(new Set([...myDeviceIds, ...peerDeviceIds]))
+    const seen = new Set<string>()
+    const ordered = [...peerDeviceIds, ...myDeviceIds].filter((id) => {
+      const v = String(id ?? '').trim()
+      if (!v) return false
+      if (seen.has(v)) return false
+      seen.add(v)
+      return true
+    })
+
+    const targets = ordered
       .filter((id) => (localDeviceId ? id !== localDeviceId : true))
       .slice(0, 200)
 
@@ -116,10 +125,32 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
     log('share attempt', { attempt, threadId, peerUserId, localDeviceId, targetsCount: targetDeviceIds.length, targets: targetDeviceIds })
     clientLog('secretThreadSetup', 'info', 'share attempt', { threadId, data: { attempt, targetsCount: targetDeviceIds.length } })
 
-    const envelopes: any[] = []
+    const peerSet = new Set<string>(peerDeviceIds.map((x) => String(x ?? '').trim()).filter(Boolean))
+    const pendingBatch: any[] = []
     const byMsgId = new Map<string, string>()
     const failedNoPrekeys: string[] = []
     const failedOther: string[] = []
+
+    const sendBatch = async (batch: any[]) => {
+      if (!batch.length) return
+      try {
+        const resp = await api.post('/secret/send', { messages: batch }, { timeout: 15_000 })
+        const results = (resp.data?.results ?? []) as Array<any>
+        for (const r of results) {
+          const msgId = String(r?.msgId ?? '').trim()
+          const toDeviceId = msgId ? (byMsgId.get(msgId) ?? null) : null
+          if (!msgId || !toDeviceId) continue
+          log('send result', { toDeviceId, msgId, inserted: !!r?.inserted, skippedSeen: !!r?.skippedSeen })
+          clientLog('secretThreadSetup', 'info', 'send result', { threadId, msgId, data: { toDeviceId, inserted: !!r?.inserted, skippedSeen: !!r?.skippedSeen } })
+        }
+      } catch (err: any) {
+        const message = String(err?.response?.data?.message ?? err?.message ?? '')
+        log('send failed', { attempt, batchSize: batch.length, message })
+        clientLog('secretThreadSetup', 'error', 'send failed', { threadId, data: { attempt, batchSize: batch.length, message } })
+      } finally {
+        batch.splice(0, batch.length)
+      }
+    }
 
     for (const toDeviceId of targetDeviceIds) {
       try {
@@ -129,11 +160,22 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
           payload: { threadId, key: keyRec.key },
           ttlSeconds: 60 * 60,
         })
-        envelopes.push(env)
+        pendingBatch.push(env)
         byMsgId.set(String(env.msgId), toDeviceId)
         markKeyShareSent(threadId, toDeviceId, String(env.msgId))
         log('claim ok', { toDeviceId, msgId: env.msgId, prekeyId: env?.headerJson?.prekeyId })
         clientLog('secretThreadSetup', 'info', 'claim ok', { threadId, msgId: String(env.msgId), data: { toDeviceId, prekeyId: env?.headerJson?.prekeyId } })
+
+        // Send to peer devices immediately (do not wait for long self-fanout).
+        // For non-peer devices, flush in small batches.
+        if (peerSet.has(String(toDeviceId))) {
+          await sendBatch([env])
+          // remove env from pendingBatch if present
+          const idx = pendingBatch.findIndex((x) => String(x?.msgId) === String(env.msgId))
+          if (idx >= 0) pendingBatch.splice(idx, 1)
+        } else if (pendingBatch.length >= 15) {
+          await sendBatch(pendingBatch)
+        }
       } catch (err: any) {
         const info = classifyShareError(err)
         if (info.rootCause === 'NO_PREKEYS') {
@@ -147,30 +189,10 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
       }
     }
 
-    // Send envelopes in batches and log delivery per device
-    let sent = 0
-    try {
-      const batches = await chunk(envelopes, 50)
-      for (const batch of batches) {
-        if (!batch.length) continue
-        const resp = await api.post('/secret/send', { messages: batch }, { timeout: 15_000 })
-        const results = (resp.data?.results ?? []) as Array<any>
-        for (const r of results) {
-          const msgId = String(r?.msgId ?? '').trim()
-          const toDeviceId = msgId ? (byMsgId.get(msgId) ?? null) : null
-          if (!msgId || !toDeviceId) continue
-          log('send result', { toDeviceId, msgId, inserted: !!r?.inserted, skippedSeen: !!r?.skippedSeen })
-          clientLog('secretThreadSetup', 'info', 'send result', { threadId, msgId, data: { toDeviceId, inserted: !!r?.inserted, skippedSeen: !!r?.skippedSeen } })
-        }
-        sent += batch.length
-      }
-    } catch (err: any) {
-      const message = String(err?.response?.data?.message ?? err?.message ?? '')
-      log('send failed', { attempt, sentSoFar: sent, message })
-      clientLog('secretThreadSetup', 'error', 'send failed', { threadId, data: { attempt, sentSoFar: sent, message } })
-    }
+    // Flush remaining envelopes (self devices etc).
+    await sendBatch(pendingBatch)
 
-    return { envelopes: envelopes.length, failedNoPrekeys, failedOther }
+    return { envelopes: targetDeviceIds.length - failedNoPrekeys.length - failedOther.length, failedNoPrekeys, failedOther }
   }
 
   const { myDeviceIds, peerDeviceIds, targets } = await fetchTargets()
