@@ -257,6 +257,15 @@ socket.on('device:revoked', () => {
   } catch {}
 })
 
+export function onSessionNew(cb: (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; ts: number }) => void) {
+  socket.on('session:new', cb)
+  return () => {
+    try {
+      socket.off('session:new', cb)
+    } catch {}
+  }
+}
+
 // Helpful to confirm we actually receive realtime status events in the browser
 socket.on('presence:update', (p) => {
   dbg('presence:update', p)

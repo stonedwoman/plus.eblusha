@@ -56,6 +56,7 @@ type ServerToClientEvents = {
   "secret:notify": (payload: { toDeviceId: string; msgId: string }) => void;
   "secret:thread:created": (payload: { threadId: string; type: "SECRET" }) => void;
   "device:revoked": (payload: { deviceId: string; reason?: string }) => void;
+  "session:new": (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; ts: number }) => void;
 };
 
 type ClientToServerEvents = {
@@ -676,6 +677,24 @@ export async function initSocket(
     if (verifiedDeviceId) {
       socket.join(deviceRoom(verifiedDeviceId));
       logger.info({ userId, deviceId: verifiedDeviceId }, "Socket joined device room");
+      void (async () => {
+        try {
+          const dev = await prisma.userDevice.findUnique({
+            where: { id: verifiedDeviceId },
+            select: { name: true, platform: true },
+          });
+          const payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; ts: number } = {
+            userId,
+            deviceId: verifiedDeviceId,
+            ts: Date.now(),
+          };
+          if (dev?.name != null && dev.name !== "") payload.deviceName = dev.name;
+          if (dev?.platform != null && dev.platform !== "") payload.platform = dev.platform;
+          io.to(userRoom(userId)).emit("session:new", payload);
+        } catch {
+          // ignore
+        }
+      })();
     }
 
     // Redis presence TTL heartbeat (ephemeral).
