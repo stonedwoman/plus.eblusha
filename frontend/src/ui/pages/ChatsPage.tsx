@@ -10137,10 +10137,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Контакт</div>
                         </div>
                       </div>
-                      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <div style={{ display: 'flex', gap: 8, width: '100%' }}>
                         <button
                           className="btn btn-secondary btn-icon"
                           title="Удалить"
+                          style={{ flex: 1, width: 'auto', minWidth: 0 }}
                           onClick={async () => {
                             await api.post('/contacts/remove', { contactId: c.id })
                             contactsQuery.refetch()
@@ -10151,6 +10152,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         <button
                           className="btn btn-secondary btn-icon"
                           title="Секретный чат"
+                          style={{ flex: 1, width: 'auto', minWidth: 0 }}
                           onClick={async () => {
                             await initiateSecretChat(u.id)
                             setContactsOpen(false)
@@ -10162,6 +10164,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         <button
                           className="btn btn-primary btn-icon"
                           title="Открыть чат"
+                          style={{ flex: 1, width: 'auto', minWidth: 0 }}
                           onClick={async () => {
                             const resp = await api.post('/conversations', { participantIds: [u.id], isGroup: false })
                             setContactsOpen(false)
