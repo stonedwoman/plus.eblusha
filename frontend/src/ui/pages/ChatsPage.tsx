@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2 } from 'lucide-react'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -17,13 +17,15 @@ import { ImageLightbox } from '../components/ImageLightbox'
 import { LazyImage } from '../components/LazyImage'
 import { LinkDeviceModal } from '../components/LinkDeviceModal'
 import LoadingSpinner from '../components/LoadingSpinner'
+import { systemConfirm, systemToast } from '../../domain/store/systemUiStore'
 import { useCallStore } from '../../domain/store/callStore'
 import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
+import { wipeLocalDeviceData } from '../../domain/device/deviceWipe'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
 import { createAndShareSecretThreadKey } from '../../domain/secret/secretThreadSetup'
 import { fetchSecretHistory, sendSecretThreadText, transformSecretHistoryItemToMessage } from '../../domain/secret/secretThreadMessaging'
-import { getReceiptDeviceIds } from '../../domain/secret/secretKeyShareState'
+import { getLastPendingShareAt, getPendingDeviceIds, getReceiptDeviceIds } from '../../domain/secret/secretKeyShareState'
 import { isSecretEngineV2Enabled } from '../../domain/secretV2/featureFlag'
 import { ensureReady as ensureSecretEngineReady, getThreadView as getSecretEngineThreadView, refreshKeysAndRetry, subscribeSecretThreadState, type SecretReasonCode } from '../../domain/secretV2'
 import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
@@ -33,6 +35,7 @@ import { renderChatMarkdownToHtml, htmlToMarkdown } from '../lib/chatMarkdown'
 import { renderMessageText } from './chats/chatsTextRender'
 import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
 import { VoiceMessagePlayer } from './chats/components/VoiceMessagePlayer'
+import { DeviceLinkInline } from './chats/components/DeviceLinkInline'
 import { useChatAudio } from './chats/hooks/useChatAudio'
 import { useChatSocketSubscriptions } from './chats/hooks/useChatSocketSubscriptions'
 import { useChatTyping } from './chats/hooks/useChatTyping'
@@ -436,6 +439,7 @@ export default function ChatsPage() {
   const newGroupCropCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const [newGroupCrop, setNewGroupCrop] = useState({ x: 0, y: 0, scale: 1 })
   const [newGroupDragOver, setNewGroupDragOver] = useState(false)
+  const [newGroupAvatarHover, setNewGroupAvatarHover] = useState(false)
   const [contactsOpen, setContactsOpen] = useState(false)
   const [eblDigits, setEblDigits] = useState<string[]>(['', '', '', ''])
   const eblRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)]
@@ -625,7 +629,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     queryKey: ['my-devices'],
     queryFn: async () => {
       const response = await api.get('/devices')
-      return response.data.devices as Array<{ id: string; name?: string; platform?: string | null; userId: string }>
+      return response.data.devices as Array<{
+        id: string
+        name?: string
+        platform?: string | null
+        userId: string
+        createdAt?: string | Date | null
+        lastSeenAt?: string | Date | null
+        revokedAt?: string | Date | null
+        lastIp?: string | null
+        lastCountry?: string | null
+        lastCity?: string | null
+        availablePrekeys?: number | null
+      }>
     },
   })
   // For "Link device" UX we must know the CURRENT device id; otherwise we can mistakenly
@@ -659,6 +675,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const [secretRequestLoading, setSecretRequestLoading] = useState(false)
   const [secretHistoryGate, setSecretHistoryGate] = useState<{ open: boolean; threadId: string | null }>({ open: false, threadId: null })
   const [linkDeviceModalOpen, setLinkDeviceModalOpen] = useState(false)
+  const [deviceLinkInviteOpen, setDeviceLinkInviteOpen] = useState(false)
   const [secretKeysVersion, setSecretKeysVersion] = useState(0)
   const secretEngineV2Enabled = useMemo(() => isSecretEngineV2Enabled(), [])
   const [secretEngineV2Version, setSecretEngineV2Version] = useState(0)
@@ -703,6 +720,33 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       try { window.removeEventListener('eb:secretKeysUpdated', handler as any) } catch {}
     }
   }, [])
+
+  // Re-render when device-link keys were imported (new device became trusted for secret history).
+  const [deviceLinkedVersion, setDeviceLinkedVersion] = useState(0)
+  useEffect(() => {
+    const handler = () => setDeviceLinkedVersion((v) => (v + 1) % Number.MAX_SAFE_INTEGER)
+    try {
+      window.addEventListener('eb:deviceLinked', handler as any)
+    } catch {}
+    return () => {
+      try { window.removeEventListener('eb:deviceLinked', handler as any) } catch {}
+    }
+  }, [])
+
+  const hasAnySecretThreadKeys = useMemo(() => {
+    try {
+      // Consider this a "trusted" device if it already has any secret thread keys stored.
+      // New devices start with an empty store and must be linked.
+      const raw = typeof window !== 'undefined' ? window.localStorage.getItem('eb_secret_thread_keys_v1') : null
+      if (!raw) return false
+      const parsed = JSON.parse(raw) as any
+      if (!parsed || typeof parsed !== 'object') return false
+      return Object.keys(parsed).length > 0
+    } catch {
+      return false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secretKeysVersion, deviceLinkedVersion])
 
   useEffect(() => {
     if (!secretEngineV2Enabled) return
@@ -1479,29 +1523,21 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }
 
+  // Mobile "back" must match swipe-right behavior: show the list,
+  // keep activeId so user can swipe back into the conversation.
   function backToList() {
-    if (isMobile) {
-      // If current conversation is secret, drop its messages cache when leaving
-      if (activeId) {
-        try {
-          const row = (conversationsQuery.data || []).find((r: any) => r.conversation.id === activeId)
-          const conv = row?.conversation
-          if (conv?.isSecret) {
-            client.removeQueries({ queryKey: ['messages', activeId] })
-          }
-        } catch {
-          // ignore cache cleanup errors
-        }
-      }
+    if (isMobileRef.current) {
       setMobileView('list')
-      setActiveId(null)
       setShowJump(false)
     }
-    if (pendingImagesRef.current.length) {
-      clearPendingImages()
-    }
-    if (pendingFilesRef.current.length) {
-      clearPendingFiles()
+    // Only clear pending composer attachments when we actually leave the conversation pane.
+    if (mobileView === 'conversation') {
+      if (pendingImagesRef.current.length) {
+        clearPendingImages()
+      }
+      if (pendingFilesRef.current.length) {
+        clearPendingFiles()
+      }
     }
   }
 
@@ -1775,6 +1811,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     setNewGroupAvatarBlob(null)
     setNewGroupCrop({ x: 0, y: 0, scale: 1 })
     setNewGroupAvatarEditorOpen(false)
+    setNewGroupAvatarHover(false)
   }
 
   // Scroll shadows for conversations list
@@ -2014,7 +2051,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const myDeviceIds = new Set((devicesQuery.data || []).map((d: any) => String(d?.id ?? '').trim()).filter(Boolean))
     const receiptIds = getReceiptDeviceIds(threadId)
     const hasPeerReceipt = receiptIds.some((d) => d && !myDeviceIds.has(d))
-    return !hasPeerReceipt
+    if (hasPeerReceipt) return false
+    // Avoid infinite "waiting" on re-enter: show only shortly after we actually sent key-packages.
+    // If peer never sends receipt (old client/offline), we stop showing this state.
+    const pendingIds = getPendingDeviceIds(threadId)
+    const hasPendingPeer = pendingIds.some((d) => d && !myDeviceIds.has(d))
+    if (!hasPendingPeer) return false
+    const lastSentAt = getLastPendingShareAt(threadId)
+    if (!lastSentAt) return false
+    return Date.now() - lastSentAt < 25_000
   }, [activeConversation?.id, activeConversation?.type, activeConversation?.isSecret, activeConversation?.createdById, me?.id, devicesQuery.data, secretEngineV2Version])
 
   // Show a short "done" checkmark pulse when bootstrapping finishes.
@@ -5059,7 +5104,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             }}
           >
             {mobile && (
-              <button className="btn btn-icon btn-ghost" onClick={backToList}>
+              <button type="button" className="btn btn-icon btn-ghost" onClick={backToList}>
                 <ArrowLeft size={18} />
               </button>
             )}
@@ -5249,8 +5294,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                   display: 'inline-flex',
                                   alignItems: 'center',
                                   gap: 6,
-                                  padding: '4px 8px',
-                                  borderRadius: 999,
+                                  padding: 4,
+                                  borderRadius: 0,
                                   border: '1px solid rgba(245,158,11,0.24)',
                                   background: 'rgba(245,158,11,0.10)',
                                   color: 'var(--text-primary)',
@@ -5270,6 +5315,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 })()}
                               </span>
                             )}
+                            {/* "Добавить устройство" button removed (replaced by header SVG action). */}
                             {(() => {
                               const isMinimized = minimizedCallConvId === activeId
 
@@ -5558,6 +5604,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 const peerTimeZone = (peerUser as any)?.timezone ?? (peerUser as any)?.timeZone ?? fallbackTimeZone
                 const peerName = peerUser?.displayName ?? peerUser?.username ?? 'Собеседник'
                 const canShowAvailability = !isGroup && !!peerUser?.id
+                const isSecretV2Chat = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+                const canShowAddDeviceInHeader = isSecretV2Chat && hasAnySecretThreadKeys
                 const hasHeaderGame = (() => {
                   if (isMobile) return false
                   if (isGroup) return false
@@ -5819,11 +5867,30 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             <Video size={isMobile ? 16 : 18} />
                             {isMobile ? 'Подключиться с видео' : (compactButtons ? null : ' Подключиться с видео')}
                           </button>
-                          {canShowAvailability && (
-                            <AvailabilityButton
-                              onClick={handleOpenAvailability}
-                              style={menuButtonStyle}
-                            />
+                          {canShowAvailability && !isSecretV2Chat && (
+                            <AvailabilityButton onClick={handleOpenAvailability} style={menuButtonStyle} />
+                          )}
+                          {canShowAvailability && canShowAddDeviceInHeader && (
+                            <button
+                              type="button"
+                              className="btn btn-icon btn-ghost"
+                              title="Добавить устройство"
+                              onClick={() => setDeviceLinkInviteOpen(true)}
+                              style={{
+                                ...menuButtonStyle,
+                                color: '#86efac',
+                                border: '1px solid rgba(34,197,94,0.18)',
+                                background: 'rgba(34,197,94,0.06)',
+                              }}
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true" width={20} height={20}>
+                                <rect x="2" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                                <rect x="13" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                                <rect x="2" y="13" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                                <path d="M17.5 14.5v6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                                <path d="M14.5 17.5h6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                              </svg>
+                            </button>
                           )}
                           {!isMobile && (
                             <button
@@ -5898,11 +5965,30 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           <PhoneOff size={isMobile ? 16 : 18} />
                           {isMobile ? 'Сбросить' : (compactButtons ? null : ' Сбросить')}
                         </button>
-                        {canShowAvailability && (
-                          <AvailabilityButton
-                            onClick={handleOpenAvailability}
-                            style={menuButtonStyle}
-                          />
+                        {canShowAvailability && !isSecretV2Chat && (
+                          <AvailabilityButton onClick={handleOpenAvailability} style={menuButtonStyle} />
+                        )}
+                        {canShowAvailability && canShowAddDeviceInHeader && (
+                          <button
+                            type="button"
+                            className="btn btn-icon btn-ghost"
+                            title="Добавить устройство"
+                            onClick={() => setDeviceLinkInviteOpen(true)}
+                            style={{
+                              ...menuButtonStyle,
+                              color: '#86efac',
+                              border: '1px solid rgba(34,197,94,0.18)',
+                              background: 'rgba(34,197,94,0.06)',
+                            }}
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true" width={20} height={20}>
+                              <rect x="2" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                              <rect x="13" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                              <rect x="2" y="13" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                              <path d="M17.5 14.5v6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                              <path d="M14.5 17.5h6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                            </svg>
+                          </button>
                         )}
                         {!isMobile && (
                           <button
@@ -5940,11 +6026,30 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         <Video size={isMobile ? 16 : 18} />
                         {isMobile ? ' Начать с видео' : (compactButtons ? null : ' Видео')}
                       </button>
-                      {canShowAvailability && (
-                        <AvailabilityButton
-                          onClick={handleOpenAvailability}
-                          style={menuButtonStyle}
-                        />
+                      {canShowAvailability && !isSecretV2Chat && (
+                        <AvailabilityButton onClick={handleOpenAvailability} style={menuButtonStyle} />
+                      )}
+                      {canShowAvailability && canShowAddDeviceInHeader && (
+                        <button
+                          type="button"
+                          className="btn btn-icon btn-ghost"
+                          title="Добавить устройство"
+                          onClick={() => setDeviceLinkInviteOpen(true)}
+                          style={{
+                            ...menuButtonStyle,
+                            color: '#86efac',
+                            border: '1px solid rgba(34,197,94,0.18)',
+                            background: 'rgba(34,197,94,0.06)',
+                          }}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true" width={20} height={20}>
+                            <rect x="2" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                            <rect x="13" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                            <rect x="2" y="13" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                            <path d="M17.5 14.5v6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                            <path d="M14.5 17.5h6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                          </svg>
+                        </button>
                       )}
                       {!isMobile && (
                         <button
@@ -6072,6 +6177,56 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600 }}>
                   {secretBootDonePulse ? 'Готово' : (creatorAwaitPeerAccept ? 'Ждём подтверждение…' : 'Настраиваем защиту…')}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {Boolean(
+            activeSecretUiState?.isSecret &&
+              String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
+              // On a brand-new device (no stored secret keys) require linking via code/QR.
+              hasOtherTrustedDevice &&
+              !hasAnySecretThreadKeys
+          ) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 22,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(10,12,16,0.42)',
+                backdropFilter: 'blur(8px) saturate(120%)',
+                padding: 16,
+              }}
+            >
+              <DeviceLinkInline variant="join" />
+            </div>
+          )}
+
+          {Boolean(
+            deviceLinkInviteOpen &&
+              activeSecretUiState?.isSecret &&
+              String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
+              hasAnySecretThreadKeys
+          ) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 23,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(10,12,16,0.42)',
+                backdropFilter: 'blur(8px) saturate(120%)',
+                padding: 16,
+              }}
+              onClick={() => setDeviceLinkInviteOpen(false)}
+            >
+              <div onClick={(e) => e.stopPropagation()}>
+                <DeviceLinkInline variant="invite" onClose={() => setDeviceLinkInviteOpen(false)} />
               </div>
             </div>
           )}
@@ -8127,7 +8282,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           style={{ transform: `translateX(${mobileView === 'conversation' ? '-100vw' : '0'})` }}
           onTouchStart={(e) => { const t = e.touches[0]; touchStartRef.current = { x: t.clientX, y: t.clientY }; touchDeltaRef.current = 0; }}
           onTouchMove={(e) => { if (!touchStartRef.current) return; const t = e.touches[0]; touchDeltaRef.current = t.clientX - touchStartRef.current.x; }}
-          onTouchEnd={() => { const d = touchDeltaRef.current; touchStartRef.current = null; if (Math.abs(d) < 50) return; if (d < 0 && activeId) setMobileView('conversation'); if (d > 0) setMobileView('list'); }}
+          onTouchEnd={() => {
+            const d = touchDeltaRef.current
+            touchStartRef.current = null
+            if (Math.abs(d) < 50) return
+            if (d < 0 && activeId) setMobileView('conversation')
+            if (d > 0 && mobileView === 'conversation') backToList()
+          }}
         >
           {renderConversationList(true)}
           {renderMessagesPane(true)}
@@ -8140,12 +8301,42 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       )}
     </div>
     {mePopupOpen && (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }}>
-        <div style={{ background: 'var(--surface-200)', padding: 24, borderRadius: 16, width: 440, maxWidth: '90vw', border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-medium)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(10,12,16,0.55)',
+          backdropFilter: 'blur(4px) saturate(110%)',
+          display: 'flex',
+          alignItems: isMobile ? 'flex-start' : 'center',
+          justifyContent: 'center',
+          zIndex: 80,
+          padding: isMobile ? '16px 12px' : 0,
+          overflowY: isMobile ? 'auto' : undefined,
+        }}
+        onClick={() => setMePopupOpen(false)}
+      >
+        <div
+          style={{
+            background: 'var(--surface-200)',
+            padding: isMobile ? 16 : 24,
+            borderRadius: 16,
+            width: isMobile ? '100%' : 440,
+            maxWidth: '90vw',
+            border: '1px solid var(--surface-border)',
+            boxShadow: 'var(--shadow-medium)',
+            maxHeight: isMobile ? 'calc(100vh - 32px)' : '90vh',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexShrink: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Профиль</div>
             <button className="btn btn-icon btn-ghost" onClick={() => setMePopupOpen(false)}><X size={18} /></button>
           </div>
+          <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: isMobile ? 2 : 4 }}>
           <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
             <Avatar name={me?.displayName ?? me?.username ?? 'Me'} id={me?.id ?? 'me'} avatarUrl={avatarPreviewUrl ?? meInfoQuery.data?.avatarUrl ?? undefined} />
             <div>
@@ -8441,15 +8632,463 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               <span>{uploadMessage}</span>
             </div>
           )}
+
+          {/* divider */}
+          <div style={{ borderTop: '1px solid var(--surface-border)', marginTop: 18, paddingTop: 18 }} />
+
+          {/* Active sessions (device list) */}
+          {isMobile ? (
+            <details
+              style={{
+                marginTop: 0,
+                marginBottom: 18,
+                border: '1px solid var(--surface-border)',
+                borderRadius: 14,
+                background: 'var(--surface-100)',
+                padding: 12,
+              }}
+            >
+              <summary
+                style={{
+                  cursor: 'pointer',
+                  fontWeight: 800,
+                  fontSize: 13,
+                  color: 'var(--text-muted)',
+                  letterSpacing: 0.2,
+                  userSelect: 'none',
+                }}
+              >
+                АКТИВНЫЕ СЕАНСЫ
+              </summary>
+              <div style={{ marginTop: 12 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={async () => {
+                      const currentId = String(localDeviceIdForLinking ?? '').trim()
+                      const others = (devicesQuery.data || [])
+                        .filter((d: any) => !d?.revokedAt)
+                        .filter((d: any) => String(d?.id ?? '').trim() && String(d.id).trim() !== currentId)
+                      if (!others.length) return
+                      const ok = await systemConfirm({
+                        title: 'Отключить все другие устройства?',
+                        message: 'Они будут разлогинены и перестанут получать секретные сообщения.',
+                        confirmText: 'Отключить',
+                        cancelText: 'Отмена',
+                        danger: true,
+                      })
+                      if (!ok) return
+                      await api.post('/devices/revoke-others')
+                      devicesQuery.refetch()
+                      systemToast.success('Другие устройства отключены')
+                    }}
+                    disabled={!localDeviceIdForLinking || (devicesQuery.data || []).filter((d: any) => !d?.revokedAt).length <= 1}
+                    title="Отключить все другие устройства"
+                    style={{ padding: '6px 10px', height: 32, borderRadius: 999 }}
+                  >
+                    <X size={14} /> Отключить все другие
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 10 }}>
+                  {(() => {
+                    const listAll = (devicesQuery.data || [])
+                      .filter((d: any) => !d?.revokedAt)
+                      .slice()
+                      .sort((a: any, b: any) => {
+                        const ta = a?.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0
+                        const tb = b?.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0
+                        return tb - ta
+                      })
+                    if (!listAll.length) {
+                      return <div style={{ padding: '12px 2px', fontSize: 13, color: 'var(--text-muted)' }}>Нет устройств</div>
+                    }
+                    const norm = (v: any) => String(v ?? '').trim().toLowerCase()
+                    const pickTs = (d: any) => {
+                      const t1 = d?.lastSeenAt ? new Date(d.lastSeenAt).getTime() : 0
+                      const t2 = d?.createdAt ? new Date(d.createdAt).getTime() : 0
+                      return Math.max(t1, t2)
+                    }
+                    const grouped = new Map<string, { device: any; count: number }>()
+                    for (const d of listAll) {
+                      const id = String(d?.id ?? '').trim()
+                      const kBase = `${norm(d?.name)}|${norm(d?.platform)}|${norm(d?.lastIp)}|${norm(d?.lastCity)}|${norm(d?.lastCountry)}`
+                      const key = kBase === '||||' ? `id:${id}` : kBase
+                      const prev = grouped.get(key)
+                      if (!prev) {
+                        grouped.set(key, { device: d, count: 1 })
+                        continue
+                      }
+                      const nextCount = prev.count + 1
+                      const keep = pickTs(d) >= pickTs(prev.device) ? d : prev.device
+                      grouped.set(key, { device: keep, count: nextCount })
+                    }
+                    const rows = Array.from(grouped.values()).sort((a, b) => pickTs(b.device) - pickTs(a.device))
+                    const currentId = String(localDeviceIdForLinking ?? '').trim()
+                    const iconFor = (platformRaw: any) => {
+                      const p = String(platformRaw ?? '').toLowerCase()
+                      if (p.includes('ios') || p.includes('iphone') || p.includes('android')) return <Smartphone size={18} />
+                      if (p.includes('ipad') || p.includes('tablet')) return <Tablet size={18} />
+                      return <Monitor size={18} />
+                    }
+                    const statusFor = (d: any) => {
+                      const n = typeof d?.availablePrekeys === 'number' ? d.availablePrekeys : null
+                      if (n != null && n > 0) return { text: 'Ключи готовы', color: '#86efac' }
+                      return { text: 'Ключи не готовы', color: 'var(--text-muted)' }
+                    }
+                    return (
+                      <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+                        {rows.map((row: any, idx: number) => {
+                          const d = row.device
+                          const isCurrent = !!currentId && String(d?.id ?? '').trim() === currentId
+                          const status = statusFor(d)
+                          const lastSeen = d?.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : null
+                          const platform = d?.platform ? String(d.platform) : '—'
+                          const ip = String(d?.lastIp ?? '').trim()
+                          const city = String(d?.lastCity ?? '').trim()
+                          const country = String(d?.lastCountry ?? '').trim()
+                          const loc = [city, country].filter(Boolean).join(', ')
+                          const locIp = (loc && ip) ? `${loc} • ${ip}` : (loc || ip || '')
+                          return (
+                            <div
+                              key={String(d?.id ?? idx)}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 12,
+                                padding: '12px 2px',
+                                borderBottom: idx === rows.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.06)',
+                                opacity: 1,
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                                <div
+                                  style={{
+                                    width: 40,
+                                    height: 40,
+                                    borderRadius: 999,
+                                    background: 'rgba(255,255,255,0.06)',
+                                    border: '1px solid var(--surface-border)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    color: 'var(--text-primary)',
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {iconFor(d?.platform)}
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 800, color: 'var(--text-primary)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      {d?.name ? String(d.name) : String(d?.id ?? '')}
+                                    </span>
+                                    {row?.count > 1 ? (
+                                      <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 800 }}>
+                                        +{Number(row.count) - 1}
+                                      </span>
+                                    ) : null}
+                                    {isCurrent ? (
+                                      <span
+                                        style={{
+                                          fontSize: 11,
+                                          padding: '2px 8px',
+                                          borderRadius: 999,
+                                          border: '1px solid rgba(34,197,94,0.25)',
+                                          background: 'rgba(34,197,94,0.12)',
+                                          color: '#86efac',
+                                          fontWeight: 800,
+                                        }}
+                                      >
+                                        Это устройство
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                    <span>{platform}</span>
+                                    {locIp ? (
+                                      <>
+                                        <span>•</span>
+                                        <span>{locIp}</span>
+                                      </>
+                                    ) : null}
+                                    <span>•</span>
+                                    <span style={{ color: status.color, fontWeight: 700 }}>{status.text}</span>
+                                    {lastSeen ? (
+                                      <>
+                                        <span>•</span>
+                                        <span>{lastSeen}</span>
+                                      </>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                className="btn btn-icon btn-ghost"
+                                title={isCurrent ? 'Нельзя отключить текущее устройство' : 'Отключить'}
+                                disabled={isCurrent}
+                                onClick={async () => {
+                                  if (isCurrent) return
+                                  const ok = await systemConfirm({
+                                    title: 'Отключить устройство?',
+                                    message: 'Оно перестанет получать секретные сообщения и ключи.',
+                                    confirmText: 'Отключить',
+                                    cancelText: 'Отмена',
+                                    danger: true,
+                                  })
+                                  if (!ok) return
+                                  await api.delete(`/devices/${encodeURIComponent(String(d.id))}`)
+                                  devicesQuery.refetch()
+                                  systemToast.success('Устройство отключено')
+                                }}
+                                style={{ flexShrink: 0 }}
+                              >
+                                <X size={18} />
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )
+                  })()}
+                </div>
+              </div>
+            </details>
+          ) : (
+            <div style={{ marginTop: 0, marginBottom: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--text-muted)', letterSpacing: 0.2 }}>АКТИВНЫЕ СЕАНСЫ</div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={async () => {
+                      const currentId = String(localDeviceIdForLinking ?? '').trim()
+                      const others = (devicesQuery.data || [])
+                        .filter((d: any) => !d?.revokedAt)
+                        .filter((d: any) => String(d?.id ?? '').trim() && String(d.id).trim() !== currentId)
+                      if (!others.length) return
+                      const ok = await systemConfirm({
+                        title: 'Отключить все другие устройства?',
+                        message: 'Они будут разлогинены и перестанут получать секретные сообщения.',
+                        confirmText: 'Отключить',
+                        cancelText: 'Отмена',
+                        danger: true,
+                      })
+                      if (!ok) return
+                      await api.post('/devices/revoke-others')
+                      devicesQuery.refetch()
+                      systemToast.success('Другие устройства отключены')
+                    }}
+                    disabled={!localDeviceIdForLinking || (devicesQuery.data || []).filter((d: any) => !d?.revokedAt).length <= 1}
+                    title="Отключить все другие устройства"
+                    style={{ padding: '6px 10px', height: 32, borderRadius: 999 }}
+                  >
+                    <X size={14} /> Отключить все другие
+                  </button>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  border: '1px solid var(--surface-border)',
+                  borderRadius: 14,
+                  background: 'var(--surface-100)',
+                  overflow: 'hidden',
+                }}
+              >
+                {(() => {
+                  const listAll = (devicesQuery.data || [])
+                    .filter((d: any) => !d?.revokedAt)
+                    .slice()
+                    .sort((a: any, b: any) => {
+                      const ta = a?.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0
+                      const tb = b?.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0
+                      return tb - ta
+                    })
+                  if (!listAll.length) {
+                    return (
+                      <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--text-muted)' }}>
+                        Нет устройств
+                      </div>
+                    )
+                  }
+                  const norm = (v: any) => String(v ?? '').trim().toLowerCase()
+                  const pickTs = (d: any) => {
+                    const t1 = d?.lastSeenAt ? new Date(d.lastSeenAt).getTime() : 0
+                    const t2 = d?.createdAt ? new Date(d.createdAt).getTime() : 0
+                    return Math.max(t1, t2)
+                  }
+                  const grouped = new Map<string, { device: any; count: number }>()
+                  for (const d of listAll) {
+                    const id = String(d?.id ?? '').trim()
+                    const kBase = `${norm(d?.name)}|${norm(d?.platform)}|${norm(d?.lastIp)}|${norm(d?.lastCity)}|${norm(d?.lastCountry)}`
+                    const key = kBase === '||||' ? `id:${id}` : kBase
+                    const prev = grouped.get(key)
+                    if (!prev) {
+                      grouped.set(key, { device: d, count: 1 })
+                      continue
+                    }
+                    const nextCount = prev.count + 1
+                    const keep = pickTs(d) >= pickTs(prev.device) ? d : prev.device
+                    grouped.set(key, { device: keep, count: nextCount })
+                  }
+                  const rows = Array.from(grouped.values()).sort((a, b) => pickTs(b.device) - pickTs(a.device))
+                  const currentId = String(localDeviceIdForLinking ?? '').trim()
+                  const iconFor = (platformRaw: any) => {
+                    const p = String(platformRaw ?? '').toLowerCase()
+                    if (p.includes('ios') || p.includes('iphone') || p.includes('android')) return <Smartphone size={18} />
+                    if (p.includes('ipad') || p.includes('tablet')) return <Tablet size={18} />
+                    return <Monitor size={18} />
+                  }
+                  const statusFor = (d: any) => {
+                    const n = typeof d?.availablePrekeys === 'number' ? d.availablePrekeys : null
+                    if (n != null && n > 0) return { text: 'Ключи готовы', color: '#86efac' }
+                    return { text: 'Ключи не готовы', color: 'var(--text-muted)' }
+                  }
+                  return (
+                    <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+                      {rows.map((row: any, idx: number) => {
+                        const d = row.device
+                        const isCurrent = !!currentId && String(d?.id ?? '').trim() === currentId
+                        const status = statusFor(d)
+                        const lastSeen = d?.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : null
+                        const platform = d?.platform ? String(d.platform) : '—'
+                        const ip = String(d?.lastIp ?? '').trim()
+                        const city = String(d?.lastCity ?? '').trim()
+                        const country = String(d?.lastCountry ?? '').trim()
+                        const loc = [city, country].filter(Boolean).join(', ')
+                        const locIp = (loc && ip) ? `${loc} • ${ip}` : (loc || ip || '')
+                        return (
+                          <div
+                            key={String(d?.id ?? idx)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 12,
+                              padding: '12px 14px',
+                              borderBottom: idx === rows.length - 1 ? 'none' : '1px solid var(--surface-border)',
+                              opacity: 1,
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                              <div
+                                style={{
+                                  width: 40,
+                                  height: 40,
+                                  borderRadius: 999,
+                                  background: 'rgba(255,255,255,0.06)',
+                                  border: '1px solid var(--surface-border)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  color: 'var(--text-primary)',
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {iconFor(d?.platform)}
+                              </div>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontWeight: 800, color: 'var(--text-primary)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {d?.name ? String(d.name) : String(d?.id ?? '')}
+                                  </span>
+                                  {row?.count > 1 ? (
+                                    <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 800 }}>
+                                      +{Number(row.count) - 1}
+                                    </span>
+                                  ) : null}
+                                  {isCurrent ? (
+                                    <span
+                                      style={{
+                                        fontSize: 11,
+                                        padding: '2px 8px',
+                                        borderRadius: 999,
+                                        border: '1px solid rgba(34,197,94,0.25)',
+                                        background: 'rgba(34,197,94,0.12)',
+                                        color: '#86efac',
+                                        fontWeight: 800,
+                                      }}
+                                    >
+                                      Это устройство
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                  <span>{platform}</span>
+                                  {locIp ? (
+                                    <>
+                                      <span>•</span>
+                                      <span>{locIp}</span>
+                                    </>
+                                  ) : null}
+                                  <span>•</span>
+                                  <span style={{ color: status.color, fontWeight: 700 }}>{status.text}</span>
+                                  {lastSeen ? (
+                                    <>
+                                      <span>•</span>
+                                      <span>{lastSeen}</span>
+                                    </>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              className="btn btn-icon btn-ghost"
+                              title={isCurrent ? 'Нельзя отключить текущее устройство' : 'Отключить'}
+                              disabled={isCurrent}
+                              onClick={async () => {
+                                if (isCurrent) return
+                                const ok = await systemConfirm({
+                                  title: 'Отключить устройство?',
+                                  message: 'Оно перестанет получать секретные сообщения и ключи.',
+                                  confirmText: 'Отключить',
+                                  cancelText: 'Отмена',
+                                  danger: true,
+                                })
+                                if (!ok) return
+                                await api.delete(`/devices/${encodeURIComponent(String(d.id))}`)
+                                devicesQuery.refetch()
+                                systemToast.success('Устройство отключено')
+                              }}
+                              style={{ flexShrink: 0 }}
+                            >
+                              <X size={18} />
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })()}
+              </div>
+            </div>
+          )}
+
           <div style={{ borderTop: '1px solid var(--surface-border)', marginTop: 24, paddingTop: 20 }}>
             <button 
               className="btn btn-secondary" 
               onClick={async () => {
+                // Best-effort: revoke this device server-side, then wipe all local device material and logout.
+                try {
+                  const did = getStoredDeviceInfo()?.deviceId
+                  if (did) {
+                    await api.delete(`/devices/${encodeURIComponent(String(did))}`)
+                  }
+                } catch {}
                 try {
                   await api.post('/auth/logout')
                 } catch {
                   // Ignore errors during logout
                 }
+                wipeLocalDeviceData()
                 useAppStore.getState().setSession(null)
                 setMePopupOpen(false)
               }}
@@ -8461,6 +9100,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
             <button className="btn btn-ghost" onClick={() => setMePopupOpen(false)}>Закрыть</button>
+          </div>
           </div>
         </div>
       </div>
@@ -8909,148 +9549,298 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         style={{
           position: 'fixed',
           inset: 0,
-          background: 'rgba(10,12,16,0.55)',
-          backdropFilter: 'blur(4px) saturate(110%)',
+          background: 'rgba(5,6,9,0.7)',
+          backdropFilter: 'blur(8px) saturate(120%)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           zIndex: 60,
+          padding: 16,
+          boxSizing: 'border-box',
         }}
         onClick={closeNewGroupModal}
       >
         <div
           style={{
-            background: 'var(--surface-200)',
-            padding: 16,
-            borderRadius: 10,
-            width: 520,
+            background: 'linear-gradient(180deg, var(--surface-200) 0%, var(--surface-300) 100%)',
+            padding: 0,
+            borderRadius: 20,
+            width: '100%',
+            maxWidth: 420,
             border: '1px solid var(--surface-border)',
+            boxShadow: 'var(--shadow-soft), 0 0 0 1px rgba(255,255,255,0.04) inset',
+            overflow: 'hidden',
           }}
           onClick={(e) => e.stopPropagation()}
         >
+          {/* Header */}
           <div
             style={{
+              padding: '20px 24px',
+              borderBottom: '1px solid var(--surface-border)',
               display: 'flex',
-              justifyContent: 'space-between',
               alignItems: 'center',
-              marginBottom: 8,
-              color: 'var(--text-primary)',
+              justifyContent: 'space-between',
+              gap: 12,
             }}
           >
-            <div style={{ fontWeight: 700 }}>Создать групповой чат</div>
-            <button className="btn btn-icon btn-ghost" onClick={closeNewGroupModal}>
-              <X size={16} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 14,
+                  background: 'linear-gradient(135deg, var(--brand-600), var(--brand-700))',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 4px 12px rgba(227,139,10,0.35)',
+                }}
+              >
+                <Users size={24} color="#fff" strokeWidth={2.5} />
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+                  Создать групповой чат
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>
+                  Добавьте участников и название
+                </div>
+              </div>
+            </div>
+            <button
+              className="btn btn-icon btn-ghost"
+              onClick={closeNewGroupModal}
+              style={{ flexShrink: 0, borderRadius: 10 }}
+              title="Закрыть"
+            >
+              <X size={20} />
             </button>
           </div>
 
-          {(() => {
-            const trimmedTitle = groupTitle.trim()
-            const avatarName = trimmedTitle ? trimmedTitle : '?'
-            return (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                <input
-                  placeholder="Название"
-                  value={groupTitle}
-                  onChange={(e) => setGroupTitle(e.target.value)}
-                  style={{
-                    flex: 1,
-                    width: '100%',
-                    padding: 10,
-                    borderRadius: 8,
-                    border: '1px solid var(--surface-border)',
-                    background: 'var(--surface-100)',
-                    color: 'var(--text-primary)',
-                  }}
-                />
-                <input
-                  ref={newGroupFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (!file) return
-                    setNewGroupAvatarFile(file)
-                    if (newGroupAvatarSourceUrl) {
-                      try {
-                        URL.revokeObjectURL(newGroupAvatarSourceUrl)
-                      } catch {
-                        // ignore
-                      }
-                    }
-                    try {
-                      const url = URL.createObjectURL(file)
-                      setNewGroupAvatarSourceUrl(url)
-                    } catch {
-                      setNewGroupAvatarSourceUrl(null)
-                    }
-                    // Открываем редактор после выбора файла
-                    setNewGroupAvatarEditorOpen(true)
-                  }}
-                />
-                <button
-                  type="button"
-                  className="btn btn-icon btn-ghost"
-                  onClick={() => setNewGroupAvatarEditorOpen(true)}
-                  title="Выбрать аватар группы"
-                  style={{ borderRadius: '50%', padding: 0, width: 44, height: 44, flexShrink: 0 }}
-                >
-                  <Avatar
-                    name={avatarName}
-                    id="new-group-avatar"
-                    avatarUrl={newGroupAvatarPreviewUrl ?? undefined}
-                    size={40}
-                  />
-                </button>
-              </div>
-            )
-          })()}
-
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Выберите участников</div>
-          <div
-            style={{
-              maxHeight: 280,
-              overflow: 'auto',
-              display: 'grid',
-              gridTemplateColumns: '1fr',
-              gap: 8,
-            }}
-          >
-            {contactsQuery.data?.map((c: any) => {
-              const u = c.friend
-              const checked = selectedIds.includes(u.id)
+          {/* Body */}
+          <div style={{ padding: '20px 24px', maxHeight: 'calc(100vh - 220px)', overflow: 'auto' }}>
+            {(() => {
+              const trimmedTitle = groupTitle.trim()
+              const avatarName = trimmedTitle ? trimmedTitle : '?'
               return (
-                <div
-                  key={c.id}
-                  className="tile"
-                  onClick={() =>
-                    setSelectedIds((prev) => (checked ? prev.filter((id) => id !== u.id) : [...prev, u.id]))
-                  }
-                  style={{ cursor: 'pointer', borderColor: checked ? 'var(--brand-600)' : undefined }}
-                >
-                  <Avatar
-                    name={u.displayName ?? u.username}
-                    id={u.id}
-                    presence={avatarPresenceForUser(u)}
-                    avatarUrl={u.avatarUrl ?? undefined}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
+                  <input
+                    ref={newGroupFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (!file) return
+                      setNewGroupAvatarFile(file)
+                      if (newGroupAvatarSourceUrl) {
+                        try {
+                          URL.revokeObjectURL(newGroupAvatarSourceUrl)
+                        } catch {
+                          // ignore
+                        }
+                      }
+                      try {
+                        const url = URL.createObjectURL(file)
+                        setNewGroupAvatarSourceUrl(url)
+                      } catch {
+                        setNewGroupAvatarSourceUrl(null)
+                      }
+                      setNewGroupAvatarEditorOpen(true)
+                    }}
                   />
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
-                    <div style={{ fontSize: 12, color: '#6b7280' }}>
-                      {checked ? 'Выбрано' : 'Нажмите, чтобы выбрать'}
+                  <button
+                    type="button"
+                    className="btn btn-icon btn-ghost"
+                    onClick={() => setNewGroupAvatarEditorOpen(true)}
+                    title="Выбрать аватар группы"
+                    onMouseEnter={() => setNewGroupAvatarHover(true)}
+                    onMouseLeave={() => setNewGroupAvatarHover(false)}
+                    style={{
+                      borderRadius: 16,
+                      padding: 0,
+                      width: 64,
+                      height: 64,
+                      flexShrink: 0,
+                      position: 'relative',
+                      overflow: 'hidden',
+                      border: `2px solid ${newGroupAvatarHover ? 'var(--brand-600)' : 'var(--surface-border)'}`,
+                      boxShadow: newGroupAvatarHover ? '0 0 0 4px rgba(227,139,10,0.15)' : 'none',
+                      transition: 'border-color 0.2s, box-shadow 0.2s',
+                    }}
+                  >
+                    <Avatar
+                      name={avatarName}
+                      id="new-group-avatar"
+                      avatarUrl={newGroupAvatarPreviewUrl ?? undefined}
+                      size={60}
+                    />
+                    <div
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        opacity: newGroupAvatarHover ? 1 : 0,
+                        transition: 'opacity 0.2s',
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      <ImagePlus size={24} color="#fff" strokeWidth={2.5} />
                     </div>
-                  </div>
-                  <div style={{ marginLeft: 'auto' }}>
-                    <input type="checkbox" readOnly checked={checked} />
+                  </button>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <label style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500, marginBottom: 6, display: 'block' }}>
+                      Название группы
+                    </label>
+                    <input
+                      placeholder="Например: Семья, Коллеги..."
+                      value={groupTitle}
+                      onChange={(e) => setGroupTitle(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '12px 16px',
+                        borderRadius: 12,
+                        border: '1px solid var(--surface-border)',
+                        background: 'var(--surface-100)',
+                        color: 'var(--text-primary)',
+                        fontSize: 15,
+                        outline: 'none',
+                        transition: 'border-color 0.2s, box-shadow 0.2s',
+                      }}
+                      onFocus={(e) => {
+                        e.currentTarget.style.borderColor = 'var(--brand-600)'
+                        e.currentTarget.style.boxShadow = '0 0 0 3px rgba(227,139,10,0.18)'
+                      }}
+                      onBlur={(e) => {
+                        e.currentTarget.style.borderColor = 'var(--surface-border)'
+                        e.currentTarget.style.boxShadow = 'none'
+                      }}
+                    />
                   </div>
                 </div>
               )
-            })}
+            })()}
+
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600 }}>
+                  Участники
+                </div>
+                {selectedIds.length > 0 && (
+                  <span style={{ fontSize: 12, color: 'var(--brand-600)', fontWeight: 600 }}>
+                    Выбрано: {selectedIds.length}
+                  </span>
+                )}
+              </div>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                  maxHeight: 220,
+                  overflow: 'auto',
+                  paddingRight: 4,
+                }}
+              >
+                {(!contactsQuery.data || contactsQuery.data.length === 0) ? (
+                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                    Нет контактов. Добавьте друзей в разделе «Контакты», чтобы создать группу.
+                  </div>
+                ) : (
+                contactsQuery.data?.map((c: any) => {
+                  const u = c.friend
+                  const checked = selectedIds.includes(u.id)
+                  return (
+                    <div
+                      key={c.id}
+                      onClick={() =>
+                        setSelectedIds((prev) => (checked ? prev.filter((id) => id !== u.id) : [...prev, u.id]))
+                      }
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 14,
+                        padding: '12px 14px',
+                        borderRadius: 12,
+                        cursor: 'pointer',
+                        background: checked ? 'rgba(227,139,10,0.12)' : 'var(--surface-100)',
+                        border: `1px solid ${checked ? 'rgba(227,139,10,0.4)' : 'var(--surface-border)'}`,
+                        transition: 'all 0.18s ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!checked) {
+                          e.currentTarget.style.background = 'var(--surface-200)'
+                          e.currentTarget.style.borderColor = 'var(--surface-border-strong)'
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!checked) {
+                          e.currentTarget.style.background = 'var(--surface-100)'
+                          e.currentTarget.style.borderColor = 'var(--surface-border)'
+                        }
+                      }}
+                    >
+                      <Avatar
+                        name={u.displayName ?? u.username}
+                        id={u.id}
+                        presence={avatarPresenceForUser(u)}
+                        avatarUrl={u.avatarUrl ?? undefined}
+                        size={44}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>
+                          {u.displayName ?? u.username}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                          {checked ? 'Добавлен' : 'Нажмите, чтобы добавить'}
+                        </div>
+                      </div>
+                      <div
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: 8,
+                          border: `2px solid ${checked ? 'var(--brand-600)' : 'var(--surface-border-strong)'}`,
+                          background: checked ? 'var(--brand-600)' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                          transition: 'all 0.18s ease',
+                        }}
+                      >
+                        {checked && <CheckCircle size={14} color="#fff" strokeWidth={3} />}
+                      </div>
+                    </div>
+                  )
+                })
+                )}
+              </div>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+
+          {/* Footer */}
+          <div
+            style={{
+              padding: '16px 24px 20px',
+              borderTop: '1px solid var(--surface-border)',
+              background: 'var(--surface-200)',
+            }}
+          >
             <button
               className="btn btn-primary"
               disabled={selectedIds.length === 0 || creatingGroup}
+              style={{
+                width: '100%',
+                padding: '14px 24px',
+                borderRadius: 12,
+                fontSize: 15,
+                fontWeight: 600,
+              }}
               onClick={async () => {
                 if (selectedIds.length === 0 || creatingGroup) return
                 setCreatingGroup(true)
