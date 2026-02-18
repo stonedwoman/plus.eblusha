@@ -9658,7 +9658,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     onMouseEnter={() => setNewGroupAvatarHover(true)}
                     onMouseLeave={() => setNewGroupAvatarHover(false)}
                     style={{
-                      borderRadius: 16,
+                      borderRadius: '50%',
                       padding: 0,
                       width: 64,
                       height: 64,
