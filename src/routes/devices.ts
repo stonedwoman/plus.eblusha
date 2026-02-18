@@ -4,6 +4,7 @@ import prisma from "../lib/prisma";
 import { authenticate } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rateLimit";
 import crypto from "crypto";
+import { kickDevice } from "../realtime/socket";
 
 const router = Router();
 
@@ -389,6 +390,36 @@ router.delete("/:deviceId", async (req, res) => {
     where: { id: deviceId },
     data: { revokedAt: new Date() },
   });
+  try {
+    kickDevice(deviceId, { reason: "revoked" });
+  } catch {
+    // ignore
+  }
+  res.json({ success: true });
+});
+
+router.post("/revoke-others", async (req, res) => {
+  const userId = (req as AuthedRequest).user!.id;
+  const currentDeviceId = await resolveCurrentDeviceId(req);
+  const others = await prisma.userDevice.findMany({
+    where: {
+      userId,
+      revokedAt: null,
+      ...(currentDeviceId ? { id: { not: currentDeviceId } } : {}),
+    },
+    select: { id: true },
+  });
+  for (const row of others) {
+    await prisma.userDevice.update({
+      where: { id: row.id },
+      data: { revokedAt: new Date() },
+    });
+    try {
+      kickDevice(row.id, { reason: "revoked" });
+    } catch {
+      // ignore
+    }
+  }
   res.json({ success: true });
 });
 

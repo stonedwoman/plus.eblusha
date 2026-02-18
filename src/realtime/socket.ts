@@ -55,6 +55,7 @@ type ServerToClientEvents = {
   "secret:chat:accepted": (payload: { conversationId: string; peerDeviceId: string }) => void;
   "secret:notify": (payload: { toDeviceId: string; msgId: string }) => void;
   "secret:thread:created": (payload: { threadId: string; type: "SECRET" }) => void;
+  "device:revoked": (payload: { deviceId: string; reason?: string }) => void;
 };
 
 type ClientToServerEvents = {
@@ -624,9 +625,28 @@ export async function initSocket(
       socket.data.userId = payload.sub;
       const did = typeof (payload as any).did === "string" ? ((payload as any).did as string).trim() : "";
       const verifiedDeviceId = await resolveDeviceId(socket, payload.sub, did ? did : null);
-      if (verifiedDeviceId) socket.data.deviceId = verifiedDeviceId;
+      if (verifiedDeviceId) {
+        socket.data.deviceId = verifiedDeviceId;
+        next();
+        return;
+      }
+      if (did) {
+        const dev = await prisma.userDevice.findUnique({
+          where: { id: did },
+          select: { userId: true, revokedAt: true },
+        });
+        if (dev && dev.userId === payload.sub && dev.revokedAt) {
+          next(new Error("DEVICE_REVOKED"));
+          return;
+        }
+      }
       next();
     } catch (error) {
+      const anyErr = error as any;
+      if (anyErr?.code === "DEVICE_REVOKED" || String(anyErr?.message || "") === "DEVICE_REVOKED") {
+        next(new Error("DEVICE_REVOKED"));
+        return;
+      }
       logger.warn({ error }, "Socket auth failed");
       next(new Error("Unauthorized"));
     }
@@ -1658,5 +1678,22 @@ export async function initSocket(
 
 export function getIO() {
   return ioInstance;
+}
+
+export function kickDevice(deviceId: string, opts?: { reason?: string }) {
+  const id = String(deviceId || "").trim();
+  if (!id) return;
+  const io = ioInstance;
+  if (!io) return;
+  try {
+    io.to(deviceRoom(id)).emit("device:revoked", { deviceId: id, ...(opts?.reason ? { reason: opts.reason } : {}) });
+  } catch {
+    // ignore emit failures
+  }
+  try {
+    io.in(deviceRoom(id)).disconnectSockets(true);
+  } catch {
+    // ignore disconnect failures
+  }
 }
 

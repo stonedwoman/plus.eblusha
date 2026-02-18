@@ -1,6 +1,7 @@
 import { io } from 'socket.io-client'
 import { useAppStore } from '../domain/store/appStore'
 import { Capacitor } from '@capacitor/core'
+import { wipeLocalDeviceData } from '../domain/device/deviceWipe'
 
 function isTruthyEnv(v: unknown): boolean {
   const s = String(v ?? '').trim().toLowerCase()
@@ -236,6 +237,24 @@ socket.on('connect', () => {
 
 socket.on('connect_error', (err) => {
   dbg('connect_error', { message: (err as any)?.message, description: (err as any)?.description, context: (err as any)?.context })
+  const msg = String((err as any)?.message ?? '')
+  if (msg === 'DEVICE_REVOKED') {
+    wipeLocalDeviceData()
+    useAppStore.getState().setSession(null)
+    try {
+      socket.disconnect()
+    } catch {}
+  }
+})
+
+socket.on('device:revoked', () => {
+  try {
+    wipeLocalDeviceData()
+    useAppStore.getState().setSession(null)
+    try {
+      socket.disconnect()
+    } catch {}
+  } catch {}
 })
 
 // Helpful to confirm we actually receive realtime status events in the browser

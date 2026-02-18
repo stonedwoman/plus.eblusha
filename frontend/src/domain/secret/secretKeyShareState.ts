@@ -104,6 +104,31 @@ export function markKeyShareSent(threadId: string, toDeviceId: string, msgId?: s
   save(state)
 }
 
+export function getPendingDeviceIds(threadId: string): string[] {
+  const t = String(threadId ?? '').trim()
+  if (!t) return []
+  const state = load()
+  const byDev = state.pending?.[t]
+  if (!byDev || typeof byDev !== 'object') return []
+  return Object.keys(byDev)
+    .map((d) => String(d ?? '').trim())
+    .filter(Boolean)
+}
+
+export function getLastPendingShareAt(threadId: string): number {
+  const t = String(threadId ?? '').trim()
+  if (!t) return 0
+  const state = load()
+  const byDev = state.pending?.[t]
+  if (!byDev || typeof byDev !== 'object') return 0
+  let max = 0
+  for (const rec of Object.values(byDev)) {
+    const r = rec as { lastSentAt?: number }
+    if (typeof r?.lastSentAt === 'number' && r.lastSentAt > max) max = r.lastSentAt
+  }
+  return max
+}
+
 export function getPendingAttempts(threadId: string, deviceId: string): number {
   const t = String(threadId ?? '').trim()
   const d = String(deviceId ?? '').trim()
