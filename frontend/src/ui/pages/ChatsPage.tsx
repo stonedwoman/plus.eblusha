@@ -9566,7 +9566,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             padding: 0,
             borderRadius: 20,
             width: '100%',
-            maxWidth: 420,
+            maxWidth: 480,
             border: '1px solid var(--surface-border)',
             boxShadow: 'var(--shadow-soft), 0 0 0 1px rgba(255,255,255,0.04) inset',
             overflow: 'hidden',
@@ -9738,16 +9738,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </div>
               <div
                 style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 6,
-                  maxHeight: 220,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))',
+                  gap: 10,
+                  maxHeight: 200,
                   overflow: 'auto',
                   paddingRight: 4,
                 }}
               >
                 {(!contactsQuery.data || contactsQuery.data.length === 0) ? (
-                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                  <div style={{ gridColumn: '1 / -1', padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
                     Нет контактов. Добавьте друзей в разделе «Контакты», чтобы создать группу.
                   </div>
                 ) : (
@@ -9762,14 +9762,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       }
                       style={{
                         display: 'flex',
+                        flexDirection: 'column',
                         alignItems: 'center',
-                        gap: 14,
-                        padding: '12px 14px',
+                        padding: '14px 10px',
                         borderRadius: 12,
                         cursor: 'pointer',
                         background: checked ? 'rgba(227,139,10,0.12)' : 'var(--surface-100)',
                         border: `1px solid ${checked ? 'rgba(227,139,10,0.4)' : 'var(--surface-border)'}`,
                         transition: 'all 0.18s ease',
+                        position: 'relative',
+                        minHeight: 88,
                       }}
                       onMouseEnter={(e) => {
                         if (!checked) {
@@ -9784,6 +9786,24 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         }
                       }}
                     >
+                      {checked && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: 8,
+                            right: 8,
+                            width: 20,
+                            height: 20,
+                            borderRadius: 10,
+                            background: 'var(--brand-600)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <CheckCircle size={12} color="#fff" strokeWidth={3} />
+                        </div>
+                      )}
                       <Avatar
                         name={u.displayName ?? u.username}
                         id={u.id}
@@ -9791,29 +9811,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         avatarUrl={u.avatarUrl ?? undefined}
                         size={44}
                       />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>
-                          {u.displayName ?? u.username}
-                        </div>
-                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                          {checked ? 'Добавлен' : 'Нажмите, чтобы добавить'}
-                        </div>
-                      </div>
                       <div
                         style={{
-                          width: 22,
-                          height: 22,
-                          borderRadius: 8,
-                          border: `2px solid ${checked ? 'var(--brand-600)' : 'var(--surface-border-strong)'}`,
-                          background: checked ? 'var(--brand-600)' : 'transparent',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                          transition: 'all 0.18s ease',
+                          marginTop: 8,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: 'var(--text-primary)',
+                          textAlign: 'center',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          width: '100%',
                         }}
                       >
-                        {checked && <CheckCircle size={14} color="#fff" strokeWidth={3} />}
+                        {u.displayName ?? u.username}
                       </div>
                     </div>
                   )
