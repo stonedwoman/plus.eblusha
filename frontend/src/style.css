@@ -543,6 +543,7 @@ a {
 .btn-ghost:hover { background: rgba(217,119,6,0.12); }
 
 .btn-icon { padding: 8px; width: 36px; height: 36px; border-radius: 10px; }
+.btn-icon.btn-ghost { border-radius: 50%; }
 .btn-icon svg { width: 18px; height: 18px; }
 
 .select { appearance: none; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--surface-border); background: var(--surface-100); color: var(--text-primary); }
