@@ -9921,129 +9921,263 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     )}
 
     {contactsOpen && (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }}>
-        <div style={{ background: 'var(--surface-200)', padding: 16, borderRadius: 16, width: 520, border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-sharp)', color: 'var(--text-primary)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <div style={{ fontWeight: 700 }}>Контакты</div>
-            <button className="btn btn-icon btn-ghost" onClick={() => setContactsOpen(false)}><X size={16} /></button>
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(5,6,9,0.7)',
+          backdropFilter: 'blur(8px) saturate(120%)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 70,
+          padding: 16,
+          boxSizing: 'border-box',
+        }}
+        onClick={() => setContactsOpen(false)}
+      >
+        <div
+          style={{
+            background: 'linear-gradient(180deg, var(--surface-200) 0%, var(--surface-300) 100%)',
+            padding: 0,
+            borderRadius: 20,
+            width: '100%',
+            maxWidth: 520,
+            border: '1px solid var(--surface-border)',
+            boxShadow: 'var(--shadow-soft), 0 0 0 1px rgba(255,255,255,0.04) inset',
+            overflow: 'hidden',
+            color: 'var(--text-primary)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div
+            style={{
+              padding: '20px 24px',
+              borderBottom: '1px solid var(--surface-border)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 14,
+                  background: 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 4px 12px rgba(99,102,241,0.35)',
+                }}
+              >
+                <UserPlus size={24} color="#fff" strokeWidth={2.5} />
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+                  Контакты
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>
+                  Поиск по EBLID и список друзей
+                </div>
+              </div>
+            </div>
+            <button className="btn btn-icon btn-ghost" onClick={() => setContactsOpen(false)} style={{ flexShrink: 0, borderRadius: 10 }} title="Закрыть">
+              <X size={20} />
+            </button>
           </div>
-          {incomingContactsQuery.data && incomingContactsQuery.data.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontWeight: 700, marginBottom: 6 }}>Новые запросы</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {incomingContactsQuery.data.map((c: any) => (
-                  <div key={c.id} className="tile">
-            <Avatar
-              name={(c.friend.displayName ?? c.friend.username)}
-              id={c.friend.id}
-              presence={avatarPresenceForUserIdAndStatus(c.friend.id, c.friend.status)}
-              avatarUrl={c.friend.avatarUrl ?? undefined}
-            />
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{c.friend.displayName ?? c.friend.username}</div>
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>хочет добавить вас</div>
+
+          {/* Body */}
+          <div style={{ padding: '20px 24px', maxHeight: 'calc(100vh - 200px)', overflow: 'auto' }}>
+            {incomingContactsQuery.data && incomingContactsQuery.data.length > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 8 }}>Новые запросы</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {incomingContactsQuery.data.map((c: any) => (
+                    <div
+                      key={c.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 14,
+                        padding: '14px 16px',
+                        borderRadius: 12,
+                        background: 'var(--surface-100)',
+                        border: '1px solid var(--surface-border)',
+                      }}
+                    >
+                      <Avatar
+                        name={c.friend.displayName ?? c.friend.username}
+                        id={c.friend.id}
+                        presence={avatarPresenceForUserIdAndStatus(c.friend.id, c.friend.status)}
+                        avatarUrl={c.friend.avatarUrl ?? undefined}
+                        size={44}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600 }}>{c.friend.displayName ?? c.friend.username}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>хочет добавить вас</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                        <button className="btn btn-secondary" style={{ padding: '8px 12px', fontSize: 13 }} onClick={async () => { await api.post('/contacts/respond', { contactId: c.id, action: 'reject' }); incomingContactsQuery.refetch() }}>Отклонить</button>
+                        <button className="btn btn-primary" style={{ padding: '8px 12px', fontSize: 13 }} onClick={async () => { await api.post('/contacts/respond', { contactId: c.id, action: 'accept' }); contactsQuery.refetch(); incomingContactsQuery.refetch(); conversationsQuery.refetch() }}>Добавить</button>
+                      </div>
                     </div>
-                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-                      <button className="btn btn-secondary" onClick={async () => { await api.post('/contacts/respond', { contactId: c.id, action: 'reject' }); incomingContactsQuery.refetch() }}>Отклонить</button>
-                      <button className="btn btn-primary" onClick={async () => { await api.post('/contacts/respond', { contactId: c.id, action: 'accept' }); contactsQuery.refetch(); incomingContactsQuery.refetch(); conversationsQuery.refetch() }}>Добавить</button>
-                    </div>
-                  </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 8 }}>Поиск по EBLID</div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+                {[0, 1, 2, 3].map((i) => (
+                  <input
+                    key={i}
+                    ref={eblRefs[i]}
+                    type="tel"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    autoComplete="one-time-code"
+                    enterKeyHint="done"
+                    value={eblDigits[i]}
+                    onChange={(e) => onChangeDigit(i, e.target.value.replace(/\D/g, '').slice(0, 1))}
+                    maxLength={1}
+                    style={{
+                      width: 56,
+                      height: 56,
+                      fontSize: 22,
+                      textAlign: 'center',
+                      borderRadius: 12,
+                      border: '1px solid var(--surface-border)',
+                      background: 'var(--surface-100)',
+                      color: 'var(--text-primary)',
+                      outline: 'none',
+                    }}
+                  />
                 ))}
               </div>
             </div>
-          )}
-          <div style={{ marginBottom: 8, color: 'var(--text-muted)' }}>Поиск по EBLID</div>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 12 }}>
-            {[0,1,2,3].map((i) => (
-              <input
-                key={i}
-                ref={eblRefs[i]}
-                type="tel"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                autoComplete="one-time-code"
-                enterKeyHint="done"
-                value={eblDigits[i]}
-                onChange={(e) => onChangeDigit(i, e.target.value.replace(/\D/g,'').slice(0,1))}
-                maxLength={1}
-                style={{ width: 52, height: 56, fontSize: 22, textAlign: 'center', borderRadius: 8, border: '1px solid var(--surface-border)', background: 'var(--surface-100)', color: 'var(--text-primary)' }}
-              />
-            ))}
-          </div>
-          {foundUser && (
-            <div className="tile" style={{ marginBottom: 12 }}>
-              <Avatar
-                name={foundUser.displayName ?? foundUser.username}
-                id={foundUser.id}
-                presence={avatarPresenceForUser(foundUser)}
-                avatarUrl={foundUser.avatarUrl ?? undefined}
-              />
-              <div>
-                <div style={{ fontWeight: 600 }}>{foundUser.displayName ?? foundUser.username}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Найден по EBLID</div>
+
+            {foundUser && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 14,
+                  padding: '14px 16px',
+                  borderRadius: 12,
+                  background: 'rgba(227,139,10,0.08)',
+                  border: '1px solid rgba(227,139,10,0.3)',
+                  marginBottom: 16,
+                }}
+              >
+                <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={avatarPresenceForUser(foundUser)} avatarUrl={foundUser.avatarUrl ?? undefined} size={44} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600 }}>{foundUser.displayName ?? foundUser.username}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Найден по EBLID</div>
+                </div>
+                <button disabled={sendingInvite} className="btn btn-primary" style={{ padding: '8px 16px' }} onClick={sendInvite}>Добавить</button>
               </div>
-              <div style={{ marginLeft: 'auto' }}>
-                <button disabled={sendingInvite} className="btn btn-primary" onClick={sendInvite}>Добавить</button>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, marginBottom: 20, border: '1px solid var(--surface-border)' }}>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Мой EBLID:</div>
+              <div style={{ fontWeight: 700, flex: 1 }}>{myEblid || '— — — —'}</div>
+              <button className="btn btn-secondary btn-icon" onClick={() => { if (myEblid) navigator.clipboard.writeText(myEblid) }} title="Скопировать EBLID"><Copy size={16} /></button>
+            </div>
+
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 8 }}>Мои друзья</div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+                  gap: 12,
+                  maxHeight: 280,
+                  overflow: 'auto',
+                  paddingRight: 4,
+                }}
+              >
+                {(!contactsQuery.data || contactsQuery.data.length === 0) ? (
+                  <div style={{ gridColumn: '1 / -1', padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                    Нет контактов. Введите EBLID выше или примите запрос в друзья.
+                  </div>
+                ) : (
+                (contactsQuery.data || []).map((c: any) => {
+                  const u = c.friend
+                  return (
+                    <div
+                      key={c.id}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 12,
+                        padding: '16px',
+                        borderRadius: 12,
+                        background: 'var(--surface-100)',
+                        border: '1px solid var(--surface-border)',
+                        transition: 'border-color 0.18s, background 0.18s',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.borderColor = 'var(--surface-border-strong)'
+                        e.currentTarget.style.background = 'var(--surface-200)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.borderColor = 'var(--surface-border)'
+                        e.currentTarget.style.background = 'var(--surface-100)'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <Avatar name={u.displayName ?? u.username} id={u.id} presence={avatarPresenceForUser(u)} avatarUrl={u.avatarUrl ?? undefined} size={44} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.displayName ?? u.username}</div>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Контакт</div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ flex: 1, minWidth: 0, padding: '8px 10px', fontSize: 12 }}
+                          onClick={async () => {
+                            await api.post('/contacts/remove', { contactId: c.id })
+                            contactsQuery.refetch()
+                          }}
+                        >
+                          Удалить
+                        </button>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ flex: 1, minWidth: 0, padding: '8px 10px', fontSize: 12 }}
+                          onClick={async () => {
+                            await initiateSecretChat(u.id)
+                            setContactsOpen(false)
+                            client.invalidateQueries({ queryKey: ['conversations'] })
+                          }}
+                        >
+                          Секр. чат
+                        </button>
+                        <button
+                          className="btn btn-primary"
+                          style={{ flex: 1, minWidth: 0, padding: '8px 10px', fontSize: 12 }}
+                          onClick={async () => {
+                            const resp = await api.post('/conversations', { participantIds: [u.id], isGroup: false })
+                            setContactsOpen(false)
+                            selectConversation(resp.data.conversation.id)
+                            client.invalidateQueries({ queryKey: ['conversations'] })
+                          }}
+                        >
+                          Открыть
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })
+                )}
               </div>
             </div>
-          )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Мой EBLID:</div>
-            <div style={{ fontWeight: 700 }}>{myEblid || '— — — —'}</div>
-            <button className="btn btn-secondary btn-icon" onClick={() => { if (myEblid) navigator.clipboard.writeText(myEblid) }} title="Скопировать EBLID"><Copy size={16} /></button>
-          </div>
-
-          <div style={{ marginTop: 16, fontWeight: 700 }}>Мои друзья</div>
-          <div style={{ maxHeight: 300, overflow: 'auto', marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(contactsQuery.data || []).map((c: any) => {
-              const u = c.friend
-              return (
-                <div key={c.id} className="tile">
-                  <Avatar
-                    name={u.displayName ?? u.username}
-                    id={u.id}
-                    presence={avatarPresenceForUser(u)}
-                    avatarUrl={u.avatarUrl ?? undefined}
-                  />
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{u.displayName ?? u.username}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Контакт</div>
-                  </div>
-                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={async () => {
-                        await api.post('/contacts/remove', { contactId: c.id })
-                        contactsQuery.refetch()
-                      }}
-                    >
-                      Удалить
-                    </button>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={async () => {
-                        await initiateSecretChat(u.id)
-                        setContactsOpen(false)
-                        client.invalidateQueries({ queryKey: ['conversations'] })
-                      }}
-                    >
-                      Секретный чат
-                    </button>
-                    <button
-                      className="btn btn-primary"
-                      onClick={async () => {
-                        const resp = await api.post('/conversations', { participantIds: [u.id], isGroup: false })
-                        setContactsOpen(false)
-                        selectConversation(resp.data.conversation.id)
-                        client.invalidateQueries({ queryKey: ['conversations'] })
-                      }}
-                    >
-                      Открыть чат
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
           </div>
         </div>
       </div>
