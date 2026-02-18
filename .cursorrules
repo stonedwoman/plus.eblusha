@@ -5,6 +5,7 @@
 # - Do NOT commit/push generated artifacts (e.g. dist/, frontend/dist/, installers) unless explicitly requested.
 # - Do NOT commit/push secrets (.env, API keys, tokens). If a secret is exposed, rotate it and remove from history.
 # - If a change is read-only (no repo modifications), no commit/push is needed.
+# - After a successful push, run `npm run deploy` to build and deploy frontend to /var/www/plus.eblusha.org/, reload nginx, and build backend.
 #
 # Git:
 # - Prefer small, focused commits with clear messages.
