@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus } from 'lucide-react'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -10094,7 +10094,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
                   gap: 12,
                   maxHeight: 280,
                   overflow: 'auto',
@@ -10137,31 +10137,31 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Контакт</div>
                         </div>
                       </div>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                         <button
-                          className="btn btn-secondary"
-                          style={{ flex: 1, minWidth: 0, padding: '8px 10px', fontSize: 12 }}
+                          className="btn btn-secondary btn-icon"
+                          title="Удалить"
                           onClick={async () => {
                             await api.post('/contacts/remove', { contactId: c.id })
                             contactsQuery.refetch()
                           }}
                         >
-                          Удалить
+                          <Trash2 size={16} />
                         </button>
                         <button
-                          className="btn btn-secondary"
-                          style={{ flex: 1, minWidth: 0, padding: '8px 10px', fontSize: 12 }}
+                          className="btn btn-secondary btn-icon"
+                          title="Секретный чат"
                           onClick={async () => {
                             await initiateSecretChat(u.id)
                             setContactsOpen(false)
                             client.invalidateQueries({ queryKey: ['conversations'] })
                           }}
                         >
-                          Секр. чат
+                          <Lock size={16} />
                         </button>
                         <button
-                          className="btn btn-primary"
-                          style={{ flex: 1, minWidth: 0, padding: '8px 10px', fontSize: 12 }}
+                          className="btn btn-primary btn-icon"
+                          title="Открыть чат"
                           onClick={async () => {
                             const resp = await api.post('/conversations', { participantIds: [u.id], isGroup: false })
                             setContactsOpen(false)
@@ -10169,7 +10169,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             client.invalidateQueries({ queryKey: ['conversations'] })
                           }}
                         >
-                          Открыть
+                          <MessageCircle size={16} />
                         </button>
                       </div>
                     </div>
