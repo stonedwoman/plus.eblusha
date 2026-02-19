@@ -324,8 +324,19 @@ function generatePrekeys(count: number): GeneratedPrekey[] {
   return list
 }
 
+export function isElectron(): boolean {
+  try {
+    if (typeof navigator !== 'undefined' && /Electron/i.test(navigator.userAgent || '')) return true
+    if (typeof (window as any)?.process?.versions?.electron === 'string') return true
+    return false
+  } catch {
+    return false
+  }
+}
+
 function detectDeviceName(): string {
   try {
+    if (isElectron()) return 'Еблуша для ПК'
     const userAgentData = (navigator as any).userAgentData
     if (userAgentData && Array.isArray(userAgentData.brands)) {
       const preferredBrand = userAgentData.brands.find(
@@ -353,6 +364,7 @@ function detectDeviceName(): string {
 
 function detectPlatform(): string {
   try {
+    if (isElectron()) return 'Еблуша для ПК'
     const uaPlatform = (navigator as any).userAgentData?.platform
     return (uaPlatform || navigator.platform || 'web').toString()
   } catch {

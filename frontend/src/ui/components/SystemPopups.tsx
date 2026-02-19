@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X, ChevronUp } from 'lucide-react'
+import { isElectron } from '../../domain/device/deviceManager'
 import { useSystemUiStore } from '../../domain/store/systemUiStore'
 
 function ToastIcon(props: { variant: 'success' | 'error' | 'info' }) {
@@ -49,6 +50,7 @@ function NewSessionBar(props: {
         left: 0,
         right: 0,
         zIndex: 215,
+        marginTop: isElectron() ? 24 : 0,
         transform: entered ? 'translateY(0)' : 'translateY(-100%)',
         transition: 'transform 0.25s ease-out',
         display: 'flex',
