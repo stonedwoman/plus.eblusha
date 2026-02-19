@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X } from 'lucide-react'
+import { X, ChevronUp } from 'lucide-react'
 import { useSystemUiStore } from '../../domain/store/systemUiStore'
 
 function ToastIcon(props: { variant: 'success' | 'error' | 'info' }) {
@@ -8,6 +8,78 @@ function ToastIcon(props: { variant: 'success' | 'error' | 'info' }) {
   if (v === 'success') return <span style={{ color: '#86efac', fontWeight: 900 }}>✓</span>
   if (v === 'error') return <span style={{ color: '#fca5a5', fontWeight: 900 }}>!</span>
   return <span style={{ color: 'var(--text-muted)', fontWeight: 900 }}>i</span>
+}
+
+function NewSessionBar(props: {
+  deviceName?: string
+  platform?: string
+  onOk: () => void
+  onForbid: () => void
+  onDismiss: () => void
+}) {
+  const [entered, setEntered] = useState(false)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => requestAnimationFrame(() => setEntered(true)))
+    return () => cancelAnimationFrame(id)
+  }, [])
+  const deviceLine =
+    [props.deviceName, props.platform].filter(Boolean).length > 0
+      ? [props.deviceName, props.platform].filter(Boolean).join(' • ')
+      : 'новое устройство'
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 215,
+        minHeight: 56,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: '10px 14px',
+        borderBottom: '1px solid var(--surface-border)',
+        background: 'linear-gradient(180deg, var(--surface-200), var(--surface-100))',
+        backdropFilter: 'blur(10px) saturate(120%)',
+        boxShadow: 'var(--shadow-medium)',
+        transform: entered ? 'translateY(0)' : 'translateY(-100%)',
+        transition: 'transform 0.25s ease-out',
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div style={{ fontWeight: 900, fontSize: 14, color: 'var(--text-primary)' }}>
+          Новый сеанс: {deviceLine}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.2 }}>
+          ОК — разрешить вход. Запретить — отключит это устройство.
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <button
+          type="button"
+          className="btn btn-icon btn-ghost"
+          onClick={props.onDismiss}
+          aria-label="Свернуть"
+          title="Свернуть"
+          style={{ width: 36, height: 36, borderRadius: 10 }}
+        >
+          <ChevronUp size={20} />
+        </button>
+        <button type="button" className="btn btn-primary" onClick={props.onOk} style={{ padding: '8px 14px' }}>
+          ОК
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={props.onForbid}
+          style={{ padding: '8px 14px', background: '#ef4444', borderColor: '#ef4444', color: '#fff' }}
+        >
+          Запретить
+        </button>
+      </div>
+    </div>
+  )
 }
 
 export function SystemPopups() {
@@ -29,7 +101,7 @@ export function SystemPopups() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (newSessionPopup && e.key === 'Escape') {
-        resolveNewSessionPopup('ok')
+        resolveNewSessionPopup('dismiss')
         return
       }
       if (!confirm) return
@@ -198,61 +270,15 @@ export function SystemPopups() {
         </div>
       ) : null}
 
-      {/* New session popup */}
+      {/* New session — bar from top (header height), no full-screen overlay */}
       {newSessionPopup ? (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 215,
-            background: 'rgba(10,12,16,0.62)',
-            backdropFilter: 'blur(8px) saturate(120%)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-          }}
-          onClick={() => resolveNewSessionPopup('ok')}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: 400,
-              maxWidth: '96vw',
-              borderRadius: 18,
-              border: '1px solid var(--surface-border)',
-              background: 'linear-gradient(180deg, var(--surface-200), var(--surface-100))',
-              boxShadow: 'var(--shadow-medium)',
-              overflow: 'hidden',
-            }}
-          >
-            <div style={{ padding: 16, fontWeight: 900, fontSize: 16, color: 'var(--text-primary)' }}>
-              Новый сеанс
-            </div>
-            <div style={{ padding: '0 16px 16px', color: 'var(--text-muted)', fontSize: 14, lineHeight: 1.4 }}>
-              {[newSessionPopup.deviceName, newSessionPopup.platform].filter(Boolean).length > 0
-                ? `Подключено устройство: ${[newSessionPopup.deviceName, newSessionPopup.platform].filter(Boolean).join(' • ')}`
-                : 'Подключено новое устройство.'}
-            </div>
-            <div style={{ padding: 16, display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => resolveNewSessionPopup('ok')}
-              >
-                ОК
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => resolveNewSessionPopup('forbid')}
-                style={{ background: '#ef4444', borderColor: '#ef4444', color: '#fff' }}
-              >
-                Запретить
-              </button>
-            </div>
-          </div>
-        </div>
+        <NewSessionBar
+          deviceName={newSessionPopup.deviceName}
+          platform={newSessionPopup.platform}
+          onOk={() => resolveNewSessionPopup('ok')}
+          onForbid={() => resolveNewSessionPopup('forbid')}
+          onDismiss={() => resolveNewSessionPopup('dismiss')}
+        />
       ) : null}
     </>,
     host,

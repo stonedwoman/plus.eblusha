@@ -29,13 +29,13 @@ export type NewSessionPayload = {
 type State = {
   toasts: ToastItem[]
   confirm: (ConfirmRequest & { resolve: (ok: boolean) => void }) | null
-  newSessionPopup: (NewSessionPayload & { resolve: (action: 'ok' | 'forbid') => void }) | null
+  newSessionPopup: (NewSessionPayload & { resolve: (action: 'ok' | 'forbid' | 'dismiss') => void }) | null
   pushToast: (t: Omit<ToastItem, 'id' | 'createdAt'> & Partial<Pick<ToastItem, 'id' | 'createdAt'>>) => string
   dismissToast: (id: string) => void
   requestConfirm: (req: Omit<ConfirmRequest, 'id'> & Partial<Pick<ConfirmRequest, 'id'>>) => Promise<boolean>
   resolveConfirm: (ok: boolean) => void
-  requestNewSessionPopup: (payload: NewSessionPayload) => Promise<'ok' | 'forbid'>
-  resolveNewSessionPopup: (action: 'ok' | 'forbid') => void
+  requestNewSessionPopup: (payload: NewSessionPayload) => Promise<'ok' | 'forbid' | 'dismiss'>
+  resolveNewSessionPopup: (action: 'ok' | 'forbid' | 'dismiss') => void
 }
 
 function rid() {
@@ -85,7 +85,7 @@ export const useSystemUiStore = create<State>((set, get) => ({
     set({ confirm: null })
   },
   requestNewSessionPopup: (payload) =>
-    new Promise<'ok' | 'forbid'>((resolve) => {
+    new Promise<'ok' | 'forbid' | 'dismiss'>((resolve) => {
       set({ newSessionPopup: { ...payload, resolve } })
     }),
   resolveNewSessionPopup: (action) => {
