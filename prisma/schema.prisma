@@ -346,6 +346,9 @@ model UserDevice {
   updatedAt           DateTime      @updatedAt
   lastSeenAt          DateTime?
   revokedAt           DateTime?
+  lastIp              String?
+  lastCountry         String?
+  lastCity            String?
   user                User          @relation(fields: [userId], references: [id])
   prekeys             DevicePrekey[]
 

@@ -2,6 +2,7 @@ import type { Server as HttpServer } from "http";
 import { Server } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import prisma from "../lib/prisma";
+import { buildIpLocationFromRaw } from "../lib/ipLocation";
 import env from "../config/env";
 import { createDedicatedRedisClient, getRedisClient } from "../lib/redis";
 import { deleteCallE2eeKey, generateCallE2eeSharedKeyBase64, getCallE2eeKey, setCallE2eeKey } from "../lib/callE2ee";
@@ -96,6 +97,8 @@ const userRoom = (userId: string) => `user:${userId}`;
 const deviceRoom = (deviceId: string) => `device:${deviceId}`;
 
 const PRESENCE_TTL_SECONDS = 90;
+const DEVICE_LASTSEEN_WRITE_THROTTLE_MS = 60_000;
+const lastDeviceSeenWriteAt = new Map<string, number>();
 const ACTIVITY_TTL_SECONDS = 120;
 const PRESENCE_HEARTBEAT_MS = 27_000;
 const TYPING_TTL_SECONDS = 8;
@@ -691,6 +694,31 @@ export async function initSocket(
           if (dev?.name != null && dev.name !== "") payload.deviceName = dev.name;
           if (dev?.platform != null && dev.platform !== "") payload.platform = dev.platform;
           io.to(userRoom(userId)).emit("session:new", payload);
+        } catch {
+          // ignore
+        }
+      })();
+      void (async () => {
+        try {
+          const now = Date.now();
+          const last = lastDeviceSeenWriteAt.get(verifiedDeviceId) ?? 0;
+          if (now - last < DEVICE_LASTSEEN_WRITE_THROTTLE_MS) return;
+          lastDeviceSeenWriteAt.set(verifiedDeviceId, now);
+          const xff = socket.handshake.headers?.["x-forwarded-for"];
+          const ipRaw =
+            (typeof xff === "string" ? xff.split(",")[0]?.trim() : Array.isArray(xff) ? String(xff[0] ?? "").trim() : "") ||
+            (typeof (socket.handshake as any)?.address === "string" ? String((socket.handshake as any).address).trim() : "") ||
+            "";
+          const ipLoc = buildIpLocationFromRaw(ipRaw);
+          await prisma.userDevice.update({
+            where: { id: verifiedDeviceId },
+            data: {
+              lastSeenAt: new Date(),
+              ...(ipLoc
+                ? { lastIp: ipLoc.ip, lastCountry: ipLoc.country ?? null, lastCity: ipLoc.city ?? null }
+                : {}),
+            },
+          });
         } catch {
           // ignore
         }

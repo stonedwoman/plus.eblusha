@@ -5,6 +5,7 @@ import { authenticate } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rateLimit";
 import crypto from "crypto";
 import { kickDevice } from "../realtime/socket";
+import { buildIpLocation } from "../lib/ipLocation";
 
 const router = Router();
 
@@ -83,6 +84,9 @@ router.get("/", async (req, res) => {
       createdAt: d.createdAt,
       lastSeenAt: d.lastSeenAt,
       revokedAt: d.revokedAt,
+      lastIp: d.lastIp ?? null,
+      lastCountry: d.lastCountry ?? null,
+      lastCity: d.lastCity ?? null,
       publicKey: d.publicKey,
       identityPublicKey: d.identityPublicKey,
       signedPreKey: d.signedPreKeyPublic
@@ -186,6 +190,7 @@ router.post(
   const { deviceId, name, platform, publicKey, identityPublicKey, signedPreKey, version, alg, prekeys } =
     parsed.data;
   const userId = (req as AuthedRequest).user!.id;
+  const ipLoc = buildIpLocation(req);
 
   const existing = await prisma.userDevice.findUnique({ where: { id: deviceId } });
   if (existing && existing.userId !== userId) {
@@ -208,6 +213,9 @@ router.post(
       keyAlg: alg ?? "x25519+ed25519",
       lastSeenAt: new Date(),
       revokedAt: null,
+      ...(ipLoc
+        ? { lastIp: ipLoc.ip, lastCountry: ipLoc.country ?? null, lastCity: ipLoc.city ?? null }
+        : {}),
     },
     create: {
       id: deviceId,
@@ -223,6 +231,9 @@ router.post(
       keyVersion: version ?? 1,
       keyAlg: alg ?? "x25519+ed25519",
       lastSeenAt: new Date(),
+      ...(ipLoc
+        ? { lastIp: ipLoc.ip, lastCountry: ipLoc.country ?? null, lastCity: ipLoc.city ?? null }
+        : {}),
     },
   });
 
