@@ -18,6 +18,13 @@ function NewSessionBar(props: {
   onDismiss: () => void
 }) {
   const [entered, setEntered] = useState(false)
+  const isMobile = (() => {
+    try {
+      return typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 720px)').matches
+    } catch {
+      return false
+    }
+  })()
   useEffect(() => {
     const id = requestAnimationFrame(() => requestAnimationFrame(() => setEntered(true)))
     return () => cancelAnimationFrame(id)
@@ -26,6 +33,14 @@ function NewSessionBar(props: {
     [props.deviceName, props.platform].filter(Boolean).length > 0
       ? [props.deviceName, props.platform].filter(Boolean).join(' • ')
       : 'новое устройство'
+  const barStyles: React.CSSProperties = {
+    minHeight: 130,
+    padding: 'calc(12px + var(--safe-top, 0px)) 16px 12px',
+    borderBottom: '1px solid var(--surface-border)',
+    background: 'linear-gradient(180deg, var(--surface-200), var(--surface-100))',
+    backdropFilter: 'blur(10px) saturate(120%)',
+    boxShadow: 'var(--shadow-medium)',
+  }
   return (
     <div
       style={{
@@ -34,49 +49,58 @@ function NewSessionBar(props: {
         left: 0,
         right: 0,
         zIndex: 215,
-        minHeight: 130,
-        display: 'flex',
-        alignItems: 'end',
-        gap: 12,
-        padding: 'calc(12px + var(--safe-top, 0px)) 16px 12px',
-        borderBottom: '1px solid var(--surface-border)',
-        background: 'linear-gradient(180deg, var(--surface-200), var(--surface-100))',
-        backdropFilter: 'blur(10px) saturate(120%)',
-        boxShadow: 'var(--shadow-medium)',
         transform: entered ? 'translateY(0)' : 'translateY(-100%)',
         transition: 'transform 0.25s ease-out',
+        display: 'flex',
+        justifyContent: 'center',
       }}
     >
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <div style={{ fontWeight: 900, fontSize: 14, color: 'var(--text-primary)' }}>
-          Новый сеанс: {deviceLine}
+      <div
+        style={{
+          width: isMobile ? '100%' : 'auto',
+          maxWidth: isMobile ? '100%' : 480,
+          borderRadius: isMobile ? 0 : '0 0 12px 12px',
+          ...barStyles,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ fontWeight: 900, fontSize: 14, color: 'var(--text-primary)' }}>
+              Новый сеанс: {deviceLine}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.2 }}>
+              ОК — разрешить вход. Запретить — отключит это устройство.
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <button type="button" className="btn btn-primary" onClick={props.onOk} style={{ padding: '8px 14px' }}>
+              ОК
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={props.onForbid}
+              style={{ padding: '8px 14px', background: '#ef4444', borderColor: '#ef4444', color: '#fff' }}
+            >
+              Запретить
+            </button>
+          </div>
         </div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.2 }}>
-          ОК — разрешить вход. Запретить — отключит это устройство.
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={props.onDismiss}
+            aria-label="Свернуть"
+            style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 8px' }}
+          >
+            <ChevronUp size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+            Свернуть
+          </button>
         </div>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        <button
-          type="button"
-          className="btn btn-icon btn-ghost"
-          onClick={props.onDismiss}
-          aria-label="Свернуть"
-          title="Свернуть"
-          style={{ width: 36, height: 36, borderRadius: 10 }}
-        >
-          <ChevronUp size={20} />
-        </button>
-        <button type="button" className="btn btn-primary" onClick={props.onOk} style={{ padding: '8px 14px' }}>
-          ОК
-        </button>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={props.onForbid}
-          style={{ padding: '8px 14px', background: '#ef4444', borderColor: '#ef4444', color: '#fff' }}
-        >
-          Запретить
-        </button>
       </div>
     </div>
   )
