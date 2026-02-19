@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import { socket, connectSocket } from '../../utils/socket'
 import { ensureDeviceBootstrap, forcePublishPrekeys } from '../device/deviceManager'
-import { getSecretThreadKey, importSecretThreadKeys, setSecretThreadKey } from './secretThreadKeyStore'
+import { exportSecretThreadKeys, getSecretThreadKey, importSecretThreadKeys, setSecretThreadKey } from './secretThreadKeyStore'
 import { decryptSecretThreadText } from './secretThreadCrypto'
 import { tryDecryptIncomingKeyPackage } from './secretKeyPackages'
 import { isSecretControlHeader, sendSecretControl } from './secretControl'
@@ -26,6 +26,8 @@ type InboxItem = {
 
 const RESEND_REQUEST_THROTTLE_MS = 30_000
 const lastResendHandledAt = new Map<string, number>()
+const LINK_DEVICE_JOIN_THROTTLE_MS = 120_000
+const lastLinkDeviceJoinSentAt = new Map<string, number>()
 
 function secretDebugEnabled(): boolean {
   try {
@@ -213,6 +215,56 @@ export function SecretInboxPump() {
             header && typeof header === 'object' && String((header as any).kind ?? '') === 'key_resend_request'
           const isPrekeysNeeded =
             header && typeof header === 'object' && String((header as any).kind ?? '') === 'prekeys_needed'
+          const isLinkDeviceJoin =
+            header && typeof header === 'object' && String((header as any).kind ?? '') === 'link_device_join'
+
+          if (isLinkDeviceJoin) {
+            const requesterDeviceId = String((header as any).requesterDeviceId ?? '').trim()
+            if (requesterDeviceId) {
+              const now = Date.now()
+              const last = lastLinkDeviceJoinSentAt.get(requesterDeviceId) ?? 0
+              if (now - last >= LINK_DEVICE_JOIN_THROTTLE_MS) {
+                lastLinkDeviceJoinSentAt.set(requesterDeviceId, now)
+                try {
+                  const payload = { threadKeys: exportSecretThreadKeys() }
+                  const env = await createEncryptedKeyPackageToDevice({
+                    toDeviceId: requesterDeviceId,
+                    kind: 'device_link_keys',
+                    payload,
+                    ttlSeconds: 60 * 60,
+                  })
+                  await api.post('/secret/send', { messages: [env] })
+                  if (secretDebugEnabled()) {
+                    // eslint-disable-next-line no-console
+                    console.log('[SecretInboxPump] link_device_join: sent device_link_keys', {
+                      requesterDeviceId,
+                      msgId: env.msgId,
+                    })
+                  }
+                  clientLog('SecretInboxPump', 'info', 'link_device_join: sent device_link_keys', {
+                    data: { toDeviceId: requesterDeviceId, msgId: env.msgId },
+                  })
+                  const token = String((header as any).token ?? '').trim()
+                  if (token) {
+                    try {
+                      await api.post('/devices/pairing/consume', { token })
+                    } catch {}
+                  }
+                } catch (e: any) {
+                  lastLinkDeviceJoinSentAt.delete(requesterDeviceId)
+                  if (secretDebugEnabled()) {
+                    // eslint-disable-next-line no-console
+                    console.warn('[SecretInboxPump] link_device_join: failed to send keys', {
+                      requesterDeviceId,
+                      message: String(e?.response?.data?.message ?? e?.message ?? ''),
+                    })
+                  }
+                }
+              }
+            }
+            ackIds.push(item.msgId)
+            continue
+          }
 
           if (isControl && isSecretControlHeader(header)) {
             const type = String((header as any).type ?? '')
