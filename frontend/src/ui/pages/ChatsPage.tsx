@@ -8724,8 +8724,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       const keep = pickTs(d) >= pickTs(prev.device) ? d : prev.device
                       grouped.set(key, { device: keep, count: nextCount })
                     }
-                    const rows = Array.from(grouped.values()).sort((a, b) => pickTs(b.device) - pickTs(a.device))
                     const currentId = String(localDeviceIdForLinking ?? '').trim()
+                    const rows = Array.from(grouped.values()).sort((a, b) => {
+                      const aCurrent = !!currentId && String(a.device?.id ?? '').trim() === currentId
+                      const bCurrent = !!currentId && String(b.device?.id ?? '').trim() === currentId
+                      if (aCurrent && !bCurrent) return -1
+                      if (!aCurrent && bCurrent) return 1
+                      return pickTs(b.device) - pickTs(a.device)
+                    })
                     const iconFor = (platformRaw: any) => {
                       const p = String(platformRaw ?? '').toLowerCase()
                       if (p.includes('ios') || p.includes('iphone') || p.includes('android')) return <Smartphone size={18} />
@@ -8780,18 +8786,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 >
                                   {iconFor(d?.platform)}
                                 </div>
-                                <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: 800, color: 'var(--text-primary)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <div style={{ minWidth: 0, flex: 1 }}>
+                                  <div style={{ fontWeight: 800, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minWidth: 0 }}>
                                     <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                       {d?.name ? String(d.name) : String(d?.id ?? '')}
+                                      {row?.count > 1 ? (
+                                        <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)', fontWeight: 800 }}>
+                                          +{Number(row.count) - 1}
+                                        </span>
+                                      ) : null}
                                     </span>
-                                    {row?.count > 1 ? (
-                                      <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 800 }}>
-                                        +{Number(row.count) - 1}
-                                      </span>
-                                    ) : null}
                                     {isCurrent ? (
                                       <span
+                                        className="device-current-badge"
                                         style={{
                                           fontSize: 11,
                                           padding: '2px 8px',
@@ -8800,9 +8807,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                           background: 'rgba(34,197,94,0.12)',
                                           color: '#86efac',
                                           fontWeight: 800,
+                                          flexShrink: 0,
                                         }}
+                                        title="Это устройство"
                                       >
-                                        Это устройство
+                                        <span className="device-current-long">Это устройство</span>
+                                        <span className="device-current-short">Мы</span>
                                       </span>
                                     ) : null}
                                   </div>
@@ -8937,8 +8947,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     const keep = pickTs(d) >= pickTs(prev.device) ? d : prev.device
                     grouped.set(key, { device: keep, count: nextCount })
                   }
-                  const rows = Array.from(grouped.values()).sort((a, b) => pickTs(b.device) - pickTs(a.device))
                   const currentId = String(localDeviceIdForLinking ?? '').trim()
+                  const rows = Array.from(grouped.values()).sort((a, b) => {
+                    const aCurrent = !!currentId && String(a.device?.id ?? '').trim() === currentId
+                    const bCurrent = !!currentId && String(b.device?.id ?? '').trim() === currentId
+                    if (aCurrent && !bCurrent) return -1
+                    if (!aCurrent && bCurrent) return 1
+                    return pickTs(b.device) - pickTs(a.device)
+                  })
                   const iconFor = (platformRaw: any) => {
                     const p = String(platformRaw ?? '').toLowerCase()
                     if (p.includes('ios') || p.includes('iphone') || p.includes('android')) return <Smartphone size={18} />
@@ -8993,18 +9009,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                               >
                                 {iconFor(d?.platform)}
                               </div>
-                              <div style={{ minWidth: 0 }}>
-                                <div style={{ fontWeight: 800, color: 'var(--text-primary)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div style={{ fontWeight: 800, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minWidth: 0 }}>
                                   <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                     {d?.name ? String(d.name) : String(d?.id ?? '')}
+                                    {row?.count > 1 ? (
+                                      <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)', fontWeight: 800 }}>
+                                        +{Number(row.count) - 1}
+                                      </span>
+                                    ) : null}
                                   </span>
-                                  {row?.count > 1 ? (
-                                    <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 800 }}>
-                                      +{Number(row.count) - 1}
-                                    </span>
-                                  ) : null}
                                   {isCurrent ? (
                                     <span
+                                      className="device-current-badge"
                                       style={{
                                         fontSize: 11,
                                         padding: '2px 8px',
@@ -9013,9 +9030,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                         background: 'rgba(34,197,94,0.12)',
                                         color: '#86efac',
                                         fontWeight: 800,
+                                        flexShrink: 0,
                                       }}
+                                      title="Это устройство"
                                     >
-                                      Это устройство
+                                      <span className="device-current-long">Это устройство</span>
+                                      <span className="device-current-short">Мы</span>
                                     </span>
                                   ) : null}
                                 </div>
