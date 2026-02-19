@@ -57,7 +57,7 @@ type ServerToClientEvents = {
   "secret:notify": (payload: { toDeviceId: string; msgId: string }) => void;
   "secret:thread:created": (payload: { threadId: string; type: "SECRET" }) => void;
   "device:revoked": (payload: { deviceId: string; reason?: string }) => void;
-  "session:new": (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; ts: number }) => void;
+  "session:new": (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number }) => void;
 };
 
 type ClientToServerEvents = {
@@ -686,13 +686,22 @@ export async function initSocket(
             where: { id: verifiedDeviceId },
             select: { name: true, platform: true },
           });
-          const payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; ts: number } = {
+          const xff = socket.handshake.headers?.["x-forwarded-for"];
+          const ipRaw =
+            (typeof xff === "string" ? xff.split(",")[0]?.trim() : Array.isArray(xff) ? String(xff[0] ?? "").trim() : "") ||
+            (typeof (socket.handshake as any)?.address === "string" ? String((socket.handshake as any).address).trim() : "") ||
+            "";
+          const ipLoc = buildIpLocationFromRaw(ipRaw);
+          const payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number } = {
             userId,
             deviceId: verifiedDeviceId,
             ts: Date.now(),
           };
           if (dev?.name != null && dev.name !== "") payload.deviceName = dev.name;
           if (dev?.platform != null && dev.platform !== "") payload.platform = dev.platform;
+          if (ipLoc?.ip) payload.lastIp = ipLoc.ip;
+          if (ipLoc?.city) payload.lastCity = ipLoc.city;
+          if (ipLoc?.country) payload.lastCountry = ipLoc.country;
           io.to(userRoom(userId)).emit("session:new", payload);
         } catch {
           // ignore

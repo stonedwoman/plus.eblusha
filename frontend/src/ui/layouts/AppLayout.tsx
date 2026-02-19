@@ -24,6 +24,9 @@ export default function AppLayout() {
         deviceId: payload.deviceId,
         deviceName: payload.deviceName,
         platform: payload.platform,
+        lastIp: payload.lastIp,
+        lastCity: payload.lastCity,
+        lastCountry: payload.lastCountry,
       }).then((action) => {
         if (action === 'forbid') {
           api.delete(`/devices/${encodeURIComponent(payload.deviceId)}`).finally(() => {

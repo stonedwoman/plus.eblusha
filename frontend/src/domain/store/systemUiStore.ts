@@ -24,6 +24,9 @@ export type NewSessionPayload = {
   deviceId: string
   deviceName?: string
   platform?: string
+  lastIp?: string
+  lastCity?: string
+  lastCountry?: string
 }
 
 type State = {

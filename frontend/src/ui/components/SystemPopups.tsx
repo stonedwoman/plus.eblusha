@@ -14,6 +14,9 @@ function ToastIcon(props: { variant: 'success' | 'error' | 'info' }) {
 function NewSessionBar(props: {
   deviceName?: string
   platform?: string
+  lastIp?: string
+  lastCity?: string
+  lastCountry?: string
   onOk: () => void
   onForbid: () => void
   onDismiss: () => void
@@ -34,6 +37,8 @@ function NewSessionBar(props: {
     [props.deviceName, props.platform].filter(Boolean).length > 0
       ? [props.deviceName, props.platform].filter(Boolean).join(' • ')
       : 'новое устройство'
+  const locParts = [props.lastCity, props.lastCountry].filter(Boolean)
+  const fromLine = [props.lastIp, locParts.length > 0 ? locParts.join(', ') : null].filter(Boolean).join(' • ')
   const barStyles: React.CSSProperties = {
     minHeight: 130,
     padding: 'calc(12px + var(--safe-top, 0px)) 16px 12px',
@@ -73,6 +78,11 @@ function NewSessionBar(props: {
             <div style={{ fontWeight: 900, fontSize: 14, color: 'var(--text-primary)' }}>
               Новый сеанс: {deviceLine}
             </div>
+            {fromLine ? (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.2 }}>
+                Подключение: {fromLine}
+              </div>
+            ) : null}
             <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.2 }}>
               ОК — разрешить вход и передать ключи шифрования. Запретить — отключит это устройство.
             </div>
@@ -301,6 +311,9 @@ export function SystemPopups() {
         <NewSessionBar
           deviceName={newSessionPopup.deviceName}
           platform={newSessionPopup.platform}
+          lastIp={newSessionPopup.lastIp}
+          lastCity={newSessionPopup.lastCity}
+          lastCountry={newSessionPopup.lastCountry}
           onOk={() => resolveNewSessionPopup('ok')}
           onForbid={() => resolveNewSessionPopup('forbid')}
           onDismiss={() => resolveNewSessionPopup('dismiss')}
