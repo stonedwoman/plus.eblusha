@@ -74,7 +74,7 @@ function NewSessionBar(props: {
               Новый сеанс: {deviceLine}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.2 }}>
-              ОК — разрешить вход. Запретить — отключит это устройство.
+              ОК — разрешить вход и передать ключи шифрования. Запретить — отключит это устройство.
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
