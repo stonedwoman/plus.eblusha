@@ -253,7 +253,7 @@ export default function RegisterPage() {
                   className="register-avatar-pick"
                 >
                   <Avatar
-                    name={username || '?'}
+                    name={(displayNameInput.trim() || username) || '?'}
                     id="register-preview"
                     size={88}
                     avatarUrl={avatarPreviewUrl ?? undefined}
