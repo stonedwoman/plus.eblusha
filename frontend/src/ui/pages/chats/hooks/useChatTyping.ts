@@ -15,17 +15,24 @@ export function useChatTyping(opts: {
   const [typingByConversationId, setTypingByConversationId] = useState<TypingByConversationId>({})
   const [typingDots, setTypingDots] = useState(1)
 
-  // Outgoing typing emitter (per active conversation)
+  const TYPING_STOP_IDLE_MS = 1100
+  const TYPING_PING_INTERVAL_MS = 2000
+  const TYPING_START_DEBOUNCE_MS = 300
+
+  // Outgoing: start on first input after pause, ping ≤1/2s, stop after idle 1100ms
   const typingEmitRef = useRef<{
     convId: string | null
     startTimer: number | null
     stopTimer: number | null
-    lastSentTyping: boolean
+    pingTimer: number | null
     lastSentAt: number
-  }>({ convId: null, startTimer: null, stopTimer: null, lastSentTyping: false, lastSentAt: 0 })
+    sentStart: boolean
+  }>({ convId: null, startTimer: null, stopTimer: null, pingTimer: null, lastSentAt: 0, sentStart: false })
 
   // Incoming typing cleanup (expire stale entries)
   const typingCleanupTimerRef = useRef<number | null>(null)
+
+  const LAZY_EXPIRE_MS = 6500
 
   const onIncomingTyping = useCallback((p: any) => {
     if (!p) return
@@ -33,7 +40,7 @@ export function useChatTyping(opts: {
     const uid = typeof p.userId === 'string' ? p.userId : null
     if (!convId || !uid) return
     if (uid === meId) return
-    const isTyping = !!p.typing
+    const isTyping = p.isTyping === true || (p.typing === true && p.isTyping !== false)
     setTypingByConversationId((prev) => {
       const conv = { ...(prev[convId] ?? {}) }
       if (!isTyping) {
@@ -46,65 +53,85 @@ export function useChatTyping(opts: {
     })
   }, [meId])
 
-  const emitTyping = useCallback((conversationId: string, typing: boolean) => {
+  const emitStart = useCallback((conversationId: string) => {
     if (!conversationId) return
     try {
-      if (!socket.connected) {
-        connectSocket()
-      }
-    } catch {
-      // ignore connect errors; emit may still succeed later
-    }
-    socket.emit('conversation:typing', { conversationId, typing })
+      if (!socket.connected) connectSocket()
+    } catch {}
+    socket.emit('typing_start', conversationId)
+    if (import.meta.env?.DEV) console.log('[typing] start', conversationId)
+  }, [])
+
+  const emitPing = useCallback((conversationId: string) => {
+    if (!conversationId) return
+    socket.emit('typing_ping', conversationId)
+    if (import.meta.env?.DEV) console.log('[typing] ping', conversationId)
+  }, [])
+
+  const emitStop = useCallback((conversationId: string) => {
+    if (!conversationId) return
+    socket.emit('typing_stop', conversationId)
+    if (import.meta.env?.DEV) console.log('[typing] stop', conversationId)
   }, [])
 
   const stopTyping = useCallback((conversationId: string | null) => {
     const st = typingEmitRef.current
     if (st.startTimer) window.clearTimeout(st.startTimer)
     if (st.stopTimer) window.clearTimeout(st.stopTimer)
+    if (st.pingTimer) window.clearTimeout(st.pingTimer)
     st.startTimer = null
     st.stopTimer = null
-    if (conversationId && st.lastSentTyping) {
-      emitTyping(conversationId, false)
+    st.pingTimer = null
+    if (conversationId && st.sentStart) {
+      emitStop(conversationId)
     }
-    st.lastSentTyping = false
+    st.sentStart = false
     st.lastSentAt = 0
     st.convId = conversationId
-  }, [emitTyping])
+  }, [emitStop])
 
   const notifyTyping = useCallback(() => {
     if (!activeId) return
     const st = typingEmitRef.current
-    // If conversation changed while timers pending, best-effort stop old one.
-    if (st.convId && st.convId !== activeId && st.lastSentTyping) {
-      emitTyping(st.convId, false)
-      st.lastSentTyping = false
+    if (st.convId && st.convId !== activeId && st.sentStart) {
+      emitStop(st.convId)
+      st.sentStart = false
     }
     st.convId = activeId
 
     if (st.startTimer) window.clearTimeout(st.startTimer)
-    // Debounce typing_start
     st.startTimer = window.setTimeout(() => {
       const now = Date.now()
-      // Throttle re-sending "typing=true" to keep remote indicator alive without spamming.
-      if (!st.lastSentTyping || now - st.lastSentAt > 2000) {
-        emitTyping(activeId, true)
-        st.lastSentTyping = true
+      if (!st.sentStart) {
+        emitStart(activeId)
+        st.sentStart = true
+        st.lastSentAt = now
+        if (st.pingTimer) window.clearTimeout(st.pingTimer)
+        const schedulePing = () => {
+          if (st.convId !== activeId || !st.sentStart) return
+          if (Date.now() - st.lastSentAt >= TYPING_PING_INTERVAL_MS) {
+            emitPing(activeId)
+            st.lastSentAt = Date.now()
+          }
+          st.pingTimer = window.setTimeout(schedulePing, TYPING_PING_INTERVAL_MS)
+        }
+        st.pingTimer = window.setTimeout(schedulePing, TYPING_PING_INTERVAL_MS)
+      } else if (now - st.lastSentAt >= TYPING_PING_INTERVAL_MS) {
+        emitPing(activeId)
         st.lastSentAt = now
       }
-    }, 420)
+    }, TYPING_START_DEBOUNCE_MS)
 
     if (st.stopTimer) window.clearTimeout(st.stopTimer)
-    // Send typing_stop on idle
     st.stopTimer = window.setTimeout(() => {
       if (!st.convId) return
-      if (st.lastSentTyping) {
-        emitTyping(st.convId, false)
-      }
-      st.lastSentTyping = false
-      st.lastSentAt = Date.now()
-    }, 2100)
-  }, [activeId, emitTyping])
+      if (st.sentStart) emitStop(st.convId)
+      st.sentStart = false
+      st.lastSentAt = 0
+      if (st.pingTimer) window.clearTimeout(st.pingTimer)
+      st.pingTimer = null
+    }, TYPING_STOP_IDLE_MS)
+  }, [activeId, emitStart, emitPing, emitStop])
 
   // Typing in active conversation only (exclude self), for chat pane
   const typingByUserId = useMemo(() => {
@@ -150,7 +177,7 @@ export function useChatTyping(opts: {
           const nextConv: Record<string, number> = {}
           for (const uid of Object.keys(conv)) {
             const ts = conv[uid]
-            if (typeof ts === 'number' && now - ts < 2600) {
+            if (typeof ts === 'number' && now - ts < LAZY_EXPIRE_MS) {
               nextConv[uid] = ts
             } else {
               changed = true

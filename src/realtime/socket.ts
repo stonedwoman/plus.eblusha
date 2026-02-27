@@ -40,6 +40,12 @@ type ServerToClientEvents = {
     userId: string;
     typing: boolean;
   }) => void;
+  "conversation:typing_update": (payload: {
+    conversationId: string;
+    userId: string;
+    isTyping: boolean;
+    displayName?: string | null;
+  }) => void;
   "contacts:request:new": (payload: { contactId: string; from: { id: string; username: string } }) => void;
   "contacts:request:accepted": (payload: { contactId: string }) => void;
   "contacts:request:blocked": (payload: { contactId: string }) => void;
@@ -64,6 +70,9 @@ type ClientToServerEvents = {
   "conversation:join": (conversationId: string) => void;
   "conversation:leave": (conversationId: string) => void;
   "conversation:typing": (payload: { conversationId: string; typing: boolean }) => void;
+  "typing_start": (conversationId: string) => void;
+  "typing_ping": (conversationId: string) => void;
+  "typing_stop": (conversationId: string) => void;
   "call:invite": (payload: { conversationId: string; video: boolean }) => void;
   "call:accept": (payload: { conversationId: string; video: boolean }) => void;
   "call:decline": (payload: { conversationId: string }) => void;
@@ -101,7 +110,7 @@ const DEVICE_LASTSEEN_WRITE_THROTTLE_MS = 60_000;
 const lastDeviceSeenWriteAt = new Map<string, number>();
 const ACTIVITY_TTL_SECONDS = 120;
 const PRESENCE_HEARTBEAT_MS = 27_000;
-const TYPING_TTL_SECONDS = 8;
+const TYPING_TTL_SECONDS = 6;
 
 type PresenceVisibility = "visible" | "hidden";
 type PresenceSource = "web" | "electron" | "mobile";
@@ -230,17 +239,49 @@ async function readPresenceAggregateCountsRedis(userId: string): Promise<{ onlin
   }
 }
 
-async function writeTypingRedis(conversationId: string, userId: string, typing: boolean) {
+const typingStateKey = (conversationId: string, userId: string) => `typing:${conversationId}:${userId}`;
+
+async function setTypingRedis(conversationId: string, userId: string, ttlSeconds: number) {
   try {
     const redis = await getRedisClient();
-    const key = `typing:${conversationId}:${userId}`;
-    if (typing) {
-      await redis.set(key, "1", { EX: TYPING_TTL_SECONDS });
-    } else {
-      await redis.del(key);
-    }
+    await redis.set(typingStateKey(conversationId, userId), "1", { EX: ttlSeconds });
   } catch {
-    // ignore redis failures
+    // fallback to in-memory below
+  }
+}
+
+async function clearTypingRedis(conversationId: string, userId: string) {
+  try {
+    const redis = await getRedisClient();
+    await redis.del(typingStateKey(conversationId, userId));
+  } catch {
+    // ignore
+  }
+}
+
+const typingInMemory = new Map<string, NodeJS.Timeout>();
+
+function setTypingInMemory(
+  conversationId: string,
+  userId: string,
+  io: Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>,
+  ttlMs: number
+) {
+  const key = typingStateKey(conversationId, userId);
+  const existing = typingInMemory.get(key);
+  if (existing) clearTimeout(existing);
+  const timeout = setTimeout(() => {
+    typingInMemory.delete(key);
+  }, ttlMs);
+  typingInMemory.set(key, timeout);
+}
+
+function clearTypingInMemory(conversationId: string, userId: string) {
+  const key = typingStateKey(conversationId, userId);
+  const t = typingInMemory.get(key);
+  if (t) {
+    clearTimeout(t);
+    typingInMemory.delete(key);
   }
 }
 
@@ -953,11 +994,73 @@ export async function initSocket(
       socket.leave(conversationId);
     });
 
+    const emitTypingUpdate = (
+      conversationId: string,
+      uid: string,
+      isTyping: boolean,
+      displayName?: string | null
+    ) => {
+      io.to(conversationId).emit("conversation:typing_update", {
+        conversationId,
+        userId: uid,
+        isTyping,
+        displayName: displayName ?? null,
+      });
+    };
+
+    const ensureTypingMembership = async (conversationId: string): Promise<boolean> => {
+      const membership = await prisma.conversationParticipant.findFirst({
+        where: { userId, conversationId },
+      });
+      return !!membership;
+    };
+
+    socket.on("typing_start", async (conversationId: string) => {
+      if (typeof conversationId !== "string" || !conversationId) return;
+      if (!(await ensureTypingMembership(conversationId))) return;
+      await setTypingRedis(conversationId, userId, TYPING_TTL_SECONDS);
+      setTypingInMemory(conversationId, userId, io, TYPING_TTL_SECONDS * 1000);
+      emitTypingUpdate(conversationId, userId, true);
+      if (process.env.NODE_ENV === "development") {
+        logger.info({ conversationId, userId }, "typing_start");
+      }
+    });
+
+    socket.on("typing_ping", async (conversationId: string) => {
+      if (typeof conversationId !== "string" || !conversationId) return;
+      if (!(await ensureTypingMembership(conversationId))) return;
+      await setTypingRedis(conversationId, userId, TYPING_TTL_SECONDS);
+      setTypingInMemory(conversationId, userId, io, TYPING_TTL_SECONDS * 1000);
+      emitTypingUpdate(conversationId, userId, true);
+      if (process.env.NODE_ENV === "development") {
+        logger.info({ conversationId, userId }, "typing_ping");
+      }
+    });
+
+    socket.on("typing_stop", async (conversationId: string) => {
+      if (typeof conversationId !== "string" || !conversationId) return;
+      await clearTypingRedis(conversationId, userId);
+      clearTypingInMemory(conversationId, userId);
+      emitTypingUpdate(conversationId, userId, false);
+      if (process.env.NODE_ENV === "development") {
+        logger.info({ conversationId, userId }, "typing_stop");
+      }
+    });
+
     socket.on("conversation:typing", ({ conversationId, typing }) => {
-      void writeTypingRedis(conversationId, userId, !!typing);
-      socket
-        .to(conversationId)
-        .emit("conversation:typing", { conversationId, userId, typing });
+      if (typeof conversationId !== "string" || !conversationId) return;
+      void (async () => {
+        if (!(await ensureTypingMembership(conversationId))) return;
+        if (typing) {
+          await setTypingRedis(conversationId, userId, TYPING_TTL_SECONDS);
+          setTypingInMemory(conversationId, userId, io, TYPING_TTL_SECONDS * 1000);
+          emitTypingUpdate(conversationId, userId, true);
+        } else {
+          await clearTypingRedis(conversationId, userId);
+          clearTypingInMemory(conversationId, userId);
+          emitTypingUpdate(conversationId, userId, false);
+        }
+      })();
     });
 
     socket.on("secret:chat:accept", async ({ conversationId, deviceId }) => {

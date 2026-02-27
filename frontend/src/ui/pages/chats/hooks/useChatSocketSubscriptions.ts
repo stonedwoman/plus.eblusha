@@ -79,6 +79,9 @@ export function useChatSocketSubscriptions(opts: {
     const onTyping = (p: any) => {
       onIncomingTyping(p)
     }
+    const onTypingUpdate = (p: any) => {
+      onIncomingTyping({ conversationId: p.conversationId, userId: p.userId, isTyping: p.isTyping })
+    }
 
     const onReaction = (payload: { conversationId: string; messageId: string; message?: any }) => {
       if (!activeId || payload.conversationId !== activeId) {
@@ -105,11 +108,13 @@ export function useChatSocketSubscriptions(opts: {
 
     socket.on('message:new', onNew)
     socket.on('conversation:typing', onTyping)
+    socket.on('conversation:typing_update', onTypingUpdate)
     socket.on('message:reaction', onReaction)
     socket.on('message:update', onUpdate)
     return () => {
       socket.off('message:new', onNew as any)
       socket.off('conversation:typing', onTyping as any)
+      socket.off('conversation:typing_update', onTypingUpdate as any)
       socket.off('message:reaction', onReaction as any)
       socket.off('message:update', onUpdate as any)
     }
