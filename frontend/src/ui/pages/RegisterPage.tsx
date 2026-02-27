@@ -9,7 +9,7 @@ import { Avatar } from '../components/Avatar'
 import { AvatarCropEditor } from '../components/AvatarCropEditor'
 
 const MIN_USERNAME = 3
-const MIN_PASSWORD = 8
+const MIN_PASSWORD = 6
 const MIN_DISPLAY_NAME = 2
 
 export default function RegisterPage() {
@@ -88,7 +88,7 @@ export default function RegisterPage() {
     const u = String(form.get('username') ?? '').trim()
     const p = String(form.get('password') ?? '')
     if (u.length < MIN_USERNAME || p.length < MIN_PASSWORD) {
-      setStep1Error('Логин не менее 3 символов, пароль не менее 8')
+      setStep1Error(`Логин не менее ${MIN_USERNAME} символов, пароль не менее ${MIN_PASSWORD}`)
       return
     }
     setUsername(u)

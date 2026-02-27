@@ -16,7 +16,7 @@ const router = Router();
 const registerSchema = z.object({
   username: z.string().min(3).max(30),
   displayName: z.string().min(2).max(50),
-  password: z.string().min(8),
+  password: z.string().min(6),
   email: z.string().email().optional(),
   phone: z.string().optional(),
 });
@@ -59,10 +59,43 @@ router.post("/register", async (req, res) => {
       email: email ?? null,
       phone: phone ?? null,
     },
-    select: { id: true, username: true, displayName: true },
+    select: { id: true, username: true, displayName: true, avatarUrl: true },
   });
 
-  res.status(201).json({ user });
+  const tokenId = crypto.randomUUID();
+  const accessToken = signAccessToken({ sub: user.id, tokenId });
+  const refreshTokenValue = signRefreshToken({ sub: user.id, tokenId });
+
+  await prisma.refreshToken.create({
+    data: {
+      token: tokenId,
+      userId: user.id,
+      expiresAt: new Date(Date.now() + parseJwtExpiry()),
+    },
+  });
+
+  const cookieMaxAge = parseJwtExpiry();
+  const sameSite = (env.COOKIE_SAMESITE as "lax" | "none" | "strict") ?? "lax";
+  res.cookie("refreshToken", refreshTokenValue, {
+    httpOnly: true,
+    secure: env.NODE_ENV === "production",
+    sameSite,
+    maxAge: cookieMaxAge,
+    path: env.COOKIE_PATH || "/api",
+    domain: env.COOKIE_DOMAIN || undefined,
+  });
+
+  const includeRefresh = req.get("x-native-client") === "1" || true;
+  res.status(201).json({
+    user: {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+    },
+    accessToken,
+    ...(includeRefresh ? { refreshToken: refreshTokenValue } : {}),
+  });
 });
 
 router.post(
