@@ -7262,7 +7262,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               alignItems: 'center',
               padding: '0 16px',
               background: 'var(--surface-200)',
-              borderTop: '1px solid var(--surface-border)',
               pointerEvents: Object.keys(typingByUserId).length > 0 ? 'auto' : 'none',
             }}
             aria-live="polite"
