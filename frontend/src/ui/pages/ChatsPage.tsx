@@ -4837,8 +4837,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             if (typingCount > 0) {
                               return (
                                 <span className="chat-list-typing" style={isActive ? { opacity: 0.85 } : undefined}>
-                                  {typingCount === 1 ? 'печатает…' : 'печатают…'}
-                                  <span className="chat-list-typing-cursor" aria-hidden>▍</span>
+                                  {typingCount === 1 ? 'печатает' : 'печатают'}
+                                  <span className="chat-typing-bubble chat-typing-bubble--list" aria-hidden>
+                                    <span className="chat-typing-bubble__dot" />
+                                    <span className="chat-typing-bubble__dot" />
+                                    <span className="chat-typing-bubble__dot" />
+                                  </span>
                                 </span>
                               )
                             }

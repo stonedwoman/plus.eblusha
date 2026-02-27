@@ -567,24 +567,18 @@ a {
   }
 }
 
-/* List: "печатает…" with blinking cursor */
+/* List: same bubble as above composer (печатает/печатают + 3 dots) */
 .chat-list-typing {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
 }
-.chat-list-typing-cursor {
-  opacity: 1;
-  animation: chat-list-typing-blink 0.9s ease-in-out infinite;
+.chat-typing-bubble--list {
+  padding: 2px 6px;
 }
-@keyframes chat-list-typing-blink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0.2; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-list-typing-cursor {
-    animation: none;
-  }
+.chat-typing-bubble--list .chat-typing-bubble__dot {
+  width: 4px;
+  height: 4px;
 }
 
 /* Modern controls */
