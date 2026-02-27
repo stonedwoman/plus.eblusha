@@ -102,8 +102,13 @@ a {
     -webkit-app-region: drag;
   }
 
-  /* Utility: opt-out for any subtree when needed */
+  /* Utility: opt-out for any subtree when needed (inside #app) */
   #app .eb-no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  /* Portals in document.body are outside #app; mark them no-drag so content is interactive */
+  .eb-no-drag {
     -webkit-app-region: no-drag;
   }
 
@@ -240,16 +245,6 @@ a {
 }
 
 .auth-content[data-tab="login"] {
-  --tab-accent: var(--tab-login);
-  --tab-accent-600: var(--tab-login-600);
-  --tab-bg: #0f172a;
-  --tab-surface: #1e293b;
-  --tab-border: #334155;
-  --tab-text: #f1f5f9;
-  --tab-text-muted: #94a3b8;
-}
-
-.auth-content[data-tab="register"] {
   --tab-accent: var(--tab-register);
   --tab-accent-600: var(--tab-register-600);
   --tab-bg: #1c1917;
@@ -257,6 +252,16 @@ a {
   --tab-border: #44403c;
   --tab-text: #fafaf9;
   --tab-text-muted: #a8a29e;
+}
+
+.auth-content[data-tab="register"] {
+  --tab-accent: var(--tab-login);
+  --tab-accent-600: var(--tab-login-600);
+  --tab-bg: #0f172a;
+  --tab-surface: #1e293b;
+  --tab-border: #334155;
+  --tab-text: #f1f5f9;
+  --tab-text-muted: #94a3b8;
 }
 
 .auth-nav {
@@ -305,11 +310,11 @@ a {
 }
 
 .auth-nav a:first-child {
-  border-radius: 16px 0 0 0;
+  border-radius: 16px 0 0 16px;
 }
 
 .auth-nav a:last-child {
-  border-radius: 0 16px 0 0;
+  border-radius: 0 16px 16px 0;
 }
 
 .auth-nav a:hover:not(.active) {
@@ -361,6 +366,15 @@ a {
 .auth-content .auth-form .auth-tab-divider {
   border-top-color: var(--tab-border);
   transition: border-color 0.2s ease;
+}
+
+.register-avatar-pick:hover .register-avatar-hover {
+  opacity: 1;
+}
+
+/* Крестик сброса аватара при наведении (профиль, группа) */
+.avatar-with-clear:hover .avatar-clear-overlay {
+  opacity: 1;
 }
 
 .auth-form {
@@ -1291,8 +1305,8 @@ a {
     min-width: 0;
     transition: background 0.2s ease, color 0.2s ease;
   }
-  .auth-nav a:first-child { border-radius: 16px 0 0 0; }
-  .auth-nav a:last-child { border-radius: 0 16px 0 0; }
+  .auth-nav a:first-child { border-radius: 16px 0 0 16px; }
+  .auth-nav a:last-child { border-radius: 0 16px 16px 0; }
   .auth-content h2, .auth-form-wrapper, .auth-form { width: 100%; max-width: 360px; }
   .auth-form { align-items: stretch; }
 }
