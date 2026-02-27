@@ -49,8 +49,8 @@ export default function SettingsPage() {
       <h2>Профиль</h2>
       <form onSubmit={handleSubmit}>
         <label>
-          Имя
-          <input name="displayName" defaultValue={user?.displayName ?? ''} />
+          Имя в чате
+          <input name="displayName" defaultValue={user?.displayName ?? ''} placeholder="Как вас будут видеть" />
         </label>
         <label>
           Статус

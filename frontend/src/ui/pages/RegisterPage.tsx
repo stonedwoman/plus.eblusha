@@ -20,7 +20,10 @@ export default function RegisterPage() {
       navigate('/auth', { replace: true })
     },
     onError: (e: any) => {
-      setError(e.response?.data?.message ?? 'Ошибка регистрации')
+      const msg = e.response?.data?.message
+      if (msg === 'User already exists') setError('Пользователь с таким логином уже существует')
+      else if (msg === 'Invalid data') setError('Проверьте логин, имя в чате и пароль')
+      else setError(msg ?? 'Ошибка регистрации')
     },
   })
 
@@ -38,12 +41,12 @@ export default function RegisterPage() {
     <form className="auth-form" onSubmit={handleSubmit}>
       <h2>Регистрация</h2>
       <label>
-        Никнейм
-        <input name="username" type="text" required minLength={3} />
+        Логин
+        <input name="username" type="text" required minLength={3} placeholder="Введите логин" autoComplete="username" />
       </label>
       <label>
-        Отображаемое имя
-        <input name="displayName" type="text" required minLength={2} />
+        Имя в чате
+        <input name="displayName" type="text" required minLength={2} placeholder="Как вас будут видеть" />
       </label>
       <label>
         Пароль

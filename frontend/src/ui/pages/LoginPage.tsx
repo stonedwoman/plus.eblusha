@@ -48,7 +48,7 @@ export default function LoginPage() {
       <h2>Вход</h2>
       <label>
         Логин
-        <input name="username" type="text" required autoComplete="username" />
+        <input name="username" type="text" required autoComplete="username" placeholder="Введите логин" />
       </label>
       <label>
         Пароль

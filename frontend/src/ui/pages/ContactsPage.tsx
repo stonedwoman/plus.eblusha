@@ -64,7 +64,7 @@ export default function ContactsPage() {
           </select>
         </div>
         <form onSubmit={handleSubmit}>
-          <input name="identifier" placeholder="ID / ник / email" required />
+          <input name="identifier" placeholder="ID / логин / email" required />
           <button type="submit" disabled={addMutation.isPending}>
             Добавить
           </button>
