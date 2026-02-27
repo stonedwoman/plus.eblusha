@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 import { connectSocket, socket } from '../../../../utils/socket'
+
+/** Per-conversation typing: convId -> userId -> timestamp */
+export type TypingByConversationId = Record<string, Record<string, number>>
 
 export function useChatTyping(opts: {
   activeId: string | null
@@ -9,7 +12,7 @@ export function useChatTyping(opts: {
 }) {
   const { activeId, meId, isMobileRef, messagesRef } = opts
 
-  const [typingByUserId, setTypingByUserId] = useState<Record<string, number>>({})
+  const [typingByConversationId, setTypingByConversationId] = useState<TypingByConversationId>({})
   const [typingDots, setTypingDots] = useState(1)
 
   // Outgoing typing emitter (per active conversation)
@@ -26,22 +29,22 @@ export function useChatTyping(opts: {
 
   const onIncomingTyping = useCallback((p: any) => {
     if (!p) return
-    if (p.conversationId !== activeId) return
+    const convId = typeof p.conversationId === 'string' ? p.conversationId : null
     const uid = typeof p.userId === 'string' ? p.userId : null
-    if (!uid) return
-    // Ignore our own typing echoes (defense-in-depth)
+    if (!convId || !uid) return
     if (uid === meId) return
     const isTyping = !!p.typing
-    setTypingByUserId((prev) => {
+    setTypingByConversationId((prev) => {
+      const conv = { ...(prev[convId] ?? {}) }
       if (!isTyping) {
-        if (!prev[uid]) return prev
-        const next = { ...prev }
-        delete next[uid]
-        return next
+        if (!conv[uid]) return prev
+        delete conv[uid]
+      } else {
+        conv[uid] = Date.now()
       }
-      return { ...prev, [uid]: Date.now() }
+      return { ...prev, [convId]: conv }
     })
-  }, [activeId, meId])
+  }, [meId])
 
   const emitTyping = useCallback((conversationId: string, typing: boolean) => {
     if (!conversationId) return
@@ -103,6 +106,16 @@ export function useChatTyping(opts: {
     }, 2100)
   }, [activeId, emitTyping])
 
+  // Typing in active conversation only (exclude self), for chat pane
+  const typingByUserId = useMemo(() => {
+    const raw = activeId ? (typingByConversationId[activeId] ?? {}) : {}
+    const next: Record<string, number> = {}
+    for (const uid of Object.keys(raw)) {
+      if (uid !== meId && typeof raw[uid] === 'number') next[uid] = raw[uid]
+    }
+    return next
+  }, [typingByConversationId, activeId, meId])
+
   // Ensure we always send typing_stop on conversation switch/unmount.
   useEffect(() => {
     const convId = activeId
@@ -111,43 +124,40 @@ export function useChatTyping(opts: {
     }
   }, [activeId, stopTyping])
 
-  // animate typing dots and keep view pinned to bottom when typing shown (только на мобильных)
+  // Animate typing dots only (no scroll changes — avoid layout jump)
   useEffect(() => {
     const isSomeoneTyping = Object.keys(typingByUserId).length > 0
-    if (!isSomeoneTyping || !isMobileRef.current) return
-    const el = messagesRef.current
+    if (!isSomeoneTyping) return
     const id = window.setInterval(() => {
       setTypingDots((d) => (d % 3) + 1)
-      if (el) {
-        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-        if (nearBottom) el.scrollTop = el.scrollHeight
-      }
     }, 500)
     return () => window.clearInterval(id)
-  }, [typingByUserId, isMobileRef, messagesRef])
+  }, [typingByUserId])
 
-  // Expire incoming typing users automatically (defense in depth; server doesn't send periodic stops).
+  // Expire incoming typing users in all conversations (defense in depth)
   useEffect(() => {
-    // Reset typing state on chat switch to avoid stale "typing..." from previous conversation.
-    setTypingByUserId({})
     if (typingCleanupTimerRef.current) {
       window.clearInterval(typingCleanupTimerRef.current)
       typingCleanupTimerRef.current = null
     }
     typingCleanupTimerRef.current = window.setInterval(() => {
       const now = Date.now()
-      setTypingByUserId((prev) => {
-        const keys = Object.keys(prev)
-        if (!keys.length) return prev
+      setTypingByConversationId((prev) => {
         let changed = false
-        const next: Record<string, number> = {}
-        for (const uid of keys) {
-          const ts = prev[uid]
-          if (typeof ts === 'number' && now - ts < 2600) {
-            next[uid] = ts
-          } else {
-            changed = true
+        const next: TypingByConversationId = {}
+        for (const convId of Object.keys(prev)) {
+          const conv = prev[convId]
+          const nextConv: Record<string, number> = {}
+          for (const uid of Object.keys(conv)) {
+            const ts = conv[uid]
+            if (typeof ts === 'number' && now - ts < 2600) {
+              nextConv[uid] = ts
+            } else {
+              changed = true
+            }
           }
+          if (Object.keys(nextConv).length > 0) next[convId] = nextConv
+          else if (Object.keys(conv).length > 0) changed = true
         }
         return changed ? next : prev
       })
@@ -158,10 +168,11 @@ export function useChatTyping(opts: {
         typingCleanupTimerRef.current = null
       }
     }
-  }, [activeId])
+  }, [])
 
   return {
     typingByUserId,
+    typingByConversationId,
     typingDots,
     onIncomingTyping,
     notifyTyping,

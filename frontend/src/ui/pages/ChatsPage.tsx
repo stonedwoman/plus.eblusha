@@ -776,7 +776,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [])
 
-  const { typingByUserId, typingDots, onIncomingTyping, notifyTyping, stopTyping } = useChatTyping({
+  const { typingByUserId, typingByConversationId, typingDots, onIncomingTyping, notifyTyping, stopTyping } = useChatTyping({
     activeId,
     meId: currentUserId,
     isMobileRef,
@@ -4831,9 +4831,18 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: row.unreadCount > 0 ? 'var(--brand-600)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {row.unreadCount > 0
-                      ? `${row.unreadCount} непрочитанных`
-                      : (() => {
+                    {(() => {
+                            const typingIds = typingByConversationId[c.id] ? Object.keys(typingByConversationId[c.id]).filter((uid) => uid !== me?.id) : []
+                            const typingCount = typingIds.length
+                            if (typingCount > 0) {
+                              return (
+                                <span style={isActive ? { opacity: 0.85 } : undefined}>
+                                  {typingCount === 1 ? 'печатает…' : 'печатают…'}
+                                </span>
+                              )
+                            }
+                            if (row.unreadCount > 0) return `${row.unreadCount} непрочитанных`
+                            return (() => {
                             const entry = activeCalls[c.id]
                             const peer = othersArr[0]
                             const uid = typeof peer?.id === 'string' ? peer.id : null
@@ -4887,7 +4896,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             }
                           // Для групповых бесед показываем null, для личных - статус
                           return isGroup ? null : formatPresence(othersArr[0] ?? {})
-                        })()}
+                        })()
+                            })()}
                   </div>
                 </div>
                 {mobile && (
@@ -7240,6 +7250,53 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             </div>,
             document.body,
           )}
+          {/* Fixed-height typing row: always in DOM to avoid layout shift; visibility toggled via CSS */}
+          <div
+            className="chat-typing-row"
+            style={{
+              flexShrink: 0,
+              height: 'var(--chat-typing-row-h, 22px)',
+              minHeight: 'var(--chat-typing-row-h, 22px)',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0 16px',
+              background: 'var(--surface-200)',
+              borderTop: '1px solid var(--surface-border)',
+              opacity: Object.keys(typingByUserId).length > 0 ? 1 : 0,
+              pointerEvents: Object.keys(typingByUserId).length > 0 ? 'auto' : 'none',
+              transition: 'opacity 0.15s ease',
+            }}
+            aria-live="polite"
+          >
+            {(() => {
+              const ids = Object.keys(typingByUserId)
+              const names = ids
+                .filter((uid) => uid !== me?.id)
+                .map((uid) => {
+                  const u = usersById[uid]
+                  return (u?.displayName ?? u?.username ?? 'Пользователь') as string
+                })
+                .filter(Boolean)
+              const label =
+                names.length === 0
+                  ? ''
+                  : names.length === 1
+                    ? `${names[0]} печатает`
+                    : 'несколько человек печатают'
+              return (
+                <>
+                  <span>{label}</span>
+                  {label ? (
+                    <span className="chat-typing-dots" aria-hidden>
+                      <span className="chat-typing-dot" />
+                      <span className="chat-typing-dot" />
+                      <span className="chat-typing-dot" />
+                    </span>
+                  ) : null}
+                </>
+              )
+            })()}
+          </div>
           <div className="msg-input-bar"
             style={{
               flexShrink: 0,
@@ -7579,42 +7636,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </div>
             ) : (
               <>
-                {(() => {
-              const ids = Object.keys(typingByUserId)
-              if (!ids.length) return null
-              const names = ids
-                .filter((uid) => uid !== me?.id)
-                .map((uid) => {
-                  const u = usersById[uid]
-                  return (u?.displayName ?? u?.username ?? 'Пользователь') as string
-                })
-                .filter(Boolean)
-              if (!names.length) return null
-              const label =
-                names.length === 1
-                  ? `Печатает: ${names[0]}`
-                  : `Печатают: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` и ещё ${names.length - 3}` : ''}`
-              return (
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '0 2px 8px',
-                    color: 'var(--text-muted)',
-                    fontSize: 12,
-                    userSelect: 'none',
-                    minHeight: 18,
-                  }}
-                  aria-live="polite"
-                >
-                  <span>{label}</span>
-                  <span aria-hidden style={{ letterSpacing: 2, opacity: 0.9 }}>
-                    {'.'.repeat(typingDots)}
-                  </span>
-                </div>
-              )
-            })()}
             {editState && (
               <div
                 style={{
