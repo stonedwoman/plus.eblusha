@@ -4836,8 +4836,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             const typingCount = typingIds.length
                             if (typingCount > 0) {
                               return (
-                                <span style={isActive ? { opacity: 0.85 } : undefined}>
+                                <span className="chat-list-typing" style={isActive ? { opacity: 0.85 } : undefined}>
                                   {typingCount === 1 ? 'печатает…' : 'печатают…'}
+                                  <span className="chat-list-typing-cursor" aria-hidden>▍</span>
                                 </span>
                               )
                             }
@@ -7250,9 +7251,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             </div>,
             document.body,
           )}
-          {/* Fixed-height typing row: always in DOM to avoid layout shift; visibility toggled via CSS */}
+          {/* Fixed-height typing row: always in DOM to avoid layout shift; visibility toggled via CSS + transition */}
           <div
-            className="chat-typing-row"
+            className={`chat-typing-row${Object.keys(typingByUserId).length > 0 ? ' chat-typing-row--visible' : ''}`}
             style={{
               flexShrink: 0,
               height: 'var(--chat-typing-row-h, 22px)',
@@ -7262,9 +7263,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               padding: '0 16px',
               background: 'var(--surface-200)',
               borderTop: '1px solid var(--surface-border)',
-              opacity: Object.keys(typingByUserId).length > 0 ? 1 : 0,
               pointerEvents: Object.keys(typingByUserId).length > 0 ? 'auto' : 'none',
-              transition: 'opacity 0.15s ease',
             }}
             aria-live="polite"
           >
@@ -7287,10 +7286,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 <>
                   <span>{label}</span>
                   {label ? (
-                    <span className="chat-typing-dots" aria-hidden>
-                      <span className="chat-typing-dot" />
-                      <span className="chat-typing-dot" />
-                      <span className="chat-typing-dot" />
+                    <span className="chat-typing-bubble" aria-hidden>
+                      <span className="chat-typing-bubble__dot" />
+                      <span className="chat-typing-bubble__dot" />
+                      <span className="chat-typing-bubble__dot" />
                     </span>
                   ) : null}
                 </>
