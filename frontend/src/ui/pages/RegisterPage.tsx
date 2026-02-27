@@ -161,7 +161,14 @@ export default function RegisterPage() {
     const id = requestAnimationFrame(() => {
       requestAnimationFrame(syncHeight)
     })
-    return () => cancelAnimationFrame(id)
+    const ro = new ResizeObserver(() => {
+      syncHeight()
+    })
+    ro.observe(content)
+    return () => {
+      cancelAnimationFrame(id)
+      ro.disconnect()
+    }
   }, [step])
 
   useEffect(() => {
