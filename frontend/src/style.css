@@ -236,12 +236,24 @@ a {
   border-radius: 16px;
   box-shadow: var(--shadow-medium);
   overflow: hidden;
-  transition: background 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease;
 }
 
+/* Войти: тёплая карточка (Еблуша/оранжевый акцент) */
 .auth-content[data-tab="login"] {
   --tab-accent: var(--tab-register);
   --tab-accent-600: var(--tab-register-600);
+  --tab-bg: #1a1612;
+  --tab-surface: #252119;
+  --tab-border: #3f3830;
+  --tab-text: #fafaf9;
+  --tab-text-muted: #a8a29e;
+}
+
+/* Регистрация: холодная карточка (синий акцент) */
+.auth-content[data-tab="register"] {
+  --tab-accent: var(--tab-login);
+  --tab-accent-600: var(--tab-login-600);
   --tab-bg: #0f172a;
   --tab-surface: #1e293b;
   --tab-border: #334155;
@@ -249,41 +261,16 @@ a {
   --tab-text-muted: #94a3b8;
 }
 
-.auth-content[data-tab="register"] {
-  --tab-accent: var(--tab-login);
-  --tab-accent-600: var(--tab-login-600);
-  --tab-bg: #1c1917;
-  --tab-surface: #292524;
-  --tab-border: #44403c;
-  --tab-text: #fafaf9;
-  --tab-text-muted: #a8a29e;
-}
-
 .auth-nav {
   display: flex;
   margin: 0 -48px 0 -48px;
   border-radius: 16px 16px 0 0;
   min-height: 48px;
-  transition: border-color 0.2s ease;
 }
 
 .auth-nav a {
   text-decoration: none;
   font-weight: 600;
-}
-
-.auth-content .auth-form label {
-  color: var(--tab-text-muted);
-  transition: color 0.2s ease;
-}
-
-.auth-form label {
-  text-decoration: none;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.auth-nav a {
   flex: 1;
   display: flex;
   align-items: center;
@@ -312,14 +299,21 @@ a {
   border-radius: 0 16px 0 0;
 }
 
-.auth-nav a:hover:not(.active) {
-  background: var(--surface-border);
-  color: var(--text-primary);
-}
-
 .auth-nav a.active {
   background: var(--tab-accent);
   color: #fff;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.auth-content .auth-form label {
+  color: var(--tab-text-muted);
+  transition: color 0.2s ease;
+}
+
+.auth-form label {
+  text-decoration: none;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 .auth-content .auth-form-wrapper,
@@ -348,6 +342,15 @@ a {
 .auth-content .auth-form-wrapper .auth-error {
   color: #fca5a5;
   transition: color 0.2s ease;
+}
+
+.auth-content .auth-form-wrapper a {
+  color: var(--tab-accent);
+  transition: color 0.2s ease;
+}
+
+.auth-content .auth-form-wrapper a:hover {
+  color: var(--tab-accent-600);
 }
 
 .auth-form-wrapper .auth-error {
@@ -429,7 +432,7 @@ a {
 .auth-content .auth-form button:not(.btn-secondary) {
   background: linear-gradient(135deg, var(--tab-accent), var(--tab-accent-600));
   box-shadow: 0 14px 32px color-mix(in srgb, var(--tab-accent) 35%, transparent);
-  transition: transform .1s ease, box-shadow .2s ease, background .2s ease;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease;
 }
 .auth-content .auth-form button:not(.btn-secondary):hover {
   transform: translateY(-1px);
@@ -452,7 +455,7 @@ a {
 .auth-content .auth-form input,
 .auth-content .auth-form textarea,
 .auth-content .auth-form select {
-  transition: border-color .2s ease, box-shadow .2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease;
 }
 .auth-content .auth-form input:focus,
 .auth-content .auth-form textarea:focus,
