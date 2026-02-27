@@ -1,6 +1,9 @@
-import { Outlet, NavLink } from 'react-router-dom'
+import { Outlet, NavLink, useLocation } from 'react-router-dom'
 
 export default function AuthLayout() {
+  const location = useLocation()
+  const tab = location.pathname.startsWith('/auth/register') ? 'register' : 'login'
+
   return (
     <div className="auth-layout">
       <aside className="auth-brand">
@@ -11,7 +14,7 @@ export default function AuthLayout() {
         </div>
         <div className="subtitle">На каждый хуй с винтом есть жопа с лабиринтом</div>
       </aside>
-      <section className="auth-content">
+      <section className="auth-content" data-tab={tab}>
         <div className="auth-mobile-logo">
           <div className="logo" style={{ fontSize: '28pt' }}>
             <span>Е</span>
@@ -19,12 +22,12 @@ export default function AuthLayout() {
             <span>луша</span>
           </div>
         </div>
-        <div className="auth-nav">
+        <nav className="auth-nav">
           <NavLink to="/auth" end>
             Войти
           </NavLink>
           <NavLink to="/auth/register">Регистрация</NavLink>
-        </div>
+        </nav>
         <Outlet />
       </section>
     </div>

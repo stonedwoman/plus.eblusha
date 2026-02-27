@@ -43,22 +43,25 @@ export default function LoginPage() {
     })
   }
 
+  const labelBlockStyle = { display: 'flex' as const, flexDirection: 'column' as const, gap: 8 }
+
   return (
-    <form className="auth-form" onSubmit={handleSubmit}>
-      <h2>Вход</h2>
-      <label>
-        Логин
-        <input name="username" type="text" required autoComplete="username" placeholder="Введите логин" />
-      </label>
-      <label>
-        Пароль
-        <input name="password" type="password" required autoComplete="current-password" />
-      </label>
-      {error ? <div className="auth-error">{error}</div> : null}
-      <button type="submit" disabled={mutation.isPending}>
-        {mutation.isPending ? 'Входим…' : 'Войти'}
-      </button>
-    </form>
+    <div className="auth-form-wrapper">
+      <form className="auth-form" onSubmit={handleSubmit}>
+        <label style={labelBlockStyle}>
+          Логин
+          <input name="username" type="text" required autoComplete="username" placeholder="Введите логин" />
+        </label>
+        <label style={labelBlockStyle}>
+          Пароль
+          <input name="password" type="password" required autoComplete="current-password" placeholder="Введите пароль" />
+        </label>
+        {error ? <div className="auth-error">{error}</div> : null}
+        <button type="submit" disabled={mutation.isPending}>
+          {mutation.isPending ? 'Входим…' : 'Войти'}
+        </button>
+      </form>
+    </div>
   )
 }
 

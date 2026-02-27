@@ -49,10 +49,6 @@ export default function SettingsPage() {
       <h2>Профиль</h2>
       <form onSubmit={handleSubmit}>
         <label>
-          Имя в чате
-          <input name="displayName" defaultValue={user?.displayName ?? ''} placeholder="Как вас будут видеть" />
-        </label>
-        <label>
           Статус
           <select name="status" defaultValue={normalizedStatus}>
             <option value="ONLINE">Онлайн</option>
@@ -65,6 +61,12 @@ export default function SettingsPage() {
           О себе
           <textarea name="bio" defaultValue={user?.bio ?? ''} />
         </label>
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--surface-border, #e0e0e0)' }}>
+          <label>
+            Имя в чате
+            <input name="displayName" defaultValue={user?.displayName ?? ''} placeholder="Как вас будут видеть" />
+          </label>
+        </div>
         <button type="submit" disabled={mutation.isPending}>
           Сохранить
         </button>
