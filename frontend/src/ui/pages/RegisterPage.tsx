@@ -101,7 +101,7 @@ export default function RegisterPage() {
     setStep2Error(null)
     const displayName = displayNameInput.trim()
     if (displayName.length < MIN_DISPLAY_NAME) {
-      setStep2Error('Отображаемое имя не менее 2 символов')
+      setStep2Error('Ник не менее 2 символов')
       return
     }
     mutation.mutate({ username, password, displayName })
@@ -193,7 +193,7 @@ export default function RegisterPage() {
         {step === 1 ? (
           <form className="auth-form" onSubmit={handleStep1Submit}>
             <label style={labelBlockStyle}>
-              Логин
+              Имя для входа
               <input
                 name="username"
                 type="text"
@@ -212,7 +212,7 @@ export default function RegisterPage() {
                 type="password"
                 required
                 minLength={MIN_PASSWORD}
-                placeholder="Введите пароль"
+                placeholder="Пароль для входа"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
@@ -272,13 +272,13 @@ export default function RegisterPage() {
               </div>
             </div>
             <label style={labelBlockStyle}>
-              Имя (как видят другие)
+              Ник
               <input
                 name="displayName"
                 type="text"
                 required
                 minLength={MIN_DISPLAY_NAME}
-                placeholder="Как вас будут видеть"
+                placeholder="Что будут видеть другие"
                 autoComplete="name"
                 value={displayNameInput}
                 onChange={(e) => setDisplayNameInput(e.target.value)}
