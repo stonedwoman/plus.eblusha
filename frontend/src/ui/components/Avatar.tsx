@@ -24,9 +24,21 @@ function colorFromId(id: string) {
 const MAX_RETRIES = 3
 const RETRY_DELAYS = [500, 1500, 3000] // delays in ms for each retry
 
+function initialsFromName(name: string): string {
+  const s = (name || '').trim()
+  if (!s) return '?'
+  const parts = s.split(/\s+/).filter(Boolean)
+  if (parts.length >= 2) {
+    const first = parts[0].charAt(0).toUpperCase()
+    const last = parts[parts.length - 1].charAt(0).toUpperCase()
+    return first + last
+  }
+  return s.charAt(0).toUpperCase()
+}
+
 export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl }: Props) {
   const bg = colorFromId(id)
-  const initial = (name || '?').trim().charAt(0).toUpperCase()
+  const initial = initialsFromName(name)
   const isEmoji = !!avatarUrl?.startsWith('emoji:')
   const emoji = isEmoji ? avatarUrl!.slice('emoji:'.length) : null
   const [imageError, setImageError] = useState(false)
@@ -198,7 +210,7 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
       ) : isEmoji ? (
         <span style={{ fontSize: Math.floor(size * 0.6) }}>{emoji}</span>
       ) : (
-        initial
+        <span style={{ fontSize: Math.floor(size * 0.48) }}>{initial}</span>
       )}
       {(() => {
         const showPlaying = presence === 'PLAYING'
