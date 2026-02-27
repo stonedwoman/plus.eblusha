@@ -10185,14 +10185,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       <div style={{ display: 'flex', gap: 8, width: '100%' }}>
                         <button
                           className="btn btn-secondary btn-icon"
-                          title="Удалить"
+                          title="Удалить из друзей"
                           style={{ flex: 1, width: 'auto', minWidth: 0 }}
                           onClick={async () => {
                             await api.post('/contacts/remove', { contactId: c.id })
                             contactsQuery.refetch()
                           }}
                         >
-                          <Trash2 size={16} />
+                          <X size={16} />
                         </button>
                         <button
                           className="btn btn-secondary btn-icon"

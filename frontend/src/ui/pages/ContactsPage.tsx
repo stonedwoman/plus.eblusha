@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2 } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { api } from '../../utils/api'
 import { connectSocket, onContactAccepted, onContactRequest } from '../../utils/socket'
 
@@ -36,6 +36,15 @@ export default function ContactsPage() {
   const respondMutation = useMutation({
     mutationFn: async (payload: { contactId: string; action: 'accept' | 'reject' | 'block' }) => {
       await api.post('/contacts/respond', payload)
+    },
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ['contacts'] })
+    },
+  })
+
+  const removeMutation = useMutation({
+    mutationFn: async (contactId: string) => {
+      await api.post('/contacts/remove', { contactId })
     },
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ['contacts'] })
@@ -113,15 +122,24 @@ export default function ContactsPage() {
               <span>ожидание подтверждения…</span>
             )}
             {contact.status === 'ACCEPTED' && (
-              <button
-                onClick={async () => {
-                  const resp = await api.post('/conversations/with', { userId: contact.friend.id })
-                  // TODO: переход на страницу конкретного чата (роутинг)
-                  client.invalidateQueries({ queryKey: ['conversations'] })
-                }}
-              >
-                Начать чат
-              </button>
+              <>
+                <button
+                  className="btn btn-icon btn-secondary"
+                  title="Удалить из друзей"
+                  onClick={() => removeMutation.mutate(contact.id)}
+                  disabled={removeMutation.isPending}
+                >
+                  <X size={16} />
+                </button>
+                <button
+                  onClick={async () => {
+                    await api.post('/conversations/with', { userId: contact.friend.id })
+                    client.invalidateQueries({ queryKey: ['conversations'] })
+                  }}
+                >
+                  Начать чат
+                </button>
+              </>
             )}
           </li>
         ))}
