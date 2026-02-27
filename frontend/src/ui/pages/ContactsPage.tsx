@@ -1,5 +1,6 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
 import { api } from '../../utils/api'
 import { connectSocket, onContactAccepted, onContactRequest } from '../../utils/socket'
 
@@ -12,6 +13,14 @@ export default function ContactsPage() {
     queryFn: async () => {
       const response = await api.get('/contacts', { params: { filter } })
       return response.data.contacts as Array<any>
+    },
+  })
+
+  const outgoingQuery = useQuery({
+    queryKey: ['contacts', 'outgoing'],
+    queryFn: async () => {
+      const response = await api.get('/contacts', { params: { filter: 'outgoing' } })
+      return response.data.contacts as Array<{ id: string; status: string; direction: string; friend: { id: string; username: string; displayName: string | null } }>
     },
   })
 
@@ -70,6 +79,21 @@ export default function ContactsPage() {
           </button>
         </form>
       </header>
+
+      {filter === 'accepted' && outgoingQuery.data && outgoingQuery.data.length > 0 && (
+        <div className="contacts-page__pending-wrap">
+          {outgoingQuery.data.map((contact) => (
+            <div key={contact.id} className="contacts-page__pending-card">
+              <Loader2 size={20} className="contacts-page__pending-icon" aria-hidden />
+              <div className="contacts-page__pending-text">
+                <span className="contacts-page__pending-title">Ожидание подтверждения</span>
+                <span className="contacts-page__pending-hint">Попроси человека в «Контакты» и подтвердить.</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <ul>
         {contactsQuery.data?.map((contact: any) => (
           <li key={contact.id} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>

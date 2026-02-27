@@ -996,6 +996,59 @@ a {
   gap: 12px;
 }
 
+.contacts-page__pending-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+  width: 100%;
+}
+
+.contacts-page__pending-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  min-width: 0;
+  width: 100%;
+  max-width: 420px;
+  border-radius: 12px;
+  background: var(--surface-100);
+  border: 1px solid var(--surface-border);
+  color: var(--text-primary);
+}
+
+.contacts-page__pending-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  animation: contacts-page-spin 1s linear infinite;
+}
+
+@keyframes contacts-page-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.contacts-page__pending-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.contacts-page__pending-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.contacts-page__pending-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
 .settings-page form {
   display: flex;
   flex-direction: column;
