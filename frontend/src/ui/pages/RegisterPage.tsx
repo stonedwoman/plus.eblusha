@@ -2,7 +2,7 @@ import { type FormEvent, useState, useRef, useEffect, useLayoutEffect } from 're
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
-import { X, UploadCloud } from 'lucide-react'
+import { X, UploadCloud, Check } from 'lucide-react'
 import { api } from '../../utils/api'
 import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
@@ -204,6 +204,10 @@ export default function RegisterPage() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
               />
+              <span className={`auth-field-hint ${username.length >= MIN_USERNAME ? 'auth-field-hint--valid' : ''}`}>
+                {username.length >= MIN_USERNAME ? <Check size={12} aria-hidden /> : null}
+                Не менее {MIN_USERNAME} символов
+              </span>
             </label>
             <label style={labelBlockStyle}>
               Пароль
@@ -216,6 +220,10 @@ export default function RegisterPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
+              <span className={`auth-field-hint ${password.length >= MIN_PASSWORD ? 'auth-field-hint--valid' : ''}`}>
+                {password.length >= MIN_PASSWORD ? <Check size={12} aria-hidden /> : null}
+                Не менее {MIN_PASSWORD} символов
+              </span>
             </label>
             {step1Error ? <div className="auth-error">{step1Error}</div> : null}
             <button type="submit" disabled={!step1Valid}>
@@ -283,6 +291,10 @@ export default function RegisterPage() {
                 value={displayNameInput}
                 onChange={(e) => setDisplayNameInput(e.target.value)}
               />
+              <span className={`auth-field-hint ${displayNameInput.trim().length >= MIN_DISPLAY_NAME ? 'auth-field-hint--valid' : ''}`}>
+                {displayNameInput.trim().length >= MIN_DISPLAY_NAME ? <Check size={12} aria-hidden /> : null}
+                Не менее {MIN_DISPLAY_NAME} символов
+              </span>
             </label>
             {step2Error ? <div className="auth-error">{step2Error}</div> : null}
             <div style={{ display: 'flex', gap: 12, justifyContent: 'space-between', marginTop: 8 }}>
