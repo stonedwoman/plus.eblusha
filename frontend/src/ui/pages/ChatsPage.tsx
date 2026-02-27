@@ -8325,6 +8325,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     </div>
     {mePopupOpen && (
       <div
+        className="eb-no-drag"
         style={{
           position: 'fixed',
           inset: 0,
@@ -9150,6 +9151,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     )}
     {newGroupAvatarEditorOpen && (
       <div
+        className="eb-no-drag"
         style={{
           position: 'fixed',
           inset: 0,
@@ -10673,7 +10675,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       </div>
     )}
     {groupAvatarEditor && activeConversation && (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setGroupAvatarEditor(false)}>
+      <div className="eb-no-drag" style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setGroupAvatarEditor(false)}>
         <div style={{ background: 'var(--surface-200)', padding: 24, borderRadius: 16, width: 440, maxWidth: '90vw', border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-medium)' }} onClick={(e) => e.stopPropagation()}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Изменить аватар группы</div>
