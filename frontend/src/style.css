@@ -240,8 +240,8 @@ a {
 }
 
 .auth-content[data-tab="login"] {
-  --tab-accent: var(--tab-login);
-  --tab-accent-600: var(--tab-login-600);
+  --tab-accent: var(--tab-register);
+  --tab-accent-600: var(--tab-register-600);
   --tab-bg: #0f172a;
   --tab-surface: #1e293b;
   --tab-border: #334155;
@@ -250,8 +250,8 @@ a {
 }
 
 .auth-content[data-tab="register"] {
-  --tab-accent: var(--tab-register);
-  --tab-accent-600: var(--tab-register-600);
+  --tab-accent: var(--tab-login);
+  --tab-accent-600: var(--tab-login-600);
   --tab-bg: #1c1917;
   --tab-surface: #292524;
   --tab-border: #44403c;
