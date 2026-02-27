@@ -8361,33 +8361,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           </div>
           <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: isMobile ? 2 : 4 }}>
           <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
-            <div className="avatar-with-clear" style={{ position: 'relative', display: 'inline-flex' }}>
-              <Avatar name={me?.displayName ?? me?.username ?? 'Me'} id={me?.id ?? 'me'} avatarUrl={avatarPreviewUrl ?? meInfoQuery.data?.avatarUrl ?? undefined} />
-              {avatarPreviewUrl && (
-                <div
-                  className="avatar-clear-overlay"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => { setSelectedAvatarFile(null); if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl); setAvatarPreviewUrl(null) }}
-                  onKeyDown={(e) => e.key === 'Enter' && (setSelectedAvatarFile(null), avatarPreviewUrl && URL.revokeObjectURL(avatarPreviewUrl), setAvatarPreviewUrl(null))}
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    borderRadius: '50%',
-                    background: 'rgba(0,0,0,0.5)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    opacity: 0,
-                    transition: 'opacity 0.2s ease',
-                    cursor: 'pointer',
-                  }}
-                  aria-label="Сбросить аватар"
-                >
-                  <X size={24} color="#fff" strokeWidth={2.5} />
-                </div>
-              )}
-            </div>
+            <Avatar name={me?.displayName ?? me?.username ?? 'Me'} id={me?.id ?? 'me'} avatarUrl={avatarPreviewUrl ?? meInfoQuery.data?.avatarUrl ?? undefined} />
             <div>
               <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{me?.displayName ?? me?.username}</div>
               {(() => {
@@ -9215,50 +9189,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           </div>
 
           <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
-            <div className="avatar-with-clear" style={{ position: 'relative', display: 'inline-flex' }}>
-              <Avatar
-                name={groupTitle.trim() || '?'}
-                id="new-group-avatar-preview"
-                avatarUrl={newGroupAvatarPreviewUrl ?? undefined}
-                size={60}
-              />
-              {(newGroupAvatarPreviewUrl ?? newGroupAvatarSourceUrl) && (
-                <div
-                  className="avatar-clear-overlay"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => {
-                    setNewGroupAvatarFile(null)
-                    if (newGroupAvatarPreviewUrl) { try { URL.revokeObjectURL(newGroupAvatarPreviewUrl) } catch {}; setNewGroupAvatarPreviewUrl(null) }
-                    if (newGroupAvatarSourceUrl) { try { URL.revokeObjectURL(newGroupAvatarSourceUrl) } catch {}; setNewGroupAvatarSourceUrl(null) }
-                    setNewGroupAvatarBlob(null)
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      setNewGroupAvatarFile(null)
-                      if (newGroupAvatarPreviewUrl) { try { URL.revokeObjectURL(newGroupAvatarPreviewUrl) } catch {}; setNewGroupAvatarPreviewUrl(null) }
-                      if (newGroupAvatarSourceUrl) { try { URL.revokeObjectURL(newGroupAvatarSourceUrl) } catch {}; setNewGroupAvatarSourceUrl(null) }
-                      setNewGroupAvatarBlob(null)
-                    }
-                  }}
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    borderRadius: '50%',
-                    background: 'rgba(0,0,0,0.5)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    opacity: 0,
-                    transition: 'opacity 0.2s ease',
-                    cursor: 'pointer',
-                  }}
-                  aria-label="Сбросить аватар группы"
-                >
-                  <X size={24} color="#fff" strokeWidth={2.5} />
-                </div>
-              )}
-            </div>
+            <Avatar
+              name={groupTitle.trim() || '?'}
+              id="new-group-avatar-preview"
+              avatarUrl={newGroupAvatarPreviewUrl ?? undefined}
+              size={60}
+            />
             <div>
               <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{groupTitle || 'Новая группа'}</div>
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Нажмите, чтобы изменить аватар</div>
