@@ -286,11 +286,11 @@ export function VideoMessageBubble({
     <div
       className="video-message-bubble"
       style={bubbleStyle}
-      onClick={(e) => { stopProp(e); handleBubbleClick() }}
-      onMouseDown={stopProp}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleBubbleClick() } }}
+      onClick={isInlinePlaying ? undefined : (e) => { stopProp(e); handleBubbleClick() }}
+      onMouseDown={isInlinePlaying ? undefined : stopProp}
+      role={isInlinePlaying ? undefined : 'button'}
+      tabIndex={isInlinePlaying ? undefined : 0}
+      onKeyDown={isInlinePlaying ? undefined : (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleBubbleClick() } }}
     >
       {/* Video layer (crossfades in) */}
       <video
@@ -324,8 +324,9 @@ export function VideoMessageBubble({
             inset: 0,
             width: '100%',
             height: '100%',
-            objectFit: 'cover',
+            objectFit: 'contain',
             display: 'block',
+            background: '#000',
             opacity: showVideo ? 0 : 1,
             transition: 'opacity 180ms ease',
           }}
