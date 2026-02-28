@@ -111,10 +111,34 @@ export function decryptBuffer(
   const ciphertext = payload.subarray(MAGIC.length + IV_LEN + TAG_LEN);
 
   const decipher = crypto.createDecipheriv("aes-256-gcm", masterKey, iv);
-  if (opts?.aad) decipher.setAAD(Buffer.from(opts.aad, "utf8"));
+  const aadBuf = opts?.aad ? Buffer.from(opts.aad, "utf8") : null;
+  if (aadBuf) decipher.setAAD(aadBuf);
   decipher.setAuthTag(tag);
 
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  try {
+    const updated = decipher.update(ciphertext);
+    logger.info(
+      {
+        alg: "aes-256-gcm",
+        ivLen: iv.length,
+        tagLen: tag.length,
+        ciphertextLen: ciphertext.length,
+        aadSha: aadBuf
+          ? crypto.createHash("sha256").update(aadBuf).digest("hex").slice(0, 12)
+          : null,
+        ivFirst: iv.slice(0, 8).toString("hex"),
+        tagFirst: tag.slice(0, 8).toString("hex"),
+        headerFirst32: payload.slice(0, 32).toString("hex"),
+        fmt: "ebp1",
+      },
+      "[decryptBuffer] before final"
+    );
+    const finalized = decipher.final();
+    return Buffer.concat([updated, finalized]);
+  } catch (err) {
+    logger.error({ err, stack: err instanceof Error ? err.stack : undefined }, "[decryptBuffer] final failed");
+    throw err;
+  }
 }
 
 // --- EBP2 chunked AEAD ---

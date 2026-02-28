@@ -220,6 +220,7 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
         logger.error(
           {
             err,
+            stack: err instanceof Error ? err.stack : undefined,
             putKey,
             magic: encrypted.payload.slice(0, 4).toString("utf8"),
             len: encrypted.payload.length,
