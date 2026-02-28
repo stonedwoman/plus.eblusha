@@ -104,6 +104,11 @@ export function VideoMessageBubble({
   // Keep sizing consistent with previous implementation to avoid shrink-to-fit collapse
   const bubbleW = isMobile ? 'calc(100vw - 48px)' : '420px'
   const showVideo = isInlinePlaying && videoReady
+  const showLoadingOverlay =
+    !!videoSrc &&
+    !decryptPending &&
+    !decryptError &&
+    (pendingStart || (isInlinePlaying && !videoReady))
 
   useEffect(() => {
     if (posterUrl || !attachmentId || thumbInFlight.has(attachmentId) || decryptPending) return
@@ -180,6 +185,8 @@ export function VideoMessageBubble({
 
   const handleBubbleClick = () => {
     if (!videoSrc || uploadInProgress) return
+    if (pendingStart) return
+    if (isInlinePlaying && !videoReady) return
     if (isInlinePlaying && videoRef.current) {
       if (videoRef.current.paused) {
         videoRef.current.play().catch(() => {})
@@ -360,10 +367,68 @@ export function VideoMessageBubble({
           <span>{uploadInProgress ? 'Загрузка…' : 'Видео недоступно'}</span>
         </div>
       )}
-      {pendingStart && !isInlinePlaying && (
+      {pendingStart && !isInlinePlaying && !showLoadingOverlay && (
         <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
           <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />
           <span>Загружаю…</span>
+        </div>
+      )}
+
+      {showLoadingOverlay && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          role="presentation"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 6,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16,
+            background: 'linear-gradient(180deg, rgba(5,7,10,0.40) 0%, rgba(5,7,10,0.58) 100%)',
+            backdropFilter: 'blur(6px)',
+            WebkitBackdropFilter: 'blur(6px)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '12px 14px',
+              borderRadius: 999,
+              background: 'rgba(0,0,0,0.55)',
+              border: '1px solid rgba(255,255,255,0.14)',
+              boxShadow: '0 12px 30px rgba(0,0,0,0.35)',
+              color: 'rgba(255,255,255,0.92)',
+              maxWidth: '100%',
+            }}
+          >
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 999,
+                background: 'rgba(255,255,255,0.10)',
+                border: '1px solid rgba(255,255,255,0.16)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Loader2 size={18} style={{ animation: 'spin 0.9s linear infinite' }} />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0.2, whiteSpace: 'nowrap' }}>
+                Загружаю видео…
+              </div>
+              <div style={{ marginTop: 2, fontSize: 11, color: 'rgba(255,255,255,0.66)', whiteSpace: 'nowrap' }}>
+                Подготовка к воспроизведению
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
