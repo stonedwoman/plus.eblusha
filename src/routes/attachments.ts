@@ -466,20 +466,8 @@ router.post(
         const data = JSON.parse(probe);
         const vidStream = data.streams?.find((s: any) => s.codec_type === "video");
         if (vidStream) {
-          const w0 = parseInt(vidStream.width, 10);
-          const h0 = parseInt(vidStream.height, 10);
-          // Phones often store portrait video as landscape with rotation metadata (rotate=90/270).
-          // We want UI aspect ratio to match actual playback, so swap dimensions when rotated.
-          const rotateRaw =
-            vidStream?.tags?.rotate ??
-            vidStream?.tags?.ROTATE ??
-            null;
-          const rotateDeg = rotateRaw != null ? parseInt(String(rotateRaw), 10) : 0;
-          const rotated = Number.isFinite(rotateDeg) && Math.abs(rotateDeg) % 180 === 90;
-          if (Number.isFinite(w0) && Number.isFinite(h0) && w0 > 0 && h0 > 0) {
-            width = rotated ? h0 : w0;
-            height = rotated ? w0 : h0;
-          }
+          width = parseInt(vidStream.width, 10);
+          height = parseInt(vidStream.height, 10);
         }
         const fmt = data.format;
         if (fmt?.duration) duration = Math.round(parseFloat(fmt.duration));
