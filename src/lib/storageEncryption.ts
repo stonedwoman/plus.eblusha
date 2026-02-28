@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { PassThrough, Readable } from "stream";
+import logger from "../config/logger";
 
 const MAGIC = Buffer.from("EBP1", "utf8"); // Eblusha Blob Payload v1
 const MAGIC_EBP2 = Buffer.from("EBP2", "utf8");
@@ -21,18 +22,19 @@ export type EncryptionMetadata = {
 
 export class StorageEncryptionError extends Error {}
 
-/** Parse STORAGE_ENC_KEY: base64 (if /+= or len 44) else hex (64 chars) else error. Always 32 bytes. */
+/** Parse STORAGE_ENC_KEY: base64 (if / or + or ends with = or len 44) else hex (64 chars) else error. Always 32 bytes. */
 export function parseStorageEncKey(raw: string): Buffer {
   const trimmed = raw.trim();
   if (!trimmed) throw new StorageEncryptionError("STORAGE_ENC_KEY is empty");
 
   let buf: Buffer;
+  let detectedFormat: "base64" | "hex";
 
   const looksLikeBase64 =
     trimmed.length === 44 ||
     trimmed.includes("/") ||
     trimmed.includes("+") ||
-    trimmed.includes("=");
+    trimmed.endsWith("=");
 
   if (looksLikeBase64) {
     try {
@@ -40,10 +42,12 @@ export function parseStorageEncKey(raw: string): Buffer {
     } catch {
       throw new StorageEncryptionError("STORAGE_ENC_KEY base64 decode failed");
     }
+    detectedFormat = "base64";
   } else if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
     buf = Buffer.from(trimmed, "hex");
+    detectedFormat = "hex";
   } else {
-    throw new StorageEncryptionError("STORAGE_ENC_KEY must be base64 (44 chars with /+=) or hex (64 chars)");
+    throw new StorageEncryptionError("STORAGE_ENC_KEY must be base64 (44 chars, /, +, or ends with =) or hex (64 chars)");
   }
 
   if (buf.length !== 32) {
@@ -51,6 +55,15 @@ export function parseStorageEncKey(raw: string): Buffer {
       `STORAGE_ENC_KEY must decode to 32 bytes, got ${buf.length}`
     );
   }
+
+  logger.info(
+    {
+      keyBytesLen: buf.length,
+      keyBytesFp: crypto.createHash("sha256").update(buf).digest("hex").slice(0, 8),
+      detectedFormat,
+    },
+    "[parseStorageEncKey] temp log"
+  );
 
   return buf;
 }
