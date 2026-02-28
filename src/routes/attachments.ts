@@ -53,27 +53,47 @@ const encKey = env.STORAGE_ENC_KEY ? parseStorageEncKey(env.STORAGE_ENC_KEY) : n
 
 const VIDEO_FETCH_FOR_THUMB = 15 * 1024 * 1024; // 15MB for ffmpeg (enough for 0.5s in most formats)
 
-function extractObjectKeyFromUrl(url: string): string | null {
-  if (!url) return null;
-  let pathname = url;
-  try {
-    if (url.startsWith("http")) {
-      const u = new URL(url);
-      pathname = u.pathname;
+// Same key resolution as /api/files/* — STORAGE_PREFIX, .eblusha, HeadObject to pick real key
+const splitPathSegments = (p: string) => p.split("/").filter(Boolean);
+const stripLeadingBucketSegment = (decodedPath: string, bucket: string | null, prefix: string) => {
+  const segments = splitPathSegments(decodedPath);
+  if (segments.length === 0) return decodedPath;
+  const prefixSegments = splitPathSegments(prefix);
+  if (prefixSegments.length > 0 && segments.length >= 1 + prefixSegments.length) {
+    const maybePrefix = segments.slice(1, 1 + prefixSegments.length).join("/");
+    if (maybePrefix === prefixSegments.join("/")) return segments.slice(1).join("/");
+  }
+  if (bucket && segments[0] === bucket) return segments.slice(1).join("/");
+  return decodedPath;
+};
+const buildCandidateKeys = (base: string, bucket: string, prefix: string): string[] => {
+  const b = base.replace(/^\//, "");
+  const stripped = stripLeadingBucketSegment(b, bucket, prefix);
+  const candidates: string[] = [];
+  const push = (k: string) => {
+    const key = k.replace(/^\//, "");
+    if (!key || candidates.includes(key)) return;
+    candidates.push(key);
+  };
+  push(b);
+  push(stripped);
+  const prefixNorm = prefix.replace(/^\/|\/$/g, "");
+  if (prefixNorm) {
+    for (const k of [b, stripped]) {
+      if (k === prefixNorm || k.startsWith(prefixNorm + "/")) push(k);
+      else push(`${prefixNorm}/${k}`);
     }
-  } catch {
-    return null;
   }
-  const prefix = "/api/files/";
-  if (pathname.startsWith(prefix)) {
-    const rest = pathname.slice(prefix.length).replace(/^\//, "");
-    return rest
-      .split("/")
-      .map((s) => decodeURIComponent(s))
-      .join("/");
-  }
-  return null;
-}
+  return candidates;
+};
+const toEblushaKey = (k: string): string => {
+  if (k.endsWith(".eblusha")) return k;
+  const parts = k.split("/");
+  const base = parts.pop() ?? "";
+  const baseNoExt = base.includes(".") ? base.slice(0, base.lastIndexOf(".")) : base;
+  parts.push(`${baseNoExt}.eblusha`);
+  return parts.join("/");
+};
 
 const encodeKeyForUrl = (key: string) =>
   key
@@ -169,17 +189,47 @@ router.post(
     }
 
     const bodyKey = (req.body?.objectKey as string)?.trim?.();
-    const metaKey = (meta.objectKey ?? meta.key ?? meta.storageKey) as string | undefined;
-    const objectKey =
-      (bodyKey && bodyKey.length > 0 ? bodyKey : null) ??
-      (metaKey && typeof metaKey === "string" ? metaKey.trim() : null) ??
-      extractObjectKeyFromUrl(attachment.url);
-    if (!objectKey) {
-      res.status(400).json({
-        message: "Cannot determine object key: provide objectKey in request body or ensure attachment has valid url/metadata.objectKey",
-      });
+    if (!bodyKey) {
+      res.status(400).json({ message: "objectKey required in request body" });
       return;
     }
+
+    const candidates = buildCandidateKeys(bodyKey, s3Config.bucket, objectPrefix);
+    const expandedCandidates = encKey
+      ? Array.from(new Set([...candidates, ...candidates.map(toEblushaKey)]))
+      : candidates;
+
+    let resolvedBucketKey: string | null = null;
+    let headResp: { Metadata?: Record<string, string>; ContentLength?: number } | null = null;
+    for (const key of expandedCandidates) {
+      try {
+        const h = await s3Client.send(
+          new HeadObjectCommand({ Bucket: s3Config.bucket!, Key: key })
+        ) as { Metadata?: Record<string, string>; ContentLength?: number };
+        resolvedBucketKey = key;
+        headResp = h;
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!resolvedBucketKey || !headResp) {
+      res.status(404).json({ message: "Video object not found in storage" });
+      return;
+    }
+
+    const encMeta = headResp.Metadata as Record<string, string> | undefined;
+    const isEbp2 = encMeta?.enc === "ebp2";
+    logger.info(
+      {
+        attachmentId,
+        resolvedBucketKey,
+        aadObjectKeyUsedForDecrypt: resolvedBucketKey,
+        "meta.enc": encMeta?.enc,
+        "meta.ct": encMeta?.ct,
+      },
+      "[thumbnail] resolved key (temp log)"
+    );
 
     const tmpDir = path.join(process.cwd(), "tmp", "thumbnails");
     fs.mkdirSync(tmpDir, { recursive: true });
@@ -187,18 +237,10 @@ router.post(
     const thumbPath = path.join(tmpDir, `thumb-${attachmentId}-${Date.now()}.jpg`);
 
     try {
-      const headResp = await s3Client.send(
-        new HeadObjectCommand({
-          Bucket: s3Config.bucket,
-          Key: objectKey,
-        })
-      );
-
-      const encMeta = headResp.Metadata as Record<string, string> | undefined;
-      const isEbp2 = encMeta?.enc === "ebp2";
-      const totalSize = isEbp2 && encMeta?.totalSize
-        ? parseInt(encMeta.totalSize, 10)
-        : (headResp.ContentLength ?? 0);
+      const totalSize =
+        isEbp2 && encMeta?.totalSize
+          ? parseInt(encMeta.totalSize, 10)
+          : (headResp!.ContentLength ?? 0);
       const chunkSize = isEbp2 && encMeta?.chunksize
         ? parseInt(encMeta.chunksize, 10)
         : EBP2_DEFAULT_CHUNK_SIZE;
@@ -211,14 +253,14 @@ router.post(
           const r = await s3Client.send(
             new GetObjectCommand({
               Bucket: s3Config.bucket!,
-              Key: objectKey,
+              Key: resolvedBucketKey!,
               Range: `bytes=${range.start}-${range.end}`,
             })
           );
           return readBodyToBuffer(r.Body);
         };
         const stream = decryptEbp2RangeStream(
-          objectKey,
+          resolvedBucketKey!,
           fetcher,
           { start: 0, end: fetchLen - 1 },
           encKey,
@@ -237,13 +279,13 @@ router.post(
         );
         const getCmd = new GetObjectCommand({
           Bucket: s3Config.bucket,
-          Key: objectKey,
+          Key: resolvedBucketKey!,
           Range: `bytes=0-${rangeEnd}`,
         });
         const getResp = await s3Client.send(getCmd);
         const encBuf = await readBodyToBuffer(getResp.Body);
         videoBuf = isEncryptedPayload(encBuf)
-          ? decryptBuffer(encBuf, encKey, { aad: objectKey })
+          ? decryptBuffer(encBuf, encKey, { aad: resolvedBucketKey! })
           : encBuf;
       }
 
@@ -289,7 +331,7 @@ router.post(
         // ignore
       }
 
-      const posterKeyBase = objectKey.replace(/\.[^.]+$/, "") || objectKey;
+      const posterKeyBase = resolvedBucketKey!.replace(/\.[^.]+$/, "") || resolvedBucketKey!;
       const posterKey = `${posterKeyBase}-poster-${Date.now()}.eblusha`;
 
       const { payload, meta: encMetaOut } = encryptBuffer(thumbBuf, encKey, {
