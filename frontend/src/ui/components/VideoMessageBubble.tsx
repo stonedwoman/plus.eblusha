@@ -5,14 +5,44 @@ import { encodeKeyForUrl } from '../../utils/media'
 
 const thumbInFlight = new Set<string>()
 
-// Cache aspect ratio (w/h) learned from thumbnail for attachments that lack metadata.
-const aspectByAttachmentId = new Map<string, number>()
+// width/height clamp to avoid extreme layout sizes while still supporting portrait video (e.g. 9:16 ≈ 0.56)
+const ASPECT_MIN = 0.5
+const ASPECT_MAX = 1.78
 
-function safeAspect(w: unknown, h: unknown): number | null {
-  const ww = typeof w === 'number' ? w : Number(w)
-  const hh = typeof h === 'number' ? h : Number(h)
-  if (!Number.isFinite(ww) || !Number.isFinite(hh) || ww <= 0 || hh <= 0) return null
-  return ww / hh
+function clampAspect(v: number) {
+  return Math.max(ASPECT_MIN, Math.min(ASPECT_MAX, v))
+}
+
+async function probeVideoAspect(src: string, timeoutMs: number): Promise<number | null> {
+  // Use a detached <video> to fetch only metadata (no full download).
+  // This runs only on user click to avoid preloading lots of videos in the chat list.
+  return await new Promise<number | null>((resolve) => {
+    const v = document.createElement('video')
+    v.preload = 'metadata'
+    v.muted = true
+    v.playsInline = true
+    const cleanup = () => {
+      v.removeAttribute('src')
+      // Some browsers keep network request alive until load() is called after src removal
+      try { v.load() } catch {}
+    }
+    const done = (aspect: number | null) => {
+      cleanup()
+      resolve(aspect)
+    }
+    const onMeta = () => {
+      const w = v.videoWidth
+      const h = v.videoHeight
+      if (w > 0 && h > 0) done(w / h)
+      else done(null)
+    }
+    const onErr = () => done(null)
+    v.addEventListener('loadedmetadata', onMeta, { once: true })
+    v.addEventListener('error', onErr, { once: true })
+    v.src = src
+    try { v.load() } catch {}
+    window.setTimeout(() => done(null), timeoutMs)
+  })
 }
 
 type Props = {
@@ -62,29 +92,42 @@ export function VideoMessageBubble({
   const [thumbLoading, setThumbLoading] = useState(!posterUrl && !!attachmentId && !thumbInFlight.has(attachmentId))
   const [thumbError, setThumbError] = useState(false)
 
-  const aspectFromMeta = safeAspect(width, height)
-  const aspectFromCache = attachmentId ? aspectByAttachmentId.get(attachmentId) ?? null : null
-  const [aspect, setAspect] = useState<number | null>(() => aspectFromMeta ?? aspectFromCache)
-  const [aspectSource, setAspectSource] = useState<'meta' | 'thumb' | 'cache' | 'unknown'>(() => {
-    if (aspectFromMeta) return 'meta'
-    if (aspectFromCache) return 'cache'
-    return 'unknown'
+  const initialAspect =
+    typeof width === 'number' && typeof height === 'number' && width > 0 && height > 0 ? width / height : null
+  const [aspect, setAspect] = useState<number>(() => {
+    const v = initialAspect ?? 16 / 9
+    return clampAspect(v)
   })
+  const [aspectSource, setAspectSource] = useState<'meta' | 'thumb' | 'video' | 'default'>(() => (initialAspect ? 'meta' : 'default'))
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
+  const isMobile = vw <= 768
+  // Match image sizing rules from ChatsPage: compute a target pixel width and cap by screen.
+  const maxScreen = isMobile
+    ? Math.max(320, Math.floor(vw / 2))
+    : Math.min(600, Math.max(320, Math.floor(vw / 3)))
+  const ratio = aspect > 0 ? 1 / aspect : 0.75 // height/width
+  const availW = typeof window !== 'undefined' ? Math.max(220, window.innerWidth - 100) : maxScreen
+  const maxWidth = Math.min(maxScreen, availW)
+  let maxHeight = maxScreen
+  if (ratio < 0.5) {
+    maxHeight = Math.max(Math.round(maxScreen * 0.6), 200)
+  } else if (ratio < 0.7) {
+    maxHeight = Math.max(Math.round(maxScreen * 0.75), 200)
+  }
+  let baseW = maxWidth
+  let baseH = baseW * ratio
+  const scaleByHeight = baseH > maxHeight ? maxHeight / baseH : 1
+  const scale = Math.min(scaleByHeight, 1)
+  baseW = baseW * scale
+  baseH = baseH * scale
+  const targetW = Math.round(baseW)
+  const targetH = Math.round(baseH)
   const showVideo = isInlinePlaying
   const showLoadingOverlay =
     !!videoSrc &&
     !decryptPending &&
     !decryptError &&
     (pendingStart || (isInlinePlaying && !videoReady))
-
-  useEffect(() => {
-    if (isInlinePlaying) return
-    if (!attachmentId) return
-    if (!aspectFromMeta) return
-    aspectByAttachmentId.set(attachmentId, aspectFromMeta)
-    setAspect(aspectFromMeta)
-    setAspectSource('meta')
-  }, [attachmentId, aspectFromMeta, isInlinePlaying])
 
   useEffect(() => {
     if (posterUrl || !attachmentId || thumbInFlight.has(attachmentId) || decryptPending) return
@@ -106,11 +149,12 @@ export function VideoMessageBubble({
         if (pk && typeof pk === 'string') {
           setPosterUrl(`/api/files/${encodeKeyForUrl(pk)}`)
         }
-        const a = safeAspect((data as any)?.width, (data as any)?.height)
-        if (!isInlinePlaying && a && attachmentId && !aspectFromMeta) {
-          aspectByAttachmentId.set(attachmentId, a)
-          setAspect(a)
-          setAspectSource('thumb')
+        const w = data?.width
+        const h = data?.height
+        if (!isInlinePlaying && typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) {
+          const nextAspect = clampAspect(w / h)
+          setAspect(nextAspect)
+          setAspectSource('meta')
         }
       })
       .catch((err: any) => {
@@ -170,20 +214,40 @@ export function VideoMessageBubble({
       }
     } else {
       setPendingStart(true)
-      setIsInlinePlaying(true)
-      setPendingStart(false)
+      // Try to refine aspect using <video preload="metadata"> before we start playback,
+      // so the container geometry doesn't change during preview->player transition.
+      ;(async () => {
+        try {
+          if (typeof document !== 'undefined' && aspectSource !== 'meta' && aspectSource !== 'video') {
+            const probed = await probeVideoAspect(videoSrc, 700)
+            if (typeof probed === 'number' && probed > 0) {
+              setAspect(clampAspect(probed))
+              setAspectSource('video')
+            }
+          }
+        } finally {
+          setIsInlinePlaying(true)
+          setPendingStart(false)
+        }
+      })()
     }
   }
 
   const bubbleStyle: React.CSSProperties = {
     marginTop: 8,
-    width: '100%',
-    maxWidth: 480,
-    aspectRatio: aspect ? `${aspect}` : '1 / 1',
+    maxWidth: '100%',
+    width: targetW,
+    maxHeight: targetH,
+    display: 'inline-block',
+    lineHeight: 0,
+    boxSizing: 'border-box',
+    // Fallback for environments where aspect-ratio is buggy/unsupported (children are absolutely positioned)
+    minHeight: isMobile ? 180 : 200,
+    aspectRatio: `${aspect}`,
     borderRadius: 14,
     overflow: 'hidden',
     position: 'relative',
-    background: '#000',
+    background: 'var(--surface-100)',
     border: '1px solid var(--surface-border)',
     cursor: videoSrc && !uploadInProgress ? 'pointer' : 'default',
   }
@@ -275,8 +339,7 @@ export function VideoMessageBubble({
             const nw = img.naturalWidth
             const nh = img.naturalHeight
             if (nw > 0 && nh > 0) {
-              const nextAspect = nw / nh
-              if (attachmentId && !aspectFromMeta) aspectByAttachmentId.set(attachmentId, nextAspect)
+              const nextAspect = clampAspect(nw / nh)
               setAspect(nextAspect)
               setAspectSource('thumb')
             }
