@@ -43,6 +43,7 @@ export function VideoMessageBubble({
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [isInlinePlaying, setIsInlinePlaying] = useState(false)
+  const [videoReady, setVideoReady] = useState(false)
 
   const initialUrl = (() => {
     if (initialPosterUrl) return initialPosterUrl
@@ -53,12 +54,15 @@ export function VideoMessageBubble({
   const [thumbLoading, setThumbLoading] = useState(!posterUrl && !!attachmentId && !thumbInFlight.has(attachmentId))
   const [thumbError, setThumbError] = useState(false)
 
-  const rawRatio = typeof width === 'number' && typeof height === 'number' && width > 0 ? height / width : 9 / 16
-  const ratio = Math.max(1 / ASPECT_MAX, Math.min(1 / ASPECT_MIN, rawRatio))
-  const vw = typeof window !== 'undefined' ? window.innerWidth : 320
-  const isMobile = vw <= 768
-  const maxW = isMobile ? (vw - 48) : 420
-  const maxH = 420
+  const initialAspect =
+    typeof width === 'number' && typeof height === 'number' && width > 0 && height > 0 ? width / height : null
+  const [aspect, setAspect] = useState<number>(() => {
+    const v = initialAspect ?? 16 / 9
+    return Math.max(ASPECT_MIN, Math.min(ASPECT_MAX, v))
+  })
+  const [aspectSource, setAspectSource] = useState<'meta' | 'thumb' | 'default'>(() => (initialAspect ? 'meta' : 'default'))
+  const maxW = 'min(420px, calc(100vw - 48px))'
+  const showVideo = isInlinePlaying && videoReady
 
   useEffect(() => {
     if (posterUrl || !attachmentId || thumbInFlight.has(attachmentId) || decryptPending) return
@@ -79,6 +83,13 @@ export function VideoMessageBubble({
         const pk = (data?.posterKey ?? data?.poster_file_key) as string | undefined
         if (pk && typeof pk === 'string') {
           setPosterUrl(`/api/files/${encodeKeyForUrl(pk)}`)
+        }
+        const w = data?.width
+        const h = data?.height
+        if (!isInlinePlaying && typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) {
+          const nextAspect = Math.max(ASPECT_MIN, Math.min(ASPECT_MAX, w / h))
+          setAspect(nextAspect)
+          setAspectSource('meta')
         }
       })
       .catch((err: any) => {
@@ -102,6 +113,7 @@ export function VideoMessageBubble({
 
   useEffect(() => {
     if (isInlinePlaying && videoRef.current && videoSrc) {
+      setVideoReady(false)
       videoRef.current.play().catch(() => {})
     }
   }, [isInlinePlaying, videoSrc])
@@ -142,9 +154,7 @@ export function VideoMessageBubble({
     marginTop: 8,
     width: '100%',
     maxWidth: maxW,
-    minHeight: 180,
-    aspectRatio: `${1} / ${ratio}`,
-    maxHeight: isMobile ? maxH : undefined,
+    aspectRatio: `${aspect}`,
     borderRadius: 14,
     overflow: 'hidden',
     position: 'relative',
@@ -183,81 +193,6 @@ export function VideoMessageBubble({
     </button>
   )
 
-  if (decryptPending) {
-    return (
-      <div className="video-message-bubble" style={bubbleStyle} onClick={stopProp} onMouseDown={stopProp} role="presentation">
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-          Расшифровка видео...
-        </div>
-      </div>
-    )
-  }
-
-  if (decryptError) {
-    return (
-      <div className="video-message-bubble" style={bubbleStyle} onClick={stopProp} onMouseDown={stopProp} role="presentation">
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#f87171', fontSize: 12, padding: 16 }}>
-          <span>Не удалось расшифровать</span>
-          {videoSrc && (
-            <a href={videoSrc} download={fileName || 'video.mp4'} style={{ color: 'var(--brand)', textDecoration: 'underline' }} onClick={(e) => e.stopPropagation()}>Скачать</a>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  if (!videoSrc) {
-    const statusText = uploadInProgress ? 'Загрузка…' : 'Видео недоступно'
-    return (
-      <div className="video-message-bubble" style={bubbleStyle} onClick={stopProp} onMouseDown={stopProp} role="presentation">
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            background: 'linear-gradient(180deg, #1a1d24 0%, #0f1115 100%)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(255,255,255,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Play size={32} color="rgba(255,255,255,0.9)" fill="rgba(255,255,255,0.9)" style={{ marginLeft: 4 }} />
-          </div>
-          <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
-            {uploadInProgress && <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />}
-            <span>{statusText}</span>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  if (isInlinePlaying) {
-    return (
-      <div
-        className="video-message-bubble"
-        style={bubbleStyle}
-        onClick={(e) => { stopProp(e); handleBubbleClick() }}
-        onMouseDown={stopProp}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleBubbleClick() } }}
-      >
-        <video
-          ref={videoRef}
-          src={videoSrc}
-          controls
-          playsInline
-          preload="metadata"
-          poster={posterUrl || undefined}
-          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', background: '#000' }}
-        />
-        {btnFullscreen}
-      </div>
-    )
-  }
-
   return (
     <div
       className="video-message-bubble"
@@ -268,6 +203,29 @@ export function VideoMessageBubble({
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleBubbleClick() } }}
     >
+      {/* Video layer (crossfades in) */}
+      <video
+        ref={videoRef}
+        src={videoSrc || undefined}
+        controls={isInlinePlaying}
+        playsInline
+        preload={isInlinePlaying ? 'metadata' : 'none'}
+        poster={posterUrl || undefined}
+        onCanPlay={() => setVideoReady(true)}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          objectFit: 'contain',
+          display: 'block',
+          background: '#000',
+          opacity: showVideo ? 1 : 0,
+          transition: 'opacity 180ms ease',
+        }}
+      />
+
+      {/* Preview layer (crossfades out) */}
       {posterUrl && !thumbError ? (
         <img
           src={posterUrl}
@@ -279,9 +237,22 @@ export function VideoMessageBubble({
             height: '100%',
             objectFit: 'cover',
             display: 'block',
+            opacity: showVideo ? 0 : 1,
+            transition: 'opacity 180ms ease',
           }}
           loading="lazy"
           onError={() => setThumbError(true)}
+          onLoad={(e) => {
+            if (isInlinePlaying || aspectSource === 'meta') return
+            const img = e.currentTarget
+            const nw = img.naturalWidth
+            const nh = img.naturalHeight
+            if (nw > 0 && nh > 0) {
+              const nextAspect = Math.max(ASPECT_MIN, Math.min(ASPECT_MAX, nw / nh))
+              setAspect(nextAspect)
+              setAspectSource('thumb')
+            }
+          }}
         />
       ) : (
         <div
@@ -293,6 +264,8 @@ export function VideoMessageBubble({
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
+            opacity: showVideo ? 0 : 1,
+            transition: 'opacity 180ms ease',
           }}
         >
           <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(255,255,255,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -307,6 +280,28 @@ export function VideoMessageBubble({
           {thumbError && <span style={{ position: 'absolute', bottom: 12, left: 12, fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>без превью</span>}
         </div>
       )}
+
+      {/* Status overlays */}
+      {decryptPending && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13, background: 'rgba(0,0,0,0.15)', pointerEvents: 'none' }}>
+          Расшифровка видео...
+        </div>
+      )}
+      {decryptError && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#f87171', fontSize: 12, padding: 16, background: 'rgba(0,0,0,0.15)' }}>
+          <span>Не удалось расшифровать</span>
+          {videoSrc && (
+            <a href={videoSrc} download={fileName || 'video.mp4'} style={{ color: 'var(--brand)', textDecoration: 'underline', pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()}>Скачать</a>
+          )}
+        </div>
+      )}
+      {!videoSrc && (
+        <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
+          {uploadInProgress && <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />}
+          <span>{uploadInProgress ? 'Загрузка…' : 'Видео недоступно'}</span>
+        </div>
+      )}
+
       <div
         style={{
           position: 'absolute',
@@ -316,6 +311,8 @@ export function VideoMessageBubble({
           justifyContent: 'center',
           background: posterUrl ? 'rgba(0,0,0,0.2)' : 'transparent',
           pointerEvents: 'none',
+          opacity: showVideo ? 0 : 1,
+          transition: 'opacity 180ms ease',
         }}
       >
         <div
