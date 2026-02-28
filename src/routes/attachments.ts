@@ -466,8 +466,29 @@ router.post(
         const data = JSON.parse(probe);
         const vidStream = data.streams?.find((s: any) => s.codec_type === "video");
         if (vidStream) {
-          width = parseInt(vidStream.width, 10);
-          height = parseInt(vidStream.height, 10);
+          const w0 = parseInt(vidStream.width, 10);
+          const h0 = parseInt(vidStream.height, 10);
+
+          // Phones often store portrait videos as landscape + rotation metadata.
+          // ffmpeg will render frames with rotation applied, so the thumbnail can be portrait,
+          // but ffprobe width/height may reflect the coded (unrotated) size.
+          // To keep UI aspect ratio consistent with the actual rendered frame, swap when rotated 90/270.
+          const rotateFromTagsRaw =
+            (vidStream?.tags?.rotate as unknown) ??
+            (vidStream?.tags?.ROTATE as unknown) ??
+            null;
+          const rotateFromSideDataRaw =
+            (Array.isArray(vidStream?.side_data_list)
+              ? vidStream.side_data_list.find((x: any) => typeof x?.rotation !== "undefined")?.rotation
+              : null) ?? null;
+          const rotateRaw = rotateFromTagsRaw ?? rotateFromSideDataRaw ?? null;
+          const rotateDeg = rotateRaw != null ? parseInt(String(rotateRaw), 10) : 0;
+          const rotated90 = Number.isFinite(rotateDeg) && Math.abs(rotateDeg) % 180 === 90;
+
+          if (Number.isFinite(w0) && Number.isFinite(h0) && w0 > 0 && h0 > 0) {
+            width = rotated90 ? h0 : w0;
+            height = rotated90 ? w0 : h0;
+          }
         }
         const fmt = data.format;
         if (fmt?.duration) duration = Math.round(parseFloat(fmt.duration));
