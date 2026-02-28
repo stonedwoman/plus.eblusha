@@ -61,7 +61,10 @@ export function VideoMessageBubble({
     return Math.max(ASPECT_MIN, Math.min(ASPECT_MAX, v))
   })
   const [aspectSource, setAspectSource] = useState<'meta' | 'thumb' | 'default'>(() => (initialAspect ? 'meta' : 'default'))
-  const maxW = 'min(420px, calc(100vw - 48px))'
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
+  const isMobile = vw <= 768
+  // Keep sizing consistent with previous implementation to avoid shrink-to-fit collapse
+  const bubbleW = isMobile ? 'calc(100vw - 48px)' : '420px'
   const showVideo = isInlinePlaying && videoReady
 
   useEffect(() => {
@@ -152,8 +155,10 @@ export function VideoMessageBubble({
 
   const bubbleStyle: React.CSSProperties = {
     marginTop: 8,
-    width: '100%',
-    maxWidth: maxW,
+    width: bubbleW,
+    maxWidth: bubbleW,
+    // Fallback for environments where aspect-ratio is buggy/unsupported (children are absolutely positioned)
+    minHeight: isMobile ? 180 : 200,
     aspectRatio: `${aspect}`,
     borderRadius: 14,
     overflow: 'hidden',
