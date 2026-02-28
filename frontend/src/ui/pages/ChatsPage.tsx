@@ -3,8 +3,8 @@ import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
-import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2 } from 'lucide-react'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -19,7 +19,7 @@ import { LinkDeviceModal } from '../components/LinkDeviceModal'
 import LoadingSpinner from '../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../domain/store/systemUiStore'
 import { useCallStore } from '../../domain/store/callStore'
-import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice } from '../../domain/device/deviceManager'
+import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice, isElectron } from '../../domain/device/deviceManager'
 import { wipeLocalDeviceData } from '../../domain/device/deviceWipe'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
@@ -441,6 +441,9 @@ export default function ChatsPage() {
   const [newGroupDragOver, setNewGroupDragOver] = useState(false)
   const [newGroupAvatarHover, setNewGroupAvatarHover] = useState(false)
   const [contactsOpen, setContactsOpen] = useState(false)
+  const [contactsBarDismissed, setContactsBarDismissed] = useState(false)
+  const [contactsBarEntered, setContactsBarEntered] = useState(false)
+  const [rejectedOutgoing, setRejectedOutgoing] = useState<Array<{ contactId: string; friend?: { id: string; username: string; displayName: string | null } }>>([])
   const [eblDigits, setEblDigits] = useState<string[]>(['', '', '', ''])
   const eblRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)]
   const [foundUser, setFoundUser] = useState<any | null>(null)
@@ -2447,6 +2450,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     })
   }, [contactsQuery.data])
 
+  const displayOutgoingWithRejected = useMemo(() => {
+    const pending = (outgoingContactsQuery.data ?? []).map((c: any) => ({ id: c.id, rejected: false, friend: c.friend }))
+    const rejected = rejectedOutgoing.map((r) => ({
+      id: r.contactId,
+      rejected: true,
+      friend: r.friend ?? { id: '', username: '', displayName: null },
+    }))
+    return [...pending, ...rejected]
+  }, [outgoingContactsQuery.data, rejectedOutgoing])
+
   const addParticipantsFoundUserStatus = {
     alreadyInChat: addParticipantsFoundUser ? activeConversationParticipantIds.includes(addParticipantsFoundUser.id) : false,
     isSelf: addParticipantsFoundUser ? addParticipantsFoundUser.id === me?.id : false,
@@ -3068,15 +3081,30 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   }, [])
   // live update contacts tiles
   useEffect(() => {
-    onContactRequest(() => { incomingContactsQuery.refetch() })
+    onContactRequest(() => {
+      playNotifySoundIfAllowed()
+      incomingContactsQuery.refetch()
+    })
     onContactAccepted(() => {
       outgoingContactsQuery.refetch()
       contactsQuery.refetch()
       conversationsQuery.refetch()
       incomingContactsQuery.refetch()
     })
+    onContactRejected((payload) => {
+      setRejectedOutgoing((prev) => [...prev, { contactId: payload.contactId, friend: payload.friend ?? undefined }])
+      outgoingContactsQuery.refetch()
+    })
     onContactRemoved(() => { contactsQuery.refetch(); incomingContactsQuery.refetch(); outgoingContactsQuery.refetch() })
+  }, [playNotifySoundIfAllowed])
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => requestAnimationFrame(() => setContactsBarEntered(true)))
+    return () => cancelAnimationFrame(id)
   }, [])
+  useEffect(() => {
+    setContactsBarDismissed(false)
+  }, [incomingContactsQuery.data])
 
   // Touch event handlers for personal avatar editor
   useEffect(() => {
@@ -8309,8 +8337,122 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }
 
+  const incomingCount = incomingContactsQuery.data?.length ?? 0
+  const showContactsBar = incomingCount > 0 && !contactsBarDismissed
+  const barStyles: React.CSSProperties = {
+    minHeight: 80,
+    padding: 'calc(12px + var(--safe-top, 0px)) 16px 12px',
+    borderBottom: '1px solid var(--surface-border)',
+    background: 'linear-gradient(180deg, var(--surface-200), var(--surface-100))',
+    backdropFilter: 'blur(10px) saturate(120%)',
+    boxShadow: 'var(--shadow-medium)',
+  }
+
   return (
     <>
+    {showContactsBar && (
+      <div
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 214,
+          marginTop: isElectron() ? 24 : 0,
+          transform: contactsBarEntered ? 'translateY(0)' : 'translateY(-100%)',
+          transition: 'transform 0.25s ease-out',
+          display: 'flex',
+          justifyContent: 'center',
+        }}
+      >
+        <div
+          style={{
+            width: isMobile ? '100%' : 'auto',
+            maxWidth: isMobile ? '100%' : 480,
+            borderRadius: isMobile ? 0 : '0 0 12px 12px',
+            ...barStyles,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            maxHeight: 'min(320px, 50vh)',
+            overflowY: 'auto',
+          }}
+        >
+          <div style={{ fontWeight: 900, fontSize: 14, color: 'var(--text-primary)' }}>
+            Запросы в друзья ({incomingCount})
+          </div>
+          {incomingContactsQuery.data!.map((c: any) => (
+            <div
+              key={c.id}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-end',
+                gap: 12,
+                flex: 1,
+                minHeight: 0,
+              }}
+            >
+              <div style={{ flexShrink: 0 }}>
+                <Avatar
+                  name={c.friend.displayName ?? c.friend.username}
+                  id={c.friend.id}
+                  presence={avatarPresenceForUserIdAndStatus(c.friend.id, c.friend.status)}
+                  avatarUrl={c.friend.avatarUrl ?? undefined}
+                  size={44}
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>
+                  {c.friend.displayName ?? c.friend.username}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.2 }}>
+                  хочет добавить вас в друзья
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={async () => {
+                    await api.post('/contacts/respond', { contactId: c.id, action: 'reject' })
+                    incomingContactsQuery.refetch()
+                    contactsQuery.refetch()
+                  }}
+                  style={{ padding: '8px 14px' }}
+                >
+                  Отклонить
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={async () => {
+                    await api.post('/contacts/respond', { contactId: c.id, action: 'accept' })
+                    incomingContactsQuery.refetch()
+                    contactsQuery.refetch()
+                    conversationsQuery.refetch()
+                  }}
+                  style={{ padding: '8px 14px' }}
+                >
+                  Добавить
+                </button>
+              </div>
+            </div>
+          ))}
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setContactsBarDismissed(true)}
+              aria-label="Свернуть"
+              style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 8px' }}
+            >
+              <ChevronUp size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+              Свернуть
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     {showAudioUnlock && (
       <div className="audio-unlock-overlay">
         <button
@@ -10168,30 +10310,68 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               <button className="btn btn-secondary btn-icon" onClick={() => { if (myEblid) navigator.clipboard.writeText(myEblid) }} title="Скопировать EBLID"><Copy size={16} /></button>
             </div>
 
-            {outgoingContactsQuery.data && outgoingContactsQuery.data.length > 0 && (
+            {displayOutgoingWithRejected.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-                {outgoingContactsQuery.data.map((c: any) => (
-                  <div
-                    key={c.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 12,
-                      padding: '14px 16px',
-                      width: '100%',
-                      maxWidth: 420,
-                      borderRadius: 12,
-                      background: 'var(--surface-100)',
-                      border: '1px solid var(--surface-border)',
-                    }}
-                  >
-                    <Loader2 size={20} style={{ flexShrink: 0, color: 'var(--text-muted)', animation: 'contacts-page-spin 1s linear infinite' }} aria-hidden />
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-                      <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Ожидание подтверждения</span>
-                      <span style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.3 }}>Попроси зайти в «Контакты» и подтвердить.</span>
+                {displayOutgoingWithRejected.map((item) =>
+                  item.rejected ? (
+                    <div
+                      key={item.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        padding: '14px 16px',
+                        width: '100%',
+                        maxWidth: 420,
+                        borderRadius: 12,
+                        background: 'var(--surface-100)',
+                        border: '1px solid var(--surface-border)',
+                      }}
+                    >
+                      {item.friend.id ? (
+                        <Avatar name={item.friend.displayName ?? item.friend.username} id={item.friend.id} avatarUrl={undefined} size={40} />
+                      ) : (
+                        <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--surface-200)', flexShrink: 0 }} />
+                      )}
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                        <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>
+                          {item.friend.displayName ?? item.friend.username ?? 'Пользователь'}
+                        </span>
+                        <span style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.3 }}>Запрос отклонён</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-icon btn-ghost"
+                        onClick={() => setRejectedOutgoing((p) => p.filter((r) => r.contactId !== item.id))}
+                        aria-label="Убрать"
+                        style={{ flexShrink: 0 }}
+                      >
+                        <X size={18} />
+                      </button>
                     </div>
-                  </div>
-                ))}
+                  ) : (
+                    <div
+                      key={item.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        padding: '14px 16px',
+                        width: '100%',
+                        maxWidth: 420,
+                        borderRadius: 12,
+                        background: 'var(--surface-100)',
+                        border: '1px solid var(--surface-border)',
+                      }}
+                    >
+                      <Loader2 size={20} style={{ flexShrink: 0, color: 'var(--text-muted)', animation: 'contacts-page-spin 1s linear infinite' }} aria-hidden />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                        <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Ожидание подтверждения</span>
+                        <span style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.3 }}>Попроси зайти в «Контакты» и подтвердить.</span>
+                      </div>
+                    </div>
+                  )
+                )}
               </div>
             )}
 
