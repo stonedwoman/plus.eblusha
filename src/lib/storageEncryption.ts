@@ -208,6 +208,50 @@ export function getEbp2ChunkEncryptedRange(
   return { start: offset, length: encLen, plainLen };
 }
 
+/**
+ * Decrypt EBP2 payload from buffer (sequential chunks, no range math).
+ * Used for diagnostics: if this works but decryptEbp2RangeStream fails, bug is in range logic.
+ * @param encBuf Full encrypted buffer from byte 0 (includes 17-byte header)
+ */
+export function decryptEbp2WholeFromBuffer(
+  encBuf: Buffer,
+  objectKey: string,
+  masterKey: Buffer
+): Buffer {
+  if (encBuf.length < 17 || !encBuf.subarray(0, 4).equals(MAGIC_EBP2)) {
+    throw new StorageEncryptionError("EBP2 magic mismatch or buffer too short");
+  }
+  const version = encBuf.readUInt8(4);
+  const chunkSize = encBuf.readUInt32LE(5);
+  const totalSize = Number(encBuf.readBigUInt64LE(9));
+  const headerLen = 17;
+
+  const chunks: Buffer[] = [];
+  let offset = headerLen;
+  let chunkIndex = 0;
+
+  while (offset < encBuf.length && chunkIndex * chunkSize < totalSize) {
+    const plainLen = Math.min(chunkSize, Math.max(0, totalSize - chunkIndex * chunkSize));
+    const encChunkLen = IV_LEN + TAG_LEN + plainLen;
+    if (offset + encChunkLen > encBuf.length) break;
+
+    const iv = encBuf.subarray(offset, offset + IV_LEN);
+    const tag = encBuf.subarray(offset + IV_LEN, offset + IV_LEN + TAG_LEN);
+    const ciphertext = encBuf.subarray(offset + IV_LEN + TAG_LEN, offset + encChunkLen);
+
+    const aad = buildEbp2Aad(objectKey, chunkIndex, chunkSize, totalSize, version);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", masterKey, iv);
+    decipher.setAAD(aad);
+    decipher.setAuthTag(tag);
+    chunks.push(Buffer.concat([decipher.update(ciphertext), decipher.final()]));
+
+    offset += encChunkLen;
+    chunkIndex++;
+  }
+
+  return Buffer.concat(chunks);
+}
+
 /** Get chunk indices that overlap [start, end] (inclusive). */
 export function getEbp2ChunksForRange(
   chunkSize: number,

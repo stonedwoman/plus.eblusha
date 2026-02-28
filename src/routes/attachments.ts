@@ -13,8 +13,10 @@ import {
   encryptBuffer,
   decryptBuffer,
   decryptEbp2RangeStream,
+  decryptEbp2WholeFromBuffer,
   parseStorageEncKey,
   isEncryptedPayload,
+  getEbp2ChunkEncryptedRange,
   EBP2_DEFAULT_CHUNK_SIZE,
 } from "../lib/storageEncryption";
 
@@ -220,16 +222,33 @@ router.post(
 
     const encMeta = headResp.Metadata as Record<string, string> | undefined;
     const isEbp2 = encMeta?.enc === "ebp2";
+
+    const magicResp = await s3Client.send(
+      new GetObjectCommand({
+        Bucket: s3Config.bucket!,
+        Key: resolvedBucketKey!,
+        Range: "bytes=0-3",
+      })
+    );
+    const magicBuf = await readBodyToBuffer(magicResp.Body);
+    const magicStr = magicBuf.length >= 4 ? magicBuf.subarray(0, 4).toString("utf8") : "(too short)";
+    const encKeyFp = env.STORAGE_ENC_KEY
+      ? crypto.createHash("sha256").update(env.STORAGE_ENC_KEY).digest("hex").slice(0, 8)
+      : "(none)";
     logger.info(
       {
         attachmentId,
         resolvedBucketKey,
-        aadUsedForDecrypt: resolvedBucketKey,
-        "meta.enc": encMeta?.enc,
-        "meta.ct": encMeta?.ct,
+        "encMeta.enc": encMeta?.enc,
+        magicFirst4Bytes: magicStr,
+        storageEncKeyFingerprint: encKeyFp,
       },
-      "[thumbnail] temp log (remove after fix)"
+      "[thumbnail] before decrypt (temp log)"
     );
+    const useEbp2 = isEbp2 && magicStr === "EBP2";
+    if (isEbp2 && !useEbp2) {
+      logger.warn({ attachmentId, magicStr, "encMeta.enc": encMeta?.enc }, "[thumbnail] meta.enc=ebp2 but magic disagrees, trust magic");
+    }
 
     const tmpDir = path.join(process.cwd(), "tmp", "thumbnails");
     fs.mkdirSync(tmpDir, { recursive: true });
@@ -247,31 +266,52 @@ router.post(
 
       let videoBuf: Buffer;
 
-      if (isEbp2 && totalSize > 0) {
+      if (useEbp2 && totalSize > 0) {
         const fetchLen = Math.min(VIDEO_FETCH_FOR_THUMB, totalSize);
-        const fetcher = async (range: { start: number; end: number }) => {
-          const r = await s3Client.send(
-            new GetObjectCommand({
-              Bucket: s3Config.bucket!,
-              Key: resolvedBucketKey!,
-              Range: `bytes=${range.start}-${range.end}`,
-            })
-          );
-          return readBodyToBuffer(r.Body);
-        };
-        const stream = decryptEbp2RangeStream(
-          resolvedBucketKey!,
-          fetcher,
-          { start: 0, end: fetchLen - 1 },
-          encKey,
-          { chunkSize, totalSize }
+        const numChunksNeeded = Math.ceil(fetchLen / chunkSize);
+        let rangeEnd = 16;
+        for (let i = 0; i < numChunksNeeded; i++) {
+          const { length } = getEbp2ChunkEncryptedRange(chunkSize, totalSize, i);
+          rangeEnd += length;
+        }
+        const encRangeResp = await s3Client.send(
+          new GetObjectCommand({
+            Bucket: s3Config.bucket!,
+            Key: resolvedBucketKey!,
+            Range: `bytes=0-${rangeEnd}`,
+          })
         );
-        videoBuf = await new Promise<Buffer>((resolve, reject) => {
-          const chunks: Buffer[] = [];
-          stream.on("data", (c: Buffer) => chunks.push(c));
-          stream.on("end", () => resolve(Buffer.concat(chunks)));
-          stream.on("error", reject);
-        });
+        const encBuf = await readBodyToBuffer(encRangeResp.Body);
+        try {
+          const wholeDecrypted = decryptEbp2WholeFromBuffer(encBuf, resolvedBucketKey!, encKey);
+          videoBuf = wholeDecrypted.subarray(0, fetchLen);
+          logger.info({ attachmentId, wholeDecrypt: "ok" }, "[thumbnail] temp log");
+        } catch (wholeErr: any) {
+          logger.warn({ err: wholeErr, attachmentId, wholeDecrypt: "fail" }, "[thumbnail] whole decrypt failed, trying range");
+          const fetcher = async (range: { start: number; end: number }) => {
+            const r = await s3Client.send(
+              new GetObjectCommand({
+                Bucket: s3Config.bucket!,
+                Key: resolvedBucketKey!,
+                Range: `bytes=${range.start}-${range.end}`,
+              })
+            );
+            return readBodyToBuffer(r.Body);
+          };
+          const stream = decryptEbp2RangeStream(
+            resolvedBucketKey!,
+            fetcher,
+            { start: 0, end: fetchLen - 1 },
+            encKey,
+            { chunkSize, totalSize }
+          );
+          videoBuf = await new Promise<Buffer>((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            stream.on("data", (c: Buffer) => chunks.push(c));
+            stream.on("end", () => resolve(Buffer.concat(chunks)));
+            stream.on("error", reject);
+          });
+        }
       } else {
         const rangeEnd = Math.min(
           VIDEO_FETCH_FOR_THUMB - 1,
