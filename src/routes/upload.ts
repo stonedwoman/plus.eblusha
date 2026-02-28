@@ -162,6 +162,8 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
       : crypto.randomBytes(16).toString("hex");
   const uniqueName = `${Date.now()}-${randomId}${ext}`;
   const putKey = objectPrefix ? `${objectPrefix}/${uniqueName}` : uniqueName;
+  const aadUsedForEncrypt = putKey;
+  const metaAadWritten = putKey;
 
   try {
     if (!s3Client || !s3Config) {
@@ -187,7 +189,7 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
       const inputStream = fs.createReadStream(filePath);
       const encryptedStream = encryptToEbp2Stream(
         inputStream,
-        putKey,
+        aadUsedForEncrypt,
         totalSize,
         encKey,
         { chunkSize: EBP2_DEFAULT_CHUNK_SIZE }
@@ -208,7 +210,7 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
         return;
       }
       const encrypted = encryptBuffer(buffer, encKey, {
-        aad: putKey,
+        aad: aadUsedForEncrypt,
         contentType: originalContentType,
       });
       bodyToUpload = encrypted.payload;
@@ -236,7 +238,7 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
               chunksize: (encryptionMeta as EBP2Metadata).chunksize,
               totalSize: (encryptionMeta as EBP2Metadata).totalSize,
               ct: (encryptionMeta as EBP2Metadata).ct || "",
-              aad: putKey,
+              aad: metaAadWritten,
             }
           : encryptionMeta
             ? {
@@ -246,14 +248,14 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
                 enciv: (encryptionMeta as EncryptionMetadata).iv,
                 enctag: (encryptionMeta as EncryptionMetadata).tag,
                 ct: (encryptionMeta as EncryptionMetadata).ct || "",
-                aad: putKey,
+                aad: metaAadWritten,
               }
             : undefined,
     };
     if (encryptionMeta) {
       logger.info(
-        { putKey, aadKeyUsedForEncrypt: putKey, metaAad: putKey, enc: encFormat },
-        "[upload] attachment enc key trace"
+        { putKey, aadUsedForEncrypt, metaAadWritten, enc: encFormat },
+        "[upload] aad invariants"
       );
     }
     // Note: twcstorage.ru (Russian S3) doesn't support ACL/SSE in PutObject
