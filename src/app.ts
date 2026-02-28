@@ -1,22 +1,12 @@
-import crypto from "crypto";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import compression from "compression";
 import env from "./config/env";
-import logger from "./config/logger";
 import routes from "./routes";
 import { requestIdMiddleware } from "./middlewares/requestId";
 import { httpLoggerMiddleware } from "./middlewares/httpLogger";
-
-if (env.STORAGE_ENC_KEY) {
-  const fp = crypto.createHash("sha256").update(env.STORAGE_ENC_KEY).digest("hex").slice(0, 8);
-  logger.info(
-    { storageEncKeyFingerprint: fp, storagePrefix: env.STORAGE_PREFIX, storageBucket: env.STORAGE_S3_BUCKET ?? "(not set)" },
-    "[storage] config fingerprint (compare across instances)"
-  );
-}
 
 const app = express();
 

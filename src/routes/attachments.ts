@@ -231,24 +231,8 @@ router.post(
       })
     );
     const magicBuf = await readBodyToBuffer(magicResp.Body);
-    const magicStr = magicBuf.length >= 4 ? magicBuf.subarray(0, 4).toString("utf8") : "(too short)";
-    const encKeyFp = env.STORAGE_ENC_KEY
-      ? crypto.createHash("sha256").update(env.STORAGE_ENC_KEY).digest("hex").slice(0, 8)
-      : "(none)";
-    logger.info(
-      {
-        attachmentId,
-        resolvedBucketKey,
-        "encMeta.enc": encMeta?.enc,
-        magicFirst4Bytes: magicStr,
-        storageEncKeyFingerprint: encKeyFp,
-      },
-      "[thumbnail] before decrypt (temp log)"
-    );
+    const magicStr = magicBuf.length >= 4 ? magicBuf.subarray(0, 4).toString("utf8") : "";
     const useEbp2 = isEbp2 && magicStr === "EBP2";
-    if (isEbp2 && !useEbp2) {
-      logger.warn({ attachmentId, magicStr, "encMeta.enc": encMeta?.enc }, "[thumbnail] meta.enc=ebp2 but magic disagrees, trust magic");
-    }
 
     const tmpDir = path.join(process.cwd(), "tmp", "thumbnails");
     fs.mkdirSync(tmpDir, { recursive: true });
@@ -285,9 +269,7 @@ router.post(
         try {
           const wholeDecrypted = decryptEbp2WholeFromBuffer(encBuf, resolvedBucketKey!, encKey);
           videoBuf = wholeDecrypted.subarray(0, fetchLen);
-          logger.info({ attachmentId, wholeDecrypt: "ok" }, "[thumbnail] temp log");
-        } catch (wholeErr: any) {
-          logger.warn({ err: wholeErr, attachmentId, wholeDecrypt: "fail" }, "[thumbnail] whole decrypt failed, trying range");
+        } catch (wholeErr) {
           const fetcher = async (range: { start: number; end: number }) => {
             const r = await s3Client.send(
               new GetObjectCommand({
@@ -324,9 +306,28 @@ router.post(
         });
         const getResp = await s3Client.send(getCmd);
         const encBuf = await readBodyToBuffer(getResp.Body);
-        videoBuf = isEncryptedPayload(encBuf)
-          ? decryptBuffer(encBuf, encKey, { aad: resolvedBucketKey! })
-          : encBuf;
+        if (isEncryptedPayload(encBuf)) {
+          const aadFromMeta = encMeta?.aad?.trim?.();
+          let dec: Buffer | undefined;
+          if (aadFromMeta) {
+            dec = decryptBuffer(encBuf, encKey, { aad: aadFromMeta });
+          } else {
+            const aadCandidates = [resolvedBucketKey!, ...expandedCandidates.filter((k) => k !== resolvedBucketKey)];
+            let lastErr: Error | null = null;
+            for (const aadCandidate of aadCandidates) {
+              try {
+                dec = decryptBuffer(encBuf, encKey, { aad: aadCandidate });
+                break;
+              } catch (e) {
+                lastErr = e as Error;
+              }
+            }
+            if (!dec) throw lastErr ?? new Error("EBP1 decrypt failed");
+          }
+          videoBuf = dec;
+        } else {
+          videoBuf = encBuf;
+        }
       }
 
       fs.writeFileSync(videoPath, videoBuf);

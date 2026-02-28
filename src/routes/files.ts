@@ -465,9 +465,23 @@ router.use(async (req: Request, res: Response, next) => {
           }
 
           const encryptedBuf = await readBodyToBuffer(response.Body);
-          const decrypted = isEncryptedPayload(encryptedBuf)
-            ? decryptBuffer(encryptedBuf, encKey!, { aad: key })
-            : decryptBuffer(encryptedBuf, encKey!, { aad: key });
+          const aadFromMeta = (meta?.aad ?? response.Metadata?.aad)?.trim?.();
+          let decrypted: Buffer | undefined;
+          if (aadFromMeta) {
+            decrypted = decryptBuffer(encryptedBuf, encKey!, { aad: aadFromMeta });
+          } else {
+            const aadCandidates = [key, ...expandedCandidates.filter((k) => k !== key)];
+            let lastErr: Error | null = null;
+            for (const aadCandidate of aadCandidates) {
+              try {
+                decrypted = decryptBuffer(encryptedBuf, encKey!, { aad: aadCandidate });
+                break;
+              } catch (e) {
+                lastErr = e as Error;
+              }
+            }
+            if (!decrypted) throw lastErr ?? new Error("EBP1 decrypt failed");
+          }
 
           if (rangeHeader) {
             const parsed = parseRangeHeader(rangeHeader, decrypted.length);
