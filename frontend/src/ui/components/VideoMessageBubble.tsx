@@ -344,11 +344,12 @@ export function VideoMessageBubble({
               const nextAspect = clampAspect(nw / nh)
               // If metadata-provided aspect is wrong (common for rotated phone videos),
               // prefer the actual poster intrinsic size so preview and player share geometry.
-              const shouldOverrideMeta =
-                typeof metaAspect === 'number' &&
-                metaAspect > 0 &&
-                Math.abs(metaAspect - nextAspect) >= 0.12
-              if (aspectSource !== 'thumb' && (aspectSource !== 'meta' || shouldOverrideMeta)) {
+              const shouldOverride =
+                // If we have explicit meta aspect, compare against it
+                (typeof metaAspect === 'number' && metaAspect > 0 && Math.abs(metaAspect - nextAspect) >= 0.12) ||
+                // Otherwise compare against current aspect we are using for layout
+                Math.abs(aspect - nextAspect) >= 0.12
+              if (aspectSource !== 'thumb' && shouldOverride) {
                 setAspect(nextAspect)
                 setAspectSource('thumb')
               }
