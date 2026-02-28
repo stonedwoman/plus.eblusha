@@ -269,6 +269,8 @@ router.post(
         : EBP2_DEFAULT_CHUNK_SIZE;
 
       let videoBuf: Buffer;
+      let plainLen: number | null = null;
+      const detectedContentType = (encMeta?.ct || mime || null) as string | null;
 
       if (useEbp2 && totalSize > 0) {
         const ebp2Aad = aadForDecrypt ?? resolvedBucketKey!;
@@ -398,7 +400,20 @@ router.post(
             }
             if (!dec) throw lastErr ?? new Error("EBP1 decrypt failed");
           }
-          videoBuf = dec.subarray(0, Math.min(dec.length, VIDEO_FETCH_FOR_THUMB));
+          plainLen = dec.length;
+          logger.info(
+            {
+              attachmentId,
+              resolvedBucketKey,
+              plainLen: dec.length,
+              plainFirst16Hex: dec.slice(0, 16).toString("hex"),
+              detectedContentType,
+            },
+            "[thumbnail] decrypted bytes"
+          );
+          // For EBP1 we already downloaded+decrypted the full object; don't truncate, or ffmpeg may fail
+          // for formats with critical metadata near the end (e.g. mp4 without faststart).
+          videoBuf = dec;
         } else {
           videoBuf = encBuf.subarray(0, Math.min(encBuf.length, VIDEO_FETCH_FOR_THUMB));
         }
@@ -412,14 +427,28 @@ router.post(
           `ffmpeg -y -ss 1.0 -i "${videoPath}" -vframes 1 -vf "scale='min(640,iw)':-2" -f image2 -q:v 4 "${thumbPath}"`,
           { stdio: "pipe", timeout: 15000 }
         );
-      } catch {
+      } catch (e1) {
         try {
           execSync(
             `ffmpeg -y -ss 0 -i "${videoPath}" -vframes 1 -vf "scale='min(640,iw)':-2" -f image2 -q:v 4 "${thumbPath}"`,
             { stdio: "pipe", timeout: 15000 }
           );
-        } catch {
-          res.status(500).json({ message: "Failed to extract video frame" });
+        } catch (e2) {
+          logger.warn(
+            {
+              attachmentId,
+              resolvedBucketKey,
+              enc: encMeta?.enc ?? null,
+              contentType: detectedContentType,
+              plainLen,
+              err1Name: e1 instanceof Error ? e1.name : null,
+              err1Msg: e1 instanceof Error ? e1.message : String(e1),
+              err2Name: e2 instanceof Error ? e2.name : null,
+              err2Msg: e2 instanceof Error ? e2.message : String(e2),
+            },
+            "[thumbnail] ffmpeg failed to extract frame"
+          );
+          res.status(415).json({ message: "thumbnail_unsupported" });
           return;
         }
       }
@@ -491,7 +520,18 @@ router.post(
         duration,
       });
     } catch (err: any) {
-      logger.error({ err, attachmentId }, "Thumbnail generation failed");
+      logger.error(
+        {
+          errName: err instanceof Error ? err.name : null,
+          errMsg: err instanceof Error ? err.message : String(err),
+          errStack: err instanceof Error ? err.stack : undefined,
+          attachmentId,
+          resolvedBucketKey,
+          enc: encMeta?.enc ?? null,
+          contentType: (encMeta?.ct || mime || null) as string | null,
+        },
+        "[thumbnail] failed"
+      );
       res.status(500).json({ message: err?.message || "Thumbnail generation failed" });
     } finally {
       try {
