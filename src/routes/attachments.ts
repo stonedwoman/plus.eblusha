@@ -355,14 +355,42 @@ router.post(
 
         if (isEncryptedPayload(encBuf)) {
           let dec: Buffer | undefined;
+          const headMetaAad = encMeta?.aad ?? null;
           if (aadForDecrypt) {
+            logger.info(
+              {
+                headMetadataAad: headMetaAad,
+                resolvedBucketKey,
+                aadChosen: aadForDecrypt,
+                aadChosenSha: crypto.createHash("sha256").update(Buffer.from(aadForDecrypt, "utf8")).digest("hex").slice(0, 12),
+                why: "meta",
+              },
+              "[thumbnail] EBP1 decrypt aad selection"
+            );
             dec = decryptBuffer(encBuf, encKey, { aad: aadForDecrypt });
           } else {
             const aadCandidates = [resolvedBucketKey!, ...expandedCandidates.filter((k) => k !== resolvedBucketKey)];
             let lastErr: Error | null = null;
+            logger.info(
+              {
+                headMetadataAad: headMetaAad,
+                resolvedBucketKey,
+                candidateCount: aadCandidates.length,
+                why: "candidates",
+              },
+              "[thumbnail] EBP1 decrypt aad selection"
+            );
             for (const aadCandidate of aadCandidates) {
               try {
+                logger.info(
+                  {
+                    aadCandidate,
+                    aadCandidateSha: crypto.createHash("sha256").update(Buffer.from(aadCandidate, "utf8")).digest("hex").slice(0, 12),
+                  },
+                  "[thumbnail] EBP1 trying candidate"
+                );
                 dec = decryptBuffer(encBuf, encKey, { aad: aadCandidate });
+                logger.info({ aadCandidate, why: "success" }, "[thumbnail] EBP1 decrypt aad selection");
                 break;
               } catch (e) {
                 lastErr = e as Error;

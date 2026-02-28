@@ -115,28 +115,55 @@ export function decryptBuffer(
   if (aadBuf) decipher.setAAD(aadBuf);
   decipher.setAuthTag(tag);
 
+  const aadStr = opts?.aad ?? null;
+  const aadLen = aadBuf?.length ?? 0;
+  const aadSha = aadBuf
+    ? crypto.createHash("sha256").update(aadBuf).digest("hex").slice(0, 12)
+    : null;
+  const expectedAadShaFromMeta = opts?.aad
+    ? crypto.createHash("sha256").update(Buffer.from(opts.aad, "utf8")).digest("hex").slice(0, 12)
+    : null;
+  const keyFp = crypto.createHash("sha256").update(masterKey).digest("hex").slice(0, 8);
+  const ivFirst = iv.slice(0, 8).toString("hex");
+  const tagFirst = tag.slice(0, 8).toString("hex");
+
+  logger.info(
+    {
+      aadUsed: {
+        aadStr: aadStr != null ? String(aadStr).slice(0, 120) : null,
+        aadLen,
+        aadSha,
+        expectedAadShaFromMeta,
+      },
+      keyFp,
+      fmt: "ebp1",
+      ivFirst,
+      tagFirst,
+      ciphertextLen: ciphertext.length,
+    },
+    "[decryptBuffer] aadUsed before final"
+  );
+
   try {
     const updated = decipher.update(ciphertext);
-    logger.info(
-      {
-        alg: "aes-256-gcm",
-        ivLen: iv.length,
-        tagLen: tag.length,
-        ciphertextLen: ciphertext.length,
-        aadSha: aadBuf
-          ? crypto.createHash("sha256").update(aadBuf).digest("hex").slice(0, 12)
-          : null,
-        ivFirst: iv.slice(0, 8).toString("hex"),
-        tagFirst: tag.slice(0, 8).toString("hex"),
-        headerFirst32: payload.slice(0, 32).toString("hex"),
-        fmt: "ebp1",
-      },
-      "[decryptBuffer] before final"
-    );
     const finalized = decipher.final();
     return Buffer.concat([updated, finalized]);
   } catch (err) {
-    logger.error({ err, stack: err instanceof Error ? err.stack : undefined }, "[decryptBuffer] final failed");
+    const errObj = err as Error & { code?: string };
+    logger.error(
+      {
+        errName: errObj?.name,
+        errMessage: errObj?.message,
+        errCode: errObj?.code,
+        stack: errObj?.stack,
+        fmt: "ebp1",
+        ivFirst,
+        tagFirst,
+        ciphertextLen: ciphertext.length,
+        keyFp,
+      },
+      "[decryptBuffer] final failed"
+    );
     throw err;
   }
 }
