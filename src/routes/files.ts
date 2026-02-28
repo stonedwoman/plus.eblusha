@@ -13,8 +13,30 @@ import {
   parseStorageEncKey,
 } from "../lib/storageEncryption";
 
-const EBP1_RANGE_SIZE_LIMIT = 50 * 1024 * 1024; // 50MB: refuse Range on EBP1 to avoid OOM
-const RANGE_MAX_SIZE = 16 * 1024 * 1024; // 16MB: max Range span to avoid unbounded buffering
+const EBP1_RANGE_SIZE_LIMIT = 50 * 1024 * 1024; // 50MB: above this, EBP1 ignores Range and returns 200
+const RANGE_MAX_SIZE = 16 * 1024 * 1024; // 16MB: default max Range span
+const RANGE_MAX_SIZE_VIDEO = 64 * 1024 * 1024; // 64MB: video/ for longer seeks
+const RANGE_MAX_SIZE_AUDIO = 16 * 1024 * 1024; // 16MB: audio/
+
+function getRangeMaxSize(contentType: string): number {
+  const ct = (contentType || "").toLowerCase().trim();
+  if (ct.startsWith("video/")) return RANGE_MAX_SIZE_VIDEO;
+  if (ct.startsWith("audio/")) return RANGE_MAX_SIZE_AUDIO;
+  return RANGE_MAX_SIZE;
+}
+
+function send416RangeNotSatisfiable(res: Response, totalSize: number, opts?: { contentType?: string; message?: string }) {
+  res.status(416);
+  res.setHeader("Content-Range", `bytes */${totalSize}`);
+  res.setHeader("Accept-Ranges", "bytes");
+  if (opts?.message) {
+    res.setHeader("Content-Type", "application/json");
+    res.json({ message: opts.message });
+  } else {
+    if (opts?.contentType) res.setHeader("Content-Type", opts.contentType);
+    res.end();
+  }
+}
 
 const router = Router();
 
@@ -329,14 +351,16 @@ router.use(async (req: Request, res: Response, next) => {
           if (rangeHeader) {
             const parsed = parseRangeHeader(rangeHeader, totalSize);
             if (!parsed) {
-              res.status(416).json({ message: "Invalid Range" });
+              send416RangeNotSatisfiable(res, totalSize, { contentType: originalCt, message: "Invalid Range" });
               return;
             }
             byteRange = parsed;
             const rangeLen = byteRange.end - byteRange.start + 1;
-            if (rangeLen > RANGE_MAX_SIZE) {
-              res.status(400).json({
-                message: `Range too large (max ${RANGE_MAX_SIZE / 1024 / 1024}MB). Requested: ${Math.ceil(rangeLen / 1024 / 1024)}MB`,
+            const rangeMax = getRangeMaxSize(originalCt);
+            if (rangeLen > rangeMax) {
+              send416RangeNotSatisfiable(res, totalSize, {
+                contentType: originalCt,
+                message: `Range too large (max ${rangeMax / 1024 / 1024}MB). Requested: ${Math.ceil(rangeLen / 1024 / 1024)}MB`,
               });
               return;
             }
@@ -368,6 +392,13 @@ router.use(async (req: Request, res: Response, next) => {
           res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
           const plainStream = decryptEbp2RangeStream(key, fetcher, byteRange, encKey!, { chunkSize, totalSize });
+          plainStream.on("error", (err) => res.destroy(err));
+          res.on("close", () => {
+            if (!res.writableEnded) plainStream.destroy();
+          });
+          req.on("close", () => {
+            plainStream.destroy();
+          });
           plainStream.pipe(res);
           return;
         }
@@ -386,16 +417,19 @@ router.use(async (req: Request, res: Response, next) => {
         if (!isEbp1 && headResponse) {
           const rangeHeader = req.headers.range as string | undefined;
           const objSize = headResponse.ContentLength ?? 0;
+          const unencCt = headResponse.ContentType || "application/octet-stream";
           if (rangeHeader) {
             const parsed = parseRangeHeader(rangeHeader, objSize);
             if (!parsed) {
-              res.status(416).json({ message: "Invalid Range" });
+              send416RangeNotSatisfiable(res, objSize, { contentType: unencCt, message: "Invalid Range" });
               return;
             }
             const rangeLen = parsed.end - parsed.start + 1;
-            if (rangeLen > RANGE_MAX_SIZE) {
-              res.status(400).json({
-                message: `Range too large (max ${RANGE_MAX_SIZE / 1024 / 1024}MB)`,
+            const rangeMax = getRangeMaxSize(unencCt);
+            if (rangeLen > rangeMax) {
+              send416RangeNotSatisfiable(res, objSize, {
+                contentType: unencCt,
+                message: `Range too large (max ${rangeMax / 1024 / 1024}MB)`,
               });
               return;
             }
@@ -410,21 +444,22 @@ router.use(async (req: Request, res: Response, next) => {
         const isEncrypted = isEbp1;
 
         if (isEncrypted) {
-          const rangeHeader = req.headers.range as string | undefined;
+          let rangeHeader = req.headers.range as string | undefined;
           const encSize = contentLength ?? 0;
+          const originalCt =
+            (response.Metadata?.ct && response.Metadata.ct.trim()) || "application/octet-stream";
+
+          // EBP1: for large files or oversized Range, ignore Range and return 200 full — lets <video> play without seek, no OOM
           if (rangeHeader) {
             if (encSize > EBP1_RANGE_SIZE_LIMIT) {
-              res.status(400).json({ message: "Range not supported for large legacy-encrypted files (use EBP2)" });
-              return;
-            }
-            const parsed = parseRangeHeader(rangeHeader, encSize || 0);
-            if (parsed) {
-              const rangeLen = parsed.end - parsed.start + 1;
-              if (rangeLen > RANGE_MAX_SIZE) {
-                res.status(400).json({
-                  message: `Range too large (max ${RANGE_MAX_SIZE / 1024 / 1024}MB)`,
-                });
-                return;
+              rangeHeader = undefined;
+            } else {
+              const parsed = parseRangeHeader(rangeHeader, encSize || 0);
+              if (parsed) {
+                const rangeLen = parsed.end - parsed.start + 1;
+                if (rangeLen > getRangeMaxSize(originalCt)) {
+                  rangeHeader = undefined;
+                }
               }
             }
           }
@@ -433,9 +468,6 @@ router.use(async (req: Request, res: Response, next) => {
           const decrypted = isEncryptedPayload(encryptedBuf)
             ? decryptBuffer(encryptedBuf, encKey!, { aad: key })
             : decryptBuffer(encryptedBuf, encKey!, { aad: key });
-
-          const originalCt =
-            (response.Metadata?.ct && response.Metadata.ct.trim()) || "application/octet-stream";
 
           if (rangeHeader) {
             const parsed = parseRangeHeader(rangeHeader, decrypted.length);

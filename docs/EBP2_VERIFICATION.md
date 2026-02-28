@@ -25,9 +25,23 @@ curl -D - -H "Range: bytes=0-1023" "$BASE/api/files/$FILE_PATH" -o /dev/null
 
 # 5. Range bytes=5000000-5001023 (206)
 curl -D - -H "Range: bytes=5000000-5001023" "$BASE/api/files/$FILE_PATH" -o /dev/null
+
+# 6. Range too large (expect 416)
+curl -D - -H "Range: bytes=0-20000000" "$BASE/api/files/$FILE_PATH" -o /dev/null
+# Expect: 416 Range Not Satisfiable, Content-Range: bytes */<totalSize>
 ```
 
 Note: Add `-H "Authorization: Bearer TOKEN"` if `/api/files/*` requires auth.
+
+## Range limits by Content-Type
+
+| Content-Type prefix | Max Range span |
+|---------------------|----------------|
+| video/*             | 64MB           |
+| audio/*             | 16MB           |
+| other               | 16MB           |
+
+Exceeding the limit returns **416 Range Not Satisfiable** (not 400). EBP1: for files >50MB or oversized Range, Range is ignored and 200 full file is returned so `<video>` can play without seek.
 
 ## Expected Headers
 
@@ -64,10 +78,12 @@ Content-Length: 12345678
 Accept-Ranges: bytes
 ```
 
-### 400 (Range too large, max 16MB)
+### 416 (Range Not Satisfiable — too large or invalid)
 
 ```
-HTTP/1.1 400 Bad Request
+HTTP/1.1 416 Range Not Satisfiable
+Content-Range: bytes */12345678
+Accept-Ranges: bytes
 Content-Type: application/json
 {"message":"Range too large (max 16MB). Requested: 20MB"}
 ```
@@ -81,3 +97,10 @@ Content-Type: application/json
 | 4MB | Fewer S3 requests for full download, less overhead | Coarser seek; each Range request may fetch up to 4MB |
 
 **1MB chosen:** Typical video seeks request ~1MB; overhead is small; full-file decrypt streams in ~1MB chunks. Larger files (100MB+) benefit from Range without full decrypt.
+
+## Verification
+
+1. **HEAD:** `curl -I "$BASE/api/files/$FILE_PATH"` — expect `Accept-Ranges: bytes`, `Content-Length`, `Content-Type`.
+2. **Small Range (206):** `curl -D - -H "Range: bytes=0-1023" "$BASE/api/files/$FILE_PATH" -o /dev/null` — expect `HTTP/1.1 206`, `Content-Range: bytes 0-1023/<total>`, `Content-Length: 1024`.
+3. **Range > limit (416):** `curl -D - -H "Range: bytes=0-20000000" "$BASE/api/files/$FILE_PATH" -o /dev/null` — expect `HTTP/1.1 416`, `Content-Range: bytes */<total>`, `Accept-Ranges: bytes`.
+4. **Browser:** Use `<video src="/api/files/...">` — should play without crashing on 416 (browsers typically retry with a smaller range or fall back).
