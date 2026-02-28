@@ -6,7 +6,14 @@ import {
 } from "@aws-sdk/client-s3";
 import env from "../config/env";
 import logger from "../config/logger";
-import { decryptBuffer, isEncryptedPayload, parseStorageEncKey } from "../lib/storageEncryption";
+import {
+  decryptBuffer,
+  decryptEbp2Range,
+  isEncryptedPayload,
+  parseStorageEncKey,
+} from "../lib/storageEncryption";
+
+const EBP1_RANGE_SIZE_LIMIT = 50 * 1024 * 1024; // 50MB: refuse Range on EBP1 to avoid OOM
 
 const router = Router();
 
@@ -259,26 +266,104 @@ router.use(async (req: Request, res: Response, next) => {
 
     for (const key of expandedCandidates) {
       try {
-        // First, check if object exists and get metadata (best-effort).
+        let headResponse: { Metadata?: Record<string, string>; ContentType?: string; ContentLength?: number; LastModified?: Date; ETag?: string } | null = null;
         try {
           const headCommand = new HeadObjectCommand({ Bucket: s3Config.bucket, Key: key });
-          const headResponse = await s3Client.send(headCommand);
-          contentType = headResponse.ContentType || contentType;
-          contentLength = headResponse.ContentLength;
-          lastModified = headResponse.LastModified;
-          etag = headResponse.ETag;
+          const h = await s3Client.send(headCommand) as { Metadata?: Record<string, string>; ContentType?: string; ContentLength?: number; LastModified?: Date; ETag?: string };
+          headResponse = h;
+          contentType = h.ContentType || contentType;
+          contentLength = h.ContentLength;
+          lastModified = h.LastModified;
+          etag = h.ETag;
         } catch (headError: any) {
-          // NotFound -> try next candidate without GET.
           if (headError.name === "NotFound" || headError.$metadata?.httpStatusCode === 404) {
             lastErr = headError;
             continue;
           }
-          // Other errors (including AccessDenied or unsupported HEAD) -> we still try GET.
           lastErr = headError;
           logger.warn({ err: headError, key }, "HEAD request failed for candidate, will try GET");
         }
 
-        // Get the object
+        const meta = (headResponse?.Metadata || {}) as Record<string, string>;
+        const isEbp2 = meta?.enc === "ebp2";
+
+        if (req.method === "HEAD" && headResponse && !isEbp2) {
+          res.setHeader("Content-Type", headResponse.ContentType || contentType);
+          if (headResponse.ContentLength !== undefined) {
+            res.setHeader("Content-Length", headResponse.ContentLength.toString());
+          }
+          if (headResponse.LastModified) {
+            res.setHeader("Last-Modified", headResponse.LastModified.toUTCString());
+          }
+          if (headResponse.ETag) {
+            res.setHeader("ETag", headResponse.ETag);
+          }
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+          res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified");
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          res.status(200).end();
+          return;
+        }
+
+        if (isEbp2 && meta?.totalSize && meta?.chunksize) {
+          const totalSize = parseInt(meta.totalSize, 10);
+          const chunkSize = parseInt(meta.chunksize, 10);
+          const originalCt = (meta.ct && meta.ct.trim()) || "application/octet-stream";
+
+          if (req.method === "HEAD") {
+            res.setHeader("Content-Type", originalCt);
+            res.setHeader("Content-Length", totalSize.toString());
+            res.setHeader("Accept-Ranges", "bytes");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+            res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Accept-Ranges");
+            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+            res.status(200).end();
+            return;
+          }
+
+          const rangeHeader = req.headers.range as string | undefined;
+          let byteRange: { start: number; end: number };
+          if (rangeHeader) {
+            const parsed = parseRangeHeader(rangeHeader, totalSize);
+            if (!parsed) {
+              res.status(416).json({ message: "Invalid Range" });
+              return;
+            }
+            byteRange = parsed;
+          } else {
+            byteRange = { start: 0, end: totalSize > 0 ? totalSize - 1 : 0 };
+          }
+
+          const fetcher = async (range: { start: number; end: number }) => {
+            const cmd = new GetObjectCommand({
+              Bucket: s3Config.bucket!,
+              Key: key,
+              Range: `bytes=${range.start}-${range.end}`,
+            });
+            const r = await s3Client.send(cmd);
+            return readBodyToBuffer(r.Body);
+          };
+
+          const decrypted = await decryptEbp2Range(key, fetcher, byteRange, encKey, { chunkSize, totalSize });
+
+          if (rangeHeader) {
+            res.status(206);
+            res.setHeader("Content-Range", `bytes ${byteRange.start}-${byteRange.end}/${totalSize}`);
+          }
+          res.setHeader("Content-Type", originalCt);
+          res.setHeader("Content-Length", decrypted.length.toString());
+          res.setHeader("Accept-Ranges", "bytes");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+          res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges");
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          res.send(decrypted);
+          return;
+        }
+
+        // EBP1 or legacy encrypted
         const getCommand = new GetObjectCommand({ Bucket: s3Config.bucket, Key: key });
         const response = await s3Client.send(getCommand);
 
@@ -287,23 +372,25 @@ router.use(async (req: Request, res: Response, next) => {
         const isEncrypted =
           response.Metadata?.enc === "ebp1" ||
           response.Metadata?.encv === "1" ||
-          // Backward compat (older attempt used underscores)
           (response.Metadata as any)?.enc_v === "1" ||
           false;
 
         if (isEncrypted) {
-          // encKey validated above
+          const rangeHeader = req.headers.range as string | undefined;
+          const encSize = contentLength ?? 0;
+          if (rangeHeader && encSize > EBP1_RANGE_SIZE_LIMIT) {
+            res.status(400).json({ message: "Range not supported for large legacy-encrypted files (use EBP2)" });
+            return;
+          }
+
           const encryptedBuf = await readBodyToBuffer(response.Body);
           const decrypted = isEncryptedPayload(encryptedBuf)
-            ? decryptBuffer(encryptedBuf, encKey, { aad: key })
-            : decryptBuffer(encryptedBuf, encKey, { aad: key });
+            ? decryptBuffer(encryptedBuf, encKey!, { aad: key })
+            : decryptBuffer(encryptedBuf, encKey!, { aad: key });
 
           const originalCt =
             (response.Metadata?.ct && response.Metadata.ct.trim()) || "application/octet-stream";
 
-          // Support Range requests in a best-effort way for encrypted objects:
-          // decrypt full body, then serve requested slice. This fixes mobile Safari/WebView audio playback.
-          const rangeHeader = req.headers.range;
           if (rangeHeader) {
             const parsed = parseRangeHeader(rangeHeader, decrypted.length);
             if (!parsed) {
@@ -317,14 +404,9 @@ router.use(async (req: Request, res: Response, next) => {
             res.setHeader("Content-Range", `bytes ${start}-${end}/${decrypted.length}`);
             res.setHeader("Content-Type", originalCt);
             res.setHeader("Content-Length", slice.length.toString());
-            // CORS headers
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-            res.setHeader(
-              "Access-Control-Expose-Headers",
-              "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges"
-            );
-            // Cache headers
+            res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges");
             res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
             res.send(slice);
             return;
@@ -333,14 +415,9 @@ router.use(async (req: Request, res: Response, next) => {
           res.setHeader("Content-Type", originalCt);
           res.setHeader("Content-Length", decrypted.length.toString());
           res.setHeader("Accept-Ranges", "bytes");
-          // CORS headers
           res.setHeader("Access-Control-Allow-Origin", "*");
           res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-          res.setHeader(
-            "Access-Control-Expose-Headers",
-            "ETag, Content-Length, Content-Type, Last-Modified, Accept-Ranges"
-          );
-          // Cache headers
+          res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Accept-Ranges");
           res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
           res.send(decrypted);
           return;

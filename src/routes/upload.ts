@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import multer from "multer";
 import path from "path";
+import fs from "fs";
 import crypto from "crypto";
 import {
   S3Client,
@@ -14,15 +15,31 @@ import logger from "../config/logger";
 import { rateLimit } from "../middlewares/rateLimit";
 import {
   encryptBuffer,
+  encryptToEbp2Stream,
   parseStorageEncKey,
+  EBP2_DEFAULT_CHUNK_SIZE,
   type EncryptionMetadata,
+  type EBP2Metadata,
 } from "../lib/storageEncryption";
 
 const router = Router();
 
+const encV2 = env.STORAGE_ENC_V2 === true;
+
 const upload = multer({
-  storage: multer.memoryStorage(),
-  // Increase max size to 100MB to support typical documents/archives
+  storage:
+    encV2
+      ? multer.diskStorage({
+          destination: (_req, _file, cb) => {
+            const tmp = path.join(process.cwd(), "tmp", "uploads");
+            fs.mkdirSync(tmp, { recursive: true });
+            cb(null, tmp);
+          },
+          filename: (_req, _file, cb) => {
+            cb(null, `upload-${Date.now()}-${crypto.randomBytes(8).toString("hex")}`);
+          },
+        })
+      : multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 },
 });
 
@@ -155,24 +172,50 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
       return;
     }
 
-    // All uploads go to S3 - no local fallback
-    // Hetzner Object Storage may not support ACL/SSE parameters
-    // Use them only if explicitly needed for other providers
-    let bodyToUpload: Buffer = file.buffer;
-    let encryptionMeta: EncryptionMetadata | null = null;
+    let bodyToUpload: Buffer | NodeJS.ReadableStream;
+    let encryptionMeta: EncryptionMetadata | EBP2Metadata | null = null;
     let originalContentType = file.mimetype || "application/octet-stream";
 
-    // Optional app-level encryption: store only ciphertext in S3. Decrypt in /api/files.
-    // AAD binds ciphertext to its object key (prevents key-swapping attacks inside the bucket).
-    if (encKey) {
-      const encrypted = encryptBuffer(file.buffer, encKey, {
+    if (encKey && encV2) {
+      const filePath = (file as any).path as string | undefined;
+      if (!filePath || !fs.existsSync(filePath)) {
+        res.status(500).json({ message: "Upload file not found on disk" });
+        return;
+      }
+      const stat = fs.statSync(filePath);
+      const totalSize = stat.size;
+      const inputStream = fs.createReadStream(filePath);
+      const encryptedStream = encryptToEbp2Stream(
+        inputStream,
+        key,
+        totalSize,
+        encKey,
+        { chunkSize: EBP2_DEFAULT_CHUNK_SIZE }
+      );
+      bodyToUpload = encryptedStream;
+      encryptionMeta = {
+        enc: "ebp2",
+        encalg: "aes-256-gcm",
+        chunksize: String(EBP2_DEFAULT_CHUNK_SIZE),
+        totalSize: String(totalSize),
+        ct: originalContentType,
+      };
+      originalContentType = "application/octet-stream";
+    } else if (encKey) {
+      const buffer = file.buffer;
+      if (!buffer) {
+        res.status(500).json({ message: "Upload file data not available" });
+        return;
+      }
+      const encrypted = encryptBuffer(buffer, encKey, {
         aad: key,
         contentType: originalContentType,
       });
       bodyToUpload = encrypted.payload;
       encryptionMeta = encrypted.meta;
-      // ciphertext shouldn't advertise original type
       originalContentType = "application/octet-stream";
+    } else {
+      bodyToUpload = file.buffer!;
     }
 
     const putObjectParams: any = {
@@ -180,19 +223,25 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
       Key: key,
       Body: bodyToUpload,
       ContentType: originalContentType,
-      Metadata: encryptionMeta
-        ? {
-            enc: "ebp1",
-            // Avoid underscores in x-amz-meta-* keys for S3-compatible providers.
-            // Some proxies/services normalize '_' which breaks SigV4 signature verification.
-            encv: encryptionMeta.v,
-            encalg: encryptionMeta.alg,
-            enciv: encryptionMeta.iv,
-            enctag: encryptionMeta.tag,
-            // preserve original content-type for API response
-            ct: encryptionMeta.ct || "",
-          }
-        : undefined,
+      Metadata:
+        encryptionMeta && "enc" in encryptionMeta && encryptionMeta.enc === "ebp2"
+          ? {
+              enc: "ebp2",
+              encalg: (encryptionMeta as EBP2Metadata).encalg,
+              chunksize: (encryptionMeta as EBP2Metadata).chunksize,
+              totalSize: (encryptionMeta as EBP2Metadata).totalSize,
+              ct: (encryptionMeta as EBP2Metadata).ct || "",
+            }
+          : encryptionMeta
+            ? {
+                enc: "ebp1",
+                encv: (encryptionMeta as EncryptionMetadata).v,
+                encalg: (encryptionMeta as EncryptionMetadata).alg,
+                enciv: (encryptionMeta as EncryptionMetadata).iv,
+                enctag: (encryptionMeta as EncryptionMetadata).tag,
+                ct: (encryptionMeta as EncryptionMetadata).ct || "",
+              }
+            : undefined,
     };
     // Note: twcstorage.ru (Russian S3) doesn't support ACL/SSE in PutObject
     // Similar to Hetzner, these parameters cause InvalidRequest errors
@@ -203,12 +252,25 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
     // if (sse) putObjectParams.ServerSideEncryption = sse;
     const command = new PutObjectCommand(putObjectParams);
     await s3Client.send(command);
-    
+
+    if (encV2 && (file as any).path) {
+      try {
+        fs.unlinkSync((file as any).path);
+      } catch (e) {
+        logger.warn({ err: e, path: (file as any).path }, "Failed to remove temp upload file");
+      }
+    }
+
     const encodedKey = encodeKeyForUrl(key);
     const proxyUrl = `/api/files/${encodedKey}`;
     res.json({ url: proxyUrl, path: key, publicUrl: proxyUrl });
   } catch (error) {
     logger.error({ err: error }, "Failed to upload file to S3");
+    if ((file as any).path && fs.existsSync((file as any).path)) {
+      try {
+        fs.unlinkSync((file as any).path);
+      } catch {}
+    }
     res.status(500).json({ message: "Upload failed" });
   }
 });

@@ -49,6 +49,8 @@ const envSchema = z.object({
   STORAGE_S3_SSE: z.string().default("AES256"),
   // Optional symmetric key (base64 or hex, 32 bytes) for server-side encryption
   STORAGE_ENC_KEY: z.string().min(1).optional(),
+  // When 1, use EBP2 (chunked AEAD) instead of EBP1 for new uploads. Allows Range/seek without full decrypt.
+  STORAGE_ENC_V2: z.coerce.boolean().default(false),
   // Optional KEK (base64 or hex, 32 bytes) for server-side encryption of NON-secret chat DEKs
   // If unset, non-secret chat encryption helpers will throw when used.
   CHAT_ENC_KEK: z.string().optional(),
