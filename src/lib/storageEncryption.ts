@@ -21,34 +21,37 @@ export type EncryptionMetadata = {
 
 export class StorageEncryptionError extends Error {}
 
+/** Parse STORAGE_ENC_KEY: base64 (if /+= or len 44) else hex (64 chars) else error. Always 32 bytes. */
 export function parseStorageEncKey(raw: string): Buffer {
   const trimmed = raw.trim();
   if (!trimmed) throw new StorageEncryptionError("STORAGE_ENC_KEY is empty");
 
-  // Try hex
-  if (/^[0-9a-fA-F]+$/.test(trimmed) && trimmed.length % 2 === 0) {
-    const buf = Buffer.from(trimmed, "hex");
-    if (buf.length !== 32) {
-      throw new StorageEncryptionError(
-        `STORAGE_ENC_KEY hex must decode to 32 bytes, got ${buf.length}`
-      );
-    }
-    return buf;
-  }
-
-  // Try base64
   let buf: Buffer;
-  try {
-    buf = Buffer.from(trimmed, "base64");
-  } catch {
-    throw new StorageEncryptionError("STORAGE_ENC_KEY must be hex or base64");
+
+  const looksLikeBase64 =
+    trimmed.length === 44 ||
+    trimmed.includes("/") ||
+    trimmed.includes("+") ||
+    trimmed.includes("=");
+
+  if (looksLikeBase64) {
+    try {
+      buf = Buffer.from(trimmed, "base64");
+    } catch {
+      throw new StorageEncryptionError("STORAGE_ENC_KEY base64 decode failed");
+    }
+  } else if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    buf = Buffer.from(trimmed, "hex");
+  } else {
+    throw new StorageEncryptionError("STORAGE_ENC_KEY must be base64 (44 chars with /+=) or hex (64 chars)");
   }
 
   if (buf.length !== 32) {
     throw new StorageEncryptionError(
-      `STORAGE_ENC_KEY base64 must decode to 32 bytes, got ${buf.length}`
+      `STORAGE_ENC_KEY must decode to 32 bytes, got ${buf.length}`
     );
   }
+
   return buf;
 }
 
