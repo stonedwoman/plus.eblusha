@@ -96,7 +96,7 @@ export default function ContactsPage() {
               <Loader2 size={20} className="contacts-page__pending-icon" aria-hidden />
               <div className="contacts-page__pending-text">
                 <span className="contacts-page__pending-title">Ожидание подтверждения</span>
-                <span className="contacts-page__pending-hint">Попроси человека в «Контакты» и подтвердить.</span>
+                <span className="contacts-page__pending-hint">Попроси зайти в «Контакты» и подтвердить.</span>
               </div>
             </div>
           ))}

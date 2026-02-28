@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle } from 'lucide-react'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2 } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -1763,6 +1763,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     },
   })
 
+  const outgoingContactsQuery = useQuery({
+    queryKey: ['contacts', 'outgoing'],
+    queryFn: async () => {
+      const r = await api.get('/contacts', { params: { filter: 'outgoing' } })
+      return r.data.contacts as Array<any>
+    },
+  })
+
   useEffect(() => {
     if (!activeId) return
     if (typeof window === 'undefined') return
@@ -2430,6 +2438,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return contactsQuery.data.filter((c: any) => !participantIds.has(c.friend.id))
   }, [activeConversation, contactsQuery.data, activeConversationParticipantIds])
 
+  const sortedAcceptedContacts = useMemo(() => {
+    const list = contactsQuery.data ?? []
+    return [...list].sort((a: any, b: any) => {
+      const ta = new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()
+      const tb = new Date(b.updatedAt ?? b.createdAt ?? 0).getTime()
+      return tb - ta
+    })
+  }, [contactsQuery.data])
+
   const addParticipantsFoundUserStatus = {
     alreadyInChat: addParticipantsFoundUser ? activeConversationParticipantIds.includes(addParticipantsFoundUser.id) : false,
     isSelf: addParticipantsFoundUser ? addParticipantsFoundUser.id === me?.id : false,
@@ -3052,8 +3069,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   // live update contacts tiles
   useEffect(() => {
     onContactRequest(() => { incomingContactsQuery.refetch() })
-    onContactAccepted(() => { contactsQuery.refetch(); conversationsQuery.refetch(); incomingContactsQuery.refetch() })
-    onContactRemoved(() => { contactsQuery.refetch(); incomingContactsQuery.refetch() })
+    onContactAccepted(() => {
+      outgoingContactsQuery.refetch()
+      contactsQuery.refetch()
+      conversationsQuery.refetch()
+      incomingContactsQuery.refetch()
+    })
+    onContactRemoved(() => { contactsQuery.refetch(); incomingContactsQuery.refetch(); outgoingContactsQuery.refetch() })
   }, [])
 
   // Touch event handlers for personal avatar editor
@@ -3608,8 +3630,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     setSendingInvite(true)
     try {
       await api.post('/contacts/add', { identifier: code })
+      client.invalidateQueries({ queryKey: ['contacts'] })
+      await client.refetchQueries({ queryKey: ['contacts', 'outgoing'] })
+      setTimeout(() => {
+        client.refetchQueries({ queryKey: ['contacts', 'outgoing'] })
+      }, 800)
+      setEblDigits(['', '', '', ''])
+      setFoundUser(null)
+      eblRefs[0].current?.focus()
       setSendingInvite(false)
-    } catch { setSendingInvite(false) }
+    } catch (err: any) {
+      setSendingInvite(false)
+      const msg = err.response?.data?.message ?? err.message ?? 'Не удалось отправить запрос'
+      alert(msg)
+    }
   }
 
   function canAutoMarkRead() {
@@ -10134,6 +10168,33 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               <button className="btn btn-secondary btn-icon" onClick={() => { if (myEblid) navigator.clipboard.writeText(myEblid) }} title="Скопировать EBLID"><Copy size={16} /></button>
             </div>
 
+            {outgoingContactsQuery.data && outgoingContactsQuery.data.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+                {outgoingContactsQuery.data.map((c: any) => (
+                  <div
+                    key={c.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: '14px 16px',
+                      width: '100%',
+                      maxWidth: 420,
+                      borderRadius: 12,
+                      background: 'var(--surface-100)',
+                      border: '1px solid var(--surface-border)',
+                    }}
+                  >
+                    <Loader2 size={20} style={{ flexShrink: 0, color: 'var(--text-muted)', animation: 'contacts-page-spin 1s linear infinite' }} aria-hidden />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                      <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>Ожидание подтверждения</span>
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.3 }}>Попроси зайти в «Контакты» и подтвердить.</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div style={{ marginBottom: 8 }}>
               <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 8 }}>Мои друзья</div>
               <div
@@ -10146,12 +10207,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   paddingRight: 4,
                 }}
               >
-                {(!contactsQuery.data || contactsQuery.data.length === 0) ? (
+                {sortedAcceptedContacts.length === 0 ? (
                   <div style={{ gridColumn: '1 / -1', padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
                     Нет контактов. Введите EBLID выше или примите запрос в друзья.
                   </div>
                 ) : (
-                (contactsQuery.data || []).map((c: any) => {
+                sortedAcceptedContacts.map((c: any) => {
                   const u = c.friend
                   return (
                     <div
