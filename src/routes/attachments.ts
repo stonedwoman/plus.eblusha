@@ -103,21 +103,29 @@ const encodeKeyForUrl = (key: string) =>
     .map((segment) => encodeURIComponent(segment))
     .join("/");
 
-const readBodyToBuffer = async (body: any): Promise<Buffer> => {
+/** Read stream fully into Buffer via async iterator (no truncation, no string decode). */
+async function readStreamFully(body: any): Promise<Buffer> {
   if (!body) return Buffer.alloc(0);
+  if (typeof body[Symbol.asyncIterator] === "function") {
+    const chunks: Buffer[] = [];
+    for await (const c of body) {
+      chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c as Uint8Array));
+    }
+    return Buffer.concat(chunks);
+  }
   if (typeof body.pipe === "function") {
     const chunks: Buffer[] = [];
     await new Promise<void>((resolve, reject) => {
       body.on("data", (c: any) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
       body.on("end", () => resolve());
-      body.on("error", (e: any) => reject(e));
+      body.on("error", reject);
     });
     return Buffer.concat(chunks);
   }
   const arrayBuffer = (await body.transformToByteArray?.()) || (await body.arrayBuffer?.());
   if (arrayBuffer) return Buffer.from(arrayBuffer);
   throw new Error("Unsupported S3 body");
-};
+}
 
 router.use(authenticate);
 
@@ -230,7 +238,7 @@ router.post(
         Range: "bytes=0-3",
       })
     );
-    const magicBuf = await readBodyToBuffer(magicResp.Body);
+    const magicBuf = await readStreamFully(magicResp.Body);
     const magicStr = magicBuf.length >= 4 ? magicBuf.subarray(0, 4).toString("utf8") : "";
     const useEbp2 = isEbp2 && magicStr === "EBP2";
     const aadForDecrypt = encMeta?.aad?.trim?.() || null;
@@ -278,7 +286,7 @@ router.post(
             Range: `bytes=0-${rangeEnd}`,
           })
         );
-        const encBuf = await readBodyToBuffer(encRangeResp.Body);
+        const encBuf = await readStreamFully(encRangeResp.Body);
         try {
           const wholeDecrypted = decryptEbp2WholeFromBuffer(encBuf, ebp2Aad, encKey);
           videoBuf = wholeDecrypted.subarray(0, fetchLen);
@@ -291,7 +299,7 @@ router.post(
                 Range: `bytes=${range.start}-${range.end}`,
               })
             );
-            return readBodyToBuffer(r.Body);
+            return readStreamFully(r.Body);
           };
           const stream = decryptEbp2RangeStream(
             ebp2Aad,
@@ -308,17 +316,33 @@ router.post(
           });
         }
       } else {
-        const rangeEnd = Math.min(
-          VIDEO_FETCH_FOR_THUMB - 1,
-          Math.max(0, (headResp.ContentLength ?? VIDEO_FETCH_FOR_THUMB) - 1)
-        );
+        const contentLen = headResp.ContentLength ?? 0;
         const getCmd = new GetObjectCommand({
           Bucket: s3Config.bucket,
           Key: resolvedBucketKey!,
-          Range: `bytes=0-${rangeEnd}`,
         });
         const getResp = await s3Client.send(getCmd);
-        const encBuf = await readBodyToBuffer(getResp.Body);
+        const encBuf = await readStreamFully(getResp.Body);
+        const gotLen = encBuf.length;
+
+        logger.info(
+          {
+            attachmentId,
+            resolvedBucketKey,
+            contentLen,
+            gotLen,
+            enc: encMeta?.enc,
+            aad: encMeta?.aad,
+            magic: encBuf.length >= 4 ? encBuf.subarray(0, 4).toString("utf8") : "",
+          },
+          "[thumbnail] downloaded bytes"
+        );
+
+        if (gotLen !== contentLen) {
+          res.status(502).json({ message: "incomplete_download", expected: contentLen, got: gotLen });
+          return;
+        }
+
         if (isEncryptedPayload(encBuf)) {
           let dec: Buffer | undefined;
           if (aadForDecrypt) {
@@ -336,9 +360,9 @@ router.post(
             }
             if (!dec) throw lastErr ?? new Error("EBP1 decrypt failed");
           }
-          videoBuf = dec;
+          videoBuf = dec.subarray(0, Math.min(dec.length, VIDEO_FETCH_FOR_THUMB));
         } else {
-          videoBuf = encBuf;
+          videoBuf = encBuf.subarray(0, Math.min(encBuf.length, VIDEO_FETCH_FOR_THUMB));
         }
       }
 
