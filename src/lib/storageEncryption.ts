@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { PassThrough } from "stream";
+import { PassThrough, Readable } from "stream";
 
 const MAGIC = Buffer.from("EBP1", "utf8"); // Eblusha Blob Payload v1
 const MAGIC_EBP2 = Buffer.from("EBP2", "utf8");
@@ -228,51 +228,68 @@ type EncryptedStreamFetcher = (range: { start: number; end: number }) => Promise
 
 /**
  * Decrypt only the chunks needed for the requested plaintext byte range.
- * Returns plaintext bytes [start..end] (inclusive).
+ * Returns a Readable stream that pushes plaintext chunks as they are decrypted (no full buffering).
  */
-export async function decryptEbp2Range(
+export function decryptEbp2RangeStream(
   objectKey: string,
   encryptedStreamFetcher: EncryptedStreamFetcher,
   byteRange: { start: number; end: number },
   masterKey: Buffer,
   opts: { chunkSize: number; totalSize: number; version?: number }
-): Promise<Buffer> {
+): Readable {
   const { chunkSize, totalSize, version = 1 } = opts;
   const { start, end } = byteRange;
 
   const chunks = getEbp2ChunksForRange(chunkSize, totalSize, start, end);
-  const parts: Buffer[] = [];
+  let idx = 0;
 
-  for (const ci of chunks) {
-    const { start: encStart, length: encLen, plainLen } = getEbp2ChunkEncryptedRange(
-      chunkSize,
-      totalSize,
-      ci
-    );
-    const encBuf = await encryptedStreamFetcher({ start: encStart, end: encStart + encLen - 1 });
+  const stream = new Readable({
+    async read() {
+      if (idx >= chunks.length) {
+        this.push(null);
+        return;
+      }
+      const ci = chunks[idx++];
+      if (ci === undefined) {
+        this.push(null);
+        return;
+      }
+      try {
+        const { start: encStart, length: encLen, plainLen } = getEbp2ChunkEncryptedRange(
+          chunkSize,
+          totalSize,
+          ci
+        );
+        const encBuf = await encryptedStreamFetcher({ start: encStart, end: encStart + encLen - 1 });
 
-    if (encBuf.length < IV_LEN + TAG_LEN)
-      throw new StorageEncryptionError(`EBP2 chunk ${ci} too short`);
+        if (encBuf.length < IV_LEN + TAG_LEN)
+          throw new StorageEncryptionError(`EBP2 chunk ${String(ci)} too short`);
 
-    const iv = encBuf.subarray(0, IV_LEN);
-    const tag = encBuf.subarray(IV_LEN, IV_LEN + TAG_LEN);
-    const ciphertext = encBuf.subarray(IV_LEN + TAG_LEN);
+        const iv = encBuf.subarray(0, IV_LEN);
+        const tag = encBuf.subarray(IV_LEN, IV_LEN + TAG_LEN);
+        const ciphertext = encBuf.subarray(IV_LEN + TAG_LEN);
 
-    const aad = buildEbp2Aad(objectKey, ci, chunkSize, totalSize, version);
-    const decipher = crypto.createDecipheriv("aes-256-gcm", masterKey, iv);
-    decipher.setAAD(aad);
-    decipher.setAuthTag(tag);
+        const aad = buildEbp2Aad(objectKey, ci, chunkSize, totalSize, version);
+        const decipher = crypto.createDecipheriv("aes-256-gcm", masterKey, iv);
+        decipher.setAAD(aad);
+        decipher.setAuthTag(tag);
 
-    const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+        const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 
-    const chunkPlainStart = ci * chunkSize;
-    const chunkPlainEnd = chunkPlainStart + plainLen - 1;
-    const sliceStart = Math.max(0, start - chunkPlainStart);
-    const sliceEnd = Math.min(plainLen - 1, end - chunkPlainStart);
-    parts.push(plain.subarray(sliceStart, sliceEnd + 1));
-  }
+        const chunkPlainStart = ci * chunkSize;
+        const sliceStart = Math.max(0, start - chunkPlainStart);
+        const sliceEnd = Math.min(plainLen - 1, end - chunkPlainStart);
+        const slice = plain.subarray(sliceStart, sliceEnd + 1);
 
-  return Buffer.concat(parts);
+        if (slice.length > 0) this.push(slice);
+        if (idx >= chunks.length) this.push(null);
+      } catch (err) {
+        this.destroy(err as Error);
+      }
+    },
+  });
+
+  return stream;
 }
 
 

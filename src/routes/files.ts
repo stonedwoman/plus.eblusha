@@ -8,12 +8,13 @@ import env from "../config/env";
 import logger from "../config/logger";
 import {
   decryptBuffer,
-  decryptEbp2Range,
+  decryptEbp2RangeStream,
   isEncryptedPayload,
   parseStorageEncKey,
 } from "../lib/storageEncryption";
 
 const EBP1_RANGE_SIZE_LIMIT = 50 * 1024 * 1024; // 50MB: refuse Range on EBP1 to avoid OOM
+const RANGE_MAX_SIZE = 16 * 1024 * 1024; // 16MB: max Range span to avoid unbounded buffering
 
 const router = Router();
 
@@ -332,6 +333,13 @@ router.use(async (req: Request, res: Response, next) => {
               return;
             }
             byteRange = parsed;
+            const rangeLen = byteRange.end - byteRange.start + 1;
+            if (rangeLen > RANGE_MAX_SIZE) {
+              res.status(400).json({
+                message: `Range too large (max ${RANGE_MAX_SIZE / 1024 / 1024}MB). Requested: ${Math.ceil(rangeLen / 1024 / 1024)}MB`,
+              });
+              return;
+            }
           } else {
             byteRange = { start: 0, end: totalSize > 0 ? totalSize - 1 : 0 };
           }
@@ -346,41 +354,79 @@ router.use(async (req: Request, res: Response, next) => {
             return readBodyToBuffer(r.Body);
           };
 
-          const decrypted = await decryptEbp2Range(key, fetcher, byteRange, encKey, { chunkSize, totalSize });
-
+          const contentLength = byteRange.end - byteRange.start + 1;
           if (rangeHeader) {
             res.status(206);
             res.setHeader("Content-Range", `bytes ${byteRange.start}-${byteRange.end}/${totalSize}`);
           }
           res.setHeader("Content-Type", originalCt);
-          res.setHeader("Content-Length", decrypted.length.toString());
+          res.setHeader("Content-Length", contentLength.toString());
           res.setHeader("Accept-Ranges", "bytes");
           res.setHeader("Access-Control-Allow-Origin", "*");
           res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
           res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges");
           res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-          res.send(decrypted);
+
+          const plainStream = decryptEbp2RangeStream(key, fetcher, byteRange, encKey!, { chunkSize, totalSize });
+          plainStream.pipe(res);
           return;
         }
 
-        // EBP1 or legacy encrypted
-        const getCommand = new GetObjectCommand({ Bucket: s3Config.bucket, Key: key });
+        // EBP1 or unencrypted
+        const isEbp1 =
+          meta?.enc === "ebp1" ||
+          meta?.encv === "1" ||
+          (meta as any)?.enc_v === "1" ||
+          false;
+
+        let getParams: { Bucket: string; Key: string; Range?: string } = {
+          Bucket: s3Config.bucket!,
+          Key: key,
+        };
+        if (!isEbp1 && headResponse) {
+          const rangeHeader = req.headers.range as string | undefined;
+          const objSize = headResponse.ContentLength ?? 0;
+          if (rangeHeader) {
+            const parsed = parseRangeHeader(rangeHeader, objSize);
+            if (!parsed) {
+              res.status(416).json({ message: "Invalid Range" });
+              return;
+            }
+            const rangeLen = parsed.end - parsed.start + 1;
+            if (rangeLen > RANGE_MAX_SIZE) {
+              res.status(400).json({
+                message: `Range too large (max ${RANGE_MAX_SIZE / 1024 / 1024}MB)`,
+              });
+              return;
+            }
+            getParams.Range = `bytes=${parsed.start}-${parsed.end}`;
+          }
+        }
+        const getCommand = new GetObjectCommand(getParams);
         const response = await s3Client.send(getCommand);
 
         logger.info({ key }, "Proxying file from S3 using resolved key");
 
-        const isEncrypted =
-          response.Metadata?.enc === "ebp1" ||
-          response.Metadata?.encv === "1" ||
-          (response.Metadata as any)?.enc_v === "1" ||
-          false;
+        const isEncrypted = isEbp1;
 
         if (isEncrypted) {
           const rangeHeader = req.headers.range as string | undefined;
           const encSize = contentLength ?? 0;
-          if (rangeHeader && encSize > EBP1_RANGE_SIZE_LIMIT) {
-            res.status(400).json({ message: "Range not supported for large legacy-encrypted files (use EBP2)" });
-            return;
+          if (rangeHeader) {
+            if (encSize > EBP1_RANGE_SIZE_LIMIT) {
+              res.status(400).json({ message: "Range not supported for large legacy-encrypted files (use EBP2)" });
+              return;
+            }
+            const parsed = parseRangeHeader(rangeHeader, encSize || 0);
+            if (parsed) {
+              const rangeLen = parsed.end - parsed.start + 1;
+              if (rangeLen > RANGE_MAX_SIZE) {
+                res.status(400).json({
+                  message: `Range too large (max ${RANGE_MAX_SIZE / 1024 / 1024}MB)`,
+                });
+                return;
+              }
+            }
           }
 
           const encryptedBuf = await readBodyToBuffer(response.Body);
@@ -423,36 +469,33 @@ router.use(async (req: Request, res: Response, next) => {
           return;
         }
 
-        // Set appropriate headers
-        res.setHeader("Content-Type", response.ContentType || contentType);
-        if (contentLength !== undefined) {
-          res.setHeader("Content-Length", contentLength.toString());
+        // Unencrypted: set headers and stream
+        const usedRange = !!getParams.Range;
+        if (usedRange && response.ContentRange) {
+          res.status(206);
+          res.setHeader("Content-Range", response.ContentRange);
         }
+        res.setHeader("Content-Type", response.ContentType || contentType);
+        const bodyLength = response.ContentLength ?? contentLength;
+        if (bodyLength !== undefined) {
+          res.setHeader("Content-Length", bodyLength.toString());
+        }
+        res.setHeader("Accept-Ranges", "bytes");
         if (lastModified) {
           res.setHeader("Last-Modified", lastModified.toUTCString());
         }
         if (etag) {
           res.setHeader("ETag", etag);
         }
-
-        // CORS headers
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
         res.setHeader(
           "Access-Control-Expose-Headers",
-          "ETag, Content-Length, Content-Type, Last-Modified"
+          "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges"
         );
-
-        // Cache headers
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
-        // Handle range requests (for video/audio streaming)
-        const range = req.headers.range;
-        if (range && response.ContentRange) {
-          res.status(206).setHeader("Content-Range", response.ContentRange);
-        }
-
-        // Stream the object body to response
+        // Stream the object body
         if (response.Body) {
           const body = response.Body as any;
 

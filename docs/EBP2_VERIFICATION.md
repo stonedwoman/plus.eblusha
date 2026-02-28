@@ -15,19 +15,62 @@ Replace `BASE` (e.g. `https://plus.eblusha.org`), `TOKEN`, and `FILE_PATH` (path
 curl -X POST -H "Authorization: Bearer TOKEN" -F "file=@/path/to/test.mp4" "$BASE/api/upload"
 
 # 2. HEAD — check Accept-Ranges, Content-Length (plaintext size)
-curl -I -H "Authorization: Bearer TOKEN" "$BASE/api/files/$FILE_PATH"
-# Expect: Accept-Ranges: bytes, Content-Length: <plaintext size>
+curl -I "$BASE/api/files/$FILE_PATH"
 
-# 3. Range bytes=0-1023 (first 1KB)
-curl -H "Authorization: Bearer TOKEN" -H "Range: bytes=0-1023" "$BASE/api/files/$FILE_PATH" -o /dev/null -w "%{http_code}\n"
-# Expect: 206
+# 3. Full file (200)
+curl -D - -o /dev/null "$BASE/api/files/$FILE_PATH"
 
-# 4. Range bytes=5000000-5001023 (middle 1KB)
-curl -H "Authorization: Bearer TOKEN" -H "Range: bytes=5000000-5001023" "$BASE/api/files/$FILE_PATH" -o /dev/null -w "%{http_code}\n"
-# Expect: 206
+# 4. Range bytes=0-1023 (206)
+curl -D - -H "Range: bytes=0-1023" "$BASE/api/files/$FILE_PATH" -o /dev/null
+
+# 5. Range bytes=5000000-5001023 (206)
+curl -D - -H "Range: bytes=5000000-5001023" "$BASE/api/files/$FILE_PATH" -o /dev/null
 ```
 
-Note: `/api/files/*` may allow unauthenticated access depending on server config. If auth is required, add `-H "Authorization: Bearer TOKEN"`.
+Note: Add `-H "Authorization: Bearer TOKEN"` if `/api/files/*` requires auth.
+
+## Expected Headers
+
+### 200 (full file)
+
+```
+HTTP/1.1 200 OK
+Content-Type: video/mp4
+Content-Length: 12345678
+Accept-Ranges: bytes
+Content-Range: (absent)
+Cache-Control: public, max-age=31536000, immutable
+Access-Control-Expose-Headers: ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges
+```
+
+### 206 (Range)
+
+```
+HTTP/1.1 206 Partial Content
+Content-Type: video/mp4
+Content-Length: 1024
+Content-Range: bytes 0-1023/12345678
+Accept-Ranges: bytes
+Cache-Control: public, max-age=31536000, immutable
+Access-Control-Expose-Headers: ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges
+```
+
+### HEAD (metadata only)
+
+```
+HTTP/1.1 200 OK
+Content-Type: video/mp4
+Content-Length: 12345678
+Accept-Ranges: bytes
+```
+
+### 400 (Range too large, max 16MB)
+
+```
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+{"message":"Range too large (max 16MB). Requested: 20MB"}
+```
 
 ## chunkSize Tradeoffs (1MB default)
 
