@@ -327,6 +327,16 @@ router.post(
 
         logger.info(
           {
+            resolvedBucketKey,
+            objLen: encBuf.length,
+            objFirst32: encBuf.slice(0, 32).toString("hex"),
+            objLast32: encBuf.slice(-32).toString("hex"),
+            objSha: crypto.createHash("sha256").update(encBuf).digest("hex").slice(0, 12),
+          },
+          "[thumbnail] obj bytes"
+        );
+        logger.info(
+          {
             attachmentId,
             resolvedBucketKey,
             contentLen,

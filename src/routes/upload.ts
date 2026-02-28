@@ -274,6 +274,19 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
         "[upload] aad invariants"
       );
     }
+    if (encFormat === "ebp1" && Buffer.isBuffer(bodyToUpload)) {
+      const enc = bodyToUpload;
+      logger.info(
+        {
+          putKey,
+          encLen: enc.length,
+          encFirst32: enc.slice(0, 32).toString("hex"),
+          encLast32: enc.slice(-32).toString("hex"),
+          encSha: crypto.createHash("sha256").update(enc).digest("hex").slice(0, 12),
+        },
+        "[upload] enc bytes"
+      );
+    }
     // Note: twcstorage.ru (Russian S3) doesn't support ACL/SSE in PutObject
     // Similar to Hetzner, these parameters cause InvalidRequest errors
     // Uncomment if needed for AWS S3 or other providers that support it:
