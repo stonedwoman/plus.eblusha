@@ -325,7 +325,8 @@ export function VideoMessageBubble({
             inset: 0,
             width: '100%',
             height: '100%',
-            objectFit: 'contain',
+            // Fill the bubble in preview mode (no letterboxing).
+            objectFit: 'cover',
             display: 'block',
             background: '#000',
             opacity: isInlinePlaying ? 0 : 1,
