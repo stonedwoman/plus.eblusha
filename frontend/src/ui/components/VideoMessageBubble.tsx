@@ -9,6 +9,42 @@ const thumbInFlight = new Set<string>()
 const ASPECT_MIN = 0.5
 const ASPECT_MAX = 1.78
 
+function clampAspect(v: number) {
+  return Math.max(ASPECT_MIN, Math.min(ASPECT_MAX, v))
+}
+
+async function probeVideoAspect(src: string, timeoutMs: number): Promise<number | null> {
+  // Use a detached <video> to fetch only metadata (no full download).
+  // This runs only on user click to avoid preloading lots of videos in the chat list.
+  return await new Promise<number | null>((resolve) => {
+    const v = document.createElement('video')
+    v.preload = 'metadata'
+    v.muted = true
+    v.playsInline = true
+    const cleanup = () => {
+      v.removeAttribute('src')
+      // Some browsers keep network request alive until load() is called after src removal
+      try { v.load() } catch {}
+    }
+    const done = (aspect: number | null) => {
+      cleanup()
+      resolve(aspect)
+    }
+    const onMeta = () => {
+      const w = v.videoWidth
+      const h = v.videoHeight
+      if (w > 0 && h > 0) done(w / h)
+      else done(null)
+    }
+    const onErr = () => done(null)
+    v.addEventListener('loadedmetadata', onMeta, { once: true })
+    v.addEventListener('error', onErr, { once: true })
+    v.src = src
+    try { v.load() } catch {}
+    window.setTimeout(() => done(null), timeoutMs)
+  })
+}
+
 type Props = {
   attachmentId: string
   objectKey?: string | null
@@ -45,6 +81,7 @@ export function VideoMessageBubble({
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [isInlinePlaying, setIsInlinePlaying] = useState(false)
   const [videoReady, setVideoReady] = useState(false)
+  const [pendingStart, setPendingStart] = useState(false)
 
   const initialUrl = (() => {
     if (initialPosterUrl) return initialPosterUrl
@@ -59,9 +96,9 @@ export function VideoMessageBubble({
     typeof width === 'number' && typeof height === 'number' && width > 0 && height > 0 ? width / height : null
   const [aspect, setAspect] = useState<number>(() => {
     const v = initialAspect ?? 16 / 9
-    return Math.max(ASPECT_MIN, Math.min(ASPECT_MAX, v))
+    return clampAspect(v)
   })
-  const [aspectSource, setAspectSource] = useState<'meta' | 'thumb' | 'default'>(() => (initialAspect ? 'meta' : 'default'))
+  const [aspectSource, setAspectSource] = useState<'meta' | 'thumb' | 'video' | 'default'>(() => (initialAspect ? 'meta' : 'default'))
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
   const isMobile = vw <= 768
   // Keep sizing consistent with previous implementation to avoid shrink-to-fit collapse
@@ -91,7 +128,7 @@ export function VideoMessageBubble({
         const w = data?.width
         const h = data?.height
         if (!isInlinePlaying && typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) {
-          const nextAspect = Math.max(ASPECT_MIN, Math.min(ASPECT_MAX, w / h))
+          const nextAspect = clampAspect(w / h)
           setAspect(nextAspect)
           setAspectSource('meta')
         }
@@ -150,7 +187,23 @@ export function VideoMessageBubble({
         videoRef.current.pause()
       }
     } else {
-      setIsInlinePlaying(true)
+      setPendingStart(true)
+      // Try to refine aspect using <video preload="metadata"> before we start playback,
+      // so the container geometry doesn't change during preview->player transition.
+      ;(async () => {
+        try {
+          if (typeof document !== 'undefined' && aspectSource !== 'meta' && aspectSource !== 'video') {
+            const probed = await probeVideoAspect(videoSrc, 700)
+            if (typeof probed === 'number' && probed > 0) {
+              setAspect(clampAspect(probed))
+              setAspectSource('video')
+            }
+          }
+        } finally {
+          setIsInlinePlaying(true)
+          setPendingStart(false)
+        }
+      })()
     }
   }
 
@@ -305,6 +358,12 @@ export function VideoMessageBubble({
         <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
           {uploadInProgress && <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />}
           <span>{uploadInProgress ? 'Загрузка…' : 'Видео недоступно'}</span>
+        </div>
+      )}
+      {pendingStart && !isInlinePlaying && (
+        <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
+          <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />
+          <span>Загружаю…</span>
         </div>
       )}
 
