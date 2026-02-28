@@ -101,8 +101,9 @@ export function VideoMessageBubble({
   const [aspectSource, setAspectSource] = useState<'meta' | 'thumb' | 'video' | 'default'>(() => (initialAspect ? 'meta' : 'default'))
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
   const isMobile = vw <= 768
-  // Keep sizing consistent with previous implementation to avoid shrink-to-fit collapse
-  const bubbleW = isMobile ? 'calc(100vw - 48px)' : '420px'
+  // Let the parent message column constrain width (prevents overflow on mobile).
+  // We'll keep the old "max ~420px" behavior with maxWidth.
+  const bubbleMaxW = 420
   const showVideo = isInlinePlaying && videoReady
   const showLoadingOverlay =
     !!videoSrc &&
@@ -199,11 +200,17 @@ export function VideoMessageBubble({
       // so the container geometry doesn't change during preview->player transition.
       ;(async () => {
         try {
-          if (typeof document !== 'undefined' && aspectSource !== 'meta' && aspectSource !== 'video') {
+          if (typeof document !== 'undefined' && aspectSource !== 'video') {
             const probed = await probeVideoAspect(videoSrc, 700)
             if (typeof probed === 'number' && probed > 0) {
-              setAspect(clampAspect(probed))
-              setAspectSource('video')
+              const next = clampAspect(probed)
+              // If server-reported aspect is wrong (common with rotation metadata), prefer probed aspect.
+              // Only apply before playback starts (we are still in preview).
+              const diff = Math.abs(next - aspect)
+              if (diff >= 0.08) {
+                setAspect(next)
+                setAspectSource('video')
+              }
             }
           }
         } finally {
@@ -216,8 +223,9 @@ export function VideoMessageBubble({
 
   const bubbleStyle: React.CSSProperties = {
     marginTop: 8,
-    width: bubbleW,
-    maxWidth: bubbleW,
+    width: '100%',
+    maxWidth: bubbleMaxW,
+    boxSizing: 'border-box',
     // Fallback for environments where aspect-ratio is buggy/unsupported (children are absolutely positioned)
     minHeight: isMobile ? 180 : 200,
     aspectRatio: `${aspect}`,
