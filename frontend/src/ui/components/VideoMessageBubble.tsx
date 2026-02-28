@@ -109,6 +109,26 @@ export function VideoMessageBubble({
     !decryptError &&
     (pendingStart || (isInlinePlaying && !videoReady))
 
+  // Size bubble similarly to single images: a pixel-sized tile capped by screen,
+  // with height derived from aspect ratio.
+  const maxScreen = isMobile
+    ? Math.max(320, Math.floor(vw / 2))
+    : Math.min(480, Math.max(320, Math.floor(vw / 3)))
+  const ratioHW = aspect > 0 ? 1 / aspect : 0.75 // height/width
+  let maxHeight = maxScreen
+  if (ratioHW < 0.5) {
+    maxHeight = Math.max(Math.round(maxScreen * 0.6), 200)
+  } else if (ratioHW < 0.7) {
+    maxHeight = Math.max(Math.round(maxScreen * 0.75), 200)
+  }
+  const maxWidth = Math.min(maxScreen, 480)
+  let targetW = maxWidth
+  let targetH = targetW * ratioHW
+  const scaleByHeight = targetH > maxHeight ? maxHeight / targetH : 1
+  const scale = Math.min(scaleByHeight, 1)
+  targetW = Math.round(targetW * scale)
+  targetH = Math.round(targetH * scale)
+
   useEffect(() => {
     if (posterUrl || !attachmentId || thumbInFlight.has(attachmentId) || decryptPending) return
     if (!objectKey) {
@@ -215,14 +235,12 @@ export function VideoMessageBubble({
 
   const bubbleStyle: React.CSSProperties = {
     marginTop: 8,
-    // Keep bubble responsive and avoid "right gap" due to manual width scaling.
-    // Width must match preview and player container.
-    width: 'min(480px, 100%)',
     maxWidth: '100%',
+    width: targetW,
+    height: targetH,
+    display: 'inline-block',
     lineHeight: 0,
     boxSizing: 'border-box',
-    // Fallback for environments where aspect-ratio is buggy/unsupported (children are absolutely positioned)
-    minHeight: isMobile ? 180 : 200,
     aspectRatio: `${aspect}`,
     borderRadius: 14,
     overflow: 'hidden',
