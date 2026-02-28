@@ -5,7 +5,8 @@ import { encodeKeyForUrl } from '../../utils/media'
 
 const thumbInFlight = new Set<string>()
 
-const ASPECT_MIN = 0.75
+// width/height clamp to avoid extreme layout sizes while still supporting portrait video (e.g. 9:16 ≈ 0.56)
+const ASPECT_MIN = 0.5
 const ASPECT_MAX = 1.78
 
 type Props = {
