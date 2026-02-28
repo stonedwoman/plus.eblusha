@@ -107,13 +107,14 @@ export function decryptBuffer(
   }
 
   const iv = payload.subarray(MAGIC.length, MAGIC.length + IV_LEN);
-  const tag = payload.subarray(MAGIC.length + IV_LEN, MAGIC.length + IV_LEN + TAG_LEN);
+  const tagRaw = payload.subarray(MAGIC.length + IV_LEN, MAGIC.length + IV_LEN + TAG_LEN);
+  const tag = Buffer.from(tagRaw); // copy: ensure 16-byte buffer for setAuthTag (native may require it)
   const ciphertext = payload.subarray(MAGIC.length + IV_LEN + TAG_LEN);
 
   const decipher = crypto.createDecipheriv("aes-256-gcm", masterKey, iv);
   const aadBuf = opts?.aad ? Buffer.from(opts.aad, "utf8") : null;
+  decipher.setAuthTag(tag); // must be before update(); before setAAD per some impls
   if (aadBuf) decipher.setAAD(aadBuf);
-  decipher.setAuthTag(tag);
 
   const aadStr = opts?.aad ?? null;
   const aadLen = aadBuf?.length ?? 0;
@@ -152,15 +153,14 @@ export function decryptBuffer(
     const errObj = err as Error & { code?: string };
     logger.error(
       {
-        errName: errObj?.name,
         errMessage: errObj?.message,
-        errCode: errObj?.code,
-        stack: errObj?.stack,
-        fmt: "ebp1",
-        ivFirst,
-        tagFirst,
-        ciphertextLen: ciphertext.length,
         keyFp,
+        aadSha: aadBuf ? crypto.createHash("sha256").update(aadBuf).digest("hex").slice(0, 8) : null,
+        aadLen,
+        ivLen: iv.length,
+        tagLen: tag.length,
+        ciphertextLen: ciphertext.length,
+        fmt: "ebp1",
       },
       "[decryptBuffer] final failed"
     );
