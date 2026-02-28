@@ -224,11 +224,11 @@ router.post(
       {
         attachmentId,
         resolvedBucketKey,
-        aadObjectKeyUsedForDecrypt: resolvedBucketKey,
+        aadUsedForDecrypt: resolvedBucketKey,
         "meta.enc": encMeta?.enc,
         "meta.ct": encMeta?.ct,
       },
-      "[thumbnail] resolved key (temp log)"
+      "[thumbnail] temp log (remove after fix)"
     );
 
     const tmpDir = path.join(process.cwd(), "tmp", "thumbnails");

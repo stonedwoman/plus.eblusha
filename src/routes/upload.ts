@@ -250,6 +250,16 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
     // if (acl) putObjectParams.ACL = acl;
     // const sse = resolveServerSideEncryption(env.STORAGE_S3_SSE);
     // if (sse) putObjectParams.ServerSideEncryption = sse;
+    const encFormat = encryptionMeta ? ("enc" in encryptionMeta && encryptionMeta.enc === "ebp2" ? "ebp2" : "ebp1") : "none";
+    logger.info(
+      {
+        s3KeyUsedForPutObject: key,
+        aadUsedForEncrypt: key,
+        encFormat,
+      },
+      "[upload] temp log (remove after fix)"
+    );
+
     const command = new PutObjectCommand(putObjectParams);
     await s3Client.send(command);
 
