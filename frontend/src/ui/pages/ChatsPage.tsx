@@ -14,6 +14,8 @@ import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
 import { ImageEditorModal } from '../components/ImageEditorModal'
 import { ImageLightbox } from '../components/ImageLightbox'
+import { VideoViewer } from '../components/VideoViewer'
+import { VideoMessageBubble } from '../components/VideoMessageBubble'
 import { LazyImage } from '../components/LazyImage'
 import { LinkDeviceModal } from '../components/LinkDeviceModal'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -174,6 +176,58 @@ function formatAttachmentFileSize(value: unknown): string | null {
   return `${size.toFixed(1)} ${units[unitIndex]}`
 }
 
+const VIDEO_EXTS = ['mp4', 'webm', 'mov', 'm4v']
+const AUDIO_EXTS = ['mp3', 'm4a', 'ogg', 'wav']
+
+function getMediaKind(att: any, metadata?: Record<string, any>): { isVideo: boolean; displayFormat: string } {
+  const meta = metadata ?? att?.metadata ?? {}
+  const mime = (meta.mime ?? meta.contentType ?? meta.e2ee?.originalType) as string | undefined
+  const nameCandidate =
+    (meta.originalName ?? meta.name ?? meta.filename ?? att?.key ?? att?.url ?? '') as string
+  let ext = (nameCandidate.split('.').pop() || '').toLowerCase()
+  if (ext === 'eblusha' && nameCandidate.includes('.')) {
+    const withoutEblusha = nameCandidate.slice(0, -('.eblusha'.length))
+    ext = (withoutEblusha.split('.').pop() || '').toLowerCase()
+  }
+  const isVideo =
+    (typeof mime === 'string' && mime.toLowerCase().trim().startsWith('video/')) ||
+    VIDEO_EXTS.includes(ext)
+  let displayFormat = 'VIDEO'
+  if (typeof mime === 'string' && mime.trim()) {
+    const m = mime.toLowerCase().split(';')[0]?.trim() || ''
+    if (m === 'video/mp4') displayFormat = 'MP4'
+    else if (m === 'video/webm') displayFormat = 'WEBM'
+    else if (m.startsWith('video/')) displayFormat = m.replace('video/', '').toUpperCase().slice(0, 6)
+  } else if (ext) {
+    displayFormat = ext.toUpperCase()
+  }
+  return { isVideo, displayFormat }
+}
+
+function inferAttachmentRenderType(att: any, mergedMeta: Record<string, any>): 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE' {
+  const t = att?.type
+  if (t === 'IMAGE' || t === 'VIDEO' || t === 'AUDIO') return t
+
+  const { isVideo } = getMediaKind(att, mergedMeta)
+  if (isVideo) return 'VIDEO'
+
+  const mime = (mergedMeta?.mime ?? att?.metadata?.mime ?? att?.metadata?.e2ee?.originalType) as string | undefined
+  if (typeof mime === 'string' && mime.trim()) {
+    const m = mime.toLowerCase().trim()
+    if (m.startsWith('audio/')) return 'AUDIO'
+  }
+  const rawName = (mergedMeta?.originalName ?? att?.metadata?.originalName ?? att?.metadata?.e2ee?.originalName) as string | undefined
+  const name = (rawName && rawName.trim()) || extractFilenameFromUrl(att?.url) || (typeof att?.url === 'string' ? att.url : '')
+  let ext = name.split('.').pop()?.toLowerCase() || ''
+  if (ext === 'eblusha' && name.includes('.')) {
+    const withoutEblusha = name.slice(0, -('.eblusha'.length))
+    ext = withoutEblusha.split('.').pop()?.toLowerCase() || ext
+  }
+  if (['mp3', 'm4a', 'ogg', 'wav'].includes(ext)) return 'AUDIO'
+
+  return 'FILE'
+}
+
 function extractFilenameFromUrl(rawUrl: string | null | undefined): string | null {
   if (!rawUrl) return null
   const clean = rawUrl.split('?')[0]?.split('#')[0] || rawUrl
@@ -205,6 +259,13 @@ function resolveAttachmentFileName(att: any, metadata: any): string {
 }
 
 function getAttachmentFilePresentation(att: any, metadata: any) {
+  const { isVideo, displayFormat } = getMediaKind(att, metadata)
+  if (isVideo) {
+    const fileName = resolveAttachmentFileName(att, metadata)
+    const sizeText = formatAttachmentFileSize(att?.size ?? metadata?.size ?? metadata?.e2ee?.originalSize)
+    return { fileName, description: `Видео ${displayFormat}`, sizeText, badge: displayFormat.slice(0, 4), ui: { bg: '#1a1d24', fg: '#94a3b8' } }
+  }
+
   const fileName = resolveAttachmentFileName(att, metadata)
   const dot = fileName.lastIndexOf('.')
   let ext = dot > 0 ? fileName.slice(dot + 1).toLowerCase() : ''
@@ -259,7 +320,7 @@ function getAttachmentFilePresentation(att: any, metadata: any) {
       ? `.${ext.toUpperCase().slice(0, 3)}`
       : null
   const badge = (info?.badge || unknownExtBadge || ui.badge).slice(0, 4).toUpperCase()
-  const description = info?.description || (ext ? `Файл ${ext.toUpperCase()}` : 'Неизвестный формат')
+  const description = info?.description || (ext ? `Файл ${ext.toUpperCase()}` : 'Файл')
   const sizeText = formatAttachmentFileSize(att?.size ?? metadata?.size ?? metadata?.e2ee?.originalSize)
   const displayName = fileName === 'Файл' && ext ? `${fileName}.${ext}` : fileName
   return { fileName: displayName, description, sizeText, badge, ui }
@@ -286,7 +347,7 @@ function parseContentDispositionFilename(headerValue: string | null): string | n
 
 type PendingAttachment = {
   url: string
-  type: 'IMAGE' | 'FILE'
+  type: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO'
   size?: number
   width?: number
   height?: number
@@ -475,6 +536,7 @@ export default function ChatsPage() {
   const [dragOver, setDragOver] = useState(false)
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<{ open: boolean; index: number; items: string[] }>({ open: false, index: 0, items: [] })
+  const [videoViewer, setVideoViewer] = useState<{ open: boolean; url: string; fileName?: string }>({ open: false, url: '', fileName: undefined })
   const [attachUploading, setAttachUploading] = useState(false)
   const [attachProgress, setAttachProgress] = useState(0)
   const [attachDragOver, setAttachDragOver] = useState(false)
@@ -1488,6 +1550,18 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }
 
+  const onKeyDownAddParticipantsDigit = (idx: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace' && !addParticipantsEblDigits[idx] && idx > 0) {
+      e.preventDefault()
+      const next = [...addParticipantsEblDigits]
+      next[idx - 1] = ''
+      setAddParticipantsEblDigits(next)
+      setAddParticipantsFoundUser(null)
+      setAddParticipantsSearchError(null)
+      addParticipantsEblRefs[idx - 1].current?.focus()
+    }
+  }
+
   const onChangeAddParticipantsDigit = (idx: number, val: string) => {
     if (!/^\d?$/.test(val)) return
     const next = [...addParticipantsEblDigits]
@@ -2417,6 +2491,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       cancelled = true
     }
   }, [displayedMessages, attachmentHeadInfoMap])
+
 
   const usersById = useMemo(() => {
     const map: Record<string, any> = {}
@@ -3624,6 +3699,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return () => window.removeEventListener('resize', measure)
   }, [activeId])
 
+  function onKeyDownDigit(idx: number, e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Backspace' && !eblDigits[idx] && idx > 0) {
+      e.preventDefault()
+      const next = [...eblDigits]
+      next[idx - 1] = ''
+      setEblDigits(next)
+      setFoundUser(null)
+      eblRefs[idx - 1].current?.focus()
+    }
+  }
+
   function onChangeDigit(idx: number, val: string) {
     if (!/^\d?$/.test(val)) return
     const next = [...eblDigits]
@@ -4244,7 +4330,18 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           const { width, height } = await getImageSize(blobUrl)
           pendingAttachments.push({ url: blobUrl, type: 'IMAGE', width, height, progress: 0, __pending: true })
         } else {
-          pendingAttachments.push({ url: f.name, type: 'FILE', size: f.size, __pending: true, progress: 0 })
+          const ext = (f.name || '').split('.').pop()?.toLowerCase() || ''
+          const isVideo = f.type.startsWith('video/') || VIDEO_EXTS.includes(ext)
+          const isAudio = f.type.startsWith('audio/') || AUDIO_EXTS.includes(ext)
+          const pendingType = isVideo ? 'VIDEO' : isAudio ? 'AUDIO' : 'FILE'
+          pendingAttachments.push({
+            url: f.name,
+            type: pendingType,
+            size: f.size,
+            __pending: true,
+            progress: 0,
+            metadata: { originalName: f.name || undefined, mime: f.type || undefined },
+          })
         }
       }
       setPendingByConv((prev) => ({
@@ -4255,7 +4352,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         ],
       }))
 
-      const uploaded: Array<{ url: string; type: 'IMAGE' | 'FILE'; size?: number; metadata?: Record<string, any> }> = []
+      const uploaded: Array<{ url: string; type: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO'; size?: number; metadata?: Record<string, any> }> = []
       let done = 0
       for (let i = 0; i < files.length; i++) {
         const f = files[i]
@@ -4295,7 +4392,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 const copy = arr.map((m) => ({ ...m, attachments: m.attachments.map((a) => ({ ...a })) }))
                 const last = copy[copy.length - 1]
                 if (last) {
-                  const idx = last.attachments.findIndex((a) => a.__pending && a.type === (f.type.startsWith('image/') ? 'IMAGE' : 'FILE') && (!a.width || a.url.startsWith('blob:')))
+                  const pext = (f.name || '').split('.').pop()?.toLowerCase() || ''
+                  const ptype = f.type.startsWith('image/') ? 'IMAGE' : f.type.startsWith('video/') || VIDEO_EXTS.includes(pext) ? 'VIDEO' : f.type.startsWith('audio/') || AUDIO_EXTS.includes(pext) ? 'AUDIO' : 'FILE'
+                  const idx = last.attachments.findIndex((a) => a.__pending && a.type === ptype && (!a.width || a.url.startsWith('blob:')))
                   if (idx >= 0) last.attachments[idx].progress = percent
                 }
                 return { ...prev, [activeId!]: copy }
@@ -4311,9 +4410,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           }
           xhr.send(form)
         })
-        const uploadItem: { url: string; type: 'IMAGE' | 'FILE'; size?: number; metadata?: Record<string, any> } = {
+        const ext = (f.name || '').split('.').pop()?.toLowerCase() || ''
+        const isVideo = f.type.startsWith('video/') || VIDEO_EXTS.includes(ext)
+        const isAudio = f.type.startsWith('audio/') || AUDIO_EXTS.includes(ext)
+        const attachType = f.type.startsWith('image/') ? 'IMAGE' : isVideo ? 'VIDEO' : isAudio ? 'AUDIO' : 'FILE'
+        const uploadItem: { url: string; type: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO'; size?: number; metadata?: Record<string, any> } = {
           url,
-          type: f.type.startsWith('image/') ? 'IMAGE' : 'FILE',
+          type: attachType,
           size: f.size,
         }
         const metadataPayload: Record<string, any> = {}
@@ -4334,8 +4437,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         done += f.size
         setAttachProgress(Math.round((done / totalSize) * 100))
       }
-      // Send as FILE message if there is no text and only attachments
-      const msgType = uploaded.every((u) => u.type === 'IMAGE') ? 'IMAGE' : 'FILE'
+      // Send as IMAGE/VIDEO/AUDIO message when all attachments are same type, else FILE
+      const msgType = uploaded.every((u) => u.type === 'IMAGE') ? 'IMAGE'
+        : uploaded.every((u) => u.type === 'VIDEO') ? 'VIDEO'
+        : uploaded.every((u) => u.type === 'AUDIO') ? 'AUDIO'
+        : 'FILE'
       await api.post('/conversations/send', { conversationId: activeId, type: msgType, content: textContent, attachments: uploaded, replyToId })
       // Remove pending message after successful send
       setPendingByConv((prev) => {
@@ -6506,7 +6612,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         onClick={(e) => {
                           if (!isMobile) return
                           const target = e.target as HTMLElement
-                          if (target.closest('a, button, input, textarea, img, video, .reaction-emoji')) return
+                          if (target.closest('a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble')) return
                           const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
                           if (selection && selection.toString()) return
                           openMenuAt(e.clientX, e.clientY)
@@ -7088,6 +7194,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                     ...(headInfo?.mime ? { mime: headInfo.mime } : {}),
                                     ...(headInfo?.size ? { size: headInfo.size } : {}),
                                   }
+                                  const effectiveType = inferAttachmentRenderType(att, mergedMeta)
                                   const resolvedUrl = resolveAttachmentUrl(att)
                                   const needsDecrypt = Boolean(
                                     activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext',
@@ -7096,7 +7203,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                   const decryptPending =
                                     needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
                                   const decryptError = needsDecrypt && decryptState?.status === 'error'
-                                  if (att.type === 'AUDIO') {
+                                  if (effectiveType === 'AUDIO') {
                                     const duration = m.metadata?.duration || 0
                                     const audioUrl = resolvedUrl || att.url
                                     return (
@@ -7114,6 +7221,36 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                           <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Голосовое сообщение</div>
                                         )}
                                       </div>
+                                    )
+                                  }
+
+                                  if (effectiveType === 'VIDEO') {
+                                    const videoUrl = att.__pending ? null : (activeConversation?.isSecret ? resolvedUrl : (convertToProxyUrl(att.url) || resolvedUrl || att.url))
+                                    const posterKey = (mergedMeta?.posterKey as string) || null
+                                    const w = mergedMeta?.width ?? att?.width
+                                    const h = mergedMeta?.height ?? att?.height
+                                    const duration = mergedMeta?.duration ?? att?.metadata?.duration
+                                    const sizeText = formatAttachmentFileSize(att?.size ?? mergedMeta?.size)
+                                    const uploadInProgress = !!att?.__pending
+                                    return (
+                                      <VideoMessageBubble
+                                        key={`${att.url}-${idx}-${renderIdx}`}
+                                        attachmentId={att.id || ''}
+                                        videoSrc={videoUrl && (videoUrl.startsWith('/') || videoUrl.startsWith('http') || videoUrl.startsWith('blob:')) ? videoUrl : null}
+                                        posterKey={posterKey}
+                                        width={w}
+                                        height={h}
+                                        duration={duration}
+                                        sizeText={sizeText ?? undefined}
+                                        fileName={(mergedMeta?.originalName as string) || att?.metadata?.originalName || att?.url || 'video.mp4'}
+                                        decryptPending={decryptPending}
+                                        decryptError={decryptError}
+                                        uploadInProgress={uploadInProgress}
+                                        _debug={{ mime: mergedMeta?.mime as string, nameCandidate: (mergedMeta?.originalName ?? mergedMeta?.name ?? att?.url) as string }}
+                                        onOpenFullscreenViewer={(url, fileName) =>
+                                          setVideoViewer({ open: true, url, fileName })
+                                        }
+                                      />
                                     )
                                   }
 
@@ -10265,6 +10402,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     enterKeyHint="done"
                     value={eblDigits[i]}
                     onChange={(e) => onChangeDigit(i, e.target.value.replace(/\D/g, '').slice(0, 1))}
+                    onKeyDown={(e) => onKeyDownDigit(i, e)}
                     maxLength={1}
                     style={{
                       width: 56,
@@ -10560,6 +10698,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       onClose={() => setLightbox((l) => ({ ...l, open: false }))}
       onIndexChange={(nextIndex) => setLightbox((l) => ({ ...l, index: nextIndex }))}
     />
+    <VideoViewer
+      open={videoViewer.open}
+      videoUrl={videoViewer.url}
+      fileName={videoViewer.fileName}
+      onClose={() => setVideoViewer({ open: false, url: '', fileName: undefined })}
+    />
     {forwardModal.open && (
       <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setForwardModal({ open: false, messageId: null })}>
         <div style={{ background: 'var(--surface-200)', padding: 16, borderRadius: 12, width: 420, border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-sharp)', color: 'var(--text-primary)' }} onClick={(e) => e.stopPropagation()}>
@@ -10683,6 +10827,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     enterKeyHint="done"
                     value={addParticipantsEblDigits[i]}
                     onChange={(e) => onChangeAddParticipantsDigit(i, e.target.value.replace(/\D/g, '').slice(0, 1))}
+                    onKeyDown={(e) => onKeyDownAddParticipantsDigit(i, e)}
                     maxLength={1}
                     style={{
                       width: 56,
