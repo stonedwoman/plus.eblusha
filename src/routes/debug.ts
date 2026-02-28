@@ -1,8 +1,14 @@
 import { Router, type Request } from "express";
+import crypto from "crypto";
 import { z } from "zod";
 import env from "../config/env";
 import { authenticate } from "../middlewares/auth";
 import prisma from "../lib/prisma";
+import {
+  encryptBuffer,
+  decryptBuffer,
+  parseStorageEncKey,
+} from "../lib/storageEncryption";
 import { getRedisClient } from "../lib/redis";
 import { appendClientLogs, listClientLogDevices, pullClientLogs } from "../lib/clientLogs";
 import { rateLimit } from "../middlewares/rateLimit";
@@ -97,6 +103,39 @@ router.get(
     res.json({ devices });
   }
 );
+
+router.get("/storageenc-selftest", async (_req, res) => {
+  if (!env.DEBUG_STORAGE_ENC) {
+    res.status(404).json({ message: "Not found" });
+    return;
+  }
+  if (!env.STORAGE_ENC_KEY) {
+    res.status(503).json({ message: "STORAGE_ENC_KEY not configured" });
+    return;
+  }
+  try {
+    const masterKey = parseStorageEncKey(env.STORAGE_ENC_KEY);
+    const aad = "selftest/aad";
+    const plain = crypto.randomBytes(1024);
+    const { payload: enc } = encryptBuffer(plain, masterKey, { aad });
+    const dec = decryptBuffer(enc, masterKey, { aad });
+    const plainHash = crypto.createHash("sha256").update(plain).digest("hex");
+    const decHash = crypto.createHash("sha256").update(dec).digest("hex");
+    if (plainHash !== decHash) {
+      res.status(500).json({
+        ok: false,
+        message: "plainHash !== decHash after encrypt/decrypt roundtrip",
+      });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      message: err instanceof Error ? err.message : "selftest failed",
+    });
+  }
+});
 
 router.get(
   "/client-logs",

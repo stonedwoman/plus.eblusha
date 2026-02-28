@@ -15,6 +15,7 @@ import logger from "../config/logger";
 import { rateLimit } from "../middlewares/rateLimit";
 import {
   encryptBuffer,
+  decryptBuffer,
   encryptToEbp2Stream,
   parseStorageEncKey,
   EBP2_DEFAULT_CHUNK_SIZE,
@@ -213,6 +214,21 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
         aad: aadUsedForEncrypt,
         contentType: originalContentType,
       });
+      try {
+        decryptBuffer(encrypted.payload, encKey, { aad: aadUsedForEncrypt });
+      } catch (err) {
+        logger.error(
+          {
+            err,
+            putKey,
+            magic: encrypted.payload.slice(0, 4).toString("utf8"),
+            len: encrypted.payload.length,
+          },
+          "[upload] EBP1 selfcheck failed"
+        );
+        res.status(500).json({ message: "storage_enc_selfcheck_failed" });
+        return;
+      }
       bodyToUpload = encrypted.payload;
       encryptionMeta = encrypted.meta;
       originalContentType = "application/octet-stream";

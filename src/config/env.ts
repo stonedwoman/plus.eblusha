@@ -37,6 +37,8 @@ const envSchema = z.object({
   // Debug: allow clients to ship SAFE debug logs to server (Redis, TTL/capped).
   // Keep disabled by default in production.
   DEBUG_CLIENT_LOGS: z.coerce.boolean().default(false),
+  // Debug: enable storage encryption selftest endpoint (/api/debug/storageenc-selftest)
+  DEBUG_STORAGE_ENC: z.coerce.boolean().default(false),
   STORAGE_S3_ENDPOINT: z.string().url().optional(),
   STORAGE_S3_REGION: z.string().optional(),
   STORAGE_S3_BUCKET: z.string().optional(),
