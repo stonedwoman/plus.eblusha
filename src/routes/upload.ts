@@ -161,7 +161,7 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
       ? crypto.randomUUID()
       : crypto.randomBytes(16).toString("hex");
   const uniqueName = `${Date.now()}-${randomId}${ext}`;
-  const key = objectPrefix ? `${objectPrefix}/${uniqueName}` : uniqueName;
+  const putKey = objectPrefix ? `${objectPrefix}/${uniqueName}` : uniqueName;
 
   try {
     if (!s3Client || !s3Config) {
@@ -187,7 +187,7 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
       const inputStream = fs.createReadStream(filePath);
       const encryptedStream = encryptToEbp2Stream(
         inputStream,
-        key,
+        putKey,
         totalSize,
         encKey,
         { chunkSize: EBP2_DEFAULT_CHUNK_SIZE }
@@ -208,7 +208,7 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
         return;
       }
       const encrypted = encryptBuffer(buffer, encKey, {
-        aad: key,
+        aad: putKey,
         contentType: originalContentType,
       });
       bodyToUpload = encrypted.payload;
@@ -218,9 +218,14 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
       bodyToUpload = file.buffer!;
     }
 
+    const encFormat = encryptionMeta
+      ? "enc" in encryptionMeta && encryptionMeta.enc === "ebp2"
+        ? "ebp2"
+        : "ebp1"
+      : "none";
     const putObjectParams: any = {
       Bucket: s3Config.bucket,
-      Key: key,
+      Key: putKey,
       Body: bodyToUpload,
       ContentType: originalContentType,
       Metadata:
@@ -231,7 +236,7 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
               chunksize: (encryptionMeta as EBP2Metadata).chunksize,
               totalSize: (encryptionMeta as EBP2Metadata).totalSize,
               ct: (encryptionMeta as EBP2Metadata).ct || "",
-              aad: key,
+              aad: putKey,
             }
           : encryptionMeta
             ? {
@@ -241,10 +246,16 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
                 enciv: (encryptionMeta as EncryptionMetadata).iv,
                 enctag: (encryptionMeta as EncryptionMetadata).tag,
                 ct: (encryptionMeta as EncryptionMetadata).ct || "",
-                aad: key,
+                aad: putKey,
               }
             : undefined,
     };
+    if (encryptionMeta) {
+      logger.info(
+        { putKey, aadKeyUsedForEncrypt: putKey, metaAad: putKey, enc: encFormat },
+        "[upload] attachment enc key trace"
+      );
+    }
     // Note: twcstorage.ru (Russian S3) doesn't support ACL/SSE in PutObject
     // Similar to Hetzner, these parameters cause InvalidRequest errors
     // Uncomment if needed for AWS S3 or other providers that support it:
@@ -263,9 +274,9 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
       }
     }
 
-    const encodedKey = encodeKeyForUrl(key);
+    const encodedKey = encodeKeyForUrl(putKey);
     const proxyUrl = `/api/files/${encodedKey}`;
-    res.json({ url: proxyUrl, path: key, publicUrl: proxyUrl });
+    res.json({ url: proxyUrl, path: putKey, publicUrl: proxyUrl });
   } catch (error) {
     logger.error({ err: error }, "Failed to upload file to S3");
     if ((file as any).path && fs.existsSync((file as any).path)) {

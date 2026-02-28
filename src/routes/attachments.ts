@@ -233,6 +233,18 @@ router.post(
     const magicBuf = await readBodyToBuffer(magicResp.Body);
     const magicStr = magicBuf.length >= 4 ? magicBuf.subarray(0, 4).toString("utf8") : "";
     const useEbp2 = isEbp2 && magicStr === "EBP2";
+    const aadForDecrypt = encMeta?.aad?.trim?.() || null;
+
+    logger.info(
+      {
+        attachmentId,
+        resolvedBucketKey,
+        "head.Metadata.enc": encMeta?.enc,
+        "head.Metadata.aad": encMeta?.aad,
+        magicFirst4Bytes: magicStr,
+      },
+      "[thumbnail] before decrypt"
+    );
 
     const tmpDir = path.join(process.cwd(), "tmp", "thumbnails");
     fs.mkdirSync(tmpDir, { recursive: true });
@@ -251,6 +263,7 @@ router.post(
       let videoBuf: Buffer;
 
       if (useEbp2 && totalSize > 0) {
+        const ebp2Aad = aadForDecrypt ?? resolvedBucketKey!;
         const fetchLen = Math.min(VIDEO_FETCH_FOR_THUMB, totalSize);
         const numChunksNeeded = Math.ceil(fetchLen / chunkSize);
         let rangeEnd = 16;
@@ -267,7 +280,7 @@ router.post(
         );
         const encBuf = await readBodyToBuffer(encRangeResp.Body);
         try {
-          const wholeDecrypted = decryptEbp2WholeFromBuffer(encBuf, resolvedBucketKey!, encKey);
+          const wholeDecrypted = decryptEbp2WholeFromBuffer(encBuf, ebp2Aad, encKey);
           videoBuf = wholeDecrypted.subarray(0, fetchLen);
         } catch (wholeErr) {
           const fetcher = async (range: { start: number; end: number }) => {
@@ -281,7 +294,7 @@ router.post(
             return readBodyToBuffer(r.Body);
           };
           const stream = decryptEbp2RangeStream(
-            resolvedBucketKey!,
+            ebp2Aad,
             fetcher,
             { start: 0, end: fetchLen - 1 },
             encKey,
@@ -307,10 +320,9 @@ router.post(
         const getResp = await s3Client.send(getCmd);
         const encBuf = await readBodyToBuffer(getResp.Body);
         if (isEncryptedPayload(encBuf)) {
-          const aadFromMeta = encMeta?.aad?.trim?.();
           let dec: Buffer | undefined;
-          if (aadFromMeta) {
-            dec = decryptBuffer(encBuf, encKey, { aad: aadFromMeta });
+          if (aadForDecrypt) {
+            dec = decryptBuffer(encBuf, encKey, { aad: aadForDecrypt });
           } else {
             const aadCandidates = [resolvedBucketKey!, ...expandedCandidates.filter((k) => k !== resolvedBucketKey)];
             let lastErr: Error | null = null;
