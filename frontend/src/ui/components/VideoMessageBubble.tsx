@@ -94,6 +94,7 @@ export function VideoMessageBubble({
 
   const initialAspect =
     typeof width === 'number' && typeof height === 'number' && width > 0 && height > 0 ? width / height : null
+  const metaAspect = initialAspect
   const [aspect, setAspect] = useState<number>(() => {
     const v = initialAspect ?? 16 / 9
     return clampAspect(v)
@@ -335,14 +336,22 @@ export function VideoMessageBubble({
           loading="lazy"
           onError={() => setThumbError(true)}
           onLoad={(e) => {
-            if (isInlinePlaying || aspectSource === 'meta') return
+            if (isInlinePlaying) return
             const img = e.currentTarget
             const nw = img.naturalWidth
             const nh = img.naturalHeight
             if (nw > 0 && nh > 0) {
               const nextAspect = clampAspect(nw / nh)
-              setAspect(nextAspect)
-              setAspectSource('thumb')
+              // If metadata-provided aspect is wrong (common for rotated phone videos),
+              // prefer the actual poster intrinsic size so preview and player share geometry.
+              const shouldOverrideMeta =
+                typeof metaAspect === 'number' &&
+                metaAspect > 0 &&
+                Math.abs(metaAspect - nextAspect) >= 0.12
+              if (aspectSource !== 'thumb' && (aspectSource !== 'meta' || shouldOverrideMeta)) {
+                setAspect(nextAspect)
+                setAspectSource('thumb')
+              }
             }
           }}
         />
