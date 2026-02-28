@@ -34,7 +34,7 @@ export function parseStorageEncKey(raw: string): Buffer {
     trimmed.length === 44 ||
     trimmed.includes("/") ||
     trimmed.includes("+") ||
-    trimmed.endsWith("=");
+    trimmed.includes("=");
 
   if (looksLikeBase64) {
     try {
@@ -47,7 +47,7 @@ export function parseStorageEncKey(raw: string): Buffer {
     buf = Buffer.from(trimmed, "hex");
     detectedFormat = "hex";
   } else {
-    throw new StorageEncryptionError("STORAGE_ENC_KEY must be base64 (44 chars, /, +, or ends with =) or hex (64 chars)");
+    throw new StorageEncryptionError("STORAGE_ENC_KEY must be base64 (44 chars, /, +, =) or hex (64 chars)");
   }
 
   if (buf.length !== 32) {
@@ -60,9 +60,9 @@ export function parseStorageEncKey(raw: string): Buffer {
     {
       keyBytesLen: buf.length,
       keyBytesFp: crypto.createHash("sha256").update(buf).digest("hex").slice(0, 8),
-      detectedFormat,
+      fmt: detectedFormat,
     },
-    "[parseStorageEncKey] temp log"
+    "[storageEnc] key-bytes"
   );
 
   return buf;
