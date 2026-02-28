@@ -122,7 +122,7 @@ export function VideoMessageBubble({
   baseH = baseH * scale
   const targetW = Math.round(baseW)
   const targetH = Math.round(baseH)
-  const showVideo = isInlinePlaying && videoReady
+  const showVideo = isInlinePlaying
   const showLoadingOverlay =
     !!videoSrc &&
     !decryptPending &&
@@ -309,8 +309,9 @@ export function VideoMessageBubble({
           objectFit: 'contain',
           display: 'block',
           background: '#000',
-          opacity: showVideo ? 1 : 0,
+          opacity: isInlinePlaying ? 1 : 0,
           transition: 'opacity 180ms ease',
+          pointerEvents: isInlinePlaying ? 'auto' : 'none',
         }}
       />
 
@@ -327,7 +328,7 @@ export function VideoMessageBubble({
             objectFit: 'contain',
             display: 'block',
             background: '#000',
-            opacity: showVideo ? 0 : 1,
+            opacity: isInlinePlaying ? 0 : 1,
             transition: 'opacity 180ms ease',
           }}
           loading="lazy"
@@ -354,7 +355,7 @@ export function VideoMessageBubble({
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            opacity: showVideo ? 0 : 1,
+            opacity: isInlinePlaying ? 0 : 1,
             transition: 'opacity 180ms ease',
           }}
         >
@@ -414,6 +415,9 @@ export function VideoMessageBubble({
             background: 'linear-gradient(180deg, rgba(5,7,10,0.40) 0%, rgba(5,7,10,0.58) 100%)',
             backdropFilter: 'blur(6px)',
             WebkitBackdropFilter: 'blur(6px)',
+            pointerEvents: 'none',
+            opacity: isInlinePlaying || pendingStart ? 1 : 0,
+            transition: 'opacity 180ms ease',
           }}
         >
           <div
@@ -465,7 +469,7 @@ export function VideoMessageBubble({
           justifyContent: 'center',
           background: posterUrl ? 'rgba(0,0,0,0.2)' : 'transparent',
           pointerEvents: 'none',
-          opacity: showVideo ? 0 : 1,
+          opacity: isInlinePlaying ? 0 : 1,
           transition: 'opacity 180ms ease',
         }}
       >
