@@ -10,6 +10,7 @@ const ASPECT_MAX = 1.78
 
 type Props = {
   attachmentId: string
+  objectKey?: string | null
   videoSrc: string | null
   posterKey?: string | null
   initialPosterUrl?: string | null
@@ -22,12 +23,11 @@ type Props = {
   decryptError?: boolean
   uploadInProgress?: boolean
   onOpenFullscreenViewer: (url: string, fileName?: string) => void
-  /** @internal temporary debug */
-  _debug?: { mime?: string; nameCandidate?: string }
 }
 
 export function VideoMessageBubble({
   attachmentId,
+  objectKey,
   videoSrc,
   posterKey,
   initialPosterUrl,
@@ -40,7 +40,6 @@ export function VideoMessageBubble({
   decryptError,
   uploadInProgress = false,
   onOpenFullscreenViewer,
-  _debug,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [isInlinePlaying, setIsInlinePlaying] = useState(false)
@@ -51,13 +50,6 @@ export function VideoMessageBubble({
     return null
   })()
   const [posterUrl, setPosterUrl] = useState<string | null>(() => initialUrl)
-
-  // Temporary diagnostic log (remove after debug)
-  useEffect(() => {
-    const ext = _debug?.nameCandidate ? (/(?:\.)([^.]+)$/.exec(_debug.nameCandidate)?.[1] || '').toLowerCase() : ''
-    // eslint-disable-next-line no-console
-    console.log('[VideoMessageBubble] mount', { attachmentId, mime: _debug?.mime, nameCandidate: _debug?.nameCandidate, ext, posterKey, posterUrl: initialUrl })
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const [thumbLoading, setThumbLoading] = useState(!posterUrl && !!attachmentId && !thumbInFlight.has(attachmentId))
   const [thumbError, setThumbError] = useState(false)
 
@@ -70,24 +62,23 @@ export function VideoMessageBubble({
 
   useEffect(() => {
     if (posterUrl || !attachmentId || thumbInFlight.has(attachmentId) || decryptPending) return
+    if (!objectKey) {
+      // eslint-disable-next-line no-console
+      console.warn('[VideoMessageBubble] No objectKey, backend will fallback to url', { attachmentId })
+    }
 
     thumbInFlight.add(attachmentId)
     setThumbLoading(true)
     setThumbError(false)
 
+    const body = objectKey ? { objectKey } : {}
     api
-      .post<{ posterKey?: string; posterUrl?: string }>(`/attachments/${attachmentId}/thumbnail`)
+      .post<{ posterKey?: string }>(`/attachments/${attachmentId}/thumbnail`, body)
       .then((r) => {
         const data = r.data as Record<string, unknown>
         const pk = (data?.posterKey ?? data?.poster_file_key) as string | undefined
-        const pu = (data?.posterUrl ?? data?.poster_url) as string | undefined
-        const computed = pk ? `/api/files/${encodeKeyForUrl(pk)}` : null
-        // eslint-disable-next-line no-console
-        console.log('[VideoMessageBubble] POST thumbnail', { status: r.status, data, pk, pu, computed })
-        if (pu && typeof pu === 'string') {
-          setPosterUrl(pu)
-        } else if (pk && typeof pk === 'string') {
-          setPosterUrl(computed!)
+        if (pk && typeof pk === 'string') {
+          setPosterUrl(`/api/files/${encodeKeyForUrl(pk)}`)
         }
       })
       .catch((err: any) => {
@@ -99,7 +90,7 @@ export function VideoMessageBubble({
         thumbInFlight.delete(attachmentId)
         setThumbLoading(false)
       })
-  }, [attachmentId, posterUrl, decryptPending])
+  }, [attachmentId, objectKey, posterUrl, decryptPending])
 
   useEffect(() => {
     if (!posterUrl && initialPosterUrl) setPosterUrl(initialPosterUrl)
@@ -290,10 +281,6 @@ export function VideoMessageBubble({
             display: 'block',
           }}
           loading="lazy"
-          onLoad={() => {
-            // eslint-disable-next-line no-console
-            console.log('[VideoMessageBubble] poster GET 200 OK', { posterUrl })
-          }}
           onError={() => setThumbError(true)}
         />
       ) : (

@@ -159,10 +159,8 @@ router.post(
 
     const meta = (attachment.metadata as Record<string, unknown>) || {};
     if (meta.posterKey && typeof meta.posterKey === "string") {
-      const posterUrl = `/api/files/${encodeKeyForUrl(meta.posterKey)}`;
       res.json({
         posterKey: meta.posterKey,
-        posterUrl,
         width: meta.width,
         height: meta.height,
         duration: meta.duration,
@@ -170,9 +168,16 @@ router.post(
       return;
     }
 
-    const objectKey = extractObjectKeyFromUrl(attachment.url);
+    const bodyKey = (req.body?.objectKey as string)?.trim?.();
+    const metaKey = (meta.objectKey ?? meta.key ?? meta.storageKey) as string | undefined;
+    const objectKey =
+      (bodyKey && bodyKey.length > 0 ? bodyKey : null) ??
+      (metaKey && typeof metaKey === "string" ? metaKey.trim() : null) ??
+      extractObjectKeyFromUrl(attachment.url);
     if (!objectKey) {
-      res.status(400).json({ message: "Cannot determine object key from URL" });
+      res.status(400).json({
+        message: "Cannot determine object key: provide objectKey in request body or ensure attachment has valid url/metadata.objectKey",
+      });
       return;
     }
 
@@ -322,11 +327,8 @@ router.post(
         data: { metadata: updatedMeta as any },
       });
 
-      const posterUrl = `/api/files/${encodeKeyForUrl(posterKey)}`;
-
       res.json({
         posterKey,
-        posterUrl,
         width,
         height,
         duration,

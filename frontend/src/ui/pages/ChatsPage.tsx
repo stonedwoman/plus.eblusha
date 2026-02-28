@@ -30,7 +30,7 @@ import { fetchSecretHistory, sendSecretThreadText, transformSecretHistoryItemToM
 import { getLastPendingShareAt, getPendingDeviceIds, getReceiptDeviceIds } from '../../domain/secret/secretKeyShareState'
 import { isSecretEngineV2Enabled } from '../../domain/secretV2/featureFlag'
 import { ensureReady as ensureSecretEngineReady, getThreadView as getSecretEngineThreadView, refreshKeysAndRetry, subscribeSecretThreadState, type SecretReasonCode } from '../../domain/secretV2'
-import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
+import { ensureMediaPermissions, convertToProxyUrl, extractObjectKeyFromUrl } from '../../utils/media'
 import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { extractFirstPreviewableUrl } from '../../js/link-detect'
 import { renderChatMarkdownToHtml, htmlToMarkdown } from '../lib/chatMarkdown'
@@ -4378,7 +4378,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         if (f.name) form.append('originalFileName', f.name)
         // Used by the server to encrypt non-secret chat uploads with the per-conversation DEK.
         try { form.append('conversationId', activeId) } catch {}
-        const url = await new Promise<string>((resolve, reject) => {
+        const { url, path: objectKey } = await new Promise<{ url: string; path?: string }>((resolve, reject) => {
           const xhr = new XMLHttpRequest()
           xhr.open('POST', '/api/upload')
           try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
@@ -4404,7 +4404,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           xhr.onreadystatechange = () => {
             if (xhr.readyState === 4) {
               if (xhr.status >= 200 && xhr.status < 300) {
-                try { const resp = JSON.parse(xhr.responseText); resolve(resp.url) } catch (err) { reject(err) }
+                try {
+                  const resp = JSON.parse(xhr.responseText)
+                  resolve({ url: resp.url, path: resp.path })
+                } catch (err) {
+                  reject(err)
+                }
               } else reject(new Error('upload failed'))
             }
           }
@@ -4423,6 +4428,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         if (f.name) metadataPayload.originalName = f.name
         if (f.type) metadataPayload.mime = f.type
         if (Number.isFinite(f.size) && f.size > 0) metadataPayload.size = f.size
+        if (objectKey) metadataPayload.objectKey = objectKey
         if (pendingAtt && pendingAtt.type === 'IMAGE' && pendingAtt.width && pendingAtt.height) {
           metadataPayload.width = pendingAtt.width
           metadataPayload.height = pendingAtt.height
@@ -7227,6 +7233,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                   if (effectiveType === 'VIDEO') {
                                     const videoUrl = att.__pending ? null : (activeConversation?.isSecret ? resolvedUrl : (convertToProxyUrl(att.url) || resolvedUrl || att.url))
                                     const posterKey = (mergedMeta?.posterKey as string) || null
+                                    const objectKey =
+                                      (mergedMeta?.objectKey as string) ??
+                                      (mergedMeta?.key as string) ??
+                                      (mergedMeta?.storageKey as string) ??
+                                      extractObjectKeyFromUrl(att.url)
                                     const w = mergedMeta?.width ?? att?.width
                                     const h = mergedMeta?.height ?? att?.height
                                     const duration = mergedMeta?.duration ?? att?.metadata?.duration
@@ -7236,6 +7247,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                       <VideoMessageBubble
                                         key={`${att.url}-${idx}-${renderIdx}`}
                                         attachmentId={att.id || ''}
+                                        objectKey={objectKey || undefined}
                                         videoSrc={videoUrl && (videoUrl.startsWith('/') || videoUrl.startsWith('http') || videoUrl.startsWith('blob:')) ? videoUrl : null}
                                         posterKey={posterKey}
                                         width={w}
@@ -7246,7 +7258,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                         decryptPending={decryptPending}
                                         decryptError={decryptError}
                                         uploadInProgress={uploadInProgress}
-                                        _debug={{ mime: mergedMeta?.mime as string, nameCandidate: (mergedMeta?.originalName ?? mergedMeta?.name ?? att?.url) as string }}
                                         onOpenFullscreenViewer={(url, fileName) =>
                                           setVideoViewer({ open: true, url, fileName })
                                         }

@@ -80,4 +80,32 @@ export function convertToProxyUrl(url: string | null | undefined): string | null
   return `/api/files/${segments}${suffix}`
 }
 
+/** Encode S3 object key for /api/files/ URL (matches backend encodeKeyForUrl). */
+export function encodeKeyForUrl(key: string): string {
+  return key.split('/').map((s) => encodeURIComponent(s)).join('/')
+}
+
+/** Extract S3 object key from /api/files/ URL. Returns null if URL format unknown. */
+export function extractObjectKeyFromUrl(url: string | null | undefined): string | null {
+  if (!url?.trim()) return null
+  let pathname = url.trim()
+  try {
+    if (url.startsWith('http')) {
+      const u = new URL(url)
+      pathname = u.pathname
+    }
+  } catch {
+    return null
+  }
+  const prefix = '/api/files/'
+  if (pathname.startsWith(prefix)) {
+    const rest = pathname.slice(prefix.length).replace(/^\//, '')
+    return rest
+      .split('/')
+      .map((s) => decodeURIComponent(s))
+      .join('/')
+  }
+  return null
+}
+
 
