@@ -102,27 +102,6 @@ export function VideoMessageBubble({
   const [aspectSource, setAspectSource] = useState<'meta' | 'thumb' | 'video' | 'default'>(() => (initialAspect ? 'meta' : 'default'))
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
   const isMobile = vw <= 768
-  // Match image sizing rules from ChatsPage: compute a target pixel width and cap by screen.
-  const maxScreen = isMobile
-    ? Math.max(320, Math.floor(vw / 2))
-    : Math.min(600, Math.max(320, Math.floor(vw / 3)))
-  const ratio = aspect > 0 ? 1 / aspect : 0.75 // height/width
-  const availW = typeof window !== 'undefined' ? Math.max(220, window.innerWidth - 100) : maxScreen
-  const maxWidth = Math.min(maxScreen, availW)
-  let maxHeight = maxScreen
-  if (ratio < 0.5) {
-    maxHeight = Math.max(Math.round(maxScreen * 0.6), 200)
-  } else if (ratio < 0.7) {
-    maxHeight = Math.max(Math.round(maxScreen * 0.75), 200)
-  }
-  let baseW = maxWidth
-  let baseH = baseW * ratio
-  const scaleByHeight = baseH > maxHeight ? maxHeight / baseH : 1
-  const scale = Math.min(scaleByHeight, 1)
-  baseW = baseW * scale
-  baseH = baseH * scale
-  const targetW = Math.round(baseW)
-  const targetH = Math.round(baseH)
   const showVideo = isInlinePlaying
   const showLoadingOverlay =
     !!videoSrc &&
@@ -236,10 +215,10 @@ export function VideoMessageBubble({
 
   const bubbleStyle: React.CSSProperties = {
     marginTop: 8,
+    // Keep bubble responsive and avoid "right gap" due to manual width scaling.
+    // Width must match preview and player container.
+    width: 'min(480px, 100%)',
     maxWidth: '100%',
-    width: targetW,
-    maxHeight: targetH,
-    display: 'inline-block',
     lineHeight: 0,
     boxSizing: 'border-box',
     // Fallback for environments where aspect-ratio is buggy/unsupported (children are absolutely positioned)
