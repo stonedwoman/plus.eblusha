@@ -306,6 +306,7 @@ export function VideoMessageBubble({
           objectFit: 'contain',
           display: 'block',
           background: '#000',
+          zIndex: isInlinePlaying ? 2 : 1,
           opacity: isInlinePlaying ? 1 : 0,
           transition: 'opacity 180ms ease',
           pointerEvents: isInlinePlaying ? 'auto' : 'none',
@@ -326,8 +327,10 @@ export function VideoMessageBubble({
             objectFit: 'cover',
             display: 'block',
             background: '#000',
+            zIndex: isInlinePlaying ? 1 : 2,
             opacity: isInlinePlaying ? 0 : 1,
             transition: 'opacity 180ms ease',
+            pointerEvents: isInlinePlaying ? 'none' : 'auto',
           }}
           loading="lazy"
           onError={() => setThumbError(true)}
@@ -362,8 +365,10 @@ export function VideoMessageBubble({
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
+            zIndex: isInlinePlaying ? 1 : 2,
             opacity: isInlinePlaying ? 0 : 1,
             transition: 'opacity 180ms ease',
+            pointerEvents: isInlinePlaying ? 'none' : 'auto',
           }}
         >
           <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(255,255,255,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
