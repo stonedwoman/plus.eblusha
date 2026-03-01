@@ -103,11 +103,10 @@ export function VideoMessageBubble({
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
   const isMobile = vw <= 768
   const showVideo = isInlinePlaying
-  const showLoadingOverlay =
-    !!videoSrc &&
-    !decryptPending &&
-    !decryptError &&
-    (pendingStart || (isInlinePlaying && !videoReady))
+  const showStartOverlay =
+    !!videoSrc && !decryptPending && !decryptError && pendingStart && !isInlinePlaying
+  const showBufferingPill =
+    !!videoSrc && !decryptPending && !decryptError && isInlinePlaying && !videoReady
 
   // Size bubble similarly to single images: a pixel-sized tile capped by screen,
   // with height derived from aspect ratio.
@@ -400,14 +399,10 @@ export function VideoMessageBubble({
           <span>{uploadInProgress ? 'Загрузка…' : 'Видео недоступно'}</span>
         </div>
       )}
-      {pendingStart && !isInlinePlaying && !showLoadingOverlay && (
-        <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
-          <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />
-          <span>Загружаю…</span>
-        </div>
-      )}
+      {/* Replaced by start overlay / buffering pill */}
 
-      {showLoadingOverlay && (
+      {/* Full overlay only before playback starts (doesn't cover controls). */}
+      {showStartOverlay && (
         <div
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
@@ -424,7 +419,7 @@ export function VideoMessageBubble({
             backdropFilter: 'blur(6px)',
             WebkitBackdropFilter: 'blur(6px)',
             pointerEvents: 'none',
-            opacity: isInlinePlaying || pendingStart ? 1 : 0,
+            opacity: 1,
             transition: 'opacity 180ms ease',
           }}
         >
@@ -465,6 +460,34 @@ export function VideoMessageBubble({
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Small buffering indicator while playing (must not block controls). */}
+      {showBufferingPill && (
+        <div
+          role="presentation"
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: 10,
+            zIndex: 6,
+            pointerEvents: 'none',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '8px 10px',
+            borderRadius: 999,
+            background: 'rgba(0,0,0,0.45)',
+            border: '1px solid rgba(255,255,255,0.14)',
+            color: 'rgba(255,255,255,0.9)',
+            boxShadow: '0 10px 24px rgba(0,0,0,0.28)',
+            backdropFilter: 'blur(6px)',
+            WebkitBackdropFilter: 'blur(6px)',
+          }}
+        >
+          <Loader2 size={14} style={{ animation: 'spin 0.9s linear infinite', flexShrink: 0 }} />
+          <span style={{ fontSize: 12, fontWeight: 600 }}>Буферизация…</span>
         </div>
       )}
 
