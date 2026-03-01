@@ -5,6 +5,15 @@ import { encodeKeyForUrl } from '../../utils/media'
 
 const thumbInFlight = new Set<string>()
 
+function withFilenameParam(src: string, fileName?: string | null): string {
+  if (!src) return src
+  if (!fileName) return src
+  if (src.startsWith('blob:')) return src
+  if (/[?&]filename=/.test(src)) return src
+  const sep = src.includes('?') ? '&' : '?'
+  return `${src}${sep}filename=${encodeURIComponent(fileName)}`
+}
+
 // width/height clamp to avoid extreme layout sizes while still supporting portrait video (e.g. 9:16 ≈ 0.56)
 const ASPECT_MIN = 0.5
 const ASPECT_MAX = 1.78
@@ -82,6 +91,7 @@ export function VideoMessageBubble({
   const [isInlinePlaying, setIsInlinePlaying] = useState(false)
   const [videoReady, setVideoReady] = useState(false)
   const [pendingStart, setPendingStart] = useState(false)
+  const videoSrcNamed = videoSrc ? withFilenameParam(videoSrc, fileName) : null
 
   const initialUrl = (() => {
     if (initialPosterUrl) return initialPosterUrl
@@ -187,13 +197,13 @@ export function VideoMessageBubble({
       const el = videoRef.current
       if (el.requestFullscreen) {
         el.requestFullscreen().catch(() => {
-          if (videoSrc) onOpenFullscreenViewer(videoSrc, fileName)
+          if (videoSrcNamed) onOpenFullscreenViewer(videoSrcNamed, fileName)
         })
-      } else if (videoSrc) {
-        onOpenFullscreenViewer(videoSrc, fileName)
+      } else if (videoSrcNamed) {
+        onOpenFullscreenViewer(videoSrcNamed, fileName)
       }
-    } else if (videoSrc) {
-      onOpenFullscreenViewer(videoSrc, fileName)
+    } else if (videoSrcNamed) {
+      onOpenFullscreenViewer(videoSrcNamed, fileName)
     }
   }
 
@@ -292,7 +302,7 @@ export function VideoMessageBubble({
       {/* Video layer (crossfades in) */}
       <video
         ref={videoRef}
-        src={videoSrc || undefined}
+        src={videoSrcNamed || undefined}
         controls={isInlinePlaying}
         playsInline
         preload={isInlinePlaying ? 'metadata' : 'none'}
@@ -393,8 +403,8 @@ export function VideoMessageBubble({
       {decryptError && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#f87171', fontSize: 12, padding: 16, background: 'rgba(0,0,0,0.15)' }}>
           <span>Не удалось расшифровать</span>
-          {videoSrc && (
-            <a href={videoSrc} download={fileName || 'video.mp4'} style={{ color: 'var(--brand)', textDecoration: 'underline', pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()}>Скачать</a>
+          {videoSrcNamed && (
+            <a href={videoSrcNamed} download={fileName || 'video.mp4'} style={{ color: 'var(--brand)', textDecoration: 'underline', pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()}>Скачать</a>
           )}
         </div>
       )}

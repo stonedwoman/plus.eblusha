@@ -18,6 +18,51 @@ const RANGE_MAX_SIZE = 16 * 1024 * 1024; // 16MB: default max Range span
 const RANGE_MAX_SIZE_VIDEO = 64 * 1024 * 1024; // 64MB: video/ for longer seeks
 const RANGE_MAX_SIZE_AUDIO = 16 * 1024 * 1024; // 16MB: audio/
 
+function sanitizeFilename(name: string): string {
+  // Remove path separators and control chars; keep it reasonable length.
+  const cleaned = String(name)
+    .replace(/[\\/]+/g, "_")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/"/g, "")
+    .trim();
+  if (!cleaned) return "file";
+  return cleaned.slice(0, 180);
+}
+
+function extFromContentType(contentType: string): string | null {
+  const ct = (contentType || "").toLowerCase().trim();
+  if (ct === "video/mp4") return "mp4";
+  if (ct === "video/webm") return "webm";
+  if (ct === "video/quicktime") return "mov";
+  if (ct === "image/jpeg") return "jpg";
+  if (ct === "image/png") return "png";
+  return null;
+}
+
+function applyContentDisposition(req: Request, res: Response, contentType: string) {
+  const q = req.query as any;
+  const filenameRaw = typeof q?.filename === "string" ? q.filename : null;
+  if (!filenameRaw) return;
+
+  const download = q?.download === "1" || q?.download === "true";
+  let safe = sanitizeFilename(filenameRaw);
+  // Avoid leaking ".eblusha" to end users if we know the real content type.
+  if (safe.toLowerCase().endsWith(".eblusha")) {
+    const ext = extFromContentType(contentType);
+    safe = safe.replace(/\.eblusha$/i, ext ? `.${ext}` : ".bin");
+  }
+
+  res.setHeader("Content-Disposition", `${download ? "attachment" : "inline"}; filename="${safe}"`);
+
+  const existing = String(res.getHeader("Access-Control-Expose-Headers") || "");
+  if (!existing.toLowerCase().includes("content-disposition")) {
+    res.setHeader(
+      "Access-Control-Expose-Headers",
+      existing ? `${existing}, Content-Disposition` : "Content-Disposition"
+    );
+  }
+}
+
 function getRangeMaxSize(contentType: string): number {
   const ct = (contentType || "").toLowerCase().trim();
   if (ct.startsWith("video/")) return RANGE_MAX_SIZE_VIDEO;
@@ -384,6 +429,7 @@ router.use(async (req: Request, res: Response, next) => {
             res.setHeader("Content-Range", `bytes ${byteRange.start}-${byteRange.end}/${totalSize}`);
           }
           res.setHeader("Content-Type", originalCt);
+          applyContentDisposition(req, res, originalCt);
           res.setHeader("Content-Length", contentLength.toString());
           res.setHeader("Accept-Ranges", "bytes");
           res.setHeader("Access-Control-Allow-Origin", "*");
@@ -495,6 +541,7 @@ router.use(async (req: Request, res: Response, next) => {
             res.setHeader("Accept-Ranges", "bytes");
             res.setHeader("Content-Range", `bytes ${start}-${end}/${decrypted.length}`);
             res.setHeader("Content-Type", originalCt);
+            applyContentDisposition(req, res, originalCt);
             res.setHeader("Content-Length", slice.length.toString());
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
@@ -505,6 +552,7 @@ router.use(async (req: Request, res: Response, next) => {
           }
 
           res.setHeader("Content-Type", originalCt);
+          applyContentDisposition(req, res, originalCt);
           res.setHeader("Content-Length", decrypted.length.toString());
           res.setHeader("Accept-Ranges", "bytes");
           res.setHeader("Access-Control-Allow-Origin", "*");
@@ -522,6 +570,7 @@ router.use(async (req: Request, res: Response, next) => {
           res.setHeader("Content-Range", response.ContentRange);
         }
         res.setHeader("Content-Type", response.ContentType || contentType);
+        applyContentDisposition(req, res, String(response.ContentType || contentType));
         const bodyLength = response.ContentLength ?? contentLength;
         if (bodyLength !== undefined) {
           res.setHeader("Content-Length", bodyLength.toString());
