@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../../utils/api'
+import { api, getUploadUrl } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
 import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp } from 'lucide-react'
@@ -178,6 +178,44 @@ function formatAttachmentFileSize(value: unknown): string | null {
 
 const VIDEO_EXTS = ['mp4', 'webm', 'mov', 'm4v']
 const AUDIO_EXTS = ['mp3', 'm4a', 'ogg', 'wav']
+
+const ATTACH_PROCESSING_MESSAGES = [
+  {
+    title: '🔐 Шифруем файл (AES-256-GCM)',
+    detail: 'Каждый блок защищён отдельной подписью',
+  },
+  {
+    title: '🧩 Разбиваем файл на защищённые блоки',
+    detail: 'Каждый блок получает уникальный nonce',
+  },
+  {
+    title: '🛡 Проверяем целостность данных',
+    detail: 'Каждый блок имеет криптографический тег',
+  },
+  {
+    title: '💾 Сохраняем зашифрованный файл',
+    detail: 'Исходный файл не хранится на сервере',
+  },
+] as const
+
+function formatUploadSpeed(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '0 B/s'
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+  let value = bytesPerSecond
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  if (unitIndex === 0) return `${Math.round(value)} ${units[unitIndex]}`
+  return `${value.toFixed(1)} ${units[unitIndex]}`
+}
+
+function isUploadAbortError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  const code = typeof error === 'object' && error && 'code' in error ? String((error as any).code ?? '') : ''
+  return /aborted|canceled|cancelled/i.test(message) || code === 'ERR_CANCELED'
+}
 
 function getMediaKind(att: any, metadata?: Record<string, any>): { isVideo: boolean; displayFormat: string } {
   const meta = metadata ?? att?.metadata ?? {}
@@ -539,8 +577,20 @@ export default function ChatsPage() {
   const [videoViewer, setVideoViewer] = useState<{ open: boolean; url: string; fileName?: string }>({ open: false, url: '', fileName: undefined })
   const [attachUploading, setAttachUploading] = useState(false)
   const [attachProgress, setAttachProgress] = useState(0)
+  const [attachUploadState, setAttachUploadState] = useState<'uploading' | 'processing' | 'done'>('done')
+  const [attachUploadSpeed, setAttachUploadSpeed] = useState('0 B/s')
+  const [attachProcessingMessageIndex, setAttachProcessingMessageIndex] = useState(0)
+  const [attachCanceling, setAttachCanceling] = useState(false)
   const [attachDragOver, setAttachDragOver] = useState(false)
   const attachDragDepthRef = useRef(0)
+  const attachUploadStartedAtRef = useRef<number | null>(null)
+  const attachUploadSpeedUpdatedAtRef = useRef(0)
+  const activeAttachXhrRef = useRef<XMLHttpRequest | null>(null)
+  const activeAttachAbortControllerRef = useRef<AbortController | null>(null)
+  const activeAttachUploadIdRef = useRef<string | null>(null)
+  const activeAttachPendingMessageIdRef = useRef<string | null>(null)
+  const activeAttachConversationIdRef = useRef<string | null>(null)
+  const attachCancelRequestedRef = useRef(false)
   const [callPermissionError, setCallPermissionError] = useState<string | null>(null)
   const [pendingByConv, setPendingByConv] = useState<Record<string, PendingMessage[]>>({})
   const [attachmentDecryptMap, setAttachmentDecryptMap] = useState<Record<string, AttachmentDecryptionEntry>>({})
@@ -4250,7 +4300,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   useLayoutEffect(() => {
     syncComposerBarHeightVar()
-  }, [composerEmpty, pendingImages.length, pendingFiles.length, replyTo?.id, editState?.messageId, attachUploading, syncComposerBarHeightVar])
+  }, [composerEmpty, pendingImages.length, pendingFiles.length, replyTo?.id, editState?.messageId, attachUploading, attachUploadState, syncComposerBarHeightVar])
+
+  useEffect(() => {
+    if (attachUploadState !== 'processing') {
+      setAttachProcessingMessageIndex(0)
+      return
+    }
+    setAttachProcessingMessageIndex(0)
+    const intervalId = window.setInterval(() => {
+      setAttachProcessingMessageIndex((prev) => (prev + 1) % ATTACH_PROCESSING_MESSAGES.length)
+    }, 2000)
+    return () => window.clearInterval(intervalId)
+  }, [attachUploadState])
 
   // Keep CSS var in sync for any layout changes (e.g. fonts/viewport).
   useEffect(() => {
@@ -4268,6 +4330,82 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     ro.observe(bar)
     return () => ro.disconnect()
   }, [syncComposerBarHeightVar])
+
+  const beginAttachUploadTracking = useCallback(() => {
+    attachUploadStartedAtRef.current = Date.now()
+    attachUploadSpeedUpdatedAtRef.current = 0
+    setAttachUploadSpeed('0 B/s')
+  }, [])
+
+  const updateAttachUploadSpeed = useCallback((uploadedBytes: number, force = false) => {
+    const startedAt = attachUploadStartedAtRef.current
+    if (!startedAt) return
+    const now = Date.now()
+    if (!force && now - attachUploadSpeedUpdatedAtRef.current < 400) return
+    const elapsedMs = Math.max(1, now - startedAt)
+    const bytesPerSecond = uploadedBytes / (elapsedMs / 1000)
+    attachUploadSpeedUpdatedAtRef.current = now
+    setAttachUploadSpeed(formatUploadSpeed(bytesPerSecond))
+  }, [])
+
+  const removePendingUploadMessage = useCallback((conversationId: string | null, pendingId: string | null) => {
+    if (!conversationId || !pendingId) return
+    setPendingByConv((prev) => {
+      const convPending = prev[conversationId] || []
+      const filtered = convPending.filter((m) => m.id !== pendingId)
+      if (filtered.length === convPending.length) return prev
+      if (filtered.length === 0) {
+        const { [conversationId]: _removed, ...rest } = prev
+        return rest
+      }
+      return { ...prev, [conversationId]: filtered }
+    })
+  }, [])
+
+  const resetAttachUploadTracking = useCallback(() => {
+    attachUploadStartedAtRef.current = null
+    attachUploadSpeedUpdatedAtRef.current = 0
+    setAttachUploadSpeed('0 B/s')
+    setAttachProcessingMessageIndex(0)
+  }, [])
+
+  const resetActiveAttachUpload = useCallback(() => {
+    activeAttachXhrRef.current = null
+    activeAttachAbortControllerRef.current = null
+    activeAttachUploadIdRef.current = null
+    activeAttachPendingMessageIdRef.current = null
+    activeAttachConversationIdRef.current = null
+    attachCancelRequestedRef.current = false
+    setAttachCanceling(false)
+  }, [])
+
+  const cancelActiveAttachUpload = useCallback(async () => {
+    if (!attachUploading || attachCanceling) return
+    setAttachCanceling(true)
+    attachCancelRequestedRef.current = true
+
+    const xhr = activeAttachXhrRef.current
+    const controller = activeAttachAbortControllerRef.current
+    const uploadId = activeAttachUploadIdRef.current
+    const pendingId = activeAttachPendingMessageIdRef.current
+    const conversationId = activeAttachConversationIdRef.current
+
+    try { xhr?.abort() } catch {}
+    try { controller?.abort() } catch {}
+
+    if (uploadId) {
+      try {
+        await api.delete(`/upload/${uploadId}`)
+      } catch {}
+    }
+
+    removePendingUploadMessage(conversationId, pendingId)
+    setAttachUploadState('done')
+    setAttachUploading(false)
+    setAttachProgress(0)
+    resetAttachUploadTracking()
+    resetActiveAttachUpload()
+  }, [attachUploading, attachCanceling, removePendingUploadMessage, resetActiveAttachUpload, resetAttachUploadTracking])
 
   const eventHasFiles = useCallback((e: React.DragEvent) => {
     try {
@@ -4318,9 +4456,22 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     setAttachUploading(true)
     setAttachProgress(0)
+    setAttachUploadState('uploading')
+    setAttachCanceling(false)
+    attachCancelRequestedRef.current = false
+    activeAttachConversationIdRef.current = activeId
+    activeAttachPendingMessageIdRef.current = null
+    activeAttachUploadIdRef.current = null
+    activeAttachXhrRef.current = null
+    activeAttachAbortControllerRef.current = null
+    beginAttachUploadTracking()
+    // Let React paint the upload bar before sync prep/XHR starts.
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve())
+    })
+    const pid = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`
     try {
       // Build optimistic pending entry
-      const pid = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`
       const pendingAttachments: PendingAttachment[] = []
       const totalSize = files.reduce((s, f) => s + f.size, 0)
       // Precompute dimensions for images
@@ -4351,16 +4502,172 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           { id: pid, createdAt: Date.now(), senderId: me?.id || 'me', attachments: pendingAttachments, content: textContent },
         ],
       }))
+      activeAttachPendingMessageIdRef.current = pid
 
       const uploaded: Array<{ url: string; type: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO'; size?: number; metadata?: Record<string, any> }> = []
+      const CHUNK_UPLOAD_THRESHOLD = 10 * 1024 * 1024
+      const uploadBaseUrl = getUploadUrl()
+      const authToken = (() => {
+        try {
+          return useAppStore.getState().session?.accessToken
+        } catch {
+          return undefined
+        }
+      })()
+      let uploadDebug = !!import.meta.env.DEV
+      try {
+        if (typeof localStorage !== 'undefined' && localStorage.getItem('eblushaUploadDebug') === '1') uploadDebug = true
+      } catch {}
+      try {
+        if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('uploadDebug') === '1') uploadDebug = true
+      } catch {}
+      const uploadChunkPart = (uploadId: string, partNumber: number, chunk: Blob, onProgress: (loaded: number) => void) => new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        activeAttachXhrRef.current = xhr
+        xhr.open('PUT', `${uploadBaseUrl}/${uploadId}/part/${partNumber}`)
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+        if (authToken) xhr.setRequestHeader('Authorization', `Bearer ${authToken}`)
+        xhr.upload.onprogress = (e) => {
+          const loaded = e.lengthComputable ? e.loaded : chunk.size
+          if (uploadDebug) {
+            console.log('[upload-chunk] onprogress', { uploadId, partNumber, loaded, chunkSize: chunk.size, lengthComputable: e.lengthComputable })
+          }
+          onProgress(Math.min(chunk.size, loaded))
+        }
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState !== 4) return
+          if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
+          if (xhr.status >= 200 && xhr.status < 300) {
+            onProgress(chunk.size)
+            resolve()
+            return
+          }
+          reject(new Error(`chunk upload failed: ${xhr.status}`))
+        }
+        xhr.onerror = () => {
+          if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
+          reject(new Error('chunk upload failed'))
+        }
+        xhr.onabort = () => {
+          if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
+          reject(new Error('chunk upload aborted'))
+        }
+        if (uploadDebug) {
+          console.log('[upload-chunk] send', { uploadId, partNumber, chunkSize: chunk.size })
+        }
+        xhr.send(chunk)
+      })
+      const uploadViaChunks = async (
+        uploadBlob: Blob | File,
+        uploadName: string,
+        contentType: string,
+        reportProgress: (uploadFrac: number) => void,
+      ): Promise<{ url: string; path?: string }> => {
+        const initController = new AbortController()
+        activeAttachAbortControllerRef.current = initController
+        const initResp = await api.post('/upload/init', {
+          filename: uploadName,
+          size: uploadBlob.size,
+          contentType,
+        }, { signal: initController.signal })
+        activeAttachAbortControllerRef.current = null
+        const uploadId = initResp?.data?.uploadId
+        const chunkSize = Number(initResp?.data?.chunkSize)
+        if (!uploadId || !Number.isFinite(chunkSize) || chunkSize <= 0) {
+          throw new Error('chunk upload init failed')
+        }
+        activeAttachUploadIdRef.current = uploadId
+        const totalBytes = uploadBlob.size
+        const totalParts = totalBytes === 0 ? 0 : Math.ceil(totalBytes / chunkSize)
+        if (uploadDebug) {
+          console.log('[upload-chunk] init', { uploadId, chunkSize, totalBytes, totalParts })
+        }
+        let uploadedBytes = 0
+        try {
+          for (let partNumber = 0; partNumber < totalParts; partNumber += 1) {
+            const start = partNumber * chunkSize
+            const end = Math.min(totalBytes, start + chunkSize)
+            const chunk = uploadBlob.slice(start, end)
+            let attempt = 0
+            for (;;) {
+              try {
+                await uploadChunkPart(uploadId, partNumber, chunk, (loaded) => {
+                  const uploadFrac = totalBytes > 0 ? Math.min(1, (uploadedBytes + loaded) / totalBytes) : 1
+                  reportProgress(uploadFrac)
+                })
+                break
+              } catch (error) {
+                attempt += 1
+                if (attempt >= 2) throw error
+                if (uploadDebug) {
+                  console.log('[upload-chunk] retry', { uploadId, partNumber, attempt, error })
+                }
+              }
+            }
+            uploadedBytes += chunk.size
+            const uploadFrac = totalBytes > 0 ? Math.min(1, uploadedBytes / totalBytes) : 1
+            reportProgress(uploadFrac)
+          }
+          setAttachUploadState('processing')
+          setAttachUploadSpeed('0 B/s')
+          const controller = new AbortController()
+          activeAttachAbortControllerRef.current = controller
+          const completeResp = await api.post(`/upload/${uploadId}/complete`, undefined, { signal: controller.signal })
+          activeAttachAbortControllerRef.current = null
+          activeAttachUploadIdRef.current = null
+          return { url: completeResp.data.url, path: completeResp.data.path }
+        } catch (error) {
+          activeAttachAbortControllerRef.current = null
+          if (!attachCancelRequestedRef.current) {
+            try {
+              await api.delete(`/upload/${uploadId}`)
+            } catch {}
+          }
+          if (activeAttachUploadIdRef.current === uploadId) activeAttachUploadIdRef.current = null
+          throw error
+        }
+      }
       let done = 0
       for (let i = 0; i < files.length; i++) {
         const f = files[i]
+        setAttachUploadState('uploading')
         const pendingAtt = pendingAttachments[i]
+        const updateProgress = (percent: number) => {
+          setAttachProgress(percent)
+          setPendingByConv((prev) => {
+            const arr = prev[activeId!] || []
+            const copy = arr.map((m) => ({ ...m, attachments: m.attachments.map((a) => ({ ...a })) }))
+            const last = copy[copy.length - 1]
+            if (last) {
+              const pext = (f.name || '').split('.').pop()?.toLowerCase() || ''
+              const ptype = f.type.startsWith('image/') ? 'IMAGE' : f.type.startsWith('video/') || VIDEO_EXTS.includes(pext) ? 'VIDEO' : f.type.startsWith('audio/') || AUDIO_EXTS.includes(pext) ? 'AUDIO' : 'FILE'
+              const idx = last.attachments.findIndex((a) => a.__pending && a.type === ptype && (!a.width || a.url.startsWith('blob:')))
+              if (idx >= 0) last.attachments[idx].progress = percent
+            }
+            return { ...prev, [activeId!]: copy }
+          })
+        }
+        const fileWeight = f.size / totalSize
         let uploadBlob: Blob | File = f
         let encryptedMeta: Record<string, any> | undefined
         if (isSecretConversation && activeConversation) {
-          const buffer = new Uint8Array(await f.arrayBuffer())
+          // read file in chunks (no simulated progress; real progress comes from XHR upload)
+          const chunks: Uint8Array[] = []
+          let received = 0
+          const reader = f.stream().getReader()
+          while (true) {
+            const { done: readerDone, value } = await reader.read()
+            if (readerDone) break
+            chunks.push(value)
+            received += value.length
+          }
+          const buffer = new Uint8Array(received)
+          let offset = 0
+          for (const c of chunks) {
+            buffer.set(c, offset)
+            offset += c.length
+          }
+          // encryption (no simulated progress)
           const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
           uploadBlob = new Blob([encrypted.cipher as BlobPart], { type: 'application/octet-stream' })
           encryptedMeta = {
@@ -4373,48 +4680,78 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             originalSize: f.size,
           }
         }
-        const form = new FormData()
-        form.append('file', uploadBlob, isSecretConversation ? `${f.name || 'file'}.enc` : f.name)
-        if (f.name) form.append('originalFileName', f.name)
-        // Used by the server to encrypt non-secret chat uploads with the per-conversation DEK.
-        try { form.append('conversationId', activeId) } catch {}
-        const { url, path: objectKey } = await new Promise<{ url: string; path?: string }>((resolve, reject) => {
-          const xhr = new XMLHttpRequest()
-          xhr.open('POST', '/api/upload')
-          try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              const percent = Math.round(((done + e.loaded) / totalSize) * 100)
-              setAttachProgress(percent)
-              // update corresponding pending attachment progress
-              setPendingByConv((prev) => {
-                const arr = prev[activeId!] || []
-                const copy = arr.map((m) => ({ ...m, attachments: m.attachments.map((a) => ({ ...a })) }))
-                const last = copy[copy.length - 1]
-                if (last) {
-                  const pext = (f.name || '').split('.').pop()?.toLowerCase() || ''
-                  const ptype = f.type.startsWith('image/') ? 'IMAGE' : f.type.startsWith('video/') || VIDEO_EXTS.includes(pext) ? 'VIDEO' : f.type.startsWith('audio/') || AUDIO_EXTS.includes(pext) ? 'AUDIO' : 'FILE'
-                  const idx = last.attachments.findIndex((a) => a.__pending && a.type === ptype && (!a.width || a.url.startsWith('blob:')))
-                  if (idx >= 0) last.attachments[idx].progress = percent
-                }
-                return { ...prev, [activeId!]: copy }
-              })
-            }
+        const uploadName = isSecretConversation ? `${f.name || 'file'}.enc` : (f.name || 'file')
+        const uploadContentType = uploadBlob.type || f.type || 'application/octet-stream'
+        const reportProgress = (uploadFrac: number) => {
+          const uploadedBytes = done + f.size * uploadFrac
+          const pct = Math.min(100, Math.round(((done + f.size * uploadFrac) / totalSize) * 100))
+          if (uploadDebug) {
+            console.log('[upload] reportProgress', { uploadFrac, pct, doneBytes: done, fileSize: f.size, totalBytes: totalSize })
           }
-          xhr.onreadystatechange = () => {
-            if (xhr.readyState === 4) {
-              if (xhr.status >= 200 && xhr.status < 300) {
-                try {
-                  const resp = JSON.parse(xhr.responseText)
-                  resolve({ url: resp.url, path: resp.path })
-                } catch (err) {
-                  reject(err)
-                }
-              } else reject(new Error('upload failed'))
+          updateAttachUploadSpeed(uploadedBytes)
+          updateProgress(pct)
+        }
+        const { url, path: objectKey } = uploadBlob.size > CHUNK_UPLOAD_THRESHOLD
+          ? await uploadViaChunks(uploadBlob, uploadName, uploadContentType, reportProgress)
+          : await new Promise<{ url: string; path?: string }>((resolve, reject) => {
+            const form = new FormData()
+            form.append('file', uploadBlob, uploadName)
+            if (f.name) form.append('originalFileName', f.name)
+            try { form.append('conversationId', activeId) } catch {}
+            const xhr = new XMLHttpRequest()
+            activeAttachXhrRef.current = xhr
+            xhr.open('POST', uploadBaseUrl)
+            if (uploadDebug) {
+              console.log('[upload] xhr opened', { url: uploadBaseUrl, origin: window.location.origin, blobSize: uploadBlob.size })
             }
-          }
-          xhr.send(form)
-        })
+            if (authToken) xhr.setRequestHeader('Authorization', `Bearer ${authToken}`)
+            let lastProgressMs = 0
+            let progressEventCount = 0
+            xhr.upload.onprogress = (e) => {
+              progressEventCount += 1
+              const uploadTotal = uploadBlob.size
+              if (uploadTotal > 0) {
+                const uploadFrac = Math.min(1, e.loaded / uploadTotal)
+                const now = Date.now()
+                if (uploadDebug) {
+                  console.log('[upload] onprogress', { loaded: e.loaded, total: uploadTotal, uploadFrac, lengthComputable: e.lengthComputable, eventNum: progressEventCount, ts: now })
+                }
+                if (uploadFrac >= 1 || now - lastProgressMs >= 80) {
+                  lastProgressMs = now
+                  reportProgress(uploadFrac)
+                }
+              }
+            }
+            xhr.onreadystatechange = () => {
+              if (uploadDebug && xhr.readyState === 4) {
+                console.log('[upload] readyState 4', { status: xhr.status, progressEventsReceived: progressEventCount })
+              }
+              if (xhr.readyState === 4) {
+                if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  reportProgress(1)
+                  try {
+                    const resp = JSON.parse(xhr.responseText)
+                    resolve({ url: resp.url, path: resp.path })
+                  } catch (err) {
+                    reject(err)
+                  }
+                } else reject(new Error('upload failed'))
+              }
+            }
+            xhr.onerror = () => {
+              if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
+              reject(new Error('upload failed'))
+            }
+            xhr.onabort = () => {
+              if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
+              reject(new Error('upload aborted'))
+            }
+            if (uploadDebug) {
+              console.log('[upload] xhr.send(form) about to send', { formDataKeys: Array.from(form.keys()), blobSize: uploadBlob.size })
+            }
+            xhr.send(form)
+          })
         const ext = (f.name || '').split('.').pop()?.toLowerCase() || ''
         const isVideo = f.type.startsWith('video/') || VIDEO_EXTS.includes(ext)
         const isAudio = f.type.startsWith('audio/') || AUDIO_EXTS.includes(ext)
@@ -4448,22 +4785,30 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         : uploaded.every((u) => u.type === 'VIDEO') ? 'VIDEO'
         : uploaded.every((u) => u.type === 'AUDIO') ? 'AUDIO'
         : 'FILE'
-      await api.post('/conversations/send', { conversationId: activeId, type: msgType, content: textContent, attachments: uploaded, replyToId })
+      const sendController = new AbortController()
+      activeAttachAbortControllerRef.current = sendController
+      await api.post(
+        '/conversations/send',
+        { conversationId: activeId, type: msgType, content: textContent, attachments: uploaded, replyToId },
+        { signal: sendController.signal },
+      )
+      activeAttachAbortControllerRef.current = null
       // Remove pending message after successful send
-      setPendingByConv((prev) => {
-        const convPending = prev[activeId!] || []
-        const filtered = convPending.filter((m) => m.id !== pid)
-        if (filtered.length === 0) {
-          const { [activeId!]: _, ...rest } = prev
-          return rest
-        }
-        return { ...prev, [activeId!]: filtered }
-      })
+      removePendingUploadMessage(activeId, pid)
       client.invalidateQueries({ queryKey: ['messages', activeId] })
     } catch (error) {
-      console.error('Failed to upload attachments', error)
+      if (attachCancelRequestedRef.current || isUploadAbortError(error)) {
+        removePendingUploadMessage(activeId, pid)
+      } else {
+        console.error('Failed to upload attachments', error)
+      }
+    } finally {
+      setAttachUploadState('done')
+      setAttachUploading(false)
+      setAttachProgress(0)
+      resetAttachUploadTracking()
+      resetActiveAttachUpload()
     }
-    setAttachUploading(false)
   }
 
   async function getImageSize(url: string): Promise<{ width: number; height: number }> {
@@ -4586,16 +4931,40 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
     setAttachUploading(true)
     setAttachProgress(0)
+    setAttachUploadState('uploading')
+    setAttachCanceling(false)
+    attachCancelRequestedRef.current = false
+    activeAttachConversationIdRef.current = activeId
+    activeAttachPendingMessageIdRef.current = null
+    activeAttachUploadIdRef.current = null
+    activeAttachXhrRef.current = null
+    activeAttachAbortControllerRef.current = null
+    beginAttachUploadTracking()
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve())
+    })
 
     try {
-      // Create a File from Blob
       const audioFile = new File([audioBlob], 'voice-message.webm', { type: audioBlob.type || 'audio/webm' })
-      
       let uploadBlob: Blob | File = audioFile
       let encryptedMeta: Record<string, any> | undefined
 
       if (isSecretConversation && activeConversation) {
-        const buffer = new Uint8Array(await audioFile.arrayBuffer())
+        const chunks: Uint8Array[] = []
+        let received = 0
+        const reader = audioFile.stream().getReader()
+        while (true) {
+          const { done: readerDone, value } = await reader.read()
+          if (readerDone) break
+          chunks.push(value)
+          received += value.length
+        }
+        const buffer = new Uint8Array(received)
+        let offset = 0
+        for (const c of chunks) {
+          buffer.set(c, offset)
+          offset += c.length
+        }
         const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
         uploadBlob = new Blob([encrypted.cipher as BlobPart], { type: 'application/octet-stream' })
         encryptedMeta = {
@@ -4612,24 +4981,27 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const form = new FormData()
       form.append('file', uploadBlob, isSecretConversation ? `${audioFile.name}.enc` : audioFile.name)
       if (audioFile.name) form.append('originalFileName', audioFile.name)
-      // Used by the server to encrypt non-secret chat uploads with the per-conversation DEK.
       try { form.append('conversationId', activeId) } catch {}
 
       const url = await new Promise<string>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
-        xhr.open('POST', '/api/upload')
+        activeAttachXhrRef.current = xhr
+        xhr.open('POST', getUploadUrl())
         try {
           const token = useAppStore.getState().session?.accessToken
           if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
         } catch {}
         xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const percent = Math.round((e.loaded / e.total) * 100)
-            setAttachProgress(percent)
+          const total = uploadBlob.size
+          if (total > 0) {
+            const uploadFrac = Math.min(1, e.loaded / total)
+            updateAttachUploadSpeed(uploadBlob.size * uploadFrac)
+            setAttachProgress(Math.min(100, Math.round(uploadFrac * 100)))
           }
         }
         xhr.onreadystatechange = () => {
           if (xhr.readyState === 4) {
+            if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
             if (xhr.status >= 200 && xhr.status < 300) {
               try {
                 const resp = JSON.parse(xhr.responseText)
@@ -4641,6 +5013,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               reject(new Error('upload failed'))
             }
           }
+        }
+        xhr.onerror = () => {
+          if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
+          reject(new Error('upload failed'))
+        }
+        xhr.onabort = () => {
+          if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
+          reject(new Error('upload aborted'))
         }
         xhr.send(form)
       })
@@ -4662,22 +5042,30 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       }
 
       // Send directly (like uploadAndSendAttachments does for attachments)
+      const sendController = new AbortController()
+      activeAttachAbortControllerRef.current = sendController
       await api.post('/conversations/send', {
         conversationId: activeId,
         type: 'AUDIO',
         metadata: { duration },
         attachments: [attachment],
         replyToId: replyTo?.id,
-      })
+      }, { signal: sendController.signal })
+      activeAttachAbortControllerRef.current = null
 
       setReplyTo(null)
       client.invalidateQueries({ queryKey: ['messages', activeId] })
     } catch (error) {
-      console.error('Failed to send voice message', error)
-      alert('Не удалось отправить голосовое сообщение')
+      if (!(attachCancelRequestedRef.current || isUploadAbortError(error))) {
+        console.error('Failed to send voice message', error)
+        alert('Не удалось отправить голосовое сообщение')
+      }
     } finally {
+      setAttachUploadState('done')
       setAttachUploading(false)
       setAttachProgress(0)
+      resetAttachUploadTracking()
+      resetActiveAttachUpload()
     }
   }
 
@@ -8155,8 +8543,86 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </>
             )}
             {attachUploading && (
-              <div style={{ height: 6, background: 'var(--surface-100)', borderRadius: 3, overflow: 'hidden', marginTop: 10 }}>
-                <div style={{ width: `${attachProgress}%`, height: '100%', background: 'var(--brand)', transition: 'width 0.2s ease' }} />
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: '10px 12px',
+                  borderRadius: 14,
+                  border: '1px solid var(--surface-border)',
+                  background: 'color-mix(in srgb, var(--surface-100) 88%, transparent)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0, fontSize: 13, color: 'var(--text-primary)', fontWeight: 600 }}>
+                    {attachUploadState === 'processing' ? (
+                      <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0, color: 'var(--brand)' }} />
+                    ) : (
+                      <UploadCloud size={14} style={{ flexShrink: 0, color: 'var(--brand)' }} />
+                    )}
+                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {attachUploadState === 'processing'
+                        ? (ATTACH_PROCESSING_MESSAGES[attachProcessingMessageIndex]?.title ?? '🔐 Шифруем файл (AES-256-GCM)')
+                        : 'Загрузка файла...'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    <span>{attachUploadState === 'processing' ? '100%' : `${attachProgress}%`}</span>
+                    <button
+                      type="button"
+                      onClick={() => { void cancelActiveAttachUpload() }}
+                      disabled={attachCanceling}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        borderRadius: 999,
+                        border: '1px solid var(--surface-border)',
+                        background: 'color-mix(in srgb, var(--surface-200) 92%, transparent)',
+                        color: 'var(--text-primary)',
+                        padding: '7px 14px',
+                        minHeight: 34,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: attachCanceling ? 'default' : 'pointer',
+                        opacity: attachCanceling ? 0.7 : 1,
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.16)',
+                      }}
+                    >
+                      {attachCanceling ? (
+                        <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                      ) : (
+                        <X size={14} />
+                      )}
+                      <span>{attachCanceling ? 'Отменяем...' : 'Отменить'}</span>
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8, fontSize: 12, color: 'var(--text-muted)', minHeight: 16 }}>
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {attachCanceling
+                      ? 'Прерываем загрузку и удаляем временный файл...'
+                      : attachUploadState === 'processing'
+                      ? (ATTACH_PROCESSING_MESSAGES[attachProcessingMessageIndex]?.detail ?? 'Каждый блок защищён отдельной подписью')
+                      : attachUploadSpeed}
+                  </span>
+                  <span style={{ flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                    {attachUploadState === 'processing' ? '100%' : `${attachProgress}%`}
+                  </span>
+                </div>
+                <div style={{ height: 6, background: 'var(--surface-100)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${attachUploadState === 'processing' ? 100 : attachProgress}%`,
+                      height: '100%',
+                      background: attachUploadState === 'processing'
+                        ? 'linear-gradient(90deg, var(--brand), rgba(255,255,255,0.65), var(--brand))'
+                        : 'var(--brand)',
+                      backgroundSize: attachUploadState === 'processing' ? '200% 100%' : undefined,
+                      animation: attachUploadState === 'processing' ? 'eb-shimmer 1.6s linear infinite, pulse 1.8s ease-in-out infinite' : undefined,
+                      transition: 'width 0.2s ease',
+                    }}
+                  />
+                </div>
               </div>
             )}
             </>
@@ -8943,11 +9409,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   }
                   const form = new FormData()
                   form.append('file', blobToSend ?? selectedAvatarFile)
-                  const url = await new Promise<string>((resolve, reject) => {
+                    const url = await new Promise<string>((resolve, reject) => {
                     const xhr = new XMLHttpRequest()
-                    xhr.open('POST', '/api/upload')
+                    xhr.open('POST', getUploadUrl())
                     try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
-                    xhr.upload.onprogress = (e) => { if (e.lengthComputable) setUploadProgress(Math.round(100 * e.loaded / e.total)) }
+                    xhr.upload.onprogress = (e) => {
+                      const total = e.lengthComputable ? e.total : ((blobToSend ?? selectedAvatarFile)?.size ?? 0)
+                      if (total > 0) setUploadProgress(Math.min(100, Math.round(100 * e.loaded / total)))
+                    }
                     xhr.onreadystatechange = () => {
                       if (xhr.readyState === 4) {
                         if (xhr.status >= 200 && xhr.status < 300) {
@@ -8955,6 +9424,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         } else reject(new Error('upload failed'))
                       }
                     }
+                    xhr.onerror = () => reject(new Error('upload failed'))
                     xhr.send(form)
                   })
                   await api.patch('/status/me', { avatarUrl: url })
@@ -10238,7 +10708,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       form.append('file', newGroupAvatarBlob ?? newGroupAvatarFile!)
                       const url = await new Promise<string>((resolve, reject) => {
                         const xhr = new XMLHttpRequest()
-                        xhr.open('POST', '/api/upload')
+                        xhr.open('POST', getUploadUrl())
                         try {
                           const token = useAppStore.getState().session?.accessToken
                           if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
@@ -11351,12 +11821,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   form.append('file', blobToSend ?? groupSelectedAvatarFile!)
                   const url = await new Promise<string>((resolve, reject) => {
                     const xhr = new XMLHttpRequest()
-                    xhr.open('POST', '/api/upload')
+                    xhr.open('POST', getUploadUrl())
                     try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
-                    xhr.upload.onprogress = (e) => { 
-                      if (e.lengthComputable) {
-                        setUploadProgress(Math.round(100 * e.loaded / e.total))
-                      }
+                    xhr.upload.onprogress = (e) => {
+                      const total = e.lengthComputable ? e.total : ((blobToSend ?? groupSelectedAvatarFile)?.size ?? 0)
+                      if (total > 0) setUploadProgress(Math.min(100, Math.round(100 * e.loaded / total)))
                     }
                     xhr.onreadystatechange = () => {
                       if (xhr.readyState === 4) {
@@ -11369,12 +11838,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           }
                         } else {
                           reject(new Error(`upload failed: ${xhr.status} ${xhr.statusText}`))
-                      }
+                        }
                       }
                     }
-                    xhr.onerror = () => {
-                      reject(new Error('Network error during upload'))
-                    }
+                    xhr.onerror = () => reject(new Error('Network error during upload'))
                     xhr.send(form)
                   })
                   await api.patch(`/conversations/${activeConversation.id}`, { avatarUrl: url })
