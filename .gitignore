@@ -7,6 +7,9 @@ tmp/
 *.env.*
 !.env.example
 
+# SSL certs (self-signed for stoned.local) — ключи не коммитить
+/deploy/certs/*.pem
+
 # build artifacts
 /dist
 /frontend/dist
