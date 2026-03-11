@@ -2,6 +2,24 @@
 
 These files are prefilled for your project and domain.
 
+## Вариант: Полный стек в Docker (включая LiveKit)
+
+Если нужен весь стек в одном месте (Postgres, Redis, Backend, Worker, **LiveKit**, Nginx):
+
+```
+cd /DATA/eblusha-plus
+# Сборка фронта
+cd frontend && npm ci && npm run build && cd ..
+# Запуск (обязательно --env-file для LiveKit)
+docker compose -f deploy/docker-compose.full.yml --env-file .env up -d --build
+```
+
+В `.env` задайте:
+- `LIVEKIT_URL=ws://stoned.local` (для HTTP) или `wss://plus.eblusha.org` (для HTTPS)
+- `LIVEKIT_API_KEY=myapp` и `LIVEKIT_API_SECRET` (должны совпадать с ключами в LiveKit)
+
+---
+
 ## 1) Copy repo to server
 ```
 sudo mkdir -p /opt/eblusha-plus && sudo chown -R $USER:$USER /opt/eblusha-plus
@@ -28,6 +46,18 @@ JWT_REFRESH_SECRET=replace_with_long_random_hex_64
 LIVEKIT_URL=wss://voice.eblusha.org
 LIVEKIT_API_KEY=myapp
 LIVEKIT_API_SECRET=YOUR_LIVEKIT_SECRET
+
+# Storage: local (no S3) or s3. For Romania server, use local.
+STORAGE_BACKEND=local
+LOCAL_STORAGE_PATH=/var/lib/eblusha/storage
+STORAGE_ENC_KEY=<base64-32-bytes>
+STORAGE_PREFIX=uploads
+```
+
+## 3b) Create storage directory (for STORAGE_BACKEND=local)
+```bash
+sudo mkdir -p /var/lib/eblusha/storage
+# Ensure writable by the eblusha process (systemd usually runs as root)
 ```
 
 ## 4) Build backend and run migrations

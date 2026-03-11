@@ -1,9 +1,4 @@
 import { Router, type Request, type Response } from "express";
-import {
-  S3Client,
-  GetObjectCommand,
-  HeadObjectCommand,
-} from "@aws-sdk/client-s3";
 import env from "../config/env";
 import logger from "../config/logger";
 import {
@@ -12,6 +7,7 @@ import {
   isEncryptedPayload,
   parseStorageEncKey,
 } from "../lib/storageEncryption";
+import { getStorageProvider } from "../lib/storage";
 
 const EBP1_RANGE_SIZE_LIMIT = 50 * 1024 * 1024; // 50MB: above this, EBP1 ignores Range and returns 200
 const RANGE_MAX_SIZE = 16 * 1024 * 1024; // 16MB: default max Range span
@@ -84,46 +80,10 @@ function send416RangeNotSatisfiable(res: Response, totalSize: number, opts?: { c
 }
 
 const router = Router();
-
-const s3Config =
-  env.STORAGE_S3_ENDPOINT &&
-  env.STORAGE_S3_REGION &&
-  env.STORAGE_S3_BUCKET
-    ? {
-        endpoint: env.STORAGE_S3_ENDPOINT,
-        region: env.STORAGE_S3_REGION,
-        bucket: env.STORAGE_S3_BUCKET,
-        accessKeyId: env.STORAGE_S3_ACCESS_KEY || undefined,
-        secretAccessKey: env.STORAGE_S3_SECRET_KEY || undefined,
-      }
-    : null;
-
-const s3Client = s3Config
-  ? new S3Client({
-      region: s3Config.region,
-      endpoint: s3Config.endpoint,
-      forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
-      ...(s3Config.accessKeyId && s3Config.secretAccessKey
-        ? { credentials: { accessKeyId: s3Config.accessKeyId, secretAccessKey: s3Config.secretAccessKey } }
-        : {}),
-    })
-  : null;
-
 const objectPrefix = env.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
 const encKey = env.STORAGE_ENC_KEY ? parseStorageEncKey(env.STORAGE_ENC_KEY) : null;
-
-if (s3Client && s3Config) {
-  logger.info(
-    {
-      endpoint: s3Config.endpoint,
-      region: s3Config.region,
-      bucket: s3Config.bucket,
-      forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
-      objectPrefix,
-    },
-    "S3 file proxy initialized"
-  );
-}
+const bucketForKeys =
+  env.STORAGE_BACKEND === "local" ? null : (env.STORAGE_S3_BUCKET ?? null);
 
 // Decode URL-encoded path segments
 const decodeKeyFromUrl = (urlPath: string) =>
@@ -232,7 +192,7 @@ const readBodyToBuffer = async (body: any): Promise<Buffer> => {
   throw new Error("Unsupported S3 body type");
 };
 
-const buildCandidateKeys = (decodedPath: string, bucket: string, prefix: string): string[] => {
+const buildCandidateKeys = (decodedPath: string, bucket: string | null, prefix: string): string[] => {
   const base = decodedPath.replace(/^\//, "");
   const stripped = stripLeadingBucketSegment(base, bucket, prefix);
 
@@ -281,7 +241,7 @@ router.use(async (req: Request, res: Response, next) => {
     return next();
   }
 
-  // Handle OPTIONS for CORS preflight without touching S3.
+  // Handle OPTIONS for CORS preflight without touching storage.
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
@@ -291,8 +251,12 @@ router.use(async (req: Request, res: Response, next) => {
     return;
   }
 
-  if (!s3Client || !s3Config) {
-    res.status(503).json({ message: "S3 storage is not configured" });
+  let storage;
+  try {
+    storage = getStorageProvider();
+  } catch (e: any) {
+    logger.error({ err: e }, "Storage provider not configured");
+    res.status(503).json({ message: "Storage is not configured" });
     return;
   }
 
@@ -314,7 +278,11 @@ router.use(async (req: Request, res: Response, next) => {
   // Remove leading slash if present
   decodedPath = decodedPath.replace(/^\//, "");
 
-  const candidates = buildCandidateKeys(decodedPath, s3Config.bucket, objectPrefix);
+  const candidates = buildCandidateKeys(
+    decodedPath,
+    bucketForKeys,
+    objectPrefix
+  );
   // If we migrated objects to *.eblusha but DB still contains old URLs (.jpg/.png/.bin),
   // transparently try the ".eblusha" variant as a fallback.
   const expandedCandidates = encKey
@@ -322,7 +290,7 @@ router.use(async (req: Request, res: Response, next) => {
     : candidates;
   logger.info(
     { urlPath, decodedPath, objectPrefix, candidates: expandedCandidates, originalPath: req.path },
-    "Resolving S3 key candidates for file request"
+    "Resolving storage key candidates for file request"
   );
 
   try {
@@ -334,17 +302,31 @@ router.use(async (req: Request, res: Response, next) => {
 
     for (const key of expandedCandidates) {
       try {
-        let headResponse: { Metadata?: Record<string, string>; ContentType?: string; ContentLength?: number; LastModified?: Date; ETag?: string } | null = null;
+        let headResponse: { metadata?: Record<string, string>; contentType?: string; contentLength?: number; lastModified?: Date; etag?: string } | null = null;
         try {
-          const headCommand = new HeadObjectCommand({ Bucket: s3Config.bucket, Key: key });
-          const h = await s3Client.send(headCommand) as { Metadata?: Record<string, string>; ContentType?: string; ContentLength?: number; LastModified?: Date; ETag?: string };
-          headResponse = h;
-          contentType = h.ContentType || contentType;
-          contentLength = h.ContentLength;
-          lastModified = h.LastModified;
-          etag = h.ETag;
+          const h = await storage.headObject(key);
+          if (!h) {
+            lastErr = new Error("NotFound");
+            continue;
+          }
+          headResponse = {
+            metadata: h.metadata ?? {},
+            ...(h.contentType != null && { contentType: h.contentType }),
+            ...(h.contentLength != null && { contentLength: h.contentLength }),
+            ...(h.lastModified != null && { lastModified: h.lastModified }),
+            ...(h.etag != null && { etag: h.etag }),
+          };
+          contentType = h.contentType || contentType;
+          contentLength = h.contentLength;
+          lastModified = h.lastModified;
+          etag = h.etag;
         } catch (headError: any) {
-          if (headError.name === "NotFound" || headError.$metadata?.httpStatusCode === 404) {
+          if (
+            headError?.code === "NotFound" ||
+            headError?.name === "NotFound" ||
+            headError?.name === "NoSuchKey" ||
+            headError?.$metadata?.httpStatusCode === 404
+          ) {
             lastErr = headError;
             continue;
           }
@@ -352,19 +334,19 @@ router.use(async (req: Request, res: Response, next) => {
           logger.warn({ err: headError, key }, "HEAD request failed for candidate, will try GET");
         }
 
-        const meta = (headResponse?.Metadata || {}) as Record<string, string>;
+        const meta = (headResponse?.metadata ?? {}) as Record<string, string>;
         const isEbp2 = meta?.enc === "ebp2";
 
         if (req.method === "HEAD" && headResponse && !isEbp2) {
-          res.setHeader("Content-Type", headResponse.ContentType || contentType);
-          if (headResponse.ContentLength !== undefined) {
-            res.setHeader("Content-Length", headResponse.ContentLength.toString());
+          res.setHeader("Content-Type", headResponse.contentType || contentType);
+          if (headResponse.contentLength !== undefined) {
+            res.setHeader("Content-Length", headResponse.contentLength.toString());
           }
-          if (headResponse.LastModified) {
-            res.setHeader("Last-Modified", headResponse.LastModified.toUTCString());
+          if (headResponse.lastModified) {
+            res.setHeader("Last-Modified", headResponse.lastModified.toUTCString());
           }
-          if (headResponse.ETag) {
-            res.setHeader("ETag", headResponse.ETag);
+          if (headResponse.etag) {
+            res.setHeader("ETag", headResponse.etag);
           }
           res.setHeader("Access-Control-Allow-Origin", "*");
           res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
@@ -414,13 +396,8 @@ router.use(async (req: Request, res: Response, next) => {
           }
 
           const fetcher = async (range: { start: number; end: number }) => {
-            const cmd = new GetObjectCommand({
-              Bucket: s3Config.bucket!,
-              Key: key,
-              Range: `bytes=${range.start}-${range.end}`,
-            });
-            const r = await s3Client.send(cmd);
-            return readBodyToBuffer(r.Body);
+            const r = await storage.getObject(key, range);
+            return readBodyToBuffer(r.body);
           };
 
           const contentLength = byteRange.end - byteRange.start + 1;
@@ -456,14 +433,11 @@ router.use(async (req: Request, res: Response, next) => {
           (meta as any)?.enc_v === "1" ||
           false;
 
-        let getParams: { Bucket: string; Key: string; Range?: string } = {
-          Bucket: s3Config.bucket!,
-          Key: key,
-        };
+        let rangeOpt: { start: number; end: number } | undefined;
         if (!isEbp1 && headResponse) {
           const rangeHeader = req.headers.range as string | undefined;
-          const objSize = headResponse.ContentLength ?? 0;
-          const unencCt = headResponse.ContentType || "application/octet-stream";
+          const objSize = headResponse.contentLength ?? 0;
+          const unencCt = headResponse.contentType || "application/octet-stream";
           if (rangeHeader) {
             const parsed = parseRangeHeader(rangeHeader, objSize);
             if (!parsed) {
@@ -479,13 +453,12 @@ router.use(async (req: Request, res: Response, next) => {
               });
               return;
             }
-            getParams.Range = `bytes=${parsed.start}-${parsed.end}`;
+            rangeOpt = parsed;
           }
         }
-        const getCommand = new GetObjectCommand(getParams);
-        const response = await s3Client.send(getCommand);
+        const getResult = await storage.getObject(key, rangeOpt);
 
-        logger.info({ key }, "Proxying file from S3 using resolved key");
+        logger.info({ key }, "Proxying file from storage using resolved key");
 
         const isEncrypted = isEbp1;
 
@@ -493,7 +466,7 @@ router.use(async (req: Request, res: Response, next) => {
           let rangeHeader = req.headers.range as string | undefined;
           const encSize = contentLength ?? 0;
           const originalCt =
-            (response.Metadata?.ct && response.Metadata.ct.trim()) || "application/octet-stream";
+            (getResult.metadata?.ct && getResult.metadata.ct.trim()) || "application/octet-stream";
 
           // EBP1: for large files or oversized Range, ignore Range and return 200 full — lets <video> play without seek, no OOM
           if (rangeHeader) {
@@ -510,8 +483,8 @@ router.use(async (req: Request, res: Response, next) => {
             }
           }
 
-          const encryptedBuf = await readBodyToBuffer(response.Body);
-          const aadFromMeta = (meta?.aad ?? response.Metadata?.aad)?.trim?.();
+          const encryptedBuf = await readBodyToBuffer(getResult.body);
+          const aadFromMeta = (meta?.aad ?? getResult.metadata?.aad)?.trim?.();
           let decrypted: Buffer | undefined;
           if (aadFromMeta) {
             decrypted = decryptBuffer(encryptedBuf, encKey!, { aad: aadFromMeta });
@@ -564,14 +537,17 @@ router.use(async (req: Request, res: Response, next) => {
         }
 
         // Unencrypted: set headers and stream
-        const usedRange = !!getParams.Range;
-        if (usedRange && response.ContentRange) {
+        const usedRange = !!rangeOpt;
+        if (usedRange && rangeOpt) {
           res.status(206);
-          res.setHeader("Content-Range", response.ContentRange);
+          res.setHeader(
+            "Content-Range",
+            `bytes ${rangeOpt.start}-${rangeOpt.end}/${contentLength ?? "*"}`
+          );
         }
-        res.setHeader("Content-Type", response.ContentType || contentType);
-        applyContentDisposition(req, res, String(response.ContentType || contentType));
-        const bodyLength = response.ContentLength ?? contentLength;
+        res.setHeader("Content-Type", getResult.contentType || contentType);
+        applyContentDisposition(req, res, String(getResult.contentType || contentType));
+        const bodyLength = getResult.contentLength ?? contentLength;
         if (bodyLength !== undefined) {
           res.setHeader("Content-Length", bodyLength.toString());
         }
@@ -591,9 +567,8 @@ router.use(async (req: Request, res: Response, next) => {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
         // Stream the object body
-        if (response.Body) {
-          const body = response.Body as any;
-
+        const body = getResult.body;
+        if (body) {
           if (typeof body.pipe === "function") {
             body.pipe(res);
             return;
@@ -614,7 +589,11 @@ router.use(async (req: Request, res: Response, next) => {
         return;
       } catch (err: any) {
         lastErr = err;
-        if (err?.name === "NoSuchKey" || err?.$metadata?.httpStatusCode === 404) {
+        if (
+          err?.code === "NotFound" ||
+          err?.name === "NoSuchKey" ||
+          err?.$metadata?.httpStatusCode === 404
+        ) {
           continue;
         }
         // Some S3-compatible providers return 403 even for missing keys; continue trying other candidates.
@@ -634,7 +613,7 @@ router.use(async (req: Request, res: Response, next) => {
     res.status(404).json({ message: "File not found" });
     return;
   } catch (error: any) {
-    logger.error({ err: error }, "Failed to proxy file from S3");
+    logger.error({ err: error }, "Failed to proxy file from storage");
     
     if (error.name === "NoSuchKey" || error.$metadata?.httpStatusCode === 404) {
       res.status(404).json({ message: "File not found" });

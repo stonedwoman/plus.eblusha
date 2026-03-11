@@ -8,7 +8,27 @@ dotenv.config({ path: ".env.local", override: true });
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().default(4000),
-  CLIENT_URL: z.string().url().optional(),
+  // Один origin или несколько через запятую (http://stoned.local,https://plus.eblusha.org)
+  CLIENT_URL: z
+    .string()
+    .optional()
+    .transform((v): string[] | undefined => {
+      if (!v?.trim()) return undefined;
+      const parts = v
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const valid: string[] = [];
+      for (const p of parts) {
+        try {
+          new URL(p);
+          valid.push(p);
+        } catch {
+          // skip invalid
+        }
+      }
+      return valid.length > 0 ? valid : undefined;
+    }),
   DATABASE_URL: z.string(),
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
   JWT_REFRESH_SECRET: z
@@ -20,8 +40,16 @@ const envSchema = z.object({
   COOKIE_SAMESITE: z.enum(["lax", "none", "strict"]).default("lax"),
   COOKIE_DOMAIN: z.string().optional(),
   COOKIE_PATH: z.string().default("/api"),
-  // LiveKit must be explicitly provided
-  LIVEKIT_URL: z.string().url({ message: "LIVEKIT_URL must be a valid ws(s) URL" }),
+  // Override: 0/false = allow cookies over HTTP (stoned.local и т.п.)
+  COOKIE_SECURE: z
+    .string()
+    .optional()
+    .transform((v): boolean | undefined =>
+      v === undefined ? undefined : /^(1|true|yes)$/i.test(String(v).trim())
+    ),
+  // LiveKit: либо полный URL (LIVEKIT_URL), либо путь для построения от текущего хоста (LIVEKIT_PATH, без доменов)
+  LIVEKIT_URL: z.string().url().optional(),
+  LIVEKIT_PATH: z.string().optional(), // напр. /api/voice — бэкенд построит ws(s)://host/api/voice из запроса
   LIVEKIT_API_KEY: z.string(),
   LIVEKIT_API_SECRET: z.string(),
   // Feature flags
@@ -39,6 +67,13 @@ const envSchema = z.object({
   DEBUG_CLIENT_LOGS: z.coerce.boolean().default(false),
   // Debug: enable storage encryption selftest endpoint (/api/debug/storageenc-selftest)
   DEBUG_STORAGE_ENC: z.coerce.boolean().default(false),
+  // Storage backend: "local" | "s3" (default)
+  STORAGE_BACKEND: z
+    .string()
+    .optional()
+    .transform((v) => (v?.toLowerCase().trim() === "local" ? "local" : "s3")),
+  // For STORAGE_BACKEND=local: base directory for files (default /var/lib/eblusha/storage)
+  LOCAL_STORAGE_PATH: z.string().optional(),
   STORAGE_S3_ENDPOINT: z.string().url().optional(),
   STORAGE_S3_REGION: z.string().optional(),
   STORAGE_S3_BUCKET: z.string().optional(),
@@ -66,6 +101,10 @@ if (env.NODE_ENV === "production" && !env.METRICS_TOKEN) {
 
 if (env.NODE_ENV === "production" && !env.STORAGE_ENC_KEY) {
   throw new Error("STORAGE_ENC_KEY is required in production");
+}
+
+if (!env.LIVEKIT_URL && !env.LIVEKIT_PATH) {
+  throw new Error("Either LIVEKIT_URL or LIVEKIT_PATH must be set");
 }
 
 export default env;

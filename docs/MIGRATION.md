@@ -56,9 +56,20 @@ METRICS_TOKEN=<токен для /api/status/metrics>
 STORAGE_ENC_KEY=<base64, 32 байта>
 ```
 
-### S3 Storage (обязательно в продакшене для файлов)
+### Storage (локальный диск или S3)
 
+**Локальный диск (рекомендуется для Румынии):**
 ```
+STORAGE_BACKEND=local
+LOCAL_STORAGE_PATH=/var/lib/eblusha/storage
+STORAGE_PREFIX=uploads
+STORAGE_ENC_KEY=<base64, 32 байта>
+CHAT_ENC_KEK=<base64, 32 байта — для шифрования DEK не-secret чатов>
+```
+
+**S3 (для РФ или облака):**
+```
+STORAGE_BACKEND=s3
 STORAGE_S3_ENDPOINT=https://s3.twcstorage.ru
 STORAGE_S3_REGION=ru-1
 STORAGE_S3_BUCKET=<bucket-id>
@@ -69,6 +80,7 @@ STORAGE_PREFIX=uploads
 STORAGE_S3_FORCE_PATH_STYLE=true
 STORAGE_S3_ACL=public-read
 STORAGE_S3_SSE=AES256
+STORAGE_ENC_KEY=<base64, 32 байта>
 CHAT_ENC_KEK=<base64, 32 байта — для шифрования DEK не-secret чатов>
 ```
 
@@ -114,14 +126,18 @@ VITE_LIVEKIT_URL=                # если отличается от серве
 | deploy/nginx-docker.conf | /etc/nginx/conf.d/default.conf | Конфиг nginx         |
 | frontend/dist            | /var/www/plus.eblusha.org    | Собранный SPA         |
 
-### Локальные пути (при ENABLE_LOCAL_UPLOADS=true)
+### Локальное хранилище (STORAGE_BACKEND=local)
 
-При отключённом S3 бэкенд пишет файлы в:
+При `STORAGE_BACKEND=local` файлы сохраняются в `LOCAL_STORAGE_PATH` (по умолчанию `/var/lib/eblusha/storage`):
 
-- `uploads/` — корень проекта (rel to cwd)
+- `LOCAL_STORAGE_PATH/uploads/<filename>.eblusha` — зашифрованные вложения
 - `tmp/uploads/` — временные загрузки (multer)
 
-**Продакшен использует S3** — локальные uploads не нужны.
+Создать директорию:
+```bash
+sudo mkdir -p /var/lib/eblusha/storage
+sudo chown -R eblusha:eblusha /var/lib/eblusha
+```
 
 ---
 

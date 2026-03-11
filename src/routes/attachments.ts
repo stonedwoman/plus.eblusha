@@ -3,7 +3,6 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import crypto from "crypto";
-import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { authenticate } from "../middlewares/auth";
 import env from "../config/env";
 import logger from "../config/logger";
@@ -19,37 +18,9 @@ import {
   getEbp2ChunkEncryptedRange,
   EBP2_DEFAULT_CHUNK_SIZE,
 } from "../lib/storageEncryption";
+import { getStorageProvider } from "../lib/storage";
 
 const router = Router();
-const s3Config =
-  env.STORAGE_S3_ENDPOINT &&
-  env.STORAGE_S3_REGION &&
-  env.STORAGE_S3_BUCKET
-    ? {
-        endpoint: env.STORAGE_S3_ENDPOINT,
-        region: env.STORAGE_S3_REGION,
-        bucket: env.STORAGE_S3_BUCKET,
-        accessKeyId: env.STORAGE_S3_ACCESS_KEY || undefined,
-        secretAccessKey: env.STORAGE_S3_SECRET_KEY || undefined,
-      }
-    : null;
-
-const s3Client = s3Config
-  ? new S3Client({
-      region: s3Config.region,
-      endpoint: s3Config.endpoint,
-      forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
-      ...(s3Config.accessKeyId && s3Config.secretAccessKey
-        ? {
-            credentials: {
-              accessKeyId: s3Config.accessKeyId,
-              secretAccessKey: s3Config.secretAccessKey,
-            },
-          }
-        : {}),
-    })
-  : null;
-
 const objectPrefix = env.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
 const encKey = env.STORAGE_ENC_KEY ? parseStorageEncKey(env.STORAGE_ENC_KEY) : null;
 
@@ -68,7 +39,7 @@ const stripLeadingBucketSegment = (decodedPath: string, bucket: string | null, p
   if (bucket && segments[0] === bucket) return segments.slice(1).join("/");
   return decodedPath;
 };
-const buildCandidateKeys = (base: string, bucket: string, prefix: string): string[] => {
+const buildCandidateKeys = (base: string, bucket: string | null, prefix: string): string[] => {
   const b = base.replace(/^\//, "");
   const stripped = stripLeadingBucketSegment(b, bucket, prefix);
   const candidates: string[] = [];
@@ -124,7 +95,7 @@ async function readStreamFully(body: any): Promise<Buffer> {
   }
   const arrayBuffer = (await body.transformToByteArray?.()) || (await body.arrayBuffer?.());
   if (arrayBuffer) return Buffer.from(arrayBuffer);
-  throw new Error("Unsupported S3 body");
+  throw new Error("Unsupported storage body");
 }
 
 router.use(authenticate);
@@ -140,8 +111,16 @@ router.post(
       return;
     }
 
-    if (!s3Client || !s3Config || !encKey) {
-      res.status(503).json({ message: "Storage or encryption not configured" });
+    if (!encKey) {
+      res.status(503).json({ message: "Storage encryption not configured" });
+      return;
+    }
+    let storage;
+    try {
+      storage = getStorageProvider();
+    } catch (e: any) {
+      logger.error({ err: e }, "Storage provider not configured");
+      res.status(503).json({ message: "Storage is not configured" });
       return;
     }
 
@@ -204,20 +183,24 @@ router.post(
       return;
     }
 
-    const candidates = buildCandidateKeys(bodyKey, s3Config.bucket, objectPrefix);
+    const bucketForKeys =
+      env.STORAGE_BACKEND === "local" ? null : (env.STORAGE_S3_BUCKET ?? null);
+    const candidates = buildCandidateKeys(bodyKey, bucketForKeys, objectPrefix);
     const expandedCandidates = encKey
       ? Array.from(new Set([...candidates, ...candidates.map(toEblushaKey)]))
       : candidates;
 
     let resolvedBucketKey: string | null = null;
-    let headResp: { Metadata?: Record<string, string>; ContentLength?: number } | null = null;
+    let headResp: { metadata?: Record<string, string>; contentLength?: number } | null = null;
     for (const key of expandedCandidates) {
       try {
-        const h = await s3Client.send(
-          new HeadObjectCommand({ Bucket: s3Config.bucket!, Key: key })
-        ) as { Metadata?: Record<string, string>; ContentLength?: number };
+        const h = await storage.headObject(key);
+        if (!h) continue;
         resolvedBucketKey = key;
-        headResp = h;
+        headResp = {
+          metadata: h.metadata ?? {},
+          ...(h.contentLength != null && { contentLength: h.contentLength }),
+        };
         break;
       } catch {
         continue;
@@ -228,17 +211,14 @@ router.post(
       return;
     }
 
-    const encMeta = headResp.Metadata as Record<string, string> | undefined;
+    const encMeta = headResp.metadata as Record<string, string> | undefined;
     const isEbp2 = encMeta?.enc === "ebp2";
 
-    const magicResp = await s3Client.send(
-      new GetObjectCommand({
-        Bucket: s3Config.bucket!,
-        Key: resolvedBucketKey!,
-        Range: "bytes=0-3",
-      })
-    );
-    const magicBuf = await readStreamFully(magicResp.Body);
+    const magicResp = await storage.getObject(resolvedBucketKey!, {
+      start: 0,
+      end: 3,
+    });
+    const magicBuf = await readStreamFully(magicResp.body);
     const magicStr = magicBuf.length >= 4 ? magicBuf.subarray(0, 4).toString("utf8") : "";
     const useEbp2 = isEbp2 && magicStr === "EBP2";
     const aadForDecrypt = encMeta?.aad?.trim?.() || null;
@@ -263,7 +243,7 @@ router.post(
       const totalSize =
         isEbp2 && encMeta?.totalSize
           ? parseInt(encMeta.totalSize, 10)
-          : (headResp!.ContentLength ?? 0);
+          : (headResp!.contentLength ?? 0);
       const chunkSize = isEbp2 && encMeta?.chunksize
         ? parseInt(encMeta.chunksize, 10)
         : EBP2_DEFAULT_CHUNK_SIZE;
@@ -281,27 +261,18 @@ router.post(
           const { length } = getEbp2ChunkEncryptedRange(chunkSize, totalSize, i);
           rangeEnd += length;
         }
-        const encRangeResp = await s3Client.send(
-          new GetObjectCommand({
-            Bucket: s3Config.bucket!,
-            Key: resolvedBucketKey!,
-            Range: `bytes=0-${rangeEnd}`,
-          })
-        );
-        const encBuf = await readStreamFully(encRangeResp.Body);
+        const encRangeResp = await storage.getObject(resolvedBucketKey!, {
+          start: 0,
+          end: rangeEnd,
+        });
+        const encBuf = await readStreamFully(encRangeResp.body);
         try {
           const wholeDecrypted = decryptEbp2WholeFromBuffer(encBuf, ebp2Aad, encKey);
           videoBuf = wholeDecrypted.subarray(0, fetchLen);
         } catch (wholeErr) {
           const fetcher = async (range: { start: number; end: number }) => {
-            const r = await s3Client.send(
-              new GetObjectCommand({
-                Bucket: s3Config.bucket!,
-                Key: resolvedBucketKey!,
-                Range: `bytes=${range.start}-${range.end}`,
-              })
-            );
-            return readStreamFully(r.Body);
+            const r = await storage.getObject(resolvedBucketKey!, range);
+            return readStreamFully(r.body);
           };
           const stream = decryptEbp2RangeStream(
             ebp2Aad,
@@ -318,13 +289,9 @@ router.post(
           });
         }
       } else {
-        const contentLen = headResp.ContentLength ?? 0;
-        const getCmd = new GetObjectCommand({
-          Bucket: s3Config.bucket,
-          Key: resolvedBucketKey!,
-        });
-        const getResp = await s3Client.send(getCmd);
-        const encBuf = await readStreamFully(getResp.Body);
+        const contentLen = headResp.contentLength ?? 0;
+        const getResp = await storage.getObject(resolvedBucketKey!);
+        const encBuf = await readStreamFully(getResp.body);
         const gotLen = encBuf.length;
 
         logger.info(
@@ -504,22 +471,17 @@ router.post(
         contentType: "image/jpeg",
       });
 
-      await s3Client.send(
-        new PutObjectCommand({
-          Bucket: s3Config.bucket,
-          Key: posterKey,
-          Body: payload,
-          ContentType: "application/octet-stream",
-          Metadata: {
-            enc: "ebp1",
-            encv: encMetaOut.v,
-            encalg: encMetaOut.alg,
-            enciv: encMetaOut.iv,
-            enctag: encMetaOut.tag,
-            ct: "image/jpeg",
-          },
-        })
-      );
+      await storage.putObject(posterKey, payload, {
+        contentType: "application/octet-stream",
+        metadata: {
+          enc: "ebp1",
+          encv: encMetaOut.v,
+          encalg: encMetaOut.alg,
+          enciv: encMetaOut.iv,
+          enctag: encMetaOut.tag,
+          ct: "image/jpeg",
+        },
+      });
 
       const updatedMeta = {
         ...meta,
