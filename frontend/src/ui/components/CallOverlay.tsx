@@ -2678,6 +2678,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           button.style.marginLeft = options?.pushRight ? 'auto' : '0'
         }
 
+        const activationEvent: 'pointerup' | 'click' =
+          typeof window !== 'undefined' && 'PointerEvent' in window ? 'pointerup' : 'click'
+
         const ensureButtonMounted = (button: HTMLButtonElement | null) => {
           if (!button) return
           if (button.parentElement === controlBar) return
@@ -2700,7 +2703,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               onMinimize?.()
             }
             ;(minimizeBtn as any).__ebMinHandler = handler
-            minimizeBtn.addEventListener('click', handler, true)
+            ;(minimizeBtn as any).__ebMinActivationEvent = activationEvent
+            minimizeBtn.addEventListener(activationEvent, handler, true)
             minimizeBtn.addEventListener('keydown', (e: any) => {
               if (e?.key !== 'Enter' && e?.key !== ' ') return
               handler(e)
@@ -2720,7 +2724,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               setIsWindowExpanded((prev) => !prev)
             }
             ;(expandBtn as any).__ebExpandHandler = handler
-            expandBtn.addEventListener('click', handler, true)
+            ;(expandBtn as any).__ebExpandActivationEvent = activationEvent
+            expandBtn.addEventListener(activationEvent, handler, true)
             expandBtn.addEventListener('keydown', (e: any) => {
               if (e?.key !== 'Enter' && e?.key !== ' ') return
               handler(e)
@@ -2728,13 +2733,13 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           }
         } else if (!isDesktop && expandBtn) {
           const handler = (expandBtn as any).__ebExpandHandler as ((evt: Event) => void) | undefined
+          const eventName = ((expandBtn as any).__ebExpandActivationEvent as 'pointerup' | 'click' | undefined) ?? activationEvent
           if (handler) {
-            expandBtn.removeEventListener('click', handler, true)
-            expandBtn.removeEventListener('pointerup', handler, true)
-            expandBtn.removeEventListener('touchend', handler, true)
+            expandBtn.removeEventListener(eventName, handler, true)
           }
           delete (expandBtn as any).__ebExpandBound
           delete (expandBtn as any).__ebExpandHandler
+          delete (expandBtn as any).__ebExpandActivationEvent
           expandBtn.remove()
           expandBtn = null
         }
@@ -2804,11 +2809,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       const expandBtn = root.querySelector('.call-container .eb-expand-btn') as HTMLButtonElement | null
       if (expandBtn && (expandBtn as any).__ebExpandHandler) {
         const handler = (expandBtn as any).__ebExpandHandler
-        expandBtn.removeEventListener('click', handler, true)
-        expandBtn.removeEventListener('pointerup', handler, true)
-        expandBtn.removeEventListener('touchend', handler, true)
+        const eventName = ((expandBtn as any).__ebExpandActivationEvent as 'pointerup' | 'click' | undefined) ?? 'pointerup'
+        expandBtn.removeEventListener(eventName, handler, true)
         delete (expandBtn as any).__ebExpandHandler
         delete (expandBtn as any).__ebExpandBound
+        delete (expandBtn as any).__ebExpandActivationEvent
       }
     }
   }, [open, onMinimize, isDesktop, isWindowExpanded])
