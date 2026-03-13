@@ -2980,15 +2980,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         leaveBtn.removeEventListener('click', (leaveBtn as any).__ebLeaveBound, true)
         delete (leaveBtn as any).__ebLeaveBound
       }
-      const expandBtn = root.querySelector('.call-container .eb-expand-btn') as HTMLButtonElement | null
-      if (expandBtn && (expandBtn as any).__ebExpandHandler) {
-        const handler = (expandBtn as any).__ebExpandHandler
-        const eventName = ((expandBtn as any).__ebExpandActivationEvent as 'pointerup' | 'click' | undefined) ?? 'pointerup'
-        expandBtn.removeEventListener(eventName, handler, true)
-        delete (expandBtn as any).__ebExpandHandler
-        delete (expandBtn as any).__ebExpandBound
-        delete (expandBtn as any).__ebExpandActivationEvent
-      }
     }
   }, [open, onMinimize, isDesktop, isWindowExpanded, syncWindowExpandedDom])
 
