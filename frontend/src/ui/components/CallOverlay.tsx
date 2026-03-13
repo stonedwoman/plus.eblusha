@@ -1798,6 +1798,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const [isDesktop, setIsDesktop] = useState<boolean>(() => (typeof window !== 'undefined' ? window.innerWidth > 768 : true))
   const [isWindowExpanded, setIsWindowExpanded] = useState(false)
   const [wasConnected, setWasConnected] = useState(false)
+  const overlayRef = useRef<HTMLDivElement | null>(null)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const isWindowExpandedRef = useRef(false)
   const me = useAppStore((s) => s.session?.user)
 
   const e2ee1to1FlagEnabled = useMemo(() => readEnvBool((import.meta as any).env?.VITE_E2EE_1TO1), [])
@@ -1857,6 +1860,20 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     onClose(effectiveOptions)
   }, [conversationId, isGroup, onClose])
 
+  const syncWindowExpandedDom = useCallback((expanded: boolean) => {
+    isWindowExpandedRef.current = expanded
+    const value = expanded ? 'true' : 'false'
+    overlayRef.current?.setAttribute('data-eb-window-expanded', value)
+    containerRef.current?.setAttribute('data-eb-window-expanded', value)
+    if (typeof window !== 'undefined') {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new Event('resize'))
+        })
+      })
+    }
+  }, [])
+
   useEffect(() => {
     setIsWindowExpanded(false)
   }, [conversationId])
@@ -1866,6 +1883,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       setIsWindowExpanded(false)
     }
   }, [open, minimized, isDesktop])
+
+  useEffect(() => {
+    syncWindowExpandedDom(isWindowExpanded)
+  }, [isWindowExpanded, syncWindowExpandedDom])
 
   const cleanupE2eeResources = useCallback(() => {
     try {
@@ -1887,6 +1908,42 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const videoContainCss = `
     /* Force videos to fit tile without cropping on all layouts */
     .call-container video { object-fit: contain !important; object-position: center !important; background: #000 !important; }
+    .call-container .lk-room-container,
+    .call-container .lk-video-conference,
+    .call-container .lk-layout {
+      width: 100% !important;
+      height: 100% !important;
+      min-height: 0 !important;
+    }
+    .call-overlay[data-eb-window-expanded="true"] {
+      align-items: stretch !important;
+      justify-content: stretch !important;
+    }
+    .call-overlay[data-eb-window-expanded="true"] .call-container {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 100vw !important;
+      height: 100dvh !important;
+      min-height: 100dvh !important;
+      max-width: 100vw !important;
+      max-height: 100dvh !important;
+      margin: 0 !important;
+      border-radius: 0 !important;
+      border: none !important;
+      box-shadow: none !important;
+    }
+    .call-overlay[data-eb-window-expanded="true"] .call-container > :not(style) {
+      width: 100% !important;
+      height: 100% !important;
+      min-height: 0 !important;
+    }
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-room-container,
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-video-conference,
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-layout {
+      width: 100% !important;
+      height: 100% !important;
+      min-height: 0 !important;
+    }
     .call-container .lk-participant-tile video,
     .call-container .lk-participant-media video,
     .call-container .lk-video-tile video,
@@ -2721,7 +2778,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             const handler = (evt: Event) => {
               evt.preventDefault()
               evt.stopPropagation()
-              setIsWindowExpanded((prev) => !prev)
+              const nextExpanded = !isWindowExpandedRef.current
+              syncWindowExpandedDom(nextExpanded)
+              setIsWindowExpanded(nextExpanded)
             }
             ;(expandBtn as any).__ebExpandHandler = handler
             ;(expandBtn as any).__ebExpandActivationEvent = activationEvent
@@ -2816,7 +2875,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         delete (expandBtn as any).__ebExpandActivationEvent
       }
     }
-  }, [open, onMinimize, isDesktop, isWindowExpanded])
+  }, [open, onMinimize, isDesktop, isWindowExpanded, syncWindowExpandedDom])
 
   // Add "(мы)" label to local participant name in tiles
   useEffect(() => {
@@ -3162,7 +3221,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
 
   const overlay = (
     <div
+      ref={overlayRef}
       className="call-overlay"
+      data-eb-window-expanded={isWindowExpanded ? 'true' : 'false'}
       onClick={(e) => {
         // Prevent taps/clicks from bubbling to the underlying app on mobile (can cause call state to reset)
         e.stopPropagation()
@@ -3188,7 +3249,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       pointerEvents: minimized ? 'none' : 'auto',
       }}
     >
-      <div data-lk-theme="default" style={{ 
+      <div ref={containerRef} data-lk-theme="default" data-eb-window-expanded={isWindowExpanded ? 'true' : 'false'} style={{ 
         width: minimized ? 0 : (isDesktop ? (isWindowExpanded ? '100vw' : '90vw') : '100vw'),
         height: minimized ? 0 : (isDesktop ? (isWindowExpanded ? '100dvh' : '80vh') : '100vh'),
         minHeight: minimized ? 0 : ((isDesktop && !isWindowExpanded) ? undefined : '100dvh'),
