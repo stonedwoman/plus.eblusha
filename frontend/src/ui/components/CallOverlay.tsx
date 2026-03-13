@@ -2701,8 +2701,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             }
             ;(minimizeBtn as any).__ebMinHandler = handler
             minimizeBtn.addEventListener('click', handler, true)
-            minimizeBtn.addEventListener('pointerup', handler, true)
-            minimizeBtn.addEventListener('touchend', handler, true)
             minimizeBtn.addEventListener('keydown', (e: any) => {
               if (e?.key !== 'Enter' && e?.key !== ' ') return
               handler(e)
@@ -2723,8 +2721,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             }
             ;(expandBtn as any).__ebExpandHandler = handler
             expandBtn.addEventListener('click', handler, true)
-            expandBtn.addEventListener('pointerup', handler, true)
-            expandBtn.addEventListener('touchend', handler, true)
             expandBtn.addEventListener('keydown', (e: any) => {
               if (e?.key !== 'Enter' && e?.key !== ' ') return
               handler(e)
