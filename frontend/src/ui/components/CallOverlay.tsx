@@ -1910,10 +1910,30 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     .call-container video { object-fit: contain !important; object-position: center !important; background: #000 !important; }
     .call-container .lk-room-container,
     .call-container .lk-video-conference,
+    .call-container .lk-video-conference-inner,
     .call-container .lk-layout {
       width: 100% !important;
       height: 100% !important;
       min-height: 0 !important;
+    }
+    .call-container .lk-video-conference-inner,
+    .call-container .lk-grid-layout-wrapper,
+    .call-container .lk-focus-layout-wrapper {
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
+    }
+    .call-container .lk-grid-layout-wrapper,
+    .call-container .lk-focus-layout-wrapper {
+      width: 100% !important;
+      height: calc(100% - var(--lk-control-bar-height)) !important;
+      max-height: none !important;
+    }
+    .call-container .lk-grid-layout,
+    .call-container .lk-focus-layout {
+      width: 100% !important;
+      height: 100% !important;
+      min-height: 0 !important;
+      max-height: none !important;
     }
     .call-overlay[data-eb-window-expanded="true"] {
       align-items: stretch !important;
@@ -1939,10 +1959,25 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     }
     .call-overlay[data-eb-window-expanded="true"] .call-container .lk-room-container,
     .call-overlay[data-eb-window-expanded="true"] .call-container .lk-video-conference,
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-video-conference-inner,
     .call-overlay[data-eb-window-expanded="true"] .call-container .lk-layout {
       width: 100% !important;
       height: 100% !important;
       min-height: 0 !important;
+    }
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-grid-layout-wrapper,
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-focus-layout-wrapper {
+      width: 100% !important;
+      height: calc(100% - var(--lk-control-bar-height)) !important;
+      min-height: 0 !important;
+      max-height: none !important;
+    }
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-grid-layout,
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-focus-layout {
+      width: 100% !important;
+      height: 100% !important;
+      min-height: 0 !important;
+      max-height: none !important;
     }
     .call-container .lk-participant-tile video,
     .call-container .lk-participant-media video,
