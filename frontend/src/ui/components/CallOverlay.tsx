@@ -1892,6 +1892,21 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     setImportant(containerEl, 'border', expanded ? 'none' : undefined)
     setImportant(containerEl, 'box-shadow', expanded ? 'none' : undefined)
 
+    const viewportWidth = typeof window !== 'undefined' ? `${window.innerWidth}px` : '100vw'
+    const viewportHeight = typeof window !== 'undefined' ? `${window.innerHeight}px` : '100vh'
+    const controlBarEl =
+      containerEl?.querySelector<HTMLElement>('.lk-control-bar, [data-lk-control-bar], [role="toolbar"]') ?? null
+    const controlBarHeight = controlBarEl?.getBoundingClientRect().height ?? 0
+    const contentHeight = typeof window !== 'undefined'
+      ? `${Math.max(0, window.innerHeight - controlBarHeight)}px`
+      : `calc(100vh - ${Math.max(0, controlBarHeight)}px)`
+
+    setImportant(containerEl, 'width', expanded ? viewportWidth : undefined)
+    setImportant(containerEl, 'height', expanded ? viewportHeight : undefined)
+    setImportant(containerEl, 'min-height', expanded ? viewportHeight : undefined)
+    setImportant(containerEl, 'max-width', expanded ? viewportWidth : undefined)
+    setImportant(containerEl, 'max-height', expanded ? viewportHeight : undefined)
+
     const livekitEls = containerEl?.querySelectorAll<HTMLElement>(
       '.lk-room-container, .lk-video-conference, .lk-video-conference-inner, .lk-grid-layout-wrapper, .lk-focus-layout-wrapper, .lk-grid-layout, .lk-focus-layout, .lk-layout'
     ) ?? []
@@ -1900,11 +1915,18 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       const isWrapper = el.matches('.lk-grid-layout-wrapper, .lk-focus-layout-wrapper')
       const isLayout = el.matches('.lk-grid-layout, .lk-focus-layout')
       const isConferenceInner = el.matches('.lk-video-conference-inner')
+      const isOuterRoom = el.matches('.lk-room-container, .lk-video-conference, .lk-video-conference-inner, .lk-layout')
 
-      setImportant(el, 'width', expanded ? '100%' : undefined)
+      setImportant(el, 'width', expanded ? (isOuterRoom ? viewportWidth : '100%') : undefined)
       setImportant(el, 'min-height', expanded ? '0' : undefined)
       setImportant(el, 'max-height', expanded && (isWrapper || isLayout) ? 'none' : undefined)
-      setImportant(el, 'height', expanded ? (isWrapper ? 'calc(100% - var(--lk-control-bar-height))' : '100%') : undefined)
+      setImportant(
+        el,
+        'height',
+        expanded
+          ? (isWrapper || isLayout ? contentHeight : (isOuterRoom ? viewportHeight : '100%'))
+          : undefined
+      )
 
       if (expanded && (isConferenceInner || isWrapper)) {
         setImportant(el, 'flex', '1 1 auto')
