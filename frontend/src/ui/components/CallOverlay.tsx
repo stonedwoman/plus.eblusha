@@ -2678,6 +2678,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           button.style.marginLeft = options?.pushRight ? 'auto' : '0'
         }
 
+        const ensureButtonMounted = (button: HTMLButtonElement | null) => {
+          if (!button) return
+          if (button.parentElement === controlBar) return
+          if (leaveBtn?.parentElement === controlBar) {
+            controlBar.insertBefore(button, leaveBtn)
+            return
+          }
+          controlBar.appendChild(button)
+        }
+
         if (!minimizeBtn) {
           minimizeBtn = document.createElement('button')
           minimizeBtn.className = 'eb-minimize-btn lk-button'
@@ -2743,6 +2753,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           minimizeBtn.setAttribute('aria-label', 'Свернуть')
           minimizeBtn.setAttribute('title', 'Свернуть')
           applyButtonStyle(minimizeBtn, { pushRight: !isDesktop })
+          ensureButtonMounted(minimizeBtn)
         }
 
         if (isDesktop && expandBtn) {
@@ -2757,8 +2768,12 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           expandBtn.setAttribute('aria-label', expandTitle)
           expandBtn.setAttribute('title', expandTitle)
           applyButtonStyle(expandBtn, { pushRight: true })
-          if (expandBtn.parentElement === controlBar) controlBar.appendChild(expandBtn)
-          if (minimizeBtn?.parentElement === controlBar) controlBar.appendChild(minimizeBtn)
+          ensureButtonMounted(expandBtn)
+          ensureButtonMounted(minimizeBtn)
+          controlBar.insertBefore(expandBtn, minimizeBtn ?? leaveBtn ?? null)
+          if (minimizeBtn) {
+            controlBar.insertBefore(minimizeBtn, leaveBtn ?? null)
+          }
         } else if (minimizeBtn?.parentElement === controlBar && controlBar.lastElementChild !== minimizeBtn) {
           controlBar.appendChild(minimizeBtn)
         }
