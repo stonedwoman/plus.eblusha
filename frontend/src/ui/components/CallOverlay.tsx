@@ -59,7 +59,9 @@ import '@livekit/components-styles'
 import { X } from 'lucide-react'
 import { convertToProxyUrl } from '../../utils/media'
 import { api } from '../../utils/api'
-import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../utils/socket'
+import { normalizeLivekitServerUrl } from '../../utils/livekitUrl'
+import { signalApkCallActive } from '../../utils/apkCallSignal'
+import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../core/realtime'
 import { useAppStore } from '../../domain/store/appStore'
 import { ConnectionState, LogLevel, Room, RoomEvent, setLogLevel, Track, RemoteAudioTrack } from 'livekit-client'
 import { createE2eeRoomOptions, enableE2ee, fetchE2eeKey } from '../../utils/e2ee'
@@ -1790,9 +1792,11 @@ function CallSettings() {
 export function CallOverlay({ open, conversationId, onClose, onMinimize, minimized = false, initialVideo = false, initialAudio = true, peerAvatarUrl = null, avatarsByName = {}, avatarsById = {}, localUserId = null, isGroup = false }: Props) {
   const [token, setToken] = useState<string | null>(null)
   const [serverUrl, setServerUrl] = useState<string | null>(null)
+  const livekitServerUrl = useMemo(() => normalizeLivekitServerUrl(serverUrl), [serverUrl])
   const [muted, setMuted] = useState(!initialAudio)
   const [camera, setCamera] = useState(!!initialVideo)
   const [isDesktop, setIsDesktop] = useState<boolean>(() => (typeof window !== 'undefined' ? window.innerWidth > 768 : true))
+  const [isWindowExpanded, setIsWindowExpanded] = useState(false)
   const [wasConnected, setWasConnected] = useState(false)
   const me = useAppStore((s) => s.session?.user)
 
@@ -1852,6 +1856,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     const effectiveOptions = manualCloseRef.current ? { ...(options ?? {}), manual: true } : options
     onClose(effectiveOptions)
   }, [conversationId, isGroup, onClose])
+
+  useEffect(() => {
+    setIsWindowExpanded(false)
+  }, [conversationId])
+
+  useEffect(() => {
+    if (!open || minimized || !isDesktop) {
+      setIsWindowExpanded(false)
+    }
+  }, [open, minimized, isDesktop])
 
   const cleanupE2eeResources = useCallback(() => {
     try {
@@ -1923,7 +1937,6 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     .call-container .lk-participant-tile[data-eb-has-video="true"]{
       justify-content: center !important;
     }
-    
     /* Hide chat entry point in the control bar (we expose device selection via Settings and also via button group menus) */
     .call-container .lk-control-bar .lk-chat-toggle { display: none !important; }
 
@@ -2312,7 +2325,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     let createdRoom: Room | null = null
 
     async function setup() {
-      if (!open || !conversationId || !token || !serverUrl || !shouldUseE2ee) {
+      if (!open || !conversationId || !token || !livekitServerUrl || !shouldUseE2ee) {
         setE2eePreparing(false)
         setE2eeError(null)
         cleanupE2eeResources()
@@ -2379,7 +2392,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         // ignore
       }
     }
-  }, [open, conversationId, token, serverUrl, shouldUseE2ee, cleanupE2eeResources])
+  }, [open, conversationId, token, livekitServerUrl, shouldUseE2ee, cleanupE2eeResources])
 
   // Ensure we always cleanup E2EE resources on unmount.
   useEffect(() => {
@@ -2606,42 +2619,76 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         (root.querySelector('.call-container [data-lk-control-bar]') as HTMLElement | null) ||
         (root.querySelector('.call-container [role="toolbar"]') as HTMLElement | null)
       
-      // Add minimize button to control bar
+      // Add minimize/expand buttons to control bar
       if (controlBar && onMinimize) {
-        // Check if minimize button already exists
         let minimizeBtn = controlBar.querySelector('.eb-minimize-btn') as HTMLButtonElement | null
+        let expandBtn = controlBar.querySelector('.eb-expand-btn') as HTMLButtonElement | null
+
+        const leaveBtn =
+          (controlBar.querySelector('button.lk-disconnect-button') as HTMLElement | null) ||
+          (controlBar.querySelector(
+            '[aria-label*="Выйти" i], [title*="Выйти" i], [aria-label*="leave" i], [title*="leave" i]'
+          ) as HTMLElement | null)
+
+        if (leaveBtn && !(leaveBtn as any).__ebLeaveBound) {
+          const handler = () => {
+            manualCloseRef.current = true
+          }
+          leaveBtn.addEventListener('click', handler, true)
+          ;(leaveBtn as any).__ebLeaveBound = handler
+        }
+
+        const minimizeIconSvg = `
+          <svg fill="currentColor" stroke="currentColor" width="30px" height="30px" version="1.1" viewBox="144 144 512 512" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" transform="matrix(6.123233995736766e-17,1,-1,6.123233995736766e-17,0,0)">
+            <g id="IconSvg_bgCarrier" stroke-width="0"></g>
+            <g id="IconSvg_tracerCarrier" stroke-linecap="round" stroke-linejoin="round" stroke="#CCCCCC"></g>
+            <g id="IconSvg_iconCarrier">
+              <path d="m546.94 400v125.95-0.003906c0 5.5703-2.2109 10.91-6.1484 14.844-3.9336 3.9375-9.2734 6.1484-14.844 6.1484h-251.9c-5.5664 0-10.906-2.2109-14.844-6.1484-3.9375-3.9336-6.1484-9.2734-6.1484-14.844v-251.9c0-5.5664 2.2109-10.906 6.1484-14.844s9.2773-6.1484 14.844-6.1484h125.95c7.5 0 14.43 4 18.18 10.496 3.75 6.4961 3.75 14.496 0 20.992-3.75 6.4961-10.68 10.496-18.18 10.496h-104.96v209.92h209.92v-104.96c0-7.5 4.0039-14.43 10.496-18.18 6.4961-3.75 14.5-3.75 20.992 0 6.4961 3.75 10.496 10.68 10.496 18.18z"></path>
+              <path fill="#d97706" stroke="#d97706" d="m567.93 253.05c0.019531-2.457-0.48047-4.8906-1.4688-7.1367-1.0117-2.043-2.2812-3.9492-3.7773-5.668l-1.6797-1.2578v-0.003907 c-1.2461-1.2812-2.7461-2.2812-4.4102-2.9375h-1.8906 0.003907c-2.2812-1.8594-4.9297-3.2188-7.7695-3.9883h-62.977 c-7.4961 0-14.43 4-18.18 10.496-3.7461 6.4961-3.7461 14.496 0 20.992 3.75 6.4961 10.684 10.496 18.18 10.496h12.387 l-111.26 111.05c-3.9727 3.9414-6.2109 9.3086-6.2109 14.906s2.2383 10.961 6.2109 14.902c3.9414 3.9727 9.3086 6.2109 14.906 6.2109s10.961-2.2383 14.902-6.2109l111.05-111.26v12.387c0 7.5 4.0039 14.43 10.496 18.18 6.4961 3.75 14.5 3.75 20.992 0 6.4961-3.75 10.496-10.68 10.496-18.18z"></path>
+            </g>
+          </svg>`
+        const expandIconSvg = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="20" height="20">
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <polyline points="9 21 3 21 3 15"></polyline>
+            <line x1="21" y1="3" x2="14" y2="10"></line>
+            <line x1="3" y1="21" x2="10" y2="14"></line>
+          </svg>`
+        const collapseIconSvg = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="20" height="20">
+            <polyline points="9 3 3 3 3 9"></polyline>
+            <polyline points="15 21 21 21 21 15"></polyline>
+            <line x1="3" y1="3" x2="10" y2="10"></line>
+            <line x1="21" y1="21" x2="14" y2="14"></line>
+          </svg>`
+
+        const applyButtonStyle = (button: HTMLButtonElement, options?: { pushRight?: boolean }) => {
+          button.style.height = '44px'
+          button.style.minHeight = '44px'
+          button.style.padding = '0 12px'
+          button.style.display = 'flex'
+          button.style.alignItems = 'center'
+          button.style.justifyContent = 'flex-start'
+          button.style.fontFamily = 'inherit'
+          button.style.fontSize = '14px'
+          button.style.fontWeight = '500'
+          button.style.lineHeight = '20px'
+          button.style.pointerEvents = 'auto'
+          button.disabled = false
+          button.style.marginLeft = options?.pushRight ? 'auto' : '0'
+        }
+
         if (!minimizeBtn) {
           minimizeBtn = document.createElement('button')
           minimizeBtn.className = 'eb-minimize-btn lk-button'
-          minimizeBtn.setAttribute('aria-label', 'Свернуть')
-          minimizeBtn.setAttribute('title', 'Свернуть')
           minimizeBtn.setAttribute('type', 'button')
-          // Custom minimize icon with text label - matching LiveKit button structure
-          minimizeBtn.innerHTML = `
-            <span style="display: flex; align-items: center; gap: 8px;">
-              <svg fill="currentColor" stroke="currentColor" width="30px" height="30px" version="1.1" viewBox="144 144 512 512" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" transform="matrix(6.123233995736766e-17,1,-1,6.123233995736766e-17,0,0)">
-                <g id="IconSvg_bgCarrier" stroke-width="0"></g>
-                <g id="IconSvg_tracerCarrier" stroke-linecap="round" stroke-linejoin="round" stroke="#CCCCCC"></g>
-                <g id="IconSvg_iconCarrier">
-                  <path d="m546.94 400v125.95-0.003906c0 5.5703-2.2109 10.91-6.1484 14.844-3.9336 3.9375-9.2734 6.1484-14.844 6.1484h-251.9c-5.5664 0-10.906-2.2109-14.844-6.1484-3.9375-3.9336-6.1484-9.2734-6.1484-14.844v-251.9c0-5.5664 2.2109-10.906 6.1484-14.844s9.2773-6.1484 14.844-6.1484h125.95c7.5 0 14.43 4 18.18 10.496 3.75 6.4961 3.75 14.496 0 20.992-3.75 6.4961-10.68 10.496-18.18 10.496h-104.96v209.92h209.92v-104.96c0-7.5 4.0039-14.43 10.496-18.18 6.4961-3.75 14.5-3.75 20.992 0 6.4961 3.75 10.496 10.68 10.496 18.18z"></path>
-                  <path fill="#d97706" stroke="#d97706" d="m567.93 253.05c0.019531-2.457-0.48047-4.8906-1.4688-7.1367-1.0117-2.043-2.2812-3.9492-3.7773-5.668l-1.6797-1.2578v-0.003907 c-1.2461-1.2812-2.7461-2.2812-4.4102-2.9375h-1.8906 0.003907c-2.2812-1.8594-4.9297-3.2188-7.7695-3.9883h-62.977 c-7.4961 0-14.43 4-18.18 10.496-3.7461 6.4961-3.7461 14.496 0 20.992 3.75 6.4961 10.684 10.496 18.18 10.496h12.387 l-111.26 111.05c-3.9727 3.9414-6.2109 9.3086-6.2109 14.906s2.2383 10.961 6.2109 14.902c3.9414 3.9727 9.3086 6.2109 14.906 6.2109s10.961-2.2383 14.902-6.2109l111.05-111.26v12.387c0 7.5 4.0039 14.43 10.496 18.18 6.4961 3.75 14.5 3.75 20.992 0 6.4961-3.75 10.496-10.68 10.496-18.18z"></path>
-                </g>
-              </svg>
-              <span style="font-size: 14px;">Свернуть</span>
-            </span>
-          `
-          // Bind minimize handler using capture phase to avoid LiveKit / parent interception.
           if (!(minimizeBtn as any).__ebMinBound) {
             ;(minimizeBtn as any).__ebMinBound = true
             const handler = (evt: Event) => {
-            evt.preventDefault()
-            evt.stopPropagation()
-            try {
+              evt.preventDefault()
+              evt.stopPropagation()
               onMinimize?.()
-            } catch (err) {
-              console.error('Minimize click error', err)
             }
-          }
             ;(minimizeBtn as any).__ebMinHandler = handler
             minimizeBtn.addEventListener('click', handler, true)
             minimizeBtn.addEventListener('pointerup', handler, true)
@@ -2651,71 +2698,69 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               handler(e)
             })
           }
-          minimizeBtn.style.pointerEvents = 'auto'
-          minimizeBtn.disabled = false
-          
-          // Insert before leave button (or at the end if not found)
-          // Ищем кнопку "Выйти" максимально надежно (у LiveKit есть стабильный класс lk-disconnect-button)
-          let leaveBtn =
-            (controlBar.querySelector('button.lk-disconnect-button') as HTMLElement | null) ||
-            (controlBar.querySelector(
-              '[aria-label*="Выйти" i], [title*="Выйти" i], [aria-label*="leave" i], [title*="leave" i]'
-            ) as HTMLElement | null)
-          
-          if (leaveBtn && leaveBtn.parentNode) {
-            if (!(leaveBtn as any).__ebLeaveBound) {
-              const handler = (evt: Event) => {
-                // Устанавливаем флаг ДО того, как LiveKit обработает клик
-                manualCloseRef.current = true
-                // Не предотвращаем дефолтное поведение - пусть LiveKit обработает отключение
-                // handleClose будет вызван через onDisconnected с manual: true
-              }
-              // Используем capture phase, чтобы установить флаг до обработки LiveKit
-              leaveBtn.addEventListener('click', handler, true)
-              ;(leaveBtn as any).__ebLeaveBound = handler
-            }
-            leaveBtn.parentNode.insertBefore(minimizeBtn, leaveBtn)
-          } else {
-            controlBar.appendChild(minimizeBtn)
-          }
         }
 
-        // Обновляем расположение и подпись в зависимости от режима (desktop/mobile)
+        if (isDesktop && !expandBtn) {
+          expandBtn = document.createElement('button')
+          expandBtn.className = 'eb-expand-btn lk-button'
+          expandBtn.setAttribute('type', 'button')
+          if (!(expandBtn as any).__ebExpandBound) {
+            ;(expandBtn as any).__ebExpandBound = true
+            const handler = (evt: Event) => {
+              evt.preventDefault()
+              evt.stopPropagation()
+              setIsWindowExpanded((prev) => !prev)
+            }
+            ;(expandBtn as any).__ebExpandHandler = handler
+            expandBtn.addEventListener('click', handler, true)
+            expandBtn.addEventListener('pointerup', handler, true)
+            expandBtn.addEventListener('touchend', handler, true)
+            expandBtn.addEventListener('keydown', (e: any) => {
+              if (e?.key !== 'Enter' && e?.key !== ' ') return
+              handler(e)
+            })
+          }
+        } else if (!isDesktop && expandBtn) {
+          const handler = (expandBtn as any).__ebExpandHandler as ((evt: Event) => void) | undefined
+          if (handler) {
+            expandBtn.removeEventListener('click', handler, true)
+            expandBtn.removeEventListener('pointerup', handler, true)
+            expandBtn.removeEventListener('touchend', handler, true)
+          }
+          delete (expandBtn as any).__ebExpandBound
+          delete (expandBtn as any).__ebExpandHandler
+          expandBtn.remove()
+          expandBtn = null
+        }
+
         if (minimizeBtn) {
-          const iconSvg = `
-            <svg fill="currentColor" stroke="currentColor" width="30px" height="30px" version="1.1" viewBox="144 144 512 512" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" transform="matrix(6.123233995736766e-17,1,-1,6.123233995736766e-17,0,0)">
-              <g id="IconSvg_bgCarrier" stroke-width="0"></g>
-              <g id="IconSvg_tracerCarrier" stroke-linecap="round" stroke-linejoin="round" stroke="#CCCCCC"></g>
-              <g id="IconSvg_iconCarrier">
-                <path d="m546.94 400v125.95-0.003906c0 5.5703-2.2109 10.91-6.1484 14.844-3.9336 3.9375-9.2734 6.1484-14.844 6.1484h-251.9c-5.5664 0-10.906-2.2109-14.844-6.1484-3.9375-3.9336-6.1484-9.2734-6.1484-14.844v-251.9c0-5.5664 2.2109-10.906 6.1484-14.844s9.2773-6.1484 14.844-6.1484h125.95c7.5 0 14.43 4 18.18 10.496 3.75 6.4961 3.75 14.496 0 20.992-3.75 6.4961-10.68 10.496-18.18 10.496h-104.96v209.92h209.92v-104.96c0-7.5 4.0039-14.43 10.496-18.18 6.4961-3.75 14.5-3.75 20.992 0 6.4961-3.75 10.496-10.68 10.496-18.18z"></path>
-                <path fill="#d97706" stroke="#d97706" d="m567.93 253.05c0.019531-2.457-0.48047-4.8906-1.4688-7.1367-1.0117-2.043-2.2812-3.9492-3.7773-5.668l-1.6797-1.2578v-0.003907 c-1.2461-1.2812-2.7461-2.2812-4.4102-2.9375h-1.8906 0.003907c-2.2812-1.8594-4.9297-3.2188-7.7695-3.9883h-62.977 c-7.4961 0-14.43 4-18.18 10.496-3.7461 6.4961-3.7461 14.496 0 20.992 3.75 6.4961 10.684 10.496 18.18 10.496h12.387 l-111.26 111.05c-3.9727 3.9414-6.2109 9.3086-6.2109 14.906s2.2383 10.961 6.2109 14.902c3.9414 3.9727 9.3086 6.2109 14.906 6.2109s10.961-2.2383 14.902-6.2109l111.05-111.26v12.387c0 7.5 4.0039 14.43 10.496 18.18 6.4961 3.75 14.5 3.75 20.992 0 6.4961-3.75 10.496-10.68 10.496-18.18z"></path>
-              </g>
-            </svg>`
           const desktopLabel = `
             <span style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 14px; font-family: inherit; font-weight: 500; line-height: 20px;">Свернуть</span>
-              ${iconSvg}
+              ${minimizeIconSvg}
             </span>`
-          minimizeBtn.innerHTML = isDesktop ? desktopLabel : iconSvg
-          // Выравниваем высоту под другие кнопки панели
-          minimizeBtn.style.height = '44px'
-          minimizeBtn.style.minHeight = '44px'
-          minimizeBtn.style.padding = '0 12px'
-          minimizeBtn.style.display = 'flex'
-          minimizeBtn.style.alignItems = 'center'
-          minimizeBtn.style.justifyContent = 'flex-start'
-          minimizeBtn.style.fontFamily = 'inherit'
-          minimizeBtn.style.fontSize = '14px'
-          minimizeBtn.style.fontWeight = '500'
-          minimizeBtn.style.lineHeight = '20px'
-          // Keep handler bound (don't overwrite via onclick).
-          minimizeBtn.style.pointerEvents = 'auto'
-          minimizeBtn.disabled = false
-          minimizeBtn.style.marginLeft = 'auto'
-          // Перемещаем в конец панели, чтобы была справа
-          if (minimizeBtn.parentElement === controlBar && controlBar.lastElementChild !== minimizeBtn) {
-            controlBar.appendChild(minimizeBtn)
-          }
+          minimizeBtn.innerHTML = isDesktop ? desktopLabel : minimizeIconSvg
+          minimizeBtn.setAttribute('aria-label', 'Свернуть')
+          minimizeBtn.setAttribute('title', 'Свернуть')
+          applyButtonStyle(minimizeBtn, { pushRight: !isDesktop })
+        }
+
+        if (isDesktop && expandBtn) {
+          const expandLabel = isWindowExpanded ? 'Обычный размер' : 'Развернуть'
+          const expandTitle = isWindowExpanded ? 'Вернуть размер окна' : 'Развернуть на всё окно'
+          const desktopLabel = `
+            <span style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 14px; font-family: inherit; font-weight: 500; line-height: 20px;">${expandLabel}</span>
+              ${isWindowExpanded ? collapseIconSvg : expandIconSvg}
+            </span>`
+          expandBtn.innerHTML = desktopLabel
+          expandBtn.setAttribute('aria-label', expandTitle)
+          expandBtn.setAttribute('title', expandTitle)
+          applyButtonStyle(expandBtn, { pushRight: true })
+          if (expandBtn.parentElement === controlBar) controlBar.appendChild(expandBtn)
+          if (minimizeBtn?.parentElement === controlBar) controlBar.appendChild(minimizeBtn)
+        } else if (minimizeBtn?.parentElement === controlBar && controlBar.lastElementChild !== minimizeBtn) {
+          controlBar.appendChild(minimizeBtn)
         }
       }
     }
@@ -2745,8 +2790,17 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         leaveBtn.removeEventListener('click', (leaveBtn as any).__ebLeaveBound, true)
         delete (leaveBtn as any).__ebLeaveBound
       }
+      const expandBtn = root.querySelector('.call-container .eb-expand-btn') as HTMLButtonElement | null
+      if (expandBtn && (expandBtn as any).__ebExpandHandler) {
+        const handler = (expandBtn as any).__ebExpandHandler
+        expandBtn.removeEventListener('click', handler, true)
+        expandBtn.removeEventListener('pointerup', handler, true)
+        expandBtn.removeEventListener('touchend', handler, true)
+        delete (expandBtn as any).__ebExpandHandler
+        delete (expandBtn as any).__ebExpandBound
+      }
     }
-  }, [open, onMinimize, handleClose, isDesktop])
+  }, [open, onMinimize, isDesktop, isWindowExpanded])
 
   // Add "(мы)" label to local participant name in tiles
   useEffect(() => {
@@ -3088,7 +3142,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     return () => mo.disconnect()
   }, [open, avatarsByName, avatarsById, localUserId, myAvatar])
 
-  if (!open || !conversationId || !token || !serverUrl) return null
+  if (!open || !conversationId || !token || !livekitServerUrl) return null
 
   const overlay = (
     <div
@@ -3096,6 +3150,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       onClick={(e) => {
         // Prevent taps/clicks from bubbling to the underlying app on mobile (can cause call state to reset)
         e.stopPropagation()
+        if (e.target === e.currentTarget && isDesktop && onMinimize) {
+          onMinimize()
+        }
       }}
       onTouchStart={(e) => {
         // Same as onClick; important for iOS/Safari where touch events may trigger global handlers
@@ -3116,16 +3173,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       }}
     >
       <div data-lk-theme="default" style={{ 
-        width: minimized ? 0 : (isDesktop ? '90vw' : '100vw'),
-        height: minimized ? 0 : (isDesktop ? '80vh' : '100vh'),
-        minHeight: minimized ? 0 : (isDesktop ? undefined : '100dvh'),
-        maxWidth: minimized ? 0 : (isDesktop ? 1200 : '100vw'),
+        width: minimized ? 0 : (isDesktop ? (isWindowExpanded ? '100vw' : '90vw') : '100vw'),
+        height: minimized ? 0 : (isDesktop ? (isWindowExpanded ? '100dvh' : '80vh') : '100vh'),
+        minHeight: minimized ? 0 : ((isDesktop && !isWindowExpanded) ? undefined : '100dvh'),
+        maxWidth: minimized ? 0 : (isDesktop ? (isWindowExpanded ? '100vw' : 1200) : '100vw'),
         background: 'var(--surface-200)', 
-        borderRadius: isDesktop ? 16 : 0, 
+        borderRadius: isDesktop ? (isWindowExpanded ? 0 : 16) : 0, 
         overflow: minimized ? 'hidden' : 'hidden', 
         position: 'relative', 
-        border: isDesktop ? '1px solid var(--surface-border)' : 'none',
-        boxShadow: minimized ? 'none' : (isDesktop ? 'var(--shadow-sharp)' : 'none'),
+        border: isDesktop ? (isWindowExpanded ? 'none' : '1px solid var(--surface-border)') : 'none',
+        boxShadow: minimized ? 'none' : (isDesktop ? (isWindowExpanded ? 'none' : 'var(--shadow-sharp)') : 'none'),
         opacity: minimized ? 0 : 1,
         visibility: minimized ? 'hidden' : 'visible',
       }} className="call-container">
@@ -3176,7 +3233,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           ) : (
             <LiveKitRoom
               room={e2eeRoom}
-              serverUrl={serverUrl}
+              serverUrl={livekitServerUrl}
               token={token}
               connect
               // IMPORTANT: never publish tracks before E2EE is enabled.
@@ -3188,6 +3245,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               }}
               onConnected={() => {
                 setWasConnected(true)
+                if (conversationId) {
+                  signalApkCallActive(conversationId, initialVideo)
+                }
                 enableE2eeAndPublishAfterConnect()
               }}
               onDisconnected={(reason) => {
@@ -3247,13 +3307,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           )
         ) : (
           <LiveKitRoom
-            serverUrl={serverUrl}
+            serverUrl={livekitServerUrl}
             token={token}
             connect
             video={camera}
             audio={!muted}
             onConnected={() => {
               setWasConnected(true)
+              if (conversationId) {
+                signalApkCallActive(conversationId, initialVideo)
+              }
               try {
                 if (conversationId && isGroup) {
                   if (isDebugFlagEnabled('lk-debug-call', 'lkDebugCall')) {
