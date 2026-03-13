@@ -1863,8 +1863,66 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const syncWindowExpandedDom = useCallback((expanded: boolean) => {
     isWindowExpandedRef.current = expanded
     const value = expanded ? 'true' : 'false'
+    const overlayEl = overlayRef.current
+    const containerEl = containerRef.current
     overlayRef.current?.setAttribute('data-eb-window-expanded', value)
     containerRef.current?.setAttribute('data-eb-window-expanded', value)
+
+    const setImportant = (el: HTMLElement | null, property: string, nextValue?: string) => {
+      if (!el) return
+      if (typeof nextValue === 'string') {
+        el.style.setProperty(property, nextValue, 'important')
+      } else {
+        el.style.removeProperty(property)
+      }
+    }
+
+    setImportant(overlayEl, 'align-items', expanded ? 'stretch' : undefined)
+    setImportant(overlayEl, 'justify-content', expanded ? 'stretch' : undefined)
+
+    setImportant(containerEl, 'position', expanded ? 'fixed' : undefined)
+    setImportant(containerEl, 'inset', expanded ? '0' : undefined)
+    setImportant(containerEl, 'width', expanded ? '100vw' : undefined)
+    setImportant(containerEl, 'height', expanded ? '100dvh' : undefined)
+    setImportant(containerEl, 'min-height', expanded ? '100dvh' : undefined)
+    setImportant(containerEl, 'max-width', expanded ? '100vw' : undefined)
+    setImportant(containerEl, 'max-height', expanded ? '100dvh' : undefined)
+    setImportant(containerEl, 'margin', expanded ? '0' : undefined)
+    setImportant(containerEl, 'border-radius', expanded ? '0' : undefined)
+    setImportant(containerEl, 'border', expanded ? 'none' : undefined)
+    setImportant(containerEl, 'box-shadow', expanded ? 'none' : undefined)
+
+    const livekitEls = containerEl?.querySelectorAll<HTMLElement>(
+      '.lk-room-container, .lk-video-conference, .lk-video-conference-inner, .lk-grid-layout-wrapper, .lk-focus-layout-wrapper, .lk-grid-layout, .lk-focus-layout, .lk-layout'
+    ) ?? []
+
+    livekitEls.forEach((el) => {
+      const isWrapper = el.matches('.lk-grid-layout-wrapper, .lk-focus-layout-wrapper')
+      const isLayout = el.matches('.lk-grid-layout, .lk-focus-layout')
+      const isConferenceInner = el.matches('.lk-video-conference-inner')
+
+      setImportant(el, 'width', expanded ? '100%' : undefined)
+      setImportant(el, 'min-height', expanded ? '0' : undefined)
+      setImportant(el, 'max-height', expanded && (isWrapper || isLayout) ? 'none' : undefined)
+      setImportant(el, 'height', expanded ? (isWrapper ? 'calc(100% - var(--lk-control-bar-height))' : '100%') : undefined)
+
+      if (expanded && (isConferenceInner || isWrapper)) {
+        setImportant(el, 'flex', '1 1 auto')
+      } else {
+        setImportant(el, 'flex', undefined)
+      }
+
+      if (expanded && isConferenceInner) {
+        setImportant(el, 'display', 'flex')
+        setImportant(el, 'flex-direction', 'column')
+        setImportant(el, 'align-items', 'stretch')
+      } else if (isConferenceInner) {
+        setImportant(el, 'display', undefined)
+        setImportant(el, 'flex-direction', undefined)
+        setImportant(el, 'align-items', undefined)
+      }
+    })
+
     if (typeof window !== 'undefined') {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
