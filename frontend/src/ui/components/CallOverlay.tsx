@@ -1868,6 +1868,15 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     overlayRef.current?.setAttribute('data-eb-window-expanded', value)
     containerRef.current?.setAttribute('data-eb-window-expanded', value)
 
+    const normalOverlayAlignment = isDesktop ? 'center' : undefined
+    const normalContainerWidth = minimized ? '0px' : (isDesktop ? '90vw' : '100vw')
+    const normalContainerHeight = minimized ? '0px' : (isDesktop ? '80vh' : '100vh')
+    const normalContainerMinHeight = minimized ? '0px' : (!isDesktop ? '100dvh' : undefined)
+    const normalContainerMaxWidth = minimized ? '0px' : (isDesktop ? '1200px' : '100vw')
+    const normalContainerBorderRadius = isDesktop ? '16px' : '0px'
+    const normalContainerBorder = isDesktop ? '1px solid var(--surface-border)' : 'none'
+    const normalContainerBoxShadow = minimized ? 'none' : (isDesktop ? 'var(--shadow-sharp)' : 'none')
+
     const setImportant = (el: HTMLElement | null, property: string, nextValue?: string) => {
       if (!el) return
       if (typeof nextValue === 'string') {
@@ -1877,20 +1886,20 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       }
     }
 
-    setImportant(overlayEl, 'align-items', expanded ? 'stretch' : undefined)
-    setImportant(overlayEl, 'justify-content', expanded ? 'stretch' : undefined)
+    setImportant(overlayEl, 'align-items', expanded ? 'stretch' : normalOverlayAlignment)
+    setImportant(overlayEl, 'justify-content', expanded ? 'stretch' : normalOverlayAlignment)
 
-    setImportant(containerEl, 'position', expanded ? 'fixed' : undefined)
+    setImportant(containerEl, 'position', expanded ? 'fixed' : 'relative')
     setImportant(containerEl, 'inset', expanded ? '0' : undefined)
-    setImportant(containerEl, 'width', expanded ? '100vw' : undefined)
-    setImportant(containerEl, 'height', expanded ? '100dvh' : undefined)
-    setImportant(containerEl, 'min-height', expanded ? '100dvh' : undefined)
-    setImportant(containerEl, 'max-width', expanded ? '100vw' : undefined)
+    setImportant(containerEl, 'width', expanded ? '100vw' : normalContainerWidth)
+    setImportant(containerEl, 'height', expanded ? '100dvh' : normalContainerHeight)
+    setImportant(containerEl, 'min-height', expanded ? '100dvh' : normalContainerMinHeight)
+    setImportant(containerEl, 'max-width', expanded ? '100vw' : normalContainerMaxWidth)
     setImportant(containerEl, 'max-height', expanded ? '100dvh' : undefined)
     setImportant(containerEl, 'margin', expanded ? '0' : undefined)
-    setImportant(containerEl, 'border-radius', expanded ? '0' : undefined)
-    setImportant(containerEl, 'border', expanded ? 'none' : undefined)
-    setImportant(containerEl, 'box-shadow', expanded ? 'none' : undefined)
+    setImportant(containerEl, 'border-radius', expanded ? '0' : normalContainerBorderRadius)
+    setImportant(containerEl, 'border', expanded ? 'none' : normalContainerBorder)
+    setImportant(containerEl, 'box-shadow', expanded ? 'none' : normalContainerBoxShadow)
 
     const viewportWidth = typeof window !== 'undefined' ? `${window.innerWidth}px` : '100vw'
     const viewportHeight = typeof window !== 'undefined' ? `${window.innerHeight}px` : '100vh'
@@ -1901,10 +1910,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       ? `${Math.max(0, window.innerHeight - controlBarHeight)}px`
       : `calc(100vh - ${Math.max(0, controlBarHeight)}px)`
 
-    setImportant(containerEl, 'width', expanded ? viewportWidth : undefined)
-    setImportant(containerEl, 'height', expanded ? viewportHeight : undefined)
-    setImportant(containerEl, 'min-height', expanded ? viewportHeight : undefined)
-    setImportant(containerEl, 'max-width', expanded ? viewportWidth : undefined)
+    setImportant(containerEl, 'width', expanded ? viewportWidth : normalContainerWidth)
+    setImportant(containerEl, 'height', expanded ? viewportHeight : normalContainerHeight)
+    setImportant(containerEl, 'min-height', expanded ? viewportHeight : normalContainerMinHeight)
+    setImportant(containerEl, 'max-width', expanded ? viewportWidth : normalContainerMaxWidth)
     setImportant(containerEl, 'max-height', expanded ? viewportHeight : undefined)
 
     const livekitEls = containerEl?.querySelectorAll<HTMLElement>(
@@ -1952,7 +1961,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         })
       })
     }
-  }, [])
+  }, [isDesktop, minimized])
 
   useEffect(() => {
     setIsWindowExpanded(false)
