@@ -2059,6 +2059,19 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       min-height: 0 !important;
       max-height: none !important;
     }
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-focus-layout {
+      grid-template-columns: clamp(72px, 5vw, 96px) minmax(0, 1fr) !important;
+    }
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-focused-participant {
+      min-width: 0 !important;
+    }
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-carousel[data-lk-orientation="vertical"] {
+      width: 100% !important;
+      min-width: 0 !important;
+    }
+    .call-overlay[data-eb-window-expanded="true"] .call-container .lk-carousel[data-lk-orientation="vertical"] > * {
+      width: 100% !important;
+    }
     .call-container .lk-participant-tile video,
     .call-container .lk-participant-media video,
     .call-container .lk-video-tile video,
