@@ -112,6 +112,61 @@ async function createUser(username: string) {
   });
 }
 
+async function connectAuthedSocket(baseUrl: string, token: string) {
+  const socket = ioClient(baseUrl, {
+    auth: { token },
+    transports: ["websocket"],
+    forceNew: true,
+  });
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", () => resolve());
+    socket.once("connect_error", reject);
+  });
+  return socket;
+}
+
+async function waitForSocketEvent<T>(socket: ReturnType<typeof ioClient>, event: string, timeoutMs = 4_000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`${event} timeout`));
+    }, timeoutMs);
+    const handler = (payload: T) => {
+      cleanup();
+      resolve(payload);
+    };
+    const onError = (error: unknown) => {
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off(event, handler);
+      socket.off("connect_error", onError);
+    };
+    socket.on(event, handler);
+    socket.on("connect_error", onError);
+  });
+}
+
+async function expectNoSocketEvent(socket: ReturnType<typeof ioClient>, event: string, waitMs = 800): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, waitMs);
+    const handler = (payload: unknown) => {
+      cleanup();
+      reject(new Error(`unexpected ${event}: ${JSON.stringify(payload)}`));
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off(event, handler);
+    };
+    socket.on(event, handler);
+  });
+}
+
 async function runCallsWebhookTest(baseUrl: string) {
   const roomId = `call-room-${randomUUID()}`;
   const alice = await createUser(`calls_a_${Date.now()}`);
@@ -208,6 +263,82 @@ async function runCallsWebhookTest(baseUrl: string) {
   assert.equal(participant.userId, bob.id);
   assert.equal(Math.floor(participant.joinedAt.getTime() / 1000), joinedTs);
   assert.equal(Math.floor((participant.leftAt ?? new Date(0)).getTime() / 1000), leftTs);
+}
+
+async function runDirectCallStaleDeclineTest(baseUrl: string) {
+  const roomId = `direct-call-${randomUUID()}`;
+  const alice = await createUser(`direct_a_${Date.now()}`);
+  const bob = await createUser(`direct_b_${Date.now()}`);
+  await prisma.conversation.create({
+    data: {
+      id: roomId,
+      isGroup: false,
+      createdById: alice.id,
+      participants: {
+        create: [{ userId: alice.id }, { userId: bob.id }],
+      },
+    },
+  });
+
+  const aliceToken = signAccessToken({
+    sub: alice.id,
+    tokenId: `tok-${randomUUID()}`,
+  });
+  const bobToken = signAccessToken({
+    sub: bob.id,
+    tokenId: `tok-${randomUUID()}`,
+  });
+
+  const aliceSocket = await connectAuthedSocket(baseUrl, aliceToken);
+  const bobPrimarySocket = await connectAuthedSocket(baseUrl, bobToken);
+  const bobSecondarySocket = await connectAuthedSocket(baseUrl, bobToken);
+
+  try {
+    const incomingPrimaryPromise = waitForSocketEvent<{ conversationId: string; from: { id: string }; video: boolean }>(
+      bobPrimarySocket,
+      "call:incoming"
+    );
+    const incomingSecondaryPromise = waitForSocketEvent<{ conversationId: string; from: { id: string }; video: boolean }>(
+      bobSecondarySocket,
+      "call:incoming"
+    );
+
+    aliceSocket.emit("call:invite", { conversationId: roomId, video: false });
+
+    const [incomingPrimary, incomingSecondary] = await Promise.all([incomingPrimaryPromise, incomingSecondaryPromise]);
+    assert.equal(incomingPrimary.conversationId, roomId);
+    assert.equal(incomingPrimary.from.id, alice.id);
+    assert.equal(incomingSecondary.conversationId, roomId);
+    assert.equal(incomingSecondary.from.id, alice.id);
+
+    const acceptedPromise = waitForSocketEvent<{ conversationId: string; by: { id: string }; video: boolean }>(
+      aliceSocket,
+      "call:accepted"
+    );
+    bobPrimarySocket.emit("call:accept", { conversationId: roomId, video: false });
+
+    const accepted = await acceptedPromise;
+    assert.equal(accepted.conversationId, roomId);
+    assert.equal(accepted.by.id, bob.id);
+
+    const noDeclinePromise = expectNoSocketEvent(aliceSocket, "call:declined");
+    bobSecondarySocket.emit("call:decline", { conversationId: roomId });
+    await noDeclinePromise;
+
+    const endedPromise = waitForSocketEvent<{ conversationId: string; by: { id: string } }>(
+      bobPrimarySocket,
+      "call:ended"
+    );
+    aliceSocket.emit("call:end", { conversationId: roomId });
+
+    const ended = await endedPromise;
+    assert.equal(ended.conversationId, roomId);
+    assert.equal(ended.by.id, alice.id);
+  } finally {
+    aliceSocket.disconnect();
+    bobPrimarySocket.disconnect();
+    bobSecondarySocket.disconnect();
+  }
 }
 
 async function runConcurrentPrekeyClaimTest(baseUrl: string) {
@@ -394,6 +525,7 @@ async function main() {
   const { baseUrl, server } = await startServer();
   try {
     await runCallsWebhookTest(baseUrl);
+    await runDirectCallStaleDeclineTest(baseUrl);
     await runConcurrentPrekeyClaimTest(baseUrl);
     await runSecretRelayTest(baseUrl);
   } finally {

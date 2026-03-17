@@ -1342,6 +1342,14 @@ export async function initSocket(
       const st = callState.get(conversationId);
       const callInfo = activeGroupCalls.get(conversationId);
 
+      // A direct call may ring on multiple devices of the same account.
+      // Once one device has accepted, late auto-decline events from the
+      // remaining devices must only dismiss their local UI, not end the live call.
+      if (!isGroup && (st?.accepted || activeDirectCalls.has(conversationId))) {
+        logger.info({ conversationId, userId }, "Ignoring stale direct call decline after accept");
+        return;
+      }
+
       const computeDuration = () => {
         const startedAt = callInfo?.startedAt ?? st?.startedAt ?? Date.now();
         const elapsedMs = Math.max(0, Date.now() - startedAt);
