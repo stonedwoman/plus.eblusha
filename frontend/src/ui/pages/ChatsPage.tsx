@@ -11203,8 +11203,46 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             )}
 
             <div style={identityBubbleStyle}>
-              <div style={identitySectionHeaderStyle}>
-                <div style={identitySectionTitleStyle}>Поиск по EBLID</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ ...identityInputsRowStyle, justifyContent: 'flex-start', gap: 6, flex: '1 1 auto' }}>
+                  {[0, 1, 2, 3].map((i) => (
+                    <input
+                      key={i}
+                      ref={eblRefs[i]}
+                      type="tel"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      autoComplete="one-time-code"
+                      enterKeyHint="done"
+                      value={eblDigits[i]}
+                      onChange={(e) => onChangeDigit(i, e.target.value.replace(/\D/g, '').slice(0, 1))}
+                      onKeyDown={(e) => onKeyDownDigit(i, e)}
+                      onFocus={(e) => {
+                        try { e.currentTarget.select() } catch {}
+                      }}
+                      onPaste={(e) => {
+                        const txt = e.clipboardData?.getData('text') ?? ''
+                        if (!txt) return
+                        e.preventDefault()
+                        applyEblidPaste(i, txt)
+                      }}
+                      maxLength={1}
+                      style={{
+                        width: 46,
+                        height: 46,
+                        fontSize: 19,
+                        fontWeight: 700,
+                        textAlign: 'center',
+                        borderRadius: 11,
+                        border: eblDigits[i] ? '1px solid var(--brand-600)' : '1px solid var(--surface-border)',
+                        background: 'var(--surface-200)',
+                        color: 'var(--text-primary)',
+                        outline: 'none',
+                        boxShadow: eblDigits[i] ? '0 0 0 1px color-mix(in srgb, var(--brand) 16%, transparent)' : 'none',
+                      }}
+                    />
+                  ))}
+                </div>
                 <button
                   className="btn btn-icon btn-ghost"
                   type="button"
@@ -11217,47 +11255,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   <X size={16} aria-hidden />
                 </button>
               </div>
-              <div style={identityInputsRowStyle}>
-                {[0, 1, 2, 3].map((i) => (
-                  <input
-                    key={i}
-                    ref={eblRefs[i]}
-                    type="tel"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    autoComplete="one-time-code"
-                    enterKeyHint="done"
-                    value={eblDigits[i]}
-                    onChange={(e) => onChangeDigit(i, e.target.value.replace(/\D/g, '').slice(0, 1))}
-                    onKeyDown={(e) => onKeyDownDigit(i, e)}
-                    onFocus={(e) => {
-                      try { e.currentTarget.select() } catch {}
-                    }}
-                    onPaste={(e) => {
-                      const txt = e.clipboardData?.getData('text') ?? ''
-                      if (!txt) return
-                      e.preventDefault()
-                      applyEblidPaste(i, txt)
-                    }}
-                    maxLength={1}
-                    style={{
-                      width: 52,
-                      height: 52,
-                      fontSize: 21,
-                      fontWeight: 700,
-                      textAlign: 'center',
-                      borderRadius: 12,
-                      border: eblDigits[i] ? '1px solid var(--brand-600)' : '1px solid var(--surface-border)',
-                      background: 'var(--surface-200)',
-                      color: 'var(--text-primary)',
-                      outline: 'none',
-                      boxShadow: eblDigits[i] ? '0 0 0 1px color-mix(in srgb, var(--brand) 16%, transparent)' : 'none',
-                    }}
-                  />
-                ))}
-              </div>
               <div style={{ ...identityHelperTextStyle, color: 'var(--text-muted)' }}>
-                Введите 4 цифры EBLID или вставьте номер целиком.
+                EBLID нужен, чтобы быстро найти пользователя и добавить его в контакты.
               </div>
 
               {foundUser && (

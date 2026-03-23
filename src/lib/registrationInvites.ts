@@ -42,7 +42,7 @@ function getInviteWindow(now = new Date()): { minuteBucket: bigint; expiresAt: D
   const currentBucket = Math.floor(nowMs / REGISTRATION_INVITE_WINDOW_MS);
   return {
     minuteBucket: BigInt(currentBucket),
-    expiresAt: new Date((currentBucket + 1) * REGISTRATION_INVITE_WINDOW_MS),
+    expiresAt: new Date(nowMs + REGISTRATION_INVITE_WINDOW_MS),
   };
 }
 
@@ -88,7 +88,6 @@ export async function getCurrentRegistrationInviteCodeForUser(
   if (
     !forceRotate &&
     existing &&
-    existing.minuteBucket === minuteBucket &&
     existing.expiresAt.getTime() > now.getTime()
   ) {
     return {
