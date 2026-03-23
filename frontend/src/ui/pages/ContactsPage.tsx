@@ -1,8 +1,9 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Copy, Loader2, X } from 'lucide-react'
+import { Check, Copy, Loader2, RefreshCw, X } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../../utils/api'
+import { copyPlainText } from '../../utils/clipboard'
 import { connectSocket, onContactAccepted, onContactRejected, onContactRequest } from '../../core/realtime'
 import { withAppRoutePrefix } from '../../core/navigation/routes'
 
@@ -139,12 +140,15 @@ export default function ContactsPage() {
 
   const handleCopyInviteCode = async () => {
     if (!inviteCode) return
-    try {
-      await navigator.clipboard.writeText(inviteCode)
+    const copied = await copyPlainText(inviteCode)
+    if (copied) {
       setInviteCopied(true)
-    } catch {
-      // ignore clipboard errors
     }
+  }
+
+  const handleRefreshInviteCode = async () => {
+    setInviteCopied(false)
+    await inviteCodeQuery.refetch()
   }
 
   return (
@@ -157,15 +161,28 @@ export default function ContactsPage() {
               Дай этот код новому пользователю. После регистрации вы сразу окажетесь в друзьях.
             </div>
           </div>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={handleCopyInviteCode}
-            disabled={!inviteCode || inviteCodeQuery.isLoading}
-          >
-            {inviteCopied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
-            {inviteCopied ? 'Скопировано' : 'Скопировать'}
-          </button>
+          <div className="contacts-page__invite-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleRefreshInviteCode}
+              disabled={inviteCodeQuery.isFetching}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 13 }}
+            >
+              <RefreshCw size={16} aria-hidden className={inviteCodeQuery.isFetching ? 'contacts-page__invite-spin' : undefined} />
+              Обновить
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleCopyInviteCode}
+              disabled={!inviteCode || inviteCodeQuery.isLoading}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 13 }}
+            >
+              {inviteCopied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+              {inviteCopied ? 'Скопировано' : 'Скопировать'}
+            </button>
+          </div>
         </div>
         <div className="contacts-page__invite-code">
           {inviteCodeQuery.isLoading ? 'Загружаем…' : formattedInviteCode}

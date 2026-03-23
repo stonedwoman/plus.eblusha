@@ -5,7 +5,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, getUploadUrl } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../core/realtime'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp } from 'lucide-react'
+import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp, RefreshCw } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -41,6 +41,7 @@ import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
 import { isChatsRoute, withAppRoutePrefix } from '../../core/navigation/routes'
 import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../utils/apkCallSignal'
 import { shouldShowAudioUnlockPrompt } from '../../utils/audioUnlock'
+import { copyPlainText } from '../../utils/clipboard'
 import { VoiceMessagePlayer } from './chats/components/VoiceMessagePlayer'
 import { DeviceLinkInline } from './chats/components/DeviceLinkInline'
 import { useChatAudio } from './chats/hooks/useChatAudio'
@@ -3970,10 +3971,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   async function copyContactsInviteCode() {
     if (!contactsInviteCode) return
-    try {
-      await navigator.clipboard.writeText(contactsInviteCode)
+    const copied = await copyPlainText(contactsInviteCode)
+    if (copied) {
       setContactsInviteCopied(true)
-    } catch {}
+    }
+  }
+
+  async function refreshContactsInviteCode() {
+    setContactsInviteCopied(false)
+    await registrationInviteCodeQuery.refetch()
   }
 
   async function sendInvite() {
@@ -11118,37 +11124,53 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               style={{
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 12,
-                padding: '16px 18px',
+                gap: 10,
+                padding: '14px 16px',
                 borderRadius: 14,
-                marginBottom: 20,
-                border: '1px solid rgba(56, 189, 248, 0.25)',
-                background: 'radial-gradient(circle at top right, rgba(14,165,233,0.16), transparent 42%), linear-gradient(135deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92))',
+                marginBottom: 16,
+                border: '1px solid rgba(227,139,10,0.28)',
+                background: 'radial-gradient(circle at top right, rgba(251,146,60,0.14), transparent 42%), linear-gradient(135deg, rgba(43,26,10,0.96), rgba(29,19,11,0.94))',
                 boxShadow: 'var(--shadow-medium)',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Код регистрации</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4, marginTop: 4 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>Код регистрации</div>
+                  <div style={{ fontSize: 12, color: '#d6d3d1', lineHeight: 1.35, marginTop: 4, maxWidth: 290 }}>
                     Дай этот код новому пользователю. После регистрации вы сразу окажетесь в друзьях.
                   </div>
                 </div>
-                <button
-                  className="btn btn-secondary"
-                  type="button"
-                  onClick={copyContactsInviteCode}
-                  disabled={!contactsInviteCode || registrationInviteCodeQuery.isLoading}
-                  style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}
-                >
-                  {contactsInviteCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
-                  {contactsInviteCopied ? 'Скопировано' : 'Скопировать'}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={() => void refreshContactsInviteCode()}
+                    disabled={registrationInviteCodeQuery.isFetching}
+                    style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 13 }}
+                  >
+                    <RefreshCw
+                      size={16}
+                      aria-hidden
+                      style={registrationInviteCodeQuery.isFetching ? { animation: 'contacts-page-spin 1s linear infinite' } : undefined}
+                    />
+                    Обновить
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={copyContactsInviteCode}
+                    disabled={!contactsInviteCode || registrationInviteCodeQuery.isLoading}
+                    style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 13 }}
+                  >
+                    {contactsInviteCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+                    {contactsInviteCopied ? 'Скопировано' : 'Скопировать'}
+                  </button>
+                </div>
               </div>
-              <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: '0.16em', color: '#e0f2fe' }}>
+              <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: '0.14em', color: '#ffedd5' }}>
                 {registrationInviteCodeQuery.isLoading ? 'Загружаем…' : formattedContactsInviteCode}
               </div>
-              <div style={{ fontSize: 12, color: '#bae6fd' }}>
+              <div style={{ fontSize: 12, color: '#fdba74' }}>
                 {registrationInviteCodeQuery.isError
                   ? 'Не удалось получить код. Попробуйте открыть окно еще раз.'
                   : `Код обновится через ${contactsInviteRemainingLabel}`}

@@ -990,13 +990,13 @@ a {
 .contacts-page__invite-card {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px 20px;
+  gap: 12px;
+  padding: 14px 16px;
   border-radius: 16px;
-  border: 1px solid rgba(56, 189, 248, 0.25);
+  border: 1px solid rgba(227, 139, 10, 0.28);
   background:
-    radial-gradient(circle at top right, rgba(14, 165, 233, 0.18), transparent 42%),
-    linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92));
+    radial-gradient(circle at top right, rgba(251, 146, 60, 0.14), transparent 42%),
+    linear-gradient(135deg, rgba(43, 26, 10, 0.96), rgba(29, 19, 11, 0.94));
   box-shadow: var(--shadow-medium);
 }
 
@@ -1009,29 +1009,40 @@ a {
 }
 
 .contacts-page__invite-title {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
 .contacts-page__invite-hint {
   margin-top: 4px;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.45;
-  color: var(--text-muted);
-  max-width: 560px;
+  color: #d6d3d1;
+  max-width: 420px;
+}
+
+.contacts-page__invite-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .contacts-page__invite-code {
-  font-size: clamp(28px, 4vw, 44px);
+  font-size: clamp(24px, 3.2vw, 36px);
   font-weight: 800;
-  letter-spacing: 0.16em;
-  color: #e0f2fe;
+  letter-spacing: 0.14em;
+  color: #ffedd5;
 }
 
 .contacts-page__invite-footer {
-  font-size: 13px;
-  color: #bae6fd;
+  font-size: 12px;
+  color: #fdba74;
+}
+
+.contacts-page__invite-spin {
+  animation: contacts-page-spin 1s linear infinite;
 }
 
 .contacts-page header {
