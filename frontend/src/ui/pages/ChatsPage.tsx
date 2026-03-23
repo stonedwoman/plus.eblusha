@@ -64,6 +64,7 @@ const MIN_OUTGOING_CALL_DURATION_MS = 30_000
 const MAX_PENDING_IMAGES = 10
 const MAX_PENDING_FILES = 10
 const MESSAGES_PAGE_SIZE = 80
+const EMPTY_EBLID_DIGITS = ['', '', '', '']
 
 type AttachmentFileKind =
   | 'document'
@@ -587,6 +588,7 @@ export default function ChatsPage() {
   const [foundUser, setFoundUser] = useState<any | null>(null)
   const [sendingInvite, setSendingInvite] = useState(false)
   const [myEblid, setMyEblid] = useState<string>('')
+  const [myEblidCopied, setMyEblidCopied] = useState(false)
   const [contactsInviteNow, setContactsInviteNow] = useState(() => Date.now())
   const [contactsInviteCopied, setContactsInviteCopied] = useState(false)
   const [mePopupOpen, setMePopupOpen] = useState(false)
@@ -2739,6 +2741,64 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
   }, [registrationInviteCodeQuery.data?.expiresAt, contactsInviteNow])
 
+  const identityCardBaseStyle = {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    padding: '14px 16px',
+    borderRadius: 14,
+    marginBottom: 16,
+  } as const
+  const identityCardHeaderStyle = {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  } as const
+  const identityCardTitleStyle = {
+    fontSize: 14,
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+  } as const
+  const identityCardHelperStyle = {
+    fontSize: 12,
+    lineHeight: 1.35,
+  } as const
+  const identityCardActionRowStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  } as const
+  const identityActionButtonStyle = {
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 12px',
+    fontSize: 13,
+  } as const
+
+  const searchIdentityCardStyle = {
+    ...identityCardBaseStyle,
+    border: '1px solid var(--surface-border)',
+    background: 'linear-gradient(180deg, var(--surface-100), color-mix(in srgb, var(--surface-100) 78%, var(--surface-200) 22%))',
+    boxShadow: '0 10px 24px rgba(0,0,0,0.16)',
+  } as const
+  const myEblidCardStyle = {
+    ...identityCardBaseStyle,
+    border: '1px solid color-mix(in srgb, var(--brand) 28%, var(--surface-border) 72%)',
+    background: 'linear-gradient(135deg, color-mix(in srgb, var(--brand) 8%, var(--surface-200) 92%), color-mix(in srgb, var(--brand) 10%, var(--surface-100) 90%))',
+    boxShadow: '0 10px 26px color-mix(in srgb, var(--brand) 16%, transparent)',
+  } as const
+  const registrationIdentityCardStyle = {
+    ...identityCardBaseStyle,
+    border: '1px solid color-mix(in srgb, var(--brand) 42%, var(--surface-border) 58%)',
+    background: 'linear-gradient(135deg, color-mix(in srgb, var(--brand) 18%, var(--surface-200) 82%), color-mix(in srgb, var(--brand-600) 22%, var(--surface-100) 78%))',
+    boxShadow: '0 14px 32px color-mix(in srgb, var(--brand) 24%, transparent)',
+  } as const
+
   const addParticipantsFoundUserStatus = {
     alreadyInChat: addParticipantsFoundUser ? activeConversationParticipantIds.includes(addParticipantsFoundUser.id) : false,
     isSelf: addParticipantsFoundUser ? addParticipantsFoundUser.id === me?.id : false,
@@ -2767,6 +2827,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const timeout = window.setTimeout(() => setContactsInviteCopied(false), 1600)
     return () => window.clearTimeout(timeout)
   }, [contactsInviteCopied])
+
+  useEffect(() => {
+    if (!myEblidCopied) return
+    const timeout = window.setTimeout(() => setMyEblidCopied(false), 1600)
+    return () => window.clearTimeout(timeout)
+  }, [myEblidCopied])
 
   useEffect(() => {
     if (!addParticipantsModal) return
@@ -3928,6 +3994,35 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return () => window.removeEventListener('resize', measure)
   }, [activeId])
 
+  async function lookupUserByEblid(full: string) {
+    try {
+      const resp = await api.get('/contacts/search', { params: { query: full } })
+      setFoundUser(resp.data.results?.[0] ?? null)
+    } catch {
+      setFoundUser(null)
+    }
+  }
+
+  function applyEblidPaste(startIdx: number, text: string) {
+    const only = String(text ?? '').replace(/\D/g, '').slice(0, EMPTY_EBLID_DIGITS.length)
+    if (!only) return
+    const next = [...eblDigits]
+    for (let k = 0; k < only.length && startIdx + k < EMPTY_EBLID_DIGITS.length; k += 1) {
+      next[startIdx + k] = only[k] ?? ''
+    }
+    setEblDigits(next)
+    const full = next.join('')
+    if (full.length === 4 && /^\d{4}$/.test(full)) {
+      void lookupUserByEblid(full)
+    } else {
+      setFoundUser(null)
+    }
+    const last = Math.min(EMPTY_EBLID_DIGITS.length - 1, startIdx + only.length - 1)
+    if (last >= 0 && last < EMPTY_EBLID_DIGITS.length - 1) {
+      eblRefs[last + 1].current?.focus()
+    }
+  }
+
   function onKeyDownDigit(idx: number, e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Backspace' && !eblDigits[idx] && idx > 0) {
       e.preventDefault()
@@ -3948,12 +4043,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!val && idx > 0) eblRefs[idx - 1].current?.focus()
     const full = next.join('')
     if (full.length === 4 && /^\d{4}$/.test(full)) {
-      ;(async () => {
-        try {
-          const resp = await api.get('/contacts/search', { params: { query: full } })
-          setFoundUser(resp.data.results?.[0] ?? null)
-        } catch { setFoundUser(null) }
-      })()
+      void lookupUserByEblid(full)
     } else {
       setFoundUser(null)
     }
@@ -3962,7 +4052,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   async function openContactsOverlay() {
     setContactsOpen(true)
     setContactsInviteCopied(false)
+    setMyEblidCopied(false)
     void registrationInviteCodeQuery.refetch()
+    window.setTimeout(() => {
+      const firstEmptyIdx = eblDigits.findIndex((digit) => !digit)
+      const targetIdx = firstEmptyIdx >= 0 ? firstEmptyIdx : EMPTY_EBLID_DIGITS.length - 1
+      eblRefs[targetIdx]?.current?.focus()
+    }, 70)
     try {
       const r = await api.get('/status/me')
       setMyEblid(r.data.user?.eblid ?? '')
@@ -3980,6 +4076,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   async function refreshContactsInviteCode() {
     setContactsInviteCopied(false)
     await registrationInviteCodeQuery.refetch()
+  }
+
+  async function copyMyEblid() {
+    if (!myEblid) return
+    const copied = await copyPlainText(myEblid)
+    if (copied) {
+      setMyEblidCopied(true)
+    }
+  }
+
+  function clearEblidSearch() {
+    setEblDigits([...EMPTY_EBLID_DIGITS])
+    setFoundUser(null)
+    eblRefs[0].current?.focus()
   }
 
   async function sendInvite() {
@@ -11060,9 +11170,21 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </div>
             )}
 
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 8 }}>Поиск по EBLID</div>
-              <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <div style={searchIdentityCardStyle}>
+              <div style={identityCardHeaderStyle}>
+                <div style={identityCardTitleStyle}>Поиск по EBLID</div>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={clearEblidSearch}
+                  disabled={!eblDigits.some(Boolean) && !foundUser}
+                  style={identityActionButtonStyle}
+                >
+                  <X size={16} aria-hidden />
+                  Очистить
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'nowrap' }}>
                 {[0, 1, 2, 3].map((i) => (
                   <input
                     key={i}
@@ -11075,20 +11197,34 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     value={eblDigits[i]}
                     onChange={(e) => onChangeDigit(i, e.target.value.replace(/\D/g, '').slice(0, 1))}
                     onKeyDown={(e) => onKeyDownDigit(i, e)}
+                    onFocus={(e) => {
+                      try { e.currentTarget.select() } catch {}
+                    }}
+                    onPaste={(e) => {
+                      const txt = e.clipboardData?.getData('text') ?? ''
+                      if (!txt) return
+                      e.preventDefault()
+                      applyEblidPaste(i, txt)
+                    }}
                     maxLength={1}
                     style={{
                       width: 56,
                       height: 56,
                       fontSize: 22,
+                      fontWeight: 700,
                       textAlign: 'center',
                       borderRadius: 12,
-                      border: '1px solid var(--surface-border)',
-                      background: 'var(--surface-100)',
+                      border: eblDigits[i] ? '1px solid var(--brand-600)' : '1px solid var(--surface-border)',
+                      background: 'var(--surface-200)',
                       color: 'var(--text-primary)',
                       outline: 'none',
+                      boxShadow: eblDigits[i] ? '0 0 0 1px color-mix(in srgb, var(--brand) 16%, transparent)' : 'none',
                     }}
                   />
                 ))}
+              </div>
+              <div style={{ ...identityCardHelperStyle, color: 'var(--text-muted)' }}>
+                Введите 4 цифры EBLID или вставьте номер целиком.
               </div>
             </div>
 
@@ -11114,39 +11250,48 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </div>
             )}
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, marginBottom: 20, border: '1px solid var(--surface-border)' }}>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Мой EBLID:</div>
-              <div style={{ fontWeight: 700, flex: 1 }}>{myEblid || '— — — —'}</div>
-              <button className="btn btn-secondary btn-icon" onClick={() => { if (myEblid) navigator.clipboard.writeText(myEblid) }} title="Скопировать EBLID"><Copy size={16} /></button>
+            <div style={myEblidCardStyle}>
+              <div style={identityCardHeaderStyle}>
+                <div style={identityCardTitleStyle}>Мой EBLID</div>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={copyMyEblid}
+                  disabled={!myEblid}
+                  style={identityActionButtonStyle}
+                >
+                  {myEblidCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+                  {myEblidCopied ? 'Скопировано' : 'Скопировать'}
+                </button>
+              </div>
+              <div
+                style={{
+                  fontSize: 28,
+                  fontWeight: 800,
+                  letterSpacing: '0.12em',
+                  color: 'var(--text-primary)',
+                  fontVariantNumeric: 'tabular-nums',
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                }}
+              >
+                {myEblid || '— — — —'}
+              </div>
+              <div style={{ ...identityCardHelperStyle, color: 'color-mix(in srgb, var(--brand) 72%, var(--text-muted) 28%)' }}>
+                используется для поиска
+              </div>
             </div>
 
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 10,
-                padding: '14px 16px',
-                borderRadius: 14,
-                marginBottom: 16,
-                border: '1px solid rgba(227,139,10,0.28)',
-                background: 'radial-gradient(circle at top right, rgba(251,146,60,0.14), transparent 42%), linear-gradient(135deg, rgba(43,26,10,0.96), rgba(29,19,11,0.94))',
-                boxShadow: 'var(--shadow-medium)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>Код регистрации</div>
-                  <div style={{ fontSize: 12, color: '#d6d3d1', lineHeight: 1.35, marginTop: 4, maxWidth: 290 }}>
-                    Дай этот код новому пользователю. После регистрации вы сразу окажетесь в друзьях.
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <div style={registrationIdentityCardStyle}>
+              <div style={identityCardHeaderStyle}>
+                <div style={identityCardTitleStyle}>Код регистрации</div>
+                <div style={identityCardActionRowStyle}>
                   <button
                     className="btn btn-secondary"
                     type="button"
                     onClick={() => void refreshContactsInviteCode()}
                     disabled={registrationInviteCodeQuery.isFetching}
-                    style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 13 }}
+                    style={identityActionButtonStyle}
                   >
                     <RefreshCw
                       size={16}
@@ -11160,20 +11305,30 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     type="button"
                     onClick={copyContactsInviteCode}
                     disabled={!contactsInviteCode || registrationInviteCodeQuery.isLoading}
-                    style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 13 }}
+                    style={identityActionButtonStyle}
                   >
                     {contactsInviteCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
                     {contactsInviteCopied ? 'Скопировано' : 'Скопировать'}
                   </button>
                 </div>
               </div>
-              <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: '0.14em', color: '#ffedd5' }}>
+              <div
+                style={{
+                  fontSize: 26,
+                  fontWeight: 800,
+                  letterSpacing: '0.14em',
+                  color: '#ffedd5',
+                  fontVariantNumeric: 'tabular-nums',
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                }}
+              >
                 {registrationInviteCodeQuery.isLoading ? 'Загружаем…' : formattedContactsInviteCode}
               </div>
-              <div style={{ fontSize: 12, color: '#fdba74' }}>
+              <div style={{ ...identityCardHelperStyle, color: '#fdba74' }}>
                 {registrationInviteCodeQuery.isError
                   ? 'Не удалось получить код. Попробуйте открыть окно еще раз.'
-                  : `Код обновится через ${contactsInviteRemainingLabel}`}
+                  : `Дай код новому пользователю. Обновится через ${contactsInviteRemainingLabel}.`}
               </div>
             </div>
 
