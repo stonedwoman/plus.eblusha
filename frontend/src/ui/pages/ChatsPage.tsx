@@ -591,6 +591,7 @@ export default function ChatsPage() {
   const [myEblidCopied, setMyEblidCopied] = useState(false)
   const [contactsInviteNow, setContactsInviteNow] = useState(() => Date.now())
   const [contactsInviteCopied, setContactsInviteCopied] = useState(false)
+  const [contactsInviteRefreshing, setContactsInviteRefreshing] = useState(false)
   const [mePopupOpen, setMePopupOpen] = useState(false)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const [selectedAvatarFile, setSelectedAvatarFile] = useState<File | null>(null)
@@ -2741,62 +2742,83 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
   }, [registrationInviteCodeQuery.data?.expiresAt, contactsInviteNow])
 
-  const identityCardBaseStyle = {
+  const identityBubbleStyle = {
     display: 'flex',
     flexDirection: 'column',
     gap: 12,
-    padding: '14px 16px',
-    borderRadius: 14,
+    padding: '14px',
+    borderRadius: 18,
     marginBottom: 16,
+    border: '1px solid color-mix(in srgb, var(--brand) 24%, var(--surface-border) 76%)',
+    background:
+      'linear-gradient(180deg, color-mix(in srgb, var(--surface-100) 82%, var(--brand) 18%), color-mix(in srgb, var(--surface-200) 86%, var(--brand) 14%))',
+    boxShadow: '0 14px 34px rgba(0,0,0,0.18)',
   } as const
-  const identityCardHeaderStyle = {
+  const identitySectionHeaderStyle = {
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: 10,
   } as const
-  const identityCardTitleStyle = {
-    fontSize: 14,
+  const identitySectionTitleStyle = {
+    fontSize: 13,
     fontWeight: 700,
     color: 'var(--text-primary)',
   } as const
-  const identityCardHelperStyle = {
+  const identityHelperTextStyle = {
     fontSize: 12,
     lineHeight: 1.35,
   } as const
-  const identityCardActionRowStyle = {
+  const identityIconRowStyle = {
     display: 'flex',
     alignItems: 'center',
-    gap: 8,
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
+    gap: 6,
+    marginLeft: 'auto',
   } as const
-  const identityActionButtonStyle = {
+  const identityIconButtonStyle = {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     flexShrink: 0,
+    border: '1px solid color-mix(in srgb, var(--surface-border) 78%, white 22%)',
+    background: 'color-mix(in srgb, var(--surface-100) 74%, var(--surface-200) 26%)',
+  } as const
+  const identityInputsRowStyle = {
     display: 'flex',
-    alignItems: 'center',
     gap: 8,
-    padding: '8px 12px',
-    fontSize: 13,
+    justifyContent: 'center',
+    flexWrap: 'nowrap',
   } as const
-
-  const searchIdentityCardStyle = {
-    ...identityCardBaseStyle,
-    border: '1px solid var(--surface-border)',
-    background: 'linear-gradient(180deg, var(--surface-100), color-mix(in srgb, var(--surface-100) 78%, var(--surface-200) 22%))',
-    boxShadow: '0 10px 24px rgba(0,0,0,0.16)',
+  const identityDividerStyle = {
+    height: 1,
+    borderRadius: 999,
+    background: 'linear-gradient(90deg, transparent, color-mix(in srgb, var(--surface-border) 55%, var(--brand) 45%), transparent)',
   } as const
-  const myEblidCardStyle = {
-    ...identityCardBaseStyle,
-    border: '1px solid color-mix(in srgb, var(--brand) 28%, var(--surface-border) 72%)',
-    background: 'linear-gradient(135deg, color-mix(in srgb, var(--brand) 8%, var(--surface-200) 92%), color-mix(in srgb, var(--brand) 10%, var(--surface-100) 90%))',
-    boxShadow: '0 10px 26px color-mix(in srgb, var(--brand) 16%, transparent)',
+  const identityBottomRowStyle = {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
   } as const
-  const registrationIdentityCardStyle = {
-    ...identityCardBaseStyle,
-    border: '1px solid color-mix(in srgb, var(--brand) 42%, var(--surface-border) 58%)',
-    background: 'linear-gradient(135deg, color-mix(in srgb, var(--brand) 18%, var(--surface-200) 82%), color-mix(in srgb, var(--brand-600) 22%, var(--surface-100) 78%))',
-    boxShadow: '0 14px 32px color-mix(in srgb, var(--brand) 24%, transparent)',
+  const identityMiniCardBaseStyle = {
+    flex: '1 1 190px',
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: '12px 13px',
+    borderRadius: 14,
+  } as const
+  const myEblidMiniCardStyle = {
+    ...identityMiniCardBaseStyle,
+    border: '1px solid color-mix(in srgb, var(--brand) 24%, var(--surface-border) 76%)',
+    background:
+      'linear-gradient(135deg, color-mix(in srgb, var(--brand) 9%, var(--surface-200) 91%), color-mix(in srgb, var(--brand) 6%, var(--surface-100) 94%))',
+  } as const
+  const registrationMiniCardStyle = {
+    ...identityMiniCardBaseStyle,
+    border: '1px solid color-mix(in srgb, var(--brand) 40%, var(--surface-border) 60%)',
+    background:
+      'linear-gradient(135deg, color-mix(in srgb, var(--brand) 18%, var(--surface-200) 82%), color-mix(in srgb, var(--brand-600) 20%, var(--surface-100) 80%))',
   } as const
 
   const addParticipantsFoundUserStatus = {
@@ -4052,6 +4074,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   async function openContactsOverlay() {
     setContactsOpen(true)
     setContactsInviteCopied(false)
+    setContactsInviteRefreshing(false)
     setMyEblidCopied(false)
     void registrationInviteCodeQuery.refetch()
     window.setTimeout(() => {
@@ -4075,7 +4098,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   async function refreshContactsInviteCode() {
     setContactsInviteCopied(false)
-    await registrationInviteCodeQuery.refetch()
+    setContactsInviteRefreshing(true)
+    try {
+      const response = await api.post('/auth/register/code/refresh')
+      const nextInvite = response.data as { code: string; expiresAt: string; digits?: number }
+      client.setQueryData(['registration-invite-code'], nextInvite)
+      client.setQueryData(['registration-invite-code', 'contacts-overlay'], nextInvite)
+      setContactsInviteNow(Date.now())
+    } finally {
+      setContactsInviteRefreshing(false)
+    }
   }
 
   async function copyMyEblid() {
@@ -11170,21 +11202,22 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </div>
             )}
 
-            <div style={searchIdentityCardStyle}>
-              <div style={identityCardHeaderStyle}>
-                <div style={identityCardTitleStyle}>Поиск по EBLID</div>
+            <div style={identityBubbleStyle}>
+              <div style={identitySectionHeaderStyle}>
+                <div style={identitySectionTitleStyle}>Поиск по EBLID</div>
                 <button
-                  className="btn btn-secondary"
+                  className="btn btn-icon btn-ghost"
                   type="button"
                   onClick={clearEblidSearch}
                   disabled={!eblDigits.some(Boolean) && !foundUser}
-                  style={identityActionButtonStyle}
+                  title="Сбросить поиск"
+                  aria-label="Сбросить поиск"
+                  style={identityIconButtonStyle}
                 >
                   <X size={16} aria-hidden />
-                  Очистить
                 </button>
               </div>
-              <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'nowrap' }}>
+              <div style={identityInputsRowStyle}>
                 {[0, 1, 2, 3].map((i) => (
                   <input
                     key={i}
@@ -11208,9 +11241,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     }}
                     maxLength={1}
                     style={{
-                      width: 56,
-                      height: 56,
-                      fontSize: 22,
+                      width: 52,
+                      height: 52,
+                      fontSize: 21,
                       fontWeight: 700,
                       textAlign: 'center',
                       borderRadius: 12,
@@ -11223,112 +11256,118 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   />
                 ))}
               </div>
-              <div style={{ ...identityCardHelperStyle, color: 'var(--text-muted)' }}>
+              <div style={{ ...identityHelperTextStyle, color: 'var(--text-muted)' }}>
                 Введите 4 цифры EBLID или вставьте номер целиком.
               </div>
-            </div>
 
-            {foundUser && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 14,
-                  padding: '14px 16px',
-                  borderRadius: 12,
-                  background: 'rgba(227,139,10,0.08)',
-                  border: '1px solid rgba(227,139,10,0.3)',
-                  marginBottom: 16,
-                }}
-              >
-                <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={avatarPresenceForUser(foundUser)} avatarUrl={foundUser.avatarUrl ?? undefined} size={44} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600 }}>{foundUser.displayName ?? foundUser.username}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Найден по EBLID</div>
-                </div>
-                <button disabled={sendingInvite} className="btn btn-primary" style={{ padding: '8px 16px' }} onClick={sendInvite}>Добавить</button>
-              </div>
-            )}
-
-            <div style={myEblidCardStyle}>
-              <div style={identityCardHeaderStyle}>
-                <div style={identityCardTitleStyle}>Мой EBLID</div>
-                <button
-                  className="btn btn-secondary"
-                  type="button"
-                  onClick={copyMyEblid}
-                  disabled={!myEblid}
-                  style={identityActionButtonStyle}
+              {foundUser && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: '12px 13px',
+                    borderRadius: 13,
+                    background: 'rgba(227,139,10,0.08)',
+                    border: '1px solid rgba(227,139,10,0.3)',
+                  }}
                 >
-                  {myEblidCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
-                  {myEblidCopied ? 'Скопировано' : 'Скопировать'}
-                </button>
-              </div>
-              <div
-                style={{
-                  fontSize: 28,
-                  fontWeight: 800,
-                  letterSpacing: '0.12em',
-                  color: 'var(--text-primary)',
-                  fontVariantNumeric: 'tabular-nums',
-                  fontFamily:
-                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                }}
-              >
-                {myEblid || '— — — —'}
-              </div>
-              <div style={{ ...identityCardHelperStyle, color: 'color-mix(in srgb, var(--brand) 72%, var(--text-muted) 28%)' }}>
-                используется для поиска
-              </div>
-            </div>
-
-            <div style={registrationIdentityCardStyle}>
-              <div style={identityCardHeaderStyle}>
-                <div style={identityCardTitleStyle}>Код регистрации</div>
-                <div style={identityCardActionRowStyle}>
-                  <button
-                    className="btn btn-secondary"
-                    type="button"
-                    onClick={() => void refreshContactsInviteCode()}
-                    disabled={registrationInviteCodeQuery.isFetching}
-                    style={identityActionButtonStyle}
-                  >
-                    <RefreshCw
-                      size={16}
-                      aria-hidden
-                      style={registrationInviteCodeQuery.isFetching ? { animation: 'contacts-page-spin 1s linear infinite' } : undefined}
-                    />
-                    Обновить
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    type="button"
-                    onClick={copyContactsInviteCode}
-                    disabled={!contactsInviteCode || registrationInviteCodeQuery.isLoading}
-                    style={identityActionButtonStyle}
-                  >
-                    {contactsInviteCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
-                    {contactsInviteCopied ? 'Скопировано' : 'Скопировать'}
-                  </button>
+                  <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={avatarPresenceForUser(foundUser)} avatarUrl={foundUser.avatarUrl ?? undefined} size={40} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600 }}>{foundUser.displayName ?? foundUser.username}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Найден по EBLID</div>
+                  </div>
+                  <button disabled={sendingInvite} className="btn btn-primary" style={{ padding: '8px 14px' }} onClick={sendInvite}>Добавить</button>
                 </div>
-              </div>
-              <div
-                style={{
-                  fontSize: 26,
-                  fontWeight: 800,
-                  letterSpacing: '0.14em',
-                  color: '#ffedd5',
-                  fontVariantNumeric: 'tabular-nums',
-                  fontFamily:
-                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                }}
-              >
-                {registrationInviteCodeQuery.isLoading ? 'Загружаем…' : formattedContactsInviteCode}
-              </div>
-              <div style={{ ...identityCardHelperStyle, color: '#fdba74' }}>
-                {registrationInviteCodeQuery.isError
-                  ? 'Не удалось получить код. Попробуйте открыть окно еще раз.'
-                  : `Дай код новому пользователю. Обновится через ${contactsInviteRemainingLabel}.`}
+              )}
+
+              <div style={identityDividerStyle} />
+
+              <div style={identityBottomRowStyle}>
+                <div style={myEblidMiniCardStyle}>
+                  <div style={identitySectionHeaderStyle}>
+                    <div style={identitySectionTitleStyle}>Мой EBLID</div>
+                    <button
+                      className="btn btn-icon btn-ghost"
+                      type="button"
+                      onClick={copyMyEblid}
+                      disabled={!myEblid}
+                      title={myEblidCopied ? 'Скопировано' : 'Скопировать EBLID'}
+                      aria-label={myEblidCopied ? 'Скопировано' : 'Скопировать EBLID'}
+                      style={identityIconButtonStyle}
+                    >
+                      {myEblidCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+                    </button>
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 24,
+                      fontWeight: 800,
+                      letterSpacing: '0.12em',
+                      color: 'var(--text-primary)',
+                      fontVariantNumeric: 'tabular-nums',
+                      fontFamily:
+                        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                    }}
+                  >
+                    {myEblid || '— — — —'}
+                  </div>
+                  <div style={{ ...identityHelperTextStyle, color: 'color-mix(in srgb, var(--brand) 72%, var(--text-muted) 28%)' }}>
+                    используется для поиска
+                  </div>
+                </div>
+
+                <div style={registrationMiniCardStyle}>
+                  <div style={identitySectionHeaderStyle}>
+                    <div style={identitySectionTitleStyle}>Код регистрации</div>
+                    <div style={identityIconRowStyle}>
+                      <button
+                        className="btn btn-icon btn-ghost"
+                        type="button"
+                        onClick={() => void refreshContactsInviteCode()}
+                        disabled={registrationInviteCodeQuery.isFetching || contactsInviteRefreshing}
+                        title="Обновить код"
+                        aria-label="Обновить код"
+                        style={identityIconButtonStyle}
+                      >
+                        <RefreshCw
+                          size={16}
+                          aria-hidden
+                          style={registrationInviteCodeQuery.isFetching || contactsInviteRefreshing ? { animation: 'contacts-page-spin 1s linear infinite' } : undefined}
+                        />
+                      </button>
+                      <button
+                        className="btn btn-icon btn-ghost"
+                        type="button"
+                        onClick={copyContactsInviteCode}
+                        disabled={!contactsInviteCode || registrationInviteCodeQuery.isLoading || contactsInviteRefreshing}
+                        title={contactsInviteCopied ? 'Скопировано' : 'Скопировать код регистрации'}
+                        aria-label={contactsInviteCopied ? 'Скопировано' : 'Скопировать код регистрации'}
+                        style={identityIconButtonStyle}
+                      >
+                        {contactsInviteCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 24,
+                      fontWeight: 800,
+                      letterSpacing: '0.14em',
+                      color: '#ffedd5',
+                      fontVariantNumeric: 'tabular-nums',
+                      fontFamily:
+                        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                    }}
+                  >
+                    {registrationInviteCodeQuery.isLoading ? 'Загружаем…' : formattedContactsInviteCode}
+                  </div>
+                  <div style={{ ...identityHelperTextStyle, color: '#fdba74' }}>
+                    {registrationInviteCodeQuery.isError
+                      ? 'Не удалось получить код. Попробуйте открыть окно еще раз.'
+                      : `Дай код новому пользователю. Обновится через ${contactsInviteRemainingLabel}.`}
+                  </div>
+                </div>
               </div>
             </div>
 

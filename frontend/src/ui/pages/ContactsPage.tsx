@@ -15,6 +15,7 @@ export default function ContactsPage() {
   const [rejectedOutgoing, setRejectedOutgoing] = useState<Array<{ contactId: string; friend?: { id: string; username: string; displayName: string | null } }>>([])
   const [inviteNow, setInviteNow] = useState(() => Date.now())
   const [inviteCopied, setInviteCopied] = useState(false)
+  const [inviteRefreshing, setInviteRefreshing] = useState(false)
 
   const inviteCodeQuery = useQuery({
     queryKey: ['registration-invite-code'],
@@ -148,7 +149,16 @@ export default function ContactsPage() {
 
   const handleRefreshInviteCode = async () => {
     setInviteCopied(false)
-    await inviteCodeQuery.refetch()
+    setInviteRefreshing(true)
+    try {
+      const response = await api.post('/auth/register/code/refresh')
+      const nextInvite = response.data as { code: string; expiresAt: string; digits?: number }
+      client.setQueryData(['registration-invite-code'], nextInvite)
+      client.setQueryData(['registration-invite-code', 'contacts-overlay'], nextInvite)
+      setInviteNow(Date.now())
+    } finally {
+      setInviteRefreshing(false)
+    }
   }
 
   return (
@@ -166,17 +176,17 @@ export default function ContactsPage() {
               type="button"
               className="btn btn-secondary"
               onClick={handleRefreshInviteCode}
-              disabled={inviteCodeQuery.isFetching}
+              disabled={inviteCodeQuery.isFetching || inviteRefreshing}
               style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 13 }}
             >
-              <RefreshCw size={16} aria-hidden className={inviteCodeQuery.isFetching ? 'contacts-page__invite-spin' : undefined} />
+              <RefreshCw size={16} aria-hidden className={inviteCodeQuery.isFetching || inviteRefreshing ? 'contacts-page__invite-spin' : undefined} />
               Обновить
             </button>
             <button
               type="button"
               className="btn btn-secondary"
               onClick={handleCopyInviteCode}
-              disabled={!inviteCode || inviteCodeQuery.isLoading}
+              disabled={!inviteCode || inviteCodeQuery.isLoading || inviteRefreshing}
               style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 13 }}
             >
               {inviteCopied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}

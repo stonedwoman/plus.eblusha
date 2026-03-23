@@ -33,6 +33,10 @@ export type RegistrationInviteCodeView = {
   inviter: RegistrationInviteInviter;
 };
 
+type GetRegistrationInviteCodeOptions = {
+  forceRotate?: boolean;
+};
+
 function getInviteWindow(now = new Date()): { minuteBucket: bigint; expiresAt: Date } {
   const nowMs = now.getTime();
   const currentBucket = Math.floor(nowMs / REGISTRATION_INVITE_WINDOW_MS);
@@ -70,16 +74,23 @@ export function normalizeRegistrationInviteCode(value: unknown): string {
 
 export async function getCurrentRegistrationInviteCodeForUser(
   userId: string,
-  now = new Date()
+  now = new Date(),
+  options: GetRegistrationInviteCodeOptions = {}
 ): Promise<RegistrationInviteCodeView> {
   const { minuteBucket, expiresAt } = getInviteWindow(now);
+  const forceRotate = options.forceRotate === true;
 
   const existing = await prisma.registrationInviteCode.findUnique({
     where: { userId },
     include: { user: { select: inviterSelect } },
   });
 
-  if (existing && existing.minuteBucket === minuteBucket && existing.expiresAt.getTime() > now.getTime()) {
+  if (
+    !forceRotate &&
+    existing &&
+    existing.minuteBucket === minuteBucket &&
+    existing.expiresAt.getTime() > now.getTime()
+  ) {
     return {
       code: existing.code,
       expiresAt: existing.expiresAt,
@@ -118,6 +129,13 @@ export async function getCurrentRegistrationInviteCodeForUser(
   }
 
   throw new Error("Unable to generate registration invite code");
+}
+
+export async function refreshRegistrationInviteCodeForUser(
+  userId: string,
+  now = new Date()
+): Promise<RegistrationInviteCodeView> {
+  return getCurrentRegistrationInviteCodeForUser(userId, now, { forceRotate: true });
 }
 
 export async function resolveRegistrationInviteCode(

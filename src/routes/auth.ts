@@ -19,6 +19,7 @@ import {
   getRegistrationInviteCodeDigits,
   issueRegistrationInviteGrant,
   normalizeRegistrationInviteCode,
+  refreshRegistrationInviteCodeForUser,
   resolveRegistrationInviteCode,
   verifyRegistrationInviteGrant,
 } from "../lib/registrationInvites";
@@ -57,6 +58,22 @@ router.get("/register/code", authenticate, async (req, res) => {
     digits: getRegistrationInviteCodeDigits(),
   });
 });
+
+router.post(
+  "/register/code/refresh",
+  authenticate,
+  rateLimit({ name: "auth_register_code_refresh", windowMs: 60_000, max: 30 }),
+  async (req, res) => {
+    const userId = (req as any).user!.id as string;
+    const invite = await refreshRegistrationInviteCodeForUser(userId);
+    res.json({
+      code: invite.code,
+      expiresAt: invite.expiresAt.toISOString(),
+      inviter: invite.inviter,
+      digits: getRegistrationInviteCodeDigits(),
+    });
+  }
+);
 
 router.post(
   "/register/code/verify",
