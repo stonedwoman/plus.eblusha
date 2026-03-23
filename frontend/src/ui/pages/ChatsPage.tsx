@@ -2769,12 +2769,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     fontSize: 12,
     lineHeight: 1.35,
   } as const
-  const identityIconRowStyle = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    marginLeft: 'auto',
-  } as const
   const identityIconButtonStyle = {
     width: 34,
     height: 34,
@@ -11256,7 +11250,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 </button>
               </div>
               <div style={{ ...identityHelperTextStyle, color: 'var(--text-muted)' }}>
-                EBLID нужен, чтобы быстро найти пользователя и добавить его в контакты.
+                Введи, чтобы добавить друга
               </div>
 
               {foundUser && (
@@ -11311,60 +11305,59 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   >
                     {myEblid || '— — — —'}
                   </div>
-                  <div style={{ ...identityHelperTextStyle, color: 'color-mix(in srgb, var(--brand) 72%, var(--text-muted) 28%)' }}>
-                    используется для поиска
-                  </div>
                 </div>
 
                 <div style={registrationMiniCardStyle}>
                   <div style={identitySectionHeaderStyle}>
                     <div style={identitySectionTitleStyle}>Код регистрации</div>
-                    <div style={identityIconRowStyle}>
-                      <button
-                        className="btn btn-icon btn-ghost"
-                        type="button"
-                        onClick={() => void refreshContactsInviteCode()}
-                        disabled={registrationInviteCodeQuery.isFetching || contactsInviteRefreshing}
-                        title="Обновить код"
-                        aria-label="Обновить код"
-                        style={identityIconButtonStyle}
-                      >
-                        <RefreshCw
-                          size={16}
-                          aria-hidden
-                          style={registrationInviteCodeQuery.isFetching || contactsInviteRefreshing ? { animation: 'contacts-page-spin 1s linear infinite' } : undefined}
-                        />
-                      </button>
-                      <button
-                        className="btn btn-icon btn-ghost"
-                        type="button"
-                        onClick={copyContactsInviteCode}
-                        disabled={!contactsInviteCode || registrationInviteCodeQuery.isLoading || contactsInviteRefreshing}
-                        title={contactsInviteCopied ? 'Скопировано' : 'Скопировать код регистрации'}
-                        aria-label={contactsInviteCopied ? 'Скопировано' : 'Скопировать код регистрации'}
-                        style={identityIconButtonStyle}
-                      >
-                        {contactsInviteCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
-                      </button>
-                    </div>
+                    <button
+                      className="btn btn-icon btn-ghost"
+                      type="button"
+                      onClick={copyContactsInviteCode}
+                      disabled={!contactsInviteCode || registrationInviteCodeQuery.isLoading || contactsInviteRefreshing}
+                      title={contactsInviteCopied ? 'Скопировано' : 'Скопировать код регистрации'}
+                      aria-label={contactsInviteCopied ? 'Скопировано' : 'Скопировать код регистрации'}
+                      style={identityIconButtonStyle}
+                    >
+                      {contactsInviteCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+                    </button>
                   </div>
-                  <div
-                    style={{
-                      fontSize: 24,
-                      fontWeight: 800,
-                      letterSpacing: '0.14em',
-                      color: '#ffedd5',
-                      fontVariantNumeric: 'tabular-nums',
-                      fontFamily:
-                        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                    }}
-                  >
-                    {registrationInviteCodeQuery.isLoading ? 'Загружаем…' : formattedContactsInviteCode}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                    <div
+                      style={{
+                        flex: '1 1 auto',
+                        minWidth: 0,
+                        fontSize: 24,
+                        fontWeight: 800,
+                        letterSpacing: '0.14em',
+                        color: '#ffedd5',
+                        fontVariantNumeric: 'tabular-nums',
+                        fontFamily:
+                          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                      }}
+                    >
+                      {registrationInviteCodeQuery.isLoading ? 'Загружаем…' : formattedContactsInviteCode}
+                    </div>
+                    <button
+                      className="btn btn-icon btn-ghost"
+                      type="button"
+                      onClick={() => void refreshContactsInviteCode()}
+                      disabled={registrationInviteCodeQuery.isFetching || contactsInviteRefreshing}
+                      title="Обновить код"
+                      aria-label="Обновить код"
+                      style={{ ...identityIconButtonStyle, flexShrink: 0 }}
+                    >
+                      <RefreshCw
+                        size={16}
+                        aria-hidden
+                        style={registrationInviteCodeQuery.isFetching || contactsInviteRefreshing ? { animation: 'contacts-page-spin 1s linear infinite' } : undefined}
+                      />
+                    </button>
                   </div>
                   <div style={{ ...identityHelperTextStyle, color: '#fdba74' }}>
                     {registrationInviteCodeQuery.isError
                       ? 'Не удалось получить код. Попробуйте открыть окно еще раз.'
-                      : `Дай код новому пользователю. Обновится через ${contactsInviteRemainingLabel}.`}
+                      : `Обновится через ${contactsInviteRemainingLabel}.`}
                   </div>
                 </div>
               </div>
