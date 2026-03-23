@@ -123,10 +123,7 @@ export default function ContactsPage() {
   }
 
   const inviteCode = typeof inviteCodeQuery.data?.code === 'string' ? inviteCodeQuery.data.code : ''
-  const formattedInviteCode = useMemo(() => {
-    if (!inviteCode) return '---- ----'
-    return inviteCode.length > 4 ? `${inviteCode.slice(0, 4)} ${inviteCode.slice(4)}` : inviteCode
-  }, [inviteCode])
+  const formattedInviteCode = useMemo(() => inviteCode || '--------', [inviteCode])
 
   const inviteRemainingLabel = useMemo(() => {
     const expiresAtRaw = inviteCodeQuery.data?.expiresAt

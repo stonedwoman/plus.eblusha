@@ -471,7 +471,6 @@ export default function RegisterPage() {
                         fontVariantNumeric: 'tabular-nums',
                         fontFamily:
                           'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                        ...(idx === 4 ? { marginLeft: 10 } : {}),
                       }}
                     />
                   ))}

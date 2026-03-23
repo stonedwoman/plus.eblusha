@@ -2727,10 +2727,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   }, [outgoingContactsQuery.data, rejectedOutgoing])
 
   const contactsInviteCode = typeof registrationInviteCodeQuery.data?.code === 'string' ? registrationInviteCodeQuery.data.code : ''
-  const formattedContactsInviteCode = useMemo(() => {
-    if (!contactsInviteCode) return '---- ----'
-    return contactsInviteCode.length > 4 ? `${contactsInviteCode.slice(0, 4)} ${contactsInviteCode.slice(4)}` : contactsInviteCode
-  }, [contactsInviteCode])
+  const formattedContactsInviteCode = useMemo(() => contactsInviteCode || '--------', [contactsInviteCode])
   const contactsInviteRemainingLabel = useMemo(() => {
     const expiresAtRaw = registrationInviteCodeQuery.data?.expiresAt
     if (!expiresAtRaw) return '00:00'
@@ -11322,18 +11319,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       {contactsInviteCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
                     </button>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, overflow: 'hidden' }}>
                     <div
                       style={{
                         flex: '1 1 auto',
                         minWidth: 0,
-                        fontSize: 24,
+                        fontSize: 'clamp(17px, 3.4vw, 22px)',
                         fontWeight: 800,
-                        letterSpacing: '0.14em',
+                        letterSpacing: '0.06em',
                         color: '#ffedd5',
                         fontVariantNumeric: 'tabular-nums',
                         fontFamily:
                           'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                        whiteSpace: 'nowrap',
+                        overflowX: 'auto',
                       }}
                     >
                       {registrationInviteCodeQuery.isLoading ? 'Загружаем…' : formattedContactsInviteCode}

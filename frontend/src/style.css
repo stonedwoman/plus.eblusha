@@ -1030,10 +1030,12 @@ a {
 }
 
 .contacts-page__invite-code {
-  font-size: clamp(24px, 3.2vw, 36px);
+  font-size: clamp(20px, 3vw, 32px);
   font-weight: 800;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.06em;
   color: #ffedd5;
+  white-space: nowrap;
+  overflow-x: auto;
 }
 
 .contacts-page__invite-footer {
