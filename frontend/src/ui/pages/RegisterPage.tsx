@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
@@ -12,6 +12,7 @@ const MIN_USERNAME = 3
 const MIN_PASSWORD = 6
 const MIN_DISPLAY_NAME = 2
 const REGISTRATION_INVITE_CODE_DIGITS = 8
+const EMPTY_INVITE_DIGITS = Array.from({ length: REGISTRATION_INVITE_CODE_DIGITS }, () => '')
 
 type RegistrationStep = 0 | 1 | 2
 
@@ -26,12 +27,6 @@ function normalizeInviteCode(value: string) {
   return value.replace(/\D/g, '').slice(0, REGISTRATION_INVITE_CODE_DIGITS)
 }
 
-function formatInviteCode(value: string) {
-  const digits = normalizeInviteCode(value)
-  if (digits.length <= 4) return digits
-  return `${digits.slice(0, 4)} ${digits.slice(4)}`
-}
-
 export default function RegisterPage() {
   const navigate = useNavigate()
   const setSession = useAppStore((s) => s.setSession)
@@ -39,7 +34,7 @@ export default function RegisterPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [displayNameInput, setDisplayNameInput] = useState('')
-  const [inviteCode, setInviteCode] = useState('')
+  const [inviteDigits, setInviteDigits] = useState<string[]>(() => [...EMPTY_INVITE_DIGITS])
   const [registrationInviteToken, setRegistrationInviteToken] = useState<string | null>(null)
   const [verifiedInviter, setVerifiedInviter] = useState<InviterPreview | null>(null)
   const [inviteError, setInviteError] = useState<string | null>(null)
@@ -54,6 +49,7 @@ export default function RegisterPage() {
   const avatarInputRef = useRef<HTMLInputElement>(null)
   const avatarPreviewUrlRef = useRef<string | null>(null)
   const avatarEditingUrlRef = useRef<string | null>(null)
+  const inviteDigitRefs = useRef<Array<HTMLInputElement | null>>([])
 
   const verifyInviteMutation = useMutation({
     mutationFn: async (code: string) => {
@@ -137,13 +133,50 @@ export default function RegisterPage() {
   })
 
   const step1Valid = username.length >= MIN_USERNAME && password.length >= MIN_PASSWORD
-  const inviteCodeValid = inviteCode.length === REGISTRATION_INVITE_CODE_DIGITS
+  const inviteCode = useMemo(() => inviteDigits.join(''), [inviteDigits])
+  const inviteCodeValid = inviteDigits.every((digit) => /^\d$/.test(digit))
+
+  const focusInviteDigit = (idx: number) => {
+    const el = inviteDigitRefs.current[idx]
+    if (!el) return
+    try {
+      el.focus()
+      el.select?.()
+    } catch {}
+  }
+
+  const submitInviteCode = (code: string) => {
+    const normalized = normalizeInviteCode(code)
+    if (verifyInviteMutation.isPending || normalized.length !== REGISTRATION_INVITE_CODE_DIGITS) return
+    setInviteError(null)
+    verifyInviteMutation.mutate(normalized)
+  }
+
+  const applyInviteDigits = (startIdx: number, raw: string) => {
+    const only = normalizeInviteCode(raw)
+    if (!only) return
+    const next = [...inviteDigits]
+    for (let k = 0; k < only.length && startIdx + k < REGISTRATION_INVITE_CODE_DIGITS; k += 1) {
+      next[startIdx + k] = only[k] ?? ''
+    }
+    setInviteDigits(next)
+    if (inviteError) setInviteError(null)
+    const lastFilled = Math.min(REGISTRATION_INVITE_CODE_DIGITS - 1, startIdx + only.length - 1)
+    if (lastFilled < REGISTRATION_INVITE_CODE_DIGITS - 1) {
+      focusInviteDigit(lastFilled + 1)
+    }
+    const nextCode = next.join('')
+    const complete = next.every((digit) => /^\d$/.test(digit))
+    if (complete) {
+      submitInviteCode(nextCode)
+    }
+  }
 
   const resetInvite = () => {
     setInviteError(null)
     setStep1Error(null)
     setStep2Error(null)
-    setInviteCode('')
+    setInviteDigits([...EMPTY_INVITE_DIGITS])
     setRegistrationInviteToken(null)
     setVerifiedInviter(null)
     setStep(0)
@@ -157,7 +190,7 @@ export default function RegisterPage() {
       setInviteError(`Введите ${REGISTRATION_INVITE_CODE_DIGITS} цифр`)
       return
     }
-    verifyInviteMutation.mutate(normalized)
+    submitInviteCode(normalized)
   }
 
   const handleStep1Submit = (e: FormEvent<HTMLFormElement>) => {
@@ -236,6 +269,12 @@ export default function RegisterPage() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [avatarEditingUrl])
+
+  useEffect(() => {
+    if (step !== 0) return
+    const id = window.setTimeout(() => focusInviteDigit(0), 60)
+    return () => window.clearTimeout(id)
+  }, [step])
 
   const labelBlockStyle = { display: 'flex' as const, flexDirection: 'column' as const, gap: 8 }
 
@@ -341,24 +380,127 @@ export default function RegisterPage() {
             <form className="auth-form" onSubmit={handleInviteSubmit}>
               <label style={labelBlockStyle}>
                 Код приглашения
-                <input
-                  name="inviteCode"
-                  type="text"
-                  required
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  placeholder="1234 5678"
-                  value={formatInviteCode(inviteCode)}
-                  onChange={(e) => setInviteCode(normalizeInviteCode(e.target.value))}
-                />
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    flexWrap: 'nowrap',
+                    width: '100%',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {inviteDigits.map((digit, idx) => (
+                    <input
+                      key={idx}
+                      ref={(el) => {
+                        inviteDigitRefs.current[idx] = el
+                      }}
+                      value={digit}
+                      onChange={(e) => {
+                        const raw = String(e.target.value ?? '')
+                        const only = normalizeInviteCode(raw)
+                        if (!only) {
+                          setInviteDigits((prev) => {
+                            const next = [...prev]
+                            next[idx] = ''
+                            return next
+                          })
+                          if (inviteError) setInviteError(null)
+                          return
+                        }
+                        applyInviteDigits(idx, only)
+                      }}
+                      onFocus={(e) => {
+                        try {
+                          e.currentTarget.select()
+                        } catch {}
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Backspace' && !inviteDigits[idx] && idx > 0) {
+                          e.preventDefault()
+                          setInviteDigits((prev) => {
+                            const next = [...prev]
+                            next[idx - 1] = ''
+                            return next
+                          })
+                          if (inviteError) setInviteError(null)
+                          focusInviteDigit(idx - 1)
+                        }
+                        if (e.key === 'ArrowLeft' && idx > 0) {
+                          e.preventDefault()
+                          focusInviteDigit(idx - 1)
+                        }
+                        if (e.key === 'ArrowRight' && idx < REGISTRATION_INVITE_CODE_DIGITS - 1) {
+                          e.preventDefault()
+                          focusInviteDigit(idx + 1)
+                        }
+                      }}
+                      onPaste={(e) => {
+                        const txt = e.clipboardData?.getData('text') ?? ''
+                        if (!txt) return
+                        e.preventDefault()
+                        applyInviteDigits(idx, txt)
+                      }}
+                      type="tel"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      autoComplete={idx === 0 ? 'one-time-code' : 'off'}
+                      aria-label={`Цифра кода ${idx + 1}`}
+                      disabled={verifyInviteMutation.isPending}
+                      style={{
+                        flex: '1 1 0',
+                        minWidth: 0,
+                        maxWidth: 38,
+                        height: 50,
+                        borderRadius: 12,
+                        border: '1px solid var(--tab-border)',
+                        background: 'var(--tab-surface)',
+                        color: 'var(--tab-text)',
+                        outline: 'none',
+                        fontSize: 22,
+                        fontWeight: 800,
+                        textAlign: 'center',
+                        fontVariantNumeric: 'tabular-nums',
+                        fontFamily:
+                          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                        ...(idx === 4 ? { marginLeft: 10 } : {}),
+                      }}
+                    />
+                  ))}
+                </div>
                 <span className="auth-field-hint">
                   Код показывает зарегистрированный пользователь во вкладке «Контакты». Он обновляется каждую минуту.
                 </span>
               </label>
               {inviteError ? <div className="auth-error">{inviteError}</div> : null}
-              <button type="submit" disabled={!inviteCodeValid || verifyInviteMutation.isPending}>
-                {verifyInviteMutation.isPending ? 'Проверяем…' : 'Продолжить'}
-              </button>
+              {verifyInviteMutation.isPending ? (
+                <div
+                  style={{
+                    width: '100%',
+                    textAlign: 'center',
+                    fontSize: 14,
+                    fontWeight: 700,
+                    color: 'var(--tab-accent)',
+                    paddingTop: 4,
+                  }}
+                >
+                  Проверяем код…
+                </div>
+              ) : !inviteCodeValid ? (
+                <div
+                  style={{
+                    width: '100%',
+                    textAlign: 'center',
+                    fontSize: 13,
+                    color: 'var(--tab-text-muted)',
+                    paddingTop: 4,
+                  }}
+                >
+                  Введите все 8 цифр
+                </div>
+              ) : null}
             </form>
           ) : step === 1 ? (
             <form className="auth-form" onSubmit={handleStep1Submit}>
