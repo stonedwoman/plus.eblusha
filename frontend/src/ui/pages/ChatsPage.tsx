@@ -42,6 +42,7 @@ import { isChatsRoute, withAppRoutePrefix } from '../../core/navigation/routes'
 import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../utils/apkCallSignal'
 import { shouldShowAudioUnlockPrompt } from '../../utils/audioUnlock'
 import { copyPlainText } from '../../utils/clipboard'
+import { formatRegistrationInviteCodeForDisplay } from '../../utils/formatRegistrationInviteCode'
 import { VoiceMessagePlayer } from './chats/components/VoiceMessagePlayer'
 import { DeviceLinkInline } from './chats/components/DeviceLinkInline'
 import { useChatAudio } from './chats/hooks/useChatAudio'
@@ -2727,7 +2728,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   }, [outgoingContactsQuery.data, rejectedOutgoing])
 
   const contactsInviteCode = typeof registrationInviteCodeQuery.data?.code === 'string' ? registrationInviteCodeQuery.data.code : ''
-  const formattedContactsInviteCode = useMemo(() => contactsInviteCode || '--------', [contactsInviteCode])
+  const formattedContactsInviteCode = useMemo(
+    () => formatRegistrationInviteCodeForDisplay(contactsInviteCode),
+    [contactsInviteCode]
+  )
   const contactsInviteRemainingLabel = useMemo(() => {
     const expiresAtRaw = registrationInviteCodeQuery.data?.expiresAt
     if (!expiresAtRaw) return '00:00'

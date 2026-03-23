@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Camera, Copy, Keyboard, RefreshCw, X } from 'lucide-react'
 import { api } from '../../../../utils/api'
+import { formatRegistrationInviteCodeForDisplay } from '../../../../utils/formatRegistrationInviteCode'
 import { bytesToBase64, utf8ToBytes } from '../../../../utils/base64'
 import { forcePublishPrekeys, getStoredDeviceInfo } from '../../../../domain/device/deviceManager'
 import { qrDataUrlWithEbLogo } from '../../../lib/qrWithEbLogo'
@@ -375,7 +376,7 @@ export function DeviceLinkInline(props: {
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {invite?.code ?? '--------'}
+                  {formatRegistrationInviteCodeForDisplay(invite?.code)}
                 </div>
               </div>
 

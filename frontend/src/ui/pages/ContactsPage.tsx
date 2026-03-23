@@ -4,6 +4,7 @@ import { Check, Copy, Loader2, RefreshCw, X } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../../utils/api'
 import { copyPlainText } from '../../utils/clipboard'
+import { formatRegistrationInviteCodeForDisplay } from '../../utils/formatRegistrationInviteCode'
 import { connectSocket, onContactAccepted, onContactRejected, onContactRequest } from '../../core/realtime'
 import { withAppRoutePrefix } from '../../core/navigation/routes'
 
@@ -123,7 +124,7 @@ export default function ContactsPage() {
   }
 
   const inviteCode = typeof inviteCodeQuery.data?.code === 'string' ? inviteCodeQuery.data.code : ''
-  const formattedInviteCode = useMemo(() => inviteCode || '--------', [inviteCode])
+  const formattedInviteCode = useMemo(() => formatRegistrationInviteCodeForDisplay(inviteCode), [inviteCode])
 
   const inviteRemainingLabel = useMemo(() => {
     const expiresAtRaw = inviteCodeQuery.data?.expiresAt
