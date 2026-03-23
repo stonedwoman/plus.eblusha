@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, getUploadUrl } from '../../utils/api'
 import type { AxiosError } from 'axios'
-import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../utils/socket'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../core/realtime'
 import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
@@ -35,22 +36,27 @@ import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { extractFirstPreviewableUrl } from '../../js/link-detect'
 import { renderChatMarkdownToHtml, htmlToMarkdown } from '../lib/chatMarkdown'
 import { renderMessageText } from './chats/chatsTextRender'
+import { openUrlSystemBrowser } from './chats/chatsEmbeds'
 import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
+import { isChatsRoute, withAppRoutePrefix } from '../../core/navigation/routes'
+import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../utils/apkCallSignal'
+import { shouldShowAudioUnlockPrompt } from '../../utils/audioUnlock'
 import { VoiceMessagePlayer } from './chats/components/VoiceMessagePlayer'
 import { DeviceLinkInline } from './chats/components/DeviceLinkInline'
 import { useChatAudio } from './chats/hooks/useChatAudio'
 import { useChatSocketSubscriptions } from './chats/hooks/useChatSocketSubscriptions'
 import { useChatTyping } from './chats/hooks/useChatTyping'
 import { useChatsResponsive } from './chats/hooks/useChatsResponsive'
-
-declare global {
-  interface Window {
-    __nativeCallOverlayBridge?: {
-      accept?: (conversationId: string, withVideo: boolean) => Promise<boolean> | boolean
-      decline?: (conversationId: string) => Promise<boolean> | boolean
-    }
-  }
-}
+import { useChatUiStore } from '../../core/chat-sync/chatUiStore'
+import {
+  acceptIncomingCallAction,
+  declineIncomingCallAction,
+  endActiveCallAction,
+  registerActiveCallRuntime,
+  registerIncomingCallRuntime,
+  type ResolvedActiveCall,
+  type ResolvedIncomingCall,
+} from '../../core/call-state/incomingCallActions'
 
 const LAST_ACTIVE_CONVERSATION_KEY = 'eblusha:last-active-conversation'
 const MIN_OUTGOING_CALL_DURATION_MS = 30_000
@@ -432,10 +438,18 @@ type PendingMessage = {
 }
 
 export default function ChatsPage() {
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [callConvId, setCallConvId] = useState<string | null>(null)
-  const [minimizedCallConvId, setMinimizedCallConvId] = useState<string | null>(null)
-  const [outgoingCall, setOutgoingCall] = useState<{ conversationId: string; startedAt: number; video: boolean; minimized?: boolean } | null>(null)
+  const navigate = useNavigate()
+  const location = useLocation()
+  const params = useParams<{ conversationId?: string }>()
+  const activeId = useChatUiStore((state) => state.activeConversationId)
+  const setActiveId = useChatUiStore((state) => state.setActiveConversationId)
+  const markConversationJoined = useChatUiStore((state) => state.markConversationJoined)
+  const callConvId = useCallStore((state) => state.overlayConvId)
+  const setCallConvId = useCallStore((state) => state.setOverlayConvId)
+  const minimizedCallConvId = useCallStore((state) => state.minimizedCallConvId)
+  const setMinimizedCallConvId = useCallStore((state) => state.setMinimizedCallConvId)
+  const outgoingCall = useCallStore((state) => state.outgoingCall)
+  const setOutgoingCall = useCallStore((state) => state.setOutgoingCall)
   const outgoingCallRef = useRef<typeof outgoingCall>(null)
   useEffect(() => { outgoingCallRef.current = outgoingCall }, [outgoingCall])
   const outgoingCallTimerRef = useRef<number | null>(null)
@@ -458,6 +472,30 @@ export default function ChatsPage() {
   const messagesRef = useRef<HTMLDivElement | null>(null)
 
   const { isMobile, isMobileRef, isNarrowHeaderButtons, mobileView, setMobileView } = useChatsResponsive(activeId)
+  useEffect(() => {
+    const routeConversationId = typeof params.conversationId === 'string' ? params.conversationId : null
+    if (routeConversationId && routeConversationId !== activeId) {
+      setActiveId(routeConversationId)
+    }
+  }, [activeId, params.conversationId, setActiveId])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mobile = window.innerWidth <= 768
+    if (!mobile) return
+    if (!isChatsRoute(location.pathname)) return
+    if (mobileView === 'list') {
+      const listRoute = withAppRoutePrefix(location.pathname, '/chats')
+      if (location.pathname !== listRoute) {
+        navigate(listRoute, { replace: true })
+      }
+      return
+    }
+    const conversationRoute = activeId ? withAppRoutePrefix(location.pathname, `/chats/${activeId}`) : null
+    if (activeId && conversationRoute && location.pathname !== conversationRoute) {
+      navigate(conversationRoute, { replace: true })
+    }
+  }, [activeId, location.pathname, mobileView, navigate])
 
   const {
     showAudioUnlock,
@@ -548,6 +586,8 @@ export default function ChatsPage() {
   const [foundUser, setFoundUser] = useState<any | null>(null)
   const [sendingInvite, setSendingInvite] = useState(false)
   const [myEblid, setMyEblid] = useState<string>('')
+  const [contactsInviteNow, setContactsInviteNow] = useState(() => Date.now())
+  const [contactsInviteCopied, setContactsInviteCopied] = useState(false)
   const [mePopupOpen, setMePopupOpen] = useState(false)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const [selectedAvatarFile, setSelectedAvatarFile] = useState<File | null>(null)
@@ -591,7 +631,8 @@ export default function ChatsPage() {
   const activeAttachPendingMessageIdRef = useRef<string | null>(null)
   const activeAttachConversationIdRef = useRef<string | null>(null)
   const attachCancelRequestedRef = useRef(false)
-  const [callPermissionError, setCallPermissionError] = useState<string | null>(null)
+  const callPermissionError = useCallStore((state) => state.callPermissionError)
+  const setCallPermissionError = useCallStore((state) => state.setCallPermissionError)
   const [pendingByConv, setPendingByConv] = useState<Record<string, PendingMessage[]>>({})
   const [attachmentDecryptMap, setAttachmentDecryptMap] = useState<Record<string, AttachmentDecryptionEntry>>({})
   const [attachmentHeadInfoMap, setAttachmentHeadInfoMap] = useState<Record<string, AttachmentHeadInfo>>({})
@@ -917,6 +958,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const inviterByConvRef = useRef<Record<string, string>>({})
   const minCallDurationUntilRef = useRef<Record<string, number>>({})
   const pendingCallAutoCloseTimersRef = useRef<Record<string, number>>({})
+  const stopOutgoingDialing = useCallback((options?: { playEndTone?: boolean }) => {
+    if (outgoingCallTimerRef.current) {
+      window.clearTimeout(outgoingCallTimerRef.current)
+      outgoingCallTimerRef.current = null
+    }
+    stopDialingSound()
+    if (options?.playEndTone) {
+      playEndCallSound()
+    }
+  }, [playEndCallSound, stopDialingSound])
+
   useEffect(() => {
     return () => {
       if (typeof window === 'undefined') return
@@ -925,12 +977,23 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           window.clearTimeout(id)
         }
       })
-      if (outgoingCallTimerRef.current) {
-        window.clearTimeout(outgoingCallTimerRef.current)
-      }
-      stopDialingSound()
+      stopOutgoingDialing()
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stopOutgoingDialing])
+
+  useEffect(() => {
+    if (!outgoingCall) {
+      stopOutgoingDialing()
+    }
+  }, [outgoingCall, stopOutgoingDialing])
+
+  useEffect(() => {
+    if (!callConvId) return
+    if (outgoingCallRef.current && outgoingCallRef.current.conversationId !== callConvId) return
+    stopOutgoingDialing()
+    setOutgoingCall((prev) => (prev?.conversationId === callConvId ? null : prev))
+  }, [callConvId, setOutgoingCall, stopOutgoingDialing])
+
   // Обновляем таймер дозвона каждую секунду
   useEffect(() => {
     if (!outgoingCall) return
@@ -1032,14 +1095,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       return false
     }
   }, [describeMediaPermissionError])
-  const acceptIncomingCall = useCallback(async (withVideo: boolean) => {
-    const incoming = callStore.incoming
-    if (!incoming) return
-    if (!(await requireMediaAccess(withVideo))) return
-    const convId = incoming.conversationId
+  const performAcceptIncomingCall = useCallback(async (call: ResolvedIncomingCall) => {
+    if (!(await requireMediaAccess(call.isVideo))) return false
+    const convId = call.conversationId
     beginOutgoingCallGuard(convId)
-    acceptCall(convId, withVideo)
-    callStore.startOutgoing(convId, withVideo)
+    acceptCall(convId, call.isVideo)
+    signalApkIncomingAccepted(convId, call.isVideo)
+    callStore.startOutgoing(convId, call.isVideo)
     setActiveCalls((prev) => {
       const current = prev[convId]
       const myId = me?.id
@@ -1055,43 +1117,105 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     setMinimizedCallConvId((prev) => (prev === convId ? null : prev))
     callStore.setIncoming(null)
     stopRingtone()
-  }, [beginOutgoingCallGuard, callStore, me?.id, requireMediaAccess])
+    return true
+  }, [beginOutgoingCallGuard, callStore, me?.id, requireMediaAccess, stopRingtone])
 
-  const declineIncomingCall = useCallback(() => {
-    const incoming = callStore.incoming
-    if (!incoming) return
-    declineCall(incoming.conversationId)
+  const performDeclineIncomingCall = useCallback((call: ResolvedIncomingCall) => {
+    declineCall(call.conversationId)
     callStore.setIncoming(null)
     stopRingtone()
-  }, [callStore])
+    return true
+  }, [callStore, stopRingtone])
+
+  const performEndActiveCall = useCallback((call: ResolvedActiveCall) => {
+    const convId = call.conversationId
+    const conv = getConversationFromCache(convId)
+    const participantsCount = conv?.participants?.length ?? 0
+    const isGroupConv = !!(conv?.isGroup || participantsCount > 2)
+    const isDialog = !isGroupConv
+
+    if (outgoingCallTimerRef.current) {
+      window.clearTimeout(outgoingCallTimerRef.current)
+      outgoingCallTimerRef.current = null
+    }
+
+    if (isDialog) {
+      endCall(convId)
+      setActiveCalls((prev) => {
+        const current = prev[convId]
+        if (!current) return prev
+        if (current.active) {
+          return { ...prev, [convId]: { ...current, active: false, endedAt: Date.now() } }
+        }
+        return prev
+      })
+    } else {
+      try {
+        leaveCallRoom(convId)
+      } catch {
+        // ignore leave failures; store/server reconciliation will follow
+      }
+      setActiveCalls((prev) => {
+        const current = prev[convId]
+        if (!current) return prev
+        if (!current.participants) return prev
+        const myId = me?.id
+        if (!myId || !current.participants.includes(myId)) return prev
+        return {
+          ...prev,
+          [convId]: { ...current, participants: current.participants.filter((id: string) => id !== myId) },
+        }
+      })
+    }
+
+    setOutgoingCall((prev) => (prev?.conversationId === convId ? null : prev))
+    setCallConvId((prev) => (prev === convId ? null : prev))
+    setMinimizedCallConvId((prev) => (prev === convId ? null : prev))
+    callStore.endCall()
+    stopRingtone()
+    clearMinCallDurationGuard(convId)
+    return true
+  }, [
+    callStore,
+    clearMinCallDurationGuard,
+    getConversationFromCache,
+    me?.id,
+    setCallConvId,
+    setMinimizedCallConvId,
+    setOutgoingCall,
+    stopRingtone,
+  ])
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
+    return registerIncomingCallRuntime({
+      id: 'chats-page',
+      priority: 100,
+      acceptIncomingCall: (call) => performAcceptIncomingCall(call),
+      declineIncomingCall: (call) => performDeclineIncomingCall(call),
+    })
+  }, [performAcceptIncomingCall, performDeclineIncomingCall])
+
+  useEffect(() => {
+    return registerActiveCallRuntime({
+      id: 'chats-page',
+      priority: 100,
+      endActiveCall: (call) => performEndActiveCall(call),
+    })
+  }, [performEndActiveCall])
+
+  useEffect(() => {
+    if (callStore.incoming?.source !== 'android_native') {
       return
     }
-    const bridge = {
-      accept: async (conversationId: string, withVideo: boolean) => {
-        if (callStore.incoming?.conversationId !== conversationId) {
-          return false
-        }
-        await acceptIncomingCall(withVideo)
-        return true
-      },
-      decline: (conversationId: string) => {
-        if (callStore.incoming?.conversationId !== conversationId) {
-          return false
-        }
-        declineIncomingCall()
-        return true
-      },
+
+    stopRingtone()
+    if (ringTimerRef.current) {
+      window.clearTimeout(ringTimerRef.current)
+      ringTimerRef.current = null
     }
-    window.__nativeCallOverlayBridge = bridge
-    return () => {
-      if (window.__nativeCallOverlayBridge === bridge) {
-        delete window.__nativeCallOverlayBridge
-      }
-    }
-  }, [callStore.incoming?.conversationId, acceptIncomingCall, declineIncomingCall])
+    ringingConvIdRef.current = callStore.incoming.conversationId
+  }, [callStore.incoming?.conversationId, callStore.incoming?.source, stopRingtone])
+
   useEffect(() => {
     const id = window.setInterval(() => setTimerTick((t) => (t + 1) % 1000000), 1000)
     return () => window.clearInterval(id)
@@ -1675,6 +1799,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       return r.data.user as any
     }
   })
+  const registrationInviteCodeQuery = useQuery({
+    queryKey: ['registration-invite-code', 'contacts-overlay'],
+    enabled: contactsOpen,
+    queryFn: async () => {
+      const r = await api.get('/auth/register/code')
+      return r.data as { code: string; expiresAt: string }
+    },
+  })
   const conversationsQuery = useQuery({
     queryKey: ['conversations'],
     queryFn: async () => {
@@ -1984,9 +2116,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         // ignore
       }
       if (list.length > 0) requestCallStatuses(list)
-      for (const cid of list) { try { joinConversation(cid) } catch {} }
+      for (const cid of list) {
+        try {
+          joinConversation(cid)
+          markConversationJoined(cid)
+        } catch {}
+      }
     } catch {}
-  }, [conversationsQuery.data])
+  }, [conversationsQuery.data, markConversationJoined])
 
   const activeConversation = useMemo(() => {
     return conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
@@ -2585,10 +2722,50 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return [...pending, ...rejected]
   }, [outgoingContactsQuery.data, rejectedOutgoing])
 
+  const contactsInviteCode = typeof registrationInviteCodeQuery.data?.code === 'string' ? registrationInviteCodeQuery.data.code : ''
+  const formattedContactsInviteCode = useMemo(() => {
+    if (!contactsInviteCode) return '---- ----'
+    return contactsInviteCode.length > 4 ? `${contactsInviteCode.slice(0, 4)} ${contactsInviteCode.slice(4)}` : contactsInviteCode
+  }, [contactsInviteCode])
+  const contactsInviteRemainingLabel = useMemo(() => {
+    const expiresAtRaw = registrationInviteCodeQuery.data?.expiresAt
+    if (!expiresAtRaw) return '00:00'
+    const expiresAtMs = Date.parse(expiresAtRaw)
+    if (!Number.isFinite(expiresAtMs)) return '00:00'
+    const remainingSeconds = Math.max(0, Math.ceil((expiresAtMs - contactsInviteNow) / 1000))
+    const minutes = Math.floor(remainingSeconds / 60)
+    const seconds = remainingSeconds % 60
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  }, [registrationInviteCodeQuery.data?.expiresAt, contactsInviteNow])
+
   const addParticipantsFoundUserStatus = {
     alreadyInChat: addParticipantsFoundUser ? activeConversationParticipantIds.includes(addParticipantsFoundUser.id) : false,
     isSelf: addParticipantsFoundUser ? addParticipantsFoundUser.id === me?.id : false,
   }
+
+  useEffect(() => {
+    if (!contactsOpen) return
+    const interval = window.setInterval(() => setContactsInviteNow(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [contactsOpen])
+
+  useEffect(() => {
+    if (!contactsOpen) return
+    const expiresAtRaw = registrationInviteCodeQuery.data?.expiresAt
+    if (!expiresAtRaw) return
+    const expiresAtMs = Date.parse(expiresAtRaw)
+    if (!Number.isFinite(expiresAtMs)) return
+    const timeout = window.setTimeout(() => {
+      void registrationInviteCodeQuery.refetch()
+    }, Math.max(250, expiresAtMs - Date.now() + 250))
+    return () => window.clearTimeout(timeout)
+  }, [contactsOpen, registrationInviteCodeQuery.data?.expiresAt, registrationInviteCodeQuery.refetch])
+
+  useEffect(() => {
+    if (!contactsInviteCopied) return
+    const timeout = window.setTimeout(() => setContactsInviteCopied(false), 1600)
+    return () => window.clearTimeout(timeout)
+  }, [contactsInviteCopied])
 
   useEffect(() => {
     if (!addParticipantsModal) return
@@ -2785,7 +2962,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         try {
           const list = (conversationsQuery.data || []).map((r: any) => r.conversation.id)
           // re-join all conversation rooms after reconnect so we receive call:status broadcasts
-          for (const cid of list) { try { joinConversation(cid) } catch {} }
+          for (const cid of list) {
+            try {
+              joinConversation(cid)
+              markConversationJoined(cid)
+            } catch {}
+          }
           if (list.length > 0) requestCallStatuses(list)
         } catch {}
       }
@@ -2809,7 +2991,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('focus', onFocus)
     }
-  }, [client])
+  }, [client, conversationsQuery.data, markConversationJoined])
 
   // Keep own presence in sync with server events, like for other users
   useEffect(() => {
@@ -2932,6 +3114,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     onIncomingCall(({ conversationId, from, video }) => {
       // debounce duplicate incoming for same conv
       if (ringingConvIdRef.current && ringingConvIdRef.current === conversationId) return
+      if (callStore.incoming?.conversationId === conversationId) {
+        return
+      }
       // stop previous ring if any
       stopRingtone()
       // suppress popup for group calls or if already in this call
@@ -2952,7 +3137,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         }
       } catch {}
       ringingConvIdRef.current = conversationId
-      callStore.startIncoming({ conversationId, from, video })
+      callStore.startIncoming({
+        callId: conversationId,
+        conversationId,
+        from,
+        video,
+        source: 'web_ui',
+      })
       // start ringtone from file
       try {
         const audio = ensureRingAudio()
@@ -2974,16 +3165,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     })
     onCallAccepted(({ conversationId, by, video }) => {
       clearMinCallDurationGuard(conversationId)
+      stopOutgoingDialing()
 
       // Останавливаем "дозвон" на этом устройстве сразу, как только другой участник принял звонок.
       // (Даже если мы не будем подключаться на этом устройстве — дозвон UI/звук не должен продолжаться.)
       setOutgoingCall((prev) => {
         if (prev?.conversationId === conversationId) {
-          if (outgoingCallTimerRef.current) {
-            window.clearTimeout(outgoingCallTimerRef.current)
-            outgoingCallTimerRef.current = null
-          }
-          stopDialingSound()
           return null
         }
         return prev
@@ -3055,15 +3242,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       stopRingtone()
     })
     onCallDeclined(({ conversationId }) => {
+      stopOutgoingDialing({ playEndTone: true })
       // Закрываем экран дозвона, если он открыт
       setOutgoingCall((prev) => {
         if (prev?.conversationId === conversationId) {
-          if (outgoingCallTimerRef.current) {
-            window.clearTimeout(outgoingCallTimerRef.current)
-            outgoingCallTimerRef.current = null
-          }
-          stopDialingSound()
-          playEndCallSound()
           return null
         }
         return prev
@@ -3123,6 +3305,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         }
       }
       const finalize = () => {
+        stopOutgoingDialing()
         if (endedByOther) {
           try {
             const audio = ensureNotifyAudio()
@@ -3136,11 +3319,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         // Закрываем экран дозвона, если он открыт
         setOutgoingCall((prev) => {
           if (prev?.conversationId === conversationId) {
-            if (outgoingCallTimerRef.current) {
-              window.clearTimeout(outgoingCallTimerRef.current)
-              outgoingCallTimerRef.current = null
-            }
-            stopDialingSound()
             return null
           }
           return prev
@@ -3176,28 +3354,28 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     let detachUnlockListeners: (() => void) | null = null
     try {
       ensureNotifyAudio()
-      const isMobileInitial = window.innerWidth <= 768
-      if (isMobileInitial) {
+      if (shouldShowAudioUnlockPrompt()) {
         const hasSession = !!useAppStore.getState().session?.user
         const alreadyUnlocked = !!(window as any).__ebAudioUnlockedOnce
         if (hasSession && !alreadyUnlocked && (!notifyUnlockedRef.current || !ringUnlockedRef.current)) {
           setShowAudioUnlock(true)
         }
-      }
-      const unlock = async () => {
-        const ready = await performAudioUnlock()
-        if (ready && detachUnlockListeners) {
-          detachUnlockListeners()
-          detachUnlockListeners = null
+
+        const unlock = async () => {
+          const ready = await performAudioUnlock()
+          if (ready && detachUnlockListeners) {
+            detachUnlockListeners()
+            detachUnlockListeners = null
+          }
         }
-      }
-      window.addEventListener('click', unlock)
-      window.addEventListener('keydown', unlock)
-      window.addEventListener('touchstart', unlock)
-      detachUnlockListeners = () => {
-        window.removeEventListener('click', unlock)
-        window.removeEventListener('keydown', unlock)
-        window.removeEventListener('touchstart', unlock)
+        window.addEventListener('click', unlock)
+        window.addEventListener('keydown', unlock)
+        window.addEventListener('touchstart', unlock)
+        detachUnlockListeners = () => {
+          window.removeEventListener('click', unlock)
+          window.removeEventListener('keydown', unlock)
+          window.removeEventListener('touchstart', unlock)
+        }
       }
     } catch {}
     return () => {
@@ -3782,9 +3960,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   async function openContactsOverlay() {
     setContactsOpen(true)
+    setContactsInviteCopied(false)
+    void registrationInviteCodeQuery.refetch()
     try {
       const r = await api.get('/status/me')
       setMyEblid(r.data.user?.eblid ?? '')
+    } catch {}
+  }
+
+  async function copyContactsInviteCode() {
+    if (!contactsInviteCode) return
+    try {
+      await navigator.clipboard.writeText(contactsInviteCode)
+      setContactsInviteCopied(true)
     } catch {}
   }
 
@@ -6018,7 +6206,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     }
                     onClick={() => {
                       if (!steamUrl) return
-                      try { window.open(steamUrl, '_blank', 'noopener,noreferrer') } catch {}
+                      void openUrlSystemBrowser(steamUrl)
                     }}
                     style={{
                       cursor: steamUrl ? 'pointer' : 'default',
@@ -6270,6 +6458,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   try {
                     beginOutgoingCallGuard(activeId)
                     inviteCall(activeId, false)
+                    signalApkOutgoingStarted(activeId, false)
                     callStore.startOutgoing(activeId, false)
                     setActiveCalls((prev) => {
                       const current = prev[activeId]
@@ -6332,6 +6521,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   try {
                     beginOutgoingCallGuard(activeId)
                     inviteCall(activeId, true)
+                    signalApkOutgoingStarted(activeId, true)
                     callStore.startOutgoing(activeId, true)
                     setActiveCalls((prev) => {
                       const current = prev[activeId]
@@ -6504,34 +6694,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           className="btn"
                           title={!isMobile ? 'Сбросить' : undefined}
                           onClick={() => {
-                            const count = activeConversation?.participants?.length ?? 0
-                            const isDialog = count <= 2
-                            const isGroupCall = activeConversation?.isGroup || (count > 2)
-                            if (isDialog && callConvId) {
-                              endCall(callConvId)
-                              setActiveCalls((prev) => {
-                                const current = prev[callConvId]
-                                if (current?.active) {
-                                  return { ...prev, [callConvId]: { ...current, active: false, endedAt: Date.now() } }
-                                }
-                                return prev
-                              })
-                            } else if (isGroupCall && callConvId) {
-                              try { leaveCallRoom(callConvId) } catch {}
-                              setActiveCalls((prev) => {
-                                const current = prev[callConvId]
-                                if (!current) return prev
-                                if (!current.participants) return prev
-                                const myId = me?.id
-                                if (!myId) return prev
-                                if (!current.participants.includes(myId)) return prev
-                                return { ...prev, [callConvId]: { ...current, participants: current.participants.filter((id: string) => id !== myId) } }
-                              })
-                            }
-                            setCallConvId(null)
-                            setMinimizedCallConvId(null)
-                            callStore.endCall()
-                            stopRingtone()
+                            if (!callConvId) return
+                            void endActiveCallAction(
+                              {
+                                callId: callConvId,
+                                conversationId: callConvId,
+                              },
+                              'web_ui',
+                            )
                           }}
                           style={{ 
                             ...buttonBaseStyle,
@@ -8629,119 +8799,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           </div>
           </div>
         </div>
-        <Suspense fallback={null}>
-          {callConvId && (
-            <CallOverlay
-              open={!!callConvId}
-              conversationId={callConvId}
-              minimized={minimizedCallConvId === callConvId}
-              peerAvatarUrl={(() => {
-            // Используем conversation из callConvId, если звонок активен, иначе из activeConversation
-            const conv = callConvId ? (conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation) : activeConversation
-            const parts = conv?.participants || []
-            if (parts.length === 2) {
-            const peer = parts.find((p: any) => (currentUserId ? p.user.id !== currentUserId : true))?.user
-              return peer?.avatarUrl ?? null
-            }
-            return null
-          })()}
-              avatarsByName={(() => {
-            // Используем conversation из callConvId, если звонок активен, иначе из activeConversation
-            const conv = callConvId ? (conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation) : activeConversation
-            const parts = conv?.participants || []
-            const map: Record<string, string | null> = {}
-            for (const p of parts) {
-              const u = p.user
-              const name = u.displayName ?? u.username ?? u.id
-              map[name] = u.avatarUrl ?? null
-            }
-            // include me fallback
-            if (me) map[me.displayName ?? me.username ?? me.id] = (meInfoQuery.data?.avatarUrl ?? me.avatarUrl ?? null)
-            return map
-          })()}
-              avatarsById={(() => {
-            // Используем conversation из callConvId, если звонок активен, иначе из activeConversation
-            const conv = callConvId ? (conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation) : activeConversation
-            const parts = conv?.participants || []
-            const map: Record<string, string | null> = {}
-            for (const p of parts) {
-              const u = p.user
-              map[u.id] = u.avatarUrl ?? null
-            }
-            if (me) map[me.id] = (meInfoQuery.data?.avatarUrl ?? me.avatarUrl ?? null)
-            return map
-          })()}
-              localUserId={me?.id ?? null}
-              isGroup={(() => {
-                // Используем conversation из callConvId, если звонок активен, иначе из activeConversation
-                const conv = callConvId ? (conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation) : activeConversation
-                return !!conv?.isGroup
-              })()}
-              onMinimize={() => {
-                if (callConvId) {
-                  // Сохраняем callConvId при минимизации - он должен оставаться установленным
-                  const convIdToMinimize = callConvId
-                  setMinimizedCallConvId(convIdToMinimize)
-                  // Убеждаемся, что callStore.activeConvId установлен при минимизации для 1:1 звонков
-                  const conv = getConversationFromCache(convIdToMinimize)
-                  const isGroupConv = !!(conv?.isGroup || (conv?.participants?.length ?? 0) > 2)
-                  if (!isGroupConv && callStore.activeConvId !== convIdToMinimize) {
-                    // Для 1:1 звонков устанавливаем activeConvId, если его нет
-                    callStore.startOutgoing(convIdToMinimize, callStore.initialVideo)
-                  }
-                  // Убеждаемся, что callConvId остается установленным (не сбрасываем его при минимизации)
-                  if (callConvId !== convIdToMinimize) {
-                    setCallConvId(convIdToMinimize)
-                  }
-                }
-              }}
-              onClose={(options) => {
-                const convId = callConvId ?? callConvIdRef.current
-                if (!convId) return
-                // Если оверлей минимизирован, НЕ закрываем его - минимизация не означает закрытие
-                // Минимизированный оверлей остается открытым (open=true), но визуально скрыт
-                if (minimizedCallConvId === convId) {
-                  // При минимизации оверлей НЕ должен закрываться - только визуально скрыт
-                  // Поэтому не вызываем finalize
-                  return
-                }
-                const finalize = () => {
-                  const conv = getConversationFromCache(convId)
-                  const participantsCount = conv?.participants?.length ?? 0
-                  const isGroupConv = !!(conv?.isGroup || participantsCount > 2)
-                  const isDialog = !isGroupConv
-                  if (isDialog) {
-                    endCall(convId)
-                  }
-                  setActiveCalls((prev) => {
-                    const current = prev[convId]
-                    if (!current) return prev
-                    if (isGroupConv) {
-                      const participants = (current.participants || []).filter((id: string) => (currentUserId ? id !== currentUserId : true))
-                      return { ...prev, [convId]: { ...current, participants } }
-                    }
-                    if (current.active) {
-                      return { ...prev, [convId]: { ...current, active: false, endedAt: Date.now() } }
-                    }
-                    return prev
-                  })
-                  setCallConvId((prev) => (prev === convId ? null : prev))
-                  setMinimizedCallConvId((prev) => (prev === convId ? null : prev))
-                  callStore.endCall()
-                  stopRingtone()
-                }
-                if (!options?.manual && isOneToOneConversation(convId)) {
-                  scheduleAfterMinCallDuration(convId, finalize)
-                } else {
-                  clearMinCallDurationGuard(convId)
-                  finalize()
-                }
-              }}
-              initialVideo={callStore.initialVideo}
-              initialAudio={callStore.initialAudio}
-            />
-          )}
-        </Suspense>
         <ImageEditorModal
           open={!!editingImage}
           image={editingImage}
@@ -8864,7 +8921,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </div>
             </div>, document.body)
         })()}
-        {callStore.incoming && createPortal(
+        {callStore.incoming && callStore.incoming.source !== 'android_native' && createPortal(
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }}>
             <div style={{ background: 'var(--surface-200)', borderRadius: 16, border: '1px solid var(--surface-border)', padding: 24, width: 'min(92vw, 440px)', boxShadow: 'var(--shadow-sharp)', transform: 'translateY(-4vh)', color: 'var(--text-primary)' }}>
               <div style={{ fontWeight: 700, marginBottom: 12 }}>{callStore.incoming.video ? 'Входящий видеозвонок' : 'Входящий аудиозвонок'}</div>
@@ -8887,17 +8944,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-primary" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCall(false) }}>
+                  <button className="btn btn-primary" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId, isVideo: false }, 'web_ui') }}>
                     <Phone size={18} />
                     <span>Ответить</span>
                   </button>
-                  <button className="btn" style={{ background: 'var(--brand)', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCall(true) }}>
+                  <button className="btn" style={{ background: 'var(--brand)', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId, isVideo: true }, 'web_ui') }}>
                     <Video size={18} />
                     <span>Ответить с видео</span>
                   </button>
                 </div>
                 <div style={{ display: 'flex' }}>
-                  <button className="btn" style={{ background: '#ef4444', color: '#fff', width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { declineIncomingCall() }}>
+                  <button className="btn" style={{ background: '#ef4444', color: '#fff', width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void declineIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId }, 'web_ui') }}>
                     <PhoneOff size={18} />
                     <span>Отмена</span>
                   </button>
@@ -8912,6 +8969,132 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           </div>, document.body)
         }
       </section>
+    )
+  }
+
+  function renderActiveCallOverlay() {
+    if (!callConvId) return null
+
+    return (
+      <Suspense fallback={null}>
+        <CallOverlay
+          open={!!callConvId}
+          conversationId={callConvId}
+          minimized={minimizedCallConvId === callConvId}
+          peerAvatarUrl={(() => {
+            // Keep the overlay outside responsive panes so orientation changes do not remount LiveKit.
+            const conv = callConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation
+              : activeConversation
+            const parts = conv?.participants || []
+            if (parts.length === 2) {
+              const peer = parts.find((p: any) => (currentUserId ? p.user.id !== currentUserId : true))?.user
+              return peer?.avatarUrl ?? null
+            }
+            return null
+          })()}
+          avatarsByName={(() => {
+            const conv = callConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation
+              : activeConversation
+            const parts = conv?.participants || []
+            const map: Record<string, string | null> = {}
+            for (const p of parts) {
+              const u = p.user
+              const name = u.displayName ?? u.username ?? u.id
+              map[name] = u.avatarUrl ?? null
+            }
+            if (me) map[me.displayName ?? me.username ?? me.id] = meInfoQuery.data?.avatarUrl ?? me.avatarUrl ?? null
+            return map
+          })()}
+          avatarsById={(() => {
+            const conv = callConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation
+              : activeConversation
+            const parts = conv?.participants || []
+            const map: Record<string, string | null> = {}
+            for (const p of parts) {
+              const u = p.user
+              map[u.id] = u.avatarUrl ?? null
+            }
+            if (me) map[me.id] = meInfoQuery.data?.avatarUrl ?? me.avatarUrl ?? null
+            return map
+          })()}
+          localUserId={me?.id ?? null}
+          isGroup={(() => {
+            const conv = callConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation
+              : activeConversation
+            return !!conv?.isGroup
+          })()}
+          onMinimize={() => {
+            if (callConvId) {
+              const convIdToMinimize = callConvId
+              setMinimizedCallConvId(convIdToMinimize)
+              const conv = getConversationFromCache(convIdToMinimize)
+              const isGroupConv = !!(conv?.isGroup || (conv?.participants?.length ?? 0) > 2)
+              if (!isGroupConv && callStore.activeConvId !== convIdToMinimize) {
+                callStore.startOutgoing(convIdToMinimize, callStore.initialVideo)
+              }
+              if (callConvId !== convIdToMinimize) {
+                setCallConvId(convIdToMinimize)
+              }
+            }
+          }}
+          onClose={(options) => {
+            const convId = callConvId ?? callConvIdRef.current
+            if (!convId) return
+            if (minimizedCallConvId === convId) {
+              return
+            }
+            if (options?.manual) {
+              void endActiveCallAction(
+                {
+                  callId: convId,
+                  conversationId: convId,
+                },
+                'web_ui',
+              )
+              return
+            }
+            const finalize = () => {
+              const conv = getConversationFromCache(convId)
+              const participantsCount = conv?.participants?.length ?? 0
+              const isGroupConv = !!(conv?.isGroup || participantsCount > 2)
+              const isDialog = !isGroupConv
+              if (isDialog) {
+                endCall(convId)
+              }
+              setActiveCalls((prev) => {
+                const current = prev[convId]
+                if (!current) return prev
+                if (isGroupConv) {
+                  const participants = (current.participants || []).filter((id: string) =>
+                    currentUserId ? id !== currentUserId : true,
+                  )
+                  return { ...prev, [convId]: { ...current, participants } }
+                }
+                if (current.active) {
+                  return { ...prev, [convId]: { ...current, active: false, endedAt: Date.now() } }
+                }
+                return prev
+              })
+              setCallConvId((prev) => (prev === convId ? null : prev))
+              setMinimizedCallConvId((prev) => (prev === convId ? null : prev))
+              callStore.endCall()
+              stopRingtone()
+            }
+            if (isOneToOneConversation(convId)) {
+              scheduleAfterMinCallDuration(convId, finalize)
+            } else {
+              clearMinCallDurationGuard(convId)
+              finalize()
+            }
+          }}
+          initialVideo={callStore.initialVideo}
+          initialAudio={callStore.initialAudio}
+        />
+      </Suspense>
     )
   }
 
@@ -8964,6 +9147,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   return (
     <>
+    {renderActiveCallOverlay()}
     {showContactsBar && (
       <div
         style={{
@@ -9922,7 +10106,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   }
                 } catch {}
                 try {
-                  await api.post('/auth/logout')
+                  const refreshToken = useAppStore.getState().session?.refreshToken
+                  await api.post('/auth/logout', refreshToken ? { refreshToken } : undefined)
                 } catch {
                   // Ignore errors during logout
                 }
@@ -10927,6 +11112,47 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Мой EBLID:</div>
               <div style={{ fontWeight: 700, flex: 1 }}>{myEblid || '— — — —'}</div>
               <button className="btn btn-secondary btn-icon" onClick={() => { if (myEblid) navigator.clipboard.writeText(myEblid) }} title="Скопировать EBLID"><Copy size={16} /></button>
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+                padding: '16px 18px',
+                borderRadius: 14,
+                marginBottom: 20,
+                border: '1px solid rgba(56, 189, 248, 0.25)',
+                background: 'radial-gradient(circle at top right, rgba(14,165,233,0.16), transparent 42%), linear-gradient(135deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92))',
+                boxShadow: 'var(--shadow-medium)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Код регистрации</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4, marginTop: 4 }}>
+                    Дай этот код новому пользователю. После регистрации вы сразу окажетесь в друзьях.
+                  </div>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={copyContactsInviteCode}
+                  disabled={!contactsInviteCode || registrationInviteCodeQuery.isLoading}
+                  style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}
+                >
+                  {contactsInviteCopied ? <CheckCircle size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+                  {contactsInviteCopied ? 'Скопировано' : 'Скопировать'}
+                </button>
+              </div>
+              <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: '0.16em', color: '#e0f2fe' }}>
+                {registrationInviteCodeQuery.isLoading ? 'Загружаем…' : formattedContactsInviteCode}
+              </div>
+              <div style={{ fontSize: 12, color: '#bae6fd' }}>
+                {registrationInviteCodeQuery.isError
+                  ? 'Не удалось получить код. Попробуйте открыть окно еще раз.'
+                  : `Код обновится через ${contactsInviteRemainingLabel}`}
+              </div>
             </div>
 
             {displayOutgoingWithRejected.length > 0 && (
