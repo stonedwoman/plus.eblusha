@@ -38,6 +38,7 @@ model User {
   callSessions      CallSession[]               @relation("CallSessionInitiator")
   callParticipations CallParticipant[]
   devices           UserDevice[]
+  registrationInviteCode RegistrationInviteCode?
   availabilityIntervals ConversationAvailabilityInterval[]
   availabilityProposalsCreated ConversationAvailabilityProposal[] @relation("AvailabilityProposalCreator")
   availabilityProposalReactions ConversationAvailabilityProposalReaction[]
@@ -56,6 +57,16 @@ model Contact {
   @@unique([requesterId, addresseeId])
   @@index([addresseeId, status])
   @@index([requesterId, status])
+}
+
+model RegistrationInviteCode {
+  userId       String   @id
+  code         String   @unique
+  minuteBucket BigInt
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Conversation {
@@ -244,12 +255,20 @@ model RefreshToken {
   id        String    @id @default(cuid())
   token     String    @unique
   userId    String
+  sessionId String?
+  client    String?
+  deviceId  String?
   expiresAt DateTime
   createdAt DateTime  @default(now())
   revokedAt DateTime?
+  replacedByToken String? @unique
+  revocationReason String?
   user      User      @relation(fields: [userId], references: [id])
 
   @@index([userId])
+  @@index([sessionId])
+  @@index([deviceId])
+  @@index([userId, sessionId])
 }
 
 model CallSession {

@@ -1,17 +1,33 @@
-import crypto from "node:crypto";
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma";
 import { hashPassword, verifyPassword } from "../utils/password";
 import {
-  signAccessToken,
-  signRefreshToken,
-  verifyRefreshToken,
-} from "../utils/jwt";
-import env from "../config/env";
+  clearRefreshCookie,
+  createRefreshSession,
+  getRefreshTokenFromRequest,
+  getRequestClient,
+  getRequestDeviceId,
+  RefreshTokenUnauthorizedError,
+  revokeRefreshSession,
+  rotateRefreshSession,
+  setRefreshCookie,
+  type SessionUser,
+} from "../lib/authSessions";
+import {
+  getCurrentRegistrationInviteCodeForUser,
+  getRegistrationInviteCodeDigits,
+  issueRegistrationInviteGrant,
+  normalizeRegistrationInviteCode,
+  resolveRegistrationInviteCode,
+  verifyRegistrationInviteGrant,
+} from "../lib/registrationInvites";
+import { authenticate } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rateLimit";
+import { getIO } from "../realtime/socket";
 
 const router = Router();
+const userRoom = (userId: string) => `user:${userId}`;
 
 const registerSchema = z.object({
   username: z.string().min(3).max(30),
@@ -19,6 +35,7 @@ const registerSchema = z.object({
   password: z.string().min(6),
   email: z.string().email().optional(),
   phone: z.string().optional(),
+  registrationInviteToken: z.string().optional(),
 });
 
 const loginSchema = z.object({
@@ -26,145 +43,217 @@ const loginSchema = z.object({
   password: z.string(),
 });
 
-router.post("/register", async (req, res) => {
-  const parsed = registerSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
-    return;
-  }
+const registerInviteCodeVerifySchema = z.object({
+  code: z.string().min(1),
+});
 
-  const { username, displayName, password, email, phone } = parsed.data;
-
-  const uniqueChecks = [{ username }] as Array<Record<string, string>>;
-  if (email) uniqueChecks.push({ email });
-  if (phone) uniqueChecks.push({ phone });
-
-  const existing = await prisma.user.findFirst({
-    where: { OR: uniqueChecks },
-    select: { id: true, username: true },
-  });
-
-  if (existing) {
-    res.status(409).json({ message: "User already exists" });
-    return;
-  }
-
-  const passwordHash = await hashPassword(password);
-
-  const user = await prisma.user.create({
-    data: {
-      username,
-      displayName,
-      passwordHash,
-      email: email ?? null,
-      phone: phone ?? null,
-    },
-    select: { id: true, username: true, displayName: true, avatarUrl: true },
-  });
-
-  const tokenId = crypto.randomUUID();
-  const accessToken = signAccessToken({ sub: user.id, tokenId });
-  const refreshTokenValue = signRefreshToken({ sub: user.id, tokenId });
-
-  await prisma.refreshToken.create({
-    data: {
-      token: tokenId,
-      userId: user.id,
-      expiresAt: new Date(Date.now() + parseJwtExpiry()),
-    },
-  });
-
-  const cookieMaxAge = parseJwtExpiry();
-  const sameSite = (env.COOKIE_SAMESITE as "lax" | "none" | "strict") ?? "lax";
-  res.cookie("refreshToken", refreshTokenValue, {
-    httpOnly: true,
-    secure: env.NODE_ENV === "production",
-    sameSite,
-    maxAge: cookieMaxAge,
-    path: env.COOKIE_PATH || "/api",
-    domain: env.COOKIE_DOMAIN || undefined,
-  });
-
-  const includeRefresh = req.get("x-native-client") === "1" || true;
-  res.status(201).json({
-    user: {
-      id: user.id,
-      username: user.username,
-      displayName: user.displayName,
-      avatarUrl: user.avatarUrl,
-    },
-    accessToken,
-    ...(includeRefresh ? { refreshToken: refreshTokenValue } : {}),
+router.get("/register/code", authenticate, async (req, res) => {
+  const userId = (req as any).user!.id as string;
+  const invite = await getCurrentRegistrationInviteCodeForUser(userId);
+  res.json({
+    code: invite.code,
+    expiresAt: invite.expiresAt.toISOString(),
+    inviter: invite.inviter,
+    digits: getRegistrationInviteCodeDigits(),
   });
 });
+
+router.post(
+  "/register/code/verify",
+  rateLimit({ name: "auth_register_code_verify", windowMs: 60_000, max: 20 }),
+  async (req, res) => {
+    const parsed = registerInviteCodeVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid invite code" });
+      return;
+    }
+
+    const normalizedCode = normalizeRegistrationInviteCode(parsed.data.code);
+    if (normalizedCode.length !== getRegistrationInviteCodeDigits()) {
+      res.status(400).json({ message: "Invalid invite code" });
+      return;
+    }
+
+    const invite = await resolveRegistrationInviteCode(normalizedCode);
+    if (!invite) {
+      res.status(404).json({ message: "Invite code is invalid or expired" });
+      return;
+    }
+
+    res.json({
+      registrationInviteToken: issueRegistrationInviteGrant(invite.inviter.id),
+      inviter: invite.inviter,
+      code: invite.code,
+      expiresAt: invite.expiresAt.toISOString(),
+    });
+  }
+);
+
+router.post(
+  "/register",
+  rateLimit({ name: "auth_register", windowMs: 60_000, max: 10 }),
+  async (req, res) => {
+    const parsed = registerSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+      return;
+    }
+
+    const { username, displayName, password, email, phone, registrationInviteToken } = parsed.data;
+    const inviteToken = registrationInviteToken?.trim();
+    if (!inviteToken) {
+      res.status(403).json({ message: "Registration requires invite code" });
+      return;
+    }
+
+    let inviterId: string;
+    try {
+      inviterId = verifyRegistrationInviteGrant(inviteToken).inviterId;
+    } catch {
+      res.status(403).json({ message: "Invalid or expired registration invite" });
+      return;
+    }
+
+    const inviter = await prisma.user.findUnique({
+      where: { id: inviterId },
+      select: { id: true },
+    });
+    if (!inviter) {
+      res.status(403).json({ message: "Invalid or expired registration invite" });
+      return;
+    }
+
+    const uniqueChecks = [{ username }] as Array<Record<string, string>>;
+    if (email) uniqueChecks.push({ email });
+    if (phone) uniqueChecks.push({ phone });
+
+    const existing = await prisma.user.findFirst({
+      where: { OR: uniqueChecks },
+      select: { id: true, username: true },
+    });
+
+    if (existing) {
+      res.status(409).json({ message: "User already exists" });
+      return;
+    }
+
+    const passwordHash = await hashPassword(password);
+
+    const created = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          username,
+          displayName,
+          passwordHash,
+          email: email ?? null,
+          phone: phone ?? null,
+        },
+        select: { id: true, username: true, displayName: true, avatarUrl: true },
+      });
+
+      const contact = await tx.contact.create({
+        data: {
+          requesterId: inviterId,
+          addresseeId: user.id,
+          status: "ACCEPTED",
+        },
+        select: { id: true },
+      });
+
+      const conversation = await tx.conversation.create({
+        data: {
+          isGroup: false,
+          participants: {
+            create: [{ userId: inviterId }, { userId: user.id }],
+          },
+        },
+        select: { id: true },
+      });
+
+      return {
+        user,
+        contactId: contact.id,
+        conversationId: conversation.id,
+      };
+    });
+
+    const issuedSession = await createRefreshSession({
+      userId: created.user.id,
+      client: getRequestClient(req),
+      deviceId: getRequestDeviceId(req),
+    });
+
+    const io = getIO();
+    io?.to(userRoom(inviterId)).emit("contacts:request:accepted", { contactId: created.contactId });
+    io?.to(userRoom(created.user.id)).emit("contacts:request:accepted", { contactId: created.contactId });
+    io?.to(userRoom(inviterId)).emit("conversations:new", { conversationId: created.conversationId });
+    io?.to(userRoom(created.user.id)).emit("conversations:new", { conversationId: created.conversationId });
+
+    setRefreshCookie(res, issuedSession.refreshToken, issuedSession.refreshMaxAgeMs);
+    respondWithSession(res, {
+      user: created.user,
+      accessToken: issuedSession.accessToken,
+      refreshToken: issuedSession.refreshToken,
+      expiresAt: issuedSession.expiresAt,
+      sessionId: issuedSession.sessionId,
+      statusCode: 201,
+    });
+  }
+);
 
 router.post(
   "/login",
   rateLimit({ name: "auth_login", windowMs: 60_000, max: 10 }),
   async (req, res) => {
-  const parsed = loginSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ message: "Invalid credentials" });
-    return;
-  }
+    const parsed = loginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid credentials" });
+      return;
+    }
 
-  const { username, password } = parsed.data;
+    const { username, password } = parsed.data;
 
-  const user = await prisma.user.findUnique({
-    where: { username },
-    select: {
-      id: true,
-      username: true,
-      displayName: true,
-      passwordHash: true,
-    },
-  });
+    const user = await prisma.user.findUnique({
+      where: { username },
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        avatarUrl: true,
+        passwordHash: true,
+      },
+    });
 
-  if (!user) {
-    res.status(401).json({ message: "Invalid credentials" });
-    return;
-  }
+    if (!user) {
+      res.status(401).json({ message: "Invalid credentials" });
+      return;
+    }
 
-  const valid = await verifyPassword(password, user.passwordHash);
-  if (!valid) {
-    res.status(401).json({ message: "Invalid credentials" });
-    return;
-  }
+    const valid = await verifyPassword(password, user.passwordHash);
+    if (!valid) {
+      res.status(401).json({ message: "Invalid credentials" });
+      return;
+    }
 
-  const tokenId = crypto.randomUUID();
-  const accessToken = signAccessToken({ sub: user.id, tokenId });
-  const refreshTokenValue = signRefreshToken({ sub: user.id, tokenId });
-
-  await prisma.refreshToken.create({
-    data: {
-      token: tokenId,
+    const issuedSession = await createRefreshSession({
       userId: user.id,
-      expiresAt: new Date(Date.now() + parseJwtExpiry()),
-    },
-  });
+      client: getRequestClient(req),
+      deviceId: getRequestDeviceId(req),
+    });
 
-  // Set httpOnly cookie for refresh token
-  const cookieMaxAge = parseJwtExpiry();
-  const sameSite = (env.COOKIE_SAMESITE as "lax" | "none" | "strict") ?? "lax";
-  res.cookie("refreshToken", refreshTokenValue, {
-    httpOnly: true,
-    secure: env.NODE_ENV === "production",
-    sameSite,
-    maxAge: cookieMaxAge,
-    path: env.COOKIE_PATH || "/api",
-    domain: env.COOKIE_DOMAIN || undefined,
-  });
-
-  const includeRefresh = req.get("x-native-client") === "1" || true;
-  res.json({
-    accessToken,
-    user: {
-      id: user.id,
-      username: user.username,
-      displayName: user.displayName,
-    },
-    ...(includeRefresh ? { refreshToken: refreshTokenValue } : {}),
-  });
+    setRefreshCookie(res, issuedSession.refreshToken, issuedSession.refreshMaxAgeMs);
+    respondWithSession(res, {
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName,
+        avatarUrl: user.avatarUrl,
+      },
+      accessToken: issuedSession.accessToken,
+      refreshToken: issuedSession.refreshToken,
+      expiresAt: issuedSession.expiresAt,
+      sessionId: issuedSession.sessionId,
+    });
   }
 );
 
@@ -172,106 +261,60 @@ router.post(
   "/refresh",
   rateLimit({ name: "auth_refresh", windowMs: 60_000, max: 30 }),
   async (req, res) => {
-  // Try to get refresh token from cookie first, then from body (for backward compatibility)
-  const token = req.cookies?.refreshToken || req.body?.refreshToken;
-  if (typeof token !== "string") {
-    res.status(400).json({ message: "Invalid refresh token" });
-    return;
-  }
-
-  try {
-    const payload = verifyRefreshToken<{ sub: string; tokenId: string }>(token);
-    const stored = await prisma.refreshToken.findUnique({
-      where: { token: payload.tokenId },
-    });
-
-    if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
-      res.clearCookie("refreshToken", { path: "/api/auth" });
-      res.status(401).json({ message: "Refresh token expired" });
+    const token = getRefreshTokenFromRequest(req);
+    if (!token) {
+      clearRefreshCookie(res);
+      res.status(400).json({ message: "Invalid refresh token" });
       return;
     }
 
-    const newTokenId = crypto.randomUUID();
-
-    await prisma.$transaction([
-      prisma.refreshToken.update({
-        where: { token: payload.tokenId },
-        data: { revokedAt: new Date() },
-      }),
-      prisma.refreshToken.create({
-        data: {
-          token: newTokenId,
-          userId: payload.sub,
-          expiresAt: new Date(Date.now() + parseJwtExpiry()),
-        },
-      }),
-    ]);
-
-    const accessToken = signAccessToken({ sub: payload.sub, tokenId: newTokenId });
-    const refreshTokenValue = signRefreshToken({ sub: payload.sub, tokenId: newTokenId });
-
-    // Update httpOnly cookie with new refresh token
-    const cookieMaxAge = parseJwtExpiry();
-    const sameSite = (env.COOKIE_SAMESITE as "lax" | "none" | "strict") ?? "lax";
-    res.cookie("refreshToken", refreshTokenValue, {
-      httpOnly: true,
-      secure: env.NODE_ENV === "production",
-      sameSite,
-      maxAge: cookieMaxAge,
-      path: env.COOKIE_PATH || "/api",
-      domain: env.COOKIE_DOMAIN || undefined,
-    });
-
-    const includeRefresh = req.get("x-native-client") === "1" || true;
-    res.json({
-      accessToken,
-      ...(includeRefresh ? { refreshToken: refreshTokenValue } : {}),
-    });
-  } catch (error) {
-    res.clearCookie("refreshToken", {
-      path: env.COOKIE_PATH || "/api",
-      domain: env.COOKIE_DOMAIN || undefined,
-    });
-    res.status(401).json({ message: "Invalid refresh token" });
-  }
+    try {
+      const issuedSession = await rotateRefreshSession(token, {
+        client: getRequestClient(req),
+        deviceId: getRequestDeviceId(req),
+      });
+      setRefreshCookie(res, issuedSession.refreshToken, issuedSession.refreshMaxAgeMs);
+      res.json({
+        accessToken: issuedSession.accessToken,
+        refreshToken: issuedSession.refreshToken,
+        expiresAt: issuedSession.expiresAt.toISOString(),
+        sessionId: issuedSession.sessionId,
+      });
+    } catch (error) {
+      clearRefreshCookie(res);
+      if (error instanceof RefreshTokenUnauthorizedError) {
+        res.status(401).json({ message: error.message });
+        return;
+      }
+      throw error;
+    }
   }
 );
 
 router.post("/logout", async (req, res) => {
-  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
-  if (typeof refreshToken === "string") {
-    try {
-      const payload = verifyRefreshToken<{ tokenId: string }>(refreshToken);
-      await prisma.refreshToken.updateMany({
-        where: { token: payload.tokenId },
-        data: { revokedAt: new Date() },
-      });
-    } catch {
-      // Ignore errors during logout
-    }
-  }
-  res.clearCookie("refreshToken", {
-    path: env.COOKIE_PATH || "/api",
-    domain: env.COOKIE_DOMAIN || undefined,
-  });
+  await revokeRefreshSession(getRefreshTokenFromRequest(req), "logout");
+  clearRefreshCookie(res);
   res.status(204).send();
 });
 
-function parseJwtExpiry(): number {
-  const expiry = process.env.JWT_REFRESH_EXPIRES_IN ?? "180d";
-  const match = expiry.match(/^(\d+)([smhd])$/);
-  if (!match) {
-    throw new Error("Invalid JWT expiry format");
+function respondWithSession(
+  res: Response,
+  input: {
+    user: SessionUser;
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: Date;
+    sessionId: string | null;
+    statusCode?: number;
   }
-  const amount = Number(match[1]);
-  const unit = match[2];
-  const multipliers = {
-    s: 1000,
-    m: 60 * 1000,
-    h: 60 * 60 * 1000,
-    d: 24 * 60 * 60 * 1000,
-  } as const;
-  return amount * multipliers[unit as keyof typeof multipliers];
+): void {
+  res.status(input.statusCode ?? 200).json({
+    user: input.user,
+    accessToken: input.accessToken,
+    refreshToken: input.refreshToken,
+    expiresAt: input.expiresAt.toISOString(),
+    sessionId: input.sessionId,
+  });
 }
 
 export default router;

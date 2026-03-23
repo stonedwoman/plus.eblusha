@@ -981,10 +981,71 @@ a {
   margin-bottom: 6px;
 }
 
+.contacts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.contacts-page__invite-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  background:
+    radial-gradient(circle at top right, rgba(14, 165, 233, 0.18), transparent 42%),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92));
+  box-shadow: var(--shadow-medium);
+}
+
+.contacts-page__invite-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.contacts-page__invite-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.contacts-page__invite-hint {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  max-width: 560px;
+}
+
+.contacts-page__invite-code {
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  color: #e0f2fe;
+}
+
+.contacts-page__invite-footer {
+  font-size: 13px;
+  color: #bae6fd;
+}
+
 .contacts-page header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.contacts-page header form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .contacts-page ul {

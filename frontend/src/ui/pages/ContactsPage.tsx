@@ -1,12 +1,27 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, X } from 'lucide-react'
+import { Check, Copy, Loader2, X } from 'lucide-react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../../utils/api'
-import { connectSocket, onContactAccepted, onContactRequest } from '../../utils/socket'
+import { connectSocket, onContactAccepted, onContactRejected, onContactRequest } from '../../core/realtime'
+import { withAppRoutePrefix } from '../../core/navigation/routes'
 
 export default function ContactsPage() {
   const client = useQueryClient()
+  const navigate = useNavigate()
+  const location = useLocation()
   const [filter, setFilter] = useState<'accepted' | 'incoming' | 'outgoing' | 'all'>('accepted')
+  const [rejectedOutgoing, setRejectedOutgoing] = useState<Array<{ contactId: string; friend?: { id: string; username: string; displayName: string | null } }>>([])
+  const [inviteNow, setInviteNow] = useState(() => Date.now())
+  const [inviteCopied, setInviteCopied] = useState(false)
+
+  const inviteCodeQuery = useQuery({
+    queryKey: ['registration-invite-code'],
+    queryFn: async () => {
+      const response = await api.get('/auth/register/code')
+      return response.data as { code: string; expiresAt: string; digits?: number }
+    },
+  })
 
   const contactsQuery = useQuery({
     queryKey: ['contacts', filter],
@@ -56,9 +71,45 @@ export default function ContactsPage() {
     connectSocket()
     const onNew = () => client.invalidateQueries({ queryKey: ['contacts'] })
     const onAccepted = () => client.invalidateQueries({ queryKey: ['contacts'] })
+    onContactRejected((payload) => {
+      setRejectedOutgoing((prev) => [...prev, { contactId: payload.contactId, friend: payload.friend ?? undefined }])
+      client.invalidateQueries({ queryKey: ['contacts'] })
+    })
     onContactRequest(onNew)
     onContactAccepted(onAccepted)
   }, [client])
+
+  const displayOutgoingWithRejected = useMemo(() => {
+    const pending = (outgoingQuery.data ?? []).map((c) => ({ id: c.id, rejected: false as const, friend: c.friend }))
+    const rejected = rejectedOutgoing.map((r) => ({
+      id: r.contactId,
+      rejected: true as const,
+      friend: r.friend ?? { id: '', username: '', displayName: null },
+    }))
+    return [...pending, ...rejected]
+  }, [outgoingQuery.data, rejectedOutgoing])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setInviteNow(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    const expiresAtRaw = inviteCodeQuery.data?.expiresAt
+    if (!expiresAtRaw) return
+    const expiresAtMs = Date.parse(expiresAtRaw)
+    if (!Number.isFinite(expiresAtMs)) return
+    const timeout = window.setTimeout(() => {
+      void inviteCodeQuery.refetch()
+    }, Math.max(250, expiresAtMs - Date.now() + 250))
+    return () => window.clearTimeout(timeout)
+  }, [inviteCodeQuery.data?.expiresAt, inviteCodeQuery.refetch])
+
+  useEffect(() => {
+    if (!inviteCopied) return
+    const timeout = window.setTimeout(() => setInviteCopied(false), 1600)
+    return () => window.clearTimeout(timeout)
+  }, [inviteCopied])
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -69,8 +120,64 @@ export default function ContactsPage() {
     event.currentTarget.reset()
   }
 
+  const inviteCode = typeof inviteCodeQuery.data?.code === 'string' ? inviteCodeQuery.data.code : ''
+  const formattedInviteCode = useMemo(() => {
+    if (!inviteCode) return '---- ----'
+    return inviteCode.length > 4 ? `${inviteCode.slice(0, 4)} ${inviteCode.slice(4)}` : inviteCode
+  }, [inviteCode])
+
+  const inviteRemainingLabel = useMemo(() => {
+    const expiresAtRaw = inviteCodeQuery.data?.expiresAt
+    if (!expiresAtRaw) return '00:00'
+    const expiresAtMs = Date.parse(expiresAtRaw)
+    if (!Number.isFinite(expiresAtMs)) return '00:00'
+    const remainingSeconds = Math.max(0, Math.ceil((expiresAtMs - inviteNow) / 1000))
+    const minutes = Math.floor(remainingSeconds / 60)
+    const seconds = remainingSeconds % 60
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  }, [inviteCodeQuery.data?.expiresAt, inviteNow])
+
+  const handleCopyInviteCode = async () => {
+    if (!inviteCode) return
+    try {
+      await navigator.clipboard.writeText(inviteCode)
+      setInviteCopied(true)
+    } catch {
+      // ignore clipboard errors
+    }
+  }
+
   return (
     <div className="contacts-page">
+      <section className="contacts-page__invite-card">
+        <div className="contacts-page__invite-top">
+          <div>
+            <div className="contacts-page__invite-title">Код регистрации</div>
+            <div className="contacts-page__invite-hint">
+              Дай этот код новому пользователю. После регистрации вы сразу окажетесь в друзьях.
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleCopyInviteCode}
+            disabled={!inviteCode || inviteCodeQuery.isLoading}
+          >
+            {inviteCopied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+            {inviteCopied ? 'Скопировано' : 'Скопировать'}
+          </button>
+        </div>
+        <div className="contacts-page__invite-code">
+          {inviteCodeQuery.isLoading ? 'Загружаем…' : formattedInviteCode}
+        </div>
+        <div className="contacts-page__invite-footer">
+          {inviteCodeQuery.isError ? (
+            <span>Не удалось получить код. Попробуй открыть вкладку еще раз.</span>
+          ) : (
+            <span>Код обновится через {inviteRemainingLabel}</span>
+          )}
+        </div>
+      </section>
       <header>
         <h2>Контакты</h2>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -89,17 +196,34 @@ export default function ContactsPage() {
         </form>
       </header>
 
-      {filter === 'accepted' && outgoingQuery.data && outgoingQuery.data.length > 0 && (
+      {filter === 'accepted' && displayOutgoingWithRejected.length > 0 && (
         <div className="contacts-page__pending-wrap">
-          {outgoingQuery.data.map((contact) => (
-            <div key={contact.id} className="contacts-page__pending-card">
-              <Loader2 size={20} className="contacts-page__pending-icon" aria-hidden />
-              <div className="contacts-page__pending-text">
-                <span className="contacts-page__pending-title">Ожидание подтверждения</span>
-                <span className="contacts-page__pending-hint">Попроси зайти в «Контакты» и подтвердить.</span>
+          {displayOutgoingWithRejected.map((item) =>
+            item.rejected ? (
+              <div key={item.id} className="contacts-page__pending-card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div className="contacts-page__pending-text" style={{ flex: 1 }}>
+                  <span className="contacts-page__pending-title">{item.friend.displayName ?? item.friend.username ?? 'Пользователь'}</span>
+                  <span className="contacts-page__pending-hint">Запрос отклонён</span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-icon btn-ghost"
+                  onClick={() => setRejectedOutgoing((p) => p.filter((r) => r.contactId !== item.id))}
+                  aria-label="Убрать"
+                >
+                  <X size={18} />
+                </button>
               </div>
-            </div>
-          ))}
+            ) : (
+              <div key={item.id} className="contacts-page__pending-card">
+                <Loader2 size={20} className="contacts-page__pending-icon" aria-hidden />
+                <div className="contacts-page__pending-text">
+                  <span className="contacts-page__pending-title">Ожидание подтверждения</span>
+                  <span className="contacts-page__pending-hint">Попроси зайти в «Контакты» и подтвердить.</span>
+                </div>
+              </div>
+            )
+          )}
         </div>
       )}
 
@@ -133,8 +257,12 @@ export default function ContactsPage() {
                 </button>
                 <button
                   onClick={async () => {
-                    await api.post('/conversations/with', { userId: contact.friend.id })
+                    const response = await api.post('/conversations/with', { userId: contact.friend.id })
+                    const conversationId = String(response.data?.conversation?.id ?? response.data?.id ?? '').trim()
                     client.invalidateQueries({ queryKey: ['conversations'] })
+                    if (conversationId) {
+                      navigate(withAppRoutePrefix(location.pathname, `/chats/${conversationId}`))
+                    }
                   }}
                 >
                   Начать чат
