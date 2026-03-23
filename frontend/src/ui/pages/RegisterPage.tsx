@@ -298,15 +298,25 @@ export default function RegisterPage() {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-          <Avatar
-            name={inviterLabel}
-            id={verifiedInviter.id}
-            size={42}
-            avatarUrl={verifiedInviter.avatarUrl ?? undefined}
-          />
+          <div
+            style={{
+              width: 42,
+              height: 42,
+              borderRadius: '50%',
+              overflow: 'hidden',
+              flexShrink: 0,
+            }}
+          >
+            <Avatar
+              name={inviterLabel}
+              id={verifiedInviter.id}
+              size={42}
+              avatarUrl={verifiedInviter.avatarUrl ?? undefined}
+            />
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
             <strong style={{ fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              Код подтвержден: {inviterLabel}
+              Вас пригласил {inviterLabel}
             </strong>
             <span style={{ fontSize: 12, color: 'var(--tab-text-muted)' }}>
               После регистрации вы сразу будете в друзьях
