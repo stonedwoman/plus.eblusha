@@ -476,11 +476,11 @@ export default function RegisterPage() {
                     />
                   ))}
                 </div>
-                <span className="auth-field-hint">
+                <span className="auth-field-hint" style={{ color: '#d97706' }}>
                   Код показывает зарегистрированный пользователь во вкладке «Контакты». Он обновляется каждую минуту.
                 </span>
               </label>
-              {inviteError ? <div className="auth-error">{inviteError}</div> : null}
+              {inviteError ? <div className="auth-error" style={{ color: '#f97070' }}>{inviteError}</div> : null}
               {verifyInviteMutation.isPending ? (
                 <div
                   style={{
