@@ -37,7 +37,8 @@
     "migrate:s3-to-local": "ts-node src/scripts/migrateS3ToLocal.ts",
     "gc:unused-storage": "ts-node src/scripts/gcUnusedStorageFiles.ts",
     "unify-storage": "ts-node src/scripts/unifyStorage.ts",
-    "audit:users": "ts-node src/scripts/listUsersAudit.ts"
+    "audit:users": "ts-node src/scripts/listUsersAudit.ts",
+    "cleanup:integration-test-users": "ts-node src/scripts/deleteIntegrationTestUsers.ts"
   },
   "keywords": [],
   "author": "",
