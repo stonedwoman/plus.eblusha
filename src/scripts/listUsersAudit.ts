@@ -11,6 +11,7 @@
  * Usage:
  *   npx ts-node src/scripts/listUsersAudit.ts
  *   npx ts-node src/scripts/listUsersAudit.ts --csv
+ *   npx ts-node src/scripts/listUsersAudit.ts --table   # username, displayName, dates (TSV)
  */
 
 import dotenv from "dotenv";
@@ -21,6 +22,7 @@ dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: true });
 
 const csv = process.argv.includes("--csv");
+const table = process.argv.includes("--table");
 
 function maxDate(a: Date | null | undefined, b: Date | null | undefined): Date | null {
   if (!a) return b ?? null;
@@ -116,6 +118,17 @@ async function main() {
           ].join(",")
         );
       }
+      return;
+    }
+
+    if (table) {
+      console.log(["username", "displayName", "registeredAt", "lastVisitEffective"].join("\t"));
+      for (const r of rows) {
+        const dn = (r.displayName || "—").replace(/\t/g, " ");
+        const lv = r.lastVisitEffective ? r.lastVisitEffective.toISOString() : "—";
+        console.log([r.username, dn, r.registeredAt.toISOString(), lv].join("\t"));
+      }
+      console.error(`Total: ${rows.length} users`);
       return;
     }
 
