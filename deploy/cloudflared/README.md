@@ -4,32 +4,57 @@
 
 ## Что нужно на origin
 
-1. Nginx слушает HTTP **80** (рекомендуется для туннеля: TLS заканчивается на Cloudflare, до origin — HTTP на localhost).
-2. В `server_name` указаны `eblusha.org`, `www.eblusha.org` и при необходимости `voice.eblusha.org` — см. `deploy/nginx-plus.eblusha.org.conf` в репозитории.
-3. Сертификат Let’s Encrypt на origin для **прямого** доступа (запасной путь) можно оставить на 443; туннель использует **только** то, что указано в `config.yml` (обычно `http://127.0.0.1:80`).
+1. Nginx (или контейнер `eblusha-nginx`) слушает HTTP **80** на `127.0.0.1` — туннель шлёт запросы на `http://localhost:80`.
+2. В `server_name` указаны `eblusha.org`, `www.eblusha.org` и при необходимости `voice.eblusha.org` — см. `deploy/nginx-plus.eblusha.org.conf` (хостовый nginx) или настройте аналог для Docker.
+3. Сертификат на origin для **прямого** доступа (запасной путь) может оставаться на 443; для туннеля достаточно HTTP:80.
 
 ## Установка cloudflared (Linux)
 
+Бинарник без `.tgz` (актуальный URL с версией в пути):
+
 ```bash
-# Актуальная версия: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
-chmod +x /usr/local/bin/cloudflared
+VER=$(curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest | sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p')
+sudo curl -fL -o /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/download/${VER}/cloudflared-linux-amd64"
+sudo chmod +x /usr/local/bin/cloudflared
 ```
 
-## Создание туннеля и credentials
+## Основной способ: токен + systemd (рекомендуется)
 
-Вариант A — через [Zero Trust Dashboard](https://one.dash.cloudflare.com/): **Networks → Tunnels → Create** → выбрать тип **Cloudflared** → скопировать команду установки и токен/файл credentials.
+Авторизация в Cloudflare делается **в браузере** в вашем аккаунте; на сервер кладётся только **токен коннектора**.
 
-Вариант B — CLI (нужен API Token с правами на Tunnel + DNS):
+1. [Zero Trust Dashboard](https://one.dash.cloudflare.com/) → **Networks** → **Tunnels** → **Create tunnel** → имя, например `eblusha-org`.
+2. В шаге **Configure** добавьте **Public Hostnames** (origin на этой машине):
+   - `eblusha.org` → `http://localhost:80`
+   - `www.eblusha.org` → `http://localhost:80`
+   - при необходимости `voice.eblusha.org` → `http://localhost:80`
+3. На шаге **Install connector** скопируйте **токен** (длинная строка `eyJ...`).
+4. На сервере:
+
+```bash
+sudo mkdir -p /etc/cloudflared
+sudo cp /opt/eblusha-plus/deploy/cloudflared/tunnel-token.sample /etc/cloudflared/tunnel.env
+sudo chmod 600 /etc/cloudflared/tunnel.env
+sudo nano /etc/cloudflared/tunnel.env   # TUNNEL_TOKEN=eyJ...
+sudo cp /opt/eblusha-plus/deploy/cloudflared/eblusha-tunnel.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now eblusha-tunnel
+sudo journalctl -u eblusha-tunnel -f
+```
+
+Публичный адрес после переключения DNS: **`https://eblusha.org`** (и `https://www.eblusha.org`).
+
+## Альтернатива: CLI + config.yml
+
+Нужен интерактивный `cloudflared tunnel login` (откроется ссылка в браузере) и файлы credentials:
 
 ```bash
 cloudflared tunnel login
 cloudflared tunnel create eblusha-org
-# Запомните UUID туннеля; появится файл ~/.cloudflared/<UUID>.json
+# ~/.cloudflared/<UUID>.json
 sudo mkdir -p /etc/cloudflared
 sudo cp ~/.cloudflared/<UUID>.json /etc/cloudflared/
 sudo cp deploy/cloudflared/config.yml.example /etc/cloudflared/config.yml
-# Отредактируйте: tunnel, credentials-file, при необходимости service URL
+# Подставьте tunnel UUID и credentials-file; в unit используйте ExecStart с --config
 ```
 
 ## Маршруты в Cloudflare (обязательно)
@@ -53,16 +78,7 @@ sudo cp deploy/cloudflared/config.yml.example /etc/cloudflared/config.yml
 
 Прокси (оранжевое облако) для этих имён должен быть **включён** (Proxied).
 
-## Запуск systemd
-
-```bash
-sudo cp /opt/eblusha-plus/deploy/cloudflared/eblusha-tunnel.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now eblusha-tunnel
-sudo journalctl -u eblusha-tunnel -f
-```
-
-Путь к бинарнику: при установке через пакет может быть `/usr/bin/cloudflared` — поправьте `ExecStart` в unit.
+Путь к бинарнику в unit: `/usr/local/bin/cloudflared`. Если пакет положил бинарник в `/usr/bin/cloudflared`, поправьте `ExecStart`.
 
 ## Запасной путь (РФ / без Cloudflare)
 

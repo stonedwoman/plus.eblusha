@@ -1,15 +1,16 @@
 [Unit]
 Description=Cloudflare Tunnel (eblusha.org)
-After=network-online.target
+Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/tunnel-guide/
+After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
-Type=notify
-ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run
+Type=simple
+# Токен из Zero Trust → Tunnels → Install connector (файл /etc/cloudflared/tunnel.env)
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel run --token ${TUNNEL_TOKEN}
+EnvironmentFile=-/etc/cloudflared/tunnel.env
 Restart=on-failure
 RestartSec=5
-User=root
-# Ограничение открытых файлов для многих WS
 LimitNOFILE=1048576
 
 [Install]

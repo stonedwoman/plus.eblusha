@@ -1,0 +1,9 @@
+# Скопируйте: sudo cp tunnel-token.sample /etc/cloudflared/tunnel.env && sudo chmod 600 /etc/cloudflared/tunnel.env
+#
+# Токен: Cloudflare Zero Trust → Networks → Tunnels → ваш туннель →
+# вкладка с установкой коннектора (Install connector) — длинная строка eyJ...
+#
+# В Cloudflare для туннеля задайте Public Hostnames:
+#   eblusha.org, www.eblusha.org, voice.eblusha.org → http://localhost:80
+#
+TUNNEL_TOKEN=
