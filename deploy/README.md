@@ -2,6 +2,10 @@
 
 These files are prefilled for your project and domain.
 
+## eblusha.org через Cloudflare Tunnel
+
+Основной домен и `/v` (Valheim) можно отдавать через **Cloudflare Tunnel**, запасной вход из РФ — отдельным именем/DNS без туннеля. Инструкция и пример `config.yml`: **`deploy/cloudflared/README.md`**.
+
 ## Вариант: Полный стек в Docker (включая LiveKit)
 
 Если нужен весь стек в одном месте (Postgres, Redis, Backend, Worker, **LiveKit**, Nginx):
@@ -99,5 +103,14 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d plus.eblusha.org --redirect --agree-tos -m you@example.com -n
 ```
+
+## Крупные файлы (большие не загружаются)
+
+1. **Nginx** — любой nginx перед backend обязан иметь:
+   - `client_max_body_size 1024m;` (дефолт nginx = 1MB!)
+   - `proxy_read_timeout 3600s;` и `proxy_send_timeout 3600s;`
+   Файл `deploy/nginx-plus.eblusha.org.conf` уже содержит это. При кастомном конфиге — добавьте.
+
+2. **EBP2** — файлы >50 MB автоматически шифруются потоково (EBP2). `STORAGE_ENC_V2=true` включает EBP2 для всех; без флага — только для больших.
 
 
