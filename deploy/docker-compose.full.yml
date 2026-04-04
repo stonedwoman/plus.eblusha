@@ -55,6 +55,9 @@ services:
       DATABASE_URL: postgresql://eblusha:${POSTGRES_PASSWORD:-eblusha}@postgres:5432/eblusha?schema=public
       REDIS_URL: redis://redis:6379
       PORT: 4000
+    volumes:
+      - /var/lib/eblusha/storage:/var/lib/eblusha/storage
+      - eblusha-upload-tmp:/app/tmp/uploads
     ports:
       - "${BACKEND_PORT:-4000}:4000"
     depends_on:
@@ -77,10 +80,38 @@ services:
     environment:
       DATABASE_URL: postgresql://eblusha:${POSTGRES_PASSWORD:-eblusha}@postgres:5432/eblusha?schema=public
       REDIS_URL: redis://redis:6379
+    volumes:
+      - /var/lib/eblusha/storage:/var/lib/eblusha/storage
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+    networks:
+      - eblusha-net
+
+  maintenance:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: eblusha-maintenance
+    restart: unless-stopped
+    command:
+      [
+        "sh",
+        "-c",
+        "while true; do node dist/scripts/gcUploadSessions.js --delete --max-age-hours ${UPLOAD_TMP_GC_MAX_AGE_HOURS:-24}; node dist/scripts/gcUnusedStorageFiles.js --delete; sleep ${STORAGE_GC_INTERVAL_SECONDS:-86400}; done",
+      ]
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql://eblusha:${POSTGRES_PASSWORD:-eblusha}@postgres:5432/eblusha?schema=public
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - /var/lib/eblusha/storage:/var/lib/eblusha/storage
+      - eblusha-upload-tmp:/app/tmp/uploads
+    depends_on:
+      postgres:
         condition: service_healthy
     networks:
       - eblusha-net
@@ -107,15 +138,18 @@ services:
   # Nginx: SPA + reverse proxy к backend + LiveKit
   # Требует предварительной сборки frontend: cd frontend && npm run build
   # Bind mount: ../frontend/dist -> /var/www/plus.eblusha.org
+  # ../frontend/public -> overlay: те же URL что у Vite public/, без пересборки (см. nginx try_files)
   nginx:
     image: nginx:alpine
     container_name: eblusha-nginx
     restart: unless-stopped
     ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
+      # Публичный вход (раньше занимал Cosmos на хосте)
+      - "80:80"
+      - "443:443"
     volumes:
       - ../frontend/dist:/var/www/plus.eblusha.org:ro
+      - ../frontend/public:/var/www/plus.eblusha.org-public:ro
       - ./nginx-docker.conf:/etc/nginx/conf.d/default.conf:ro
       - ./certs:/etc/nginx/certs:ro
     depends_on:
@@ -127,6 +161,7 @@ services:
 volumes:
   eblusha-postgres-data:
   eblusha-redis-data:
+  eblusha-upload-tmp:
 
 networks:
   eblusha-net:
