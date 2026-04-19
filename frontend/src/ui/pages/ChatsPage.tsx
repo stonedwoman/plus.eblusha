@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, getUploadUrl } from '../../utils/api'
 import type { AxiosError } from 'axios'
-import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../core/realtime'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, onCallGlare, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../core/realtime'
 import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp, RefreshCw } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
@@ -3219,6 +3219,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           // This is our own outgoing call, do not treat as incoming
           return
         }
+        // ===== 1:1 GLARE RESOLUTION =====
+        // If we are currently dialing the SAME 1:1 conversation, both sides
+        // tried to call each other simultaneously. The server keeps the
+        // first invite intact and forwards it as call:incoming to us. Drop
+        // our outgoing dial UI/audio so the incoming modal can take over
+        // cleanly; the user then accepts/declines the peer's call.
+        if (outgoingCallRef.current?.conversationId === conversationId) {
+          try { stopOutgoingDialing() } catch {}
+          setOutgoingCall((prev) => (prev?.conversationId === conversationId ? null : prev))
+          console.log('[ChatsPage] 1:1 call glare detected — converting our outgoing into incoming', conversationId)
+        }
       } catch {}
       ringingConvIdRef.current = conversationId
       callStore.startIncoming({
@@ -3360,6 +3371,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       } else {
         finalize()
       }
+    })
+    onCallGlare(({ conversationId, with: peerInfo }) => {
+      // We are the original 1:1 inviter and the peer simultaneously dialed us.
+      // Server kept our invite intact; the peer's client converts its outgoing
+      // into incoming. Nothing UI-level to do here: we keep our outgoing dial
+      // running. Log for diagnostics so we can correlate with peer's log.
+      console.log('[ChatsPage] 1:1 call glare reported by server (peer also dialed us)', { conversationId, peer: peerInfo?.id })
     })
     onCallEnded(({ conversationId, by }) => {
       const endedByOther = !!by?.id && by.id !== me?.id

@@ -49,6 +49,7 @@ type ServerToClientEvents = {
   "contacts:request:new": (payload: { contactId: string; from: { id: string; username: string } }) => void;
   "contacts:request:accepted": (payload: { contactId: string }) => void;
   "contacts:request:blocked": (payload: { contactId: string }) => void;
+  "contacts:request:rejected": (payload: { contactId: string; friend?: { id: string; username: string; displayName: string | null } }) => void;
   "conversations:new": (payload: { conversationId: string }) => void;
   "conversations:updated": (payload: { conversationId: string; conversation?: any }) => void;
   "conversations:deleted": (payload: { conversationId: string }) => void;
@@ -56,6 +57,10 @@ type ServerToClientEvents = {
   "call:accepted": (payload: { conversationId: string; by: { id: string }; video: boolean }) => void;
   "call:declined": (payload: { conversationId: string; by: { id: string } }) => void;
   "call:ended": (payload: { conversationId: string; by: { id: string } }) => void;
+  // Sent to the original inviter when the peer simultaneously dialed them
+  // (1:1 glare). Purely informational; the peer's client converts its
+  // outgoing UI into an incoming modal upon receiving call:incoming.
+  "call:glare": (payload: { conversationId: string; with: { id: string } }) => void;
   "call:status": (payload: { conversationId: string; active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }) => void;
   "call:status:bulk": (payload: { statuses: Record<string, { active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }> }) => void;
   "secret:chat:offer": (payload: { conversationId: string; from: { id: string; name: string; deviceId?: string | null } }) => void;
@@ -1196,10 +1201,61 @@ export async function initSocket(
       const caller = await prisma.user.findUnique({ where: { id: userId }, select: { displayName: true, username: true } });
       const name = caller?.displayName ?? caller?.username ?? "пользователь";
       const isGroup = !!conv.isGroup;
-      
+
       // Убеждаемся, что сокет присоединен к комнате беседы для получения событий
       socket.join(conversationId);
-      
+
+      // ===== 1:1 GLARE DETECTION =====
+      // If there is already a pending (not yet accepted) invite for this
+      // 1:1 conversation, do NOT overwrite callState / rotate E2EE key /
+      // re-broadcast incoming. Otherwise simultaneous mutual call:invite
+      // (A→B and B→A in the same tick) would scramble the inviter and
+      // generate two different E2EE keys, breaking the call.
+      if (!isGroup) {
+        const existingState = callState.get(conversationId);
+        if (existingState && !existingState.accepted) {
+          if (existingState.inviterId === userId) {
+            // Same user re-emitted invite (e.g., reconnect / duplicate emit
+            // after socket bounce). Idempotently re-deliver call:incoming
+            // to peer(s) so they can re-show the modal if they missed it.
+            const incomingPayload = { conversationId, from: { id: userId, name }, video: existingState.video };
+            for (const rid of recipients) {
+              io.to(userRoom(rid)).emit("call:incoming", incomingPayload);
+            }
+            logger.info({ conversationId, userId }, "1:1 call:invite re-emitted by same inviter, re-delivered call:incoming");
+            return;
+          }
+          // Different user → glare. Resolve by keeping the EXISTING call.
+          // Deliver the existing inviter's call:incoming to all of the new
+          // inviter's sockets so their client can convert outgoing→incoming.
+          try {
+            const existingInviter = await prisma.user.findUnique({
+              where: { id: existingState.inviterId },
+              select: { displayName: true, username: true },
+            });
+            const inviterName = existingInviter?.displayName ?? existingInviter?.username ?? "пользователь";
+            io.to(userRoom(userId)).emit("call:incoming", {
+              conversationId,
+              from: { id: existingState.inviterId, name: inviterName },
+              video: existingState.video,
+            });
+            // Inform the original inviter that the peer was simultaneously
+            // dialing too. Purely informational; their dialing UI continues.
+            io.to(userRoom(existingState.inviterId)).emit("call:glare", {
+              conversationId,
+              with: { id: userId },
+            });
+          } catch (error) {
+            logger.warn({ error, conversationId, userId }, "Failed to deliver glare snapshot");
+          }
+          logger.info(
+            { conversationId, userId, existingInviter: existingState.inviterId },
+            "1:1 call:invite glare detected — keeping existing call, no state overwrite",
+          );
+          return;
+        }
+      }
+
       // track call state
       const startedAt = Date.now();
       callState.set(conversationId, { inviterId: userId, accepted: false, video, startedAt });
@@ -1215,23 +1271,30 @@ export async function initSocket(
         }
       }
 
+      // Track whether this invite actually bootstrapped a new group call.
+      // Subsequent invites for an already-active group call must NOT reset
+      // startedAt nor create a duplicate "started" system message.
+      let isFirstGroupInviter = false;
       if (isGroup) {
         const callInfo = activeGroupCalls.get(conversationId);
         if (!callInfo) {
           const info: ActiveCallInfo = { startedAt, participantsByUser: new Map<string, Set<string>>() };
           addParticipant(info, userId, socket.id);
           activeGroupCalls.set(conversationId, info);
+          isFirstGroupInviter = true;
         } else {
-          callInfo.startedAt = startedAt;
+          // Preserve existing call's startedAt — don't reset on join-as-invite.
           addParticipant(callInfo, userId, socket.id);
         }
         // Update global presence for inviter (IN_CALL override)
         void emitEffectivePresence(io, userId);
       }
-      
+
       // Создаем системное сообщение о начале звонка только для групповых бесед
       // Для 1:1 бесед не создаем, так как есть входящий звонок с оверлеем и звуком
-      if (isGroup) {
+      // Для уже активного группового звонка повторное приглашение не должно создавать
+      // дублирующее системное сообщение "X начал звонок".
+      if (isGroup && isFirstGroupInviter) {
         try {
           const callTypeText = video ? "звонок с видео" : "звонок";
           const now = new Date();

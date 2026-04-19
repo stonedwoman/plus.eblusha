@@ -104,6 +104,14 @@ export interface CallEndedPayload {
   by: { id: string }
 }
 
+// Sent to the original inviter when the peer simultaneously dialed the same
+// 1:1 conversation. Informational: the peer's own client converts its
+// outgoing UI into an incoming modal upon receiving call:incoming.
+export interface CallGlarePayload {
+  conversationId: string
+  with: { id: string }
+}
+
 // ========== Групповые звонки ==========
 
 export interface CallStatusPayload {
