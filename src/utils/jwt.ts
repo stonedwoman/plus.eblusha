@@ -1,4 +1,4 @@
-import { sign, verify, type Secret } from "jsonwebtoken";
+import { sign, verify, type Secret, type SignOptions } from "jsonwebtoken";
 import env from "../config/env";
 
 type JwtPayload = Record<string, unknown>;
@@ -6,16 +6,39 @@ type JwtPayload = Record<string, unknown>;
 const accessSecret: Secret = env.JWT_SECRET as unknown as Secret;
 const refreshSecret: Secret = env.JWT_REFRESH_SECRET as unknown as Secret;
 
-export function signAccessToken(payload: JwtPayload): string {
-  return sign(payload, accessSecret, {
-    expiresIn: env.JWT_ACCESS_EXPIRES_IN as unknown as number,
-  });
+type SignTokenOptions = {
+  expiresInSeconds?: number;
+};
+
+function resolveTokenExpiry(
+  fallback: string,
+  options?: SignTokenOptions
+): SignOptions["expiresIn"] {
+  return typeof options?.expiresInSeconds === "number"
+    ? options.expiresInSeconds
+    : (fallback as SignOptions["expiresIn"]);
 }
 
-export function signRefreshToken(payload: JwtPayload): string {
-  return sign(payload, refreshSecret, {
-    expiresIn: env.JWT_REFRESH_EXPIRES_IN as unknown as number,
-  });
+function signWithResolvedExpiry(
+  payload: JwtPayload,
+  secret: Secret,
+  fallback: string,
+  options?: SignTokenOptions
+): string {
+  const signOptions: SignOptions = {};
+  const expiresIn = resolveTokenExpiry(fallback, options);
+  if (expiresIn !== undefined) {
+    signOptions.expiresIn = expiresIn;
+  }
+  return sign(payload, secret, signOptions);
+}
+
+export function signAccessToken(payload: JwtPayload, options?: SignTokenOptions): string {
+  return signWithResolvedExpiry(payload, accessSecret, env.JWT_ACCESS_EXPIRES_IN, options);
+}
+
+export function signRefreshToken(payload: JwtPayload, options?: SignTokenOptions): string {
+  return signWithResolvedExpiry(payload, refreshSecret, env.JWT_REFRESH_EXPIRES_IN, options);
 }
 
 export function verifyAccessToken<T extends JwtPayload>(token: string): T {

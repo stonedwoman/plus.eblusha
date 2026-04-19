@@ -257,7 +257,7 @@ socket.on('device:revoked', () => {
   } catch {}
 })
 
-export function onSessionNew(cb: (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; ts: number }) => void) {
+export function onSessionNew(cb: (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number }) => void) {
   socket.on('session:new', cb)
   return () => {
     try {
@@ -309,6 +309,9 @@ export function onContactRequest(cb: (payload: any) => void) {
 }
 export function onContactAccepted(cb: (payload: any) => void) {
   socket.on('contacts:request:accepted', cb)
+}
+export function onContactRejected(cb: (payload: { contactId: string; friend?: { id: string; username: string; displayName: string | null } }) => void) {
+  socket.on('contacts:request:rejected', cb)
 }
 export function onContactRemoved(cb: (payload: { contactId: string }) => void) {
   socket.on('contacts:removed', cb)

@@ -29,6 +29,7 @@
     "smoke:local": "ts-node test/local-smoke.ts",
     "smoke:test": "ts-node test/platform-smoke.ts",
     "smoke": "ts-node test/run-smoke.ts",
+    "gc:device-prekeys": "ts-node src/scripts/gcDevicePrekeys.ts",
     "gc:secret-attachments": "ts-node src/scripts/gcSecretAttachments.ts",
     "gc:upload-sessions": "ts-node src/scripts/gcUploadSessions.ts",
     "migrate:uploads": "ts-node src/scripts/migrateUploads.ts",

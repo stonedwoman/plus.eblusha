@@ -10,6 +10,7 @@ import { CallHandler } from './services/call-handler'
 import { App } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 import { NativeSocket } from './plugins/native-socket-plugin'
+import { bindNativeSocketService } from '../core/realtime'
 
 // Инициализируем сервис уведомлений при загрузке (только на нативной платформе)
 if (typeof window !== 'undefined' && Capacitor.isNativePlatform()) {
@@ -38,6 +39,9 @@ export async function initializeSocketConnection(wsUrl: string, accessToken: str
   const socketService = getSocketService(wsUrl)
   console.log('[Capacitor] Connecting socket with token length:', accessToken?.length || 0)
   socketService.connect(accessToken)
+  // In native runtime the web realtime layer subscribes through SocketService.onRaw().
+  // Connect/create the socket first so those listeners bind to a real transport, just like web.
+  bindNativeSocketService(socketService)
   console.log('[Capacitor] socketService.connect() called, now setting up lifecycle handlers')
 
   const keepAliveListener = () => {

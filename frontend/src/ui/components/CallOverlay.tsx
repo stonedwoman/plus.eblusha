@@ -139,6 +139,10 @@ function writeStoredBool(key: string, value: boolean) {
   }
 }
 
+function clampNumber(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n))
+}
+
 function isDebugFlagEnabled(storageKey: string, queryKey: string): boolean {
   if (typeof window === 'undefined') return false
   try {
@@ -1563,6 +1567,437 @@ function ParticipantVolumeUpdater() {
   return null
 }
 
+function VideoTileZoomEnhancer({ enabled }: { enabled: boolean }) {
+  useEffect(() => {
+    if (!enabled) return
+    const root = document.body
+    if (!root) return
+
+    const MAX_SCALE = 6
+    const boundTiles = new Set<HTMLElement>()
+
+    type PointerState = {
+      id: number
+      x: number
+      y: number
+    }
+
+    type ZoomState = {
+      scale: number
+      x: number
+      y: number
+      dragPointerId: number | null
+      dragStartClientX: number
+      dragStartClientY: number
+      dragOriginX: number
+      dragOriginY: number
+      lastPinchDistance: number
+      pointers: Map<number, PointerState>
+      baseInlineTransform: string
+      computedBaseTransform: string
+    }
+
+    const getActiveVideoSurface = (tile: HTMLElement): { surfaceEl: HTMLElement; videoEl: HTMLVideoElement } | null => {
+      const isVideoMuted =
+        tile.getAttribute('data-video-muted') === 'true' ||
+        tile.getAttribute('data-lk-video-muted') === 'true' ||
+        (tile as any).dataset?.videoMuted === 'true' ||
+        (tile as any).dataset?.lkVideoMuted === 'true'
+      const videoEl =
+        (tile.querySelector('video.lk-participant-media-video') as HTMLVideoElement | null) ||
+        (tile.querySelector('video') as HTMLVideoElement | null)
+      if (isVideoMuted || !videoEl || videoEl.offsetWidth <= 0 || videoEl.offsetHeight <= 0) return null
+      return { surfaceEl: videoEl, videoEl }
+    }
+
+    const getPointFromCurrentCenter = (clientX: number, clientY: number, surfaceEl: HTMLElement) => {
+      const rect = surfaceEl.getBoundingClientRect()
+      return {
+        x: clientX - (rect.left + rect.width / 2),
+        y: clientY - (rect.top + rect.height / 2),
+      }
+    }
+
+    const applyTransform = (tile: HTMLElement, surfaceEl: HTMLElement, state: ZoomState) => {
+      const viewportWidth = tile.clientWidth || tile.getBoundingClientRect().width || 0
+      const viewportHeight = tile.clientHeight || tile.getBoundingClientRect().height || 0
+      const baseWidth = surfaceEl.offsetWidth || surfaceEl.getBoundingClientRect().width || viewportWidth
+      const baseHeight = surfaceEl.offsetHeight || surfaceEl.getBoundingClientRect().height || viewportHeight
+
+      let nextScale = clampNumber(state.scale, 1, MAX_SCALE)
+      let nextX = state.x
+      let nextY = state.y
+
+      if (!viewportWidth || !viewportHeight || !baseWidth || !baseHeight || nextScale <= 1.01) {
+        nextScale = 1
+        nextX = 0
+        nextY = 0
+      } else {
+        const maxX = Math.max(0, (baseWidth * nextScale - viewportWidth) / 2)
+        const maxY = Math.max(0, (baseHeight * nextScale - viewportHeight) / 2)
+        nextX = clampNumber(nextX, -maxX, maxX)
+        nextY = clampNumber(nextY, -maxY, maxY)
+      }
+
+      state.scale = nextScale
+      state.x = nextX
+      state.y = nextY
+
+      const baseTransform =
+        state.computedBaseTransform && state.computedBaseTransform !== 'none'
+          ? `${state.computedBaseTransform} `
+          : ''
+
+      surfaceEl.style.transform =
+        nextScale > 1.01
+          ? `${baseTransform}translate3d(${nextX}px, ${nextY}px, 0) scale(${nextScale})`
+          : state.baseInlineTransform
+
+      tile.setAttribute('data-eb-video-zoomed', nextScale > 1.01 ? 'true' : 'false')
+      if (state.pointers.size > 0 && nextScale > 1.01) {
+        tile.setAttribute('data-eb-video-zoom-dragging', 'true')
+      } else {
+        tile.removeAttribute('data-eb-video-zoom-dragging')
+      }
+    }
+
+    const zoomToPoint = (
+      tile: HTMLElement,
+      surfaceEl: HTMLElement,
+      state: ZoomState,
+      nextScaleRaw: number,
+      pointX: number,
+      pointY: number,
+    ) => {
+      const prevScale = Math.max(1, state.scale || 1)
+      const nextScale = clampNumber(nextScaleRaw, 1, MAX_SCALE)
+      if (nextScale <= 1.01) {
+        state.scale = 1
+        state.x = 0
+        state.y = 0
+        applyTransform(tile, surfaceEl, state)
+        return
+      }
+      const ratio = nextScale / prevScale
+      state.scale = nextScale
+      state.x = pointX - ratio * (pointX - state.x)
+      state.y = pointY - ratio * (pointY - state.y)
+      applyTransform(tile, surfaceEl, state)
+    }
+
+    const unbindTile = (tile: HTMLElement) => {
+      const cleanup = (tile as any).__ebVideoZoomCleanup as (() => void) | undefined
+      if (cleanup) cleanup()
+      delete (tile as any).__ebVideoZoomCleanup
+      delete (tile as any).__ebVideoZoomSurface
+      delete (tile as any).__ebVideoZoomState
+      tile.removeAttribute('data-eb-video-zoomable')
+      tile.removeAttribute('data-eb-video-zoomed')
+      tile.removeAttribute('data-eb-video-zoom-dragging')
+      boundTiles.delete(tile)
+    }
+
+    const bindTile = (tile: HTMLElement, surfaceEl: HTMLElement) => {
+      const currentSurface = (tile as any).__ebVideoZoomSurface as HTMLElement | undefined
+      const currentState = (tile as any).__ebVideoZoomState as ZoomState | undefined
+
+      if (currentSurface === surfaceEl && currentState) {
+        tile.setAttribute('data-eb-video-zoomable', 'true')
+        surfaceEl.setAttribute('data-eb-video-zoom-surface', 'true')
+        applyTransform(tile, surfaceEl, currentState)
+        boundTiles.add(tile)
+        return
+      }
+
+      unbindTile(tile)
+
+      const state: ZoomState = {
+        scale: 1,
+        x: 0,
+        y: 0,
+        dragPointerId: null,
+        dragStartClientX: 0,
+        dragStartClientY: 0,
+        dragOriginX: 0,
+        dragOriginY: 0,
+        lastPinchDistance: 0,
+        pointers: new Map(),
+        baseInlineTransform: surfaceEl.style.transform,
+        computedBaseTransform: window.getComputedStyle(surfaceEl).transform || 'none',
+      }
+      const gestureEl = tile
+
+      const resetSinglePointerDrag = (pointer?: PointerState) => {
+        state.dragPointerId = pointer?.id ?? null
+        state.dragStartClientX = pointer?.x ?? 0
+        state.dragStartClientY = pointer?.y ?? 0
+        state.dragOriginX = state.x
+        state.dragOriginY = state.y
+      }
+
+      const onWheel = (e: WheelEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const deltaPx =
+          e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * (window.innerHeight || 800) : e.deltaY
+        const factorRaw = Math.exp(-deltaPx * 0.00075)
+        const factor = clampNumber(factorRaw, 0.85, 1.18)
+        const point = getPointFromCurrentCenter(e.clientX, e.clientY, surfaceEl)
+        zoomToPoint(tile, surfaceEl, state, state.scale * factor, point.x, point.y)
+      }
+
+      const onPointerDown = (e: PointerEvent) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return
+        if (e.pointerType === 'mouse' && state.scale <= 1.01) return
+
+        const pointer: PointerState = { id: e.pointerId, x: e.clientX, y: e.clientY }
+        state.pointers.set(e.pointerId, pointer)
+        try {
+          gestureEl.setPointerCapture(e.pointerId)
+        } catch {
+          // ignore
+        }
+
+        if (state.pointers.size === 1) {
+          resetSinglePointerDrag(pointer)
+          return
+        }
+
+        if (state.pointers.size >= 2) {
+          const [a, b] = Array.from(state.pointers.values())
+          state.lastPinchDistance = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y))
+          tile.setAttribute('data-eb-video-zoom-dragging', 'true')
+          e.preventDefault()
+          e.stopPropagation()
+        }
+      }
+
+      const onPointerMove = (e: PointerEvent) => {
+        const pointer = state.pointers.get(e.pointerId)
+        if (!pointer) return
+        pointer.x = e.clientX
+        pointer.y = e.clientY
+
+        if (state.pointers.size >= 2) {
+          const [a, b] = Array.from(state.pointers.values())
+          const nextDistance = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y))
+          const prevDistance = Math.max(1, state.lastPinchDistance || nextDistance)
+          state.lastPinchDistance = nextDistance
+          const centerClientX = (a.x + b.x) / 2
+          const centerClientY = (a.y + b.y) / 2
+          const point = getPointFromCurrentCenter(centerClientX, centerClientY, surfaceEl)
+          const factor = nextDistance / prevDistance
+          zoomToPoint(tile, surfaceEl, state, state.scale * factor, point.x, point.y)
+          tile.setAttribute('data-eb-video-zoom-dragging', 'true')
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+
+        if (state.dragPointerId !== e.pointerId || state.scale <= 1.01) return
+
+        state.x = state.dragOriginX + (e.clientX - state.dragStartClientX)
+        state.y = state.dragOriginY + (e.clientY - state.dragStartClientY)
+        applyTransform(tile, surfaceEl, state)
+        tile.setAttribute('data-eb-video-zoom-dragging', 'true')
+        e.preventDefault()
+        e.stopPropagation()
+      }
+
+      const onPointerEnd = (e: PointerEvent) => {
+        if (!state.pointers.has(e.pointerId)) return
+        state.pointers.delete(e.pointerId)
+        try {
+          gestureEl.releasePointerCapture(e.pointerId)
+        } catch {
+          // ignore
+        }
+
+        if (state.pointers.size >= 2) {
+          const [a, b] = Array.from(state.pointers.values())
+          state.lastPinchDistance = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y))
+        } else {
+          state.lastPinchDistance = 0
+          const remaining = Array.from(state.pointers.values())[0]
+          resetSinglePointerDrag(remaining)
+        }
+
+        applyTransform(tile, surfaceEl, state)
+      }
+
+      const onClickCapture = (e: MouseEvent) => {
+        if (state.scale <= 1.01) return
+        e.preventDefault()
+        e.stopPropagation()
+      }
+
+      gestureEl.addEventListener('wheel', onWheel, { passive: false } as any)
+      gestureEl.addEventListener('pointerdown', onPointerDown)
+      gestureEl.addEventListener('pointermove', onPointerMove)
+      gestureEl.addEventListener('pointerup', onPointerEnd)
+      gestureEl.addEventListener('pointercancel', onPointerEnd)
+      gestureEl.addEventListener('click', onClickCapture, true)
+
+      const resizeObserver =
+        typeof ResizeObserver !== 'undefined'
+          ? new ResizeObserver(() => {
+              applyTransform(tile, surfaceEl, state)
+            })
+          : null
+      resizeObserver?.observe(tile)
+      if (surfaceEl !== tile) resizeObserver?.observe(surfaceEl)
+
+      const cleanup = () => {
+        resizeObserver?.disconnect()
+        gestureEl.removeEventListener('wheel', onWheel as any)
+        gestureEl.removeEventListener('pointerdown', onPointerDown as any)
+        gestureEl.removeEventListener('pointermove', onPointerMove as any)
+        gestureEl.removeEventListener('pointerup', onPointerEnd as any)
+        gestureEl.removeEventListener('pointercancel', onPointerEnd as any)
+        gestureEl.removeEventListener('click', onClickCapture as any, true)
+        surfaceEl.style.transform = state.baseInlineTransform
+        surfaceEl.removeAttribute('data-eb-video-zoom-surface')
+      }
+
+      ;(tile as any).__ebVideoZoomCleanup = cleanup
+      ;(tile as any).__ebVideoZoomSurface = surfaceEl
+      ;(tile as any).__ebVideoZoomState = state
+
+      tile.setAttribute('data-eb-video-zoomable', 'true')
+      surfaceEl.setAttribute('data-eb-video-zoom-surface', 'true')
+      applyTransform(tile, surfaceEl, state)
+      boundTiles.add(tile)
+    }
+
+    const applyDom = () => {
+      const seen = new Set<HTMLElement>()
+      const tiles = root.querySelectorAll('.call-container .lk-participant-tile') as NodeListOf<HTMLElement>
+
+      tiles.forEach((tile) => {
+        seen.add(tile)
+        const active = getActiveVideoSurface(tile)
+        if (!active) {
+          unbindTile(tile)
+          return
+        }
+        bindTile(tile, active.surfaceEl)
+      })
+
+      Array.from(boundTiles).forEach((tile) => {
+        if (!tile.isConnected || !seen.has(tile)) {
+          unbindTile(tile)
+        }
+      })
+    }
+
+    let pending = false
+    const schedule = () => {
+      if (pending) return
+      pending = true
+      requestAnimationFrame(() => {
+        pending = false
+        applyDom()
+      })
+    }
+
+    const mo = new MutationObserver(() => schedule())
+    mo.observe(root, { childList: true, subtree: true })
+    window.addEventListener('resize', schedule)
+    applyDom()
+
+    return () => {
+      mo.disconnect()
+      window.removeEventListener('resize', schedule)
+      Array.from(boundTiles).forEach((tile) => unbindTile(tile))
+    }
+  }, [enabled])
+
+  return null
+}
+
+function ParticipantTileDoubleClickFocusEnhancer({ enabled }: { enabled: boolean }) {
+  useEffect(() => {
+    if (!enabled) return
+    const root = document.body
+    if (!root) return
+
+    const boundTiles = new Set<HTMLElement>()
+
+    const unbindTile = (tile: HTMLElement) => {
+      const cleanup = (tile as any).__ebDblClickFocusCleanup as (() => void) | undefined
+      if (cleanup) cleanup()
+      delete (tile as any).__ebDblClickFocusCleanup
+      boundTiles.delete(tile)
+    }
+
+    const bindTile = (tile: HTMLElement) => {
+      if ((tile as any).__ebDblClickFocusCleanup) {
+        boundTiles.add(tile)
+        return
+      }
+
+      const onDoubleClick = (e: MouseEvent) => {
+        const target = e.target as HTMLElement | null
+        if (
+          target?.closest(
+            'button, a, input, textarea, select, label, [role="button"], .eb-vol-ring, .lk-control-bar, .lk-settings-menu-modal'
+          )
+        ) {
+          return
+        }
+
+        const focusToggle = tile.querySelector<HTMLButtonElement>('button.lk-focus-toggle-button')
+        if (!focusToggle || focusToggle.disabled) return
+
+        e.preventDefault()
+        e.stopPropagation()
+        focusToggle.click()
+      }
+
+      tile.addEventListener('dblclick', onDoubleClick)
+      ;(tile as any).__ebDblClickFocusCleanup = () => {
+        tile.removeEventListener('dblclick', onDoubleClick)
+      }
+      boundTiles.add(tile)
+    }
+
+    const applyDom = () => {
+      const seen = new Set<HTMLElement>()
+      const tiles = root.querySelectorAll('.call-container .lk-participant-tile') as NodeListOf<HTMLElement>
+      tiles.forEach((tile) => {
+        seen.add(tile)
+        bindTile(tile)
+      })
+      Array.from(boundTiles).forEach((tile) => {
+        if (!tile.isConnected || !seen.has(tile)) {
+          unbindTile(tile)
+        }
+      })
+    }
+
+    let pending = false
+    const schedule = () => {
+      if (pending) return
+      pending = true
+      requestAnimationFrame(() => {
+        pending = false
+        applyDom()
+      })
+    }
+
+    const mo = new MutationObserver(() => schedule())
+    mo.observe(root, { childList: true, subtree: true })
+    applyDom()
+
+    return () => {
+      mo.disconnect()
+      Array.from(boundTiles).forEach((tile) => unbindTile(tile))
+    }
+  }, [enabled])
+
+  return null
+}
+
 function CallSettings() {
   const room = useRoomContext()
   const { isMicrophoneEnabled, microphoneTrack } = useLocalParticipant()
@@ -2130,6 +2565,30 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
        the media ends up top-aligned. Center the flex column ONLY for tiles that currently show video. */
     .call-container .lk-participant-tile[data-eb-has-video="true"]{
       justify-content: center !important;
+    }
+    .call-container [data-eb-video-zoom-surface="true"]{
+      user-select: none;
+      -webkit-user-select: none;
+      transform-origin: center center;
+      transition: transform 120ms ease-out;
+      will-change: transform;
+    }
+    .call-container .lk-participant-tile[data-eb-video-zoomable="true"]{
+      touch-action: none;
+    }
+    .call-container .lk-participant-tile[data-eb-video-zoom-dragging="true"] [data-eb-video-zoom-surface="true"]{
+      transition: none;
+    }
+    @media (hover: hover) and (pointer: fine){
+      .call-container .lk-participant-tile[data-eb-video-zoomable="true"]{
+        cursor: zoom-in;
+      }
+      .call-container .lk-participant-tile[data-eb-video-zoomable="true"][data-eb-video-zoomed="true"]{
+        cursor: grab;
+      }
+      .call-container .lk-participant-tile[data-eb-video-zoomable="true"][data-eb-video-zoom-dragging="true"]{
+        cursor: grabbing;
+      }
     }
     /* Hide chat entry point in the control bar (we expose device selection via Settings and also via button group menus) */
     .call-container .lk-control-bar .lk-chat-toggle { display: none !important; }
@@ -3505,6 +3964,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                   <DefaultMicrophoneSetter />
                   <PingDisplayUpdater localUserId={localUserId} />
                   <ParticipantVolumeUpdater />
+                  <VideoTileZoomEnhancer enabled={!minimized} />
+                  <ParticipantTileDoubleClickFocusEnhancer enabled={!minimized} />
                   <VideoConference SettingsComponent={CallSettings} />
                 </div>
               )}
@@ -3572,6 +4033,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               <DefaultMicrophoneSetter />
               <PingDisplayUpdater localUserId={localUserId} />
               <ParticipantVolumeUpdater />
+              <VideoTileZoomEnhancer enabled={!minimized} />
+              <ParticipantTileDoubleClickFocusEnhancer enabled={!minimized} />
               <VideoConference SettingsComponent={CallSettings} />
             </div>
           </LiveKitRoom>

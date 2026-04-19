@@ -1,6 +1,7 @@
 import { type FormEvent, useMemo, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../../utils/api'
+import { normalizeLivekitServerUrl } from '../../utils/livekitUrl'
 import { useAppStore } from '../../domain/store/appStore'
 import { LiveKitRoom, VideoConference } from '@livekit/components-react'
 import '@livekit/components-styles'
@@ -15,7 +16,7 @@ export default function CallsPage() {
 
   const preferredUrl = useMemo(() => {
     const envUrl = (import.meta as any).env?.VITE_LIVEKIT_URL as string | undefined
-    return envUrl ?? serverUrl ?? 'ws://eblusha.org:7880'
+    return normalizeLivekitServerUrl(envUrl ?? serverUrl ?? 'ws://eblusha.org:7880')
   }, [serverUrl])
 
   const joinMutation = useMutation({
@@ -62,7 +63,7 @@ export default function CallsPage() {
             {joinMutation.isPending ? 'Подключаемся…' : 'Войти'}
           </button>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            Сервер: {(import.meta as any).env?.VITE_LIVEKIT_URL || serverUrl || '—'}
+            Сервер: {preferredUrl || '—'}
           </div>
         </form>
       ) : (

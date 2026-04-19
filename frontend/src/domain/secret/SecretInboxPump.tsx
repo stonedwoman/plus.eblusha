@@ -40,6 +40,13 @@ function secretDebugEnabled(): boolean {
   }
 }
 
+function isBootstrapRepairableError(err: any): boolean {
+  const status = typeof err?.response?.status === 'number' ? err.response.status : null
+  const message = String(err?.response?.data?.message ?? err?.message ?? '').toLowerCase()
+  if (status !== 400 && status !== 404) return false
+  return message.includes('device') || message.includes('bootstrap')
+}
+
 type InboxAttemptRec = { count: number; firstAt: number; lastAt: number; rootCause?: string; prekeyId?: string }
 const ATTEMPTS_KEY = 'eb_secret_inbox_attempts_v1'
 const LAST_ROOT_CAUSE_KEY = 'eb_secret_last_root_cause_v1'
@@ -147,6 +154,7 @@ export function SecretInboxPump() {
   const pullingRef = useRef(false)
   const bootstrapReadyRef = useRef<Promise<any> | null>(null)
   const lastSelfHealAtRef = useRef<number>(0)
+  const lastBootstrapRepairAtRef = useRef<number>(0)
 
   useEffect(() => {
     let mounted = true
@@ -162,20 +170,6 @@ export function SecretInboxPump() {
       })
     }
 
-    // Publish OPKs as soon as device bootstrap is ready (do NOT wait for inbox pull success).
-    // This reduces long "No prekeys available" windows when the network is flaky.
-    void (async () => {
-      try {
-        const boot = await (bootstrapReadyRef.current ?? Promise.resolve(null))
-        if (!mounted || !boot) return
-        const now = Date.now()
-        if (now - lastSelfHealAtRef.current > 5_000) {
-          await forcePublishPrekeys({ reason: 'secret_inbox_bootstrap_ready', count: 200 })
-          lastSelfHealAtRef.current = Date.now()
-        }
-      } catch {}
-    })()
-
     const pullOnce = async () => {
       if (!mounted) return
       if (pullingRef.current) return
@@ -185,16 +179,6 @@ export function SecretInboxPump() {
         const bootstrapRes = await (bootstrapReadyRef.current ?? Promise.resolve(null))
         const bootstrapReady = !!bootstrapRes
         if (!bootstrapReady) return
-
-        // Proactively publish OPKs so peers can encrypt key packages to this device.
-        // This removes multi-minute "No prekeys available" windows on fresh/idle clients.
-        try {
-          const now = Date.now()
-          if (now - lastSelfHealAtRef.current > 5_000) {
-            await forcePublishPrekeys({ reason: 'secret_inbox_pull_loop' })
-            lastSelfHealAtRef.current = Date.now()
-          }
-        } catch {}
 
         const resp = await api.get('/secret/inbox/pull', {
           params: { limit: 50 },
@@ -370,7 +354,7 @@ export function SecretInboxPump() {
             // Creator can send this signal when OPK claim fails with "No prekeys available".
             // It does not reveal anything; it only asks the peer device to publish OPKs ASAP.
             try {
-              await forcePublishPrekeys({ reason: 'prekeys_needed', count: 200, force: true })
+              await forcePublishPrekeys({ reason: 'prekeys_needed', count: 50, force: true })
               if (secretDebugEnabled()) {
                 // eslint-disable-next-line no-console
                 console.log('[SecretInboxPump] prekeys_needed: published OPKs')
@@ -515,7 +499,7 @@ export function SecretInboxPump() {
               if (now - lastSelfHealAtRef.current > 30_000) {
                 lastSelfHealAtRef.current = now
                 try {
-                  void forcePublishPrekeys({ reason: 'opk_secret_miss' }).catch(() => {})
+                  void forcePublishPrekeys({ reason: 'opk_secret_miss', count: 50, force: true }).catch(() => {})
                 } catch {}
               }
             }
@@ -609,6 +593,13 @@ export function SecretInboxPump() {
           void api.post('/secret/inbox/ack', { msgIds: ackIds }).catch(() => {})
         }
       } catch (err: any) {
+        if (isBootstrapRepairableError(err)) {
+          const now = Date.now()
+          if (now - lastBootstrapRepairAtRef.current > 60_000) {
+            lastBootstrapRepairAtRef.current = now
+            void ensureDeviceBootstrap({ forceRegister: true, skipReserveCheck: true }).catch(() => {})
+          }
+        }
         if (secretDebugEnabled()) {
           // eslint-disable-next-line no-console
           console.warn('[SecretInboxPump] pullOnce failed', {

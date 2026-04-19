@@ -88,7 +88,7 @@ export class CallHandler {
     const unsubscribeAccepted = this.socketService.onCallAccepted((payload) => {
       console.log('[CallHandler] call:accepted:', payload)
 
-      const hadIncomingHere = this.activeIncomingCalls.has(payload.conversationId)
+      const hadIncomingHere = this.hasTrackedIncomingUi(payload.conversationId)
 
       // Очищаем таймер авто-decline
       const timer = this.autoDeclineTimers.get(payload.conversationId)
@@ -97,15 +97,16 @@ export class CallHandler {
         this.autoDeclineTimers.delete(payload.conversationId)
       }
 
-      // Закрываем экран входящего звонка
-      void this.closeIncomingCallScreen(payload.conversationId)
+      // В outgoing flow у этого устройства может не быть активного incoming UI.
+      // Не шлём пустой closeIncomingCall() в native/web bridge без реальной incoming-сессии.
+      if (hadIncomingHere) {
+        void this.closeIncomingCallScreen(payload.conversationId)
+      }
 
       // Важно: если на этом устройстве этот звонок был "входящим", то call:accepted означает,
       // что звонок приняли где-то ещё (на другом устройстве этого же аккаунта).
       // В этом случае просто гасим входящий экран/уведомление и НИЧЕГО не подключаем.
       if (hadIncomingHere) {
-        this.activeIncomingCalls.delete(payload.conversationId)
-        this.callNotificationIds.delete(payload.conversationId)
         return
       }
 
@@ -117,6 +118,7 @@ export class CallHandler {
     // call:declined - звонок отклонен
     const unsubscribeDeclined = this.socketService.onCallDeclined((payload) => {
       console.log('[CallHandler] call:declined:', payload)
+      const hadIncomingHere = this.hasTrackedIncomingUi(payload.conversationId)
 
       // Очищаем таймер авто-decline
       const timer = this.autoDeclineTimers.get(payload.conversationId)
@@ -125,8 +127,9 @@ export class CallHandler {
         this.autoDeclineTimers.delete(payload.conversationId)
       }
 
-      // Закрываем экран входящего звонка
-      void this.closeIncomingCallScreen(payload.conversationId)
+      if (hadIncomingHere) {
+        void this.closeIncomingCallScreen(payload.conversationId)
+      }
 
       this.callbacks.onCallDeclined?.(payload)
     })
@@ -135,6 +138,7 @@ export class CallHandler {
     // call:ended - звонок завершен
     const unsubscribeEnded = this.socketService.onCallEnded((payload) => {
       console.log('[CallHandler] call:ended:', payload)
+      const hadIncomingHere = this.hasTrackedIncomingUi(payload.conversationId)
 
       // Очищаем таймер авто-decline
       const timer = this.autoDeclineTimers.get(payload.conversationId)
@@ -143,8 +147,9 @@ export class CallHandler {
         this.autoDeclineTimers.delete(payload.conversationId)
       }
 
-      // Закрываем экран входящего звонка
-      void this.closeIncomingCallScreen(payload.conversationId)
+      if (hadIncomingHere) {
+        void this.closeIncomingCallScreen(payload.conversationId)
+      }
 
       this.callbacks.onCallEnded?.(payload)
     })
@@ -236,6 +241,8 @@ export class CallHandler {
    * Закрыть экран входящего звонка
    */
   private async closeIncomingCallScreen(conversationId: string): Promise<void> {
+    const hadTrackedUi = this.hasTrackedIncomingUi(conversationId)
+
     // Отменяем уведомление
     const notificationId = this.callNotificationIds.get(conversationId)
     if (notificationId) {
@@ -247,7 +254,7 @@ export class CallHandler {
     this.activeIncomingCalls.delete(conversationId)
 
     // Закрываем нативный экран
-    if (Capacitor.isNativePlatform()) {
+    if (hadTrackedUi && Capacitor.isNativePlatform()) {
       try {
         await IncomingCall.closeIncomingCall()
       } catch (error) {
@@ -324,6 +331,10 @@ export class CallHandler {
    */
   requestCallStatuses(conversationIds: string[]): void {
     this.socketService.emitCallStatusRequest({ conversationIds })
+  }
+
+  private hasTrackedIncomingUi(conversationId: string): boolean {
+    return this.activeIncomingCalls.has(conversationId) || this.callNotificationIds.has(conversationId)
   }
 }
 

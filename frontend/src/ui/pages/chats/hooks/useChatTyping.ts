@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from 'react'
-import { connectSocket, socket } from '../../../../utils/socket'
+import { connectSocket, socket } from '../../../../core/realtime'
 
 /** Per-conversation typing: convId -> userId -> timestamp */
 export type TypingByConversationId = Record<string, Record<string, number>>

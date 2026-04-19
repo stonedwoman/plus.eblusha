@@ -22,10 +22,10 @@ export default function LoginPage() {
         accessToken: data.accessToken,
         refreshToken: data.refreshToken ?? undefined,
       })
-      // Force new document so iOS Safari drops autofill/passkey context
       const redirectTo = (location.state as { from?: Location })?.from?.pathname ?? '/'
-      // Small microtask delay ensures state flush in React
-      setTimeout(() => { window.location.replace(redirectTo) }, 0)
+      setTimeout(() => {
+        navigate(redirectTo, { replace: true })
+      }, 0)
     },
     onError: () => {
       setError('Неверные данные')

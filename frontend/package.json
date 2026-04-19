@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:v-landing": "rsync -a --delete public/v/ dist/v/",
     "preview": "vite preview",
     "test": "vitest run"
   },
@@ -18,7 +19,7 @@
     "@types/morgan": "^1.9.10",
     "@types/qrcode": "^1.5.6",
     "typescript": "~5.9.3",
-    "vite": "^7.1.7",
+    "vite": "^6.0.3",
     "vitest": "^4.0.18"
   },
   "dependencies": {
@@ -39,6 +40,7 @@
     "cookie-parser": "^1.4.7",
     "dompurify": "^3.3.1",
     "framer-motion": "^12.34.1",
+    "jsqr": "^1.4.0",
     "helmet": "^8.1.0",
     "livekit-client": "^2.15.13",
     "lucide-react": "^0.548.0",

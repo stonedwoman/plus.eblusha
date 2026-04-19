@@ -1,5 +1,5 @@
 import { useEffect, type Dispatch, type SetStateAction } from 'react'
-import { socket } from '../../../../utils/socket'
+import { socket } from '../../../../core/realtime'
 
 export function useChatSocketSubscriptions(opts: {
   activeId: string | null

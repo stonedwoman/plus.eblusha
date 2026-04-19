@@ -63,8 +63,8 @@ export default function SettingsPage() {
         </label>
         <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--surface-border, #e0e0e0)' }}>
           <label>
-            Имя в чате
-            <input name="displayName" defaultValue={user?.displayName ?? ''} placeholder="Как вас будут видеть" />
+Имя (как видят другие)
+          <input name="displayName" defaultValue={user?.displayName ?? ''} placeholder="Как вас будут видеть" />
           </label>
         </div>
         <button type="submit" disabled={mutation.isPending}>

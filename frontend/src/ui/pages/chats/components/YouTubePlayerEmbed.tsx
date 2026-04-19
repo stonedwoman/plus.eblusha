@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getYouTubeEmbedUrl } from '../chatsEmbeds'
+import { getYouTubeEmbedUrl, openUrlSystemBrowser } from '../chatsEmbeds'
 
 let NEXT_WIDGET_ID = 1
 function allocWidgetId(): number {
@@ -125,7 +125,7 @@ export function YouTubePlayerEmbed({ videoId, openUrl, debug }: { videoId: strin
   if (!src) {
     return (
       <div style={{ padding: 12 }}>
-        <button className="btn btn-secondary" type="button" onClick={() => window.open(openUrl, '_blank', 'noopener,noreferrer')}>
+        <button className="btn btn-secondary" type="button" onClick={() => { void openUrlSystemBrowser(openUrl) }}>
           Открыть в браузере
         </button>
       </div>
@@ -175,7 +175,7 @@ export function YouTubePlayerEmbed({ videoId, openUrl, debug }: { videoId: strin
               YouTube может требовать подтверждение/вход. Откройте видео в браузере.
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" type="button" onClick={() => window.open(openUrl, '_blank', 'noopener,noreferrer')}>
+              <button className="btn btn-primary" type="button" onClick={() => { void openUrlSystemBrowser(openUrl) }}>
                 Открыть в браузере
               </button>
             </div>

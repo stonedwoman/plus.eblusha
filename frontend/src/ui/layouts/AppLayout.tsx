@@ -7,8 +7,10 @@ import { isSecretEngineV2Enabled } from '../../domain/secretV2/featureFlag'
 import { getStoredDeviceInfo } from '../../domain/device/deviceManager'
 import { useSystemUiStore } from '../../domain/store/systemUiStore'
 import { api } from '../../utils/api'
-import { onSessionNew } from '../../utils/socket'
+import { onSessionNew } from '../../core/realtime'
 import { SystemPopups } from '../components/SystemPopups'
+import { AppRuntimeCoordinator } from './AppRuntimeCoordinator'
+import { CallHost } from './CallHost'
 
 export default function AppLayout() {
   const useV2 = isSecretEngineV2Enabled()
@@ -41,9 +43,16 @@ export default function AppLayout() {
 
   return (
     <>
+      <AppRuntimeCoordinator />
       {useV2 ? <SecretV2InboxPump /> : <SecretInboxPump />}
       <SystemPopups />
-      <main className="content" style={{ height: 'calc(var(--vh, 1vh) * 100)' }}>
+      <CallHost />
+      <main
+        className="content"
+        style={{
+          height: 'calc(var(--vh, 1vh) * 100)',
+        }}
+      >
         <Outlet />
       </main>
     </>

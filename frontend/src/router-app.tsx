@@ -2,9 +2,11 @@ import { createBrowserRouter } from 'react-router-dom'
 import { Suspense, lazy, type ReactNode } from 'react'
 import { ProtectedRoute } from './ui/components/ProtectedRoute'
 import LoadingSpinner from './ui/components/LoadingSpinner'
+import { Static404Redirect } from './ui/components/Static404Redirect'
 
 const AppLayout = lazy(() => import('./ui/layouts/AppLayout'))
 const ChatsPage = lazy(() => import('./ui/pages/ChatsPage'))
+const MobileChatsRoute = lazy(() => import('./ui/web-mobile/MobileChatsRoute').then((module) => ({ default: module.MobileChatsRoute })))
 const ContactsPage = lazy(() => import('./ui/pages/ContactsPage'))
 const CallsPage = lazy(() => import('./ui/pages/CallsPage'))
 const SettingsPage = lazy(() => import('./ui/pages/SettingsPage'))
@@ -23,9 +25,12 @@ export const appRouter = createBrowserRouter([
         element: withSuspense(<AppLayout />),
         children: [
           { index: true, element: withSuspense(<ChatsPage />) },
+          { path: 'chats', element: withSuspense(<MobileChatsRoute />) },
+          { path: 'chats/:conversationId', element: withSuspense(<MobileChatsRoute />) },
           { path: 'contacts', element: withSuspense(<ContactsPage />) },
           { path: 'calls', element: withSuspense(<CallsPage />) },
           { path: 'settings', element: withSuspense(<SettingsPage />) },
+          { path: '*', element: <Static404Redirect /> },
         ],
       },
     ],
@@ -39,9 +44,12 @@ export const appRouter = createBrowserRouter([
         element: withSuspense(<AppLayout />),
         children: [
           { index: true, element: withSuspense(<ChatsPage />) },
+          { path: 'chats', element: withSuspense(<MobileChatsRoute />) },
+          { path: 'chats/:conversationId', element: withSuspense(<MobileChatsRoute />) },
           { path: 'contacts', element: withSuspense(<ContactsPage />) },
           { path: 'calls', element: withSuspense(<CallsPage />) },
           { path: 'settings', element: withSuspense(<SettingsPage />) },
+          { path: '*', element: <Static404Redirect /> },
         ],
       },
     ],

@@ -1,3 +1,5 @@
+import { isIosBrowserRuntime } from './platform'
+
 let unlockAudioEl: HTMLAudioElement | null = null
 
 declare global {
@@ -10,6 +12,10 @@ declare global {
  * Unlock audio playback on mobile browsers (iOS WebKit) using a user gesture.
  * This must be called directly inside a click/tap/submit handler.
  */
+export function shouldShowAudioUnlockPrompt(): boolean {
+  return isIosBrowserRuntime()
+}
+
 export async function unlockAppAudio(): Promise<boolean> {
   if (typeof window === 'undefined') return false
   if ((window as any).__ebAudioUnlockedOnce) return true
