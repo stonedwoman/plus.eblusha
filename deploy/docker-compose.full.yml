@@ -123,12 +123,13 @@ services:
     restart: unless-stopped
     env_file:
       - ../.env
-    entrypoint: ["sh", "-c"]
-    command: ["cp /etc/livekit.yaml /tmp/livekit.yaml && sed -i \"s|REPLACE_SECRET|$$LIVEKIT_API_SECRET|g\" /tmp/livekit.yaml && exec /livekit-server --config /tmp/livekit.yaml"]
+    entrypoint: ["/bin/sh", "/usr/local/bin/render-livekit-config.sh"]
     volumes:
-      - ./livekit.yaml:/etc/livekit.yaml:ro
+      - ./livekit.yaml:/etc/livekit.yaml.template:ro
+      - ./render-livekit-config.sh:/usr/local/bin/render-livekit-config.sh:ro
     ports:
       - "7880:7880"
+      - "7881:7881/tcp"
       - "58000-58100:58000-58100/udp"
     depends_on:
       - backend
@@ -137,8 +138,9 @@ services:
 
   # Nginx: SPA + reverse proxy к backend + LiveKit
   # Требует предварительной сборки frontend: cd frontend && npm run build
-  # Bind mount: ../frontend/dist -> /var/www/plus.eblusha.org
-  # ../frontend/public -> overlay: те же URL что у Vite public/, без пересборки (см. nginx try_files)
+  # Bind mount: ../frontend/dist -> /var/www/plus.eblusha.org (сборка SPA)
+  # Bind mount: ../frontend/public -> /var/www/plus.eblusha.org-public — весь каталог целиком, включая любые подпапки;
+  #   новые/изменённые файлы на хосте сразу видны в контейнере (отдельный sync не нужен). Nginx: open_file_cache off в nginx-docker.conf.
   nginx:
     image: nginx:alpine
     container_name: eblusha-nginx
@@ -147,6 +149,9 @@ services:
       # Публичный вход (раньше занимал Cosmos на хосте)
       - "80:80"
       - "443:443"
+      # Админка: только loopback хоста — наружу/в туннели не выходит.
+      # Доступ: ssh -L 8088:127.0.0.1:8088 host → http://127.0.0.1:8088/admin.html
+      - "127.0.0.1:8088:8088"
     volumes:
       - ../frontend/dist:/var/www/plus.eblusha.org:ro
       - ../frontend/public:/var/www/plus.eblusha.org-public:ro
