@@ -559,6 +559,11 @@ export default function ChatsPage() {
   const userStickyScrollRef = useRef<boolean>(false)
   const lastRenderedMessagesRef = useRef(0)
   const lastScrollConvRef = useRef<string | null>(null)
+  // ID последнего (самого нового) сообщения в списке. Используем чтобы отличать
+  // «новое сообщение пришло снизу» от «подгрузилась страница старых сверху»:
+  // в первом случае хвост меняется и можно стикаться к низу, во втором — нельзя,
+  // иначе при подгрузке истории нас выкидывает в самый низ.
+  const lastTailMessageIdRef = useRef<string | null>(null)
   const batchToRead = useRef<Set<string>>(new Set())
   const batchTimer = useRef<number | null>(null)
   const scrollPinTimerRef = useRef<number | null>(null)
@@ -3915,22 +3920,33 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!activeId) {
       lastScrollConvRef.current = null
       lastRenderedMessagesRef.current = 0
+      lastTailMessageIdRef.current = null
       return
     }
     if (lastScrollConvRef.current !== activeId) {
       lastScrollConvRef.current = activeId
       lastRenderedMessagesRef.current = 0
+      lastTailMessageIdRef.current = null
     }
     const renderedCount = (displayedMessages?.length ?? 0) + activePendingMessages.length
     const prevCount = lastRenderedMessagesRef.current
+    const prevTailId = lastTailMessageIdRef.current
     lastRenderedMessagesRef.current = renderedCount
     if (!messagesRef.current) return
-    if (renderedCount === 0 || renderedCount <= prevCount) return
+    if (renderedCount === 0) return
     const fullList = [
       ...(displayedMessages || []),
       ...activePendingMessages,
     ]
     const lastMessage = fullList[fullList.length - 1]
+    const tailId = (lastMessage as any)?.id ?? (lastMessage as any)?.tempId ?? null
+    lastTailMessageIdRef.current = tailId
+    // Если хвост (самое последнее сообщение) не изменился, значит это либо ничего не
+    // поменялось, либо подгрузилась страница СТАРЫХ сверху. В обоих случаях
+    // автоскролл вниз делать нельзя — иначе при загрузке истории нас выбрасывает
+    // в самый низ беседы.
+    if (renderedCount <= prevCount && tailId === prevTailId) return
+    if (tailId === prevTailId) return
     const isMine = lastMessage?.senderId && me?.id ? lastMessage.senderId === me.id : false
     const shouldStick = isMine || !userStickyScrollRef.current || nearBottomRef.current
     if (!shouldStick) return
