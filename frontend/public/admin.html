@@ -488,15 +488,18 @@
     } catch (e) { alert("Не удалось загрузить: " + e.message); }
   }
 
-  // Boot
-  if (getToken()) {
-    api("/ping").then(showApp).catch(() => {
-      clearToken();
-      showLogin("Токен отозван — введи заново.");
-    });
-  } else {
+  // Boot. Probe /ping без токена: если ADMIN_TOKEN не задан на сервере (защита по
+  // сети — host loopback + SSH), сразу показываем панель и не мучаем оператора логином.
+  (async function boot() {
+    if (getToken()) {
+      try { await api("/ping"); showApp(); return; }
+      catch (e) {
+        if (/^4(0[13])\b/.test(e.message)) { clearToken(); showLogin("Токен отозван — введи заново."); return; }
+      }
+    }
+    try { await api("/ping"); showApp(); return; } catch (_) { /* fall through to login */ }
     showLogin("");
-  }
+  })();
 })();
 </script>
 </body>

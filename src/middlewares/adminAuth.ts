@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import crypto from "node:crypto";
 import env from "../config/env";
+import logger from "../config/logger";
 
 /**
  * Admin auth: a single shared bearer token in env (`ADMIN_TOKEN`).
@@ -9,9 +10,26 @@ import env from "../config/env";
  * full RBAC layer for one operator is overkill — a dedicated env-secret keeps
  * the surface area minimal and orthogonal to user accounts.
  *
+ * If `ADMIN_TOKEN` is unset/empty, the admin API is exposed *without* token
+ * auth. This is intentional: in the default deployment the admin server only
+ * listens on host loopback (deploy/nginx-docker.conf, listener 8088, mapped to
+ * 127.0.0.1:8088 in compose) and the backend port itself is also bound to
+ * loopback only, so reaching /api/admin requires SSH access to the host. SSH
+ * key auth replaces the token in that setup.
+ *
  * Accepts the token via either `Authorization: Bearer <token>` or
  * `X-Admin-Token: <token>`. Constant-time compare to avoid timing leaks.
  */
+let warnedNoToken = false;
+function warnNoTokenOnce(): void {
+  if (warnedNoToken) return;
+  warnedNoToken = true;
+  logger.warn(
+    "ADMIN_TOKEN is unset — /api/admin/* is open to anyone who can reach the backend. " +
+      "Make sure the backend port and the admin nginx listener are bound to host loopback only " +
+      "(see deploy/docker-compose.full.yml + deploy/nginx-docker.conf).",
+  );
+}
 function safeEqualBuffers(a: Buffer, b: Buffer): boolean {
   if (a.length !== b.length) return false;
   try {
@@ -39,7 +57,8 @@ function extractToken(req: Request): string | null {
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   const expected = env.ADMIN_TOKEN;
   if (!expected) {
-    res.status(503).json({ message: "Admin API is disabled (ADMIN_TOKEN unset)" });
+    warnNoTokenOnce();
+    next();
     return;
   }
   const got = extractToken(req);

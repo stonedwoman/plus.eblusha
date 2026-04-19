@@ -58,8 +58,11 @@ services:
     volumes:
       - /var/lib/eblusha/storage:/var/lib/eblusha/storage
       - eblusha-upload-tmp:/app/tmp/uploads
+    # Backend port: только host loopback. Снаружи backend живёт исключительно
+    # через nginx (docker-сеть → backend:4000). 127.0.0.1:4000 на хосте оставлен,
+    # чтобы локальные скрипты/curl с самого сервера могли стучаться напрямую.
     ports:
-      - "${BACKEND_PORT:-4000}:4000"
+      - "127.0.0.1:${BACKEND_PORT:-4000}:4000"
     depends_on:
       postgres:
         condition: service_healthy

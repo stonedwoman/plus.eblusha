@@ -60,9 +60,17 @@ const envSchema = z.object({
   ALLOW_DEVICE_QUERY: z.coerce.boolean().default(false),
   // Protect /api/status/metrics (Bearer token). Required in production.
   METRICS_TOKEN: z.string().min(8).optional(),
-  // Protect /api/admin/* (Bearer token). When unset, the admin API is fully disabled.
-  // Recommended: 32+ chars random, store outside repo (`.env` only).
-  ADMIN_TOKEN: z.string().min(16).optional(),
+  // Optional bearer for /api/admin/*. Empty string is treated as unset — in that
+  // mode the admin API is open without auth (see src/middlewares/adminAuth.ts;
+  // the default deployment binds backend + admin nginx to host loopback only).
+  // When set, must be >=16 chars (>=32 recommended).
+  ADMIN_TOKEN: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined))
+    .refine((v) => v === undefined || v.length >= 16, {
+      message: "ADMIN_TOKEN must be at least 16 characters or empty",
+    }),
   // Default TTL for secret messages on the server (in seconds)
   SECRET_MESSAGE_TTL_SECONDS: z.coerce.number().default(3600),
   // Debug: allow clients to ship SAFE debug logs to server (Redis, TTL/capped).
