@@ -27,6 +27,11 @@ model User {
   passwordHash      String
   status            UserStatus                  @default(OFFLINE)
   lastSeenAt        DateTime?
+  /// Set by admin to prevent login + socket connections. Reversible.
+  bannedAt          DateTime?
+  bannedReason      String?
+  /// Set by admin "delete account" — anonymized + permanently disabled. Not reversible.
+  deletedAt         DateTime?
   contactsRequested Contact[]                   @relation("ContactRequester")
   contactsReceived  Contact[]                   @relation("ContactAddressee")
   conversations     ConversationParticipant[]

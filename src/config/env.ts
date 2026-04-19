@@ -60,6 +60,9 @@ const envSchema = z.object({
   ALLOW_DEVICE_QUERY: z.coerce.boolean().default(false),
   // Protect /api/status/metrics (Bearer token). Required in production.
   METRICS_TOKEN: z.string().min(8).optional(),
+  // Protect /api/admin/* (Bearer token). When unset, the admin API is fully disabled.
+  // Recommended: 32+ chars random, store outside repo (`.env` only).
+  ADMIN_TOKEN: z.string().min(16).optional(),
   // Default TTL for secret messages on the server (in seconds)
   SECRET_MESSAGE_TTL_SECONDS: z.coerce.number().default(3600),
   // Debug: allow clients to ship SAFE debug logs to server (Redis, TTL/capped).

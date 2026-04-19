@@ -238,11 +238,23 @@ router.post(
         displayName: true,
         avatarUrl: true,
         passwordHash: true,
+        bannedAt: true,
+        bannedReason: true,
+        deletedAt: true,
       },
     });
 
     if (!user) {
       res.status(401).json({ message: "Invalid credentials" });
+      return;
+    }
+
+    if (user.deletedAt) {
+      res.status(401).json({ message: "Invalid credentials" });
+      return;
+    }
+    if (user.bannedAt) {
+      res.status(403).json({ message: "Account banned", reason: user.bannedReason ?? null });
       return;
     }
 

@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<title>Eblusha · Admin</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --border: #2a323d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --good: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f8fa;
+      --panel: #ffffff;
+      --panel-2: #f6f8fa;
+      --border: #d0d7de;
+      --text: #1f2328;
+      --muted: #57606a;
+      --accent: #0969da;
+      --good: #1a7f37;
+      --warn: #9a6700;
+      --bad: #cf222e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header .badge { background: var(--panel-2); border: 1px solid var(--border); padding: 2px 8px; border-radius: 10px; font-size: 12px; color: var(--muted); }
+  header .spacer { flex: 1; }
+  header button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  main { padding: 20px; max-width: 1280px; margin: 0 auto; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; min-width: 220px; flex: 1; }
+  .card h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  .card .v { font-size: 22px; font-weight: 600; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .toolbar { margin: 18px 0 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  input[type="search"], input[type="text"], input[type="password"] { padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+  input[type="search"] { width: 280px; }
+  button { background: var(--accent); color: white; border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; font-weight: 600; }
+  button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  button.danger { background: var(--bad); }
+  button.warn { background: var(--warn); color: #1f2328; }
+  button.good { background: var(--good); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { background: var(--panel-2); font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr:hover { background: var(--panel-2); }
+  td.actions { white-space: nowrap; }
+  td.actions button { margin-right: 4px; padding: 4px 8px; font-size: 12px; }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; }
+  .tag.banned { background: rgba(248,81,73,.15); color: var(--bad); border: 1px solid var(--bad); }
+  .tag.deleted { background: rgba(139,148,158,.2); color: var(--muted); border: 1px solid var(--muted); }
+  .tag.online { background: rgba(63,185,80,.15); color: var(--good); border: 1px solid var(--good); }
+  .tag.offline { color: var(--muted); }
+  .muted { color: var(--muted); }
+  .right { text-align: right; }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  dialog { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); padding: 0; max-width: 520px; width: 100%; }
+  dialog::backdrop { background: rgba(0,0,0,.5); }
+  dialog .dlg-head { padding: 14px 16px; border-bottom: 1px solid var(--border); font-weight: 600; }
+  dialog .dlg-body { padding: 16px; }
+  dialog .dlg-foot { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+  dialog input { width: 100%; }
+  .login { max-width: 420px; margin: 80px auto; padding: 24px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  .login h2 { margin-top: 0; }
+  .login input { width: 100%; margin: 8px 0 12px; }
+  .grow { flex: 1; }
+  .progress { height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
+  .progress > div { height: 100%; background: var(--accent); }
+  .progress > div.warn { background: var(--warn); }
+  .progress > div.bad { background: var(--bad); }
+  pre { background: var(--panel-2); border: 1px solid var(--border); padding: 10px; border-radius: 6px; overflow: auto; }
+  small.kbd { background: var(--panel-2); padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="login-view" class="login" style="display:none">
+  <h2>Eblusha admin</h2>
+  <p class="muted">Введи <code>ADMIN_TOKEN</code>. Он живёт только в твоём браузере (<small class="kbd">localStorage</small>) и отправляется в <small class="kbd">Authorization: Bearer …</small>.</p>
+  <input id="login-token" type="password" placeholder="ADMIN_TOKEN" autocomplete="off" />
+  <button id="login-btn">Войти</button>
+  <p id="login-error" class="muted" style="margin-top:10px"></p>
+</div>
+
+<div id="app-view" style="display:none">
+  <header>
+    <h1>Eblusha · admin</h1>
+    <span class="badge" id="env-badge">…</span>
+    <div class="spacer"></div>
+    <button class="secondary" id="refresh-btn" title="Обновить">↻</button>
+    <button class="secondary" id="logout-btn">Выйти</button>
+  </header>
+  <main>
+    <section class="row" id="summary-row">
+      <div class="card"><h3>Пользователи</h3><div class="v" id="m-users">…</div><div class="sub" id="m-users-sub"></div></div>
+      <div class="card"><h3>Устройства</h3><div class="v" id="m-devices">…</div><div class="sub" id="m-devices-sub"></div></div>
+      <div class="card"><h3>Загружено в БД</h3><div class="v" id="m-bytes">…</div><div class="sub" id="m-bytes-sub"></div></div>
+      <div class="card" id="disk-card" style="display:none">
+        <h3>Диск</h3>
+        <div class="v" id="m-disk">…</div>
+        <div class="sub" id="m-disk-sub"></div>
+        <div class="progress" style="margin-top:8px"><div id="m-disk-bar" style="width:0"></div></div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Поиск: username / display / email / id" />
+      <button id="search-btn">Найти</button>
+      <span class="grow"></span>
+      <span class="muted" id="users-meta"></span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Пользователь</th>
+          <th>Регистрация</th>
+          <th>Был онлайн</th>
+          <th>Последний IP / гео</th>
+          <th>Устройства</th>
+          <th>Статус</th>
+          <th class="right">Действия</th>
+        </tr>
+      </thead>
+      <tbody id="users-tbody">
+        <tr><td colspan="7" class="empty">…</td></tr>
+      </tbody>
+    </table>
+
+    <div class="toolbar">
+      <button class="secondary" id="prev-btn" disabled>← Назад</button>
+      <button class="secondary" id="next-btn" disabled>Вперёд →</button>
+      <span class="muted" id="page-meta"></span>
+    </div>
+  </main>
+</div>
+
+<dialog id="ban-dialog">
+  <div class="dlg-head">Забанить пользователя</div>
+  <div class="dlg-body">
+    <p><b id="ban-username"></b> больше не сможет войти. Все рефреш-токены и устройства будут отозваны, активные сокеты — отключены.</p>
+    <label>Причина (опционально):</label>
+    <input id="ban-reason" type="text" placeholder="например: spam" />
+  </div>
+  <div class="dlg-foot">
+    <button class="secondary" data-close>Отмена</button>
+    <button class="danger" id="ban-confirm">Забанить</button>
+  </div>
+</dialog>
+
+<dialog id="delete-dialog">
+  <div class="dlg-head">Удалить аккаунт</div>
+  <div class="dlg-body">
+    <p>Аккаунт <b id="del-username"></b> будет анонимизирован: данные профиля стираются, пароль рандомизируется, все токены/устройства отзываются. История чатов остаётся видимой для собеседников. <b>Действие необратимо.</b></p>
+    <label>Подтверди вводом username:</label>
+    <input id="del-confirm" type="text" autocomplete="off" />
+  </div>
+  <div class="dlg-foot">
+    <button class="secondary" data-close>Отмена</button>
+    <button class="danger" id="del-confirm-btn">Удалить навсегда</button>
+  </div>
+</dialog>
+
+<dialog id="user-dialog">
+  <div class="dlg-head" id="user-dlg-title">Пользователь</div>
+  <div class="dlg-body" id="user-dlg-body"></div>
+  <div class="dlg-foot">
+    <button class="secondary" data-close>Закрыть</button>
+  </div>
+</dialog>
+
+<script>
+(() => {
+  const TOKEN_KEY = "eblusha-admin-token";
+  const PAGE_SIZE = 50;
+
+  const $ = (sel) => document.querySelector(sel);
+  const fmtBytes = (n) => {
+    if (n == null || isNaN(n)) return "—";
+    const u = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let i = 0; let v = Number(n);
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(v >= 100 || i === 0 ? 0 : v >= 10 ? 1 : 2)} ${u[i]}`;
+  };
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    const now = Date.now();
+    const diff = (now - d.getTime()) / 1000;
+    const abs = (s, v) => `${Math.floor(v)}${s} назад`;
+    if (diff < 60) return "только что";
+    if (diff < 3600) return abs("м", diff / 60);
+    if (diff < 86400) return abs("ч", diff / 3600);
+    if (diff < 86400 * 14) return abs("д", diff / 86400);
+    return d.toISOString().slice(0, 16).replace("T", " ");
+  };
+  const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+  let state = { offset: 0, total: 0, search: "" };
+
+  function getToken() { return localStorage.getItem(TOKEN_KEY) || ""; }
+  function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
+  function clearToken() { localStorage.removeItem(TOKEN_KEY); }
+
+  async function api(path, opts = {}) {
+    const headers = Object.assign({}, opts.headers || {}, {
+      "Authorization": `Bearer ${getToken()}`,
+      "Accept": "application/json",
+    });
+    if (opts.body && typeof opts.body !== "string") {
+      headers["Content-Type"] = "application/json";
+      opts = { ...opts, body: JSON.stringify(opts.body) };
+    }
+    const res = await fetch(`/api/admin${path}`, { ...opts, headers, credentials: "same-origin" });
+    let data = null;
+    try { data = await res.json(); } catch {}
+    if (res.status === 401 || res.status === 403) {
+      const err = new Error((data && data.message) || `HTTP ${res.status}`);
+      err.unauth = true;
+      throw err;
+    }
+    if (!res.ok) {
+      throw new Error((data && data.message) || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  function showLogin(msg) {
+    $("#login-view").style.display = "";
+    $("#app-view").style.display = "none";
+    if (msg) $("#login-error").textContent = msg;
+    $("#login-token").focus();
+  }
+
+  function showApp() {
+    $("#login-view").style.display = "none";
+    $("#app-view").style.display = "";
+    void refresh();
+  }
+
+  $("#login-btn").addEventListener("click", async () => {
+    const v = $("#login-token").value.trim();
+    if (!v) return;
+    setToken(v);
+    try {
+      await api("/ping");
+      showApp();
+    } catch (e) {
+      clearToken();
+      showLogin(e.message || "Не удалось войти");
+    }
+  });
+  $("#login-token").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("#login-btn").click();
+  });
+
+  $("#logout-btn").addEventListener("click", () => {
+    clearToken();
+    showLogin("");
+  });
+
+  $("#refresh-btn").addEventListener("click", refresh);
+  $("#search-btn").addEventListener("click", () => {
+    state.offset = 0;
+    state.search = $("#q").value.trim();
+    void loadUsers();
+  });
+  $("#q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("#search-btn").click();
+  });
+  $("#prev-btn").addEventListener("click", () => {
+    state.offset = Math.max(0, state.offset - PAGE_SIZE);
+    void loadUsers();
+  });
+  $("#next-btn").addEventListener("click", () => {
+    state.offset = state.offset + PAGE_SIZE;
+    void loadUsers();
+  });
+
+  document.querySelectorAll("dialog [data-close]").forEach((b) => {
+    b.addEventListener("click", (e) => e.target.closest("dialog").close());
+  });
+
+  async function refresh() {
+    try {
+      const summary = await api("/summary");
+      renderSummary(summary);
+      await loadUsers();
+    } catch (e) {
+      if (e.unauth) { showLogin("Токен отозван — введи заново."); return; }
+      alert("Ошибка: " + e.message);
+    }
+  }
+
+  function renderSummary(s) {
+    $("#m-users").textContent = s.users.total;
+    $("#m-users-sub").textContent =
+      `${s.users.banned} забанено · ${s.users.deleted} удалено`;
+    $("#m-devices").textContent = s.devices.active;
+    $("#m-devices-sub").textContent = `всего ${s.devices.total}`;
+    $("#m-bytes").textContent = fmtBytes(s.storage.dbAttachmentBytes);
+    $("#m-bytes-sub").textContent = `${s.storage.dbAttachmentCount} вложений · ${s.storage.secretAttachmentCount} secret · ${s.storage.userAvatarCount} аватарок`;
+    $("#env-badge").textContent = `storage: ${s.storage.backend}`;
+
+    if (s.storage.local && (s.storage.local.diskTotalBytes || s.storage.local.diskAvailableBytes)) {
+      $("#disk-card").style.display = "";
+      const total = s.storage.local.diskTotalBytes || 0;
+      const avail = s.storage.local.diskAvailableBytes || 0;
+      const used = Math.max(0, total - (s.storage.local.diskFreeBytes ?? avail));
+      const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+      $("#m-disk").textContent = `${fmtBytes(avail)} свободно`;
+      $("#m-disk-sub").textContent = `${fmtBytes(used)} занято из ${fmtBytes(total)} (${pct}%) · ${s.storage.local.path}`;
+      const bar = $("#m-disk-bar");
+      bar.style.width = `${pct}%`;
+      bar.className = pct > 90 ? "bad" : pct > 75 ? "warn" : "";
+    } else {
+      $("#disk-card").style.display = "none";
+    }
+  }
+
+  async function loadUsers() {
+    const params = new URLSearchParams();
+    params.set("limit", String(PAGE_SIZE));
+    params.set("offset", String(state.offset));
+    if (state.search) params.set("search", state.search);
+    try {
+      const data = await api(`/users?${params.toString()}`);
+      state.total = data.total;
+      renderUsers(data.users);
+      renderPagination();
+    } catch (e) {
+      if (e.unauth) { showLogin("Токен отозван — введи заново."); return; }
+      $("#users-tbody").innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderUsers(users) {
+    if (!users.length) {
+      $("#users-tbody").innerHTML = `<tr><td colspan="7" class="empty">Никого не нашли</td></tr>`;
+      return;
+    }
+    const html = users.map((u) => {
+      const tags = [];
+      if (u.deletedAt) tags.push(`<span class="tag deleted">deleted</span>`);
+      else if (u.bannedAt) tags.push(`<span class="tag banned" title="${escapeHtml(u.bannedReason ?? '')}">banned</span>`);
+      else if (u.status === "ONLINE" || u.status === "IN_CALL") tags.push(`<span class="tag online">${u.status.toLowerCase()}</span>`);
+      else tags.push(`<span class="tag offline">${(u.status || 'offline').toLowerCase()}</span>`);
+      const geo = [u.lastCity, u.lastCountry].filter(Boolean).join(", ") || "—";
+      const ip = u.lastIp ? escapeHtml(u.lastIp) : "—";
+      const lastSeen = u.effectiveLastSeenAt;
+      const dn = u.displayName ? `<span class="muted"> · ${escapeHtml(u.displayName)}</span>` : "";
+      const banButton = u.deletedAt
+        ? ""
+        : u.bannedAt
+          ? `<button class="good" data-action="unban" data-id="${u.id}">Разбан</button>`
+          : `<button class="warn" data-action="ban" data-id="${u.id}" data-username="${escapeHtml(u.username)}">Бан</button>`;
+      const delButton = u.deletedAt
+        ? ""
+        : `<button class="danger" data-action="delete" data-id="${u.id}" data-username="${escapeHtml(u.username)}">Удалить</button>`;
+      return `<tr data-id="${u.id}">
+        <td>
+          <div><a href="#" data-action="open" data-id="${u.id}"><b>@${escapeHtml(u.username)}</b></a>${dn}</div>
+          <div class="muted" style="font-size:12px">${escapeHtml(u.email ?? "")}</div>
+        </td>
+        <td>${escapeHtml(fmtDate(u.createdAt))}<div class="muted" style="font-size:11px">${escapeHtml(u.createdAt.slice(0,10))}</div></td>
+        <td>${escapeHtml(fmtDate(lastSeen))}</td>
+        <td>${ip}<div class="muted" style="font-size:11px">${escapeHtml(geo)}</div></td>
+        <td>${u.activeDeviceCount}<span class="muted">/${u.deviceCount}</span></td>
+        <td>${tags.join(" ")}</td>
+        <td class="actions right">${banButton}${delButton}</td>
+      </tr>`;
+    }).join("");
+    $("#users-tbody").innerHTML = html;
+  }
+
+  $("#users-tbody").addEventListener("click", (e) => {
+    const a = e.target.closest("[data-action]");
+    if (!a) return;
+    e.preventDefault();
+    const action = a.getAttribute("data-action");
+    const id = a.getAttribute("data-id");
+    const username = a.getAttribute("data-username") || "";
+    if (action === "open") openUser(id);
+    else if (action === "ban") openBanDialog(id, username);
+    else if (action === "unban") void unbanUser(id);
+    else if (action === "delete") openDeleteDialog(id, username);
+  });
+
+  function renderPagination() {
+    $("#users-meta").textContent = state.total != null ? `Найдено: ${state.total}` : "";
+    $("#prev-btn").disabled = state.offset <= 0;
+    $("#next-btn").disabled = state.offset + PAGE_SIZE >= state.total;
+    $("#page-meta").textContent = `${state.offset + 1}–${Math.min(state.offset + PAGE_SIZE, state.total)}`;
+  }
+
+  function openBanDialog(id, username) {
+    $("#ban-username").textContent = "@" + username;
+    $("#ban-reason").value = "";
+    const dlg = $("#ban-dialog");
+    dlg.showModal();
+    $("#ban-confirm").onclick = async () => {
+      const reason = $("#ban-reason").value.trim();
+      try {
+        await api(`/users/${encodeURIComponent(id)}/ban`, {
+          method: "POST",
+          body: reason ? { reason } : {},
+        });
+        dlg.close();
+        void refresh();
+      } catch (e) { alert("Не удалось забанить: " + e.message); }
+    };
+  }
+
+  async function unbanUser(id) {
+    if (!confirm("Снять бан?")) return;
+    try {
+      await api(`/users/${encodeURIComponent(id)}/unban`, { method: "POST" });
+      void refresh();
+    } catch (e) { alert("Не удалось разбанить: " + e.message); }
+  }
+
+  function openDeleteDialog(id, username) {
+    $("#del-username").textContent = "@" + username;
+    $("#del-confirm").value = "";
+    const dlg = $("#delete-dialog");
+    dlg.showModal();
+    $("#del-confirm-btn").onclick = async () => {
+      const v = $("#del-confirm").value.trim();
+      if (v !== username && v !== `id:${id}`) {
+        alert(`Введи @${username} ровно как написано (или id:${id}).`);
+        return;
+      }
+      try {
+        await api(`/users/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+          body: { confirmUsername: v },
+        });
+        dlg.close();
+        void refresh();
+      } catch (e) { alert("Не удалось удалить: " + e.message); }
+    };
+  }
+
+  async function openUser(id) {
+    try {
+      const data = await api(`/users/${encodeURIComponent(id)}`);
+      const u = data.user;
+      $("#user-dlg-title").textContent = "@" + u.username;
+      const devicesHtml = u.devices.length
+        ? u.devices.map((d) => `<tr>
+            <td>${escapeHtml(d.name)}<div class="muted" style="font-size:11px">${escapeHtml(d.platform || "")}</div></td>
+            <td>${fmtDate(d.lastSeenAt)}</td>
+            <td>${escapeHtml(d.lastIp || "—")}<div class="muted" style="font-size:11px">${escapeHtml([d.lastCity, d.lastCountry].filter(Boolean).join(", ") || "")}</div></td>
+            <td>${d.revokedAt ? '<span class="tag deleted">revoked</span>' : '<span class="tag online">active</span>'}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="muted">нет устройств</td></tr>`;
+      $("#user-dlg-body").innerHTML = `
+        <p class="muted" style="margin:0 0 10px"><code>${escapeHtml(u.id)}</code></p>
+        <p>${escapeHtml(u.displayName || "")} · ${escapeHtml(u.email || "")} · ${escapeHtml(u.phone || "")}</p>
+        <p class="muted">создан ${fmtDate(u.createdAt)} · обновлён ${fmtDate(u.updatedAt)}</p>
+        ${u.bannedAt ? `<p><span class="tag banned">banned</span> ${escapeHtml(u.bannedReason || "")}</p>` : ""}
+        ${u.deletedAt ? `<p><span class="tag deleted">deleted</span> ${fmtDate(u.deletedAt)}</p>` : ""}
+        <h4 style="margin:14px 0 6px">Устройства</h4>
+        <table>
+          <thead><tr><th>Имя</th><th>Был</th><th>IP / гео</th><th>Статус</th></tr></thead>
+          <tbody>${devicesHtml}</tbody>
+        </table>
+      `;
+      $("#user-dialog").showModal();
+    } catch (e) { alert("Не удалось загрузить: " + e.message); }
+  }
+
+  // Boot
+  if (getToken()) {
+    api("/ping").then(showApp).catch(() => {
+      clearToken();
+      showLogin("Токен отозван — введи заново.");
+    });
+  } else {
+    showLogin("");
+  }
+})();
+</script>
+</body>
+</html>

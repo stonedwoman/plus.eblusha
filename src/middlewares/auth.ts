@@ -29,11 +29,26 @@ export async function authenticate(
 
     const user = await prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, username: true, displayName: true },
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        bannedAt: true,
+        bannedReason: true,
+        deletedAt: true,
+      },
     });
 
     if (!user) {
       res.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+    if (user.deletedAt) {
+      res.status(401).json({ message: "Account deleted" });
+      return;
+    }
+    if (user.bannedAt) {
+      res.status(403).json({ message: "Account banned", reason: user.bannedReason ?? null });
       return;
     }
 

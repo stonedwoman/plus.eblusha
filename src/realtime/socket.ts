@@ -672,6 +672,20 @@ export async function initSocket(
       }
 
       const payload = verifyAccessToken<{ sub: string; did?: string }>(token);
+      // Reject banned/deleted users at the gate so a stale access token can't
+      // keep them online after the admin panel revoked them.
+      try {
+        const u = await prisma.user.findUnique({
+          where: { id: payload.sub },
+          select: { bannedAt: true, deletedAt: true },
+        });
+        if (u && (u.bannedAt || u.deletedAt)) {
+          next(new Error(u.deletedAt ? "ACCOUNT_DELETED" : "ACCOUNT_BANNED"));
+          return;
+        }
+      } catch {
+        // best-effort; if Prisma fails, fall through to verifyAccessToken/connection
+      }
       socket.data.userId = payload.sub;
       const did = typeof (payload as any).did === "string" ? ((payload as any).did as string).trim() : "";
       const verifiedDeviceId = await resolveDeviceId(socket, payload.sub, did ? did : null);
@@ -1922,6 +1936,32 @@ export function kickDevice(deviceId: string, opts?: { reason?: string }) {
   }
   try {
     io.in(deviceRoom(id)).disconnectSockets(true);
+  } catch {
+    // ignore disconnect failures
+  }
+}
+
+/**
+ * Force-disconnect every socket of a user across all instances (Redis adapter
+ * propagates disconnectSockets). Used by the admin panel for ban/delete to
+ * make sure the user can't keep transmitting on a still-open socket.
+ */
+export function kickUser(userId: string, opts?: { reason?: string }) {
+  const id = String(userId || "").trim();
+  if (!id) return;
+  const io = ioInstance;
+  if (!io) return;
+  const reason = opts?.reason;
+  try {
+    io.to(userRoom(id)).emit("device:revoked", {
+      deviceId: "*",
+      ...(reason ? { reason } : {}),
+    });
+  } catch {
+    // ignore emit failures
+  }
+  try {
+    io.in(userRoom(id)).disconnectSockets(true);
   } catch {
     // ignore disconnect failures
   }
