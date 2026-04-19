@@ -5693,12 +5693,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   (() => {
                     const peerUser = othersArr[0]
                     const peerInCallByPresence = peerUser ? effectiveUserStatus(peerUser) === 'IN_CALL' : false
+                    // For 1:1 the avatar represents the PEER, so the red dot must reflect the peer's
+                    // real presence (server-authoritative IN_CALL), not our local dialing/optimistic state.
+                    // Otherwise simply opening "звонок" UI would paint the peer red while we're only ringing.
                     return (
                       <Avatar
                         name={peerUser?.displayName ?? peerUser?.username ?? 'D'}
                         id={peerUser?.id ?? c.id}
                         presence={avatarPresenceForUser(peerUser)}
-                        inCall={peerInCallByPresence || isCallActiveByState}
+                        inCall={peerInCallByPresence}
                         avatarUrl={peerUser?.avatarUrl && peerUser.avatarUrl.trim() ? peerUser.avatarUrl : undefined}
                       />
                     )
@@ -6154,7 +6157,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             id={peer?.id ?? activeConversation.id}
                             avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
                             presence={avatarPresenceForUser(peer)}
-                              inCall={effectiveUserStatus(peer) === 'IN_CALL' || !!callEntry?.active || minimizedCallConvId === activeId}
+                            // 1:1 conversation header: red dot must mean the peer is actually in a call.
+                            // Local dialing / optimistic activeCalls / minimized overlay are our own state
+                            // and must not paint the peer as IN_CALL during a failed dial-out.
+                            inCall={effectiveUserStatus(peer) === 'IN_CALL'}
                             size={60}
                           />
                         </div>
