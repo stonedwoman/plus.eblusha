@@ -7481,10 +7481,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 const decryptError = needsDecrypt && decryptState?.status === 'error'
 
                                 const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
+                                const vh = typeof window !== 'undefined' ? window.innerHeight : 800
                                 const isMobile = vw <= 768
                                 const maxScreen = isMobile
                                   ? Math.max(320, Math.floor(vw / 2))
-                                  : Math.min(600, Math.max(320, Math.floor(vw / 3)))
+                                  : Math.min(520, Math.max(320, Math.floor(vw / 3)))
+                                // Hard ceiling for image height so portrait shots never grow
+                                // unbounded with the bubble width.
+                                const heightBudget = isMobile
+                                  ? Math.min(420, Math.round(vh * 0.55))
+                                  : Math.min(520, Math.round(vh * 0.6))
 
                                 const dimKey = `${att.url || idx}`
                                 const loadedDims = imageDimensions[dimKey]
@@ -7494,12 +7500,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 const ratio = baseH / baseW || 0.75
 
                                 const maxWidth = maxScreen
-                                let maxHeight = maxScreen
+                                let maxHeight = heightBudget
                                 if (ratio < 0.5) {
                                   maxHeight = Math.max(Math.round(maxScreen * 0.6), 200)
                                 } else if (ratio < 0.7) {
                                   maxHeight = Math.max(Math.round(maxScreen * 0.75), 200)
                                 }
+                                if (maxHeight > heightBudget) maxHeight = heightBudget
 
                                 const scaleByWidth = baseW > maxWidth ? maxWidth / baseW : 1
                                 const scaleByHeight = baseH > maxHeight ? maxHeight / baseH : 1
@@ -7731,6 +7738,47 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 return Math.max(0.2, Math.min(5, Number.isFinite(r) ? r : 1))
                               }
 
+                              // Compute a maxWidth for the whole grid so that with the current
+                              // per-tile aspect-ratio layout the resulting height stays within
+                              // a sensible budget (no infinite portrait stretches).
+                              // Formulas derived from the flex weights used below for 2 / 3 / 4 layouts:
+                              //   2 tiles : H = W * (r0*r1) / (r0+r1)
+                              //   3 tiles : H = W * (r0*(r1+r2)) / (r0+r1+r2)
+                              //   4 tiles : H = W * ((r0+r2)*(r1+r3)) / (r0+r1+r2+r3)
+                              const gridVw = typeof window !== 'undefined' ? window.innerWidth : 1280
+                              const gridVh = typeof window !== 'undefined' ? window.innerHeight : 800
+                              const gridIsMobile = gridVw <= 768
+                              const gridMaxW = gridIsMobile
+                                ? Math.max(280, Math.floor(gridVw * 0.85))
+                                : Math.min(520, Math.max(320, Math.floor(gridVw / 3)))
+                              const gridMaxH = gridIsMobile
+                                ? Math.min(420, Math.round(gridVh * 0.55))
+                                : Math.min(520, Math.round(gridVh * 0.6))
+
+                              let gridHeightCoef = 0
+                              if (visible.length === 2) {
+                                const r0 = getRatio(visible[0], 0)
+                                const r1 = getRatio(visible[1], 1)
+                                const denom = r0 + r1
+                                gridHeightCoef = denom > 0 ? (r0 * r1) / denom : 0
+                              } else if (visible.length === 3) {
+                                const r0 = getRatio(visible[0], 0)
+                                const r1 = getRatio(visible[1], 1)
+                                const r2 = getRatio(visible[2], 2)
+                                const denom = r0 + r1 + r2
+                                gridHeightCoef = denom > 0 ? (r0 * (r1 + r2)) / denom : 0
+                              } else if (visible.length >= 4) {
+                                const r0 = getRatio(visible[0], 0)
+                                const r1 = getRatio(visible[1], 1)
+                                const r2 = getRatio(visible[2], 2)
+                                const r3 = getRatio(visible[3], 3)
+                                const denom = r0 + r1 + r2 + r3
+                                gridHeightCoef = denom > 0 ? ((r0 + r2) * (r1 + r3)) / denom : 0
+                              }
+                              const widthByHeightBudget =
+                                gridHeightCoef > 0 ? Math.floor(gridMaxH / gridHeightCoef) : gridMaxW
+                              const gridMaxWidth = Math.max(220, Math.min(gridMaxW, widthByHeightBudget))
+
                               const renderTile = (att: any, tileIdx: number, showMore: boolean) => {
                                 const metadata = att.metadata ?? {}
                                 const resolvedUrl = resolveAttachmentUrl(att)
@@ -7814,6 +7862,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 <div
                                   key="images-mosaic"
                                   className="msg-media-grid"
+                                  style={{ maxWidth: gridMaxWidth, width: '100%' }}
                                 >
                                   {imageOnly && (
                                     <div className="msg-media-meta">
