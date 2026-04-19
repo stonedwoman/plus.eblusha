@@ -3288,6 +3288,23 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         // Закрываем экран дозвона, если он открыт (если пользователь звонил с этого устройства)
         // (уже остановили выше)
         // Не открываем оверлей на этом устройстве - звонок принят на другом
+        // НО: фиксируем, что звонок активен и в нём участвует МОЙ аккаунт (другое устройство).
+        // Это нужно, чтобы в шапке беседы показалась кнопка «Тоже сюда» — возможность подключиться
+        // к этому же звонку с этого устройства.
+        if (me?.id) {
+          const myId = me.id
+          setActiveCalls((prev) => {
+            const current = prev[conversationId]
+            if (!current?.active) {
+              return { ...prev, [conversationId]: { startedAt: Date.now(), active: true, endedAt: null, participants: [myId] } }
+            }
+            const participants = Array.isArray(current.participants) ? current.participants : []
+            if (!participants.includes(myId)) {
+              return { ...prev, [conversationId]: { ...current, active: true, endedAt: null, participants: [...participants, myId] } }
+            }
+            return prev
+          })
+        }
         return
       }
 
@@ -3309,6 +3326,35 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             ringTimerRef.current = null
           }
           ringingConvIdRef.current = null
+        }
+        // Звонок принят на другом устройстве моего аккаунта (или это другая сторона звонка),
+        // у нас здесь намерения не было. Всё равно отметим звонок как активный — чтобы в
+        // шапке беседы появилась кнопка «Тоже сюда» (если это мой собственный звонок,
+        // активный с другого устройства) или «Подключиться» (если это групповой звонок).
+        if (me?.id) {
+          const myId = me.id
+          const acceptedByMe = by?.id === myId
+          setActiveCalls((prev) => {
+            const current = prev[conversationId]
+            if (!current?.active) {
+              return {
+                ...prev,
+                [conversationId]: {
+                  startedAt: Date.now(),
+                  active: true,
+                  endedAt: null,
+                  participants: acceptedByMe ? [myId] : (by?.id ? [by.id] : []),
+                },
+              }
+            }
+            if (acceptedByMe) {
+              const participants = Array.isArray(current.participants) ? current.participants : []
+              if (!participants.includes(myId)) {
+                return { ...prev, [conversationId]: { ...current, active: true, endedAt: null, participants: [...participants, myId] } }
+              }
+            }
+            return prev
+          })
         }
         return
       }
@@ -6755,11 +6801,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   // Если звонок активен ИЛИ минимизирован (минимизированный звонок все еще активен, просто скрыт)
                   if (isActive || isMinimized) {
                     if (!isParticipating) {
+                      // «Мой собственный звонок, активный с другого устройства» (1:1):
+                      // подписываем кнопки короче, чтобы влазило на мобилках.
+                      const isMineOnAnotherDevice = !isGroup && !!myId && (callEntry?.participants?.includes(myId) ?? false)
+                      const audioLabel = isMineOnAnotherDevice ? 'Тоже сюда' : 'Подключиться'
+                      const videoLabel = isMineOnAnotherDevice ? 'Видео сюда' : 'Подключиться с видео'
                       return (
                         <>
                           <button 
                             className="btn btn-secondary" 
-                            title={!isMobile ? 'Подключиться' : undefined}
+                            title={!isMobile ? audioLabel : undefined}
                             onClick={() => {
                               const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
                               if (isGroupCall) {
@@ -6768,20 +6819,24 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 callStore.startOutgoing(activeId!, false)
                                 try { joinCallRoom(activeId!, false) } catch {}
                               } else {
-                                // Для 1:1 звонков устанавливаем callConvId и callStore.activeConvId для показа кнопок управления
+                                // Для 1:1 звонков устанавливаем callConvId и callStore.activeConvId для показа кнопок управления.
+                                // joinCallRoom нужен, чтобы сервер зарегистрировал этот сокет в activeDirectCalls
+                                // (важно для presence IN_CALL и для подключения к уже активному 1:1 звонку
+                                // с другого устройства того же аккаунта).
                                 setCallConvId(activeId!)
                                 setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
                                 callStore.startOutgoing(activeId!, false)
+                                try { joinCallRoom(activeId!, false) } catch {}
                               }
                             }}
                             style={buttonBaseStyle}
                           >
                             <Phone size={isMobile ? 16 : 18} />
-                            {isMobile ? 'Подключиться' : (compactButtons ? null : ' Подключиться')}
+                            {isMobile ? audioLabel : (compactButtons ? null : ` ${audioLabel}`)}
                           </button>
                           <button 
                             className="btn btn-primary" 
-                            title={!isMobile ? 'Подключиться с видео' : undefined}
+                            title={!isMobile ? videoLabel : undefined}
                             onClick={() => {
                               const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
                               if (isGroupCall) {
@@ -6794,12 +6849,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 setCallConvId(activeId!)
                                 setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
                                 callStore.startOutgoing(activeId!, true)
+                                try { joinCallRoom(activeId!, true) } catch {}
                               }
                             }}
                             style={buttonBaseStyle}
                           >
                             <Video size={isMobile ? 16 : 18} />
-                            {isMobile ? 'Подключиться с видео' : (compactButtons ? null : ' Подключиться с видео')}
+                            {isMobile ? videoLabel : (compactButtons ? null : ` ${videoLabel}`)}
                           </button>
                           {canShowAvailability && !isSecretV2Chat && (
                             <AvailabilityButton onClick={handleOpenAvailability} style={menuButtonStyle} />
