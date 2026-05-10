@@ -65,6 +65,7 @@ import { joinCallRoom, requestCallStatuses, leaveCallRoom } from '../../core/rea
 import { useAppStore } from '../../domain/store/appStore'
 import { ConnectionState, LogLevel, Room, RoomEvent, setLogLevel, Track, RemoteAudioTrack } from 'livekit-client'
 import { createE2eeRoomOptions, enableE2ee, fetchE2eeKey } from '../../utils/e2ee'
+import { ScreenShareSettingsController } from './ScreenShareSettings'
 
 function readEnvBool(v: unknown): boolean {
   const raw = String(v ?? '').trim().toLowerCase()
@@ -2471,6 +2472,225 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       font-size: 14px;
       line-height: 18px;
     }
+
+    /* Screen-share quality picker (Discord-like) */
+    .eb-share-modal-backdrop{
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 2147483600;
+      animation: ebShareFadeIn 140ms ease;
+    }
+    @keyframes ebShareFadeIn{
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    .eb-share-modal{
+      width: min(560px, 100%);
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      background: var(--surface-200, #1a1a1f);
+      color: rgba(255,255,255,0.92);
+      border: 1px solid var(--surface-border, rgba(255,255,255,0.08));
+      border-radius: 16px;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+      display: flex;
+      flex-direction: column;
+      transform: translateZ(0);
+    }
+    .eb-share-modal-header{
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 18px 20px 12px 20px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .eb-share-modal-title{
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+    .eb-share-modal-subtitle{
+      font-size: 12px;
+      color: rgba(255,255,255,0.62);
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+    .eb-share-modal-close{
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      color: rgba(255,255,255,0.85);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 120ms ease, color 120ms ease;
+    }
+    .eb-share-modal-close:hover{
+      background: rgba(255,255,255,0.10);
+      color: #fff;
+    }
+    .eb-share-modal-body{
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .eb-share-section{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .eb-share-section-title{
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.6);
+      font-weight: 600;
+    }
+    .eb-share-segments{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+      gap: 8px;
+    }
+    .eb-share-segment{
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.03);
+      color: rgba(255,255,255,0.88);
+      border-radius: 12px;
+      padding: 10px 8px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      font: inherit;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+      min-height: 56px;
+    }
+    .eb-share-segment:hover{
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.18);
+    }
+    .eb-share-segment:active{
+      transform: scale(0.98);
+    }
+    .eb-share-segment.is-active{
+      background: rgba(217,119,6,0.16);
+      border-color: rgba(217,119,6,0.65);
+      color: #fff;
+      box-shadow: inset 0 0 0 1px rgba(217,119,6,0.45);
+    }
+    .eb-share-segment-label{
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .eb-share-segment-hint{
+      font-size: 11px;
+      color: rgba(255,255,255,0.55);
+    }
+    .eb-share-segment.is-active .eb-share-segment-hint{
+      color: rgba(255,255,255,0.78);
+    }
+    .eb-share-audio-row{
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(0,0,0,0.18);
+      border-radius: 12px;
+      cursor: pointer;
+    }
+    .eb-share-audio-row input[type="checkbox"]{
+      flex-shrink: 0;
+      margin-top: 3px;
+      width: 16px;
+      height: 16px;
+      accent-color: rgb(217,119,6);
+      cursor: pointer;
+    }
+    .eb-share-audio-text{
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .eb-share-audio-label{
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.92);
+    }
+    .eb-share-audio-hint{
+      font-size: 11px;
+      color: rgba(255,255,255,0.6);
+      line-height: 1.35;
+    }
+    .eb-share-summary{
+      font-size: 12px;
+      color: rgba(255,255,255,0.65);
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.04);
+      border: 1px dashed rgba(255,255,255,0.10);
+    }
+    .eb-share-modal-actions{
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 12px 20px 18px 20px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .eb-share-btn{
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 9px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+    }
+    .eb-share-btn:active{ transform: scale(0.98); }
+    .eb-share-btn-secondary{
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.10);
+      color: rgba(255,255,255,0.88);
+    }
+    .eb-share-btn-secondary:hover{
+      background: rgba(255,255,255,0.10);
+      border-color: rgba(255,255,255,0.18);
+    }
+    .eb-share-btn-primary{
+      background: rgb(217,119,6);
+      border-color: rgb(217,119,6);
+      color: #fff;
+    }
+    .eb-share-btn-primary:hover{
+      background: rgb(234,135,21);
+      border-color: rgb(234,135,21);
+    }
+
+    @media (max-width: 480px){
+      .eb-share-modal{ border-radius: 12px; }
+      .eb-share-modal-header{ padding: 14px 16px 10px 16px; }
+      .eb-share-modal-body{ padding: 12px 16px; gap: 14px; }
+      .eb-share-modal-actions{ padding: 10px 16px 14px 16px; }
+      .eb-share-segments{ grid-template-columns: repeat(3, minmax(0,1fr)); }
+    }
   `
 
   useEffect(() => {
@@ -3505,6 +3725,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                   <DefaultMicrophoneSetter />
                   <PingDisplayUpdater localUserId={localUserId} />
                   <ParticipantVolumeUpdater />
+                  <ScreenShareSettingsController enabled={!minimized} />
                   <VideoConference SettingsComponent={CallSettings} />
                 </div>
               )}
@@ -3572,6 +3793,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               <DefaultMicrophoneSetter />
               <PingDisplayUpdater localUserId={localUserId} />
               <ParticipantVolumeUpdater />
+              <ScreenShareSettingsController enabled={!minimized} />
               <VideoConference SettingsComponent={CallSettings} />
             </div>
           </LiveKitRoom>
