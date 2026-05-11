@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocalParticipant, useRoomContext } from '@livekit/components-react'
 import { X } from 'lucide-react'
+import { installScreenShareAudioGuard } from '../../utils/screenShareAudio'
+
+installScreenShareAudioGuard()
 
 // Storage keys (per-browser preferences)
 const STORAGE_KEYS = {
@@ -238,10 +241,12 @@ function ScreenShareSettingsDialog({
                 onChange={(e) => setAudio(e.target.checked)}
               />
               <span className="eb-share-audio-text">
-                <span className="eb-share-audio-label">Передавать звук вкладки</span>
+                <span className="eb-share-audio-label">Захват звука</span>
                 <span className="eb-share-audio-hint">
-                  Работает только для отдельной вкладки браузера (Chromium). В диалоге выбора окна
-                  установите флажок «Передавать звук вкладки».
+                  Передаёт звук системы / выбранного окна / вкладки. Список источников появится
+                  в системном диалоге Chrome рядом с превью окон. Голоса участников звонка
+                  автоматически вычитаются из захвата (Chrome 140+), но во избежание эха
+                  включайте только в наушниках.
                 </span>
               </span>
             </label>
