@@ -1866,95 +1866,44 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     const value = expanded ? 'true' : 'false'
     const overlayEl = overlayRef.current
     const containerEl = containerRef.current
-    overlayRef.current?.setAttribute('data-eb-window-expanded', value)
-    containerRef.current?.setAttribute('data-eb-window-expanded', value)
+    overlayEl?.setAttribute('data-eb-window-expanded', value)
+    containerEl?.setAttribute('data-eb-window-expanded', value)
 
-    const normalOverlayAlignment = isDesktop ? 'center' : undefined
-    const normalContainerWidth = minimized ? '0px' : (isDesktop ? '90vw' : '100vw')
-    const normalContainerHeight = minimized ? '0px' : (isDesktop ? '80vh' : '100vh')
-    const normalContainerMinHeight = minimized ? '0px' : (!isDesktop ? '100dvh' : undefined)
-    const normalContainerMaxWidth = minimized ? '0px' : (isDesktop ? '1200px' : '100vw')
-    const normalContainerBorderRadius = isDesktop ? '16px' : '0px'
-    const normalContainerBorder = isDesktop ? '1px solid var(--surface-border)' : 'none'
-    const normalContainerBoxShadow = minimized ? 'none' : (isDesktop ? 'var(--shadow-sharp)' : 'none')
-
-    const setImportant = (el: HTMLElement | null, property: string, nextValue?: string) => {
+    // Sizing in expanded mode is owned by CSS (selectors driven by [data-eb-window-expanded]).
+    // We deliberately do NOT pin pixel sizes here: a useCallback captured snapshot of
+    // window.innerWidth/innerHeight at click time would lock the overlay to the click-time
+    // viewport and stop tracking subsequent resize/maximize/restore. Viewport units (100vw/100dvh)
+    // and percentages re-evaluate naturally as the window changes size.
+    //
+    // We still clear any inline style residue (from older builds, or from React itself once it
+    // strips its style props) so leftover values can't fight the CSS cascade.
+    const residueProps: readonly string[] = [
+      'position', 'inset', 'top', 'right', 'bottom', 'left', 'margin',
+      'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
+      'border-radius', 'border', 'box-shadow',
+      'display', 'flex', 'flex-direction',
+      'align-items', 'justify-content',
+    ]
+    const clearResidue = (el: HTMLElement | null) => {
       if (!el) return
-      if (typeof nextValue === 'string') {
-        el.style.setProperty(property, nextValue, 'important')
-      } else {
-        el.style.removeProperty(property)
+      for (const prop of residueProps) {
+        const inlineImportant = el.style.getPropertyPriority(prop) === 'important'
+        if (inlineImportant) {
+          el.style.removeProperty(prop)
+        }
       }
     }
-
-    setImportant(overlayEl, 'align-items', expanded ? 'stretch' : normalOverlayAlignment)
-    setImportant(overlayEl, 'justify-content', expanded ? 'stretch' : normalOverlayAlignment)
-
-    setImportant(containerEl, 'position', expanded ? 'fixed' : 'relative')
-    setImportant(containerEl, 'inset', expanded ? '0' : undefined)
-    setImportant(containerEl, 'width', expanded ? '100vw' : normalContainerWidth)
-    setImportant(containerEl, 'height', expanded ? '100dvh' : normalContainerHeight)
-    setImportant(containerEl, 'min-height', expanded ? '100dvh' : normalContainerMinHeight)
-    setImportant(containerEl, 'max-width', expanded ? '100vw' : normalContainerMaxWidth)
-    setImportant(containerEl, 'max-height', expanded ? '100dvh' : undefined)
-    setImportant(containerEl, 'margin', expanded ? '0' : undefined)
-    setImportant(containerEl, 'border-radius', expanded ? '0' : normalContainerBorderRadius)
-    setImportant(containerEl, 'border', expanded ? 'none' : normalContainerBorder)
-    setImportant(containerEl, 'box-shadow', expanded ? 'none' : normalContainerBoxShadow)
-
-    const viewportWidth = typeof window !== 'undefined' ? `${window.innerWidth}px` : '100vw'
-    const viewportHeight = typeof window !== 'undefined' ? `${window.innerHeight}px` : '100vh'
-    const controlBarEl =
-      containerEl?.querySelector<HTMLElement>('.lk-control-bar, [data-lk-control-bar], [role="toolbar"]') ?? null
-    const controlBarHeight = controlBarEl?.getBoundingClientRect().height ?? 0
-    const contentHeight = typeof window !== 'undefined'
-      ? `${Math.max(0, window.innerHeight - controlBarHeight)}px`
-      : `calc(100vh - ${Math.max(0, controlBarHeight)}px)`
-
-    setImportant(containerEl, 'width', expanded ? viewportWidth : normalContainerWidth)
-    setImportant(containerEl, 'height', expanded ? viewportHeight : normalContainerHeight)
-    setImportant(containerEl, 'min-height', expanded ? viewportHeight : normalContainerMinHeight)
-    setImportant(containerEl, 'max-width', expanded ? viewportWidth : normalContainerMaxWidth)
-    setImportant(containerEl, 'max-height', expanded ? viewportHeight : undefined)
-
-    const livekitEls = containerEl?.querySelectorAll<HTMLElement>(
-      '.lk-room-container, .lk-video-conference, .lk-video-conference-inner, .lk-grid-layout-wrapper, .lk-focus-layout-wrapper, .lk-grid-layout, .lk-focus-layout, .lk-layout'
-    ) ?? []
-
-    livekitEls.forEach((el) => {
-      const isWrapper = el.matches('.lk-grid-layout-wrapper, .lk-focus-layout-wrapper')
-      const isLayout = el.matches('.lk-grid-layout, .lk-focus-layout')
-      const isConferenceInner = el.matches('.lk-video-conference-inner')
-      const isOuterRoom = el.matches('.lk-room-container, .lk-video-conference, .lk-video-conference-inner, .lk-layout')
-
-      setImportant(el, 'width', expanded ? (isOuterRoom ? viewportWidth : '100%') : undefined)
-      setImportant(el, 'min-height', expanded ? '0' : undefined)
-      setImportant(el, 'max-height', expanded && (isWrapper || isLayout) ? 'none' : undefined)
-      setImportant(
-        el,
-        'height',
-        expanded
-          ? (isWrapper || isLayout ? contentHeight : (isOuterRoom ? viewportHeight : '100%'))
-          : undefined
+    clearResidue(overlayEl)
+    clearResidue(containerEl)
+    if (containerEl) {
+      const livekitEls = containerEl.querySelectorAll<HTMLElement>(
+        '.lk-room-container, .lk-video-conference, .lk-video-conference-inner, .lk-grid-layout-wrapper, .lk-focus-layout-wrapper, .lk-grid-layout, .lk-focus-layout, .lk-layout'
       )
+      livekitEls.forEach((el) => clearResidue(el))
+    }
 
-      if (expanded && (isConferenceInner || isWrapper)) {
-        setImportant(el, 'flex', '1 1 auto')
-      } else {
-        setImportant(el, 'flex', undefined)
-      }
-
-      if (expanded && isConferenceInner) {
-        setImportant(el, 'display', 'flex')
-        setImportant(el, 'flex-direction', 'column')
-        setImportant(el, 'align-items', 'stretch')
-      } else if (isConferenceInner) {
-        setImportant(el, 'display', undefined)
-        setImportant(el, 'flex-direction', undefined)
-        setImportant(el, 'align-items', undefined)
-      }
-    })
-
+    // LiveKit recomputes its tile grid in response to `resize`; nudge it once after the attribute
+    // flip so tiles snap to the new available area without waiting for the next real resize.
     if (typeof window !== 'undefined') {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -1962,7 +1911,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         })
       })
     }
-  }, [isDesktop, minimized])
+  }, [])
 
   useEffect(() => {
     setIsWindowExpanded(false)
@@ -2028,15 +1977,30 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     .call-overlay[data-eb-window-expanded="true"] {
       align-items: stretch !important;
       justify-content: stretch !important;
+      /* Drop backdrop-filter on the overlay in expanded mode: it would otherwise create
+         a containing block for the fixed-positioned .call-container, so top/right/bottom/left
+         would resolve relative to the overlay instead of the viewport. The container fully
+         covers the overlay's background in expanded mode anyway, so this has no visual cost. */
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
     }
+    /* Expanded mode sizing is owned entirely by CSS so it tracks window resize natively.
+       --eb-app-header-offset = title bar height of the desktop shell (Electron etc.).
+       Resolution order: --app-titlebar-h (preferred future name) -> --eb-header-h
+       (legacy name the current Electron shell injects) -> env(titlebar-area-height)
+       (Window Controls Overlay) -> 0px. */
     .call-overlay[data-eb-window-expanded="true"] .call-container {
+      --eb-app-header-offset: var(--app-titlebar-h, var(--eb-header-h, env(titlebar-area-height, 0px)));
       position: fixed !important;
-      inset: 0 !important;
+      top: var(--eb-app-header-offset) !important;
+      right: 0 !important;
+      bottom: 0 !important;
+      left: 0 !important;
       width: 100vw !important;
-      height: 100dvh !important;
-      min-height: 100dvh !important;
-      max-width: 100vw !important;
-      max-height: 100dvh !important;
+      height: calc(100dvh - var(--eb-app-header-offset)) !important;
+      min-height: 0 !important;
+      max-width: none !important;
+      max-height: none !important;
       margin: 0 !important;
       border-radius: 0 !important;
       border: none !important;
