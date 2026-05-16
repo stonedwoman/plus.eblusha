@@ -116,6 +116,11 @@ const lastDeviceSeenWriteAt = new Map<string, number>();
 const ACTIVITY_TTL_SECONDS = 120;
 const PRESENCE_HEARTBEAT_MS = 27_000;
 const TYPING_TTL_SECONDS = 6;
+// Sweep cadence for catching stale ONLINE/BACKGROUND rows whose disconnect
+// handler never ran (backend crash / killed mid-flight / TCP black-hole).
+// Picked to be >= PRESENCE_TTL_SECONDS so Redis keys have had a chance to
+// expire before we declare a user truly offline.
+const PRESENCE_RECONCILE_INTERVAL_MS = 60_000;
 
 type PresenceVisibility = "visible" | "hidden";
 type PresenceSource = "web" | "electron" | "mobile";
@@ -524,6 +529,91 @@ async function persistPresenceToDb(userId: string, status: PresenceStatus) {
   }
 }
 
+/**
+ * Reconcile DB presence (user.status) against the cluster-wide Redis presence
+ * aggregate (presence_socks:<userId>). For every user whose DB status is not
+ * OFFLINE but whose Redis presence set is empty, mark them OFFLINE and emit
+ * presence:update so clients/admin panels refresh.
+ *
+ * Why this exists:
+ * - Normally, status transitions are driven by socket connect/disconnecting
+ *   handlers calling recomputePresenceFromRedis().
+ * - If a backend instance is killed (crash / OOM / SIGKILL / forced restart)
+ *   while users are online, their disconnecting handler never runs. The Redis
+ *   presence keys still expire after PRESENCE_TTL_SECONDS, but nothing
+ *   recomputes presence for those users — so user.status stays ONLINE/BACKGROUND
+ *   forever (until the user reconnects).
+ * - Same staleness can also happen on TCP black-holes or any path that bypasses
+ *   the normal disconnect lifecycle.
+ *
+ * Multi-instance safety: this only marks a user OFFLINE if Redis aggregate is
+ * empty cluster-wide. If the user is connected to another instance, their
+ * Redis set is non-empty and we leave them alone.
+ */
+async function reconcileStalePresence(io: Server): Promise<void> {
+  let candidates: Array<{ id: string; status: PresenceStatus }>;
+  try {
+    const rows = await prisma.user.findMany({
+      where: { status: { not: "OFFLINE" } },
+      select: { id: true, status: true },
+    });
+    candidates = rows.map((r) => ({ id: r.id, status: r.status as PresenceStatus }));
+  } catch (error) {
+    logger.warn({ error }, "Presence reconcile: failed to list non-offline users");
+    return;
+  }
+
+  if (candidates.length === 0) return;
+
+  const stuckUserIds: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      const counts = await readPresenceAggregateCountsRedis(candidate.id);
+      // Treat Redis read failure as "do not touch" — better to leave a stale
+      // ONLINE than to flap statuses on a transient Redis issue.
+      if (!counts) continue;
+      if (counts.onlineCount === 0) {
+        stuckUserIds.push(candidate.id);
+      }
+    } catch (error) {
+      logger.warn({ error, userId: candidate.id }, "Presence reconcile: Redis lookup failed");
+    }
+  }
+
+  if (stuckUserIds.length === 0) return;
+
+  try {
+    await prisma.user.updateMany({
+      where: { id: { in: stuckUserIds }, status: { not: "OFFLINE" } },
+      data: { status: "OFFLINE", lastSeenAt: new Date() },
+    });
+  } catch (error) {
+    logger.warn({ error, count: stuckUserIds.length }, "Presence reconcile: bulk DB update failed");
+    return;
+  }
+
+  for (const userId of stuckUserIds) {
+    // Keep in-memory throttling state coherent so subsequent connects/disconnects
+    // produce the expected DB writes and broadcasts.
+    lastObservedPresenceByUser.set(userId, "OFFLINE");
+    lastPresenceDbWriteAtByUser.set(userId, Date.now());
+    broadcastedPresenceByUser.delete(userId);
+    // Best-effort cleanup of convenience aggregate keys.
+    void deleteAggregatedPresenceRedis(userId);
+    void deleteAggregatedActivityRedis(userId);
+    try {
+      io.emit("presence:update", { userId, status: "OFFLINE" });
+    } catch (error) {
+      logger.warn({ error, userId }, "Presence reconcile: failed to emit presence:update");
+    }
+  }
+
+  logger.info(
+    { reconciled: stuckUserIds.length, scanned: candidates.length },
+    "Reconciled stale ONLINE/BACKGROUND user statuses to OFFLINE",
+  );
+}
+
 function recomputePresenceFromRedis(
   io: Server,
   userId: string,
@@ -583,6 +673,16 @@ export async function initSocket(
   await subClient.connect();
   io.adapter(createAdapter(pubClient, subClient));
   logger.info({ redisUrl: env.REDIS_URL }, "Socket.IO Redis adapter enabled");
+
+  // Recover from any stale ONLINE/BACKGROUND rows that survived the previous
+  // process (crash, OOM, forced restart, deploy). Runs in the background so it
+  // does not delay accepting connections.
+  void reconcileStalePresence(io);
+  // Periodic sweep keeps DB in sync with Redis even when disconnect handlers
+  // are bypassed at runtime.
+  setInterval(() => {
+    void reconcileStalePresence(io);
+  }, PRESENCE_RECONCILE_INTERVAL_MS).unref?.();
 
   // Bridge worker-originated message updates into Socket.IO rooms.
   const eventsSub = await createDedicatedRedisClient();
