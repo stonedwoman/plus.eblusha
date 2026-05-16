@@ -620,6 +620,8 @@ export default function ChatsPage() {
   const [groupCrop, setGroupCrop] = useState({ x: 0, y: 0, scale: 1 })
   const [groupAvatarPreviewUrl, setGroupAvatarPreviewUrl] = useState<string | null>(null)
   const [groupSelectedAvatarFile, setGroupSelectedAvatarFile] = useState<File | null>(null)
+  const [groupTitleEditValue, setGroupTitleEditValue] = useState('')
+  const [savingGroupTitle, setSavingGroupTitle] = useState(false)
   const [groupDragOver, setGroupDragOver] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
@@ -2138,6 +2140,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const activeConversation = useMemo(() => {
     return conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
   }, [conversationsQuery.data, activeId])
+
+  // Sync group title input with the active conversation when the group editor opens.
+  useEffect(() => {
+    if (groupAvatarEditor) {
+      setGroupTitleEditValue(activeConversation?.title ?? '')
+    }
+  }, [groupAvatarEditor, activeConversation?.id, activeConversation?.title])
 
   useEffect(() => {
     const isSecretV2 = Boolean(activeConversation?.id && String(activeConversation?.type ?? '').toUpperCase() === 'SECRET')
@@ -12137,14 +12146,33 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       <div className="eb-no-drag" style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setGroupAvatarEditor(false)}>
         <div style={{ background: 'var(--surface-200)', padding: 24, borderRadius: 16, width: 440, maxWidth: '90vw', border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-medium)' }} onClick={(e) => e.stopPropagation()}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Изменить аватар группы</div>
+            <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Настройки группы</div>
             <button className="btn btn-icon btn-ghost" onClick={() => setGroupAvatarEditor(false)}><X size={18} /></button>
           </div>
           <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
-            <Avatar name={activeConversation.title?.trim()?.charAt(0) || 'Г'} id={activeConversation.id} avatarUrl={groupAvatarPreviewUrl ?? activeConversation.avatarUrl ?? undefined} size={60} />
-            <div>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{activeConversation.title || 'Группа'}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Нажмите, чтобы изменить аватар</div>
+            <div onClick={() => groupFileInputRef.current?.click()} style={{ cursor: 'pointer' }} title="Нажмите, чтобы изменить аватар">
+              <Avatar name={(groupTitleEditValue || activeConversation.title)?.trim()?.charAt(0) || 'Г'} id={activeConversation.id} avatarUrl={groupAvatarPreviewUrl ?? activeConversation.avatarUrl ?? undefined} size={60} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ marginBottom: 6, color: 'var(--text-muted)', fontSize: 12, fontWeight: 500 }}>Название группы</div>
+              <input
+                type="text"
+                value={groupTitleEditValue}
+                onChange={(e) => setGroupTitleEditValue(e.target.value)}
+                placeholder="Название группы"
+                maxLength={100}
+                style={{
+                  width: '100%',
+                  padding: '8px 10px',
+                  borderRadius: 8,
+                  border: '1px solid var(--surface-border)',
+                  background: 'var(--surface-100)',
+                  color: 'var(--text-primary)',
+                  fontSize: 14,
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
             </div>
           </div>
           <input ref={groupFileInputRef} type="file" accept="image/*" onChange={(e) => {
@@ -12370,108 +12398,126 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               <canvas ref={groupCropCanvasRef} width={240} height={240} style={{ display: 'none' }} />
             </div>
           )}
-          {groupSelectedAvatarFile && (
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-              <button className="btn btn-secondary" onClick={() => { 
-                setGroupSelectedAvatarFile(null)
-                if (groupAvatarPreviewUrl) URL.revokeObjectURL(groupAvatarPreviewUrl)
-                setGroupAvatarPreviewUrl(null)
-                setGroupCrop({ x: 0, y: 0, scale: 1 })
-              }}>Отмена</button>
-              <button className="btn btn-primary" disabled={uploadingAvatar} onClick={async () => {
-                if (!groupSelectedAvatarFile || !activeConversation) return
-                setUploadingAvatar(true)
-                setUploadProgress(0)
-                try {
-                  let blobToSend: Blob | null = null
-                  if (groupCropCanvasRef.current && groupAvatarPreviewUrl) {
-                    const img = await new Promise<HTMLImageElement>((resolve) => { const i = new Image(); i.onload = () => resolve(i); i.src = groupAvatarPreviewUrl })
-                    const ctx = groupCropCanvasRef.current.getContext('2d')!
-                    if (!ctx) {
-                      throw new Error('Could not get 2d context from canvas')
-                    }
-                    const size = 240
-                    ctx.clearRect(0,0,size,size)
-                    ctx.save()
-                    ctx.beginPath(); ctx.arc(size/2, size/2, size/2, 0, Math.PI*2); ctx.closePath(); ctx.clip()
-                    const vw = groupEditorRef.current?.clientWidth ?? 320
-                    const vh = groupEditorRef.current?.clientHeight ?? 320
-                    const viewportCenter = { x: vw / 2, y: vh / 2 }
-                    const viewRect = { x: viewportCenter.x - size/2, y: viewportCenter.y - size/2, w: size, h: size }
-                    const srcX = (viewRect.x - groupCrop.x) / groupCrop.scale
-                    const srcY = (viewRect.y - groupCrop.y) / groupCrop.scale
-                    const srcW = viewRect.w / groupCrop.scale
-                    const srcH = viewRect.h / groupCrop.scale
-                    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, size, size)
-                    ctx.restore()
-                    blobToSend = await new Promise<Blob | null>((resolve) => groupCropCanvasRef.current!.toBlob((b) => resolve(b), 'image/png'))
-                  }
-                  if (!blobToSend && !groupSelectedAvatarFile) {
-                    throw new Error('No file to upload')
-                  }
-                  const form = new FormData()
-                  form.append('file', blobToSend ?? groupSelectedAvatarFile!)
-                  const url = await new Promise<string>((resolve, reject) => {
-                    const xhr = new XMLHttpRequest()
-                    xhr.open('POST', getUploadUrl())
-                    try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
-                    xhr.upload.onprogress = (e) => {
-                      const total = e.lengthComputable ? e.total : ((blobToSend ?? groupSelectedAvatarFile)?.size ?? 0)
-                      if (total > 0) setUploadProgress(Math.min(100, Math.round(100 * e.loaded / total)))
-                    }
-                    xhr.onreadystatechange = () => {
-                      if (xhr.readyState === 4) {
-                        if (xhr.status >= 200 && xhr.status < 300) {
-                          try { 
-                            const resp = JSON.parse(xhr.responseText)
-                            resolve(resp.url) 
-                          } catch (err) { 
-                            reject(err) 
-                          }
-                        } else {
-                          reject(new Error(`upload failed: ${xhr.status} ${xhr.statusText}`))
-                        }
-                      }
-                    }
-                    xhr.onerror = () => reject(new Error('Network error during upload'))
-                    xhr.send(form)
-                  })
-                  await api.patch(`/conversations/${activeConversation.id}`, { avatarUrl: url })
-                  // Обновляем данные беседы оптимистично
-                  client.setQueryData(['conversations'], (old: any) => {
-                    if (!Array.isArray(old)) return old
-                    return old.map((r: any) => {
-                      if (r.conversation?.id === activeConversation.id) {
-                        return {
-                          ...r,
-                          conversation: {
-                            ...r.conversation,
-                            avatarUrl: url
-                          }
-                        }
-                      }
-                      return r
-                    })
-                  })
-                  client.invalidateQueries({ queryKey: ['conversations'] })
-                  await conversationsQuery.refetch()
+          {(() => {
+            const trimmedTitle = groupTitleEditValue.trim()
+            const titleChanged = trimmedTitle.length > 0 && trimmedTitle !== (activeConversation.title ?? '').trim()
+            const hasChanges = !!groupSelectedAvatarFile || titleChanged
+            if (!hasChanges) return null
+            const busy = uploadingAvatar || savingGroupTitle
+            return (
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+                <button className="btn btn-secondary" disabled={busy} onClick={() => {
                   setGroupSelectedAvatarFile(null)
                   if (groupAvatarPreviewUrl) URL.revokeObjectURL(groupAvatarPreviewUrl)
                   setGroupAvatarPreviewUrl(null)
                   setGroupCrop({ x: 0, y: 0, scale: 1 })
-                  setGroupAvatarEditor(false)
-                setUploadMessage('Готово')
-                setTimeout(() => setUploadMessage(null), 2200)
-                } catch (err) {
-                  console.error('Error uploading group avatar:', err)
-                  setUploadMessage(`Ошибка: ${err instanceof Error ? err.message : 'Неизвестная ошибка'}`)
-                  setTimeout(() => setUploadMessage(null), 3000)
-                } finally {
-                  setUploadingAvatar(false)
-                }
-              }}>{uploadingAvatar ? 'Загрузка...' : 'Загрузить'}</button>
-            </div>
-          )}
+                  setGroupTitleEditValue(activeConversation.title ?? '')
+                }}>Отмена</button>
+                <button className="btn btn-primary" disabled={busy} onClick={async () => {
+                  if (!activeConversation) return
+                  setSavingGroupTitle(true)
+                  try {
+                    let uploadedAvatarUrl: string | null = null
+                    if (groupSelectedAvatarFile) {
+                      setUploadingAvatar(true)
+                      setUploadProgress(0)
+                      let blobToSend: Blob | null = null
+                      if (groupCropCanvasRef.current && groupAvatarPreviewUrl) {
+                        const img = await new Promise<HTMLImageElement>((resolve) => { const i = new Image(); i.onload = () => resolve(i); i.src = groupAvatarPreviewUrl })
+                        const ctx = groupCropCanvasRef.current.getContext('2d')!
+                        if (!ctx) {
+                          throw new Error('Could not get 2d context from canvas')
+                        }
+                        const size = 240
+                        ctx.clearRect(0,0,size,size)
+                        ctx.save()
+                        ctx.beginPath(); ctx.arc(size/2, size/2, size/2, 0, Math.PI*2); ctx.closePath(); ctx.clip()
+                        const vw = groupEditorRef.current?.clientWidth ?? 320
+                        const vh = groupEditorRef.current?.clientHeight ?? 320
+                        const viewportCenter = { x: vw / 2, y: vh / 2 }
+                        const viewRect = { x: viewportCenter.x - size/2, y: viewportCenter.y - size/2, w: size, h: size }
+                        const srcX = (viewRect.x - groupCrop.x) / groupCrop.scale
+                        const srcY = (viewRect.y - groupCrop.y) / groupCrop.scale
+                        const srcW = viewRect.w / groupCrop.scale
+                        const srcH = viewRect.h / groupCrop.scale
+                        ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, size, size)
+                        ctx.restore()
+                        blobToSend = await new Promise<Blob | null>((resolve) => groupCropCanvasRef.current!.toBlob((b) => resolve(b), 'image/png'))
+                      }
+                      if (!blobToSend && !groupSelectedAvatarFile) {
+                        throw new Error('No file to upload')
+                      }
+                      const form = new FormData()
+                      form.append('file', blobToSend ?? groupSelectedAvatarFile!)
+                      uploadedAvatarUrl = await new Promise<string>((resolve, reject) => {
+                        const xhr = new XMLHttpRequest()
+                        xhr.open('POST', getUploadUrl())
+                        try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
+                        xhr.upload.onprogress = (e) => {
+                          const total = e.lengthComputable ? e.total : ((blobToSend ?? groupSelectedAvatarFile)?.size ?? 0)
+                          if (total > 0) setUploadProgress(Math.min(100, Math.round(100 * e.loaded / total)))
+                        }
+                        xhr.onreadystatechange = () => {
+                          if (xhr.readyState === 4) {
+                            if (xhr.status >= 200 && xhr.status < 300) {
+                              try {
+                                const resp = JSON.parse(xhr.responseText)
+                                resolve(resp.url)
+                              } catch (err) {
+                                reject(err)
+                              }
+                            } else {
+                              reject(new Error(`upload failed: ${xhr.status} ${xhr.statusText}`))
+                            }
+                          }
+                        }
+                        xhr.onerror = () => reject(new Error('Network error during upload'))
+                        xhr.send(form)
+                      })
+                    }
+                    const patchPayload: { title?: string; avatarUrl?: string } = {}
+                    if (titleChanged) patchPayload.title = trimmedTitle
+                    if (uploadedAvatarUrl) patchPayload.avatarUrl = uploadedAvatarUrl
+                    if (Object.keys(patchPayload).length > 0) {
+                      await api.patch(`/conversations/${activeConversation.id}`, patchPayload)
+                    }
+                    client.setQueryData(['conversations'], (old: any) => {
+                      if (!Array.isArray(old)) return old
+                      return old.map((r: any) => {
+                        if (r.conversation?.id === activeConversation.id) {
+                          return {
+                            ...r,
+                            conversation: {
+                              ...r.conversation,
+                              ...(patchPayload.title !== undefined ? { title: patchPayload.title } : {}),
+                              ...(patchPayload.avatarUrl !== undefined ? { avatarUrl: patchPayload.avatarUrl } : {}),
+                            },
+                          }
+                        }
+                        return r
+                      })
+                    })
+                    client.invalidateQueries({ queryKey: ['conversations'] })
+                    await conversationsQuery.refetch()
+                    setGroupSelectedAvatarFile(null)
+                    if (groupAvatarPreviewUrl) URL.revokeObjectURL(groupAvatarPreviewUrl)
+                    setGroupAvatarPreviewUrl(null)
+                    setGroupCrop({ x: 0, y: 0, scale: 1 })
+                    setGroupAvatarEditor(false)
+                    setUploadMessage('Готово')
+                    setTimeout(() => setUploadMessage(null), 2200)
+                  } catch (err) {
+                    console.error('Error saving group settings:', err)
+                    setUploadMessage(`Ошибка: ${err instanceof Error ? err.message : 'Неизвестная ошибка'}`)
+                    setTimeout(() => setUploadMessage(null), 3000)
+                  } finally {
+                    setUploadingAvatar(false)
+                    setSavingGroupTitle(false)
+                  }
+                }}>{busy ? 'Сохранение...' : 'Сохранить'}</button>
+              </div>
+            )
+          })()}
           {uploadingAvatar && (
             <div style={{ height: 6, background: 'var(--surface-100)', borderRadius: 3, overflow: 'hidden', marginTop: 12 }}>
               <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'var(--brand)', transition: 'width 0.2s ease' }} />
