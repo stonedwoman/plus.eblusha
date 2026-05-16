@@ -7307,8 +7307,24 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   const avatarId = senderUser?.id ?? (isMe ? (me?.id ?? 'me') : 'user')
                   const bg = isMe ? '#303845' : hashToGray(m.senderId)
                   const fg = isMe ? '#f1f3f6' : '#f1f3f6'
-                  const showAvatar = leftAlignAll && isLastOfRun
-                  const showSpacer = leftAlignAll
+                  const isGroupConv = !!(activeConversation?.isGroup || (activeConversation?.participants?.length ?? 0) > 2)
+                  // In wide mode all rows are left-aligned and the avatar is always on the left.
+                  // In narrow mode for group chats we still want to show who sent the message,
+                  // so we render the avatar on the appropriate side of the row (left for them, right for me).
+                  const showAvatarBlock = leftAlignAll || isGroupConv
+                  const showAvatar = showAvatarBlock && isLastOfRun
+                  const avatarOnRight = !leftAlignAll && isGroupConv && isMe
+                  const avatarOnLeft = showAvatarBlock && !avatarOnRight
+                  const renderAvatarOrSpacer = () => (
+                    showAvatar ? (
+                      <Avatar name={avatarName} id={avatarId} avatarUrl={(() => {
+                        const userAvatar = usersById[m.senderId]?.avatarUrl
+                        return userAvatar && userAvatar.trim() ? userAvatar : undefined
+                      })()} />
+                    ) : (
+                      <div className="avatar-spacer" />
+                    )
+                  )
                   const createdAt = m.createdAt ? new Date(m.createdAt) : null
                   const timeLabel = createdAt ? createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
                   const editedAtRaw = (m as any)?.metadata?.editedAt
@@ -7395,14 +7411,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       const rowHandlers = isMobile ? {} : { onContextMenu, ...onLongPress }
                       return (
                         <div key={m.id} className={rowClass} {...rowHandlers}>
-                      {showSpacer && (showAvatar ? (
-                        <Avatar name={avatarName} id={avatarId} avatarUrl={(() => {
-                          const userAvatar = usersById[m.senderId]?.avatarUrl
-                          return userAvatar && userAvatar.trim() ? userAvatar : undefined
-                        })()} />
-                      ) : (
-                        <div className="avatar-spacer" />
-                      ))}
+                      {avatarOnLeft && renderAvatarOrSpacer()}
                       <div
                         className={hasAnyLink ? `${bubbleClass} has-link-preview${previewMedia ? ' has-link-preview-media' : ''}` : bubbleClass}
                         data-mid={m.id}
@@ -8235,6 +8244,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           )
                         })()}
                       </div>
+                      {avatarOnRight && renderAvatarOrSpacer()}
                     </div>
                   )
                 })
