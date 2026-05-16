@@ -748,9 +748,11 @@ router.patch("/:id", async (req, res) => {
   const isMember = conv.participants.some((p) => p.userId === userId);
   if (!isMember) return res.status(403).json({ message: "Forbidden" });
 
+  // avatarUrl is set by our upload pipeline and may be either an absolute URL
+  // (e.g. CDN) or a relative proxy path like "/api/files/...". Accept both.
   const updateSchema = z.object({
-    title: z.string().optional(),
-    avatarUrl: z.union([z.string().url(), z.null()]).optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    avatarUrl: z.union([z.string().min(1).max(2048), z.null()]).optional(),
   });
   const parsed = updateSchema.safeParse(req.body);
   if (!parsed.success) {
