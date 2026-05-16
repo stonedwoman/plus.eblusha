@@ -1,15 +1,27 @@
 #!/usr/bin/env npx ts-node
 /**
- * Remove users created by integration tests (username prefixes from test/*.integration.test.ts).
+ * Remove users created by integration tests (username prefixes from test/*.integration.test.ts)
+ * and, optionally, soft-deleted accounts whose username starts with "deleted_".
  *
- * Patterns: calls_a_, calls_b_, direct_a_, direct_b_, prekey_owner_, sec_s_, sec_r_, st_a_, st_b_
+ * Patterns covered:
+ *   - calls_a_, calls_b_
+ *   - direct_a_, direct_b_
+ *   - direct_pending_a_, direct_pending_b_
+ *   - group_call_a_, group_call_b_, group_call_c_
+ *   - prekey_owner_
+ *   - sec_s_, sec_r_
+ *   - st_a_, st_b_
+ *   - presence_obs_, presence_call_
+ *   - presence_direct_obs_, presence_direct_call_
+ *   - deleted_ (only when --include-deleted is passed)
  *
- * 1) Hard-delete conversations where every participant is a test user (and there is ≥1 participant).
- * 2) Purge each test user: messages (as sender), contacts, call rows, participants, devices, secrets, tokens.
+ * 1) Hard-delete conversations where every participant is in the matched set (and there is ≥1 participant).
+ * 2) Purge each matched user: messages (as sender), contacts, call rows, participants, devices, secrets, tokens.
  *
  * Usage:
- *   npx ts-node src/scripts/deleteIntegrationTestUsers.ts           # dry-run
- *   npx ts-node src/scripts/deleteIntegrationTestUsers.ts --delete  # execute
+ *   npx ts-node src/scripts/deleteIntegrationTestUsers.ts                       # dry-run, test users only
+ *   npx ts-node src/scripts/deleteIntegrationTestUsers.ts --delete              # execute, test users only
+ *   npx ts-node src/scripts/deleteIntegrationTestUsers.ts --include-deleted --delete  # also purge deleted_* accounts
  */
 
 import dotenv from "dotenv";
@@ -21,20 +33,31 @@ type Tx = Prisma.TransactionClient;
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: true });
 
-const PREFIXES = [
+const TEST_PREFIXES = [
   "calls_a_",
   "calls_b_",
   "direct_a_",
   "direct_b_",
+  "direct_pending_a_",
+  "direct_pending_b_",
+  "group_call_a_",
+  "group_call_b_",
+  "group_call_c_",
   "prekey_owner_",
   "sec_s_",
   "sec_r_",
   "st_a_",
   "st_b_",
+  "presence_obs_",
+  "presence_call_",
+  "presence_direct_obs_",
+  "presence_direct_call_",
 ] as const;
 
+const DELETED_PREFIX = "deleted_" as const;
+
 function isTestUsername(username: string): boolean {
-  return PREFIXES.some((p) => username.startsWith(p));
+  return TEST_PREFIXES.some((p) => username.startsWith(p));
 }
 
 async function hardDeleteConversation(tx: Tx, conversationId: string) {
@@ -143,28 +166,34 @@ async function purgeTestUser(tx: Tx, userId: string) {
 
 async function main() {
   const execute = process.argv.includes("--delete");
+  const includeDeleted = process.argv.includes("--include-deleted");
   if (!process.env.DATABASE_URL) {
     console.error("DATABASE_URL is not set (.env / .env.local).");
     process.exit(1);
   }
 
+  const orFilters: Array<{ username: { startsWith: string } }> = TEST_PREFIXES.map((p) => ({
+    username: { startsWith: p },
+  }));
+  if (includeDeleted) {
+    orFilters.push({ username: { startsWith: DELETED_PREFIX } });
+  }
+
   const prisma = new PrismaClient();
   try {
     const testUsers = await prisma.user.findMany({
-      where: {
-        OR: PREFIXES.map((p) => ({ username: { startsWith: p } })),
-      },
+      where: { OR: orFilters },
       select: { id: true, username: true },
       orderBy: { createdAt: "asc" },
     });
 
     if (testUsers.length === 0) {
-      console.log("No integration-test users found.");
+      console.log("No matching users found.");
       return;
     }
 
     const testIdSet = new Set(testUsers.map((u) => u.id));
-    console.log(`Found ${testUsers.length} test user(s):`);
+    console.log(`Found ${testUsers.length} user(s) to purge:`);
     for (const u of testUsers) console.log(`  ${u.username} (${u.id})`);
 
     if (!execute) {
@@ -205,7 +234,7 @@ async function main() {
       { timeout: 120_000 }
     );
 
-    console.log(`\nDeleted ${testUsers.length} integration-test user(s).`);
+    console.log(`\nDeleted ${testUsers.length} user(s).`);
   } finally {
     await prisma.$disconnect();
   }
