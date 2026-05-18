@@ -1,0 +1,2296 @@
+<!DOCTYPE html>
+<html lang="ru" data-w-landing="2026-05-09">
+<head>
+  <script>
+    try {
+      console.clear();
+      if (window.self !== window.top) {
+        document.documentElement.dataset.embedded = "true";
+      }
+    } catch (e) {
+      document.documentElement.dataset.embedded = "true";
+    }
+  </script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <title>Koban · Windrose</title>
+  <link rel="icon" type="image/png" href="/koban/icon.png?v=20260505" />
+  <link rel="apple-touch-icon" href="/koban/icon.png?v=20260505" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --panel: rgba(8, 18, 24, 0.78);
+      --panel-border: rgba(95, 182, 197, 0.18);
+      --text-main: #e8eef0;
+      --text-muted: #92a4ad;
+      --accent: #5fb6c5;
+      --accent-hover: #7fcfd8;
+      --accent-soft: rgba(95, 182, 197, 0.16);
+      --gold: #f4d977;
+      --online: #6ee7a8;
+      --danger: #e86868;
+      --warn: #f1a64a;
+      --radius-lg: 22px;
+      --radius-sm: 12px;
+      --ease: cubic-bezier(0.4, 0, 0.2, 1);
+      --t-fast: 180ms var(--ease);
+      --t-med: 200ms var(--ease);
+      --shadow-panel: 0 12px 48px rgba(0, 0, 0, 0.5), 0 2px 12px rgba(0, 0, 0, 0.28);
+      --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(95, 182, 197, 0.18), transparent 36rem),
+        radial-gradient(circle at 12% 22%, rgba(244, 217, 119, 0.08), transparent 30rem),
+        radial-gradient(circle at 88% 18%, rgba(95, 182, 197, 0.1), transparent 32rem),
+        linear-gradient(180deg, #0c2230 0%, #07151c 52%, #050d12 100%);
+    }
+
+    body {
+      margin: 0;
+      font-family: "Source Sans 3", system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+      color: var(--text-main);
+      background: transparent;
+      width: 100%;
+      max-width: 100%;
+      min-height: 100vh;
+      position: relative;
+      overflow-x: hidden;
+      z-index: 0;
+      /* Themed ship's-wheel cursor. The hotspot sits at the wheel hub (centre
+         of the 64x64 sprite). The image-set override gives crisp art on HiDPI
+         displays; the first declaration is the broad-compat fallback. UA
+         cursors for buttons / links / inputs still win via their own rules.
+         Sized to ~64px to roughly match /v (76x96) and /s (96x96) cursors. */
+      cursor: url("/w/cursor-helm.png?v=20260509b") 32 32, auto;
+      cursor: image-set(
+        url("/w/cursor-helm.png?v=20260509b") 1x,
+        url("/w/cursor-helm@2x.png?v=20260509b") 2x
+      ) 32 32, auto;
+    }
+
+    html[data-embedded="true"],
+    html[data-embedded="true"] body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+    html.is-map-overlay-open,
+    html.is-map-overlay-open body {
+      overflow: hidden;
+    }
+    html.is-map-overlay-open .page {
+      transform: none;
+    }
+    html[data-embedded="true"] .home-logo,
+    html.is-map-overlay-open   .home-logo { display: none; }
+
+    /* —— Background sea (WebGL canvas: TDM "Seascape" via @matikbird) —— */
+    .sea-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(95, 182, 197, 0.14), transparent 36rem),
+        linear-gradient(180deg, #0c2230 0%, #07151c 52%, #050d12 100%);
+    }
+    .sea-vignette {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 50% 38%, transparent 0 36%, rgba(5, 13, 18, 0.42) 78%, rgba(5, 13, 18, 0.78) 100%);
+      mix-blend-mode: multiply;
+    }
+
+    /* compass rose, decorative, bottom-right (rotation driven by JS, synced with sea time)
+       Container size includes the room for letters outside the ring. The ring
+       itself fills 200/232 ≈ 86% of the SVG; the multiplier 232/200 ≈ 1.16 in the
+       clamp keeps the ring at the same visual size as before the letters moved. */
+    .compass {
+      position: fixed;
+      right: clamp(0.6rem, 1.6vw, 1.4rem);
+      bottom: clamp(0.5rem, 1.4vw, 1.1rem);
+      width: clamp(8.7rem, 18.6vw, 12.8rem);
+      height: clamp(8.7rem, 18.6vw, 12.8rem);
+      z-index: 5;
+      opacity: 0.42;
+      pointer-events: none;
+      will-change: transform;
+      filter: drop-shadow(0 4px 18px rgba(0, 0, 0, 0.48));
+      overflow: visible;
+    }
+    /* No CSS transform-origin / transform-box here on purpose: the rotation
+       is applied via the SVG `transform="rotate(angle 100 100)"` attribute,
+       which uses user-space coordinates and pivots correctly around the needle
+       centre (100, 100 in viewBox). Adding `transform-box: fill-box` shifted
+       the pivot to the bbox of the rose group (which starts around x≈-2, y≈8
+       because the N/W glyphs overflow the viewBox), causing the rose to spin
+       around the upper-right corner. */
+
+    /* Tiny attribution to the original sea-shader author */
+    .attrib {
+      position: fixed;
+      left: clamp(0.55rem, 1.4vw, 1rem);
+      bottom: clamp(0.45rem, 1.2vw, 0.85rem);
+      z-index: 5;
+      margin: 0;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.6rem;
+      letter-spacing: 0.04em;
+      color: rgba(232, 238, 240, 0.38);
+      pointer-events: auto;
+      max-width: min(48vw, 26rem);
+      line-height: 1.35;
+    }
+    .attrib a {
+      color: rgba(127, 207, 216, 0.72);
+      text-decoration: none;
+    }
+    .attrib a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+    .home-logo {
+      position: fixed;
+      top: clamp(0.55rem, 1.8vw, 1rem);
+      right: clamp(0.55rem, 1.8vw, 1rem);
+      z-index: 40;
+      display: block;
+      width: clamp(14.4rem, 36vw, 25rem);
+      aspect-ratio: 900 / 353;
+      filter:
+        drop-shadow(0 12px 32px rgba(0, 0, 0, 0.55))
+        drop-shadow(0 0 18px rgba(95, 182, 197, 0.18));
+      transform: translate3d(0, 0, 0);
+      animation: homeLogoFloat 4.8s ease-in-out infinite;
+    }
+    .home-logo::after {
+      content: "POWERED BY";
+      position: absolute;
+      top: calc(100% - 0.1rem);
+      left: 0;
+      right: 0;
+      color: rgba(232, 238, 240, 0.94);
+      font: 900 clamp(0.72rem, 1.55vw, 1.08rem) "Cinzel", Georgia, serif;
+      letter-spacing: 0.26em;
+      text-align: center;
+      text-shadow:
+        0 2px 14px rgba(0, 0, 0, 0.72),
+        0 0 18px rgba(95, 182, 197, 0.22);
+    }
+    .home-logo__img {
+      position: absolute;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    /* Layer order: static (z=1) is the body+text. The "hover" overlay
+       (glasses lifted + eyes visible) sits ABOVE it (z=2) and is permanently
+       at opacity 1. The "base" overlay (glasses-down + hair) covers it (z=3)
+       and slides up on hover to reveal what's beneath — no crossfade, no
+       semi-transparent overlap. */
+    .home-logo__img--static { z-index: 1; opacity: 1; }
+    .home-logo__img--hover  { z-index: 2; opacity: 1; }
+    .home-logo__img--base {
+      z-index: 3;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+      /* Un-hover (going back to idle): fade in immediately while the layer
+         slides back down. Translucent for ~280ms at the very start, then
+         solid for the rest of the slide — feels like the glasses swing
+         back into view. */
+      transition:
+        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1),
+        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
+    }
+    .home-logo:hover .home-logo__img--base,
+    .home-logo:focus-visible .home-logo__img--base,
+    .home-logo.is-logo-peeking .home-logo__img--base {
+      opacity: 0;
+      /* -15% keeps the slid layer inside the home-logo bounds — no stray
+         hair tufts floating above the logo. */
+      transform: translate3d(0, -15%, 0);
+      /* Hover (going to active): stay fully opaque for 1100ms while sliding
+         (no crossfade!), then fade out over the last 280ms — by then the
+         layer is already mostly out of the frame, so the fade-out reads as
+         "the glasses receding away" rather than dissolving. */
+      transition:
+        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1) 1100ms,
+        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
+    }
+    .home-logo:focus-visible {
+      outline: 2px solid rgba(127, 207, 216, 0.8);
+      outline-offset: 0.25rem;
+      border-radius: 0.75rem;
+    }
+    @keyframes homeLogoFloat {
+      0%, 100% { transform: translate3d(0, 0, 0) rotate(-0.45deg); }
+      50% { transform: translate3d(0, -0.72rem, 0) rotate(0.55deg); }
+    }
+
+    /* Below this width the .page (max 1040px, centered) and the floating logo
+       (up to 25rem wide, pinned top-right) start overlapping the hero panel.
+       Drop the logo into the normal flow at the very top so it sits ABOVE the
+       hero instead of crashing into it. The logo element already comes before
+       .page in the DOM, so flipping to position: relative is enough — the
+       absolutely-positioned <img>s inside it stay anchored to it. */
+    @media (max-width: 1840px) {
+      .home-logo {
+        position: relative;
+        top: auto;
+        right: auto;
+        margin: clamp(0.55rem, 1.4vw, 1rem) auto 0;
+        width: clamp(11rem, 38vw, 19rem);
+      }
+      .home-logo::after {
+        position: static;
+        top: auto;
+        display: block;
+        margin-top: 0.4rem;
+      }
+    }
+
+    /* —— Page —— */
+    .page {
+      position: relative;
+      z-index: 10;
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: clamp(0.85rem, 2.5vw, 1.35rem) clamp(1rem, 3vw, 1.75rem) clamp(1.25rem, 3vw, 2rem);
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: clamp(0.9rem, 2.5vw, 1.35rem);
+      transform: translateZ(0);
+    }
+
+    .glass-panel {
+      background: var(--panel);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-panel), var(--shadow-inset);
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      transition:
+        border-color var(--t-med),
+        box-shadow var(--t-med),
+        transform var(--t-fast);
+    }
+    @supports not (backdrop-filter: blur(1px)) {
+      .glass-panel { background: rgba(8, 22, 28, 0.94); }
+    }
+    .glass-panel--interactive:hover {
+      border-color: rgba(95, 182, 197, 0.34);
+      box-shadow:
+        var(--shadow-panel),
+        var(--shadow-inset),
+        0 0 32px rgba(95, 182, 197, 0.08);
+    }
+
+    .hero {
+      width: 100%;
+      max-width: 100%;
+      align-self: stretch;
+      margin: 0;
+      padding: clamp(0.85rem, 2.5vw, 1.15rem) clamp(1rem, 3vw, 1.5rem);
+      text-align: center;
+      box-sizing: border-box;
+    }
+
+    .hero__kicker {
+      font-family: "Source Sans 3", sans-serif;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.32em;
+      text-transform: uppercase;
+      margin: 0 0 0.2rem;
+      transition: color var(--t-med);
+    }
+    .hero__kicker--online {
+      color: var(--online);
+      text-shadow: 0 0 24px rgba(110, 231, 168, 0.25);
+    }
+    .hero__kicker--offline {
+      color: var(--danger);
+      text-shadow: 0 0 20px rgba(232, 104, 104, 0.2);
+    }
+
+    .hero__title {
+      font-family: "Cinzel", Georgia, serif;
+      font-weight: 700;
+      font-size: clamp(1.45rem, 4.5vw, 2.1rem);
+      letter-spacing: 0.28em;
+      margin: 0 0 0.3rem;
+      color: var(--text-main);
+      text-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
+    }
+
+    .hero__world-code {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 0 auto 0.6rem;
+      max-width: 100%;
+    }
+    .hero__world {
+      font-family: "Cinzel", serif;
+      font-size: 0.875rem;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+      margin: 0 0 0.55rem;
+      opacity: 0.92;
+      display: inline-block;
+      width: max-content;
+      max-width: 100%;
+      text-align: center;
+    }
+
+    .code-block {
+      padding: 0.5rem 0.85rem;
+      border-radius: calc(var(--radius-lg) - 4px);
+      background: linear-gradient(165deg, rgba(7, 18, 24, 0.7) 0%, rgba(12, 28, 36, 0.42) 100%);
+      border: 1px solid rgba(95, 182, 197, 0.14);
+      margin: 0;
+      box-sizing: border-box;
+      width: fit-content;
+      max-width: 100%;
+      margin-left: auto;
+      margin-right: auto;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .code {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: clamp(1.65rem, 6vw, 2.5rem);
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      font-variant-numeric: tabular-nums;
+      color: var(--gold);
+      text-shadow: 0 0 32px rgba(244, 217, 119, 0.16);
+      line-height: 1.05;
+      min-height: 0;
+      text-align: center;
+    }
+    .code:not(.muted) { white-space: nowrap; word-break: normal; }
+    .code.muted {
+      color: var(--text-muted);
+      font-size: clamp(1rem, 3.2vw, 1.15rem);
+      letter-spacing: 0.03em;
+      font-weight: 500;
+      text-shadow: none;
+      white-space: normal;
+      word-break: break-word;
+    }
+
+    .hero__hint {
+      margin: 0.05rem 0 0.55rem;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+    }
+
+    .hero__actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      justify-content: center;
+      margin-bottom: 0;
+    }
+    .hero__actions button {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      padding: 0.7rem 1.5rem;
+      min-height: 2.85rem;
+    }
+
+    button {
+      font-family: "Source Sans 3", sans-serif;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: transform var(--t-fast), box-shadow var(--t-fast), background var(--t-fast), opacity var(--t-fast);
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Interactive cursor: tilted wheel + cyan glow over links and live buttons.
+       The wheel has 8-fold rotational symmetry, so the rotation is 22.5deg
+       (half-period) — a literal 45deg would land on the next handle and look
+       identical to the idle cursor. Same hotspot (32, 32) keeps the click
+       point exactly where the user expects. UA cursors stay as a fallback
+       (`pointer`) if the PNG can't load. */
+    a[href],
+    button:not(:disabled) {
+      cursor: url("/w/cursor-helm-hover.png?v=20260509b") 32 32, pointer;
+      cursor: image-set(
+        url("/w/cursor-helm-hover.png?v=20260509b") 1x,
+        url("/w/cursor-helm-hover@2x.png?v=20260509b") 2x
+      ) 32 32, pointer;
+    }
+
+    .btn-primary {
+      color: #061218;
+      background: linear-gradient(180deg, var(--accent-hover) 0%, var(--accent) 50%, #2c7884 100%);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    }
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    }
+    .btn-secondary {
+      background: rgba(95, 182, 197, 0.06);
+      color: var(--accent-hover);
+      border: 1px solid rgba(95, 182, 197, 0.28);
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: rgba(95, 182, 197, 0.12);
+      border-color: rgba(95, 182, 197, 0.42);
+    }
+
+    .toast {
+      text-align: center;
+      font-size: 0.75rem;
+      min-height: 1.15em;
+      opacity: 0;
+      transition: opacity 0.3s var(--ease);
+      margin-top: 0.4rem;
+    }
+    .toast.show { opacity: 1; }
+
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: clamp(0.75rem, 2vw, 1.1rem);
+      align-items: stretch;
+      width: 100%;
+    }
+    @media (min-width: 700px) {
+      .dashboard-grid { grid-template-columns: 1fr 1fr; }
+      .panel--world-span { grid-column: 1 / -1; }
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      padding: clamp(0.9rem, 2.2vw, 1.2rem);
+      min-height: 0;
+      height: 100%;
+    }
+    .panel .list { flex: 1 1 auto; }
+    .panel__head {
+      font-family: "Cinzel", serif;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(95, 182, 197, 0.78);
+      margin: 0 0 0.55rem;
+      padding-bottom: 0.45rem;
+      border-bottom: 1px solid rgba(95, 182, 197, 0.14);
+    }
+    .panel__head-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin: 0 0 0.55rem;
+      padding-bottom: 0.45rem;
+      border-bottom: 1px solid rgba(95, 182, 197, 0.14);
+    }
+    .panel__head-row .panel__head {
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+    .panel__head-action {
+      flex: 0 0 auto;
+      padding: 0.3rem 0.55rem;
+      border: 1px solid rgba(95, 182, 197, 0.3);
+      border-radius: 10px;
+      background: rgba(95, 182, 197, 0.06);
+      color: var(--accent-hover);
+      font: 700 0.64rem/1 "JetBrains Mono", ui-monospace, monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .panel__head-action:hover {
+      background: rgba(95, 182, 197, 0.14);
+      border-color: rgba(95, 182, 197, 0.48);
+      color: #e8eef0;
+    }
+
+    .list { list-style: none; margin: 0; padding: 0; }
+    .list li {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.85rem;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      font-size: 0.875rem;
+    }
+    .list li:last-child { border-bottom: none; }
+
+    .player-row {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      min-width: 0;
+      flex: 1;
+    }
+    .player-row__name {
+      font-weight: 600;
+      color: var(--text-main);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dot-online {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--online);
+      flex-shrink: 0;
+      box-shadow: 0 0 10px rgba(110, 231, 168, 0.45);
+      animation: pulse-online 2.4s ease-in-out infinite;
+    }
+    @keyframes pulse-online {
+      0%, 100% { opacity: 0.88; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.08); }
+    }
+
+    .meta-small {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      text-align: right;
+      flex-shrink: 0;
+      line-height: 1.35;
+    }
+    .meta-small .sub {
+      display: block;
+      font-size: 0.72rem;
+      opacity: 0.85;
+      margin-top: 0.15rem;
+    }
+
+    .empty {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin: 0;
+      font-style: italic;
+    }
+
+    /* —— World panel —— */
+    .world-info { font-size: 0.875rem; line-height: 1.4; }
+    .world-info__meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem 0.8rem;
+      margin-bottom: 0.8rem;
+    }
+    @media (max-width: 520px) { .world-info__meta { grid-template-columns: 1fr; } }
+    .world-info__kv {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.35rem;
+      min-width: 0;
+    }
+    .world-info__k {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.68rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(95, 182, 197, 0.6);
+    }
+    .world-info__v {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.8125rem;
+      color: var(--accent-hover);
+      word-break: break-all;
+    }
+    .world-info__v--gold { color: var(--gold); }
+
+    .world-info__subhead {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: rgba(95, 182, 197, 0.55);
+      margin: 0 0 0.4rem;
+    }
+    .world-info__subhead--spaced { margin-top: 0.7rem; }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin: 0 0 0.45rem;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0.4rem;
+      padding: 0.22rem 0.55rem;
+      border-radius: 999px;
+      background: rgba(7, 22, 30, 0.6);
+      border: 1px solid rgba(95, 182, 197, 0.16);
+      font-size: 0.78rem;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      color: var(--text-main);
+      line-height: 1.3;
+    }
+    .chip--neutral .chip__val { color: var(--text-muted); }
+    .chip--up .chip__val { color: var(--online); }
+    .chip--down .chip__val { color: var(--warn); }
+    .chip__lbl {
+      color: rgba(95, 182, 197, 0.72);
+      font-size: 0.66rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .chip__val { font-weight: 700; }
+
+    .world-info__stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.5rem;
+      margin: 0 0 0.45rem;
+    }
+    @media (max-width: 520px) {
+      .world-info__stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    .stat-card {
+      background: rgba(7, 22, 30, 0.55);
+      border: 1px solid rgba(95, 182, 197, 0.14);
+      border-radius: 12px;
+      padding: 0.55rem 0.7rem;
+      min-width: 0;
+    }
+    .stat-card__lbl {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(95, 182, 197, 0.62);
+    }
+    .stat-card__val {
+      font-family: "Cinzel", serif;
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--gold);
+      line-height: 1.05;
+      margin-top: 0.1rem;
+    }
+    .stat-card__sub {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 0.1rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .alert {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.55rem;
+      padding: 0.55rem 0.7rem;
+      border-radius: 12px;
+      background: rgba(241, 166, 74, 0.08);
+      border: 1px solid rgba(241, 166, 74, 0.34);
+      color: #f6cf9b;
+      font-size: 0.78rem;
+      line-height: 1.4;
+      margin: 0 0 0.6rem;
+    }
+    /* Modifier used when the upstream watcher reports a fix is available
+       (release tag bumped, or issue closed) — same shape, sea-teal/green tone. */
+    .alert--good {
+      background: rgba(110, 231, 168, 0.08);
+      border-color: rgba(110, 231, 168, 0.34);
+      color: #b9efce;
+    }
+    .alert--good a { color: #6ee7a8; }
+    .alert__icon { flex: 0 0 auto; font-size: 1rem; line-height: 1.2; }
+
+    .world-info__muted {
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 0.8125rem;
+    }
+
+    /* —— Sea Chart tile viewer —— */
+    .panel--map-span { grid-column: 1 / -1; }
+    .sea-chart {
+      position: relative;
+      overflow: hidden;
+      min-height: clamp(22rem, 58vw, 38rem);
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at 48% 42%, rgba(95, 182, 197, 0.12), transparent 34rem),
+        linear-gradient(180deg, rgba(4, 19, 28, 0.96), rgba(2, 10, 16, 0.98));
+      border: 1px solid rgba(95, 182, 197, 0.18);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 16px 40px rgba(0, 0, 0, 0.24);
+    }
+    .sea-chart__viewport {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      touch-action: none;
+      user-select: none;
+      cursor: grab;
+    }
+    .sea-chart.is-dragging .sea-chart__viewport { cursor: grabbing; }
+    .sea-chart__grid {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    .sea-chart__tile {
+      position: absolute;
+      width: 256px;
+      height: 256px;
+      image-rendering: auto;
+      user-select: none;
+      -webkit-user-drag: none;
+      filter: saturate(1.08) contrast(1.05) brightness(0.92);
+    }
+    .sea-chart__shade {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 50% 45%, transparent 0 58%, rgba(0, 0, 0, 0.28) 100%),
+        linear-gradient(180deg, rgba(95, 182, 197, 0.08), transparent 32%);
+      mix-blend-mode: multiply;
+    }
+    .sea-chart__hud {
+      position: absolute;
+      left: clamp(0.7rem, 2vw, 1rem);
+      right: clamp(0.7rem, 2vw, 1rem);
+      top: clamp(0.7rem, 2vw, 1rem);
+      z-index: 2;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.75rem;
+      pointer-events: none;
+    }
+    .sea-chart__caption {
+      padding: 0.45rem 0.65rem;
+      border-radius: 12px;
+      background: rgba(3, 13, 20, 0.76);
+      border: 1px solid rgba(95, 182, 197, 0.2);
+      color: rgba(232, 238, 240, 0.9);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      line-height: 1.45;
+      pointer-events: auto;
+      backdrop-filter: blur(10px);
+    }
+    .sea-chart__caption strong {
+      display: block;
+      color: var(--gold);
+      font-family: "Cinzel", serif;
+      font-size: 0.9rem;
+      letter-spacing: 0.14em;
+      margin-bottom: 0.05rem;
+    }
+    .sea-chart__controls {
+      display: flex;
+      gap: 0.35rem;
+      pointer-events: auto;
+    }
+    .sea-chart__btn {
+      width: 2rem;
+      height: 2rem;
+      border: 1px solid rgba(95, 182, 197, 0.32);
+      border-radius: 10px;
+      background: rgba(3, 13, 20, 0.76);
+      color: var(--accent-hover);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-weight: 800;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+    }
+    .sea-chart__btn:hover {
+      background: rgba(95, 182, 197, 0.16);
+      color: #e8eef0;
+    }
+    .sea-chart__btn--wide { width: auto; padding: 0 0.65rem; }
+    .sea-chart__empty {
+      margin: 0;
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 0.875rem;
+    }
+    .windrose-plus-webview {
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      width: 100%;
+      flex: 0 0 auto;
+      aspect-ratio: 16 / 9;
+      min-height: 0;
+      border-radius: 16px;
+      background: #122449;
+      border: 1px solid rgba(95, 182, 197, 0.18);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 16px 40px rgba(0, 0, 0, 0.24);
+    }
+    .windrose-plus-webview__frame {
+      display: block;
+      width: 100%;
+      height: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
+      border: 0;
+      background: #122449;
+    }
+    #seaChartRoot {
+      display: flex;
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+    }
+    .panel--map-span.is-map-expanded #seaChartRoot {
+      display: flex;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    .panel--map-span.is-map-expanded .windrose-plus-webview {
+      display: flex;
+      flex: 1 1 auto;
+      width: 100%;
+      aspect-ratio: auto;
+      min-height: 0;
+      height: 100%;
+    }
+    .panel--map-span.is-map-expanded .windrose-plus-webview__frame {
+      flex: 1 1 auto;
+      height: 100%;
+      min-height: 0;
+    }
+    .panel--map-span.is-map-expanded {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      width: auto;
+      height: auto;
+      max-width: none;
+      margin: 0;
+      padding: clamp(0.55rem, 1.4vw, 1rem);
+      border-radius: 0;
+      background: rgba(5, 13, 18, 0.98);
+      transform: none !important;
+    }
+    .panel--map-span.is-map-expanded .panel__head-row {
+      flex: 0 0 auto;
+    }
+
+    /* —— Animated DOM cursor (helm wheel) ——————————————————————————————
+       Native CSS cursors are an instant bitmap swap, so we can't transition
+       between idle and hover states. Instead we hide the OS cursor (only when
+       JS is active — see <html.js-helm-cursor>) and render our own helm via
+       two nested elements:
+         outer (.helm-cursor)         — JS-driven translate, NO transition,
+                                         must follow the mouse pixel-perfect.
+         inner (.helm-cursor__inner)  — rotates + glows on .is-active state,
+                                         WITH slow transition.
+       The static PNG cursor rules above stay in place as a no-JS / reduced-
+       motion fallback so the page never ends up cursor-less. */
+    html.js-helm-cursor,
+    html.js-helm-cursor body { cursor: none; }
+    /* Cover ALL buttons (incl. :disabled, which has its own cursor rule):
+       the OS cursor would otherwise render on top of our DOM helm. */
+    html.js-helm-cursor a[href],
+    html.js-helm-cursor button { cursor: none; }
+
+    .helm-cursor {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 64px;
+      height: 64px;
+      /* Offset the box so its centre is at the (translate) origin — keeps the
+         click point exactly where the mouse is, regardless of inner rotation. */
+      margin: -32px 0 0 -32px;
+      pointer-events: none;
+      z-index: 9999;
+      opacity: 0;
+      transform: translate3d(-9999px, -9999px, 0);
+      transition: opacity 220ms ease;
+      will-change: transform;
+    }
+    .helm-cursor.is-visible { opacity: 1; }
+
+    .helm-cursor__inner {
+      width: 100%;
+      height: 100%;
+      background: url("/w/cursor-helm.png?v=20260509b") center/contain no-repeat;
+      transform: rotate(0deg);
+      /* Smooth return when the cursor leaves an interactive element. The
+         .is-active rule below uses an animation (which overrides this
+         transition while the cursor is on an interactive target); this
+         transition only fires on the LEAVE half of the cycle. */
+      transition: transform 460ms cubic-bezier(0.4, 0, 0.2, 1);
+      will-change: transform;
+    }
+    .helm-cursor.is-active .helm-cursor__inner {
+      /* Multi-stop spring oscillation can't be expressed with a single
+         cubic-bezier (it only allows one overshoot). Use keyframes for the
+         yank → snap-back-past-target → aftershock → settle profile. */
+      animation: helmYank 950ms ease forwards;
+    }
+    /* Captain yanks the wheel — direction (CW or CCW) is randomised per
+       hover via the --yank-dir custom property (set to +1 or -1 by JS):
+         (implicit 0%, picks up current angle so we never jump-cut back to 0)
+         45 % : sharp pull, overshoots 20deg past the 180deg target
+         65 % : springs back, dips below the target
+         82 % : small aftershock forward
+         100% : settles at 180deg * --yank-dir. */
+    @keyframes helmYank {
+      45%  { transform: rotate(calc(200deg * var(--yank-dir, 1))); }
+      65%  { transform: rotate(calc(172deg * var(--yank-dir, 1))); }
+      82%  { transform: rotate(calc(184deg * var(--yank-dir, 1))); }
+      100% { transform: rotate(calc(180deg * var(--yank-dir, 1))); }
+    }
+    @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 2dppx) {
+      .helm-cursor__inner {
+        background-image: url("/w/cursor-helm@2x.png?v=20260509b");
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dot-online,
+      .home-logo,
+      .compass { animation: none !important; }
+      .glass-panel--interactive:hover { transform: translateZ(0); }
+      /* Skip animated cursor entirely under reduced motion — JS already bails,
+         this is just belt-and-suspenders if the class somehow gets added. */
+      html.js-helm-cursor .helm-cursor { display: none; }
+      html.js-helm-cursor,
+      html.js-helm-cursor body,
+      html.js-helm-cursor a[href],
+      html.js-helm-cursor button { cursor: auto; }
+    }
+  </style>
+</head>
+<body>
+  <canvas class="sea-canvas" id="seaCanvas" aria-hidden="true"></canvas>
+  <div class="sea-vignette" aria-hidden="true"></div>
+
+  <svg class="compass" id="compassSvg" viewBox="-16 -16 232 232" aria-hidden="true">
+    <defs>
+      <radialGradient id="compassRing" cx="50%" cy="50%" r="50%">
+        <stop offset="60%" stop-color="rgba(95,182,197,0)"/>
+        <stop offset="100%" stop-color="rgba(95,182,197,0.6)"/>
+      </radialGradient>
+    </defs>
+    <g class="compass__ring" id="compassRingG">
+      <circle cx="100" cy="100" r="92" fill="none" stroke="url(#compassRing)" stroke-width="1.5"/>
+      <circle cx="100" cy="100" r="76" fill="none" stroke="rgba(95,182,197,0.25)" stroke-width="0.8" stroke-dasharray="2 4"/>
+      <g stroke="rgba(244,217,119,0.85)" stroke-width="2" stroke-linecap="round">
+        <line x1="100" y1="14" x2="100" y2="46"/>
+        <line x1="100" y1="154" x2="100" y2="186"/>
+        <line x1="14" y1="100" x2="46" y2="100"/>
+        <line x1="154" y1="100" x2="186" y2="100"/>
+      </g>
+      <!-- Letters placed OUTSIDE the r=92 ring (which spans x∈[8,192], y∈[8,192]).
+           viewBox grew from 200 to 232 to keep them in frame; container CSS bumped
+           proportionally so the ring keeps its previous physical size. -->
+      <g fill="rgba(244,217,119,0.85)" font-family="Cinzel, serif" font-size="14" font-weight="700" text-anchor="middle">
+        <text x="100" y="2"   dominant-baseline="alphabetic">N</text>
+        <text x="100" y="198" dominant-baseline="hanging">S</text>
+        <text x="-2"  y="100" dominant-baseline="middle">W</text>
+        <text x="202" y="100" dominant-baseline="middle">E</text>
+      </g>
+    </g>
+    <g class="compass__needle" id="compassNeedleG">
+      <polygon points="100,52 108,100 100,148 92,100" fill="rgba(95,182,197,0.65)" stroke="rgba(232,238,240,0.6)" stroke-width="1"/>
+      <polygon points="100,52 108,100 100,100" fill="#f4d977"/>
+      <circle cx="100" cy="100" r="4.5" fill="rgba(232,238,240,0.85)" stroke="rgba(7,22,30,0.85)" stroke-width="1.4"/>
+    </g>
+  </svg>
+
+
+  <script id="sea-vert" type="x-shader/x-vertex">
+    attribute vec2 a_position;
+    void main() {
+      gl_Position = vec4(a_position, 0.0, 1.0);
+    }
+  </script>
+
+  <script id="sea-frag" type="x-shader/x-fragment">
+    precision highp float;
+
+    uniform float iGlobalTime;
+    uniform vec2  iResolution;
+    uniform vec4  iMouse;
+
+    const int   NUM_STEPS       = 8;
+    const float PI              = 3.1415;
+    const float EPSILON         = 1e-3;
+    #define EPSILON_NRM (0.1 / iResolution.x)
+
+    const int   ITER_GEOMETRY   = 3;
+    const int   ITER_FRAGMENT   = 5;
+    const float SEA_HEIGHT      = 0.6;
+    const float SEA_CHOPPY      = 4.0;
+    const float SEA_SPEED       = 0.8;
+    const float SEA_FREQ        = 0.16;
+    const vec3  SEA_BASE        = vec3(0.1, 0.19, 0.22);
+    const vec3  SEA_WATER_COLOR = vec3(0.8, 0.9, 0.6);
+    #define SEA_TIME (1.0 + iGlobalTime * SEA_SPEED)
+    mat2 octave_m = mat2(1.6, 1.2, -1.2, 1.6);
+
+    mat3 fromEuler(vec3 ang) {
+      vec2 a1 = vec2(sin(ang.x), cos(ang.x));
+      vec2 a2 = vec2(sin(ang.y), cos(ang.y));
+      vec2 a3 = vec2(sin(ang.z), cos(ang.z));
+      mat3 m;
+      m[0] = vec3(a1.y * a3.y + a1.x * a2.x * a3.x,  a1.y * a2.x * a3.x + a3.y * a1.x, -a2.y * a3.x);
+      m[1] = vec3(-a2.y * a1.x,                      a1.y * a2.y,                       a2.x);
+      m[2] = vec3(a3.y * a1.x * a2.x + a1.y * a3.x,  a1.x * a3.x - a1.y * a3.y * a2.x,  a2.y * a3.y);
+      return m;
+    }
+
+    float hash(vec2 p) {
+      float h = dot(p, vec2(127.1, 311.7));
+      return fract(sin(h) * 43758.5453123);
+    }
+
+    float noise(in vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return -1.0 + 2.0 * mix(
+        mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+        mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+        u.y);
+    }
+
+    float diffuse(vec3 n, vec3 l, float p) {
+      return pow(dot(n, l) * 0.4 + 0.6, p);
+    }
+
+    float specular(vec3 n, vec3 l, vec3 e, float s) {
+      float nrm = (s + 8.0) / (PI * 8.0);
+      return pow(max(dot(reflect(e, n), l), 0.0), s) * nrm;
+    }
+
+    // Cheap two-stop sky gradient — no per-pixel ray tracing in the sky region.
+    // Tuned to the koban.uk teal/gold palette: warm pale horizon, deep teal up.
+    vec3 sky_dome(vec3 e) {
+      float t = clamp(e.y, 0.0, 1.0);
+      vec3 horizon = vec3(0.74, 0.72, 0.62);
+      vec3 zenith  = vec3(0.10, 0.22, 0.34);
+      return mix(horizon, zenith, pow(t, 0.55));
+    }
+    // Kept under the original name so getSeaColor's reflection lookup keeps working
+    // and matches what we draw in the sky region — water mirrors the same gradient.
+    vec3 getSkyColor(vec3 e) { return sky_dome(e); }
+
+    float sea_octave(vec2 uv, float choppy) {
+      uv += noise(uv);
+      vec2 wv  = 1.0 - abs(sin(uv));
+      vec2 swv = abs(cos(uv));
+      wv = mix(wv, swv, wv);
+      return pow(1.0 - pow(wv.x * wv.y, 0.65), choppy);
+    }
+
+    float map(vec3 p) {
+      float freq = SEA_FREQ;
+      float amp = SEA_HEIGHT;
+      float choppy = SEA_CHOPPY;
+      vec2 uv = p.xz; uv.x *= 0.75;
+      float d, h = 0.0;
+      for (int i = 0; i < ITER_GEOMETRY; i++) {
+        d  = sea_octave((uv + SEA_TIME) * freq, choppy);
+        d += sea_octave((uv - SEA_TIME) * freq, choppy);
+        h += d * amp;
+        uv *= octave_m; freq *= 1.9; amp *= 0.22;
+        choppy = mix(choppy, 1.0, 0.2);
+      }
+      return p.y - h;
+    }
+
+    float map_detailed(vec3 p) {
+      float freq = SEA_FREQ;
+      float amp = SEA_HEIGHT;
+      float choppy = SEA_CHOPPY;
+      vec2 uv = p.xz; uv.x *= 0.75;
+      float d, h = 0.0;
+      for (int i = 0; i < ITER_FRAGMENT; i++) {
+        d  = sea_octave((uv + SEA_TIME) * freq, choppy);
+        d += sea_octave((uv - SEA_TIME) * freq, choppy);
+        h += d * amp;
+        uv *= octave_m; freq *= 1.9; amp *= 0.22;
+        choppy = mix(choppy, 1.0, 0.2);
+      }
+      return p.y - h;
+    }
+
+    vec3 getSeaColor(vec3 p, vec3 n, vec3 l, vec3 eye, vec3 dist) {
+      float fresnel = clamp(1.0 - dot(n, -eye), 0.0, 1.0);
+      fresnel = pow(fresnel, 3.0) * 0.65;
+
+      vec3 reflected = getSkyColor(reflect(eye, n));
+      vec3 refracted = SEA_BASE + diffuse(n, l, 80.0) * SEA_WATER_COLOR * 0.12;
+      vec3 color = mix(refracted, reflected, fresnel);
+
+      float atten = max(1.0 - dot(dist, dist) * 0.001, 0.0);
+      color += SEA_WATER_COLOR * (p.y - SEA_HEIGHT) * 0.18 * atten;
+      color += vec3(specular(n, l, eye, 60.0));
+      return color;
+    }
+
+    vec3 getNormal(vec3 p, float eps) {
+      vec3 n;
+      n.y = map_detailed(p);
+      n.x = map_detailed(vec3(p.x + eps, p.y, p.z)) - n.y;
+      n.z = map_detailed(vec3(p.x, p.y, p.z + eps)) - n.y;
+      n.y = eps;
+      return normalize(n);
+    }
+
+    float heightMapTracing(vec3 ori, vec3 dir, out vec3 p) {
+      float tm = 0.0;
+      float tx = 1000.0;
+      float hx = map(ori + dir * tx);
+      if (hx > 0.0) return tx;
+      float hm = map(ori + dir * tm);
+      float tmid = 0.0;
+      for (int i = 0; i < NUM_STEPS; i++) {
+        tmid = mix(tm, tx, hm / (hm - hx));
+        p = ori + dir * tmid;
+        float hmid = map(p);
+        if (hmid < 0.0) {
+          tx = tmid; hx = hmid;
+        } else {
+          tm = tmid; hm = hmid;
+        }
+      }
+      return tmid;
+    }
+
+    // Single sub-pixel sample. Reused four times by main() for rotated-grid AA.
+    // Sky pixels still take the cheap early-out, so 4× sky cost is negligible;
+    // only sea sub-samples pay the full trace.
+    vec3 sample_at(vec2 sub_offset, vec3 ori, mat3 R) {
+      vec2 uv = (gl_FragCoord.xy + sub_offset) / iResolution.xy;
+      uv = uv * 2.0 - 1.0;
+      uv.x *= iResolution.x / iResolution.y;
+
+      // Pure pinhole projection: a perfectly straight horizon line. (TDM's
+      // original `dir.z += length(uv) * 0.15` added a barrel-like lens warp
+      // that made the horizon dip in the corners — we don't want that here.)
+      vec3 dir = normalize(vec3(uv.xy, -2.0)) * R;
+
+      if (dir.y > 0.0) {
+        return sky_dome(dir);
+      }
+      vec3 p;
+      heightMapTracing(ori, dir, p);
+      vec3 dist = p - ori;
+      vec3 n = getNormal(p, dot(dist, dist) * EPSILON_NRM);
+      vec3 light = normalize(vec3(0.0, 1.0, 0.8));
+      return mix(
+        sky_dome(dir),
+        getSeaColor(p, n, light, dir, dist),
+        pow(smoothstep(0.0, -0.05, dir.y), 0.3));
+    }
+
+    void main() {
+      // Locked, table-flat horizon. Roll and pitch are constant — no idle
+      // wobble — so the line where sky meets sea never tilts and never bobs.
+      // With the pure pinhole projection `dir = normalize(vec3(uv, -2))`, the
+      // horizon sits at `uv.y = 2·tan(pitch)`; pitch ≈ -0.245 rad puts it at
+      // uv.y = -0.5, i.e. 25 % up from the bottom edge → waves fill the lower
+      // quarter of the canvas. Yaw keeps its mouse-driven parallax + a tiny
+      // autonomous breath; yaw rotates around the vertical axis so it does
+      // not tilt the horizon.
+      float t = iGlobalTime * 0.25;
+      vec3 ang = vec3(
+        0.0,                                              // roll: locked level
+        -0.245,                                           // pitch: locked, horizon at 25 % from bottom
+        sin(t * 0.4) * 0.04 + iMouse.x * 1.10             // yaw   ← mouse X (wide sweep)
+      );
+      vec3 ori = vec3(sin(t * 0.25) * 0.6, 3.5, sin(t * 0.4) * 0.4);
+      mat3 R = fromEuler(ang);
+
+      // Rotated-grid 2×2 super-sampling. Diagonal silhouettes (horizon line,
+      // wave crests against sky, specular sparkles) get smoothed because the
+      // sub-samples land on different sides of the edge. RGSS rather than an
+      // axis-aligned grid because it's optimal for sub-pixel diagonal edges.
+      vec3 c0 = sample_at(vec2(-0.375, -0.125), ori, R);
+      vec3 c1 = sample_at(vec2( 0.125, -0.375), ori, R);
+      vec3 c2 = sample_at(vec2(-0.125,  0.375), ori, R);
+      vec3 c3 = sample_at(vec2( 0.375,  0.125), ori, R);
+      vec3 color = (c0 + c1 + c2 + c3) * 0.25;
+
+      gl_FragColor = vec4(pow(color, vec3(0.75)), 1.0);
+    }
+  </script>
+
+  <script>
+    /* WebGL render loop for the sea shader. The same monotonic time is fed
+       into the GLSL `iGlobalTime` uniform AND into the compass rotation, so
+       the rose drifts in the same beat as the ocean swell. */
+    (function () {
+      var canvas = document.getElementById("seaCanvas");
+      var compassSvg = document.getElementById("compassSvg");
+      var ringG = document.getElementById("compassRingG");
+      var needleG = document.getElementById("compassNeedleG");
+      if (!canvas) return;
+
+      var prefersReduced = window.matchMedia
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      // Compass rotation always runs (cheap, 60Hz won't hurt batteries here).
+      // The shader is gated on WebGL availability and motion preferences.
+      var gl = null;
+      try {
+        gl = !prefersReduced && (canvas.getContext("webgl") || canvas.getContext("experimental-webgl"));
+      } catch (e) {
+        gl = null;
+      }
+
+      var program = null;
+      var aPosition = -1;
+      var uTime = null;
+      var uRes = null;
+      var uMouse = null;
+      var ratio = 1;
+      var pixelW = 0, pixelH = 0;
+      // Mouse target/smooth are normalized to [-1, +1]; smooth is fed to the shader
+      // and to the compass. Lerp factor < 1 = how aggressively `smooth` chases
+      // `target` per frame. Smaller = creamier glide; ~0.045 ≈ 5× more damped
+      // than a snappy 0.22 reactive value.
+      var mouse = {
+        targetX: 0, targetY: 0,
+        smoothX: 0, smoothY: 0,
+        downX: 0, downY: 0, down: false,
+      };
+      var MOUSE_LERP = 0.045;
+
+      function compileShader(type, source) {
+        var s = gl.createShader(type);
+        gl.shaderSource(s, source);
+        gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+          console.warn("[sea] shader compile failed:", gl.getShaderInfoLog(s));
+          gl.deleteShader(s); return null;
+        }
+        return s;
+      }
+
+      function setupGL() {
+        if (!gl) return false;
+        var vertSrc = document.getElementById("sea-vert").textContent;
+        var fragSrc = document.getElementById("sea-frag").textContent;
+        var v = compileShader(gl.VERTEX_SHADER, vertSrc);
+        var f = compileShader(gl.FRAGMENT_SHADER, fragSrc);
+        if (!v || !f) { gl = null; return false; }
+        program = gl.createProgram();
+        gl.attachShader(program, v);
+        gl.attachShader(program, f);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          console.warn("[sea] program link failed:", gl.getProgramInfoLog(program));
+          gl = null; return false;
+        }
+        gl.useProgram(program);
+
+        var quad = new Float32Array([-1,-1,  1,-1, -1, 1,  -1, 1,  1,-1,  1, 1]);
+        var buf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+        aPosition = gl.getAttribLocation(program, "a_position");
+        gl.enableVertexAttribArray(aPosition);
+        gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+
+        uTime = gl.getUniformLocation(program, "iGlobalTime");
+        uRes = gl.getUniformLocation(program, "iResolution");
+        uMouse = gl.getUniformLocation(program, "iMouse");
+        return true;
+      }
+
+      function resize() {
+        // Cap DPR for the heavy fragment shader; static gradient stays sharp anyway.
+        var dpr = window.devicePixelRatio || 1;
+        ratio = Math.min(dpr, window.innerWidth < 540 ? 0.85 : 1.0);
+        var w = Math.max(1, Math.floor(window.innerWidth * ratio));
+        var h = Math.max(1, Math.floor(window.innerHeight * ratio));
+        if (pixelW === w && pixelH === h) return;
+        pixelW = w; pixelH = h;
+        canvas.width = w;
+        canvas.height = h;
+        if (gl) gl.viewport(0, 0, w, h);
+      }
+
+      window.addEventListener("resize", resize, { passive: true });
+      function normalizePointer(e) {
+        mouse.targetX = (e.clientX / Math.max(1, window.innerWidth)) * 2 - 1;
+        mouse.targetY = 1 - (e.clientY / Math.max(1, window.innerHeight)) * 2;
+      }
+      window.addEventListener("pointermove", function (e) {
+        normalizePointer(e);
+      }, { passive: true });
+      // When the cursor leaves the page (e.g. user tabs away or hovers over a link
+      // popup), gradually return the camera to centre. The lerp will glide it home
+      // over ~½ second, so it never snaps.
+      window.addEventListener("pointerleave", function () {
+        mouse.targetX = 0; mouse.targetY = 0;
+      }, { passive: true });
+      window.addEventListener("pointerdown", function (e) {
+        normalizePointer(e);
+        mouse.down = true;
+        mouse.downX = mouse.targetX;
+        mouse.downY = mouse.targetY;
+      }, { passive: true });
+      window.addEventListener("pointerup", function () { mouse.down = false; }, { passive: true });
+
+      var ok = setupGL();
+      resize();
+
+      var tStart = performance.now() / 1000;
+      var paused = false;
+      document.addEventListener("visibilitychange", function () { paused = document.hidden; });
+
+      // Hard-cap to ~60 FPS regardless of display refresh. On a 144/165 Hz
+      // monitor this cuts shader work by 2.4–2.7×; on a 60 Hz screen it's a
+      // no-op. The 0.5 ms slack keeps us from accidentally skipping a tick
+      // when rAF fires a hair early.
+      var FRAME_BUDGET_MS = (1000 / 60) - 0.5;
+      var CONVERGE_EPS = 5e-4;       // below this delta, snap smooth → target
+      var lastFrameMs = 0;
+      var lastRoseStr = "";
+
+      function frame(now) {
+        if (paused) { requestAnimationFrame(frame); return; }
+        if (now - lastFrameMs < FRAME_BUDGET_MS) {
+          requestAnimationFrame(frame);
+          return;
+        }
+        lastFrameMs = now;
+        var time = now / 1000 - tStart;
+
+        // Damped chase: smooth → target. Snap to target once we're below the
+        // convergence epsilon to avoid floating-point jitter at sub-pixel
+        // amplitude (and to stop pumping uniform writes for nothing).
+        var dx = mouse.targetX - mouse.smoothX;
+        var dy = mouse.targetY - mouse.smoothY;
+        if (Math.abs(dx) < CONVERGE_EPS && Math.abs(dy) < CONVERGE_EPS) {
+          mouse.smoothX = mouse.targetX;
+          mouse.smoothY = mouse.targetY;
+        } else {
+          mouse.smoothX += dx * MOUSE_LERP;
+          mouse.smoothY += dy * MOUSE_LERP;
+        }
+
+        if (ok && gl) {
+          gl.uniform1f(uTime, time);
+          gl.uniform2f(uRes, pixelW, pixelH);
+          gl.uniform4f(uMouse,
+            mouse.smoothX, mouse.smoothY,
+            mouse.down ? mouse.downX : 0,
+            mouse.down ? mouse.downY : 0);
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+
+        if (compassSvg) {
+          // Real-compass behaviour: the needle is locked to true north (it stays
+          // pointing straight up in screen space, no transform). The rose — the
+          // entire NSEW body — counter-rotates around the needle's centre by
+          // exactly the camera's yaw, so when the user yaws right the "N" mark
+          // visibly swings to the left. Same yaw expression used by ang.z in
+          // the shader, just negated and converted to degrees.
+          var t = time * 0.25;
+          var yawRad = Math.sin(t * 0.4) * 0.04 + mouse.smoothX * 1.10;
+          var roseStr = (-yawRad * (180 / Math.PI)).toFixed(2);
+          // Skip the DOM write only when the rounded value would land on the
+          // same degree — guarantees we never freeze the rose, while still
+          // dropping the redundant setAttribute calls in idle.
+          if (ringG && roseStr !== lastRoseStr) {
+            ringG.setAttribute("transform", "rotate(" + roseStr + " 100 100)");
+            lastRoseStr = roseStr;
+          }
+          if (needleG && needleG.hasAttribute("transform")) needleG.removeAttribute("transform");
+        }
+
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    })();
+  </script>
+
+  <a class="home-logo" href="https://koban.uk/" aria-label="Вернуться на koban.uk">
+    <img class="home-logo__img home-logo__img--static" src="/koban/logo-static.png?v=20260505-glasses" alt="КОБАНЮК" />
+    <img class="home-logo__img home-logo__img--base" src="/koban/logo-base-overlay.png?v=20260505-glasses" alt="" aria-hidden="true" />
+    <img class="home-logo__img home-logo__img--hover" src="/koban/logo-hover-overlay.png?v=20260509-lift" alt="" aria-hidden="true" />
+  </a>
+
+  <div class="page" aria-live="polite">
+    <article class="hero glass-panel">
+      <p class="hero__kicker hero__kicker--offline" id="heroStatus" aria-live="polite">ОФФЛАЙН</p>
+      <h1 class="hero__title">WINDROSE</h1>
+      <div class="hero__world-code">
+        <p class="hero__world" id="worldLabel">Мир · Eblusha</p>
+        <div class="code-block">
+          <div id="code" class="code muted" aria-label="Invite code">…</div>
+        </div>
+      </div>
+      <p class="hero__hint" id="codeHint">Play → Connect to Server → вставить invite code</p>
+
+      <div class="hero__actions">
+        <button type="button" class="btn-secondary" id="refreshBtn" aria-busy="false">Обновить</button>
+        <button type="button" class="btn-primary" id="copyBtn" disabled>Скопировать</button>
+      </div>
+      <p class="toast" id="toast" role="status"></p>
+    </article>
+
+    <div class="dashboard-grid">
+      <section class="panel glass-panel glass-panel--interactive">
+        <h2 class="panel__head">На борту</h2>
+        <ul class="list" id="onlineList"></ul>
+        <p class="empty" id="onlineEmpty" hidden>Никого в открытом море</p>
+      </section>
+
+      <section class="panel glass-panel glass-panel--interactive">
+        <h2 class="panel__head">Недавние</h2>
+        <ul class="list" id="recentList"></ul>
+        <p class="empty" id="recentEmpty" hidden>Нет записей</p>
+      </section>
+
+      <section class="panel panel--map-span glass-panel glass-panel--interactive" id="seaChartPanel" aria-label="Морская карта">
+        <div class="panel__head-row">
+          <h2 class="panel__head">Карта</h2>
+          <button type="button" class="panel__head-action" id="seaChartFullscreenBtn">Во весь экран</button>
+        </div>
+        <div id="seaChartRoot"></div>
+      </section>
+
+      <section class="panel panel--world-span glass-panel glass-panel--interactive" aria-label="Информация о мире">
+        <h2 class="panel__head">Мир</h2>
+        <div id="worldInfoRoot" class="world-info"></div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var JSON_URL = "/w/windrose-status.json";
+      var POLL_MS = 2500;
+
+      var $ = function (id) { return document.getElementById(id); };
+      var els = {
+        code: $("code"),
+        copyBtn: $("copyBtn"),
+        refreshBtn: $("refreshBtn"),
+        toast: $("toast"),
+        worldLabel: $("worldLabel"),
+        heroStatus: $("heroStatus"),
+        codeHint: $("codeHint"),
+        onlineList: $("onlineList"),
+        onlineEmpty: $("onlineEmpty"),
+        recentList: $("recentList"),
+        recentEmpty: $("recentEmpty"),
+        worldInfoRoot: $("worldInfoRoot"),
+        seaChartPanel: $("seaChartPanel"),
+        seaChartFullscreenBtn: $("seaChartFullscreenBtn"),
+        seaChartRoot: $("seaChartRoot"),
+      };
+
+      var lastCode = null;
+      var pollTimer = null;
+      var cachedOnline = [];
+      var cachedRecent = [];
+      var cachedWorld = null;
+      var refreshBusy = false;
+      var seaChart = {
+        ready: false,
+        initialized: false,
+        zoom: 2,
+        minZoom: 0,
+        maxZoom: 6,
+        centerX: 0.5,
+        centerY: 0.5,
+        tileSize: 256,
+        tileVersion: 0,
+        dragging: false,
+      };
+
+      function setToast(msg, ok) {
+        els.toast.textContent = msg;
+        els.toast.className = "toast show";
+        els.toast.style.color = ok ? "var(--online)" : "var(--danger)";
+        clearTimeout(setToast._t);
+        setToast._t = setTimeout(function () {
+          els.toast.className = "toast";
+          els.toast.textContent = "";
+        }, 2500);
+      }
+
+      function isMapFullscreen() {
+        return els.seaChartPanel.classList.contains("is-map-expanded");
+      }
+
+      function updateFullscreenButton() {
+        if (!els.seaChartFullscreenBtn) return;
+        els.seaChartFullscreenBtn.textContent = isMapFullscreen() ? "Свернуть" : "Во весь экран";
+      }
+
+      function notifySeaChartOverlayRefresh() {
+        if (!els.seaChartRoot) return;
+        var frame = els.seaChartRoot.querySelector("iframe");
+        if (!frame || !frame.contentWindow) return;
+        frame.contentWindow.postMessage(
+          { source: "WindrosePlusDashboard", type: "trigger-overlay-refresh" },
+          window.location.origin
+        );
+      }
+
+      function notifySeaChartResize() {
+        if (!els.seaChartRoot) return;
+        var frame = els.seaChartRoot.querySelector("iframe");
+        if (!frame || !frame.contentWindow) return;
+        [60, 260].forEach(function (delay) {
+          window.setTimeout(function () {
+            frame.contentWindow.postMessage({ source: "WindrosePlusDashboard", type: "map-resize" }, window.location.origin);
+          }, delay);
+        });
+      }
+
+      function toggleMapFullscreen() {
+        if (!els.seaChartPanel) return;
+        els.seaChartPanel.classList.toggle("is-map-expanded");
+        document.documentElement.classList.toggle("is-map-overlay-open", isMapFullscreen());
+        updateFullscreenButton();
+        notifySeaChartResize();
+      }
+
+      function escapeHtml(s) {
+        var d = document.createElement("div");
+        d.textContent = s == null ? "" : String(s);
+        return d.innerHTML;
+      }
+
+      function fmtTime(iso) {
+        if (!iso) return "—";
+        try {
+          return new Date(iso).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" });
+        } catch (e) { return iso; }
+      }
+
+      function relativeTimeRu(iso) {
+        if (!iso) return "—";
+        var d = new Date(iso); var t = d.getTime();
+        if (isNaN(t)) return "—";
+        var sec = Math.floor((Date.now() - t) / 1000);
+        if (sec < 50) return "только что";
+        if (sec < 3600) return Math.max(1, Math.floor(sec / 60)) + " мин назад";
+        if (sec < 86400) return Math.max(1, Math.floor(sec / 3600)) + " ч назад";
+        if (sec < 172800) return "вчера";
+        if (sec < 604800) return Math.max(1, Math.floor(sec / 86400)) + " дн назад";
+        return fmtTime(iso);
+      }
+
+      function formatDurationSeconds(sec) {
+        if (sec == null || !isFinite(sec)) return "—";
+        if (sec < 0) return "0 с";
+        if (sec < 60) return sec + " с";
+        var m = Math.floor(sec / 60);
+        if (m < 60) return m + " мин";
+        var h = Math.floor(m / 60); m = m % 60;
+        if (h < 24) return h + " ч" + (m ? " " + m + " мин" : "");
+        var d = Math.floor(h / 24); h = h % 24;
+        return d + " д" + (h ? " " + h + " ч" : "");
+      }
+
+      function setHeroStatus(online) {
+        if (!els.heroStatus) return;
+        els.heroStatus.textContent = online ? "ОНЛАЙН" : "ОФФЛАЙН";
+        els.heroStatus.className = "hero__kicker " + (online ? "hero__kicker--online" : "hero__kicker--offline");
+      }
+
+      function renderOnline(players) {
+        els.onlineList.innerHTML = "";
+        if (!players || !players.length) {
+          els.onlineList.hidden = true;
+          els.onlineEmpty.hidden = false;
+          return;
+        }
+        els.onlineList.hidden = false;
+        els.onlineEmpty.hidden = true;
+        players.forEach(function (p) {
+          var li = document.createElement("li");
+          var left = document.createElement("div");
+          left.className = "player-row";
+          left.innerHTML =
+            '<span class="dot-online" aria-hidden="true"></span>' +
+            '<span class="player-row__name">' + escapeHtml(p.name) + '</span>';
+          var right = document.createElement("div");
+          right.className = "meta-small";
+          var posLine = "";
+          if (p.x != null && p.y != null) {
+            posLine =
+              '<span class="sub">x ' + Math.round(Number(p.x)) +
+              ' · y ' + Math.round(Number(p.y)) + '</span>';
+          }
+          right.innerHTML = "<span>" + (p.alive === false ? "Тонет" : "На борту") + "</span>" + posLine;
+          li.appendChild(left); li.appendChild(right);
+          els.onlineList.appendChild(li);
+        });
+      }
+
+      function renderRecent(players) {
+        els.recentList.innerHTML = "";
+        if (!players || !players.length) {
+          els.recentEmpty.hidden = false;
+          return;
+        }
+        els.recentEmpty.hidden = true;
+        players.forEach(function (p) {
+          var li = document.createElement("li");
+          var left = document.createElement("div");
+          left.className = "player-row";
+          left.innerHTML = '<span class="player-row__name">' + escapeHtml(p.name) + '</span>';
+          var right = document.createElement("div");
+          right.className = "meta-small";
+          var rel = relativeTimeRu(p.lastSeen);
+          right.innerHTML = '<span>' + escapeHtml(rel) + '</span><span class="sub">' + escapeHtml(fmtTime(p.lastSeen)) + '</span>';
+          right.title = "Заходил " + fmtTime(p.lastSeen);
+          li.appendChild(left); li.appendChild(right);
+          els.recentList.appendChild(li);
+        });
+      }
+
+      var MULTIPLIER_LABELS = {
+        loot: "Лут",
+        xp: "Опыт",
+        stack_size: "Стак",
+        weight: "Вес",
+        inventory_size: "Инвентарь",
+        harvest_yield: "Сбор",
+        craft_efficiency: "Крафт",
+        cooking_speed: "Готовка",
+        crop_speed: "Грядки",
+        craft_cost: "Стоимость крафта",
+      };
+      var PRESET_LABEL = {
+        Easy: "Лёгкая",
+        Medium: "Обычная",
+        Hard: "Сложная",
+        Custom: "Кастомная",
+      };
+      var COMBAT_LABEL = {
+        "WDS.Parameter.CombatDifficulty.Easy": "Лёгкие боссы",
+        "WDS.Parameter.CombatDifficulty.Normal": "Обычные боссы",
+        "WDS.Parameter.CombatDifficulty.Hard": "Сложные боссы",
+      };
+
+      function fmtMult(value) {
+        if (value == null) return "—";
+        var n = Number(value);
+        if (!isFinite(n)) return String(value);
+        if (Math.abs(n - 1) < 1e-9) return "x1";
+        var rounded = Math.abs(n - Math.round(n)) < 1e-9 ? n.toFixed(0) : n.toFixed(2);
+        return "x" + rounded;
+      }
+
+      function chipForMult(name, value) {
+        var lbl = MULTIPLIER_LABELS[name] || name;
+        var n = Number(value);
+        var cls = "chip chip--neutral";
+        if (isFinite(n)) {
+          if (n > 1.001) cls = "chip chip--up";
+          else if (n < 0.999) cls = "chip chip--down";
+        }
+        return '<span class="' + cls + '"><span class="chip__lbl">' + escapeHtml(lbl) +
+          '</span><span class="chip__val">' + escapeHtml(fmtMult(value)) + '</span></span>';
+      }
+
+      function clamp(n, lo, hi) {
+        return Math.max(lo, Math.min(hi, n));
+      }
+
+      function seaChartReady(data) {
+        var w = data && data.world ? data.world : {};
+        var u = w.upstream || {};
+        return !!(
+          w.mapGeneration &&
+          w.mapGeneration.state === "complete" &&
+          (u.hasLocalHeightmaps || u.verdict === "working")
+        );
+      }
+
+      function ensureSeaChart() {
+        if (!els.seaChartRoot || seaChart.initialized) return;
+        els.seaChartRoot.innerHTML =
+          '<div class="sea-chart" id="seaChart">' +
+            '<div class="sea-chart__viewport" id="seaChartViewport" aria-label="Интерактивная карта Windrose">' +
+              '<div class="sea-chart__grid" id="seaChartGrid"></div>' +
+              '<div class="sea-chart__shade" aria-hidden="true"></div>' +
+            '</div>' +
+            '<div class="sea-chart__hud">' +
+              '<div class="sea-chart__caption">' +
+                '<strong>Sea Chart</strong>' +
+                '<span id="seaChartMeta">готовим карту…</span>' +
+              '</div>' +
+              '<div class="sea-chart__controls" aria-label="Управление картой">' +
+                '<button type="button" class="sea-chart__btn" id="seaChartZoomOut" aria-label="Уменьшить">−</button>' +
+                '<button type="button" class="sea-chart__btn" id="seaChartZoomIn" aria-label="Увеличить">+</button>' +
+                '<button type="button" class="sea-chart__btn sea-chart__btn--wide" id="seaChartReset" aria-label="Сбросить карту">сброс</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+
+        seaChart.el = $("seaChart");
+        seaChart.viewport = $("seaChartViewport");
+        seaChart.grid = $("seaChartGrid");
+        seaChart.meta = $("seaChartMeta");
+        seaChart.initialized = true;
+
+        seaChart.viewport.addEventListener("pointerdown", function (e) {
+          if (e.button != null && e.button !== 0) return;
+          seaChart.dragging = true;
+          seaChart.el.classList.add("is-dragging");
+          seaChart.dragStartX = e.clientX;
+          seaChart.dragStartY = e.clientY;
+          seaChart.dragCenterX = seaChart.centerX;
+          seaChart.dragCenterY = seaChart.centerY;
+          seaChart.viewport.setPointerCapture(e.pointerId);
+        });
+        seaChart.viewport.addEventListener("pointermove", function (e) {
+          if (!seaChart.dragging) return;
+          var size = seaChart.tileSize * Math.pow(2, seaChart.zoom);
+          seaChart.centerX = clamp(seaChart.dragCenterX - (e.clientX - seaChart.dragStartX) / size, 0, 1);
+          seaChart.centerY = clamp(seaChart.dragCenterY - (e.clientY - seaChart.dragStartY) / size, 0, 1);
+          renderSeaChartTiles();
+        });
+        function endDrag(e) {
+          seaChart.dragging = false;
+          seaChart.el.classList.remove("is-dragging");
+          try { seaChart.viewport.releasePointerCapture(e.pointerId); } catch (err) {}
+        }
+        seaChart.viewport.addEventListener("pointerup", endDrag);
+        seaChart.viewport.addEventListener("pointercancel", endDrag);
+        seaChart.viewport.addEventListener("wheel", function (e) {
+          e.preventDefault();
+          zoomSeaChart(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
+        }, { passive: false });
+        seaChart.viewport.addEventListener("dblclick", function (e) {
+          zoomSeaChart(1, e.clientX, e.clientY);
+        });
+        $("seaChartZoomIn").addEventListener("click", function () { zoomSeaChart(1); });
+        $("seaChartZoomOut").addEventListener("click", function () { zoomSeaChart(-1); });
+        $("seaChartReset").addEventListener("click", function () {
+          seaChart.zoom = 2;
+          seaChart.centerX = 0.5;
+          seaChart.centerY = 0.5;
+          renderSeaChartTiles();
+        });
+        window.addEventListener("resize", function () {
+          if (seaChart.ready) renderSeaChartTiles();
+        });
+      }
+
+      function zoomSeaChart(delta, clientX, clientY) {
+        if (!seaChart.ready || !seaChart.viewport) return;
+        var nextZoom = clamp(seaChart.zoom + delta, seaChart.minZoom, seaChart.maxZoom);
+        if (nextZoom === seaChart.zoom) return;
+        var rect = seaChart.viewport.getBoundingClientRect();
+        var px = clientX == null ? rect.left + rect.width / 2 : clientX;
+        var py = clientY == null ? rect.top + rect.height / 2 : clientY;
+        var oldSize = seaChart.tileSize * Math.pow(2, seaChart.zoom);
+        var newSize = seaChart.tileSize * Math.pow(2, nextZoom);
+        var fx = px - rect.left - rect.width / 2;
+        var fy = py - rect.top - rect.height / 2;
+        var worldX = seaChart.centerX + fx / oldSize;
+        var worldY = seaChart.centerY + fy / oldSize;
+        seaChart.zoom = nextZoom;
+        seaChart.centerX = clamp(worldX - fx / newSize, 0, 1);
+        seaChart.centerY = clamp(worldY - fy / newSize, 0, 1);
+        renderSeaChartTiles();
+      }
+
+      function renderSeaChartTiles() {
+        if (!seaChart.ready || !seaChart.viewport || !seaChart.grid) return;
+        var rect = seaChart.viewport.getBoundingClientRect();
+        var n = Math.pow(2, seaChart.zoom);
+        var tile = seaChart.tileSize;
+        var worldSize = n * tile;
+        var left = seaChart.centerX * worldSize - rect.width / 2;
+        var top = seaChart.centerY * worldSize - rect.height / 2;
+        var startX = clamp(Math.floor(left / tile), 0, n - 1);
+        var endX = clamp(Math.floor((left + rect.width) / tile), 0, n - 1);
+        var startY = clamp(Math.floor(top / tile), 0, n - 1);
+        var endY = clamp(Math.floor((top + rect.height) / tile), 0, n - 1);
+        var html = "";
+        for (var y = startY; y <= endY; y++) {
+          for (var x = startX; x <= endX; x++) {
+            html += '<img class="sea-chart__tile" draggable="false" alt="" ' +
+              'src="/w/map_tiles/' + seaChart.zoom + '/' + x + '-' + y + '.png?v=' + seaChart.tileVersion + '" ' +
+              'style="left:' + Math.round(x * tile - left) + 'px;top:' + Math.round(y * tile - top) + 'px">';
+          }
+        }
+        seaChart.grid.innerHTML = html;
+        if (seaChart.meta) {
+          seaChart.meta.textContent =
+            "zoom " + seaChart.zoom + " · drag / wheel · tiles " + n + "×" + n;
+        }
+      }
+
+      function renderSeaChart(data) {
+        if (!els.seaChartRoot) return;
+        if (!seaChartReady(data)) {
+          seaChart.ready = false;
+          seaChart.initialized = false;
+          els.seaChartRoot.innerHTML =
+            '<p class="sea-chart__empty">Карта ждёт готовые heightmap-тайлы.</p>';
+          return;
+        }
+        seaChart.ready = true;
+        var ts = data && data.world && data.world.mapGeneration ? data.world.mapGeneration.ts : 0;
+        seaChart.tileVersion = ts || "ready";
+        if (seaChart.webviewVersion !== seaChart.tileVersion) {
+          seaChart.initialized = false;
+          seaChart.webviewVersion = seaChart.tileVersion;
+          els.seaChartRoot.innerHTML =
+            '<div class="windrose-plus-webview">' +
+              '<iframe class="windrose-plus-webview__frame" ' +
+                'title="Windrose+ Sea Chart" ' +
+                'loading="lazy" ' +
+                'allowfullscreen ' +
+                'src="/public-map?embed=1&v=' + encodeURIComponent(String(seaChart.tileVersion)) + '">' +
+              '</iframe>' +
+            '</div>';
+        }
+      }
+
+      function renderWorld(data) {
+        var w = data && data.world ? data.world : {};
+        var s = w.stats || {};
+        var settings = w.settings || {};
+        var serverStatus = data && data.serverStatus || {};
+        var html = '';
+
+        var u = w.upstream || null;
+        // Heightmaps present locally means the map is actually generating —
+        // skip the bug banner entirely. Otherwise pick the most informative
+        // text based on the upstream watcher's verdict (set hourly by the
+        // windrose-upstream-check.timer systemd unit).
+        var bug = (w.mapGeneration && w.mapGeneration.state === "error");
+        if (bug && (!u || !u.hasLocalHeightmaps)) {
+          var alertCls = "alert";
+          var icon = "⚓";
+          var head = "<strong>Морская карта пока без рельефа.</strong> ";
+          var body =
+            "Известная проблема Windrose+ v" +
+            escapeHtml(w.windrosePlusVersion || "?") +
+            " с текущим билдом игры — игроки, мобы и POI на карте есть, " +
+            "фон с островами генерируется на стороне мода и сейчас падает с ошибкой «" +
+            escapeHtml(w.mapGeneration.error || "n/a") + "». " +
+            "Подключение по invite code и сам сервер не затронуты.";
+
+          var followUp = "";
+          if (u) {
+            if (u.verdict === "fix_published_not_applied" && u.newerReleaseAvailable) {
+              alertCls += " alert--good";
+              icon = "🆕";
+              followUp =
+                ' <strong>Вышла ' + escapeHtml(u.latestTag || "новая версия") +
+                '</strong> (у нас v' + escapeHtml(w.windrosePlusVersion || "?") +
+                '). Обновить мод и перезапустить контейнер — после этого карта должна заполниться. ' +
+                (u.latestUrl
+                  ? '<a href="' + escapeHtml(u.latestUrl) + '" target="_blank" rel="noopener">релиз</a>'
+                  : "");
+            } else if (u.verdict === "fix_published_not_applied") {
+              alertCls += " alert--good";
+              icon = "🛠";
+              followUp =
+                ' Issue #' + escapeHtml(String(u.issueNumber)) + ' закрыт апстримом — ждём релиз с фиксом. ' +
+                (u.issueUrl
+                  ? '<a href="' + escapeHtml(u.issueUrl) + '" target="_blank" rel="noopener">обсуждение</a>'
+                  : "");
+            } else if (u.verdict === "upstream_unsupported") {
+              // Maintainer closed the tracking issue as not_planned — this is
+              // an upstream UE5 limitation on headless Linux + Wine, no future
+              // WindrosePlus release will fix it from their side. Reframe the
+              // banner from "known bug, awaiting fix" to "known limitation of
+              // our runtime" — no false hope, no "wait for next release".
+              alertCls = "alert";
+              icon = "ℹ️";
+              head = "<strong>Рельеф Sea Chart недоступен на этой машине.</strong> ";
+              body =
+                "Windrose+ v" + escapeHtml(w.windrosePlusVersion || "?") +
+                " экспортирует heightmap-тайлы через C++ мод, который требует " +
+                "рендер-контекста для стриминга <code>LandscapeComponent</code>. " +
+                "На headless Linux + Wine этого нет, поэтому игра отдаёт " +
+                "только координаты ландшафтов, без данных рельефа " +
+                "(<code>" + escapeHtml(w.mapGeneration.error || "n/a") + "</code>). " +
+                "Это известное ограничение апстрима — остальные функции " +
+                "(игроки, POI, RCON, лут, статус) работают штатно.";
+              if (u.issueUrl) {
+                followUp =
+                  ' <a href="' + escapeHtml(u.issueUrl) +
+                  '" target="_blank" rel="noopener">issue #' +
+                  escapeHtml(String(u.issueNumber)) + ' (not planned)</a>';
+                if (u.checkedAt) followUp += ", проверено " + escapeHtml(relativeTimeRu(u.checkedAt));
+                followUp += ".";
+              }
+            } else if (u.issueNumber) {
+              followUp =
+                ' Трекер: <a href="' + escapeHtml(u.issueUrl || "#") +
+                '" target="_blank" rel="noopener">issue #' + escapeHtml(String(u.issueNumber)) + '</a>' +
+                (u.checkedAt ? " · проверено " + escapeHtml(relativeTimeRu(u.checkedAt)) : "") + ".";
+            }
+          }
+
+          html +=
+            '<div class="' + alertCls + '" role="status">' +
+              '<span class="alert__icon">' + icon + '</span>' +
+              '<span>' + head + body + followUp + '</span>' +
+            '</div>';
+        } else if (u && u.verdict === "fix_published_not_applied" && u.newerReleaseAvailable) {
+          // Even if the local map is currently fine, surface a release notice
+          // so we know there's an update to consider.
+          html +=
+            '<div class="alert alert--good" role="status">' +
+              '<span class="alert__icon">🆕</span>' +
+              '<span><strong>Доступна Windrose+ ' + escapeHtml(u.latestTag) + '.</strong> ' +
+              'У нас v' + escapeHtml(w.windrosePlusVersion || "?") + '. ' +
+              (u.latestUrl
+                ? '<a href="' + escapeHtml(u.latestUrl) + '" target="_blank" rel="noopener">release notes</a>.'
+                : '') +
+              '</span>' +
+            '</div>';
+        }
+
+        html += '<div class="world-info__meta">';
+        var meta = [
+          ["Сервер", w.passwordProtected ? "по паролю" : "без пароля", "v"],
+          ["Регион", w.region || "auto", "v"],
+          ["Лимит", (data.playerLimit || "—") + " игроков", "v"],
+          ["Соединение", w.useDirectConnection ? "direct " + (w.p2pProxy || "") : "P2P / NAT punch-through", "v"],
+          ["Игра", w.gameVersion || "—", "v"],
+          ["Windrose+", w.windrosePlusVersion ? ("v" + w.windrosePlusVersion + (w.windrosePlusEnabled ? " ✓" : "")) : "—", "v"],
+        ];
+        if (serverStatus && serverStatus.uptimeSec != null) {
+          meta.push(["Uptime", formatDurationSeconds(Number(serverStatus.uptimeSec)), "v"]);
+        }
+        if (data.updatedAt) {
+          meta.push(["Обновлено", relativeTimeRu(data.updatedAt), "v"]);
+        }
+        meta.forEach(function (kv) {
+          html += '<div class="world-info__kv">' +
+            '<span class="world-info__k">' + escapeHtml(kv[0]) + '</span>' +
+            '<span class="world-info__v">' + escapeHtml(kv[1]) + '</span>' +
+            '</div>';
+        });
+        html += '</div>';
+
+        html += '<h3 class="world-info__subhead">Параметры мира</h3>';
+        html += '<div class="chips">';
+        html += '<span class="chip chip--neutral"><span class="chip__lbl">Сложность</span><span class="chip__val">' +
+          escapeHtml(PRESET_LABEL[w.preset] || w.preset || "—") + '</span></span>';
+        if (settings.tagParams && settings.tagParams.CombatDifficulty) {
+          var cd = settings.tagParams.CombatDifficulty;
+          html += '<span class="chip chip--neutral"><span class="chip__lbl">Бои</span><span class="chip__val">' +
+            escapeHtml(COMBAT_LABEL[cd] || String(cd).split(".").pop()) + '</span></span>';
+        }
+        if (settings.boolParams) {
+          if (settings.boolParams["Coop.SharedQuests"] != null) {
+            html += '<span class="chip ' +
+              (settings.boolParams["Coop.SharedQuests"] ? 'chip--up' : 'chip--neutral') +
+              '"><span class="chip__lbl">Общие квесты</span><span class="chip__val">' +
+              (settings.boolParams["Coop.SharedQuests"] ? "вкл" : "выкл") + '</span></span>';
+          }
+          if (settings.boolParams.EasyExplore != null) {
+            html += '<span class="chip ' +
+              (settings.boolParams.EasyExplore ? 'chip--down' : 'chip--neutral') +
+              '"><span class="chip__lbl">Иммерсивная разведка</span><span class="chip__val">' +
+              (settings.boolParams.EasyExplore ? "вкл" : "выкл") + '</span></span>';
+          }
+        }
+        html += '</div>';
+
+        var mults = w.multipliers || {};
+        var multKeys = Object.keys(mults);
+        if (multKeys.length) {
+          html += '<h3 class="world-info__subhead world-info__subhead--spaced">Множители</h3>';
+          html += '<div class="chips">';
+          multKeys.forEach(function (k) { html += chipForMult(k, mults[k]); });
+          html += '</div>';
+        }
+
+        html += '<h3 class="world-info__subhead world-info__subhead--spaced">Морские дела</h3>';
+        html += '<div class="world-info__stats">';
+        function statCard(lbl, val, sub) {
+          return '<div class="stat-card">' +
+            '<div class="stat-card__lbl">' + escapeHtml(lbl) + '</div>' +
+            '<div class="stat-card__val">' + escapeHtml(val) + '</div>' +
+            (sub ? '<div class="stat-card__sub" title="' + escapeHtml(sub) + '">' + escapeHtml(sub) + '</div>' : '') +
+            '</div>';
+        }
+        var topNodeStr = "";
+        if (s.topNodes && s.topNodes.length) {
+          topNodeStr = s.topNodes.map(function (t) { return t[0] + " · " + t[1]; }).slice(0, 3).join(", ");
+        }
+        var topMobStr = "";
+        if (s.topMobs && s.topMobs.length) {
+          topMobStr = s.topMobs.map(function (t) { return t[0] + " · " + t[1]; }).slice(0, 3).join(", ");
+        }
+        html += statCard("POI", (s.poiCount != null ? s.poiCount : "—"), "точек интереса на карте");
+        html += statCard("Узлы ресурсов", (s.nodeCount != null ? s.nodeCount : "—"), topNodeStr || "обновляется ~ 30 с");
+        html += statCard("Существа", (s.mobCount != null ? s.mobCount : "—"), topMobStr || "обновляется ~ 30 с");
+        html += '</div>';
+
+        els.worldInfoRoot.innerHTML = html;
+      }
+
+      function applyPayload(data) {
+        if (!data || typeof data !== "object") return;
+        var name = data.serverName || "Eblusha Windrose";
+        els.worldLabel.textContent = "Мир · " + name;
+
+        if (Array.isArray(data.onlinePlayers)) {
+          var prevCount = cachedOnline.length;
+          cachedOnline = data.onlinePlayers.slice();
+          // Someone went offline → nudge the iframe to refresh saved positions immediately.
+          if (cachedOnline.length < prevCount) {
+            window.setTimeout(notifySeaChartOverlayRefresh, 2000);
+          }
+        }
+        renderOnline(cachedOnline);
+
+        if (Array.isArray(data.recentPlayers)) cachedRecent = data.recentPlayers.slice();
+        renderRecent(cachedRecent);
+
+        var dockerUp = !data.serverStatus || data.serverStatus.dockerRunning !== false;
+        var hasCode = !!(data.code || data.worldCode);
+        var online = !!(data.ok && hasCode && dockerUp);
+        setHeroStatus(online);
+
+        var wc = data.code || data.worldCode;
+        if (online && wc) {
+          els.code.textContent = wc;
+          els.code.className = "code";
+          els.copyBtn.disabled = false;
+          lastCode = String(wc);
+          els.codeHint.textContent = "Play → Connect to Server → вставить invite code";
+        } else {
+          els.code.textContent = data.error || (dockerUp ? "Код пока недоступен" : "Сервер выключен");
+          els.code.className = "code muted";
+          els.copyBtn.disabled = true;
+          lastCode = null;
+          els.codeHint.textContent = "—";
+        }
+
+        cachedWorld = data;
+        renderWorld(data);
+        renderSeaChart(data);
+      }
+
+      async function fetchData(silent) {
+        var url = JSON_URL + "?t=" + Date.now();
+        try {
+          var res = await fetch(url, { cache: "no-store" });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          var data = await res.json();
+          applyPayload(data);
+          return data;
+        } catch (e) {
+          if (!silent) {
+            els.code.textContent = "Не удалось загрузить статус";
+            els.code.className = "code muted";
+            setHeroStatus(false);
+          }
+          if (cachedWorld) renderWorld(cachedWorld);
+          throw e;
+        }
+      }
+
+      function schedulePoll() {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(function () { fetchData(true).catch(function () {}); }, POLL_MS);
+      }
+
+      els.refreshBtn.addEventListener("click", async function () {
+        if (refreshBusy) return;
+        refreshBusy = true;
+        var oldText = els.refreshBtn.textContent;
+        els.refreshBtn.textContent = "Обновление…";
+        els.refreshBtn.disabled = true;
+        try {
+          await fetchData(false);
+          setToast("Данные обновлены", true);
+        } catch (e) {
+          setToast("Не удалось обновить", false);
+        } finally {
+          els.refreshBtn.textContent = oldText;
+          els.refreshBtn.disabled = false;
+          refreshBusy = false;
+        }
+      });
+
+      els.copyBtn.addEventListener("click", function () {
+        if (!lastCode) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(lastCode).then(function () {
+            setToast("Invite скопирован", true);
+          }).catch(function () { setToast("Не удалось скопировать", false); });
+        } else {
+          setToast("Буфер недоступен", false);
+        }
+      });
+      if (els.seaChartFullscreenBtn) {
+        els.seaChartFullscreenBtn.addEventListener("click", toggleMapFullscreen);
+      }
+      window.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && els.seaChartPanel && els.seaChartPanel.classList.contains("is-map-expanded")) {
+          els.seaChartPanel.classList.remove("is-map-expanded");
+          document.documentElement.classList.remove("is-map-overlay-open");
+          updateFullscreenButton();
+          notifySeaChartResize();
+        }
+      });
+
+      fetchData(true).catch(function () {}).finally(schedulePoll);
+
+      setInterval(function () {
+        if (cachedOnline.length) renderOnline(cachedOnline);
+        if (cachedRecent.length) renderRecent(cachedRecent);
+      }, 30000);
+    })();
+
+    (function () {
+      var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      var logo = document.querySelector(".home-logo");
+      var timer = 0;
+      if (!logo || reduceMotion) return;
+      function schedulePeek() {
+        if (timer) window.clearTimeout(timer);
+        timer = window.setTimeout(function () {
+          logo.classList.add("is-logo-peeking");
+          window.setTimeout(function () {
+            logo.classList.remove("is-logo-peeking");
+            schedulePeek();
+          }, 1200);
+        }, 5000 + Math.random() * 5000);
+      }
+      schedulePeek();
+      window.addEventListener("pagehide", function () { if (timer) window.clearTimeout(timer); });
+      window.addEventListener("pageshow", schedulePeek);
+    })();
+
+    // —— Animated helm cursor —————————————————————————————————————————————
+    // Hides the OS cursor and renders a DOM helm that rotates + glows when
+    // hovering interactive elements. Pure mouse only — touch / coarse pointer
+    // / reduced-motion / embedded-iframe modes all bail to the static PNG
+    // cursor fallback defined in CSS.
+    (function () {
+      var html = document.documentElement;
+      if (html.dataset.embedded === "true") return;
+      if (window.matchMedia) {
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        if (window.matchMedia("(hover: none)").matches) return;
+        if (window.matchMedia("(pointer: coarse)").matches) return;
+      }
+
+      var cursor = document.createElement("div");
+      cursor.className = "helm-cursor";
+      cursor.setAttribute("aria-hidden", "true");
+      var inner = document.createElement("div");
+      inner.className = "helm-cursor__inner";
+      cursor.appendChild(inner);
+      document.body.appendChild(cursor);
+
+      // Pre-load the @2x art so the first hover doesn't flicker on HiDPI.
+      var preload = new Image();
+      preload.src = "/w/cursor-helm@2x.png?v=20260509b";
+
+      html.classList.add("js-helm-cursor");
+
+      var x = -9999, y = -9999, raf = 0;
+      function flush() {
+        raf = 0;
+        cursor.style.transform = "translate3d(" + x + "px," + y + "px,0)";
+      }
+
+      document.addEventListener("pointermove", function (e) {
+        if (e.pointerType && e.pointerType !== "mouse") return;
+        x = e.clientX;
+        y = e.clientY;
+        if (!cursor.classList.contains("is-visible")) cursor.classList.add("is-visible");
+        if (!raf) raf = requestAnimationFrame(flush);
+      }, { passive: true });
+
+      // Fade out when the pointer leaves the viewport or the window loses
+      // focus — otherwise the helm sits stranded at the last position.
+      html.addEventListener("pointerleave", function () { cursor.classList.remove("is-visible"); });
+      html.addEventListener("pointerenter", function () { cursor.classList.add("is-visible"); });
+      window.addEventListener("blur", function () { cursor.classList.remove("is-visible"); });
+
+      // Toggle .is-active when the pointer is over an interactive element
+      // (anchor with href, enabled button, or an explicit role=button).
+      // Walks up the DOM so clicks on icons / spans inside buttons still
+      // register the active state.
+      var INTERACTIVE_SEL = "a[href], button:not(:disabled), [role=button]:not([aria-disabled=true])";
+      function isInteractive(el) {
+        while (el && el.nodeType === 1 && el !== document.body) {
+          if (el.matches && el.matches(INTERACTIVE_SEL)) return true;
+          el = el.parentNode;
+        }
+        return false;
+      }
+      document.addEventListener("pointerover", function (e) {
+        if (e.pointerType && e.pointerType !== "mouse") return;
+        var active = isInteractive(e.target);
+        var was = cursor.classList.contains("is-active");
+        if (was !== active) {
+          if (active) {
+            // Coin-flip the rotation direction for this yank — captain can
+            // pull the wheel either way. Setting the custom property BEFORE
+            // adding the class ensures the keyframe values are computed with
+            // the freshly chosen sign.
+            cursor.style.setProperty("--yank-dir", Math.random() < 0.5 ? "1" : "-1");
+          }
+          cursor.classList.toggle("is-active", active);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

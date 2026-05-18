@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="420" viewBox="0 0 1920 420" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+  <defs>
+    <linearGradient id="farMist" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#b7d2a7" stop-opacity="0.85"/>
+      <stop offset="55%" stop-color="#6f9468" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#3e603b" stop-opacity="0.96"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#farMist)" d="M0,420 L0,300 L28,298 L42,276 L58,299 L84,268 L108,300 L134,271 L158,302 L184,266 L212,304 L240,273 L270,306 L300,276 L334,308 L368,281 L406,311 L444,284 L484,313 L524,287 L566,314 L610,289 L656,314 L704,290 L754,312 L806,286 L860,309 L916,282 L974,307 L1034,281 L1098,306 L1164,283 L1232,307 L1302,285 L1374,309 L1448,289 L1524,311 L1602,292 L1682,311 L1762,294 L1840,308 L1920,302 L1920,420 Z"/>
+</svg>

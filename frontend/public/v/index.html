@@ -1,0 +1,1300 @@
+<!DOCTYPE html>
+<!-- v-landing: фон — Canvallax (canvas + scroll), см. v-sky-full.js -->
+<html lang="ru" data-v-landing="2026-04-14-fullwidth-hero">
+<head>
+  <script>
+    try {
+      console.clear();
+      if (window.self !== window.top) {
+        document.documentElement.dataset.embedded = "true";
+      }
+    } catch (e) {
+      document.documentElement.dataset.embedded = "true";
+    }
+  </script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <title>Koban · Valheim</title>
+  <link rel="icon" type="image/png" href="/koban/icon.png?v=20260505" />
+  <link rel="apple-touch-icon" href="/koban/icon.png?v=20260505" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --panel: rgba(8, 16, 15, 0.78);
+      --panel-border: rgba(200, 164, 90, 0.16);
+      --text-main: #ece4d6;
+      --text-muted: #9aa39b;
+      --accent: #c8a45a;
+      --accent-hover: #e0bb6b;
+      --online: #6ee7a8;
+      --danger: #c45c2a;
+      --radius-lg: 22px;
+      --radius-sm: 12px;
+      --ease: cubic-bezier(0.4, 0, 0.2, 1);
+      --t-fast: 180ms var(--ease);
+      --t-med: 200ms var(--ease);
+      --shadow-panel: 0 12px 48px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.25);
+      --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      --forest-height: 30vh;
+      --forest-bleed: 8vw;
+      --v-cursor: url("/v/assets/sword-cursor.png?v=20260505") 4 4;
+    }
+
+    * { box-sizing: border-box; }
+    html {
+      margin: 0;
+      min-height: 100%;
+      background: #97a8c0;
+    }
+
+    /* Static sky is used for embedded previews and reduced-power fallbacks. */
+    html.sky-static body,
+    html.sky-error body {
+      background-image: linear-gradient(to top, #c8d2dc 40%, #97a8c0 80%);
+      background-size: cover;
+    }
+
+    /*
+      Не 400vw/400vh: в демо CodePen так «раздвигали» скролл для параллакса.
+      У нас margin: 0 auto на .page центрировал в 400vw — контент уезжал в ~200vw от левого края.
+    */
+    body {
+      margin: 0;
+      font-family: "Source Sans 3", system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+      color: var(--text-main);
+      background: transparent;
+      width: 100%;
+      max-width: 100%;
+      min-height: 100vh;
+      position: relative;
+      overflow-x: hidden;
+      z-index: 0;
+      cursor: var(--v-cursor), auto;
+    }
+
+    html[data-embedded="true"],
+    html[data-embedded="true"] body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    html[data-embedded="true"] .home-logo {
+      display: none;
+    }
+
+    a,
+    button,
+    [role="button"] {
+      cursor: var(--v-cursor), pointer;
+    }
+
+    /* Только не-canvallax canvas (если появятся) */
+    canvas:not(.bg-canvas) {
+      display: block;
+      margin: 2em;
+    }
+
+    .bg-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      display: block;
+      pointer-events: none;
+    }
+
+    .home-logo {
+      position: fixed;
+      top: clamp(0.55rem, 1.8vw, 1rem);
+      right: clamp(0.55rem, 1.8vw, 1rem);
+      z-index: 40;
+      display: block;
+      width: clamp(14.4rem, 36vw, 25rem);
+      aspect-ratio: 900 / 353;
+      filter:
+        drop-shadow(0 12px 32px rgba(0, 0, 0, 0.5))
+        drop-shadow(0 0 18px rgba(200, 164, 90, 0.16));
+      transform: translate3d(0, 0, 0);
+      animation: homeLogoFloat 4.8s ease-in-out infinite;
+    }
+
+    .home-logo::after {
+      content: "POWERED BY";
+      position: absolute;
+      top: calc(100% - 0.1rem);
+      left: 0;
+      right: 0;
+      color: rgba(236, 228, 214, 0.94);
+      font: 900 clamp(0.72rem, 1.55vw, 1.08rem) "Cinzel", Georgia, serif;
+      letter-spacing: 0.26em;
+      text-align: center;
+      text-shadow:
+        0 2px 14px rgba(0, 0, 0, 0.72),
+        0 0 18px rgba(200, 164, 90, 0.24);
+    }
+
+    .home-logo__img {
+      position: absolute;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    /* Layer order: static (z=1) is the body+text. The "hover" overlay
+       (glasses lifted + eyes visible) sits ABOVE it (z=2) and is permanently
+       at opacity 1. The "base" overlay (glasses-down + hair) covers it (z=3)
+       and slides up on hover to reveal what's beneath — no crossfade, no
+       semi-transparent overlap. */
+    .home-logo__img--static { z-index: 1; opacity: 1; }
+    .home-logo__img--hover  { z-index: 2; opacity: 1; }
+
+    .home-logo__img--base {
+      z-index: 3;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+      /* Un-hover (going back to idle): fade in immediately while the layer
+         slides back down. Translucent for ~280ms at the very start, then
+         solid for the rest of the slide — feels like the glasses swing
+         back into view. */
+      transition:
+        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1),
+        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
+    }
+
+    .home-logo:hover .home-logo__img--base,
+    .home-logo:focus-visible .home-logo__img--base,
+    .home-logo.is-logo-peeking .home-logo__img--base {
+      opacity: 0;
+      /* -15% keeps the slid layer inside the home-logo bounds — no stray
+         hair tufts floating above the logo. */
+      transform: translate3d(0, -15%, 0);
+      /* Hover (going to active): stay fully opaque for 1100ms while sliding
+         (no crossfade!), then fade out over the last 280ms — by then the
+         layer is already mostly out of the frame, so the fade-out reads as
+         "the glasses receding away" rather than dissolving. */
+      transition:
+        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1) 1100ms,
+        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
+    }
+
+    .home-logo:focus-visible {
+      outline: 2px solid rgba(224, 187, 107, 0.74);
+      outline-offset: 0.25rem;
+      border-radius: 0.75rem;
+    }
+
+    @keyframes homeLogoFloat {
+      0%, 100% { transform: translate3d(0, 0, 0) rotate(-0.45deg); }
+      50% { transform: translate3d(0, -0.72rem, 0) rotate(0.55deg); }
+    }
+
+    /* Below this width the .page (max 1040px, centered) and the floating logo
+       (up to 25rem wide, pinned top-right) start overlapping the hero panel.
+       Drop the logo into the normal flow at the very top so it sits ABOVE the
+       hero instead of crashing into it. The logo element already comes before
+       .page in the DOM, so flipping to position: relative is enough — the
+       absolutely-positioned <img>s inside it stay anchored to it. */
+    @media (max-width: 1840px) {
+      .home-logo {
+        position: relative;
+        top: auto;
+        right: auto;
+        margin: clamp(0.55rem, 1.4vw, 1rem) auto 0;
+        width: clamp(11rem, 38vw, 19rem);
+      }
+      .home-logo::after {
+        position: static;
+        top: auto;
+        display: block;
+        margin-top: 0.4rem;
+      }
+    }
+
+    .forest-parallax {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: -12px;
+      height: var(--forest-height);
+      z-index: 2;
+      overflow: hidden;
+      pointer-events: none;
+      -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 72%, rgba(0, 0, 0, 0) 100%);
+      mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 72%, rgba(0, 0, 0, 0) 100%);
+    }
+
+    .forest-parallax__layer {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc(-1 * var(--forest-bleed));
+      right: calc(-1 * var(--forest-bleed));
+      background-repeat: repeat-x;
+      background-position: left bottom;
+      background-size: auto 100%;
+      will-change: transform;
+      transform: translate3d(0, 0, 0);
+    }
+
+    .forest-parallax__layer--1 {
+      background-image: url("/v/assets/forest-vecteezy-tile-far.svg?v=3");
+      filter: blur(1.4px) saturate(0.88);
+    }
+
+    .forest-parallax__layer--2 {
+      background-image: url("/v/assets/forest-vecteezy-tile-mid.svg?v=3");
+      filter: blur(0.95px) saturate(0.94);
+    }
+
+    .forest-parallax__layer--3 {
+      background-image: url("/v/assets/forest-vecteezy-tile-mid2.svg?v=3");
+      filter: blur(0.45px) saturate(1);
+    }
+
+    .forest-parallax__layer--4 {
+      background-image: url("/v/assets/forest-vecteezy-tile-front.svg?v=3");
+      filter: saturate(1.02);
+    }
+
+    /* —— Page —— */
+    .page {
+      position: relative;
+      z-index: 10;
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: clamp(0.85rem, 2.5vw, 1.35rem) clamp(1rem, 3vw, 1.75rem) clamp(1.25rem, 3vw, 2rem);
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: clamp(0.9rem, 2.5vw, 1.35rem);
+      transform: translateZ(0);
+    }
+
+    .glass-panel {
+      background: var(--panel);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-panel), var(--shadow-inset);
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      transition:
+        border-color var(--t-med),
+        box-shadow var(--t-med),
+        transform var(--t-fast);
+    }
+
+    @supports not (backdrop-filter: blur(1px)) {
+      .glass-panel { background: rgba(10, 22, 20, 0.92); }
+    }
+
+    .glass-panel--interactive:hover {
+      border-color: rgba(200, 164, 90, 0.32);
+      box-shadow:
+        var(--shadow-panel),
+        var(--shadow-inset),
+        0 0 32px rgba(200, 164, 90, 0.06);
+    }
+
+    /* Hero — та же ширина колонки, что и панели «Онлайн» / «Мир» (вся .page) */
+    .hero {
+      width: 100%;
+      max-width: 100%;
+      align-self: stretch;
+      margin: 0;
+      padding: clamp(0.85rem, 2.5vw, 1.15rem) clamp(1rem, 3vw, 1.5rem);
+      text-align: center;
+      box-sizing: border-box;
+    }
+
+    .hero__kicker {
+      font-family: "Source Sans 3", sans-serif;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.32em;
+      text-transform: uppercase;
+      margin: 0 0 0.2rem;
+      transition: color var(--t-med);
+    }
+
+    .hero__kicker--online {
+      color: var(--online);
+      text-shadow: 0 0 24px rgba(110, 231, 168, 0.25);
+    }
+
+    .hero__kicker--offline {
+      color: #e86868;
+      text-shadow: 0 0 20px rgba(232, 104, 104, 0.2);
+    }
+
+    .hero__title {
+      font-family: "Cinzel", Georgia, serif;
+      font-weight: 700;
+      font-size: clamp(1.45rem, 4.5vw, 2.1rem);
+      letter-spacing: 0.18em;
+      margin: 0 0 0.3rem;
+      color: var(--text-main);
+      text-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
+    }
+
+    .hero__world-code {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 0 auto 0.6rem;
+      max-width: 100%;
+    }
+
+    .hero__world {
+      font-family: "Cinzel", serif;
+      font-size: 0.875rem;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+      margin: 0 0 0.55rem;
+      opacity: 0.92;
+      display: inline-block;
+      width: max-content;
+      max-width: 100%;
+      text-align: center;
+    }
+
+    .code-block {
+      padding: 0.5rem 0.85rem;
+      border-radius: calc(var(--radius-lg) - 4px);
+      background: linear-gradient(165deg, rgba(6, 15, 14, 0.65) 0%, rgba(12, 24, 22, 0.4) 100%);
+      border: 1px solid rgba(200, 164, 90, 0.1);
+      margin: 0;
+      box-sizing: border-box;
+      width: fit-content;
+      max-width: 100%;
+      margin-left: auto;
+      margin-right: auto;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .code {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: clamp(1.65rem, 6vw, 2.5rem);
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      font-variant-numeric: tabular-nums;
+      color: var(--accent);
+      text-shadow: 0 0 32px rgba(200, 164, 90, 0.1);
+      line-height: 1.05;
+      min-height: 0;
+      text-align: center;
+    }
+
+    .code:not(.muted) {
+      white-space: nowrap;
+      word-break: normal;
+    }
+
+    .code.muted {
+      color: var(--text-muted);
+      font-size: clamp(1rem, 3.2vw, 1.15rem);
+      letter-spacing: 0.03em;
+      font-weight: 500;
+      text-shadow: none;
+      white-space: normal;
+      word-break: break-word;
+    }
+
+    .hero__actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      justify-content: center;
+      margin-bottom: 0;
+    }
+
+    .hero__actions button {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      padding: 0.7rem 1.5rem;
+      min-height: 2.85rem;
+    }
+
+    button {
+      font-family: "Source Sans 3", sans-serif;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: var(--v-cursor), pointer;
+      transition: transform var(--t-fast), box-shadow var(--t-fast), background var(--t-fast), opacity var(--t-fast);
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: var(--v-cursor), not-allowed;
+    }
+
+    .btn-primary {
+      color: #0a0f0e;
+      background: linear-gradient(180deg, var(--accent-hover) 0%, var(--accent) 50%, #9a7a3a 100%);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    }
+
+    .btn-secondary {
+      background: rgba(200, 164, 90, 0.06);
+      color: var(--accent-hover);
+      border: 1px solid rgba(200, 164, 90, 0.28);
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: rgba(200, 164, 90, 0.1);
+      border-color: rgba(200, 164, 90, 0.4);
+    }
+
+    .btn-secondary.btn-secondary--refreshing:disabled {
+      opacity: 0.88;
+      cursor: var(--v-cursor), wait;
+    }
+
+    .toast {
+      text-align: center;
+      font-size: 0.75rem;
+      min-height: 1.15em;
+      opacity: 0;
+      transition: opacity 0.3s var(--ease);
+      margin-top: 0.4rem;
+    }
+
+    .toast.show { opacity: 1; }
+
+    /* Онлайн | Недавние в один ряд; «Мир» на всю ширину под ними */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: clamp(0.75rem, 2vw, 1.1rem);
+      align-items: stretch;
+      width: 100%;
+    }
+
+    @media (min-width: 700px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .panel--world-span {
+        grid-column: 1 / -1;
+      }
+    }
+
+    .world-info {
+      font-size: 0.875rem;
+      line-height: 1.4;
+    }
+
+    .world-info__meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.35rem 0.6rem;
+      margin-bottom: 0.55rem;
+    }
+
+    .world-info__kv {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.35rem;
+      min-width: 0;
+    }
+
+    .world-info__k {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.68rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(200, 164, 90, 0.55);
+    }
+
+    .world-info__v {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.8125rem;
+      color: var(--accent);
+      word-break: break-all;
+    }
+
+    .world-info__subhead {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: rgba(200, 164, 90, 0.5);
+      margin: 0 0 0.4rem;
+    }
+
+    .world-info__subhead--spaced {
+      margin-top: 0.5rem;
+    }
+
+    .world-info__namelist {
+      font-size: 0.8125rem;
+      line-height: 1.45;
+      color: var(--text-main);
+      word-break: break-word;
+    }
+
+    .world-info__namelist--pending {
+      color: rgba(232, 104, 104, 0.85);
+    }
+
+    .world-info__events {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      gap: 0.4rem;
+      align-items: flex-start;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: 0.2rem;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-gutter: stable;
+    }
+
+    .world-info__events::-webkit-scrollbar {
+      height: 4px;
+    }
+
+    .world-info__events::-webkit-scrollbar-thumb {
+      background: rgba(200, 164, 90, 0.25);
+      border-radius: 4px;
+    }
+
+    .world-info__events .world-info__event-chip {
+      flex: 0 0 auto;
+      max-width: min(100%, 18rem);
+    }
+
+    .world-info__event-chip {
+      font-size: 0.78rem;
+      padding: 0.25rem 0.5rem;
+      border-radius: 6px;
+      background: rgba(6, 15, 14, 0.55);
+      border: 1px solid rgba(200, 164, 90, 0.12);
+      color: var(--text-muted);
+    }
+
+    .world-info__muted {
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 0.8125rem;
+    }
+
+    .world-info__bosses {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.25rem 1.25rem;
+      font-size: 0.8125rem;
+      line-height: 1.45;
+      margin-bottom: 0.15rem;
+      align-items: start;
+    }
+
+    @media (max-width: 420px) {
+      :root {
+        --forest-bleed: 5vw;
+      }
+
+      .world-info__bosses {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .world-info__boss-line {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem 0.55rem;
+      min-width: 0;
+    }
+
+    .world-info__boss-thumb {
+      flex: 0 0 auto;
+      line-height: 0;
+    }
+
+    .world-info__boss-thumb img {
+      width: 48px;
+      height: auto;
+      display: block;
+      border-radius: 5px;
+      border: 1px solid rgba(200, 164, 90, 0.18);
+    }
+
+    .world-info__boss-link {
+      flex: 1 1 auto;
+      min-width: 0;
+      color: inherit;
+      text-decoration: none;
+      font-size: 0.8125rem;
+    }
+
+    .world-info__boss-link:hover {
+      text-decoration: underline;
+      color: var(--accent);
+    }
+
+    .world-info__boss-mark {
+      flex: 0 0 auto;
+      font-weight: 600;
+    }
+
+    .world-info__boss-line--done {
+      color: rgba(110, 231, 168, 0.88);
+    }
+
+    .world-info__boss-line--pending {
+      color: rgba(232, 104, 104, 0.82);
+    }
+
+    .world-info__event-chip--unknown {
+      border-style: dashed;
+      opacity: 0.92;
+    }
+
+    .world-info__event-chip--latest {
+      border-color: rgba(200, 164, 90, 0.28);
+      color: var(--text-main);
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      padding: clamp(0.9rem, 2.2vw, 1.2rem);
+      min-height: 0;
+      height: 100%;
+    }
+
+    .panel .list {
+      flex: 1 1 auto;
+    }
+
+    .panel__head {
+      font-family: "Cinzel", serif;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(200, 164, 90, 0.75);
+      margin: 0 0 0.55rem;
+      padding-bottom: 0.45rem;
+      border-bottom: 1px solid rgba(200, 164, 90, 0.12);
+    }
+
+    .list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .list li {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.85rem;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      font-size: 0.875rem;
+    }
+
+    .list li:last-child { border-bottom: none; }
+
+    .player-row {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .player-row__name {
+      font-weight: 600;
+      color: var(--text-main);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dot-online {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--online);
+      flex-shrink: 0;
+      box-shadow: 0 0 10px rgba(110, 231, 168, 0.45);
+      animation: pulse-online 2.4s ease-in-out infinite;
+    }
+
+    @keyframes pulse-online {
+      0%, 100% { opacity: 0.88; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.08); }
+    }
+
+    .meta-small {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      text-align: right;
+      flex-shrink: 0;
+      line-height: 1.35;
+    }
+
+    .meta-small .sub {
+      display: block;
+      font-size: 0.72rem;
+      opacity: 0.85;
+      margin-top: 0.15rem;
+    }
+
+    .empty {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin: 0;
+      font-style: italic;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dot-online {
+        animation: none !important;
+      }
+      .home-logo {
+        animation: none;
+      }
+      .glass-panel--interactive:hover {
+        transform: translateZ(0);
+      }
+      .forest-parallax__layer {
+        transform: translate3d(0, 0, 0) !important;
+      }
+    }
+
+    @media (hover: none) and (pointer: coarse) {
+      :root {
+        --forest-bleed: 5vw;
+      }
+    }
+
+  </style>
+</head>
+<body>
+  <a class="home-logo" href="https://koban.uk/" aria-label="Вернуться на koban.uk">
+    <img class="home-logo__img home-logo__img--static" src="/koban/logo-static.png?v=20260505-glasses" alt="КОБАНЮК" />
+    <img class="home-logo__img home-logo__img--base" src="/koban/logo-base-overlay.png?v=20260505-glasses" alt="" aria-hidden="true" />
+    <img class="home-logo__img home-logo__img--hover" src="/koban/logo-hover-overlay.png?v=20260509-lift" alt="" aria-hidden="true" />
+  </a>
+
+  <div class="page" aria-live="polite">
+    <article class="hero glass-panel">
+      <p class="hero__kicker hero__kicker--offline" id="heroStatus" aria-live="polite">ОФФЛАЙН</p>
+      <h1 class="hero__title">VALHEIM</h1>
+      <div class="hero__world-code">
+        <p class="hero__world" id="worldLabel">Мир · Koban</p>
+        <div class="code-block">
+          <div id="code" class="code muted" aria-label="Код мира">…</div>
+        </div>
+      </div>
+
+      <div class="hero__actions">
+        <button type="button" class="btn-secondary" id="refreshBtn" aria-busy="false">Обновить</button>
+        <button type="button" class="btn-primary" id="copyBtn" disabled>Скопировать код</button>
+      </div>
+
+      <p class="toast" id="toast" role="status"></p>
+    </article>
+
+    <div class="dashboard-grid">
+      <section class="panel glass-panel glass-panel--interactive">
+        <h2 class="panel__head">Онлайн</h2>
+        <ul class="list" id="onlineList"></ul>
+        <p class="empty" id="onlineEmpty" hidden>Никого в мире</p>
+      </section>
+
+      <section class="panel glass-panel glass-panel--interactive">
+        <h2 class="panel__head">Недавние</h2>
+        <ul class="list" id="recentList"></ul>
+        <p class="empty" id="recentEmpty" hidden>Нет записей</p>
+      </section>
+
+      <section class="panel panel--world-span glass-panel glass-panel--interactive" aria-label="Информация о мире">
+        <h2 class="panel__head">Мир</h2>
+        <div id="worldInfoRoot" class="world-info"></div>
+      </section>
+    </div>
+  </div>
+
+  <div class="forest-parallax" id="forestParallax" aria-hidden="true">
+    <div class="forest-parallax__layer forest-parallax__layer--1" data-depth-x="-0.18" data-depth-y="-0.06" data-base-y="0"></div>
+    <div class="forest-parallax__layer forest-parallax__layer--2" data-depth-x="-0.34" data-depth-y="-0.10" data-base-y="0"></div>
+    <div class="forest-parallax__layer forest-parallax__layer--3" data-depth-x="-0.60" data-depth-y="-0.16" data-base-y="0"></div>
+    <div class="forest-parallax__layer forest-parallax__layer--4" data-depth-x="-0.90" data-depth-y="-0.24" data-base-y="0"></div>
+  </div>
+
+  <script src="/v/canvallax.min.js"></script>
+  <script src="/v/v-sky-full.js?v=7"></script>
+  <script src="/v/forest-parallax.js?v=2"></script>
+  <script src="/v/constants/valheim-world-ru.js?v=3"></script>
+  <script src="/v/components/world-info.js?v=10"></script>
+  <script>
+    (function () {
+      var JSON_URL = "/v/valheim-join-code.json";
+      var API_REFRESH = "/api/valheim-join-code/refresh";
+      var POLL_MS = 20000;
+
+      var codeEl = document.getElementById("code");
+      var copyBtn = document.getElementById("copyBtn");
+      var refreshBtn = document.getElementById("refreshBtn");
+      var toast = document.getElementById("toast");
+      var worldLabel = document.getElementById("worldLabel");
+      var heroStatus = document.getElementById("heroStatus");
+      var onlineList = document.getElementById("onlineList");
+      var onlineEmpty = document.getElementById("onlineEmpty");
+      var recentList = document.getElementById("recentList");
+      var recentEmpty = document.getElementById("recentEmpty");
+      var worldInfoRoot = document.getElementById("worldInfoRoot");
+
+      var lastCode = null;
+      var pollTimer = null;
+      var cachedOnline = [];
+      var cachedRecent = [];
+      var cachedWorld = null;
+      var didSilentRecentBoost = false;
+
+      var REFRESH_LABEL_IDLE = "Обновить";
+      var REFRESH_LABEL_BUSY = "Обновление…";
+      var REFRESH_COOLDOWN_FALLBACK_MS = 5000;
+      var refreshBusy = false;
+      var refreshCooldownUntil = 0;
+      var refreshCooldownTimer = 0;
+
+      function getRefreshCooldownRemainingMs() {
+        return Math.max(0, refreshCooldownUntil - Date.now());
+      }
+
+      function stopRefreshCooldownTimer() {
+        if (refreshCooldownTimer) {
+          clearInterval(refreshCooldownTimer);
+          refreshCooldownTimer = 0;
+        }
+      }
+
+      function getRefreshCooldownMsFromResponse(res) {
+        if (!res || !res.headers) return REFRESH_COOLDOWN_FALLBACK_MS;
+        var retryAfter = parseFloat(res.headers.get("Retry-After"));
+        if (isFinite(retryAfter) && retryAfter > 0) {
+          return retryAfter * 1000;
+        }
+        var cooldownSec = parseFloat(res.headers.get("X-Valheim-Refresh-Cooldown-Sec"));
+        if (isFinite(cooldownSec) && cooldownSec > 0) {
+          return cooldownSec * 1000;
+        }
+        return REFRESH_COOLDOWN_FALLBACK_MS;
+      }
+
+      function updateRefreshButtonState() {
+        var cooldownMs = getRefreshCooldownRemainingMs();
+        var disabled = refreshBusy || cooldownMs > 0;
+        refreshBtn.disabled = disabled;
+        refreshBtn.setAttribute("aria-busy", refreshBusy ? "true" : "false");
+        refreshBtn.classList.toggle("btn-secondary--refreshing", refreshBusy);
+        if (refreshBusy) {
+          refreshBtn.textContent = REFRESH_LABEL_BUSY;
+          return;
+        }
+        if (cooldownMs > 0) {
+          refreshBtn.textContent = "Подождать " + Math.max(1, Math.ceil(cooldownMs / 1000)) + "с";
+          return;
+        }
+        refreshBtn.textContent = REFRESH_LABEL_IDLE;
+      }
+
+      function setRefreshBusy(busy) {
+        refreshBusy = !!busy;
+        updateRefreshButtonState();
+      }
+
+      function startRefreshCooldown(ms) {
+        var safeMs = Math.max(0, Math.floor(ms || 0));
+        stopRefreshCooldownTimer();
+        refreshCooldownUntil = safeMs > 0 ? Date.now() + safeMs : 0;
+        updateRefreshButtonState();
+        if (!safeMs) return;
+        refreshCooldownTimer = setInterval(function () {
+          if (getRefreshCooldownRemainingMs() <= 0) {
+            refreshCooldownUntil = 0;
+            stopRefreshCooldownTimer();
+          }
+          updateRefreshButtonState();
+        }, 250);
+      }
+
+      function setToast(msg, ok) {
+        toast.textContent = msg;
+        toast.className = "toast show";
+        toast.style.color = ok ? "var(--online)" : "var(--danger)";
+        clearTimeout(setToast._t);
+        setToast._t = setTimeout(function () {
+          toast.className = "toast";
+          toast.textContent = "";
+        }, 2500);
+      }
+
+      function fmtTime(iso) {
+        if (!iso) return "—";
+        try {
+          var d = new Date(iso);
+          return d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" });
+        } catch (e) {
+          return iso;
+        }
+      }
+
+      /** Относительное время на русском + полная дата в title */
+      function relativeTimeRu(iso) {
+        if (!iso) return "—";
+        var d = new Date(iso);
+        var t = d.getTime();
+        if (isNaN(t)) return "—";
+        var sec = Math.floor((Date.now() - t) / 1000);
+        if (sec < 50) return "только что";
+        if (sec < 3600) return Math.max(1, Math.floor(sec / 60)) + " мин назад";
+        if (sec < 86400) return Math.max(1, Math.floor(sec / 3600)) + " ч назад";
+        if (sec < 172800) return "вчера";
+        if (sec < 604800) return Math.max(1, Math.floor(sec / 86400)) + " дн назад";
+        return fmtTime(iso);
+      }
+
+      function formatDuration(fromIso) {
+        if (!fromIso) return "—";
+        var t = new Date(fromIso).getTime();
+        if (isNaN(t)) return "—";
+        var sec = Math.floor((Date.now() - t) / 1000);
+        return formatDurationSeconds(sec);
+      }
+
+      function formatDurationSeconds(sec) {
+        if (sec == null || !isFinite(sec)) return "—";
+        if (sec < 0) return "0 с";
+        if (sec < 60) return sec + " с";
+        var m = Math.floor(sec / 60);
+        if (m < 60) return m + " мин";
+        var h = Math.floor(m / 60);
+        m = m % 60;
+        if (h < 24) return h + " ч" + (m ? " " + m + " мин" : "");
+        var d = Math.floor(h / 24);
+        h = h % 24;
+        return d + " д" + (h ? " " + h + " ч" : "");
+      }
+
+      function getUpdated(data) {
+        return data.updatedAt != null ? data.updatedAt : data.updated;
+      }
+
+      function getWorldCode(data) {
+        return data.worldCode != null ? data.worldCode : data.code;
+      }
+
+      /** Онлайн: код есть, ok, Docker не «выключен» явно */
+      function isPayloadOnline(data) {
+        if (!data || typeof data !== "object") return false;
+        if (data.serverStatus && data.serverStatus.dockerRunning === false) return false;
+        if (data.ok !== true) return false;
+        return !!getWorldCode(data);
+      }
+
+      function setHeroStatus(online) {
+        if (!heroStatus) return;
+        heroStatus.textContent = online ? "ОНЛАЙН" : "ОФФЛАЙН";
+        heroStatus.className = "hero__kicker " + (online ? "hero__kicker--online" : "hero__kicker--offline");
+      }
+
+      function renderOnline(players) {
+        onlineList.innerHTML = "";
+        if (!players || !players.length) {
+          onlineEmpty.hidden = false;
+          return;
+        }
+        onlineEmpty.hidden = true;
+        players.forEach(function (p) {
+          var li = document.createElement("li");
+          var left = document.createElement("div");
+          left.className = "player-row";
+          left.innerHTML = '<span class="dot-online" aria-hidden="true"></span><span class="player-row__name">' + escapeHtml(p.name) + "</span>";
+          var right = document.createElement("div");
+          right.className = "meta-small";
+          right.innerHTML =
+            "<span>В игре</span><span class=\"sub\">" + formatDuration(p.onlineSince) + "</span>";
+          li.appendChild(left);
+          li.appendChild(right);
+          onlineList.appendChild(li);
+        });
+      }
+
+      function renderRecent(players) {
+        recentList.innerHTML = "";
+        if (!players || !players.length) {
+          recentEmpty.hidden = false;
+          return;
+        }
+        recentEmpty.hidden = true;
+        players.forEach(function (p) {
+          var li = document.createElement("li");
+          var left = document.createElement("div");
+          left.className = "player-row";
+          left.innerHTML = "<span class=\"player-row__name\">" + escapeHtml(p.name) + "</span>";
+          var right = document.createElement("div");
+          right.className = "meta-small";
+          if (p.online === true) {
+            right.innerHTML = "<span>Онлайн</span>";
+            right.title = p.sessionStartedAt ? "В игре с " + fmtTime(p.sessionStartedAt) : "Игрок сейчас в мире";
+          } else if (p.sessionDurationSec != null || p.sessionStartedAt) {
+            var endedAt = p.sessionEndedAt || p.lastSeen;
+            var dur =
+              p.sessionDurationSec != null
+                ? formatDurationSeconds(p.sessionDurationSec)
+                : formatDurationSeconds(
+                    Math.floor((new Date(endedAt).getTime() - new Date(p.sessionStartedAt).getTime()) / 1000)
+                  );
+            right.innerHTML = "<span>Сессия " + dur + "</span><span class=\"sub\">" + fmtTime(endedAt) + "</span>";
+            right.title = "Завершена " + fmtTime(endedAt);
+          } else {
+            var rel = relativeTimeRu(p.lastSeen);
+            right.innerHTML = "<span>" + rel + "</span><span class=\"sub\">" + fmtTime(p.lastSeen) + "</span>";
+            right.title = fmtTime(p.lastSeen);
+          }
+          li.appendChild(left);
+          li.appendChild(right);
+          recentList.appendChild(li);
+        });
+      }
+
+      function escapeHtml(s) {
+        var d = document.createElement("div");
+        d.textContent = s;
+        return d.innerHTML;
+      }
+
+      function applyPayload(data) {
+        var name = data.serverName || "Koban";
+        worldLabel.textContent = "Мир · " + name;
+
+        var u = getUpdated(data);
+
+        var online;
+        if (Array.isArray(data.onlinePlayers)) {
+          online = data.onlinePlayers.slice();
+        } else if (data.playersOnline != null) {
+          online = [];
+          if (data.players && data.players.length) {
+            data.players.forEach(function (n) {
+              online.push({ name: n, onlineSince: u });
+            });
+          }
+        } else {
+          online = cachedOnline.slice();
+        }
+
+        var rp = data.recentPlayers;
+        if (!Array.isArray(rp) && Array.isArray(data.recent_players)) rp = data.recent_players;
+        if (Array.isArray(rp)) {
+          cachedRecent = rp.slice();
+        }
+        renderRecent(cachedRecent);
+
+        cachedOnline = online.slice();
+        renderOnline(online);
+
+        setHeroStatus(isPayloadOnline(data));
+
+        var wc = getWorldCode(data);
+        if (data.ok && wc) {
+          codeEl.textContent = wc;
+          codeEl.className = "code";
+          copyBtn.disabled = false;
+          lastCode = String(wc);
+        } else {
+          codeEl.textContent = data.error || "Код пока недоступен";
+          codeEl.className = "code muted";
+          copyBtn.disabled = true;
+          lastCode = null;
+        }
+
+        applyWorldInfo(data);
+      }
+
+      /** Обновляет блок «Мир» только если в payload пришёл объект world; иначе оставляет предыдущие данные на экране. */
+      function applyWorldInfo(data) {
+        if (typeof renderWorldInfo !== "function") return;
+        if (!data || typeof data !== "object") return;
+        if (!Object.prototype.hasOwnProperty.call(data, "world")) {
+          return;
+        }
+        if (data.world != null && typeof data.world === "object") {
+          cachedWorld = data.world;
+          renderWorldInfo(worldInfoRoot, cachedWorld);
+          return;
+        }
+        if (cachedWorld) {
+          renderWorldInfo(worldInfoRoot, cachedWorld);
+        }
+      }
+
+      function schedulePoll() {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        pollTimer = setInterval(fetchJoinData, POLL_MS);
+      }
+
+      async function fetchJoinData() {
+        var url = JSON_URL + "?t=" + Date.now();
+        try {
+          var res = await fetch(url, { cache: "no-store" });
+          if (!res.ok) throw new Error("HTTP " + res.status + " — нет " + JSON_URL);
+          var data = JSON.parse(await res.text());
+          applyPayload(data);
+          if (!didSilentRecentBoost && data.ok) {
+            var hasRecentKey =
+              Object.prototype.hasOwnProperty.call(data, "recentPlayers") ||
+              Object.prototype.hasOwnProperty.call(data, "recent_players");
+            if (!hasRecentKey) {
+              didSilentRecentBoost = true;
+              try {
+                var res2 = await fetch(API_REFRESH, {
+                  method: "POST",
+                  cache: "no-store",
+                  headers: { Accept: "application/json" },
+                });
+                var txt2 = await res2.text();
+                var d2 = JSON.parse(txt2);
+                if (res2.ok) applyPayload(d2);
+              } catch (e2) {}
+            }
+          }
+        } catch (e) {
+          codeEl.textContent = String(e.message || e);
+          codeEl.className = "code muted";
+          copyBtn.disabled = true;
+          lastCode = null;
+          setHeroStatus(false);
+          renderOnline(cachedOnline);
+          renderRecent(cachedRecent);
+          if (typeof renderWorldInfo === "function" && cachedWorld) {
+            renderWorldInfo(worldInfoRoot, cachedWorld);
+          }
+          return;
+        }
+      }
+
+      async function refreshFromServer() {
+        if (refreshBusy || getRefreshCooldownRemainingMs() > 0) return;
+        setRefreshBusy(true);
+        var cooldownMs = 0;
+        try {
+          var res = await fetch(API_REFRESH, {
+            method: "POST",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          });
+          cooldownMs = getRefreshCooldownMsFromResponse(res);
+          var text = await res.text();
+          var data;
+          try {
+            data = JSON.parse(text);
+          } catch (e) {
+            throw new Error("API не JSON (проверь nginx и valheim-join-api.service). HTTP " + res.status);
+          }
+          if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+          applyPayload(data);
+          setToast("Данные обновлены (код, игроки, мир)", true);
+        } catch (e) {
+          setToast(String(e.message || e), false);
+          await fetchJoinData();
+        } finally {
+          setRefreshBusy(false);
+          if (cooldownMs > 0) {
+            startRefreshCooldown(cooldownMs);
+          }
+          schedulePoll();
+        }
+      }
+
+      refreshBtn.addEventListener("click", function () {
+        refreshFromServer();
+      });
+
+      copyBtn.addEventListener("click", function () {
+        if (!lastCode) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(lastCode).then(function () {
+            setToast("Скопировано в буфер", true);
+          }).catch(function () {
+            setToast("Не удалось скопировать", false);
+          });
+        } else {
+          setToast("Буфер недоступен в этом браузере", false);
+        }
+      });
+
+      fetchJoinData().then(function () {
+        schedulePoll();
+      });
+
+      updateRefreshButtonState();
+
+      setInterval(function () {
+        if (cachedOnline.length) renderOnline(cachedOnline);
+        if (cachedRecent.length) renderRecent(cachedRecent);
+      }, 30000);
+    })();
+  </script>
+  <script>
+    (function () {
+      var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      var logo = document.querySelector(".home-logo");
+      var timer = 0;
+
+      if (!logo || reduceMotion) return;
+
+      function schedulePeek() {
+        if (timer) window.clearTimeout(timer);
+        timer = window.setTimeout(function () {
+          logo.classList.add("is-logo-peeking");
+          window.setTimeout(function () {
+            logo.classList.remove("is-logo-peeking");
+            schedulePeek();
+          }, 1200);
+        }, 5000 + Math.random() * 5000);
+      }
+
+      schedulePeek();
+      window.addEventListener("pagehide", function () {
+        if (timer) window.clearTimeout(timer);
+      });
+      window.addEventListener("pageshow", schedulePeek);
+    })();
+  </script>
+</body>
+</html>

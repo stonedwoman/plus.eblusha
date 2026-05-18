@@ -1,0 +1,18 @@
+# SPB: /etc/frp/frpc-visitor.toml
+# auth.token и secretKey должны совпадать с frps и Romania frpc
+
+serverAddr = "127.0.0.1"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "WZCbmMdHCv43hd/xk7qqai8W1l8iFHrEjj2ao9Yb4/M="
+
+transport.tls.enable = true
+
+[[visitors]]
+name = "romania_socks_visitor"
+type = "stcp"
+serverName = "romania_socks"
+secretKey = "1"
+bindAddr = "127.0.0.1"
+bindPort = 7180

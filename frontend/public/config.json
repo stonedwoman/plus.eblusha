@@ -1,0 +1,35 @@
+{
+  "log": {
+    "level": "warn"
+  },
+  "dns": {
+    "strategy": "prefer_ipv4"
+  },
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "proxy",
+      "server": "config.chesnok.org",
+      "server_port": 2443,
+      "uuid": "d688d551-b273-404e-a784-cf1c835a1dc4",
+      "packet_encoding": "",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.cloudflare.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "UZzW7L2C89mhZkuYY-YgYxZSJclD-K4TYGXhFPq9JgQ",
+          "short_id": "6ba85179e30d4fc2"
+        }
+      }
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "proxy"
+  }
+}

@@ -1,0 +1,20 @@
+# LiveKit server config для Eblusha Plus
+# Ключи подставляются через entrypoint из LIVEKIT_API_KEY и LIVEKIT_API_SECRET
+port: 7880
+keys:
+  myapp: "REPLACE_SECRET"
+rtc:
+  port_range_start: 58000
+  port_range_end: 58100
+  tcp_port: 7881
+  use_external_ip: true
+  # Optional external TURN servers are injected here from LIVEKIT_TURN_* env vars.
+  __LIVEKIT_RTC_TURN_SERVERS__: null
+
+webhook:
+  api_key: myapp
+  urls:
+    - "http://backend:4000/api/livekit/webhook"
+
+logging:
+  level: info

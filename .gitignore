@@ -16,3 +16,10 @@ tmp/
 /node_modules
 /frontend/node_modules
 /frontend/public/updates
+
+# Local DB dumps / huge test payloads (GitHub file limit 100 MB)
+/backups/
+frontend/public/test200.bin
+
+# accidental pasted shell artifact at repo root
+/ing-box*

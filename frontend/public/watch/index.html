@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>Koban · Котонадзор</title>
+  <link rel="icon" type="image/png" href="/koban/icon.png?v=20260505" />
+  <link rel="apple-touch-icon" href="/koban/icon.png?v=20260505" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #050a0e;
+      --bar: rgba(6, 14, 20, 0.94);
+      --line: rgba(95, 182, 197, 0.14);
+      --text: #e8eef0;
+      --muted: #8fa6b0;
+      --accent: #5fb6c5;
+      --gold: #e8cc6a;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100%;
+      min-height: 100dvh;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Source Sans 3", system-ui, sans-serif;
+      font-size: 15px;
+      line-height: 1.4;
+    }
+
+    .topbar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.55rem max(1rem, env(safe-area-inset-right)) 0.55rem max(1rem, env(safe-area-inset-left));
+      background: var(--bar);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+    }
+
+    .topbar h1 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-shrink: 0;
+    }
+
+    .topbar-actions a {
+      color: var(--gold);
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.92rem;
+      white-space: nowrap;
+    }
+
+    .topbar-actions a:hover {
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .topbar-actions a.secondary {
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .topbar-actions a.secondary:hover {
+      color: var(--text);
+    }
+
+    .feeds {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      width: 100%;
+    }
+
+    .cam {
+      flex: 1 1 50%;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .cam:last-child {
+      border-bottom: none;
+    }
+
+    .frame {
+      flex: 1;
+      position: relative;
+      width: 100%;
+      min-height: 160px;
+      background: #000;
+    }
+
+    .frame img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      object-position: center center;
+    }
+
+    .cam-label {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 1.75rem 0.85rem 0.55rem;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      background: linear-gradient(to top, rgba(0, 0, 0, 0.72), transparent);
+      pointer-events: none;
+      color: rgba(255, 255, 255, 0.92);
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+    }
+
+    .offline {
+      position: absolute;
+      top: 0.55rem;
+      right: 0.55rem;
+      padding: 0.28rem 0.45rem;
+      border-radius: 6px;
+      background: rgba(24, 10, 10, 0.88);
+      color: #f0b4b4;
+      font-size: 0.75rem;
+      font-weight: 600;
+      display: none;
+    }
+
+    .frame.is-error img {
+      opacity: 0.35;
+    }
+
+    .frame.is-error .offline {
+      display: block;
+    }
+
+    footer.meta {
+      flex-shrink: 0;
+      padding: 0.35rem max(1rem, env(safe-area-inset-right)) calc(0.65rem + env(safe-area-inset-bottom))
+        max(1rem, env(safe-area-inset-left));
+      border-top: 1px solid var(--line);
+      background: var(--bar);
+    }
+
+    details.hint {
+      margin: 0;
+      font-size: 0.8125rem;
+      color: var(--muted);
+    }
+
+    details.hint summary {
+      cursor: pointer;
+      color: var(--accent);
+      font-weight: 600;
+      user-select: none;
+    }
+
+    details.hint summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details.hint summary::before {
+      content: "";
+      display: inline-block;
+      width: 0.35em;
+      height: 0.35em;
+      margin-right: 0.45em;
+      border-right: 2px solid var(--accent);
+      border-bottom: 2px solid var(--accent);
+      transform: rotate(-45deg);
+      vertical-align: 0.15em;
+      opacity: 0.85;
+    }
+
+    details.hint[open] summary::before {
+      transform: rotate(45deg);
+      vertical-align: 0.22em;
+    }
+
+    details.hint .panel {
+      margin-top: 0.65rem;
+      padding-top: 0.65rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    details.hint p {
+      margin: 0.55rem 0 0;
+    }
+
+    details.hint pre {
+      margin: 0.55rem 0 0;
+      overflow-x: auto;
+      padding: 0.55rem 0.65rem;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 0.76rem;
+      line-height: 1.38;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Котонадзор</h1>
+    <nav class="topbar-actions">
+      <a href="/koban/">На главную</a>
+      <a class="secondary" href="/watch/logout">Выйти</a>
+    </nav>
+  </header>
+
+  <div class="feeds" id="cameras">
+    <article class="cam" data-slot="0">
+      <div class="frame" id="f0">
+        <img alt="FaceCam 1000X" decoding="async" src="/watch/stream/0" referrerpolicy="no-referrer" />
+        <span class="offline">Нет сигнала</span>
+        <div class="cam-label">FaceCam 1000X</div>
+      </div>
+    </article>
+    <article class="cam" data-slot="1">
+      <div class="frame" id="f1">
+        <img alt="Streamplify CAM" decoding="async" src="/watch/stream/1" referrerpolicy="no-referrer" />
+        <span class="offline">Нет сигнала</span>
+        <div class="cam-label">Streamplify CAM</div>
+      </div>
+    </article>
+  </div>
+
+  <footer class="meta">
+    <details class="hint">
+      <summary>Сервисы и диагностика</summary>
+      <div class="panel">
+        <p>
+          Страница мониторинга и потоки <code>/watch/stream/*</code> доступны только после ввода PIN (cookie-сессия с подписью на сервере).
+          Длина кода совпадает с переменной <code>KOBAN_WATCH_PIN</code> в unit <code>koban-hub</code>.
+          Relay-камеры: <code>koban-watch-facecam</code> (<code>/dev/video0</code>),
+          <code>koban-watch-streamplify</code> (<code>/dev/video2</code>); hub:
+          <code>KOBAN_WATCH_STREAM_*</code>. Нет картинки — <code>systemctl status koban-watch-*</code>.
+        </p>
+        <p>
+          Другая схема (mjpg-streamer вместо relay): переменные unit для <code>koban-hub</code>, затем
+          <code>systemctl daemon-reload &amp;&amp; systemctl restart koban-hub</code>:
+        </p>
+        <pre>Environment=&quot;KOBAN_WATCH_STREAM_0=http://127.0.0.1:8080/?action=stream&quot;
+Environment=&quot;KOBAN_WATCH_STREAM_1=http://127.0.0.1:8081/?action=stream&quot;</pre>
+        <p>
+          За обратным прокси для живого MJPEG включите <code>proxy_buffering off</code> на location потоков.
+        </p>
+      </div>
+    </details>
+  </footer>
+
+  <script>
+    (function () {
+      ["f0", "f1"].forEach(function (id) {
+        var wrap = document.getElementById(id);
+        if (!wrap) return;
+        var img = wrap.querySelector("img");
+        img.addEventListener("error", function () {
+          wrap.classList.add("is-error");
+        });
+        img.addEventListener("load", function () {
+          wrap.classList.remove("is-error");
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

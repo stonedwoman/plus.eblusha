@@ -1,0 +1,31 @@
+# Romania → SPB frp client
+# Тот же auth.token и secretKey должны быть на SPB (frps + visitor)
+
+serverAddr = "config.chesnok.org"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "WZCbmMdHCv43hd/xk7qqai8W1l8iFHrEjj2ao9Yb4/M="
+
+transport.tls.enable = true
+
+[[proxies]]
+name = "romania_socks"
+type = "stcp"
+secretKey = "1"
+localIP = "127.0.0.1"
+localPort = 1080
+
+[[proxies]]
+name = "romania_http"
+type = "stcp"
+secretKey = "1"
+localIP = "127.0.0.1"
+localPort = 80
+
+[[proxies]]
+name = "romania_https"
+type = "stcp"
+secretKey = "1"
+localIP = "127.0.0.1"
+localPort = 443

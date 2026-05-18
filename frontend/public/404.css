@@ -1,0 +1,112 @@
+/**
+ * Кнопка «НОЗАД» на странице 404.
+ * Подключается из 404.html как /404.css (отдельное имя, не /style.css).
+ */
+
+#oopss .eb404-back {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 0;
+  padding: 0.5em 1.5em;
+  min-width: 8.5em;
+  border: 2px solid #141414;
+  border-radius: 999px;
+  background: #fff;
+  color: #111;
+  font-family: inherit;
+  font-weight: 900;
+  font-size: clamp(0.95rem, 4vw, 1.5rem);
+  letter-spacing: 0.14em;
+  text-decoration: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  /* «пластилиновая» кнопка: объём за счёт нижней грани */
+  box-shadow:
+    0 4px 0 #141414,
+    0 10px 28px rgba(0, 0, 0, 0.2);
+  transition:
+    transform 0.2s cubic-bezier(0.33, 1, 0.68, 1),
+    box-shadow 0.2s ease,
+    background 0.2s ease;
+}
+
+#oopss .eb404-back:hover {
+  background: #fafafa;
+  transform: translateY(-3px);
+  box-shadow:
+    0 7px 0 #141414,
+    0 16px 36px rgba(0, 0, 0, 0.25);
+}
+
+#oopss .eb404-back:active {
+  transform: translateY(2px);
+  box-shadow:
+    0 2px 0 #141414,
+    0 4px 14px rgba(0, 0, 0, 0.18);
+  transition-duration: 0.08s;
+}
+
+#oopss .eb404-back:focus-visible {
+  outline: 3px solid #141414;
+  outline-offset: 5px;
+}
+
+/* Десктоп: родитель #error-text с zoom: 3 — кнопка в «логических» 1/3, после zoom как раньше */
+@media (min-width: 769px) {
+  #oopss .eb404-back {
+    padding: 0.22em 0.65em;
+    min-width: 3.1em;
+    font-size: clamp(0.42rem, 1.4vw, 0.58rem);
+    letter-spacing: 0.12em;
+    border-width: 1px;
+    box-shadow:
+      0 1.5px 0 #141414,
+      0 4px 11px rgba(0, 0, 0, 0.2);
+  }
+
+  #oopss .eb404-back:hover {
+    transform: translateY(-1px);
+    box-shadow:
+      0 2.5px 0 #141414,
+      0 6px 16px rgba(0, 0, 0, 0.24);
+  }
+
+  #oopss .eb404-back:active {
+    transform: translateY(0.5px);
+    box-shadow:
+      0 1px 0 #141414,
+      0 2px 8px rgba(0, 0, 0, 0.16);
+  }
+
+  #oopss .eb404-back:focus-visible {
+    outline-width: 1px;
+    outline-offset: 2px;
+  }
+}
+
+@media (max-width: 480px) {
+  #oopss .eb404-back {
+    min-height: 44px;
+    padding: 0.55em 1.35em;
+    font-size: clamp(0.85rem, 3.8vw, 1.25rem);
+    letter-spacing: 0.1em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #oopss .eb404-back,
+  #oopss .eb404-back:hover,
+  #oopss .eb404-back:active {
+    transition: none;
+  }
+
+  #oopss .eb404-back:hover {
+    transform: none;
+  }
+
+  #oopss .eb404-back:active {
+    transform: none;
+  }
+}

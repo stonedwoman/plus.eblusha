@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="ru" data-s-landing="2026-04-27">
+<head>
+  <script>
+    try {
+      if (window.self !== window.top) {
+        document.documentElement.dataset.embedded = "true";
+      }
+    } catch (e) {
+      document.documentElement.dataset.embedded = "true";
+    }
+  </script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <title>Koban · Satisfactory</title>
+  <link rel="icon" type="image/png" href="/koban/icon.png?v=20260505" />
+  <link rel="apple-touch-icon" href="/koban/icon.png?v=20260505" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Oxanium:wght@500;600;700&family=Source+Sans+3:wght@0,400;0,500;0,600;0,700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0b1015;
+      --panel: rgba(14, 18, 22, 0.78);
+      --panel-strong: rgba(18, 23, 28, 0.92);
+      --panel-border: rgba(255, 151, 36, 0.18);
+      --text-main: #f3eadb;
+      --text-muted: #a8a59f;
+      --accent: #ff9724;
+      --accent-soft: #ffc166;
+      --online: #63e6a8;
+      --danger: #ff6b57;
+      --steel: #7aa7c7;
+      --radius-lg: 22px;
+      --radius-sm: 12px;
+      --ease: cubic-bezier(0.4, 0, 0.2, 1);
+      --shadow-panel: 0 16px 58px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      --s-cursor: url("/s/assets/xeno-zapper-cursor.png?v=20260505") 9 9;
+    }
+
+    * { box-sizing: border-box; }
+    html {
+      min-height: 100%;
+      background:
+        radial-gradient(circle at 15% 15%, rgba(255, 151, 36, 0.16), transparent 32rem),
+        radial-gradient(circle at 80% 5%, rgba(122, 167, 199, 0.14), transparent 28rem),
+        linear-gradient(145deg, #121920 0%, #0b1015 48%, #130e0a 100%);
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text-main);
+      font-family: "Source Sans 3", system-ui, sans-serif;
+      overflow-x: hidden;
+      cursor: var(--s-cursor), auto;
+    }
+
+    a,
+    button,
+    [role="button"] {
+      cursor: var(--s-cursor), pointer;
+    }
+
+    html[data-embedded="true"],
+    html[data-embedded="true"] body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    html[data-embedded="true"] .home-logo {
+      display: none;
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    body::before {
+      opacity: 0.28;
+      background-image:
+        linear-gradient(rgba(255, 151, 36, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 151, 36, 0.08) 1px, transparent 1px);
+      background-size: 64px 64px;
+      mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 78%);
+    }
+
+    body::after {
+      background:
+        linear-gradient(115deg, transparent 0 42%, rgba(255, 151, 36, 0.08) 42% 43%, transparent 43%),
+        linear-gradient(70deg, transparent 0 55%, rgba(122, 167, 199, 0.08) 55% 56%, transparent 56%);
+      opacity: 0.8;
+    }
+
+    .parallax-bg {
+      position: fixed;
+      inset: -12vmax;
+      z-index: 0;
+      pointer-events: none;
+      overflow: hidden;
+      transform: translateZ(0);
+      perspective: 900px;
+    }
+
+    .parallax-layer {
+      position: absolute;
+      inset: 0;
+      will-change: transform;
+      transform: translate3d(0, 0, 0);
+      transition: transform 120ms linear;
+    }
+
+    .parallax-layer--glow {
+      background:
+        radial-gradient(circle at 20% 24%, rgba(255, 151, 36, 0.34), transparent 25rem),
+        radial-gradient(circle at 74% 18%, rgba(122, 167, 199, 0.24), transparent 27rem),
+        radial-gradient(circle at 58% 86%, rgba(255, 193, 102, 0.2), transparent 25rem);
+      filter: blur(1px);
+      opacity: 0.95;
+    }
+
+    .parallax-layer--grid {
+      background-image:
+        linear-gradient(rgba(255, 151, 36, 0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 151, 36, 0.07) 1px, transparent 1px);
+      background-size: 74px 74px;
+      opacity: 0.42;
+      mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.85), transparent 72%);
+    }
+
+    .parallax-layer--beams {
+      background:
+        linear-gradient(118deg, transparent 0 35%, rgba(255, 151, 36, 0.18) 35.2% 36.6%, transparent 37%),
+        linear-gradient(118deg, transparent 0 61%, rgba(255, 193, 102, 0.13) 61.1% 62.8%, transparent 63.2%),
+        linear-gradient(68deg, transparent 0 47%, rgba(122, 167, 199, 0.13) 47.1% 48.8%, transparent 49.2%);
+      opacity: 0.9;
+    }
+
+    .parallax-layer--sparks {
+      background-image:
+        radial-gradient(circle, rgba(255, 193, 102, 0.8) 0 1px, transparent 1.5px),
+        radial-gradient(circle, rgba(122, 167, 199, 0.45) 0 1px, transparent 1.5px);
+      background-position: 12px 18px, 54px 68px;
+      background-size: 140px 120px, 190px 170px;
+      opacity: 0.34;
+      mask-image: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.85) 18%, rgba(0, 0, 0, 0.7) 78%, transparent);
+    }
+
+    .home-logo {
+      position: fixed;
+      top: clamp(0.55rem, 1.8vw, 1rem);
+      right: clamp(0.55rem, 1.8vw, 1rem);
+      z-index: 30;
+      display: block;
+      width: clamp(14.4rem, 36vw, 25rem);
+      aspect-ratio: 900 / 353;
+      filter:
+        drop-shadow(0 12px 32px rgba(0, 0, 0, 0.52))
+        drop-shadow(0 0 18px rgba(255, 151, 36, 0.13));
+      transform: translate3d(0, 0, 0);
+      animation: homeLogoFloat 4.8s ease-in-out infinite;
+    }
+
+    .home-logo::after {
+      content: "POWERED BY";
+      position: absolute;
+      top: calc(100% - 0.1rem);
+      left: 0;
+      right: 0;
+      color: rgba(255, 244, 223, 0.92);
+      font: 900 clamp(0.72rem, 1.55vw, 1.08rem) "Oxanium", system-ui, sans-serif;
+      letter-spacing: 0.28em;
+      text-align: center;
+      text-shadow:
+        0 2px 14px rgba(0, 0, 0, 0.72),
+        0 0 18px rgba(255, 151, 36, 0.2);
+    }
+
+    .home-logo__img {
+      position: absolute;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    /* Layer order: static (z=1) is the body+text. The "hover" overlay
+       (glasses lifted + eyes visible) sits ABOVE it (z=2) and is permanently
+       at opacity 1. The "base" overlay (glasses-down + hair) covers it (z=3)
+       and slides up on hover to reveal what's beneath — no crossfade, no
+       semi-transparent overlap. */
+    .home-logo__img--static { z-index: 1; opacity: 1; }
+    .home-logo__img--hover  { z-index: 2; opacity: 1; }
+
+    .home-logo__img--base {
+      z-index: 3;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+      /* Un-hover (going back to idle): fade in immediately while the layer
+         slides back down. Translucent for ~280ms at the very start, then
+         solid for the rest of the slide — feels like the glasses swing
+         back into view. */
+      transition:
+        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1),
+        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
+    }
+
+    .home-logo:hover .home-logo__img--base,
+    .home-logo:focus-visible .home-logo__img--base,
+    .home-logo.is-logo-peeking .home-logo__img--base {
+      opacity: 0;
+      /* -15% keeps the slid layer inside the home-logo bounds — no stray
+         hair tufts floating above the logo. */
+      transform: translate3d(0, -15%, 0);
+      /* Hover (going to active): stay fully opaque for 1100ms while sliding
+         (no crossfade!), then fade out over the last 280ms — by then the
+         layer is already mostly out of the frame, so the fade-out reads as
+         "the glasses receding away" rather than dissolving. */
+      transition:
+        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1) 1100ms,
+        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
+    }
+
+    .home-logo:focus-visible {
+      outline: 2px solid rgba(255, 193, 102, 0.7);
+      outline-offset: 0.25rem;
+      border-radius: 0.75rem;
+    }
+
+    @keyframes homeLogoFloat {
+      0%, 100% { transform: translate3d(0, 0, 0) rotate(-0.45deg); }
+      50% { transform: translate3d(0, -0.72rem, 0) rotate(0.55deg); }
+    }
+
+    /* Below this width the .page (max 1040px, centered) and the floating logo
+       (up to 25rem wide, pinned top-right) start overlapping the hero panel.
+       Drop the logo into the normal flow at the very top so it sits ABOVE the
+       hero instead of crashing into it. The logo element already comes before
+       .page in the DOM, so flipping to position: relative is enough — the
+       absolutely-positioned <img>s inside it stay anchored to it. */
+    @media (max-width: 1840px) {
+      .home-logo {
+        position: relative;
+        top: auto;
+        right: auto;
+        margin: clamp(0.55rem, 1.4vw, 1rem) auto 0;
+        width: clamp(11rem, 38vw, 19rem);
+      }
+      .home-logo::after {
+        position: static;
+        top: auto;
+        display: block;
+        margin-top: 0.4rem;
+      }
+    }
+
+    .page {
+      position: relative;
+      z-index: 2;
+      max-width: 1060px;
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: clamp(1rem, 2.8vw, 1.6rem);
+      display: flex;
+      flex-direction: column;
+      gap: clamp(0.9rem, 2.4vw, 1.25rem);
+    }
+
+    .glass-panel {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-panel);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+
+    .hero {
+      padding: clamp(1rem, 3vw, 1.55rem);
+      text-align: center;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, transparent, rgba(255, 151, 36, 0.08), transparent),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 42%);
+      pointer-events: none;
+    }
+
+    .hero > * { position: relative; z-index: 1; }
+
+    .kicker {
+      margin: 0 0 0.25rem;
+      font-family: "Oxanium", system-ui, sans-serif;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.32em;
+      text-transform: uppercase;
+    }
+
+    .kicker--online { color: var(--online); text-shadow: 0 0 24px rgba(99, 230, 168, 0.25); }
+    .kicker--offline { color: var(--danger); text-shadow: 0 0 24px rgba(255, 107, 87, 0.18); }
+
+    .title {
+      margin: 0 0 0.2rem;
+      font-family: "Oxanium", system-ui, sans-serif;
+      font-weight: 700;
+      font-size: clamp(1.65rem, 5vw, 2.45rem);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .subtitle {
+      margin: 0 0 0.75rem;
+      color: var(--accent-soft);
+      letter-spacing: 0.08em;
+      font-weight: 600;
+    }
+
+    .connect-card {
+      width: min(100%, 34rem);
+      margin: 0 auto 0.75rem;
+      display: grid;
+      gap: 0.5rem;
+    }
+
+    .connect-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.65rem;
+      align-items: center;
+      padding: 0.55rem;
+      border-radius: calc(var(--radius-lg) - 4px);
+      border: 1px solid rgba(255, 151, 36, 0.18);
+      background: linear-gradient(160deg, rgba(5, 8, 10, 0.72), rgba(24, 28, 30, 0.5));
+    }
+
+    .connect-main {
+      min-width: 0;
+      text-align: left;
+    }
+
+    .connect-label {
+      display: block;
+      margin-bottom: 0.12rem;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .connect-value {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: clamp(0.95rem, 3.8vw, 1.25rem);
+      color: var(--accent-soft);
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .copy-field {
+      min-height: 2.35rem;
+      padding: 0.5rem 0.85rem;
+      white-space: nowrap;
+    }
+
+    button {
+      border: 0;
+      border-radius: var(--radius-sm);
+      padding: 0.65rem 1.15rem;
+      min-height: 2.65rem;
+      font: 700 0.9rem "Source Sans 3", system-ui, sans-serif;
+      cursor: var(--s-cursor), pointer;
+      transition: transform 180ms var(--ease), box-shadow 180ms var(--ease), opacity 180ms var(--ease);
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: var(--s-cursor), not-allowed;
+    }
+
+    .btn-primary {
+      color: #120b05;
+      background: linear-gradient(180deg, #ffc166, var(--accent) 58%, #bd6412);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.24);
+    }
+
+    button:hover:not(:disabled) {
+      transform: translateY(-1px);
+    }
+
+    .toast {
+      min-height: 1.1em;
+      margin: 0.45rem 0 0;
+      font-size: 0.8rem;
+      opacity: 0;
+      transition: opacity 180ms var(--ease);
+    }
+
+    .toast.show { opacity: 1; }
+
+    .dashboard {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: clamp(0.75rem, 2vw, 1rem);
+    }
+
+    @media (min-width: 760px) {
+      .dashboard { grid-template-columns: 1fr 1fr; }
+      .panel--wide { grid-column: 1 / -1; }
+    }
+
+    .panel {
+      padding: clamp(0.9rem, 2.3vw, 1.2rem);
+      min-height: 100%;
+    }
+
+    .panel__head {
+      margin: 0 0 0.65rem;
+      padding-bottom: 0.45rem;
+      border-bottom: 1px solid rgba(255, 151, 36, 0.14);
+      font-family: "Oxanium", system-ui, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(255, 193, 102, 0.84);
+    }
+
+    .metric-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.75rem;
+      align-items: baseline;
+      padding: 0.42rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+    }
+
+    .metric-row:last-child { border-bottom: 0; }
+
+    .metric-k {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .metric-v {
+      min-width: 0;
+      text-align: right;
+      color: var(--text-main);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.86rem;
+      word-break: break-word;
+    }
+
+    .metric-v--accent { color: var(--accent-soft); }
+    .metric-v--good { color: var(--online); }
+    .metric-v--bad { color: var(--danger); }
+
+    a.metric-v {
+      text-decoration: none;
+      text-underline-offset: 0.18em;
+      transition: color 180ms var(--ease), text-shadow 180ms var(--ease);
+    }
+
+    a.metric-v:hover {
+      color: var(--accent-soft);
+      text-decoration: underline;
+      text-shadow: 0 0 18px rgba(255, 151, 36, 0.18);
+    }
+
+    .online-count {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.55rem;
+      padding: 1rem 0.8rem;
+      border-radius: var(--radius-sm);
+      background:
+        radial-gradient(circle at 50% 20%, rgba(99, 230, 168, 0.14), transparent 54%),
+        rgba(5, 8, 10, 0.54);
+      border: 1px solid rgba(255, 151, 36, 0.14);
+      font-family: "Oxanium", system-ui, sans-serif;
+      font-size: clamp(1.25rem, 5vw, 1.8rem);
+      font-weight: 700;
+    }
+
+    .panel--activity {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .panel--activity::before {
+      content: "";
+      position: absolute;
+      inset: -35% auto auto -18%;
+      width: 16rem;
+      height: 16rem;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255, 151, 36, 0.14), transparent 68%);
+      pointer-events: none;
+    }
+
+    .panel--activity > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    .activity-section {
+      margin-top: 0.9rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid rgba(255, 151, 36, 0.1);
+    }
+
+    .section-label {
+      margin-bottom: 0.35rem;
+      color: var(--accent-soft);
+      font-family: "Oxanium", system-ui, sans-serif;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .player-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .player-list li {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.8rem;
+      padding: 0.42rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+    }
+
+    .player-list li:last-child { border-bottom: 0; }
+
+    .player-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .player-meta {
+      flex: 0 0 auto;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--online);
+      box-shadow: 0 0 16px rgba(99, 230, 168, 0.5);
+      animation: pulse 2.4s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.78; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.14); }
+    }
+
+    .help {
+      margin: 0.7rem 0 0;
+      color: var(--text-muted);
+      font-size: 0.88rem;
+    }
+
+    .activity-section .help { margin-top: 0.35rem; }
+
+    .help strong { color: var(--accent-soft); }
+
+    .connection-copy {
+      margin: 0;
+      display: grid;
+      gap: 0.8rem;
+      color: var(--text-muted);
+      font-size: 0.92rem;
+      line-height: 1.48;
+    }
+
+    .connection-copy p {
+      margin: 0;
+      padding: 0.7rem 0;
+      background: rgba(5, 8, 10, 0.24);
+    }
+
+    .connection-copy strong {
+      color: var(--accent-soft);
+      text-shadow: 0 0 18px rgba(255, 151, 36, 0.18);
+    }
+
+    .connection-copy .danger {
+      color: var(--danger);
+      text-shadow: 0 0 18px rgba(255, 107, 87, 0.18);
+    }
+
+    .updated-line {
+      margin: -0.2rem 0 0;
+      color: rgba(168, 165, 159, 0.82);
+      text-align: center;
+      font-size: 0.82rem;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .parallax-layer {
+        transition: none;
+        transform: none !important;
+      }
+      .dot { animation: none; }
+      button:hover:not(:disabled) { transform: none; }
+      .home-logo {
+        animation: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="home-logo" href="https://koban.uk/" aria-label="Вернуться на koban.uk">
+    <img class="home-logo__img home-logo__img--static" src="/koban/logo-static.png?v=20260505-glasses" alt="КОБАНЮК" />
+    <img class="home-logo__img home-logo__img--base" src="/koban/logo-base-overlay.png?v=20260505-glasses" alt="" aria-hidden="true" />
+    <img class="home-logo__img home-logo__img--hover" src="/koban/logo-hover-overlay.png?v=20260509-lift" alt="" aria-hidden="true" />
+  </a>
+
+  <div class="parallax-bg" aria-hidden="true">
+    <div class="parallax-layer parallax-layer--glow" data-depth="34" data-tilt="4"></div>
+    <div class="parallax-layer parallax-layer--grid" data-depth="-24" data-tilt="-3"></div>
+    <div class="parallax-layer parallax-layer--beams" data-depth="54" data-tilt="6"></div>
+    <div class="parallax-layer parallax-layer--sparks" data-depth="-42" data-tilt="-5"></div>
+  </div>
+
+  <main class="page" aria-live="polite">
+    <article class="hero glass-panel">
+      <p class="kicker kicker--offline" id="status">ОФФЛАЙН</p>
+      <h1 class="title">Satisfactory</h1>
+      <p class="subtitle" id="session">Koban Factory</p>
+      <div class="connect-card">
+        <div class="connect-row">
+          <div class="connect-main">
+            <span class="connect-label">Адрес</span>
+            <div class="connect-value" id="host">…</div>
+          </div>
+          <button type="button" class="btn-primary copy-field" id="copyHostBtn" disabled>Скопировать</button>
+        </div>
+        <div class="connect-row">
+          <div class="connect-main">
+            <span class="connect-label">Порт</span>
+            <div class="connect-value" id="port">…</div>
+          </div>
+          <button type="button" class="btn-primary copy-field" id="copyPortBtn" disabled>Скопировать</button>
+        </div>
+      </div>
+      <p class="toast" id="toast" role="status"></p>
+    </article>
+
+    <section class="dashboard">
+      <article class="panel panel--activity glass-panel">
+        <h2 class="panel__head">Игроки</h2>
+        <div class="online-count"><span class="dot" aria-hidden="true"></span><span id="players">0 / 4</span></div>
+        <div class="activity-section">
+          <div class="section-label">Сейчас на фабрике</div>
+          <ul class="player-list" id="onlinePlayers"></ul>
+          <p class="help" id="onlineEmpty">Никого в игре</p>
+        </div>
+        <div class="activity-section">
+          <div class="section-label">Известные игроки</div>
+          <ul class="player-list" id="recentPlayers"></ul>
+          <p class="help" id="recentEmpty">Пока никого не нашли</p>
+        </div>
+      </article>
+
+      <article class="panel glass-panel">
+        <h2 class="panel__head">Мир</h2>
+        <div class="metric-row"><span class="metric-k">Сессия</span><a class="metric-v metric-v--accent" id="sessionMetric" href="/s/wiki/save-files.html">—</a></div>
+        <div class="metric-row"><span class="metric-k">Технологический уровень</span><a class="metric-v" id="techTier" href="/s/wiki/milestones.html">—</a></div>
+        <div class="metric-row"><span class="metric-k">Фаза</span><a class="metric-v" id="phase" href="/s/wiki/project-assembly.html">—</a></div>
+        <div class="metric-row"><span class="metric-k">Веха</span><a class="metric-v" id="schematic" href="/s/wiki/milestones.html">—</a></div>
+        <div class="metric-row"><span class="metric-k">Аптайм мира</span><a class="metric-v" id="duration" href="/s/wiki/save-files.html">—</a></div>
+      </article>
+
+      <article class="panel panel--wide glass-panel">
+        <h2 class="panel__head">Как подключиться</h2>
+        <div class="connection-copy">
+          <p>В Satisfactory лезешь в <strong>Server Manager / Управление сервером → «Добавить сервер»</strong>. Берёшь этот ебучий <strong>адрес с портом</strong>, копируешь и вставляешь в поля как есть, сохраняешь — и не выёбываешься лишний раз.</p>
+          <p><strong>Пароля там, сука, НЕТ.</strong> Если эта ебаная игра вдруг решит строить из себя умную и выкатит поле для пароля — оставляешь его, блядь, <strong>пустым</strong> и просто коннектишься. Всё.</p>
+          <p>И вот это запомни, как мать родную: в меню «Присоединиться» <strong class="danger">НЕ ТЫКАЙ</strong> эту сраную кнопку <strong class="danger">«Присоединиться к игре напрямую…»</strong>. Это тот самый кривожопый <strong>Direct Join</strong>, через который эта хуита регулярно плюётся ошибкой типа <strong class="danger">Encryption token missing</strong>. Потому что он, блядь, сломан как жизнь после пятницы.</p>
+          <p>Нам это говно не нужно. Заходишь нормально через <strong>список серверов</strong> в <strong>«Управлении сервером»</strong> — и всё будет работать без этого долбоёбского цирка.</p>
+        </div>
+      </article>
+    </section>
+    <p class="updated-line" id="updated">Обновлено: —</p>
+  </main>
+
+  <script>
+    (function () {
+      var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      var layers = Array.prototype.slice.call(document.querySelectorAll(".parallax-layer"));
+      var isPreview =
+        document.documentElement.dataset.embedded === "true" ||
+        /(?:^|[?&])preview=1(?:&|$)/.test(window.location.search);
+      if (reduceMotion || isPreview || !layers.length) return;
+
+      var targetX = 0;
+      var targetY = 0;
+      var currentX = 0;
+      var currentY = 0;
+      var raf = 0;
+
+      function setTargetFromPointer(event) {
+        var w = window.innerWidth || 1;
+        var h = window.innerHeight || 1;
+        targetX = ((event.clientX / w) - 0.5) * 2;
+        targetY = ((event.clientY / h) - 0.5) * 2;
+        start();
+      }
+
+      function resetTarget() {
+        targetX = 0;
+        targetY = 0;
+        start();
+      }
+
+      function tick() {
+        currentX += (targetX - currentX) * 0.14;
+        currentY += (targetY - currentY) * 0.14;
+
+        layers.forEach(function (layer) {
+          var depth = Number(layer.getAttribute("data-depth") || 0);
+          var tilt = Number(layer.getAttribute("data-tilt") || 0);
+          var x = currentX * depth;
+          var y = currentY * depth;
+          var rotateX = (-currentY * tilt).toFixed(2);
+          var rotateY = (currentX * tilt).toFixed(2);
+          layer.style.transform =
+            "translate3d(" + x.toFixed(2) + "px, " + y.toFixed(2) + "px, 0) " +
+            "rotateX(" + rotateX + "deg) rotateY(" + rotateY + "deg)";
+        });
+
+        if (Math.abs(targetX - currentX) > 0.001 || Math.abs(targetY - currentY) > 0.001) {
+          raf = requestAnimationFrame(tick);
+        } else {
+          raf = 0;
+        }
+      }
+
+      function start() {
+        if (!raf) raf = requestAnimationFrame(tick);
+      }
+
+      window.addEventListener("pointermove", setTargetFromPointer, { passive: true });
+      window.addEventListener("pointerleave", resetTarget, { passive: true });
+      window.addEventListener("blur", resetTarget);
+    })();
+  </script>
+
+  <script>
+    (function () {
+      var JSON_URL = "/s/satisfactory-status.json";
+      var POLL_MS = 20000;
+      var lastHost = "";
+      var lastPort = "";
+
+      var els = {
+        status: document.getElementById("status"),
+        session: document.getElementById("session"),
+        host: document.getElementById("host"),
+        port: document.getElementById("port"),
+        copyHostBtn: document.getElementById("copyHostBtn"),
+        copyPortBtn: document.getElementById("copyPortBtn"),
+        toast: document.getElementById("toast"),
+        players: document.getElementById("players"),
+        onlinePlayers: document.getElementById("onlinePlayers"),
+        onlineEmpty: document.getElementById("onlineEmpty"),
+        recentPlayers: document.getElementById("recentPlayers"),
+        recentEmpty: document.getElementById("recentEmpty"),
+        sessionMetric: document.getElementById("sessionMetric"),
+        techTier: document.getElementById("techTier"),
+        phase: document.getElementById("phase"),
+        schematic: document.getElementById("schematic"),
+        duration: document.getElementById("duration"),
+        updated: document.getElementById("updated"),
+      };
+
+      function text(id, value) {
+        els[id].textContent = value == null || value === "" ? "—" : String(value);
+      }
+
+      function escapeHtml(value) {
+        var node = document.createElement("div");
+        node.textContent = value == null ? "" : String(value);
+        return node.innerHTML;
+      }
+
+      function fmtTime(iso) {
+        if (!iso) return "—";
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        return d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" });
+      }
+
+      function fmtDuration(sec) {
+        sec = Number(sec || 0);
+        if (!isFinite(sec) || sec < 0) return "—";
+        var m = Math.floor(sec / 60);
+        if (m < 1) return Math.floor(sec) + " с";
+        if (m < 60) return m + " мин";
+        var h = Math.floor(m / 60);
+        m = m % 60;
+        if (h < 24) return h + " ч" + (m ? " " + m + " мин" : "");
+        var d = Math.floor(h / 24);
+        h = h % 24;
+        return d + " д" + (h ? " " + h + " ч" : "");
+      }
+
+      function setToast(message, ok) {
+        els.toast.textContent = message;
+        els.toast.style.color = ok ? "var(--online)" : "var(--danger)";
+        els.toast.className = "toast show";
+        clearTimeout(setToast._t);
+        setToast._t = setTimeout(function () {
+          els.toast.className = "toast";
+          els.toast.textContent = "";
+        }, 2400);
+      }
+
+      function setStatus(online) {
+        els.status.textContent = online ? "ОНЛАЙН" : "ОФФЛАЙН";
+        els.status.className = "kicker " + (online ? "kicker--online" : "kicker--offline");
+      }
+
+      function splitAddress(address, fallbackPort) {
+        var result = { host: address || "", port: fallbackPort || "" };
+        var idx = address ? address.lastIndexOf(":") : -1;
+        if (idx > 0) {
+          result.host = address.slice(0, idx);
+          result.port = address.slice(idx + 1) || result.port;
+        }
+        return result;
+      }
+
+      var SCHEMATIC_ANCHORS = {
+        "Уровень 1: Базовое строительство": "1-1",
+        "Уровень 1: Логистика": "1-2",
+        "Уровень 1: Полевые исследования": "1-3",
+        "Уровень 2: Сборка деталей": "2-1",
+        "Уровень 2: Расчистка препятствий": "2-2",
+        "Уровень 2: Прыжковые платформы": "2-3",
+        "Уровень 2: Бонусная программа AWESOME Sink": "2-4",
+        "Уровень 2: Логистика Mk.2": "2-5",
+        "Уровень 3: Угольная энергетика": "3-1",
+        "Уровень 3: Транспорт": "3-2",
+        "Уровень 3: Базовое производство стали": "3-3",
+        "Уровень 3: Усиленная безопасность активов": "3-4",
+        "Уровень 4: Чертежи FICSIT": "4-1",
+        "Уровень 4: Логистика Mk.3": "4-2",
+        "Уровень 4: Продвинутое производство стали": "4-3",
+        "Уровень 4: Расширенная энергоинфраструктура": "4-4",
+        "Уровень 4: Гипертрубы": "4-5",
+        "Уровень 5: Переработка нефти": "5-1",
+        "Уровень 5: Промышленное производство": "5-2",
+        "Уровень 5: Транспортировка жидкостей": "5-3",
+        "Уровень 5: Нефтяная энергетика": "5-4",
+        "Уровень 6: Промышленная логистика": "6-1",
+        "Уровень 6: Расширенная энергетическая инфраструктура": "6-2",
+        "Уровень 6: Реактивный ранец": "6-3",
+        "Уровень 6: Монорельсовый поезд": "6-4",
+        "Уровень 7: Производство алюминия": "7-1",
+        "Уровень 7: Продвинутая обработка алюминия": "7-2",
+        "Уровень 7: Аэропорт дронов": "7-3",
+        "Уровень 7: Управление опасными веществами": "7-4",
+        "Уровень 8: Ядерная энергетика": "8-1",
+        "Уровень 8: Продвинутое производство алюминия": "8-2",
+        "Уровень 8: Ведущая ядерная разработка": "8-3",
+        "Уровень 8: Обогащение частиц": "8-4",
+        "Уровень 9: Преобразование материи": "9-1",
+        "Уровень 9: Пространственная энергия": "9-2",
+        "Уровень 9: Расширение конвейеров": "9-3",
+        "Уровень 9: Порталы": "9-4",
+        "Уровень 9: Конверсия ядерной энергии": "9-5",
+      };
+
+      function setLink(id, href) {
+        els[id].setAttribute("href", href);
+      }
+
+      function tierLink(label) {
+        var match = String(label || "").match(/уровень\s+(\d+)/i);
+        return "/s/wiki/milestones.html" + (match ? "#tier-" + match[1] : "");
+      }
+
+      function phaseLink(label) {
+        var match = String(label || "").match(/фаза\s+(\d+)/i);
+        return "/s/wiki/project-assembly.html" + (match ? "#phase-" + match[1] : "");
+      }
+
+      function schematicLink(label) {
+        var anchor = SCHEMATIC_ANCHORS[String(label || "")];
+        return "/s/wiki/milestones.html" + (anchor ? "#" + anchor : "");
+      }
+
+      function renderPlayers(root, empty, players, emptyText, metaText) {
+        root.innerHTML = "";
+        if (!players || !players.length) {
+          empty.hidden = false;
+          empty.textContent = emptyText;
+          return;
+        }
+        empty.hidden = true;
+        players.forEach(function (player) {
+          var li = document.createElement("li");
+          var name = escapeHtml(player.name || "Pioneer");
+          var meta = metaText || (player.lastSeen ? fmtTime(player.lastSeen) : player.meta || "сейчас");
+          li.innerHTML = '<span class="player-name">' + name + '</span><span class="player-meta">' + escapeHtml(meta) + '</span>';
+          root.appendChild(li);
+        });
+      }
+
+      function apply(data) {
+        var online = !!(data && data.ok && data.serverStatus && data.serverStatus.dockerRunning !== false);
+        setStatus(online);
+
+        var connection = splitAddress(
+          data.connectAddress || data.publicAddress || "",
+          data.ports && data.ports.game ? String(data.ports.game) : "1173"
+        );
+        lastHost = connection.host;
+        lastPort = connection.port;
+        text("host", lastHost || "Адрес пока недоступен");
+        text("port", lastPort || "—");
+        els.copyHostBtn.disabled = !lastHost;
+        els.copyPortBtn.disabled = !lastPort;
+
+        var session = data.sessionName || data.autoLoadSessionName || "Koban";
+        text("session", "Сессия · " + session);
+        text("sessionMetric", session);
+
+        text("players", (data.playersOnline || 0) + " / " + (data.playerLimit || 0));
+        renderPlayers(els.onlinePlayers, els.onlineEmpty, data.onlinePlayers, "Никого в игре", "сейчас");
+        renderPlayers(els.recentPlayers, els.recentEmpty, data.recentPlayers, "Пока никого не нашли");
+
+        var techTier = data.techTierLabel || (data.techTier != null ? "Технологический уровень " + data.techTier : "—");
+        var phase = data.gamePhase || "—";
+        var schematic = data.activeSchematic || "—";
+        text("techTier", techTier);
+        text("phase", phase);
+        text("schematic", schematic);
+        text("duration", fmtDuration(data.totalGameDurationSec));
+        setLink("sessionMetric", "/s/wiki/save-files.html");
+        setLink("techTier", tierLink(techTier));
+        setLink("phase", phaseLink(phase));
+        setLink("schematic", schematicLink(schematic));
+        setLink("duration", "/s/wiki/save-files.html");
+
+        text("updated", "Обновлено: " + fmtTime(data.updatedAt));
+
+        if (data.error) {
+          els.updated.textContent += " · " + data.error;
+        }
+      }
+
+      async function fetchStatus(showToast) {
+        try {
+          var res = await fetch(JSON_URL + "?t=" + Date.now(), { cache: "no-store" });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          var data = await res.json();
+          apply(data);
+          if (showToast) setToast("Данные обновлены", true);
+        } catch (e) {
+          setStatus(false);
+          text("host", "Не удалось загрузить статус");
+          text("port", "—");
+          els.copyHostBtn.disabled = true;
+          els.copyPortBtn.disabled = true;
+          if (showToast) setToast(String(e.message || e), false);
+        }
+      }
+
+      function copyValue(value, okMessage) {
+        if (!value) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(value).then(function () {
+            setToast(okMessage, true);
+          }).catch(function () {
+            setToast("Не удалось скопировать", false);
+          });
+        } else {
+          setToast("Буфер недоступен", false);
+        }
+      }
+
+      els.copyHostBtn.addEventListener("click", function () {
+        copyValue(lastHost, "Адрес скопирован");
+      });
+
+      els.copyPortBtn.addEventListener("click", function () {
+        copyValue(lastPort, "Порт скопирован");
+      });
+
+      fetchStatus(false);
+      setInterval(fetchStatus, POLL_MS);
+    })();
+  </script>
+  <script>
+    (function () {
+      var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      var logo = document.querySelector(".home-logo");
+      var timer = 0;
+
+      if (!logo || reduceMotion) return;
+
+      function schedulePeek() {
+        if (timer) window.clearTimeout(timer);
+        timer = window.setTimeout(function () {
+          logo.classList.add("is-logo-peeking");
+          window.setTimeout(function () {
+            logo.classList.remove("is-logo-peeking");
+            schedulePeek();
+          }, 1200);
+        }, 5000 + Math.random() * 5000);
+      }
+
+      schedulePeek();
+      window.addEventListener("pagehide", function () {
+        if (timer) window.clearTimeout(timer);
+      });
+      window.addEventListener("pageshow", schedulePeek);
+    })();
+  </script>
+</body>
+</html>

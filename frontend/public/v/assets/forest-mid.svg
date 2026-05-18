@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="420" viewBox="0 0 1920 420" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+  <defs>
+    <linearGradient id="midForest" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#93b783"/>
+      <stop offset="42%" stop-color="#51774b"/>
+      <stop offset="100%" stop-color="#254327"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#midForest)" d="M0,420 L0,300 L34,288 L56,228 L82,285 L110,206 L140,294 L172,218 L206,300 L242,198 L280,307 L318,210 L358,312 L398,202 L440,317 L482,218 L526,322 L570,226 L616,326 L664,214 L714,331 L764,222 L816,334 L868,226 L922,330 L978,216 L1036,334 L1096,222 L1158,338 L1222,226 L1286,334 L1352,220 L1420,324 L1490,212 L1562,318 L1636,224 L1710,326 L1784,232 L1858,314 L1920,296 L1920,420 Z"/>
+</svg>

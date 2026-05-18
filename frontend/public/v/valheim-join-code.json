@@ -1,0 +1,73 @@
+{
+  "code": "080216",
+  "worldCode": "080216",
+  "serverName": "Koban",
+  "updated": "2026-05-18T18:36:56Z",
+  "updatedAt": "2026-05-18T18:36:56Z",
+  "ok": true,
+  "playersOnline": 0,
+  "players": [],
+  "onlinePlayers": [],
+  "recentPlayers": [
+    {
+      "name": "Кобаныч",
+      "lastSeen": "2026-04-26T16:51:09",
+      "online": false,
+      "sessionStartedAt": "2026-04-26T16:51:09",
+      "sessionEndedAt": "2026-04-26T16:55:42",
+      "sessionDurationSec": 273
+    },
+    {
+      "name": "Валян",
+      "lastSeen": "2026-04-23T19:31:08",
+      "online": false,
+      "sessionStartedAt": "2026-04-23T17:55:35",
+      "sessionEndedAt": "2026-04-23T19:40:44",
+      "sessionDurationSec": 6309
+    },
+    {
+      "name": "Васян",
+      "lastSeen": "2026-04-23T19:09:44",
+      "online": false,
+      "sessionStartedAt": "2026-04-23T17:40:04",
+      "sessionEndedAt": "2026-04-23T19:31:31",
+      "sessionDurationSec": 6687
+    }
+  ],
+  "world": {
+    "seed": "H2YgqFZwgV",
+    "day": 636,
+    "bosses": {
+      "eikthyr": true,
+      "elder": true,
+      "bonemass": true,
+      "moder": true,
+      "yagluth": true,
+      "queen": true,
+      "fader": true
+    },
+    "events": [
+      {
+        "id": "skeletons",
+        "nameRu": "Незваные кости",
+        "unknown": false,
+        "occurredAt": "2026-04-16T00:25:23",
+        "gameDaysAgo": 1578,
+        "eventDay": 1
+      },
+      {
+        "id": "hildirboss2",
+        "nameRu": "По Вам пробежал холодок",
+        "unknown": false,
+        "occurredAt": "2026-04-22T22:00:55",
+        "gameDaysAgo": 1246,
+        "eventDay": 1
+      }
+    ]
+  },
+  "serverStatus": {
+    "dockerRunning": true,
+    "container": "valheim",
+    "logTimestamp": "2026-05-18T21:30:50"
+  }
+}

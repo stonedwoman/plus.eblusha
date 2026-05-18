@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>Вход · Котонадзор</title>
+  <link rel="icon" type="image/png" href="/koban/icon.png?v=20260505" />
+  <link rel="apple-touch-icon" href="/koban/icon.png?v=20260505" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #050a0e;
+      --panel: rgba(8, 16, 22, 0.92);
+      --line: rgba(95, 182, 197, 0.18);
+      --text: #e8eef0;
+      --muted: #8fa6b0;
+      --accent: #5fb6c5;
+      --gold: #e8cc6a;
+      --digit-bg: rgba(0, 0, 0, 0.38);
+      --danger: #e86868;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100%;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: max(1.25rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+        max(1.25rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Source Sans 3", system-ui, sans-serif;
+      font-size: 16px;
+    }
+
+    .card {
+      width: min(22rem, 100%);
+      padding: 1.35rem 1.25rem 1.25rem;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+    }
+
+    h1 {
+      margin: 0 0 0.35rem;
+      font-size: 1.125rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-align: center;
+    }
+
+    .sub {
+      margin: 0 0 1.15rem;
+      font-size: 0.875rem;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.35;
+    }
+
+    .digits {
+      display: flex;
+      justify-content: center;
+      gap: 0.42rem;
+      margin-bottom: 0.85rem;
+    }
+
+    .digits.shake {
+      animation: shake 0.42s ease;
+    }
+
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      18% { transform: translateX(-6px); }
+      36% { transform: translateX(6px); }
+      54% { transform: translateX(-4px); }
+      72% { transform: translateX(4px); }
+    }
+
+    .digits input {
+      width: 2.65rem;
+      height: 3rem;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--digit-bg);
+      color: var(--text);
+      font-size: 1.35rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+      caret-color: var(--accent);
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+
+    .digits input:focus {
+      border-color: rgba(95, 182, 197, 0.65);
+      box-shadow: 0 0 0 2px rgba(95, 182, 197, 0.22);
+    }
+
+    .digits input::selection {
+      background: rgba(95, 182, 197, 0.35);
+    }
+
+    .err {
+      margin: 0;
+      min-height: 1.25rem;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--danger);
+      text-align: center;
+      opacity: 0;
+      transition: opacity 140ms ease;
+    }
+
+    .err.visible {
+      opacity: 1;
+    }
+
+    footer {
+      margin-top: 1.25rem;
+      text-align: center;
+    }
+
+    footer a {
+      color: var(--gold);
+      font-weight: 600;
+      font-size: 0.875rem;
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 id="pin-heading">Котонадзор</h1>
+    <p class="sub">Введите шестизначный код доступа.</p>
+    <div class="digits" id="digits" role="group" aria-labelledby="pin-heading">
+      <input id="d0" inputmode="numeric" autocomplete="one-time-code" maxlength="1" pattern="[0-9]*" type="text" autocorrect="off" spellcheck="false" aria-label="Цифра 1 из 6" />
+      <input id="d1" inputmode="numeric" autocomplete="off" maxlength="1" pattern="[0-9]*" type="text" autocorrect="off" spellcheck="false" aria-label="Цифра 2 из 6" />
+      <input id="d2" inputmode="numeric" autocomplete="off" maxlength="1" pattern="[0-9]*" type="text" autocorrect="off" spellcheck="false" aria-label="Цифра 3 из 6" />
+      <input id="d3" inputmode="numeric" autocomplete="off" maxlength="1" pattern="[0-9]*" type="text" autocorrect="off" spellcheck="false" aria-label="Цифра 4 из 6" />
+      <input id="d4" inputmode="numeric" autocomplete="off" maxlength="1" pattern="[0-9]*" type="text" autocorrect="off" spellcheck="false" aria-label="Цифра 5 из 6" />
+      <input id="d5" inputmode="numeric" autocomplete="off" maxlength="1" pattern="[0-9]*" type="text" autocorrect="off" spellcheck="false" aria-label="Цифра 6 из 6" />
+    </div>
+    <p class="err" id="err" role="alert">Неверный код</p>
+  </div>
+  <footer>
+    <a href="/koban/">← На главную Koban</a>
+  </footer>
+  <script>
+    (function () {
+      var box = document.getElementById("digits");
+      var inputs = [
+        document.getElementById("d0"),
+        document.getElementById("d1"),
+        document.getElementById("d2"),
+        document.getElementById("d3"),
+        document.getElementById("d4"),
+        document.getElementById("d5"),
+      ];
+      var err = document.getElementById("err");
+      var busy = false;
+
+      function pinString() {
+        return inputs.map(function (el) {
+          return el.value.replace(/\D/g, "").slice(0, 1);
+        }).join("");
+      }
+
+      function clearAll() {
+        inputs.forEach(function (el) {
+          el.value = "";
+        });
+        inputs[0].focus();
+      }
+
+      function fail() {
+        err.classList.add("visible");
+        box.classList.remove("shake");
+        void box.offsetWidth;
+        box.classList.add("shake");
+        busy = false;
+        clearAll();
+      }
+
+      function submitPin() {
+        if (busy) return;
+        var pin = pinString();
+        if (pin.length !== 6) return;
+        busy = true;
+        err.classList.remove("visible");
+        fetch("/watch/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin: pin }),
+          credentials: "same-origin",
+        })
+          .then(function (res) {
+            if (res.ok) {
+              window.location.href = "/watch/";
+              return;
+            }
+            fail();
+          })
+          .catch(function () {
+            fail();
+          });
+      }
+
+      function distributePasteDigits(text) {
+        var digits = String(text || "").replace(/\D/g, "").slice(0, 6).split("");
+        inputs.forEach(function (el, i) {
+          el.value = digits[i] || "";
+        });
+        var next = Math.min(digits.length, 5);
+        inputs[next].focus();
+        if (digits.length === 6) submitPin();
+      }
+
+      inputs.forEach(function (el, i) {
+        el.addEventListener("keydown", function (ev) {
+          if (ev.key === "Backspace") {
+            if (!el.value && i > 0) {
+              ev.preventDefault();
+              inputs[i - 1].focus();
+              inputs[i - 1].value = "";
+            }
+            return;
+          }
+          if (ev.key === "ArrowLeft" && i > 0) {
+            ev.preventDefault();
+            inputs[i - 1].focus();
+          }
+          if (ev.key === "ArrowRight" && i < 5) {
+            ev.preventDefault();
+            inputs[i + 1].focus();
+          }
+        });
+
+        el.addEventListener("input", function () {
+          var d = el.value.replace(/\D/g, "").slice(-1);
+          el.value = d;
+          if (d && i < 5) {
+            inputs[i + 1].focus();
+          }
+          submitPin();
+        });
+
+        el.addEventListener("focus", function () {
+          el.select();
+        });
+      });
+
+      inputs[0].addEventListener("paste", function (ev) {
+        ev.preventDefault();
+        var txt = (ev.clipboardData && ev.clipboardData.getData("text")) || "";
+        distributePasteDigits(txt);
+      });
+
+      inputs[0].focus();
+    })();
+  </script>
+</body>
+</html>

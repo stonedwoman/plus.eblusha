@@ -1,0 +1,7 @@
+# SPB: /etc/frp/frps.toml
+bindPort = 7000
+
+auth.method = "token"
+auth.token = "WZCbmMdHCv43hd/xk7qqai8W1l8iFHrEjj2ao9Yb4/M="
+
+transport.tls.enable = true
