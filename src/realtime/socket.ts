@@ -27,7 +27,7 @@ type ServerToClientEvents = {
   "presence:game:snapshot": (payload: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }) => void;
   "presence:game:snapshot:batch": (payload: { items: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }[] }) => void;
   "message:new": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
-  "receipts:update": (payload: { conversationId: string; messageIds: string[] }) => void;
+  "receipts:update": (payload: { conversationId: string; messageIds: string[]; userId?: string; status?: "DELIVERED" | "READ" | "SEEN"; receipts?: any[] }) => void;
   "message:update": (payload: { conversationId: string; messageId: string; reason: string; message?: any }) => void;
   "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "message:reaction": (payload: { conversationId: string; messageId: string; senderId: string }) => void;
@@ -61,8 +61,8 @@ type ServerToClientEvents = {
   // (1:1 glare). Purely informational; the peer's client converts its
   // outgoing UI into an incoming modal upon receiving call:incoming.
   "call:glare": (payload: { conversationId: string; with: { id: string } }) => void;
-  "call:status": (payload: { conversationId: string; active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }) => void;
-  "call:status:bulk": (payload: { statuses: Record<string, { active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }> }) => void;
+  "call:status": (payload: CallStatusPayload) => void;
+  "call:status:bulk": (payload: { statuses: Record<string, CallStatusPayload> }) => void;
   "secret:chat:offer": (payload: { conversationId: string; from: { id: string; name: string; deviceId?: string | null } }) => void;
   "secret:chat:accepted": (payload: { conversationId: string; peerDeviceId: string }) => void;
   "secret:notify": (payload: { toDeviceId: string; msgId: string }) => void;
@@ -106,9 +106,31 @@ type ClientToServerEvents = {
 
 type InterServerEvents = Record<string, never>;
 type SocketData = { userId: string; deviceId?: string };
+type CallPresenceSocket = {
+  data: SocketData;
+  rooms: Set<string>;
+  join: (room: string) => Promise<void> | void;
+  leave: (room: string) => Promise<void> | void;
+};
+
+type CallStatusPayload = {
+  conversationId: string;
+  active: boolean;
+  startedAt?: number;
+  elapsedMs?: number;
+  participants?: string[];
+  isGroup?: boolean;
+  aloneSince?: number;
+  autoEndAt?: number;
+  aloneReminder?: boolean;
+};
 
 const userRoom = (userId: string) => `user:${userId}`;
 const deviceRoom = (deviceId: string) => `device:${deviceId}`;
+const ACTIVE_CALL_PRESENCE_ROOM = "call:presence:active";
+const ACTIVE_CALL_CONVERSATION_ROOM_PREFIX = "call:presence:conversation:";
+const activeCallConversationRoom = (conversationId: string) => `${ACTIVE_CALL_CONVERSATION_ROOM_PREFIX}${conversationId}`;
+const activeCallUserRoom = (userId: string) => `call:presence:user:${userId}`;
 
 const PRESENCE_TTL_SECONDS = 90;
 const DEVICE_LASTSEEN_WRITE_THROTTLE_MS = 60_000;
@@ -347,12 +369,18 @@ async function resolveDeviceId(socket: any, userId: string, jwtDid: string | nul
 
 let ioInstance: Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData> | null = null;
 // Track call state per conversation to detect missed calls
-const callState: Map<string, { inviterId: string; accepted: boolean; video: boolean; startedAt?: number }> = new Map();
+const callState: Map<string, { inviterId: string; inviterSocketId?: string; accepted: boolean; video: boolean; startedAt?: number }> = new Map();
 type ActiveCallInfo = { startedAt: number; participantsByUser: Map<string, Set<string>> };
 // Track active group calls: conversationId -> { startedAt: number, participantsByUser: Map<userId, Set<socketId>> }
 const activeGroupCalls: Map<string, ActiveCallInfo> = new Map();
 // Track active direct calls (1:1): conversationId -> { startedAt: number, participantsByUser: Map<userId, Set<socketId>> }
 const activeDirectCalls: Map<string, ActiveCallInfo> = new Map();
+const GROUP_ALONE_REMINDER_MS = 2 * 60 * 1000;
+const GROUP_ALONE_AUTO_END_MS = 5 * 60 * 1000;
+const groupAloneTimers: Map<
+  string,
+  { aloneSince: number; reminder: NodeJS.Timeout; autoEnd: NodeJS.Timeout; reminded: boolean }
+> = new Map();
 let statusInterval: NodeJS.Timeout | null = null;
 
 type PresenceStatus = "ONLINE" | "OFFLINE" | "BACKGROUND";
@@ -407,12 +435,76 @@ function clearPresenceGame(io: Server, userId: string, reason: PresenceGameClear
   broadcastPresenceGame(io, { userId, ts: Date.now(), game: null, reason });
 }
 
-function addAllLocalSockets(io: Server, info: ActiveCallInfo, userId: string) {
-  // Local-only enumeration (safe for per-process call maps).
-  for (const [socketId, s] of io.sockets.sockets) {
-    if ((s as any)?.data?.userId === userId) {
-      addParticipant(info, userId, socketId);
+function hasOtherCallConversationRooms(rooms: Iterable<string>, conversationId: string): boolean {
+  const currentRoom = activeCallConversationRoom(conversationId);
+  for (const room of rooms) {
+    if (room !== currentRoom && room.startsWith(ACTIVE_CALL_CONVERSATION_ROOM_PREFIX)) {
+      return true;
     }
+  }
+  return false;
+}
+
+async function joinSocketCallPresence(socket: CallPresenceSocket, conversationId: string) {
+  const userId = socket.data.userId;
+  if (!userId) return;
+  await Promise.all([
+    Promise.resolve(socket.join(ACTIVE_CALL_PRESENCE_ROOM)),
+    Promise.resolve(socket.join(activeCallConversationRoom(conversationId))),
+    Promise.resolve(socket.join(activeCallUserRoom(userId))),
+  ]);
+}
+
+async function leaveSocketCallPresence(socket: CallPresenceSocket, conversationId: string) {
+  const userId = socket.data.userId;
+  if (!userId) return;
+  const shouldKeepUserWidePresence = hasOtherCallConversationRooms(socket.rooms, conversationId);
+  const ops: Array<Promise<void>> = [
+    Promise.resolve(socket.leave(activeCallConversationRoom(conversationId))),
+  ];
+  if (!shouldKeepUserWidePresence) {
+    ops.push(Promise.resolve(socket.leave(ACTIVE_CALL_PRESENCE_ROOM)));
+    ops.push(Promise.resolve(socket.leave(activeCallUserRoom(userId))));
+  }
+  await Promise.all(ops);
+}
+
+async function leaveAllSocketCallPresence(socket: CallPresenceSocket) {
+  const userId = socket.data.userId;
+  if (!userId) return;
+  const conversationRooms = Array.from(socket.rooms).filter((room) =>
+    room.startsWith(ACTIVE_CALL_CONVERSATION_ROOM_PREFIX)
+  );
+  await Promise.all([
+    ...conversationRooms.map((room) => Promise.resolve(socket.leave(room))),
+    Promise.resolve(socket.leave(ACTIVE_CALL_PRESENCE_ROOM)),
+    Promise.resolve(socket.leave(activeCallUserRoom(userId))),
+  ]);
+}
+
+async function clearConversationCallPresence(io: Server, conversationId: string) {
+  const room = activeCallConversationRoom(conversationId);
+  try {
+    const sockets = await io.in(room).fetchSockets();
+    await Promise.all(
+      sockets.map((socket) => leaveSocketCallPresence(socket as unknown as CallPresenceSocket, conversationId))
+    );
+  } catch (error) {
+    logger.warn({ error, conversationId }, "Failed to clear call presence rooms");
+  }
+}
+
+async function markUsersInCallPresence(io: Server, conversationId: string, userIds: string[]) {
+  const uniqueUserIds = Array.from(new Set(userIds.filter((id) => typeof id === "string" && id.trim().length > 0)));
+  const targetRooms = [ACTIVE_CALL_PRESENCE_ROOM, activeCallConversationRoom(conversationId)];
+  try {
+    await Promise.all(
+      uniqueUserIds.map((userId) =>
+        io.in(userRoom(userId)).socketsJoin([...targetRooms, activeCallUserRoom(userId)])
+      )
+    );
+  } catch (error) {
+    logger.warn({ error, conversationId, userIds: uniqueUserIds }, "Failed to mark users as in-call across cluster");
   }
 }
 
@@ -437,7 +529,23 @@ function listParticipants(info: ActiveCallInfo): string[] {
   return Array.from(info.participantsByUser.keys());
 }
 
-function isUserInAnyCall(userId: string): boolean {
+function getActiveCallInfo(conversationId: string): { info: ActiveCallInfo; isGroup: boolean } | null {
+  const groupInfo = activeGroupCalls.get(conversationId);
+  if (groupInfo) return { info: groupInfo, isGroup: true };
+  const directInfo = activeDirectCalls.get(conversationId);
+  if (directInfo) return { info: directInfo, isGroup: false };
+  return null;
+}
+
+function clearGroupAloneTimer(conversationId: string) {
+  const timer = groupAloneTimers.get(conversationId);
+  if (!timer) return;
+  clearTimeout(timer.reminder);
+  clearTimeout(timer.autoEnd);
+  groupAloneTimers.delete(conversationId);
+}
+
+function isUserInAnyCallLocal(userId: string): boolean {
   for (const info of activeGroupCalls.values()) {
     if (info.participantsByUser.has(userId)) return true;
   }
@@ -447,9 +555,23 @@ function isUserInAnyCall(userId: string): boolean {
   return false;
 }
 
-function computeBroadcastPresence(userId: string, base: PresenceStatus): BroadcastPresenceStatus {
+async function isUserInAnyCallCluster(io: Server, userId: string): Promise<boolean> {
+  try {
+    const socketIds = await io.in(activeCallUserRoom(userId)).allSockets();
+    return socketIds.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function isUserInAnyCall(io: Server, userId: string): Promise<boolean> {
+  if (isUserInAnyCallLocal(userId)) return true;
+  return isUserInAnyCallCluster(io, userId);
+}
+
+async function computeBroadcastPresence(io: Server, userId: string, base: PresenceStatus): Promise<BroadcastPresenceStatus> {
   if (base === "OFFLINE") return "OFFLINE";
-  if (isUserInAnyCall(userId)) return "IN_CALL";
+  if (await isUserInAnyCall(io, userId)) return "IN_CALL";
   return base;
 }
 
@@ -474,7 +596,7 @@ async function emitEffectivePresence(io: Server, userId: string, baseOverride?: 
       return agg?.status;
     })());
   if (!base) return;
-  const effective = computeBroadcastPresence(userId, base);
+  const effective = await computeBroadcastPresence(io, userId, base);
   const prev = broadcastedPresenceByUser.get(userId);
   if (prev === effective) return;
   if (effective === "OFFLINE") broadcastedPresenceByUser.delete(userId);
@@ -720,37 +842,151 @@ export async function initSocket(
     return `в ${timeStr}`;
   };
 
-  // Helper function to broadcast call status to all conversation participants
-  const broadcastCallStatus = (conversationId: string) => {
-    const callInfo = activeGroupCalls.get(conversationId);
+  const formatDuration = (startedAt: number) => {
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
+    const hours = Math.floor(totalSec / 3600);
+    const minutes = Math.floor((totalSec % 3600) / 60);
+    const seconds = totalSec % 60;
+    const durationText =
+      hours > 0
+        ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+        : `${minutes}:${String(seconds).padStart(2, "0")}`;
+    return { elapsedMs, durationText };
+  };
+
+  const buildCallStatus = (conversationId: string, opts?: { aloneReminder?: boolean }): CallStatusPayload => {
+    const active = getActiveCallInfo(conversationId);
     const now = Date.now();
-    
-    if (callInfo) {
-      const elapsedMs = now - callInfo.startedAt;
-      const participants = listParticipants(callInfo);
-      io.to(conversationId).emit("call:status", {
-        conversationId,
-        active: true,
-        startedAt: callInfo.startedAt,
-        elapsedMs,
-        participants,
-      });
+    if (!active) return { conversationId, active: false };
+
+    const participants = listParticipants(active.info);
+    const aloneState = active.isGroup && participants.length === 1 ? groupAloneTimers.get(conversationId) : undefined;
+    return {
+      conversationId,
+      active: true,
+      isGroup: active.isGroup,
+      startedAt: active.info.startedAt,
+      elapsedMs: now - active.info.startedAt,
+      participants,
+      ...(aloneState
+        ? {
+            aloneSince: aloneState.aloneSince,
+            autoEndAt: aloneState.aloneSince + GROUP_ALONE_AUTO_END_MS,
+            ...(opts?.aloneReminder ? { aloneReminder: true } : {}),
+          }
+        : {}),
+    };
+  };
+
+  // Helper function to broadcast call status to all conversation participants
+  const broadcastCallStatus = (conversationId: string, opts?: { aloneReminder?: boolean }) => {
+    io.to(conversationId).emit("call:status", buildCallStatus(conversationId, opts));
+  };
+
+  const finishGroupCall = async (conversationId: string, endedByUserId: string, reason: "manual" | "decline" | "empty" | "alone_timeout") => {
+    const callInfo = activeGroupCalls.get(conversationId);
+    const st = callState.get(conversationId);
+    if (!callInfo && !st) {
+      clearGroupAloneTimer(conversationId);
+      broadcastCallStatus(conversationId);
       return;
     }
 
-      // Звонок не активен
-      io.to(conversationId).emit("call:status", {
-        conversationId,
-        active: false,
+    const participantsBeforeClear = callInfo ? listParticipants(callInfo) : [];
+    const startedAt = st?.startedAt ?? callInfo?.startedAt ?? Date.now();
+    const { elapsedMs, durationText } = formatDuration(startedAt);
+    clearGroupAloneTimer(conversationId);
+    activeGroupCalls.delete(conversationId);
+    callState.delete(conversationId);
+    await clearConversationCallPresence(io, conversationId);
+
+    const conv = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: { participants: true },
+    });
+    const recipients = conv?.participants.map((p) => p.userId).filter((id) => id !== endedByUserId) ?? [];
+
+    try {
+      const content =
+        reason === "alone_timeout"
+          ? `Звонок продлился ${durationText} и был завершён автоматически`
+          : `Звонок продлился ${durationText} и был завершён`;
+      const msg = await prisma.message.create({
+        data: {
+          conversationId,
+          senderId: endedByUserId,
+          type: "SYSTEM",
+          content,
+          metadata: { ended: true, video: !!st?.video, duration: elapsedMs, reason } as any,
+        },
       });
+      io.to(conversationId).emit("message:new", {
+        conversationId,
+        messageId: msg.id,
+        senderId: endedByUserId,
+        message: msg,
+      });
+      for (const rid of recipients) {
+        io.to(userRoom(rid)).emit("message:notify", {
+          conversationId,
+          messageId: msg.id,
+          senderId: endedByUserId,
+          message: msg,
+        });
+      }
+    } catch (error) {
+      logger.warn({ error, conversationId, reason }, "Failed to create group call end message");
+    }
+
+    io.to(conversationId).emit("call:ended", { conversationId, by: { id: endedByUserId } });
+    broadcastCallStatus(conversationId);
+    for (const pid of participantsBeforeClear) {
+      void emitEffectivePresence(io, pid);
+    }
+  };
+
+  const syncGroupAloneTimer = (conversationId: string) => {
+    const callInfo = activeGroupCalls.get(conversationId);
+    const participants = callInfo ? listParticipants(callInfo) : [];
+    if (!callInfo || participants.length !== 1) {
+      clearGroupAloneTimer(conversationId);
+      return;
+    }
+    if (groupAloneTimers.has(conversationId)) return;
+
+    const aloneSince = Date.now();
+    const reminder = setTimeout(() => {
+      const current = activeGroupCalls.get(conversationId);
+      if (!current || current.participantsByUser.size !== 1) {
+        clearGroupAloneTimer(conversationId);
+        return;
+      }
+      const timer = groupAloneTimers.get(conversationId);
+      if (timer) timer.reminded = true;
+      broadcastCallStatus(conversationId, { aloneReminder: true });
+    }, GROUP_ALONE_REMINDER_MS);
+    const autoEnd = setTimeout(() => {
+      const current = activeGroupCalls.get(conversationId);
+      const onlyUserId = current ? listParticipants(current)[0] : undefined;
+      if (!current || current.participantsByUser.size !== 1 || !onlyUserId) {
+        clearGroupAloneTimer(conversationId);
+        return;
+      }
+      void finishGroupCall(conversationId, onlyUserId, "alone_timeout");
+    }, GROUP_ALONE_AUTO_END_MS);
+
+    groupAloneTimers.set(conversationId, { aloneSince, reminder, autoEnd, reminded: false });
+    broadcastCallStatus(conversationId);
   };
 
   // Периодически обновляем elapsedMs для активных звонков (каждую секунду)
   if (!statusInterval) {
     statusInterval = setInterval(() => {
       if (!io) return;
-      for (const conversationId of activeGroupCalls.keys()) {
-          broadcastCallStatus(conversationId);
+      const conversationIds = new Set([...activeGroupCalls.keys(), ...activeDirectCalls.keys()]);
+      for (const conversationId of conversationIds) {
+        broadcastCallStatus(conversationId);
       }
     }, 1000);
   }
@@ -909,23 +1145,32 @@ export async function initSocket(
     void writeAggregatedPresenceRedis(userId);
 
     // Snapshot: if there are active calls right now, inform this socket so it can render "IN_CALL" immediately.
-    try {
-      const inCallUsers = new Set<string>();
-      for (const info of activeGroupCalls.values()) {
-        for (const uid of info.participantsByUser.keys()) inCallUsers.add(uid);
-      }
-      for (const info of activeDirectCalls.values()) {
-        for (const uid of info.participantsByUser.keys()) inCallUsers.add(uid);
-      }
-      for (const uid of inCallUsers) {
-        const effective = computeBroadcastPresence(uid, "ONLINE");
-        if (effective === "IN_CALL") {
-          socket.emit("presence:update", { userId: uid, status: "IN_CALL" });
+    void (async () => {
+      try {
+        const inCallUsers = new Set<string>();
+        for (const info of activeGroupCalls.values()) {
+          for (const uid of info.participantsByUser.keys()) inCallUsers.add(uid);
         }
+        for (const info of activeDirectCalls.values()) {
+          for (const uid of info.participantsByUser.keys()) inCallUsers.add(uid);
+        }
+        const activeCallSockets = await io.in(ACTIVE_CALL_PRESENCE_ROOM).fetchSockets();
+        for (const activeSocket of activeCallSockets) {
+          const uid = activeSocket.data?.userId;
+          if (typeof uid === "string" && uid) {
+            inCallUsers.add(uid);
+          }
+        }
+        for (const uid of inCallUsers) {
+          const effective = await computeBroadcastPresence(io, uid, "ONLINE");
+          if (effective === "IN_CALL") {
+            socket.emit("presence:update", { userId: uid, status: "IN_CALL" });
+          }
+        }
+      } catch {
+        // ignore snapshot failures
       }
-    } catch {
-      // ignore snapshot failures
-    }
+    })();
 
     // Snapshot: send current "playing game" presences to the connecting socket.
     try {
@@ -1372,7 +1617,7 @@ export async function initSocket(
 
       // track call state
       const startedAt = Date.now();
-      callState.set(conversationId, { inviterId: userId, accepted: false, video, startedAt });
+      callState.set(conversationId, { inviterId: userId, inviterSocketId: socket.id, accepted: false, video, startedAt });
 
       // 1:1 calls: generate a fresh shared E2EE key per call start (stored in Redis with TTL).
       // Do NOT log the key value.
@@ -1456,6 +1701,7 @@ export async function initSocket(
       }
 
       if (isGroup) {
+        syncGroupAloneTimer(conversationId);
         broadcastCallStatus(conversationId);
       }
     });
@@ -1468,8 +1714,18 @@ export async function initSocket(
       if (!conv) return;
       const recipients = conv.participants.map((p) => p.userId).filter((id) => id !== userId);
       const st = callState.get(conversationId);
-      if (st) callState.set(conversationId, { ...st, accepted: true });
       const isGroup = !!conv.isGroup;
+
+      if (!isGroup) {
+        if (!st || st.inviterId === userId) {
+          logger.info({ conversationId, userId, hasCallState: !!st }, "Ignoring stale or invalid direct call accept");
+          broadcastCallStatus(conversationId);
+          return;
+        }
+        callState.set(conversationId, { ...st, accepted: true });
+      } else if (st) {
+        callState.set(conversationId, { ...st, accepted: true });
+      }
 
       // For direct (1:1) calls, we treat the call as active starting at accept time,
       // and wire it into presence so everyone sees "IN_CALL" reliably (even though the web client
@@ -1489,15 +1745,18 @@ export async function initSocket(
         const startedAt = st?.startedAt ?? Date.now();
         const info = activeDirectCalls.get(conversationId) ?? { startedAt, participantsByUser: new Map<string, Set<string>>() };
         info.startedAt = startedAt;
-        // Add all currently connected sockets for both parties (works for multi-tab / multi-device).
-        if (st?.inviterId) {
-          addAllLocalSockets(io, info, st.inviterId);
+        // Track the sockets that are actually involved in this call. Other
+        // tabs/devices of the same account must not keep the call alive.
+        if (st?.inviterId && st.inviterSocketId) {
+          addParticipant(info, st.inviterId, st.inviterSocketId);
         }
-        addAllLocalSockets(io, info, userId);
+        addParticipant(info, userId, socket.id);
         activeDirectCalls.set(conversationId, info);
+        await markUsersInCallPresence(io, conversationId, [st?.inviterId ?? "", userId]);
         // Broadcast effective presence for both participants.
         if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
         void emitEffectivePresence(io, userId);
+        broadcastCallStatus(conversationId);
       }
       // Отправляем call:accepted получателям звонка
       for (const rid of recipients) {
@@ -1517,7 +1776,6 @@ export async function initSocket(
       const recipients = conv.participants.map((p) => p.userId).filter((id) => id !== userId);
       const isGroup = !!conv.isGroup;
       const st = callState.get(conversationId);
-      const callInfo = activeGroupCalls.get(conversationId);
 
       // A direct call may ring on multiple devices of the same account.
       // Once one device has accepted, late auto-decline events from the
@@ -1527,55 +1785,11 @@ export async function initSocket(
         return;
       }
 
-      const computeDuration = () => {
-        const startedAt = callInfo?.startedAt ?? st?.startedAt ?? Date.now();
-        const elapsedMs = Math.max(0, Date.now() - startedAt);
-        const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
-        const hours = Math.floor(totalSec / 3600);
-        const minutes = Math.floor((totalSec % 3600) / 60);
-        const seconds = totalSec % 60;
-        const durationText =
-          hours > 0
-            ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
-            : `${minutes}:${String(seconds).padStart(2, "0")}`;
-        return { elapsedMs, durationText };
-      };
       for (const rid of recipients) {
         io.to(userRoom(rid)).emit("call:declined", { conversationId, by: { id: userId } });
       }
       if (isGroup) {
-        const { elapsedMs, durationText } = computeDuration();
-        const senderId = st?.inviterId ?? userId;
-        if (st) callState.delete(conversationId);
-        activeGroupCalls.delete(conversationId);
-        try {
-          const msg = await prisma.message.create({
-            data: {
-              conversationId,
-              senderId,
-              type: "SYSTEM",
-              content: `Звонок продлился ${durationText} и был завершён`,
-              metadata: { ended: true, video: !!st?.video, duration: elapsedMs } as any,
-            },
-          });
-          io.to(conversationId).emit("message:new", {
-            conversationId,
-            messageId: msg.id,
-            senderId,
-            message: msg,
-          });
-          for (const rid of recipients) {
-            io.to(userRoom(rid)).emit("message:notify", {
-              conversationId,
-              messageId: msg.id,
-              senderId,
-              message: msg,
-            });
-          }
-        } catch (error) {
-          logger.warn({ error }, "Failed to create group decline end message");
-        }
-        io.to(conversationId).emit("call:status", { conversationId, active: false });
+        await finishGroupCall(conversationId, st?.inviterId ?? userId, "decline");
         return;
       }
 
@@ -1588,6 +1802,7 @@ export async function initSocket(
       }
       if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
       void emitEffectivePresence(io, userId);
+      broadcastCallStatus(conversationId);
 
       // treat as missed call if not accepted yet (1:1)
       if (st && !st.accepted) {
@@ -1624,11 +1839,12 @@ export async function initSocket(
       });
       if (!conv) return;
       const recipients = conv.participants.map((p) => p.userId).filter((id) => id !== userId);
-      for (const rid of recipients) {
-        io.to(userRoom(rid)).emit("call:ended", { conversationId, by: { id: userId } });
-      }
-      
       const isGroup = !!conv.isGroup;
+      if (!isGroup) {
+        for (const rid of recipients) {
+          io.to(userRoom(rid)).emit("call:ended", { conversationId, by: { id: userId } });
+        }
+      }
       const st = callState.get(conversationId);
       const callInfo = activeGroupCalls.get(conversationId);
 
@@ -1645,39 +1861,10 @@ export async function initSocket(
             : `${minutes}:${String(seconds).padStart(2, "0")}`;
         return { elapsedMs, durationText };
       };
+      await clearConversationCallPresence(io, conversationId);
 
       if (isGroup) {
-        const { elapsedMs, durationText } = computeDuration();
-        try {
-          const msg = await prisma.message.create({
-            data: {
-              conversationId,
-              senderId: userId,
-              type: "SYSTEM",
-              content: `Звонок продлился ${durationText} и был завершён`,
-              metadata: { ended: true, video: !!st?.video, duration: elapsedMs } as any,
-            },
-          });
-          io.to(conversationId).emit("message:new", {
-            conversationId,
-            messageId: msg.id,
-            senderId: userId,
-            message: msg,
-          });
-          for (const rid of recipients) {
-            io.to(userRoom(rid)).emit("message:notify", {
-              conversationId,
-              messageId: msg.id,
-              senderId: userId,
-              message: msg,
-            });
-          }
-        } catch (error) {
-          logger.warn({ conversationId, error }, "Failed to create group call end message");
-        }
-        activeGroupCalls.delete(conversationId);
-        callState.delete(conversationId);
-        io.to(conversationId).emit("call:status", { conversationId, active: false });
+        await finishGroupCall(conversationId, userId, "manual");
         return;
       }
 
@@ -1769,6 +1956,7 @@ export async function initSocket(
 
       // Убеждаемся, что сокет присоединен к комнате беседы для получения событий
       socket.join(conversationId);
+      await joinSocketCallPresence(socket as unknown as CallPresenceSocket, conversationId);
       // Track call participation for presence (both group and direct)
       const targetMap = isGroup ? activeGroupCalls : activeDirectCalls;
       
@@ -1795,7 +1983,7 @@ export async function initSocket(
             // Используем переданный video или по умолчанию false
             const callVideo = video ?? false;
             const startedAt = Date.now();
-            callState.set(conversationId, { inviterId: userId, accepted: true, video: callVideo, startedAt });
+            callState.set(conversationId, { inviterId: userId, inviterSocketId: socket.id, accepted: true, video: callVideo, startedAt });
             
             // Создаем системное сообщение о начале звонка
             try {
@@ -1844,6 +2032,9 @@ export async function initSocket(
 
       // Обновляем состояние звонка для всех участников (только для групповых)
       if (isGroup) {
+        syncGroupAloneTimer(conversationId);
+        broadcastCallStatus(conversationId);
+      } else {
         broadcastCallStatus(conversationId);
       }
       // Update global presence (IN_CALL override) for joining user
@@ -1851,6 +2042,7 @@ export async function initSocket(
     });
 
     socket.on("call:room:leave", async ({ conversationId }) => {
+      await leaveSocketCallPresence(socket as unknown as CallPresenceSocket, conversationId);
       const groupInfo = activeGroupCalls.get(conversationId);
       const directInfo = activeDirectCalls.get(conversationId);
       const callInfo = groupInfo ?? directInfo;
@@ -1858,12 +2050,11 @@ export async function initSocket(
         // Если звонок еще не успел инициировать комнату (например, создатель сразу отменил)
         const st = callState.get(conversationId);
         if (st) {
+          clearGroupAloneTimer(conversationId);
           callState.delete(conversationId);
-          io.to(conversationId).emit("call:status", {
-            conversationId,
-            active: false,
-          });
+          broadcastCallStatus(conversationId);
         }
+        void emitEffectivePresence(io, userId);
         logger.info({ conversationId, userId }, "call:room:leave without callInfo — treated as no active participants");
         return;
       }
@@ -1872,41 +2063,20 @@ export async function initSocket(
       
       const remainingUsers = callInfo.participantsByUser.size;
       const isGroup = !!groupInfo;
-      if (remainingUsers === 0) {
-        if (isGroup) activeGroupCalls.delete(conversationId);
-        else {
+      const shouldEndCall = isGroup ? remainingUsers === 0 : remainingUsers <= 1;
+      if (shouldEndCall) {
+        if (isGroup) {
+          await finishGroupCall(conversationId, userId, "empty");
+        } else {
+          const remainingParticipantIds = listParticipants(callInfo);
+          await clearConversationCallPresence(io, conversationId);
           activeDirectCalls.delete(conversationId);
           if (env.E2EE_1TO1) {
             void deleteCallE2eeKey(conversationId).catch((error) => {
               logger.warn({ error, conversationId }, "Failed to delete call E2EE key (room:leave)");
             });
           }
-        }
-        if (isGroup) {
           try {
-            const st = callState.get(conversationId);
-            const startedAt = st?.startedAt ?? callInfo.startedAt;
-            const elapsedMs = Math.max(0, Date.now() - (startedAt ?? Date.now()));
-            const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
-            const hours = Math.floor(totalSec / 3600);
-            const minutes = Math.floor((totalSec % 3600) / 60);
-            const seconds = totalSec % 60;
-            const durationText = hours > 0
-              ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
-              : `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-            const msg = await prisma.message.create({
-              data: {
-                conversationId,
-                senderId: userId,
-                type: "SYSTEM",
-                content: `Звонок продлился ${durationText} и был завершён`,
-                metadata: { ended: true, video: !!st?.video, duration: elapsedMs } as any,
-              },
-            });
-
-            io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
-
             const conv = await prisma.conversation.findUnique({
               where: { id: conversationId },
               include: { participants: true },
@@ -1914,25 +2084,24 @@ export async function initSocket(
             if (conv) {
               for (const p of conv.participants) {
                 if (p.userId !== userId) {
-                  io.to(userRoom(p.userId)).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                  io.to(userRoom(p.userId)).emit("call:ended", { conversationId, by: { id: userId } });
                 }
               }
             }
-
-            logger.info({ conversationId, userId, messageId: msg.id, duration: elapsedMs }, "Group call duration message created in call:room:leave");
-            callState.delete(conversationId);
           } catch (error) {
-            logger.warn({ error, conversationId, userId }, "Failed to create call ended message on room leave");
+            logger.warn({ error, conversationId, userId }, "Failed to emit direct call ended on room leave");
           }
-
-          io.to(conversationId).emit("call:status", {
-            conversationId,
-            active: false,
-          });
-          logger.info({ conversationId, userId }, "Call status set to inactive in call:room:leave (no participants remain)");
+          callState.delete(conversationId);
+          broadcastCallStatus(conversationId);
+          for (const pid of remainingParticipantIds) {
+            void emitEffectivePresence(io, pid);
+          }
         }
       } else {
         if (isGroup) {
+          syncGroupAloneTimer(conversationId);
+          broadcastCallStatus(conversationId);
+        } else {
           broadcastCallStatus(conversationId);
         }
       }
@@ -1943,27 +2112,12 @@ export async function initSocket(
 
     socket.on("call:status:request", async ({ conversationIds }) => {
       if (!Array.isArray(conversationIds) || conversationIds.length === 0) return;
-      
-      const statuses: Record<string, { active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }> = {};
-      const now = Date.now();
-      
+
+      const statuses: Record<string, CallStatusPayload> = {};
       for (const conversationId of conversationIds) {
-        const callInfo = activeGroupCalls.get(conversationId);
-        if (callInfo) {
-          const elapsedMs = now - callInfo.startedAt;
-          statuses[conversationId] = {
-            active: true,
-            startedAt: callInfo.startedAt,
-            elapsedMs,
-            participants: listParticipants(callInfo),
-          };
-        } else {
-          statuses[conversationId] = {
-            active: false,
-          };
-        }
+        statuses[conversationId] = buildCallStatus(conversationId);
       }
-      
+
       socket.emit("call:status:bulk", { statuses });
     });
 
@@ -1974,30 +2128,76 @@ export async function initSocket(
       try {
         clearInterval(heartbeat);
       } catch {}
+      await leaveAllSocketCallPresence(socket as unknown as CallPresenceSocket);
+
+      for (const [conversationId, st] of callState.entries()) {
+        if (st.accepted || st.inviterSocketId !== socket.id) continue;
+        callState.delete(conversationId);
+        if (env.E2EE_1TO1) {
+          void deleteCallE2eeKey(conversationId).catch((error) => {
+            logger.warn({ error, conversationId }, "Failed to delete call E2EE key (pending inviter disconnect)");
+          });
+        }
+        try {
+          const conv = await prisma.conversation.findUnique({
+            where: { id: conversationId },
+            include: { participants: true },
+          });
+          for (const p of conv?.participants ?? []) {
+            if (p.userId !== userId) {
+              io.to(userRoom(p.userId)).emit("call:ended", { conversationId, by: { id: userId } });
+            }
+          }
+        } catch (error) {
+          logger.warn({ error, conversationId, userId }, "Failed to emit pending direct call ended on inviter disconnect");
+        }
+        broadcastCallStatus(conversationId);
+      }
       
       // Удаляем пользователя из всех активных звонков
       for (const [conversationId, callInfo] of activeGroupCalls.entries()) {
         if (callInfo.participantsByUser.has(userId)) {
           removeParticipant(callInfo, userId, socket.id);
           if (callInfo.participantsByUser.size === 0) {
-            activeGroupCalls.delete(conversationId);
+            await finishGroupCall(conversationId, userId, "empty");
+          } else {
+            syncGroupAloneTimer(conversationId);
+            broadcastCallStatus(conversationId);
           }
-          // Отправляем обновленный статус
-          broadcastCallStatus(conversationId);
         }
       }
 
       for (const [conversationId, callInfo] of activeDirectCalls.entries()) {
         if (callInfo.participantsByUser.has(userId)) {
           removeParticipant(callInfo, userId, socket.id);
-          if (callInfo.participantsByUser.size === 0) {
+          if (callInfo.participantsByUser.size <= 1) {
+            const remainingParticipantIds = listParticipants(callInfo);
+            await clearConversationCallPresence(io, conversationId);
             activeDirectCalls.delete(conversationId);
+            callState.delete(conversationId);
             if (env.E2EE_1TO1) {
               void deleteCallE2eeKey(conversationId).catch((error) => {
                 logger.warn({ error, conversationId }, "Failed to delete call E2EE key (disconnecting)");
               });
             }
+            try {
+              const conv = await prisma.conversation.findUnique({
+                where: { id: conversationId },
+                include: { participants: true },
+              });
+              for (const p of conv?.participants ?? []) {
+                if (p.userId !== userId) {
+                  io.to(userRoom(p.userId)).emit("call:ended", { conversationId, by: { id: userId } });
+                }
+              }
+            } catch (error) {
+              logger.warn({ error, conversationId, userId }, "Failed to emit direct call ended on disconnect");
+            }
+            for (const pid of remainingParticipantIds) {
+              void emitEffectivePresence(io, pid);
+            }
           }
+          broadcastCallStatus(conversationId);
         }
       }
 

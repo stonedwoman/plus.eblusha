@@ -2,7 +2,7 @@
 #   tunnel: <UUID из cloudflared tunnel create>
 #   credentials-file: путь к <UUID>.json
 #
-# Локальный origin — тот же nginx, что и для plus.eblusha.org (порт 80 или 443 см. README).
+# Локальный origin — тот же nginx, что и для eblusha.org в проде (порт 80 или 443 см. README).
 
 tunnel: REPLACE_WITH_TUNNEL_UUID
 credentials-file: /etc/cloudflared/REPLACE_WITH_TUNNEL_UUID.json
@@ -25,9 +25,6 @@ ingress:
   - hostname: voice.eblusha.org
     service: http://127.0.0.1:80
 
-  # Запасной путь «как раньше» для plus не обязателен в тоннеле — оставьте прямой DNS на сервер.
-  # Раскомментируйте, если нужно гнать через CF и plus:
-  # - hostname: plus.eblusha.org
-  #   service: http://127.0.0.1:80
+  # При необходимости добавьте сюда любые дополнительные hostname’ы того же nginx.
 
   - service: http_status:404

@@ -7,12 +7,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import './utils/i18n'
 import { router } from './router'
 import { useAppStore } from './domain/store/appStore'
-import { connectSocket, acceptCall, declineCall } from './utils/socket'
-import { api, forceRefreshSession } from './utils/api'
+import { connectSocket } from './core/realtime'
+import { api } from './core/api'
+import { forceRefreshSession, getAccessExpMs, validateStoredSession } from './core/auth'
 import { ensureDeviceBootstrap } from './domain/device/deviceManager'
 import { Capacitor } from '@capacitor/core' // Import Capacitor
 import NativeSocket from './capacitor/plugins/native-socket-plugin'
 import LoadingSpinner from './ui/components/LoadingSpinner'
+import { appLifecycle } from './core/lifecycle/appLifecycle'
+import { nativeBridge } from './platform/native-bridge/bridge'
 
 // Quiet console by default (prod + web): keep warn/error, suppress log/info/debug unless explicitly enabled.
 // Enable with: localStorage.setItem('eb-debug', '1') or ?debug=1
@@ -59,107 +62,26 @@ if (typeof window !== 'undefined' && !(window as any).__ebConsolePatched) {
 }
 
 const queryClient = new QueryClient()
+appLifecycle.bindBrowserLifecycle()
+nativeBridge.installGlobals()
+let initialSessionPrepared = false
 
-function getAccessExpMs(token: string | undefined | null): number | null {
-  if (!token) return null
+async function prepareInitialSessionState() {
+  if (initialSessionPrepared) return
+  useAppStore.getState().initFromStorage()
   try {
-    const [, payload] = token.split('.')
-    const json = JSON.parse(atob(payload))
-    if (typeof json?.exp === 'number') {
-      return json.exp * 1000
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-// Проверка валидности сохраненной сессии при загрузке приложения
-async function validateStoredSession(): Promise<boolean> {
-  const session = useAppStore.getState().session
-  
-  // Если нет сохраненной сессии, пытаемся восстановить через refresh token из cookie
-  if (!session) {
-    try {
-      // Пытаемся обновить токены через refresh (refresh token в httpOnly cookie)
-      const response = await api.post('/auth/refresh')
-      if (response.data?.accessToken) {
-        // Получаем данные пользователя
-        const userResponse = await api.get('/status/me')
-        if (userResponse.data?.user) {
-          useAppStore.getState().setSession({
-            user: {
-              id: userResponse.data.user.id,
-              username: userResponse.data.user.username,
-              displayName: userResponse.data.user.displayName,
-              avatarUrl: userResponse.data.user.avatarUrl,
-            },
-            accessToken: response.data.accessToken,
-            refreshToken: response.data.refreshToken ?? undefined,
-          })
-          return true
-        }
-      }
-    } catch {
-      // Refresh token невалиден или отсутствует
-      return false
-    }
-    return false
-  }
-
-  try {
-    // Проверяем валидность токена через запрос к /status/me
-    const response = await api.get('/status/me')
-    if (response.data?.user) {
-      // Обновляем данные пользователя из ответа (на случай если они изменились)
-      useAppStore.getState().setSession({
-        ...session,
-        user: {
-          id: response.data.user.id,
-          username: response.data.user.username,
-          displayName: response.data.user.displayName,
-          avatarUrl: response.data.user.avatarUrl,
-        },
-      })
-      return true
-    }
-    return false
+    await validateStoredSession()
   } catch (error) {
-    // Если access токен невалиден, пытаемся обновить через refresh
-    try {
-      const refreshed = await forceRefreshSession()
-      if (refreshed) {
-        const userResponse = await api.get('/status/me')
-        if (userResponse.data?.user) {
-          useAppStore.getState().setSession({
-            user: {
-              id: userResponse.data.user.id,
-              username: userResponse.data.user.username,
-              displayName: userResponse.data.user.displayName,
-              avatarUrl: userResponse.data.user.avatarUrl,
-            },
-            accessToken: refreshed.accessToken,
-            refreshToken: refreshed.refreshToken ?? undefined,
-          })
-          return true
-        }
-      }
-    } catch (refreshError) {
-      const status = (refreshError as { response?: { status?: number } })?.response?.status
-      // Очищаем сессию только при явной невалидности refresh (401/403)
-      if (status === 401 || status === 403) {
-        useAppStore.getState().setSession(null)
-      }
-      return false
-    }
-    return false
+    console.error('[Main] Initial session bootstrap failed:', error)
+  } finally {
+    initialSessionPrepared = true
   }
 }
 
 function AppRoot() {
   const session = useAppStore((state) => state.session)
   const hydrated = useAppStore((state) => state.hydrated)
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true)
+  const [isCheckingAuth, setIsCheckingAuth] = useState(!initialSessionPrepared)
   
   console.log('[AppRoot] Component rendered, session:', !!session, 'hydrated:', hydrated, 'isCheckingAuth:', isCheckingAuth)
 
@@ -222,17 +144,23 @@ function AppRoot() {
 
   // Инициализация стора из localStorage и проверка авторизации
   useEffect(() => {
-            console.log('[AppRoot] Initializing store from storage...')
+    if (initialSessionPrepared) {
+      setIsCheckingAuth(false)
+      return
+    }
+    console.log('[AppRoot] Initializing store from storage...')
     // Синхронно гидрируем токены перед любыми guard'ами
     useAppStore.getState().initFromStorage()
-            console.log('[AppRoot] Store initialized, validating session...')
-            validateStoredSession().then((valid) => {
-              console.log('[AppRoot] Session validation result:', valid)
-              setIsCheckingAuth(false)
-            }).catch((error) => {
-              console.error('[AppRoot] Session validation error:', error)
-      setIsCheckingAuth(false)
-    })
+    console.log('[AppRoot] Store initialized, validating session...')
+    validateStoredSession()
+      .then((valid) => {
+        console.log('[AppRoot] Session validation result:', valid)
+        setIsCheckingAuth(false)
+      })
+      .catch((error) => {
+        console.error('[AppRoot] Session validation error:', error)
+        setIsCheckingAuth(false)
+      })
   }, [])
 
   // Сохранение токена в нативный сервис сразу после загрузки (для Android)
@@ -511,8 +439,21 @@ function AppRoot() {
             // Инициализация обработчиков сообщений
             initializeMessageHandlers({
               onMessageReceived: (payload: any) => {
-                // Сообщение получено - будет обработано в ChatsPage
                 console.log('[Native] Message received:', payload)
+                const conversationId = String(payload?.conversationId ?? '').trim()
+                const messageId = String(payload?.messageId ?? payload?.message?.id ?? '').trim()
+                const senderId = String(payload?.senderId ?? payload?.message?.senderId ?? '').trim()
+                if (conversationId && messageId && senderId) {
+                  nativeBridge.emit('pushMessage', {
+                    version: 1,
+                    conversationId,
+                    messageId,
+                    senderId,
+                    receivedAt: Date.now(),
+                    preview:
+                      typeof payload?.message?.content === 'string' ? payload.message.content : undefined,
+                  })
+                }
               },
               onConversationUpdated: (conversationId: string) => {
                 // Беседа обновлена - инвалидируем кэш
@@ -537,8 +478,20 @@ function AppRoot() {
             // Инициализация обработчиков звонков
             initializeCallHandlers({
               onIncomingCall: (payload: any) => {
-                // Входящий звонок - нативный экран уже открыт
                 console.log('[Native] Incoming call:', payload)
+                const conversationId = String(payload?.conversationId ?? '').trim()
+                const fromUserId = String(payload?.from?.id ?? '').trim()
+                if (conversationId && fromUserId) {
+                  nativeBridge.emit('incomingCall', {
+                    version: 1,
+                    conversationId,
+                    fromUserId,
+                    fromName:
+                      typeof payload?.from?.name === 'string' ? payload.from.name : undefined,
+                    video: !!payload?.video,
+                    startedAt: Date.now(),
+                  })
+                }
               },
               onCallAccepted: (payload: any) => {
                 // Звонок принят - будет обработано в ChatsPage
@@ -546,9 +499,29 @@ function AppRoot() {
               },
               onCallDeclined: (payload: any) => {
                 console.log('[Native] Call declined:', payload)
+                const conversationId = String(payload?.conversationId ?? '').trim()
+                if (conversationId) {
+                  nativeBridge.emit('callCanceled', {
+                    version: 1,
+                    conversationId,
+                    byUserId:
+                      typeof payload?.by?.id === 'string' ? payload.by.id : undefined,
+                    reason: 'declined',
+                  })
+                }
               },
               onCallEnded: (payload: any) => {
                 console.log('[Native] Call ended:', payload)
+                const conversationId = String(payload?.conversationId ?? '').trim()
+                if (conversationId) {
+                  nativeBridge.emit('callCanceled', {
+                    version: 1,
+                    conversationId,
+                    byUserId:
+                      typeof payload?.by?.id === 'string' ? payload.by.id : undefined,
+                    reason: 'ended',
+                  })
+                }
               },
               onCallStatusUpdate: (conversationId: string, status: any) => {
                 // Обновление статуса звонка - будет обработано в ChatsPage
@@ -571,68 +544,58 @@ function AppRoot() {
               if (!Array.isArray(queue) || queue.length === 0) {
                 return
               }
+
               while (queue.length > 0) {
                 const action = queue.shift()
                 if (!action || !action.conversationId) {
                   continue
                 }
-                if (action.action === 'accept') {
-                  acceptCall(action.conversationId, !!action.withVideo)
-                } else if (action.action === 'decline') {
-                  declineCall(action.conversationId)
+
+                if (action.action === 'accept' && typeof window.acceptIncomingCallFromNative === 'function') {
+                  window.acceptIncomingCallFromNative({
+                    version: 1,
+                    callId: action.conversationId,
+                    conversationId: action.conversationId,
+                    isVideo: !!action.withVideo,
+                    source: 'android_native',
+                  })
+                } else if (
+                  action.action === 'decline' &&
+                  typeof window.declineIncomingCallFromNative === 'function'
+                ) {
+                  window.declineIncomingCallFromNative({
+                    version: 1,
+                    callId: action.conversationId,
+                    conversationId: action.conversationId,
+                    source: 'android_native',
+                  })
                 }
               }
             }
 
             ;(window as any).__flushNativeCallActions = flushNativeCallActions
 
-            const invokeNativeCallOverlayBridge = (
-              action: 'accept' | 'decline',
-              conversationId: string,
-              withVideo?: boolean
-            ): boolean => {
-              const bridge = (window as any).__nativeCallOverlayBridge
-              if (!bridge) {
-                return false
-              }
-              const handler = action === 'accept' ? bridge.accept : bridge.decline
-              if (typeof handler !== 'function') {
-                return false
-              }
-              try {
-                const result =
-                  action === 'accept'
-                    ? handler(conversationId, withVideo ?? false)
-                    : handler(conversationId)
-                if (
-                  result &&
-                  (typeof result === 'object' || typeof result === 'function') &&
-                  typeof (result as Promise<unknown>).then === 'function'
-                ) {
-                  ;(result as Promise<unknown>).catch((error: unknown) => {
-                    console.warn('[Main] Native call overlay bridge error:', error)
-                  })
-                  return true
-                }
-                return !!result
-              } catch (error) {
-                console.warn('[Main] Native call overlay bridge error:', error)
-                return false
-              }
-            }
-
             // Глобальные обработчики для нативного экрана звонка
             ;(window as any).handleIncomingCallAnswer = (conversationId: string, withVideo: boolean) => {
-              const handled = invokeNativeCallOverlayBridge('accept', conversationId, withVideo)
-              if (!handled) {
-                acceptCall(conversationId, withVideo)
+              if (typeof window.acceptIncomingCallFromNative === 'function') {
+                window.acceptIncomingCallFromNative({
+                  version: 1,
+                  callId: conversationId,
+                  conversationId,
+                  isVideo: !!withVideo,
+                  source: 'android_native',
+                })
               }
             }
             
             ;(window as any).handleIncomingCallDecline = (conversationId: string) => {
-              const handled = invokeNativeCallOverlayBridge('decline', conversationId)
-              if (!handled) {
-                declineCall(conversationId)
+              if (typeof window.declineIncomingCallFromNative === 'function') {
+                window.declineIncomingCallFromNative({
+                  version: 1,
+                  callId: conversationId,
+                  conversationId,
+                  source: 'android_native',
+                })
               }
             }
 
@@ -693,9 +656,9 @@ function AppRoot() {
   useEffect(() => {
     let timeoutId: number | undefined
     let intervalId: number | undefined
-    let visibilityHandler: (() => void) | null = null
-    let onlineHandler: (() => void) | null = null
-    let focusHandler: (() => void) | null = null
+    let offForeground: (() => void) | null = null
+    let offNetwork: (() => void) | null = null
+    let offFocus: (() => void) | null = null
     let cancelled = false
 
     async function doRefreshIfNeeded(force?: boolean) {
@@ -759,27 +722,19 @@ function AppRoot() {
       }, 2 * 60 * 1000) // Проверяем каждые 2 минуты
     }
 
-    // Подписки на возврат и онлайн
-    visibilityHandler = () => {
-      if (document.visibilityState === 'visible') {
-        // Когда окно снова становится видимым - сразу проверяем токен
+    offForeground = appLifecycle.on('foreground', () => {
+      void doRefreshIfNeeded(true)
+    })
+
+    offFocus = appLifecycle.on('focus', () => {
+      void doRefreshIfNeeded(true)
+    })
+
+    offNetwork = appLifecycle.on('networkChange', (payload) => {
+      if (payload.online) {
         void doRefreshIfNeeded(true)
       }
-    }
-    
-    focusHandler = () => {
-      // При возврате фокуса - проверяем токен
-      void doRefreshIfNeeded(true)
-    }
-    
-    onlineHandler = () => { 
-      // При восстановлении соединения - проверяем токен
-      void doRefreshIfNeeded(true) 
-    }
-    
-    document.addEventListener('visibilitychange', visibilityHandler)
-    window.addEventListener('focus', focusHandler)
-    window.addEventListener('online', onlineHandler)
+    })
 
     if (session) {
       scheduleNext()
@@ -790,9 +745,9 @@ function AppRoot() {
       cancelled = true
       if (timeoutId) clearTimeout(timeoutId)
       if (intervalId) clearInterval(intervalId)
-      if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler)
-      if (focusHandler) window.removeEventListener('focus', focusHandler)
-      if (onlineHandler) window.removeEventListener('online', onlineHandler)
+      if (offForeground) offForeground()
+      if (offFocus) offFocus()
+      if (offNetwork) offNetwork()
     }
   }, [session])
 
@@ -846,20 +801,27 @@ function AppRoot() {
 }
 
 console.log('[Main] Creating React root...')
-const rootElement = document.getElementById('app')
-if (!rootElement) {
-  console.error('[Main] ❌ Root element not found!')
-} else {
+async function bootstrapAndRender() {
+  const rootElement = document.getElementById('app')
+  if (!rootElement) {
+    console.error('[Main] ❌ Root element not found!')
+    return
+  }
+
+  await prepareInitialSessionState()
+
   console.log('[Main] Root element found, rendering...')
   ReactDOM.createRoot(rootElement).render(
-  <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <AppRoot />
-    </QueryClientProvider>
-  </React.StrictMode>,
-)
+    <React.StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <AppRoot />
+      </QueryClientProvider>
+    </React.StrictMode>,
+  )
   console.log('[Main] ✅ React app rendered')
 }
+
+void bootstrapAndRender()
 
 
 

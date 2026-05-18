@@ -49,6 +49,33 @@ public class NativeSocketPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void getStoredTokens(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context is null");
+            return;
+        }
+        JSObject result = new JSObject();
+        result.put("token", getStoredToken(context));
+        result.put("refreshToken", getStoredRefreshToken(context));
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void clearTokens(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context is null");
+            return;
+        }
+        storeTokens(context, "", "");
+        notifyServiceAboutToken("");
+        JSObject result = new JSObject();
+        result.put("success", true);
+        call.resolve(result);
+    }
+
+    @PluginMethod
     public void setPresenceFocus(PluginCall call) {
         boolean focused = call.getBoolean("focused", false);
         android.util.Log.d("NativeSocketPlugin", "setPresenceFocus() called, focused=" + focused);

@@ -6,12 +6,50 @@ import { deleteS3ObjectsByUrls } from "../lib/storageDeletion";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 import env from "../config/env";
+import logger from "../config/logger";
 import { extractFirstUrl } from "../lib/linkPreview";
 import { enqueueLinkPreview } from "../jobs/queue";
 import { rateLimit } from "../middlewares/rateLimit";
+import {
+  forwardedHostedBlobUrlLikely,
+  hostedForwardedAttachmentBlobExists,
+  remapAttachmentsForForwardedNonSecretConversation,
+} from "../lib/forwardAttachmentRemap";
+
+/** Если forwardFrom когда-то оказался JSON-строкой, remap форвардов не включался → тот же URL и 404 у получателя. */
+function coerceForwardFromObject(value: unknown): unknown {
+  if (value != null && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string") return value;
+  const s = value.trim();
+  if (!s.startsWith("{") || s.length < 3) return value;
+  try {
+    const p = JSON.parse(s) as unknown;
+    return p != null && typeof p === "object" && !Array.isArray(p) ? p : value;
+  } catch {
+    return value;
+  }
+}
+
+/** Нормализуем корень метадаты перессылки для проверки remap и сохранения в Json. */
+function normalizeForwardSendMetadata(
+  meta: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return meta;
+  const m = { ...meta };
+  m.forwardFrom = coerceForwardFromObject(m.forwardFrom);
+  const ts = m.forwardOriginalCreatedAt;
+  if (typeof ts === "number" && Number.isFinite(ts)) {
+    m.forwardOriginalCreatedAt = new Date(ts).toISOString();
+  }
+  return m;
+}
 
 const router = Router();
 const userRoom = (userId: string) => `user:${userId}`;
+
+const messageReactionsWithUser = {
+  include: { user: { select: { id: true, username: true, displayName: true } } },
+};
 
 router.use(authenticate);
 
@@ -956,7 +994,7 @@ router.get("/:id/messages", async (req, res) => {
     include: {
       sender: { select: { id: true, username: true, displayName: true } },
       attachments: true,
-      reactions: true,
+      reactions: messageReactionsWithUser,
       receipts: true,
       replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
     },
@@ -1051,6 +1089,8 @@ router.post(
   }
 
   const { conversationId, type, content, metadata, attachments, replyToId } = parsed.data;
+  const normalizedMetadata =
+    metadata !== undefined ? normalizeForwardSendMetadata(metadata as Record<string, unknown>) : metadata;
   const userId = (req as AuthedRequest).user!.id;
 
   const membership = await prisma.conversationParticipant.findFirst({
@@ -1075,6 +1115,65 @@ router.post(
     return;
   }
 
+  const fwdMetaFlat =
+    normalizedMetadata && typeof normalizedMetadata === "object" && !Array.isArray(normalizedMetadata)
+      ? (normalizedMetadata as Record<string, unknown>)
+      : null;
+  const forwardFromGuess = fwdMetaFlat?.forwardFrom;
+  const forwardOriginalTs = fwdMetaFlat?.forwardOriginalCreatedAt;
+  const hasForwardOriginalCreatedAt =
+    (typeof forwardOriginalTs === "string" && String(forwardOriginalTs).trim().length > 0) ||
+    (typeof forwardOriginalTs === "number" && Number.isFinite(forwardOriginalTs));
+  const ffAuthor = (forwardFromGuess as { authorName?: unknown } | null)?.authorName;
+  const hasForwardAuthorName =
+    typeof ffAuthor === "string" && String(ffAuthor).trim().length > 0;
+  const looksLikeForwardAttachments =
+    !!forwardFromGuess &&
+    typeof forwardFromGuess === "object" &&
+    forwardFromGuess !== null &&
+    !Array.isArray(forwardFromGuess) &&
+    (hasForwardAuthorName || hasForwardOriginalCreatedAt);
+
+  let attachmentsForDb = attachments;
+  if (
+    attachments?.length &&
+    !(conv as any).isSecret &&
+    looksLikeForwardAttachments &&
+    env.STORAGE_ENC_KEY
+  ) {
+    try {
+      attachmentsForDb = await remapAttachmentsForForwardedNonSecretConversation(conversationId, false, attachments);
+    } catch (_e: unknown) {
+      res.status(500).json({ message: "Failed to prepare forwarded attachments for this chat" });
+      return;
+    }
+  }
+
+  /** Битая ссылка в БД без объекта в storage → раньше сохраняли «успешную» пересылку с вечным 404. */
+  if (
+    attachments?.length &&
+    !(conv as any).isSecret &&
+    looksLikeForwardAttachments &&
+    attachmentsForDb?.length
+  ) {
+    for (const att of attachmentsForDb) {
+      if (!forwardedHostedBlobUrlLikely(att.url)) continue;
+      const ok = await hostedForwardedAttachmentBlobExists(att.url);
+      if (!ok) {
+        logger.warn(
+          { url: att.url, conversationId, userId },
+          "[conversations/send] forward: hosted .eblusha blob missing after remap",
+        );
+        res.status(400).json({
+          message:
+            "Вложение отсутствует в хранилище сервера (файл удалён или не был сохранён при отправке). Переслать это сообщение нельзя. Попросите повторно отправить файл из исходного чата или сохраните его вручную, если он у вас есть.",
+          code: "FORWARD_ATTACHMENT_MISSING",
+        });
+        return;
+      }
+    }
+  }
+
   let expiresAt: Date | undefined;
   if ((conv as any).isSecret) {
     const secretTtlSecondsValue = (conv as any).secretTtlSeconds as number | null | undefined;
@@ -1093,11 +1192,11 @@ router.post(
       content: content ?? null,
       replyToId: replyToId ?? null,
       ...(expiresAt ? { expiresAt } : {}),
-      ...(metadata !== undefined ? { metadata: metadata as any } : {}),
-      ...(attachments && attachments.length
+      ...(normalizedMetadata !== undefined ? { metadata: normalizedMetadata as any } : {}),
+      ...(attachmentsForDb && attachmentsForDb.length
         ? {
             attachments: {
-              create: attachments.map((a) => ({
+              create: attachmentsForDb.map((a) => ({
                 url: a.url,
                 type: a.type,
                 size: a.size ?? null,

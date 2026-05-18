@@ -6,6 +6,7 @@ import { authenticate } from "../middlewares/auth";
 import { getRedisClient } from "../lib/redis";
 import prisma from "../lib/prisma";
 import { applyLivekitFactsEvent } from "../lib/livekitFacts";
+import { buildLivekitPublicUrl } from "../lib/livekitUrl";
 
 const router = Router();
 const webhookReceiver = new WebhookReceiver(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
@@ -107,7 +108,15 @@ router.post("/token", async (req, res) => {
 
   const jwt = await token.toJwt();
 
-  res.json({ token: jwt, url: env.LIVEKIT_URL });
+  // LIVEKIT_PATH: строим URL от хоста запроса (без привязки к домену)
+  let url: string;
+  if (env.LIVEKIT_PATH) {
+    url = buildLivekitPublicUrl(req, env.LIVEKIT_PATH);
+  } else {
+    url = env.LIVEKIT_URL!;
+  }
+
+  res.json({ token: jwt, url });
 });
 
 export default router;

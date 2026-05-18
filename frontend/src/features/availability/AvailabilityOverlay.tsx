@@ -5,7 +5,7 @@ import { CheckCircle, Eye, EyeOff, HelpCircle, Trash2, X, XCircle } from 'lucide
 import type { AvailabilityProposal } from './availability.types'
 import { useAvailabilityStore } from './availability.store'
 import { api } from '../../utils/api'
-import { socket } from '../../utils/socket'
+import { socket } from '../../core/realtime'
 import {
   buildDayColumns,
   buildTimeSlots,

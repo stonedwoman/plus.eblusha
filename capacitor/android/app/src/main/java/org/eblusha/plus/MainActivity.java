@@ -76,13 +76,14 @@ public class MainActivity extends BridgeActivity {
                         "try {" +
                         "  console.log('[MainActivity JS] Checking localStorage for token...');" +
                         "  const storage = window.localStorage;" +
-                        "  // Токен хранится в ключе 'eb_access'" +
+                        "  // Токены хранятся в ключах 'eb_access' и 'eb_refresh'" +
                         "  const token = storage.getItem('eb_access');" +
+                        "  const refreshToken = storage.getItem('eb_refresh');" +
                         "  console.log('[MainActivity JS] Token found, length:', token ? token.length : 0);" +
                         "  if (token && token.length > 0) {" +
                         "    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
                         "      console.log('[MainActivity JS] NativeSocket plugin available, saving token...');" +
-                        "      window.Capacitor.Plugins.NativeSocket.updateToken({ token: token }).then(() => {" +
+                        "      window.Capacitor.Plugins.NativeSocket.updateToken({ token: token, refreshToken: refreshToken }).then(() => {" +
                         "        console.log('[MainActivity JS] ✅ Token saved from localStorage');" +
                         "      }).catch((e) => {" +
                         "        console.error('[MainActivity JS] ❌ Failed to save token from localStorage:', e);" +
@@ -93,8 +94,9 @@ public class MainActivity extends BridgeActivity {
                         "      setTimeout(function() {" +
                         "        if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSocket) {" +
                         "          const retryToken = storage.getItem('eb_access');" +
+                        "          const retryRefreshToken = storage.getItem('eb_refresh');" +
                         "          if (retryToken) {" +
-                        "            window.Capacitor.Plugins.NativeSocket.updateToken({ token: retryToken }).then(() => {" +
+                        "            window.Capacitor.Plugins.NativeSocket.updateToken({ token: retryToken, refreshToken: retryRefreshToken }).then(() => {" +
                         "              console.log('[MainActivity JS] ✅ Token saved from localStorage (retry)');" +
                         "            }).catch((e) => {" +
                         "              console.error('[MainActivity JS] ❌ Failed to save token (retry):', e);" +

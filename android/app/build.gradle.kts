@@ -40,8 +40,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            buildConfigField("String", "API_BASE_URL", "\"https://plus.eblusha.org/api/\"")
-            buildConfigField("String", "WS_BASE_URL", "\"https://plus.eblusha.org\"")
+            buildConfigField("String", "API_BASE_URL", "\"https://eblusha.org/api/\"")
+            buildConfigField("String", "WS_BASE_URL", "\"https://eblusha.org\"")
         }
         debug {
             applicationIdSuffix = ".debug"

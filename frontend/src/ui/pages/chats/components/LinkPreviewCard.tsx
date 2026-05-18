@@ -108,7 +108,7 @@ export function LinkPreviewCard({ preview }: { preview: any }) {
           // eslint-disable-next-line no-console
           console.log('[YOUTUBE_DEBUG] ui:open', { url })
         }
-        window.open(url, '_blank', 'noopener,noreferrer')
+        void openUrlSystemBrowser(url)
       }}
       style={{
         display: cardW ? 'inline-block' : 'block',
@@ -264,7 +264,7 @@ export function LinkPreviewCard({ preview }: { preview: any }) {
                       console.log('[YOUTUBE_DEBUG] ui:youtube:play', { url, videoId: youTubeId, mode: youTubeMode })
                     }
                     if (youTubeMode === 'external') {
-                      window.open(url, '_blank', 'noopener,noreferrer')
+                      void openUrlSystemBrowser(url)
                       return
                     }
                     if (youTubeMode === 'system_browser') {
@@ -278,7 +278,7 @@ export function LinkPreviewCard({ preview }: { preview: any }) {
                         try { w.__openYouTubeWindow(embedUrl) } catch {}
                         return
                       }
-                      window.open(url, '_blank', 'noopener,noreferrer')
+                      void openUrlSystemBrowser(url)
                       return
                     }
                     // embed (default)

@@ -15,12 +15,12 @@ fi
 echo "→ Building frontend..."
 npm run build
 
-echo "→ Syncing to /var/www/plus.eblusha.org/"
-sudo rsync -a dist/ /var/www/plus.eblusha.org/
+echo "→ Syncing to /var/www/eblusha.org/"
+sudo rsync -a dist/ /var/www/eblusha.org/
 
 echo "→ Syncing public/ overlay (живые статики по тем же URL, что у Vite public/)..."
-sudo mkdir -p /var/www/plus.eblusha.org-public
-sudo rsync -a --delete public/ /var/www/plus.eblusha.org-public/
+sudo mkdir -p /var/www/eblusha.org-public
+sudo rsync -a --delete public/ /var/www/eblusha.org-public/
 
 echo "→ Reloading nginx..."
 sudo systemctl reload nginx

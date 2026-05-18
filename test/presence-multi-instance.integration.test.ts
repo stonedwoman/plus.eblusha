@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { io as ioClient, type Socket } from "socket.io-client";
 import { getRedisClient } from "../src/lib/redis";
+import prisma from "../src/lib/prisma";
 import { signAccessToken } from "../src/utils/jwt";
 
 type StartedChild = { proc: ChildProcess; baseUrl: string; port: number };
@@ -102,16 +104,22 @@ async function connectSocket(baseUrl: string, token: string): Promise<Socket> {
   return socket;
 }
 
-async function main() {
+async function createUser(username: string) {
+  return prisma.user.create({
+    data: {
+      username,
+      passwordHash: `hash_${username}_${randomUUID()}`,
+    },
+  });
+}
+
+async function runPresenceDisconnectKeepsOnlineTest(a: StartedChild, b: StartedChild) {
   const userId = `presence_test_user_${Date.now()}`;
   const token = signAccessToken({ sub: userId, tokenId: `tok-${Date.now()}` });
 
   const redis = await getRedisClient();
   const presenceSetKey = `presence_socks:${userId}`;
   const activeSetKey = `active_socks:${userId}`;
-
-  const a = await startPresenceInstance("A");
-  const b = await startPresenceInstance("B");
 
   let socketA: Socket | null = null;
   let socketB: Socket | null = null;
@@ -165,8 +173,185 @@ async function main() {
     try {
       socketB?.disconnect();
     } catch {}
+  }
+}
+
+async function runInCallOverrideAcrossInstancesTest(a: StartedChild, b: StartedChild) {
+  const alice = await createUser(`presence_obs_${Date.now()}`);
+  const bob = await createUser(`presence_call_${Date.now()}`);
+  const conversationId = `presence-call-${randomUUID()}`;
+  await prisma.conversation.create({
+    data: {
+      id: conversationId,
+      isGroup: false,
+      createdById: alice.id,
+      participants: {
+        create: [{ userId: alice.id }, { userId: bob.id }],
+      },
+    },
+  });
+
+  const aliceToken = signAccessToken({ sub: alice.id, tokenId: `tok-${randomUUID()}` });
+  const bobToken = signAccessToken({ sub: bob.id, tokenId: `tok-${randomUUID()}` });
+
+  let observer: Socket | null = null;
+  let bobBackgroundSocket: Socket | null = null;
+  let bobCallSocket: Socket | null = null;
+
+  try {
+    observer = await connectSocket(a.baseUrl, aliceToken);
+    bobBackgroundSocket = await connectSocket(a.baseUrl, bobToken);
+    bobCallSocket = await connectSocket(b.baseUrl, bobToken);
+
+    let lastBobStatus: string | null = null;
+    const bobHistory: string[] = [];
+    observer.on("presence:update", (payload: any) => {
+      if (payload?.userId === bob.id && typeof payload?.status === "string") {
+        lastBobStatus = payload.status;
+        bobHistory.push(payload.status);
+      }
+    });
+
+    bobBackgroundSocket.emit("presence:state", { active: false, visibility: "hidden", source: "web" });
+    bobCallSocket.emit("presence:state", { active: false, visibility: "hidden", source: "web" });
+    bobCallSocket.emit("call:room:join", { conversationId, video: false });
+
+    await waitFor(
+      () => lastBobStatus,
+      (status) => status === "IN_CALL",
+      8_000
+    );
+
+    const historyAfterJoin = bobHistory.length;
+    bobBackgroundSocket.emit("presence:state", { active: false, visibility: "hidden", source: "web" });
+    await wait(600);
+
+    assert.equal(
+      bobHistory.slice(historyAfterJoin).includes("BACKGROUND"),
+      false,
+      `unexpected BACKGROUND after remote presence recompute. history=${bobHistory.join(",")}`
+    );
+    assert.equal(lastBobStatus, "IN_CALL");
+
+    bobCallSocket.emit("call:room:leave", { conversationId });
+    await waitFor(
+      () => lastBobStatus,
+      (status) => status === "BACKGROUND",
+      8_000
+    );
+  } finally {
+    try {
+      observer?.disconnect();
+    } catch {}
+    try {
+      bobBackgroundSocket?.disconnect();
+    } catch {}
+    try {
+      bobCallSocket?.disconnect();
+    } catch {}
+  }
+}
+
+async function runDirectAcceptInCallOverrideAcrossInstancesTest(a: StartedChild, b: StartedChild) {
+  const alice = await createUser(`presence_direct_obs_${Date.now()}`);
+  const bob = await createUser(`presence_direct_call_${Date.now()}`);
+  const conversationId = `presence-direct-call-${randomUUID()}`;
+  await prisma.conversation.create({
+    data: {
+      id: conversationId,
+      isGroup: false,
+      createdById: alice.id,
+      participants: {
+        create: [{ userId: alice.id }, { userId: bob.id }],
+      },
+    },
+  });
+
+  const aliceToken = signAccessToken({ sub: alice.id, tokenId: `tok-${randomUUID()}` });
+  const bobToken = signAccessToken({ sub: bob.id, tokenId: `tok-${randomUUID()}` });
+
+  let aliceSocket: Socket | null = null;
+  let bobBackgroundSocket: Socket | null = null;
+  let bobAcceptSocket: Socket | null = null;
+
+  try {
+    aliceSocket = await connectSocket(a.baseUrl, aliceToken);
+    bobBackgroundSocket = await connectSocket(a.baseUrl, bobToken);
+    bobAcceptSocket = await connectSocket(b.baseUrl, bobToken);
+
+    let lastBobStatus: string | null = null;
+    const bobHistory: string[] = [];
+    aliceSocket.on("presence:update", (payload: any) => {
+      if (payload?.userId === bob.id && typeof payload?.status === "string") {
+        lastBobStatus = payload.status;
+        bobHistory.push(payload.status);
+      }
+    });
+
+    bobBackgroundSocket.emit("presence:state", { active: false, visibility: "hidden", source: "web" });
+    bobAcceptSocket.emit("presence:state", { active: false, visibility: "hidden", source: "web" });
+
+    const incomingPromise = new Promise<any>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("call:incoming timeout")), 8_000);
+      bobAcceptSocket?.once("call:incoming", (payload) => {
+        clearTimeout(timeout);
+        resolve(payload);
+      });
+    });
+
+    aliceSocket.emit("call:invite", { conversationId, video: false });
+    await incomingPromise;
+
+    bobAcceptSocket.emit("call:accept", { conversationId, video: false });
+
+    await waitFor(
+      () => lastBobStatus,
+      (status) => status === "IN_CALL",
+      8_000
+    );
+
+    const historyAfterAccept = bobHistory.length;
+    bobBackgroundSocket.emit("presence:state", { active: false, visibility: "hidden", source: "web" });
+    await wait(600);
+
+    assert.equal(
+      bobHistory.slice(historyAfterAccept).includes("BACKGROUND"),
+      false,
+      `unexpected BACKGROUND after direct call accept. history=${bobHistory.join(",")}`
+    );
+    assert.equal(
+      bobHistory.slice(historyAfterAccept).includes("ONLINE"),
+      false,
+      `unexpected ONLINE after direct call accept. history=${bobHistory.join(",")}`
+    );
+    assert.equal(lastBobStatus, "IN_CALL");
+
+    aliceSocket.emit("call:end", { conversationId });
+    await wait(400);
+  } finally {
+    try {
+      aliceSocket?.disconnect();
+    } catch {}
+    try {
+      bobBackgroundSocket?.disconnect();
+    } catch {}
+    try {
+      bobAcceptSocket?.disconnect();
+    } catch {}
+  }
+}
+
+async function main() {
+  const a = await startPresenceInstance("A");
+  const b = await startPresenceInstance("B");
+  try {
+    await runPresenceDisconnectKeepsOnlineTest(a, b);
+    await runInCallOverrideAcrossInstancesTest(a, b);
+    await runDirectAcceptInCallOverrideAcrossInstancesTest(a, b);
+  } finally {
     await stopChild(a);
     await stopChild(b);
+    await prisma.$disconnect();
   }
 }
 

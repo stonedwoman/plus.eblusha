@@ -1,15 +1,16 @@
 import { useCallback, useRef, useState } from 'react'
-import { unlockAppAudio } from '../../../../utils/audioUnlock'
+import { shouldShowAudioUnlockPrompt, unlockAppAudio } from '../../../../utils/audioUnlock'
 
 export function useChatAudio() {
+  const audioUnlockNotRequired = !shouldShowAudioUnlockPrompt()
   const ringTimerRef = useRef<number | null>(null)
   const ringingConvIdRef = useRef<string | null>(null)
   const ringAudioRef = useRef<HTMLAudioElement | null>(null)
-  const ringUnlockedRef = useRef<boolean>(false)
+  const ringUnlockedRef = useRef<boolean>(audioUnlockNotRequired)
 
   // notify sound
   const notifyAudioRef = useRef<HTMLAudioElement | null>(null)
-  const notifyUnlockedRef = useRef<boolean>(false)
+  const notifyUnlockedRef = useRef<boolean>(audioUnlockNotRequired)
 
   const [showAudioUnlock, setShowAudioUnlock] = useState(false)
   const audioUnlockingRef = useRef<boolean>(false)
@@ -45,6 +46,12 @@ export function useChatAudio() {
   }, [])
 
   const performAudioUnlock = async () => {
+    if (audioUnlockNotRequired) {
+      notifyUnlockedRef.current = true
+      ringUnlockedRef.current = true
+      setShowAudioUnlock(false)
+      return true
+    }
     if (audioUnlockingRef.current) {
       return notifyUnlockedRef.current && ringUnlockedRef.current
     }
@@ -121,6 +128,8 @@ export function useChatAudio() {
 
       let t = t0
       for (const n of notes) {
+        if (stopped) break
+
         const osc = ctx.createOscillator()
         const g = ctx.createGain()
 
@@ -152,6 +161,7 @@ export function useChatAudio() {
         t += n.dur + n.gapAfter
       }
 
+      if (stopped) return
       timer = window.setTimeout(scheduleOnce, Math.max(300, Math.round((t - t0) * 1000)))
     }
 
@@ -173,6 +183,9 @@ export function useChatAudio() {
         }
         oscillators.clear()
         try {
+          void ctx.suspend()
+        } catch {}
+        try {
           master.disconnect()
         } catch {}
         try {
@@ -182,7 +195,7 @@ export function useChatAudio() {
     }
   }
 
-  function stopDialingSound() {
+  const stopDialingSound = useCallback(() => {
     try {
       if (dialingToneStopRef.current) {
         try {
@@ -197,7 +210,7 @@ export function useChatAudio() {
         } catch {}
       }
     } catch {}
-  }
+  }, [])
 
   function startDialingSound() {
     try {
@@ -233,7 +246,7 @@ export function useChatAudio() {
     return endCallAudioRef.current
   }, [])
 
-  function playEndCallSound() {
+  const playEndCallSound = useCallback(() => {
     try {
       const audio = ensureEndCallAudio()
       if (audio) {
@@ -244,7 +257,7 @@ export function useChatAudio() {
     } catch (err) {
       console.error('Error playing end call sound:', err)
     }
-  }
+  }, [ensureEndCallAudio])
 
   const playNotifySoundIfAllowed = useCallback(() => {
     try {

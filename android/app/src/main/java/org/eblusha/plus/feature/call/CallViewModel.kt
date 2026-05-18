@@ -153,10 +153,10 @@ class CallViewModel(
                 when (event) {
                     is RoomEvent.Connected -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.Connected")
-                        // For groups, join call room on server (like web version does in onConnected)
+                        // Join call room on server for both group and 1:1 calls so presence survives reconnects.
+                        android.util.Log.d("CallViewModel", "Joining call room on server")
+                        realtimeService.joinCallRoom(conversationId, isVideoCall)
                         if (isGroup) {
-                            android.util.Log.d("CallViewModel", "Group call: joining call room on server")
-                            realtimeService.joinCallRoom(conversationId, isVideoCall)
                             realtimeService.requestCallStatuses(listOf(conversationId))
                         }
                         r.remoteParticipants.values.forEach { subscribeToRemoteTracks(it) }
@@ -531,9 +531,8 @@ class CallViewModel(
     private fun cleanup() {
         pendingHangJob?.cancel()
         pendingHangJob = null
-        // For groups, leave call room on server (like web version does in handleClose)
+        realtimeService.leaveCallRoom(conversationId)
         if (isGroup) {
-            realtimeService.leaveCallRoom(conversationId)
             realtimeService.requestCallStatuses(listOf(conversationId))
         }
         room?.disconnect()

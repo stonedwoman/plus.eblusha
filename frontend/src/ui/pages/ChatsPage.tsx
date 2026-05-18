@@ -5,7 +5,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, getUploadUrl } from '../../utils/api'
 import type { AxiosError } from 'axios'
 import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, onCallGlare, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../core/realtime'
-import { Phone, Video, X, Reply, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp, RefreshCw } from 'lucide-react'
+import { Phone, Video, X, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp, RefreshCw, Check, Forward } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -41,7 +41,7 @@ import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
 import { isChatsRoute, withAppRoutePrefix } from '../../core/navigation/routes'
 import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../utils/apkCallSignal'
 import { shouldShowAudioUnlockPrompt } from '../../utils/audioUnlock'
-import { copyPlainText } from '../../utils/clipboard'
+import { copyImageFromUrl, copyPlainText } from '../../utils/clipboard'
 import { formatRegistrationInviteCodeForDisplay } from '../../utils/formatRegistrationInviteCode'
 import { VoiceMessagePlayer } from './chats/components/VoiceMessagePlayer'
 import { DeviceLinkInline } from './chats/components/DeviceLinkInline'
@@ -440,6 +440,751 @@ type PendingMessage = {
   content?: string
 }
 
+function describeCopyableAttachment(att: any): string | null {
+  const metadata = att?.metadata && typeof att.metadata === 'object' ? att.metadata : {}
+  const renderType = inferAttachmentRenderType(att, metadata)
+  const fileName = resolveAttachmentFileName(att, metadata)
+
+  if (renderType === 'IMAGE') return null
+  if (renderType === 'VIDEO') return fileName !== 'Файл' ? `Видео: ${fileName}` : 'Видео'
+  if (renderType === 'AUDIO') return fileName !== 'Файл' ? `Аудио: ${fileName}` : 'Аудио'
+  return fileName !== 'Файл' ? `Файл: ${fileName}` : 'Файл'
+}
+
+/** Склонение существительного «сообщение» для русского (11–14 → сообщений). */
+function ruPluralSoobsheniya(n: number): string {
+  const k = Math.abs(Math.floor(n))
+  const mod100 = k % 100
+  if (mod100 >= 11 && mod100 <= 14) return 'сообщений'
+  const mod10 = k % 10
+  if (mod10 === 1) return 'сообщение'
+  if (mod10 >= 2 && mod10 <= 4) return 'сообщения'
+  return 'сообщений'
+}
+
+function formatReplyBundleHeader(count: number): string {
+  return `Ответ на ${count} ${ruPluralSoobsheniya(count)}`
+}
+
+/** Фраза после имени пересылающего: «ответил на N сообщений» / одно сообщение */
+function formatSenderReplyActionPhrase(count: number): string {
+  return `ответил на ${count} ${ruPluralSoobsheniya(count)}`
+}
+
+function formatSenderReplySingleActionPhrase(): string {
+  return 'ответил на сообщение'
+}
+
+/**
+ * То же, что заголовок конверта («Из переписки с …» / «Из «Группа»»), но с маленькой «из»
+ * для склейки с именем: «Роман из переписки с …»
+ */
+function formatForwardSourcePhraseAfterName(bundleMessages: any[]): string {
+  const raw = formatMultiSourceForwardBundleSourceHeader(bundleMessages).trim()
+  if (!raw.length) return 'пересланное'
+  return raw.replace(/^Из\s+/iu, 'из ')
+}
+
+function buildMessageCopyText(message: any): string {
+  if (!message) return ''
+
+  const parts: string[] = []
+  const replyPreview = typeof message?.replyTo?.content === 'string' ? message.replyTo.content.trim() : ''
+  const content = typeof message?.content === 'string' ? message.content.trim() : ''
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : []
+  const meta = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {}
+  const rqBundleForCopy = parseReplyQuoteBundleEntries(message)
+  if (rqBundleForCopy && rqBundleForCopy.length >= 2) {
+    parts.push(formatReplyBundleHeader(rqBundleForCopy.length))
+    for (const e of rqBundleForCopy) {
+      parts.push(`— ${e.preview}`)
+    }
+  }
+  const ff = (meta as any).forwardFrom
+  if (ff && typeof ff === 'object' && typeof ff.authorName === 'string' && ff.authorName.trim()) {
+    const who = ff.authorName.trim()
+    const peerDm =
+      typeof (ff as any).directChatPeerName === 'string' ? String((ff as any).directChatPeerName).trim() : ''
+    const fromGroup = ff.isGroupSource && typeof ff.sourceChatTitle === 'string' && ff.sourceChatTitle.trim()
+    if (fromGroup) {
+      parts.push(`Переслано от ${who}, из «${ff.sourceChatTitle.trim()}»`)
+    } else if (peerDm) {
+      parts.push(`Переслано от ${who}, из переписки с ${peerDm}`)
+    } else {
+      parts.push(`Переслано от ${who}`)
+    }
+  }
+  const fwdComposerCap =
+    typeof (meta as any).forwardComposerCaption === 'string'
+      ? String((meta as any).forwardComposerCaption).trim()
+      : ''
+  if (fwdComposerCap) {
+    parts.push(fwdComposerCap)
+  }
+  if (!(rqBundleForCopy && rqBundleForCopy.length >= 2) && replyPreview) {
+    parts.push(formatReplyBundleHeader(1))
+    parts.push(`— ${replyPreview}`)
+  }
+  if (content) {
+    parts.push(content)
+  }
+  if (attachments.length > 0) {
+    parts.push(
+      ...attachments
+        .map((att: any) => describeCopyableAttachment(att))
+        .filter((value: string | null): value is string => !!value),
+    )
+  }
+
+  return parts.join('\n').trim()
+}
+
+type ReplyDraftQuotedEntry = {
+  id: string
+  senderId: string
+  preview: string
+  createdAt?: string | null
+  replyImageStub?: { url: string; type: 'IMAGE'; metadata?: Record<string, unknown> } | null
+}
+
+type ReplyDraftState =
+  | null
+  | {
+      replyToId: string
+      quoted: ReplyDraftQuotedEntry[]
+    }
+
+/** После выбора адресата: пересылаемые сообщения уже «упакованы», комментарий — из основного композера (как у ответа). */
+type ForwardComposerDraftState = {
+  destinationConversationId: string
+  payloads: Array<{ type: string; content?: string | null; metadata?: Record<string, unknown>; attachments?: any[] }>
+  mergeAsImageBulk: boolean
+  previews: Array<{ text: string; imageStub?: { url: string; type: 'IMAGE'; metadata?: Record<string, unknown> } | null }>
+}
+
+/** Служебные строки ленты (звонки и т.п.): для пересылки/превью нужен текст, даже когда `content` пуст или форматируется на клиенте. */
+function renderSystemMessageContent(message: any, currentUserId: string | null | undefined): string {
+  const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {}
+  const content = typeof message?.content === 'string' ? message.content.trim() : ''
+
+  if (metadata.missed === true) {
+    const timeSuffix = content.match(/^Пропущенный звонок\s+(.+)$/i)?.[1]?.trim()
+    const fallbackSuffix = message?.createdAt
+      ? `в ${new Date(message.createdAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })}`
+      : ''
+    const suffix = timeSuffix || fallbackSuffix
+    if (currentUserId && message?.senderId === currentUserId) {
+      return `Исходящий звонок без ответа${suffix ? ` ${suffix}` : ''}`
+    }
+    return `Пропущенный звонок${suffix ? ` ${suffix}` : ''}`
+  }
+
+  return content
+}
+
+function previewTextForReplyDraft(msg: any): string {
+  const raw =
+    (typeof msg?.content === 'string' ? msg.content.trim() : '') ||
+    (msg?.type === 'SYSTEM' ? renderSystemMessageContent(msg, null).trim() : '')
+  if (raw) return raw.length > 200 ? `${raw.slice(0, 197)}…` : raw
+  const atts = msg?.attachments
+  if (Array.isArray(atts) && atts.length > 0) {
+    const t = atts[0]?.type
+    if (t === 'IMAGE') return 'Фото'
+    if (t === 'VIDEO') return 'Видео'
+    if (t === 'AUDIO') return 'Голосовое сообщение'
+    return 'Вложение'
+  }
+  return 'Сообщение'
+}
+
+function firstImageAttachmentStubForQuote(msg: any): { url: string; type: 'IMAGE'; metadata?: Record<string, unknown> } | null {
+  const atts = msg?.attachments
+  if (!Array.isArray(atts)) return null
+  const img = atts.find((a: any) => a?.type === 'IMAGE' && typeof a?.url === 'string' && String(a.url).trim())
+  if (!img) return null
+  const meta = img.metadata
+  return {
+    url: String(img.url).trim(),
+    type: 'IMAGE',
+    ...(meta && typeof meta === 'object' && !Array.isArray(meta) ? { metadata: meta as Record<string, unknown> } : {}),
+  }
+}
+
+function replySnippetIsGenericRu(line: string): boolean {
+  const t = line.trim()
+  return t === '' || t === 'Фото' || t === 'Видео' || t === 'Голосовое сообщение' || t === 'Вложение' || t === 'Сообщение'
+}
+
+function buildReplyDraftFromMessages(msgs: any[]): ReplyDraftState | null {
+  const list = Array.isArray(msgs) ? msgs.filter((m) => m && typeof m.id === 'string') : []
+  if (!list.length) return null
+  const quoted: ReplyDraftQuotedEntry[] = list.map((m) => ({
+    id: m.id,
+    senderId: typeof m.senderId === 'string' ? m.senderId : '',
+    preview: previewTextForReplyDraft(m),
+    replyImageStub: firstImageAttachmentStubForQuote(m),
+    ...(typeof m.createdAt === 'string' && m.createdAt.trim()
+      ? { createdAt: m.createdAt.trim() }
+      : typeof m.createdAt === 'number' && Number.isFinite(m.createdAt)
+        ? { createdAt: new Date(m.createdAt).toISOString() }
+        : m.createdAt instanceof Date && Number.isFinite(m.createdAt.getTime())
+          ? { createdAt: m.createdAt.toISOString() }
+          : {}),
+  }))
+  const last = list[list.length - 1]
+  return { replyToId: last.id, quoted }
+}
+
+function buildReplyQuoteMetadataForSend(draft: ReplyDraftState): Record<string, unknown> | undefined {
+  if (!draft || draft.quoted.length < 2) return undefined
+  return {
+    replyQuoteBundle: draft.quoted.map((q) => ({
+      messageId: q.id,
+      ...(q.senderId ? { senderId: q.senderId } : {}),
+      preview: q.preview.slice(0, 420),
+      ...(q.createdAt ? { createdAt: q.createdAt } : {}),
+    })),
+  }
+}
+
+/** Предельный размах пачки «от первой до последней пересылки в блоке» (защита от склейки далёких по времени сообщений). */
+const MULTI_FWD_MAX_SPAN_MS = 7 * 24 * 60 * 60 * 1000
+/** Макс. пауза между двумя подряд идущими в ленте пересылками одного конверта (между ними нет других сообщений). */
+const MULTI_FWD_GAP_MS = 25_000
+
+function forwardFromAuthorKeyForBundle(m: any): string | null {
+  const ff = normalizeForwardFromRecord(parseMessageMetadata(m)?.forwardFrom)
+  if (!ff) return null
+  const name = typeof ff.authorName === 'string' ? String(ff.authorName).trim() : ''
+  if (!name) return null
+  const title = typeof ff.sourceChatTitle === 'string' ? String(ff.sourceChatTitle).trim() : ''
+  return `${name}|${title}`
+}
+
+function hasForwardFromMeta(m: any): boolean {
+  return forwardFromAuthorKeyForBundle(m) != null
+}
+
+/** Один источник переслыки для склейки конверта: только «откуда» (группа или личка с тем же собеседником), без автора оригинала — иначе две пересылки из одного чата не слипаются. */
+function forwardSourceFingerprintForBundle(m: any): string | null {
+  if (!hasForwardFromMeta(m)) return null
+  const ff = normalizeForwardFromRecord(parseMessageMetadata(m)?.forwardFrom)
+  if (!ff) return null
+  const isGroup = !!(ff as any).isGroupSource
+  const titleRaw =
+    typeof (ff as any).sourceChatTitle === 'string'
+      ? String((ff as any).sourceChatTitle).trim()
+      : ''
+  if (isGroup) {
+    return `grp:${titleRaw || '«без названия»'}`
+  }
+  const peer = directChatPeerDisplayForForwardHeader(m)
+  return `dm:p:${peer ? peer : '¦'}`
+}
+
+/**
+ * Подряд в ленте идущие пересылки от **одного** пересылающего и **одного источника** (та же группа / та же личка) —
+ * один внешний «конверт»; внутри — свой бабл на сообщение. Несколько сообщений из одного чата (одна или несколько отправок) — обязательно один конверт.
+ */
+function computeMultiSourceForwardBundles(fullList: any[]): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = []
+  let i = 0
+  const n = fullList.length
+  while (i < n) {
+    const m = fullList[i]
+    if (m?.deletedAt || m?.type === 'SYSTEM' || !hasForwardFromMeta(m)) {
+      i++
+      continue
+    }
+    const forwarder = m.senderId
+    const t0 = new Date(m.createdAt || 0).getTime()
+    const fp0 = forwardSourceFingerprintForBundle(m)
+    if (!fp0) {
+      i++
+      continue
+    }
+    let j = i
+    while (j + 1 < n) {
+      const next = fullList[j + 1]
+      if (next?.deletedAt || next?.type === 'SYSTEM') break
+      if (!hasForwardFromMeta(next)) break
+      if (forwardSourceFingerprintForBundle(next) !== fp0) break
+      if (next.senderId !== forwarder) break
+      const tNext = new Date(next.createdAt || 0).getTime()
+      if (tNext - t0 > MULTI_FWD_MAX_SPAN_MS) break
+      const cur = fullList[j]
+      if (tNext - new Date(cur.createdAt || 0).getTime() > MULTI_FWD_GAP_MS) break
+      j++
+    }
+    /** Одна или несколько пересылок подряд склеиваются (включая одно сообщение — иначе layout расходился с пачкой). */
+    out.push({ start: i, end: j })
+    i = j + 1
+  }
+  return out
+}
+
+/** Заголовок «конверта»: группы («…»); личка — «из переписки с Имя» только из directChatPeerName (беседа-источник / собеседник). Имя автора оригинала сюда не подставляется. */
+function formatMultiSourceForwardBundleSourceHeader(bundleMessages: any[]): string {
+  const groupTitles = new Set<string>()
+  const dmPeers = new Set<string>()
+  let hasDmLegacySansPeer = false
+  for (const msg of bundleMessages) {
+    const md = parseMessageMetadata(msg)
+    const ff = normalizeForwardFromRecord(md?.forwardFrom)
+    if (!ff) continue
+    const isGroupSource = !!(ff as any).isGroupSource
+    const st = (ff as any).sourceChatTitle
+    const sourceChatTitle = typeof st === 'string' && st.trim() ? st.trim() : null
+
+    if (isGroupSource) {
+      if (sourceChatTitle) groupTitles.add(sourceChatTitle)
+      else groupTitles.add('Группа')
+      continue
+    }
+
+    const peerLabel = directChatPeerDisplayForForwardHeader(msg)
+    if (peerLabel) dmPeers.add(peerLabel)
+    else hasDmLegacySansPeer = true
+  }
+  const titles = [...groupTitles].sort((a, b) => a.localeCompare(b, 'ru'))
+  const gpParts = titles.map((t) => `«${t}»`)
+  const peersSorted = [...dmPeers].sort((a, b) => a.localeCompare(b, 'ru'))
+  let dmPhrase = ''
+  if (peersSorted.length === 1) dmPhrase = `переписки с ${peersSorted[0]}`
+  else if (peersSorted.length > 1) dmPhrase = `переписки с ${peersSorted.join(' · ')}`
+  else if (hasDmLegacySansPeer) dmPhrase = 'личной переписки'
+
+  const parts = [...gpParts]
+  if (dmPhrase) parts.push(dmPhrase)
+
+  if (parts.length === 0) return 'Переслано'
+  return `Из ${parts.join(' · ')}`
+}
+
+function parseMessageMetadata(msg: any): Record<string, unknown> | null {
+  const md = msg?.metadata
+  if (md == null) return null
+  if (typeof md === 'string') {
+    try {
+      const p = JSON.parse(md) as unknown
+      return p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : null
+    } catch {
+      return null
+    }
+  }
+  if (typeof md === 'object' && !Array.isArray(md)) return md as Record<string, unknown>
+  return null
+}
+
+/** Несколько цитируемых сообщений в одном ответе (metadata.replyQuoteBundle). */
+function parseReplyQuoteBundleEntries(msg: any): ReplyDraftQuotedEntry[] | null {
+  const md = parseMessageMetadata(msg)
+  if (!md) return null
+  const raw = md.replyQuoteBundle
+  if (!Array.isArray(raw) || raw.length < 2) return null
+  const out: ReplyDraftQuotedEntry[] = []
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') continue
+    const messageId = typeof (row as any).messageId === 'string' ? String((row as any).messageId).trim() : ''
+    if (!messageId) continue
+    let preview =
+      typeof (row as any).preview === 'string'
+        ? String((row as any).preview)
+        : typeof (row as any).content === 'string'
+          ? String((row as any).content)
+          : ''
+    preview = preview.trim()
+    if (preview.length > 240) preview = `${preview.slice(0, 237)}…`
+    const senderId = typeof (row as any).senderId === 'string' ? String((row as any).senderId) : ''
+    const createdRaw =
+      (row as any).createdAt ?? (row as any).created_at ?? (row as any).messageCreatedAt ?? null
+    let createdAt: string | undefined
+    if (typeof createdRaw === 'string' && createdRaw.trim()) createdAt = createdRaw.trim()
+    else if (typeof createdRaw === 'number' && Number.isFinite(createdRaw)) {
+      const d = new Date(createdRaw)
+      if (Number.isFinite(d.getTime())) createdAt = d.toISOString()
+    }
+    out.push({
+      id: messageId,
+      senderId,
+      preview: preview || 'Сообщение',
+      ...(createdAt ? { createdAt } : {}),
+    })
+  }
+  return out.length >= 2 ? out : null
+}
+
+const FORWARD_COMPOSER_CAPTION_META_KEY = 'forwardComposerCaption'
+
+/** Комментарий к пересылке из композера — в metadata первого сообщения пачки; с текстом показываем под вложенным оранжевым конвертом, внутри обычного бабла. */
+function extractForwardComposerCaption(msg: any): string | null {
+  const md = parseMessageMetadata(msg)
+  if (!md) return null
+  const raw = md[FORWARD_COMPOSER_CAPTION_META_KEY]
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null
+}
+
+/** Собеседник в исходной личке для «Из переписки с …» — дублируем в metadata.sourceDmPeerName и forwardFrom.directChatPeerName. */
+function directChatPeerDisplayForForwardHeader(msg: any): string {
+  const md = parseMessageMetadata(msg)
+  if (!md) return ''
+  const root =
+    (typeof md.sourceDmPeerName === 'string' && String(md.sourceDmPeerName).trim()) ||
+    (typeof md.directChatPeerName === 'string' && String(md.directChatPeerName).trim()) ||
+    ''
+  if (root) return root
+  const ff = normalizeForwardFromRecord(md.forwardFrom)
+  if (ff) {
+    const camel =
+      typeof (ff as any).directChatPeerName === 'string' ? String((ff as any).directChatPeerName).trim() : ''
+    if (camel) return camel
+    const snake =
+      typeof (ff as any).direct_chat_peer_name === 'string'
+        ? String((ff as any).direct_chat_peer_name).trim()
+        : ''
+    if (snake) return snake
+    const isGroupSource = !!(ff as any).isGroupSource
+    if (!isGroupSource) {
+      const an = typeof (ff as any).authorName === 'string' ? String((ff as any).authorName).trim() : ''
+      if (an) return an
+    }
+  }
+  return ''
+}
+
+
+function coerceParsedMessageInstant(raw: unknown): Date | null {
+  if (raw == null || raw === '') return null
+  if (raw instanceof Date) return Number.isFinite(raw.getTime()) ? raw : null
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const d = new Date(raw)
+    return Number.isFinite(d.getTime()) ? d : null
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    const d = new Date(raw.trim())
+    return Number.isFinite(d.getTime()) ? d : null
+  }
+  return null
+}
+
+function normalizeForwardFromRecord(rawFf: unknown): Record<string, unknown> | null {
+  if (rawFf == null) return null
+  if (typeof rawFf === 'string') {
+    try {
+      const p = JSON.parse(rawFf) as unknown
+      return p && typeof p === 'object' ? (p as Record<string, unknown>) : null
+    } catch {
+      return null
+    }
+  }
+  return typeof rawFf === 'object' ? (rawFf as Record<string, unknown>) : null
+}
+
+/** Момент оригинала в исходном чате (для времени у пересланного бабла) */
+function extractOriginalForwardedInstantFromMessage(m: any): Date | null {
+  const md = parseMessageMetadata(m)
+  if (!md) return null
+  const fromTop = coerceParsedMessageInstant(md.forwardOriginalCreatedAt)
+  if (fromTop) return fromTop
+  const ff = normalizeForwardFromRecord(md.forwardFrom)
+  if (!ff) return null
+  const keys = ['originalCreatedAt', 'original_created_at', 'sourceCreatedAt', 'postedAt'] as const
+  for (const k of keys) {
+    if (!(k in ff)) continue
+    const d = coerceParsedMessageInstant(ff[k])
+    if (d) return d
+  }
+  return null
+}
+
+function formatMessageClockLabel(d: Date | null): string {
+  if (!d || !Number.isFinite(d.getTime())) return ''
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+/** «сегодня» / «вчера» / «N дней назад», иначе краткая дата (локальный календарь) */
+function formatRuRelativeSendDay(at: Date | null): string | null {
+  if (!at || !Number.isFinite(at.getTime())) return null
+
+  const startOfLocalDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const dayDiffCal = (): number =>
+    Math.round((startOfLocalDay(new Date()).getTime() - startOfLocalDay(at).getTime()) / 86_400_000)
+
+  const dd = dayDiffCal()
+  if (dd < 0) {
+    const now = new Date()
+    const y = now.getFullYear() !== at.getFullYear()
+    return at.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', ...(y ? { year: 'numeric' as const } : {}) })
+  }
+  if (dd === 0) return 'сегодня'
+  if (dd === 1) return 'вчера'
+  const MAX_DAY_COUNT = 45
+  if (dd <= MAX_DAY_COUNT) return ruPluralDaysAgo(dd)
+
+  const now = new Date()
+  const y = now.getFullYear() !== at.getFullYear()
+  return at.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', ...(y ? { year: 'numeric' as const } : {}) })
+}
+
+function ruPluralDaysAgo(daysAgoFromToday: number): string {
+  const n = Math.max(2, Math.floor(daysAgoFromToday))
+  const mod100 = n % 100
+  const mod10 = n % 10
+  if (mod100 >= 11 && mod100 <= 14) return `${n} дней назад`
+  if (mod10 === 1) return `${n} день назад`
+  if (mod10 >= 2 && mod10 <= 4) return `${n} дня назад`
+  return `${n} дней назад`
+}
+
+type ForwardAttachment = { url: string; type: string; size?: number; metadata?: Record<string, unknown> }
+
+/** Сохраняется в Message.metadata при пересылке */
+type ForwardFromMeta = {
+  authorName: string
+  /** Название чата для группы; для лички — null */
+  sourceChatTitle: string | null
+  isGroupSource: boolean
+  /** Отображаемое имя собеседника в исходной личке (кроме себя): для строки «из переписки с …» */
+  directChatPeerName?: string | null
+  /** ISO: момент оригинального сообщения (для времени на бабле при пересылке) */
+  originalCreatedAt?: string | null
+}
+
+type ForwardSourceContext = {
+  authorName: string
+  sourceChatTitle: string | null
+  isGroupSource: boolean
+  /** ISO время исходного сообщения */
+  originalCreatedAt: string
+  /** Для DM: заголовок беседы в списке (собеседник), может быть несколько через «, » */
+  directChatPeerName: string | null
+}
+
+/**
+ * Контекст источника для «Переслать»: если сообщение уже переслано — берём группу/личку из его metadata.forwardFrom.
+ * Иначе — активный чат. Так пересылка **из группы** не превращает старую личку в «из «Группа»» без собеседника.
+ */
+function buildForwardSourceContextForSend(
+  found: any,
+  activeConv: any,
+  currentUserId: string | null | undefined,
+  usersById: Record<string, any>,
+): ForwardSourceContext {
+  const orig = usersById[found.senderId] ?? found.sender
+  const srcOthers = (activeConv?.participants || [])
+    .filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
+    .map((p: any) => p.user)
+  const srcFallbackChatName = srcOthers.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
+  const srcIsGroup = !!(activeConv?.isGroup || (activeConv?.participants?.length ?? 0) > 2)
+  const srcSourceChatTitle = srcIsGroup
+    ? typeof activeConv?.title === 'string' && activeConv.title.trim()
+      ? activeConv.title.trim()
+      : srcFallbackChatName
+    : null
+
+  const mdFf = normalizeForwardFromRecord(parseMessageMetadata(found)?.forwardFrom)
+
+  const authorName =
+    mdFf && typeof (mdFf as any).authorName === 'string' && String((mdFf as any).authorName).trim()
+      ? String((mdFf as any).authorName).trim()
+      : (typeof orig?.displayName === 'string' && orig.displayName.trim()) ||
+        (typeof orig?.username === 'string' && orig.username.trim()) ||
+        'Участник'
+
+  let isGroupSource: boolean
+  let sourceChatTitle: string | null
+  let directChatPeerName: string | null
+
+  if (mdFf && typeof (mdFf as any).authorName === 'string' && String((mdFf as any).authorName).trim()) {
+    const wasGroup = !!(mdFf as any).isGroupSource
+    if (wasGroup) {
+      isGroupSource = true
+      const t = typeof (mdFf as any).sourceChatTitle === 'string' ? String((mdFf as any).sourceChatTitle).trim() : ''
+      sourceChatTitle = t || srcSourceChatTitle
+      directChatPeerName = null
+    } else {
+      isGroupSource = false
+      sourceChatTitle = null
+      const peer = directChatPeerDisplayForForwardHeader(found)
+      const ffPeer =
+        typeof (mdFf as any).directChatPeerName === 'string' ? String((mdFf as any).directChatPeerName).trim() : ''
+      let resolvedPeer: string | null = peer || ffPeer || null
+      if (!resolvedPeer && !srcIsGroup) resolvedPeer = srcFallbackChatName
+      /**
+       * Пересылка **из группы**: активный чат — не личка, `srcFallbackChatName` это участники группы, не собеседник в DM.
+       * Если в метадате нет `directChatPeerName`, подставляем автора оригинала (в входящей личке это обычно собеседник).
+       * Не подставляем, если автор — вы (иначе «из переписки с [вы]»).
+       */
+      if (!resolvedPeer && srcIsGroup && authorName && authorName !== 'Участник') {
+        let hint: string | null = authorName
+        if (hint && currentUserId) {
+          const meUser = usersById[currentUserId]
+          const norm = (s: string) => s.trim().toLowerCase()
+          const hRaw = norm(hint)
+          const h = hRaw.startsWith('@') ? hRaw.slice(1) : hRaw
+          const meA = meUser?.displayName ? norm(String(meUser.displayName)) : ''
+          const meBU = meUser?.username ? norm(String(meUser.username)) : ''
+          const meB = meBU.startsWith('@') ? meBU.slice(1) : meBU
+          if ((meA && h === meA) || (meB && h === meB)) hint = null
+        }
+        resolvedPeer = hint
+      }
+      directChatPeerName = resolvedPeer
+    }
+  } else {
+    isGroupSource = srcIsGroup
+    sourceChatTitle = srcSourceChatTitle
+    directChatPeerName = srcIsGroup ? null : srcFallbackChatName
+  }
+
+  const originalIso = (() => {
+    const d = extractOriginalForwardedInstantFromMessage(found)
+    if (d && Number.isFinite(d.getTime())) return d.toISOString()
+    const raw = found.createdAt
+    if (!raw) return new Date().toISOString()
+    const dt = new Date(raw as string | number)
+    return Number.isFinite(dt.getTime()) ? dt.toISOString() : new Date().toISOString()
+  })()
+
+  return {
+    authorName,
+    sourceChatTitle,
+    isGroupSource,
+    originalCreatedAt: originalIso,
+    directChatPeerName,
+  }
+}
+
+function cloneAttachmentForForward(att: any): ForwardAttachment | null {
+  if (!att?.url || !att.type) return null
+  if (att.metadata?.e2ee?.kind === 'ciphertext') return null
+  const out: {
+    url: string
+    type: string
+    size?: number
+    metadata?: Record<string, unknown>
+  } = { url: String(att.url), type: String(att.type) }
+  if (typeof att.size === 'number' && Number.isFinite(att.size)) out.size = att.size
+  if (att.metadata && typeof att.metadata === 'object') {
+    const meta = { ...att.metadata } as Record<string, unknown>
+    delete meta.e2ee
+    if (Object.keys(meta).length > 0) out.metadata = meta
+  }
+  return out
+}
+
+/**
+ * Для модалки «Переслать»: новее сверху (по активности беседы).
+ */
+function recencyTimestampForConversationRow(row: any): number {
+  const c = row?.conversation
+  if (!c) return 0
+  const pick = (v: unknown): number | null => {
+    if (v == null) return null
+    const t = new Date(v as string | number | Date).getTime()
+    return Number.isFinite(t) ? t : null
+  }
+  let t = pick(c.lastMessageAt)
+  if (t != null) return t
+  const m0 = Array.isArray(c.messages) ? c.messages[0] : null
+  t = pick(m0?.createdAt)
+  if (t != null) return t
+  t = pick(c.createdAt)
+  if (t != null) return t
+  t = pick(row.joinedAt)
+  return t ?? 0
+}
+
+/**
+ * Тело запроса для «Переслать»: тот же текст (опционально с префиксом ↪, если нет контекста источника)
+ * и копии вложений по URL; при forwardCtx добавляет metadata.forwardFrom.
+ */
+function buildForwardSendPayload(
+  message: any,
+  forwardCtx?: ForwardSourceContext,
+): { ok: true; payload: { type: string; content?: string | null; attachments?: any[]; metadata?: Record<string, unknown>; replyToId?: undefined } } | { ok: false; error: string } {
+  if (!message) return { ok: false, error: 'Сообщение не найдено' }
+  const forwardMetadata: Record<string, unknown> | undefined = forwardCtx
+    ? (() => {
+        const dmPeerFlat =
+          !forwardCtx.isGroupSource &&
+          forwardCtx.directChatPeerName != null &&
+          String(forwardCtx.directChatPeerName).trim()
+            ? String(forwardCtx.directChatPeerName).trim()
+            : null
+        return {
+          /** Дублируем на корень метадаты — часть клиентов/цепочек безопаснее читает плоским ключом */
+          forwardOriginalCreatedAt: forwardCtx.originalCreatedAt,
+          /** Дубликат имени собеседника в личке — чтобы шапка «Из переписки с …» не терялась при вложенном JSON. */
+          ...(dmPeerFlat ? { sourceDmPeerName: dmPeerFlat } : {}),
+          forwardFrom: forwardCtx.isGroupSource
+            ? {
+                authorName: forwardCtx.authorName,
+                sourceChatTitle: forwardCtx.sourceChatTitle,
+                isGroupSource: true as const,
+                originalCreatedAt: forwardCtx.originalCreatedAt,
+              }
+            : ({
+                authorName: forwardCtx.authorName,
+                sourceChatTitle: null,
+                isGroupSource: false as const,
+                originalCreatedAt: forwardCtx.originalCreatedAt,
+                directChatPeerName: dmPeerFlat,
+              } satisfies ForwardFromMeta),
+        }
+      })()
+    : undefined
+  const usePlainContent = !!forwardCtx
+  const attsIn: any[] = Array.isArray(message.attachments) ? message.attachments : []
+  if (attsIn.some((a: any) => a?.metadata?.e2ee?.kind === 'ciphertext')) {
+    return {
+      ok: false,
+      error: 'Зашифрованные вложения из секретного чата нельзя переслать. Сохраните файл вручную или перешлите из обычного чата.',
+    }
+  }
+  const attachments: ForwardAttachment[] = attsIn
+    .map(cloneAttachmentForForward)
+    .filter((x): x is ForwardAttachment => x !== null)
+  if (attachments.length < attsIn.length) {
+    return { ok: false, error: 'Не удалось подготовить вложения для пересылки.' }
+  }
+  const rawContent =
+    (typeof message.content === 'string' ? message.content.trim() : '') ||
+    (message.type === 'SYSTEM' ? renderSystemMessageContent(message, null).trim() : '')
+  if (attachments.length === 0) {
+    if (!rawContent) return { ok: false, error: 'В сообщении нет текста и вложений.' }
+    const textBody = usePlainContent ? rawContent : `↪ ${rawContent}`
+    return {
+      ok: true,
+      payload: {
+        type: 'TEXT',
+        content: textBody,
+        ...(forwardMetadata ? { metadata: forwardMetadata } : {}),
+        replyToId: undefined,
+      },
+    }
+  }
+  const msgType = attachments.every((u: ForwardAttachment) => u.type === 'IMAGE')
+    ? 'IMAGE'
+    : attachments.every((u: ForwardAttachment) => u.type === 'VIDEO')
+      ? 'VIDEO'
+      : attachments.every((u: ForwardAttachment) => u.type === 'AUDIO')
+        ? 'AUDIO'
+        : 'FILE'
+  const caption = rawContent ? (usePlainContent ? rawContent : `↪ ${rawContent}`) : ''
+  return {
+    ok: true,
+    payload: {
+      type: msgType,
+      ...(caption ? { content: caption } : {}),
+      attachments,
+      ...(forwardMetadata ? { metadata: forwardMetadata } : {}),
+      replyToId: undefined,
+    },
+  }
+}
+
 export default function ChatsPage() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -456,7 +1201,7 @@ export default function ChatsPage() {
   const outgoingCallRef = useRef<typeof outgoingCall>(null)
   useEffect(() => { outgoingCallRef.current = outgoingCall }, [outgoingCall])
   const outgoingCallTimerRef = useRef<number | null>(null)
-  const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
+  const [replyTo, setReplyTo] = useState<ReplyDraftState>(null)
   const [editState, setEditState] = useState<{
     messageId: string
     originalText: string
@@ -533,7 +1278,11 @@ export default function ChatsPage() {
   const convScrollRef = useRef<HTMLDivElement | null>(null)
   const [groupAvatarEditor, setGroupAvatarEditor] = useState(false)
   const [reactionBar, setReactionBar] = useState<{ open: boolean; x: number; y: number; messageId: string | null }>(() => ({ open: false, x: 0, y: 0, messageId: null }))
-  const [forwardModal, setForwardModal] = useState<{ open: boolean; messageId: string | null }>({ open: false, messageId: null })
+  const [forwardModal, setForwardModal] = useState<{ open: boolean; messageIds: string[] }>(() => ({ open: false, messageIds: [] }))
+  const [forwardComposerDraft, setForwardComposerDraft] = useState<ForwardComposerDraftState | null>(null)
+  const fwdDraftDestinationId = forwardComposerDraft?.destinationConversationId ?? null
+  const [multiSelectMode, setMultiSelectMode] = useState(false)
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([])
   const [addParticipantsModal, setAddParticipantsModal] = useState(false)
   const [addParticipantsSelectedIds, setAddParticipantsSelectedIds] = useState<string[]>([])
   const [addParticipantsLoading, setAddParticipantsLoading] = useState(false)
@@ -963,11 +1712,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   }, [pendingImages, editingImageId])
   const lightboxTimerRef = useRef<number | null>(null)
   const attachInputOverlayRef = useRef<HTMLDivElement | null>(null)
-  const [activeCalls, setActiveCalls] = useState<Record<string, { startedAt: number | null; endedAt?: number | null; active: boolean; participants?: string[]; elapsedMs?: number }>>({})
+  const [activeCalls, setActiveCalls] = useState<Record<string, { startedAt: number | null; endedAt?: number | null; active: boolean; participants?: string[]; elapsedMs?: number; aloneSince?: number; autoEndAt?: number }>>({})
   const [timerTick, setTimerTick] = useState(0)
   const callConvIdRef = useRef<string | null>(null)
   useEffect(() => { callConvIdRef.current = callConvId }, [callConvId])
   const inviterByConvRef = useRef<Record<string, string>>({})
+  const groupAloneReminderToastAtRef = useRef<Record<string, number>>({})
   const minCallDurationUntilRef = useRef<Record<string, number>>({})
   const pendingCallAutoCloseTimersRef = useRef<Record<string, number>>({})
   const stopOutgoingDialing = useCallback((options?: { playEndTone?: boolean }) => {
@@ -1296,18 +2046,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       }
     })()
 
-    const handleSingle = (p: { conversationId: string; active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }) => {
+    const handleSingle = (p: { conversationId: string; active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[]; isGroup?: boolean; aloneSince?: number; autoEndAt?: number; aloneReminder?: boolean }) => {
       if (debugCallStatus) console.log('[CallStatus] Single:', p)
-      setActiveCalls((prev) => {
-        const list = client.getQueryData(['conversations']) as any[] | undefined
-        const conv = Array.isArray(list) ? list.find((r: any) => r.conversation.id === p.conversationId)?.conversation : null
-        const current = prev[p.conversationId]
-        // Server call status stream is used only for group calls.
-        // Do NOT apply it to 1:1 calls, otherwise it can overwrite local endedAt and show wrong "Завершен N мин назад".
-        const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
-        if (!isGroup) {
-          return prev
+      if (p.aloneReminder) {
+        const last = groupAloneReminderToastAtRef.current[p.conversationId] ?? 0
+        if (Date.now() - last > 60_000) {
+          groupAloneReminderToastAtRef.current[p.conversationId] = Date.now()
+          systemToast.info('Вы один в групповом звонке. Если никто не подключится, он завершится автоматически.', {
+            title: 'Активный звонок',
+            ttlMs: 7000,
+          })
         }
+      }
+      setActiveCalls((prev) => {
+        const current = prev[p.conversationId]
 
         const participants = p.participants || []
         if (p.active) {
@@ -1320,10 +2072,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               participants,
               endedAt: null,
               elapsedMs: typeof p.elapsedMs === 'number' ? p.elapsedMs : undefined,
+              aloneSince: typeof p.aloneSince === 'number' ? p.aloneSince : undefined,
+              autoEndAt: typeof p.autoEndAt === 'number' ? p.autoEndAt : undefined,
             },
           }
         }
 
+        if (!current) return prev
         const prevEndedAt = (typeof current?.endedAt === 'number' && Number.isFinite(current.endedAt)) ? current.endedAt : null
         const startedAt = (typeof current?.startedAt === 'number' && Number.isFinite(current.startedAt)) ? current.startedAt : null
         // If we receive an "inactive" update but endedAt is missing/invalid (or equals startedAt),
@@ -1341,21 +2096,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             endedAt,
             participants: [],
             elapsedMs: undefined,
+            aloneSince: undefined,
+            autoEndAt: undefined,
           },
         }
       })
     }
-    const handleBulk = (payload: { statuses: Record<string, { active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[] }> }) => {
+    const handleBulk = (payload: { statuses: Record<string, { active: boolean; startedAt?: number; elapsedMs?: number; participants?: string[]; isGroup?: boolean; aloneSince?: number; autoEndAt?: number; aloneReminder?: boolean }> }) => {
       if (debugCallStatus) console.log('[CallStatus] Bulk:', payload)
       setActiveCalls((prev) => {
         const merged = { ...prev }
-        const list = client.getQueryData(['conversations']) as any[] | undefined
         
         for (const [cid, st] of Object.entries(payload.statuses || {})) {
-          const conv = Array.isArray(list) ? list.find((r: any) => r.conversation.id === cid)?.conversation : null
           const current = prev[cid]
-          const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
-          if (!isGroup) continue
 
           const participants = st.participants || []
           if (st.active) {
@@ -1366,10 +2119,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               participants,
               endedAt: null,
               elapsedMs: typeof st.elapsedMs === 'number' ? st.elapsedMs : undefined,
+              aloneSince: typeof st.aloneSince === 'number' ? st.aloneSince : undefined,
+              autoEndAt: typeof st.autoEndAt === 'number' ? st.autoEndAt : undefined,
             }
             continue
           }
 
+          if (!current) continue
           const prevEndedAt = (typeof current?.endedAt === 'number' && Number.isFinite(current.endedAt)) ? current.endedAt : null
           const startedAt = (typeof current?.startedAt === 'number' && Number.isFinite(current.startedAt)) ? current.startedAt : null
           const endedAtRaw = current?.active ? Date.now() : prevEndedAt
@@ -1383,6 +2139,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             endedAt,
             participants: [],
             elapsedMs: undefined,
+            aloneSince: undefined,
+            autoEndAt: undefined,
           }
         }
         return merged
@@ -1631,8 +2389,90 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         return { outcome: 'blocked' }
       }
     }
-    await api.post('/conversations/send', { conversationId: conversation.id, ...normalizedPayload })
-    return { outcome: 'sent' }
+    try {
+      await api.post('/conversations/send', { conversationId: conversation.id, ...normalizedPayload })
+      return { outcome: 'sent' }
+    } catch (err: unknown) {
+      console.warn('Failed to send message:', err)
+      const ax = err as { response?: { data?: { message?: unknown }; status?: number } }
+      const serverMsg = ax?.response?.data?.message
+      const msg =
+        typeof serverMsg === 'string' && serverMsg.trim()
+          ? serverMsg.trim()
+          : 'Не удалось отправить сообщение. Попробуйте ещё раз.'
+      systemToast.error(msg)
+      return { outcome: 'blocked' }
+    }
+  }
+
+  /** Отправка уже подготовленных пересылок + необязательный комментарий из композера. */
+  async function executeForwardPayloadDelivery(
+    conversation: any,
+    payloadsIn: Array<{ type: string; content?: string | null; metadata?: Record<string, any>; attachments?: any[] }>,
+    mergeAsImageBulk: boolean,
+    comment: string,
+  ): Promise<{ lastOutcome: { outcome: SendOutcome } | null }> {
+    const commentTrim = comment.trim()
+    const forwardPayloads = payloadsIn.map((p) => ({
+      ...p,
+      replyToId: undefined as undefined,
+      metadata:
+        typeof p.metadata === 'object' && p.metadata !== null && !Array.isArray(p.metadata)
+          ? { ...(p.metadata as Record<string, unknown>) }
+          : {},
+    }))
+
+    if (!forwardPayloads.length) return { lastOutcome: null }
+
+    if (mergeAsImageBulk) {
+      const mergedAttachments = forwardPayloads.flatMap((p) => (Array.isArray(p.attachments) ? p.attachments : []))
+      const captionParts = forwardPayloads.map((p) => String(p.content ?? '').trim()).filter(Boolean)
+      /** Тексты из самих пересылаемых сообщений — комментарий из композера только в metadata (как при обычной пересылке), иначе UI не включает вложенный бабл без «Из …» / «Переслано». */
+      const mergedContent = captionParts.length ? captionParts.join('\n\n') : undefined
+      const baseMetaRaw = (() => {
+        const withPeer = forwardPayloads.find((p) => {
+          const m = p.metadata as Record<string, unknown> | undefined
+          if (!m) return false
+          if (typeof m.sourceDmPeerName === 'string' && String(m.sourceDmPeerName).trim() !== '') return true
+          const ff = m.forwardFrom as { directChatPeerName?: string } | undefined
+          return ff && typeof ff.directChatPeerName === 'string' && String(ff.directChatPeerName).trim() !== ''
+        })
+        const pick =
+          withPeer ?? forwardPayloads.find((p) => Object.keys((p.metadata as Record<string, unknown>) || {}).length > 0)
+        return pick?.metadata as Record<string, unknown> | undefined
+      })()
+      const mergedMetadata: Record<string, unknown> = {
+        ...(baseMetaRaw && typeof baseMetaRaw === 'object' && !Array.isArray(baseMetaRaw) ? { ...baseMetaRaw } : {}),
+        ...(commentTrim ? { [FORWARD_COMPOSER_CAPTION_META_KEY]: commentTrim } : {}),
+      }
+      const r = await sendMessageToConversation(conversation, {
+        type: 'IMAGE',
+        attachments: mergedAttachments,
+        ...(mergedContent ? { content: mergedContent } : {}),
+        ...(Object.keys(mergedMetadata).length > 0 ? { metadata: mergedMetadata } : {}),
+        replyToId: undefined,
+      })
+      return { lastOutcome: r }
+    }
+
+    let lastOutcome: { outcome: SendOutcome } | null = null
+
+    if (commentTrim && forwardPayloads.length > 0) {
+      const m0meta = forwardPayloads[0].metadata as Record<string, unknown>
+      forwardPayloads[0] = {
+        ...forwardPayloads[0],
+        metadata: {
+          ...m0meta,
+          [FORWARD_COMPOSER_CAPTION_META_KEY]: commentTrim,
+        },
+      }
+    }
+
+    for (const payload of forwardPayloads) {
+      lastOutcome = await sendMessageToConversation(conversation, { ...payload, replyToId: undefined })
+      if (lastOutcome?.outcome === 'blocked') return { lastOutcome }
+    }
+    return { lastOutcome }
   }
 
   const flushSecretBootQueue = useCallback(async () => {
@@ -2528,6 +3368,39 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       .map((msg: any) => e2eeManager.transformMessage(activeConversation.id, msg))
   }, [messagesQuery.data, activeConversation?.id, activeConversation?.isSecret, e2eeVersion])
 
+  const clearMessageMultiSelect = useCallback(() => {
+    setMultiSelectMode(false)
+    setSelectedMessageIds([])
+  }, [])
+
+  const toggleMessageMultiSelect = useCallback((id: string) => {
+    setSelectedMessageIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }, [])
+
+  const getSelectedMessagesOrdered = useCallback((): any[] => {
+    const list = (displayedMessages ? [...displayedMessages] : []).filter((m: any) => !m.deletedAt)
+    const pending = (activePendingMessages || []) as any[]
+    const full = [...list, ...pending]
+    const expanded = new Set(selectedMessageIds)
+    const bundles = computeMultiSourceForwardBundles(full as any[])
+    for (const b of bundles) {
+      const fid = full[b.start]?.id
+      if (fid != null && String(fid).length && expanded.has(fid)) {
+        for (let j = b.start; j <= b.end; j++) {
+          const id = full[j]?.id
+          if (id != null && String(id).length) expanded.add(id)
+        }
+      }
+    }
+    return full.filter((m) => expanded.has(m.id)).sort(
+      (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
+    )
+  }, [displayedMessages, activePendingMessages, selectedMessageIds])
+
+  useEffect(() => {
+    clearMessageMultiSelect()
+  }, [activeId, clearMessageMultiSelect])
+
   const decryptAttachment = useCallback(
     (att: any) => {
       if (!activeConversation?.id) return
@@ -2627,6 +3500,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     },
     [attachmentDecryptMap, activeConversation?.isSecret],
   )
+
+  const resolveFirstImageAttachmentUrl = useCallback((message: any): string | null => {
+    const attachments = Array.isArray(message?.attachments) ? message.attachments : []
+    for (const att of attachments) {
+      if (att?.type !== 'IMAGE') continue
+      const resolvedUrl = resolveAttachmentUrl(att)
+      if (resolvedUrl) return resolvedUrl
+    }
+    return null
+  }, [resolveAttachmentUrl])
 
   useEffect(() => {
     if (!activeConversation?.isSecret) return
@@ -3136,7 +4019,54 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return '#191d23'
   }
 
-  
+  function hashStringToUint(s: string | null | undefined): number {
+    if (!s) return 0
+    let h = 0
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+    return h
+  }
+
+  /** Стабильный пастельный цвет имени, как в Telegram-группах */
+  function nameColorForUser(userId: string | null | undefined): string {
+    const palette = [
+      '#b39ddb',
+      '#a5d6a7',
+      '#90caf9',
+      '#ffcc80',
+      '#f48fb1',
+      '#80cbc4',
+      '#ce93d8',
+      '#ffab91',
+      '#9fa8da',
+      '#aed581',
+      '#ffecb3',
+      '#ef9a9a',
+      '#81d4fa',
+    ]
+    return palette[hashStringToUint(userId) % palette.length]
+  }
+
+  /**
+   * Фон входящих/пересланных по участнику: намеренно разные hue при тёмной яркости,
+   * чтобы отличать авторов; часть тонов тёплая (умбра / медь) в духе бренда Eblusha.
+   */
+  function groupIncomingBubbleBg(userId: string | null | undefined): string {
+    const bases = [
+      '#2a1f16', // тёплый умбра (рядом с бренд-янтарём)
+      '#1a2836', // глубокий сине-сланцевый
+      '#152820', // тёмный хвойный
+      '#281a2c', // сливовый
+      '#162a2e', // бирюза / петроль
+      '#2d2418', // бронза / кофе с тёплым подтоном
+      '#1f2440', // индиго
+      '#223016', // оливковый мох
+      '#301c22', // винный дымчатый
+      '#14222c', // ледяной графит
+      '#2f2218', // сепия / «золотая тень» (фирменное тепло)
+      '#241c30', // лилово-серый
+    ]
+    return bases[hashStringToUint(userId) % bases.length]
+  }
 
   // Глобальный обработчик paste для вставки изображений из буфера обмена (когда фокус не в поле ввода)
   useEffect(() => {
@@ -3421,6 +4351,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           setCallConvId((prev) => (prev === conversationId ? null : prev))
           setMinimizedCallConvId((prev) => (prev === conversationId ? null : prev))
           callStore.endCall()
+        } else {
+          const state = useCallStore.getState()
+          if (
+            state.activeConvId === conversationId ||
+            state.outgoingCall?.conversationId === conversationId ||
+            state.incoming?.conversationId === conversationId
+          ) {
+            callStore.endCall()
+          }
         }
         callStore.setIncoming(null)
         stopRingtone()
@@ -3448,24 +4387,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         const isGroup = !!(conv && ((conv.isGroup) || ((conv.participants?.length ?? 0) > 2)))
         if (isGroup) return
       } catch {}
-      // Если звонок минимизирован, не завершаем его - он все еще активен, просто оверлей скрыт
-      if (minimizedCallConvId === conversationId) {
-        return
-      }
-      // Для 1:1 звонков проверяем, что звонок действительно неактивен перед закрытием
-      // Если callConvId установлен, это означает, что пользователь участвует в звонке
-      // В этом случае не закрываем, так как это может быть временное отключение
-      if (isOneToOneConversation(conversationId)) {
-        const currentCall = activeCalls[conversationId]
-        const isParticipating = callConvIdRef.current === conversationId || callStore.activeConvId === conversationId
-        // Если пользователь участвует в звонке, не закрываем при получении call:ended
-        // Это может быть временное отключение, звонок должен закрыться только когда
-        // оба участника явно отключились или один нажал "Leave"
-        if (isParticipating && currentCall?.active && !endedByOther) {
-          console.log('[ChatsPage] Ignoring call:ended for active 1:1 call where user is participating', conversationId)
-          return
-        }
-      }
       const finalize = () => {
         stopOutgoingDialing()
         if (endedByOther) {
@@ -3497,6 +4418,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           setCallConvId((prev) => (prev === conversationId ? null : prev))
           setMinimizedCallConvId((prev) => (prev === conversationId ? null : prev))
           callStore.endCall()
+        } else {
+          const state = useCallStore.getState()
+          if (
+            state.activeConvId === conversationId ||
+            state.outgoingCall?.conversationId === conversationId ||
+            state.incoming?.conversationId === conversationId
+          ) {
+            callStore.endCall()
+          }
         }
         callStore.setIncoming(null)
         stopRingtone()
@@ -3508,9 +4438,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         finalize()
       }
     })
-    onReceiptsUpdate(({ conversationId }) => {
+    onReceiptsUpdate((payload) => {
+      const applied = applyReceiptUpdateToCache(payload)
+      const conversationId = payload.conversationId
       client.invalidateQueries({ queryKey: ['messages', conversationId] })
-      client.refetchQueries({ queryKey: ['messages', conversationId] })
+      if (!applied) {
+        client.refetchQueries({ queryKey: ['messages', conversationId] })
+      }
     })
     // prepare notification audio and unlock on first user gesture (autoplay policy)
     let detachUnlockListeners: (() => void) | null = null
@@ -4720,7 +5654,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   useLayoutEffect(() => {
     syncComposerBarHeightVar()
-  }, [composerEmpty, pendingImages.length, pendingFiles.length, replyTo?.id, editState?.messageId, attachUploading, attachUploadState, syncComposerBarHeightVar])
+  }, [composerEmpty, pendingImages.length, pendingFiles.length, replyTo?.replyToId, replyTo?.quoted?.length, forwardComposerDraft?.destinationConversationId, forwardComposerDraft?.previews?.length, editState?.messageId, attachUploading, attachUploadState, syncComposerBarHeightVar])
 
   useEffect(() => {
     if (attachUploadState !== 'processing') {
@@ -4843,6 +5777,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     async (files: File[]) => {
       if (!activeId || !files.length) return
       if (editState) return
+      if (forwardComposerDraft) {
+        systemToast.error('Сначала отправьте или отмените пересылку — вложения с нею не смешиваем.')
+        return
+      }
       const imageFiles = files.filter((file) => file.type.startsWith('image/'))
       const otherFiles = files.filter((file) => !file.type.startsWith('image/'))
       imageFiles.forEach((file) => addComposerImage(file, 'upload'))
@@ -4852,11 +5790,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         try { composerEditorRef.current?.focus() } catch {}
       })
     },
-    [activeId, addComposerFile, addComposerImage, editState],
+    [activeId, addComposerFile, addComposerImage, editState, forwardComposerDraft],
   )
 
-  async function uploadAndSendAttachments(files: File[], textContent: string = '', replyToId?: string) {
+  async function uploadAndSendAttachments(files: File[], textContent: string = '', replyDraft: ReplyDraftState = null) {
     if (!activeId || files.length === 0) return
+    if (forwardComposerDraft) {
+      systemToast.error('Сначала отправьте или отмените пересылку — вложения с нею не смешиваем.')
+      return
+    }
     const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
     const isLegacySecretConversation = !!activeConversation?.isSecret && !isSecretV2
     if (isSecretV2) {
@@ -5207,9 +6149,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         : 'FILE'
       const sendController = new AbortController()
       activeAttachAbortControllerRef.current = sendController
+      const replyQuoteMeta = buildReplyQuoteMetadataForSend(replyDraft)
       await api.post(
         '/conversations/send',
-        { conversationId: activeId, type: msgType, content: textContent, attachments: uploaded, replyToId },
+        {
+          conversationId: activeId,
+          type: msgType,
+          content: textContent,
+          attachments: uploaded,
+          replyToId: replyDraft?.replyToId,
+          ...(replyQuoteMeta ? { metadata: replyQuoteMeta } : {}),
+        },
         { signal: sendController.signal },
       )
       activeAttachAbortControllerRef.current = null
@@ -5243,6 +6193,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const startVoiceRecording = async () => {
     if (!activeId) return
     if (voiceRecording) return
+    if (forwardComposerDraft) {
+      systemToast.error('Сначала отправьте или отмените пересылку.')
+      return
+    }
 
     try {
       const permissionResult = await ensureMediaPermissions({ audio: true })
@@ -5329,6 +6283,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   const sendVoiceMessage = async (audioBlob: Blob, duration: number) => {
     if (!activeId) return
+    if (forwardComposerDraft) {
+      systemToast.error('Сначала отправьте или отмените пересылку.')
+      return
+    }
     const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
     const isLegacySecretConversation = !!activeConversation?.isSecret && !isSecretV2
     const isSecretConversation = isLegacySecretConversation
@@ -5464,12 +6422,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       // Send directly (like uploadAndSendAttachments does for attachments)
       const sendController = new AbortController()
       activeAttachAbortControllerRef.current = sendController
+      const replyVoiceMeta = buildReplyQuoteMetadataForSend(replyTo)
       await api.post('/conversations/send', {
         conversationId: activeId,
         type: 'AUDIO',
-        metadata: { duration },
+        metadata: replyVoiceMeta ? { duration, ...replyVoiceMeta } : { duration },
         attachments: [attachment],
-        replyToId: replyTo?.id,
+        replyToId: replyTo?.replyToId,
       }, { signal: sendController.signal })
       activeAttachAbortControllerRef.current = null
 
@@ -5488,6 +6447,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       resetActiveAttachUpload()
     }
   }
+
+  useEffect(() => {
+    if (!fwdDraftDestinationId || !activeId) return
+    if (fwdDraftDestinationId !== activeId) {
+      setForwardComposerDraft(null)
+    }
+  }, [activeId, fwdDraftDestinationId])
 
   // Cleanup voice recorder on unmount
   useEffect(() => {
@@ -5718,12 +6684,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             const isActive = activeId === c.id
             const callEntry = activeCalls[c.id]
             const isCallActive = !!callEntry?.active
-            const isCallActiveByState =
-              isCallActive ||
+            const isLocalConnectedToCall =
               callConvId === c.id ||
               minimizedCallConvId === c.id ||
-              outgoingCall?.conversationId === c.id ||
-              callStore.activeConvId === c.id
+              (!!callEntry?.active && callStore.activeConvId === c.id)
+            const isDialingThisConversation = outgoingCall?.conversationId === c.id && !callEntry?.active
+            const isCallActiveByState =
+              isCallActive ||
+              isLocalConnectedToCall ||
+              (isGroup && isDialingThisConversation)
             const isConnectedToCall = callConvId === c.id
             return (
               <div
@@ -5848,17 +6817,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             const isParticipantByLocalState =
                               callConvId === c.id ||
                               minimizedCallConvId === c.id ||
-                              outgoingCall?.conversationId === c.id ||
-                              callStore.activeConvId === c.id
+                              (!!entry?.active && callStore.activeConvId === c.id)
                             const isParticipant = isParticipantByServer || isParticipantByLocalState
                             const isCallOngoing = !!entry?.active || isParticipant
+
+                            if (isDialingThisConversation && !isCallOngoing) {
+                              return <span>Звоним...</span>
+                            }
 
                             if (isParticipant) {
                               // Use startedAt from entry or outgoingCall as a fallback.
                               const startedAt =
                                 (typeof entry?.startedAt === 'number' && entry.startedAt > 0)
                                   ? entry.startedAt
-                                  : (outgoingCall && outgoingCall.conversationId === c.id ? outgoingCall.startedAt : null)
+                                  : null
                               const elapsedMs = startedAt ? (Date.now() - startedAt) : (typeof entry?.elapsedMs === 'number' ? entry.elapsedMs : 0)
                               return <span>В ЗВОНКЕ: {formatDuration(elapsedMs)}{gameSuffix}</span>
                             }
@@ -6165,9 +7137,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                               // Используем elapsedMs с сервера и добавляем локальный тик для плавного обновления между событиями
                               // Re-render each second via timerTick, compute from startedAt to avoid double counting
                               const elapsedMs = callEntry.startedAt ? (Date.now() - callEntry.startedAt) : (typeof callEntry.elapsedMs === 'number' ? callEntry.elapsedMs : 0)
+                              const autoEndRemainingMs =
+                                typeof callEntry.autoEndAt === 'number'
+                                  ? Math.max(0, callEntry.autoEndAt - Date.now())
+                                  : null
                               return (
                                 <>
                                   {callEntry.active && <span>{formatDuration(elapsedMs)}</span>}
+                                  {participants.length === 1 && autoEndRemainingMs != null && (
+                                    <span> • один участник, автоотключение через {formatDuration(autoEndRemainingMs)}</span>
+                                  )}
                                   {allParticipants.length > 0 && (
                                     <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                                       {callEntry.startedAt && ' • '}
@@ -6348,8 +7327,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 const isParticipantByLocalState =
                                   callConvId === activeId ||
                                   minimizedCallConvId === activeId ||
-                                  outgoingCall?.conversationId === activeId ||
-                                  callStore.activeConvId === activeId
+                                  (!!callEntry?.active && callStore.activeConvId === activeId)
                                 const isParticipant = isParticipantByServer || isParticipantByLocalState
                                 const elapsedMs = isParticipant
                                   ? (callEntry.startedAt ? (Date.now() - callEntry.startedAt) : (typeof callEntry.elapsedMs === 'number' ? callEntry.elapsedMs : 0))
@@ -6637,12 +7615,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 const myId = me?.id
                 // Для групповых: звонок активен И есть в participants
                 const isParticipatingInGroup = isGroup && isActive && myId && callEntry?.participants?.includes(myId)
-                // Для 1:1: участвуем если минимизирован, или callConvId установлен (означает что начали/приняли звонок),
-                // или есть активный звонок в store, или звонок активен и есть связь
+                // Для 1:1: pending-дозвон не считается участием; участвуем только
+                // когда есть оверлей/минимизация или сервер уже подтвердил активный звонок.
                 const isParticipatingInDialog = !isGroup && (
                   isMinimized || // Если минимизирован - точно участвуем
                   callConvId === activeId || // Если оверлей был открыт/открыт - участвуем
-                  callStore.activeConvId === activeId || // Если есть активный звонок в store - участвуем
                   (isActive && (callStore.activeConvId === activeId || callConvId === activeId)) // Звонок активен и есть связь
                 )
                 const isParticipating = isParticipatingInGroup || isParticipatingInDialog
@@ -6698,21 +7675,21 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     inviteCall(activeId, false)
                     signalApkOutgoingStarted(activeId, false)
                     callStore.startOutgoing(activeId, false)
-                    setActiveCalls((prev) => {
-                      const current = prev[activeId]
-                      const myId = me?.id
-                      if (!current?.active) {
-                        return { ...prev, [activeId]: { startedAt: Date.now(), active: true, endedAt: null, participants: myId ? [myId] : [] } }
-                      }
-                      if (myId && current.participants && !current.participants.includes(myId)) {
-                        return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
-                      }
-                      return prev
-                    })
                     // Проверяем, является ли беседа групповой
                     const conv = conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
                     const isGroup = conv?.isGroup || (conv?.participants?.length ?? 0) > 2
                     if (isGroup) {
+                      setActiveCalls((prev) => {
+                        const current = prev[activeId]
+                        const myId = me?.id
+                        if (!current?.active) {
+                          return { ...prev, [activeId]: { startedAt: Date.now(), active: true, endedAt: null, participants: myId ? [myId] : [] } }
+                        }
+                        if (myId && current.participants && !current.participants.includes(myId)) {
+                          return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
+                        }
+                        return prev
+                      })
                       // Для групповых бесед сразу открываем оверлей, без экрана дозвона
                       setCallConvId(activeId)
                       setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
@@ -6761,21 +7738,21 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     inviteCall(activeId, true)
                     signalApkOutgoingStarted(activeId, true)
                     callStore.startOutgoing(activeId, true)
-                    setActiveCalls((prev) => {
-                      const current = prev[activeId]
-                      const myId = me?.id
-                      if (!current?.active) {
-                        return { ...prev, [activeId]: { startedAt: Date.now(), active: true, endedAt: null, participants: myId ? [myId] : [] } }
-                      }
-                      if (myId && current.participants && !current.participants.includes(myId)) {
-                        return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
-                      }
-                      return prev
-                    })
                     // Проверяем, является ли беседа групповой
                     const conv = conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
                     const isGroup = conv?.isGroup || (conv?.participants?.length ?? 0) > 2
                     if (isGroup) {
+                      setActiveCalls((prev) => {
+                        const current = prev[activeId]
+                        const myId = me?.id
+                        if (!current?.active) {
+                          return { ...prev, [activeId]: { startedAt: Date.now(), active: true, endedAt: null, participants: myId ? [myId] : [] } }
+                        }
+                        if (myId && current.participants && !current.participants.includes(myId)) {
+                          return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
+                        }
+                        return prev
+                      })
                       // Для групповых бесед сразу открываем оверлей, без экрана дозвона
                       setCallConvId(activeId)
                       setMinimizedCallConvId((prev) => (prev === activeId ? null : prev))
@@ -7130,6 +8107,130 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             await handleChatDropFiles(files)
           }}
         >
+          {multiSelectMode && activeId && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 15,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+                flexWrap: 'wrap',
+                padding: '10px 14px',
+                borderBottom: '1px solid var(--surface-border)',
+                background: 'var(--surface-200)',
+              }}
+            >
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={selectedMessageIds.length === 0}
+                  style={{
+                    background: selectedMessageIds.length ? 'var(--brand-600)' : 'var(--surface-border)',
+                    color: '#fff',
+                    fontWeight: 700,
+                    fontSize: 12,
+                    letterSpacing: 0.04,
+                    textTransform: 'uppercase',
+                    borderRadius: 10,
+                    padding: '8px 14px',
+                    opacity: selectedMessageIds.length ? 1 : 0.5,
+                  }}
+                  onClick={() => {
+                    const msgs = getSelectedMessagesOrdered()
+                    const draft = buildReplyDraftFromMessages(msgs)
+                    if (draft) {
+                      setForwardComposerDraft(null)
+                      setReplyTo(draft)
+                    }
+                    clearMessageMultiSelect()
+                  }}
+                >
+                  Ответить
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={selectedMessageIds.length === 0}
+                  style={{
+                    background: selectedMessageIds.length ? 'var(--brand-600)' : 'var(--surface-border)',
+                    color: '#fff',
+                    fontWeight: 700,
+                    fontSize: 12,
+                    letterSpacing: 0.04,
+                    textTransform: 'uppercase',
+                    borderRadius: 10,
+                    padding: '8px 14px',
+                    opacity: selectedMessageIds.length ? 1 : 0.5,
+                  }}
+                  onClick={() => {
+                    const ids = getSelectedMessagesOrdered().map((m) => m.id)
+                    if (!ids.length) return
+                    setForwardComposerDraft(null)
+                    setForwardModal({ open: true, messageIds: ids })
+                  }}
+                >
+                  Переслать{selectedMessageIds.length > 0 ? ` ${selectedMessageIds.length}` : ''}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={selectedMessageIds.length === 0}
+                  style={{
+                    background: selectedMessageIds.length ? 'var(--brand-600)' : 'var(--surface-border)',
+                    color: '#fff',
+                    fontWeight: 700,
+                    fontSize: 12,
+                    letterSpacing: 0.04,
+                    textTransform: 'uppercase',
+                    borderRadius: 10,
+                    padding: '8px 14px',
+                    opacity: selectedMessageIds.length ? 1 : 0.5,
+                  }}
+                  onClick={async () => {
+                    const msgs = getSelectedMessagesOrdered()
+                    const mine = msgs.filter((m) => m.senderId === me?.id)
+                    if (!mine.length) {
+                      systemToast.error('Среди выбранных нет ваших сообщений')
+                      return
+                    }
+                    const ok = await systemConfirm({
+                      title: 'Удалить сообщения',
+                      message: `Удалить ${mine.length} ваших сообщений?`,
+                      confirmText: 'Удалить',
+                      cancelText: 'Отмена',
+                      danger: true,
+                    })
+                    if (!ok) return
+                    for (const m of mine) {
+                      try {
+                        await api.post('/messages/delete', { messageId: m.id })
+                      } catch {
+                        /* next */
+                      }
+                    }
+                    if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                    clearMessageMultiSelect()
+                  }}
+                >
+                  Удалить{selectedMessageIds.length > 0 ? ` ${selectedMessageIds.length}` : ''}
+                </button>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ color: 'var(--brand-600)', fontWeight: 700, fontSize: 12, textTransform: 'uppercase' }}
+                onClick={() => clearMessageMultiSelect()}
+              >
+                Отмена
+              </button>
+            </div>
+          )}
           {attachDragOver && !editState && (
             <div
               style={{
@@ -7268,36 +8369,215 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 const pending = activePendingMessages
                 const fullList = [...(list || []), ...pending]
                 if (!fullList) return null
-                return fullList.map((m: any, i: number) => {
-                  if (m.deletedAt) return null
-                  
-                  // Системные сообщения отображаются по-особому
-                  if (m.type === 'SYSTEM') {
+                const replyQuoteVisual = (
+                  quotedMsg: any | undefined | null,
+                  snippetFromApi: string,
+                ) => {
+                  const thumbUrl = quotedMsg ? resolveFirstImageAttachmentUrl(quotedMsg) : null
+                  const apiTrim = typeof snippetFromApi === 'string' ? snippetFromApi.trim() : ''
+                  let line = apiTrim
+                  if (!line && quotedMsg) line = previewTextForReplyDraft(quotedMsg).trim()
+                  if (line.length > 240) line = `${line.slice(0, 237)}…`
+                  const hideLineForThumb = !!(thumbUrl && replySnippetIsGenericRu(line))
+                  const showText = !!line && !hideLineForThumb
+                  const showPlaceholder = !thumbUrl && !showText
+                  return { thumbUrl, line, showText, showPlaceholder }
+                }
+                const __fwdBundles = computeMultiSourceForwardBundles(fullList)
+                const __fwdSkip = new Set<number>()
+                for (const b of __fwdBundles) {
+                  for (let k = b.start + 1; k <= b.end; k++) __fwdSkip.add(k)
+                }
+                const repMessagePendingForMulti = (rep: any) =>
+                  !!rep &&
+                  (() => {
+                    try {
+                      if (typeof rep?.__pending === 'boolean') return rep.__pending
+                      if (typeof rep.id === 'string' && rep.id.startsWith('tmp-')) return true
+                      const atts = rep?.attachments
+                      if (Array.isArray(atts) && atts.some((a: any) => !!a?.__pending)) return true
+                      return false
+                    } catch {
+                      return false
+                    }
+                  })()
+                const forwardBundleHostCanMultiSelect = (rep: any) =>
+                  !!rep && !repMessagePendingForMulti(rep) && rep.type !== 'SYSTEM'
+                const renderForwardBundleHostCheckbox = (rep: any) => {
+                  if (!multiSelectMode || !forwardBundleHostCanMultiSelect(rep)) return null
+                  const rid = String(rep.id)
+                  const checked = selectedMessageIds.includes(rid)
+                  return (
+                    <button
+                      type="button"
+                      className={`msg-multi-checkbox${checked ? ' msg-multi-checkbox--checked' : ''}`}
+                      aria-label={checked ? 'Снять выделение' : 'Выбрать сообщение'}
+                      aria-pressed={checked}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        toggleMessageMultiSelect(rid)
+                      }}
+                    >
+                      {checked ? <Check size={16} strokeWidth={2.8} /> : null}
+                    </button>
+                  )
+                }
+                const onForwardBundleHostMultiClick = (e: React.MouseEvent, representativeId: string) => {
+                  if (!multiSelectMode) return
+                  const rep = fullList.find((x: any) => x?.id === representativeId)
+                  if (!forwardBundleHostCanMultiSelect(rep)) return
+                  const t = e.target as HTMLElement
+                  if (
+                    t.closest(
+                      '.msg-bubble, a[href], button, .reaction-emoji, img, video, .msg-media-tile, .video-message-bubble',
+                    )
+                  )
+                    return
+                  const sel = typeof window.getSelection === 'function' ? window.getSelection() : null
+                  if (sel && sel.toString().length > 0) return
+                  e.preventDefault()
+                  toggleMessageMultiSelect(representativeId)
+                }
+                /** Время и галочки у внешнего серого бабла: «переслано + свой комментарий» или пачка без комментария (у тел пересланого внутри конверта скрыты через suppress). */
+                const renderForwardCaptionOuterBubbleMeta = (
+                  repMsg: any,
+                  isRepMe: boolean,
+                  bubbleSelected: boolean,
+                ) => {
+                  if (!repMsg) return null
+                  const pend = (() => {
+                    try {
+                      if (typeof repMsg.__pending === 'boolean') return repMsg.__pending
+                      if (typeof repMsg.id === 'string' && repMsg.id.startsWith('tmp-')) return true
+                      const atts = repMsg?.attachments
+                      if (Array.isArray(atts) && atts.some((a: any) => !!a?.__pending)) return true
+                      return false
+                    } catch {
+                      return false
+                    }
+                  })()
+                  const createdOuter = repMsg.createdAt ? new Date(repMsg.createdAt) : null
+                  const tlab = formatMessageClockLabel(createdOuter)
+                  const recLineOuter =
+                    createdOuter && Number.isFinite(createdOuter.getTime())
+                      ? formatRuRelativeSendDay(createdOuter)
+                      : null
+                  const labelOuter =
+                    recLineOuter != null && recLineOuter.trim() !== ''
+                      ? `${tlab}, ${recLineOuter}`
+                      : tlab
+                  const editedOuter =
+                    typeof (repMsg as any)?.metadata?.editedAt === 'string' && String((repMsg as any).metadata.editedAt).length > 0
+                  const otherIdsR =
+                    (activeConversation?.participants || [])
+                      .map((p: any) => p.user.id)
+                      .filter((id: string) => (currentUserId ? id !== currentUserId : true)) ?? []
+                  const receiptsR = (repMsg.receipts || []) as Array<any>
+                  const readByAnyR =
+                    isRepMe &&
+                    otherIdsR.some((uid: string) => receiptsR.some((r) => r.userId === uid && (r.status === 'READ' || r.status === 'SEEN')))
+                  const ackedOnServerR = isRepMe && !!repMsg.id && !pend
+                  const tickVariantR: 'none' | 'ack' | 'read' = isRepMe
+                    ? readByAnyR
+                      ? 'read'
+                      : ackedOnServerR
+                        ? 'ack'
+                        : 'none'
+                    : 'none'
+                  const tickColorOuter =
+                    tickVariantR === 'read'
+                      ? bubbleSelected
+                        ? '#451a03'
+                        : '#d97706'
+                      : bubbleSelected
+                        ? '#27272a'
+                        : '#9aa0a8'
+                  const renderTicksOuter = (opts?: { withLeftMargin?: boolean }) => {
+                    if (tickVariantR === 'none') return null
+                    const withLeftMargin = opts?.withLeftMargin ?? false
+                    const common: React.CSSProperties = {
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: tickColorOuter,
+                      marginLeft: withLeftMargin ? 6 : 0,
+                      lineHeight: 0,
+                      transform: 'translateY(1px)',
+                      flexShrink: 0,
+                    }
+                    const strokeWidth = 2.2
                     return (
-                      <div key={m.id} style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '12px 16px', marginTop: 8 }}>
-                        <div style={{ 
-                          fontSize: 13, 
-                          color: 'var(--text-muted)', 
-                          textAlign: 'center',
-                          fontStyle: 'italic',
-                          opacity: 0.8
-                        }}>
-                          {renderMessageText(m.content)}
-                        </div>
-                      </div>
+                      <span style={common} aria-label={tickVariantR === 'read' ? 'Read' : 'Sent'}>
+                        {tickVariantR === 'read' ? (
+                          <svg width={18} height={12} viewBox="0 0 18 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 6.5L4.5 10L11.5 1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M7 6.5L10.5 10L17.5 1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        ) : (
+                          <svg width={12} height={12} viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 6.5L4.5 10L11 1.5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </span>
                     )
                   }
-                  
+                  return (
+                    <div className="msg-meta" style={{ marginTop: 8, color: bubbleSelected ? '#27272a' : '#9aa0a8' }}>
+                      <span>{labelOuter}</span>
+                      {editedOuter ? <span style={{ fontSize: 11, opacity: 0.9 }}>изменено</span> : null}
+                      {renderTicksOuter({ withLeftMargin: false })}
+                    </div>
+                  )
+                }
+                const renderChatMessageAtIndex = (
+                  rowIndex: number,
+                  forwardBundleInner?: boolean,
+                  forwardBundleInnerLast?: boolean,
+                  bundleForwardSenderId?: string | null,
+                  /** id первого сообщения конверта пересылки: выделение только «целым конвертом», не внутренними id */
+                  forwardBundleRepresentativeMessageId?: string | null,
+                  /** когда пересылка свёрнута в бабл с комментарием — не дублируем галочки/время на представителе внутри */
+                  forwardBundleSuppressMetaFooter?: boolean,
+                ) => {
+                  const i = rowIndex
+                  const m = fullList[i]
                   const prev = fullList[i - 1]
                   const next = fullList[i + 1]
                   const isLastOfRun = !next || next.senderId !== m.senderId
                   const isPrevSame = !!prev && prev.senderId === m.senderId
-                  const isMe = m.senderId === me?.id
+                  const isMe =
+                    currentUserId != null &&
+                    m.senderId != null &&
+                    String(m.senderId) === String(currentUserId)
+                  const isPendingMessage = (() => {
+                    try {
+                      if (typeof (m as any)?.__pending === 'boolean') return (m as any).__pending
+                      if (typeof m.id === 'string' && m.id.startsWith('tmp-')) return true
+                      const atts = (m as any)?.attachments
+                      if (Array.isArray(atts) && atts.some((a: any) => !!a?.__pending)) return true
+                      return false
+                    } catch {
+                      return false
+                    }
+                  })()
+                  const canSelectForMulti = !isPendingMessage && m.type !== 'SYSTEM'
+                  const multiSelectAnchorId =
+                    forwardBundleInner && forwardBundleRepresentativeMessageId
+                      ? forwardBundleRepresentativeMessageId
+                      : m.id
+                  const suppressFwdComposeMetaFooter =
+                    !!forwardBundleSuppressMetaFooter && !!forwardBundleInner
+                  const skipInnerBubbleAnchorRef =
+                    suppressFwdComposeMetaFooter &&
+                    forwardBundleRepresentativeMessageId != null &&
+                    String(m.id) === String(forwardBundleRepresentativeMessageId)
                   const baseRow = leftAlignAll ? 'msg left' : (isMe ? 'msg me' : 'msg them')
                   const spacingClass = isPrevSame ? 'compact' : 'gap'
-                  const rowClass = `${baseRow} ${spacingClass}`
+                  const rowClass = `${baseRow} ${spacingClass}${
+                    multiSelectMode && canSelectForMulti && leftAlignAll ? ' msg--multiselect-wide' : ''
+                  }`
                   const baseBubble = leftAlignAll ? 'msg-bubble left' : (isMe ? 'msg-bubble me' : 'msg-bubble them')
-                  const bubbleClass = isLastOfRun ? `${baseBubble} ${isMe && !leftAlignAll ? 'tail-right' : 'tail-left'}` : baseBubble
                   const firstUrl = typeof m.content === 'string' ? extractFirstPreviewableUrl(m.content) : null
                   const hasAnyLink = !!firstUrl
                   const previewMedia = (() => {
@@ -7314,14 +8594,115 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   const senderUser = usersById[m.senderId]
                   const avatarName = senderUser?.displayName ?? senderUser?.username ?? (isMe ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
                   const avatarId = senderUser?.id ?? (isMe ? (me?.id ?? 'me') : 'user')
-                  const bg = isMe ? '#303845' : hashToGray(m.senderId)
-                  const fg = isMe ? '#f1f3f6' : '#f1f3f6'
                   const isGroupConv = !!(activeConversation?.isGroup || (activeConversation?.participants?.length ?? 0) > 2)
+                  const normalizedForwardFromEarly = normalizeForwardFromRecord(parseMessageMetadata(m)?.forwardFrom)
+                  const isForwardedBubble = !!(
+                    normalizedForwardFromEarly &&
+                    typeof normalizedForwardFromEarly.authorName === 'string' &&
+                    String(normalizedForwardFromEarly.authorName).trim()
+                  )
+                  /** Исходный автор в пересылке (имя в метаданных): и для входящих, и для исходящих — senderId всегда «кто переслал». */
+                  const forwardHueKey =
+                    isForwardedBubble && normalizedForwardFromEarly
+                      ? `fwd:${String(normalizedForwardFromEarly.authorName).trim()}|${
+                          typeof normalizedForwardFromEarly.sourceChatTitle === 'string'
+                            ? String(normalizedForwardFromEarly.sourceChatTitle).trim()
+                            : ''
+                        }`
+                      : null
+                  const bgBase =
+                    forwardHueKey != null
+                      ? groupIncomingBubbleBg(forwardHueKey)
+                      : isMe
+                        ? '#303845'
+                        : isGroupConv
+                          ? groupIncomingBubbleBg(m.senderId)
+                          : hashToGray(m.senderId)
+                  const bg = bgBase
+                  const fg = isMe ? '#f1f3f6' : '#f1f3f6'
+                  const bundleFw = bundleForwardSenderId != null ? String(bundleForwardSenderId) : null
+                  /** Хвосты как у обычных: конец серии от того же отправителя что и m.
+                   *  Внутри конверта авторы в сообщениях могут быть из исходной группы — «серия чей» для хвоста
+                   *  берём у пересылающего (bundleForwardSenderId): иначе пропадает хвост, если после пачки ты пишешь снова. */
+                  const forwardBundleInnerContinuationTail =
+                    !!forwardBundleInner &&
+                    forwardBundleInnerLast === true &&
+                    !!next &&
+                    bundleFw != null &&
+                    String(next.senderId) === bundleFw
+                  const soloForwardedContinuationTail =
+                    isForwardedBubble &&
+                    !forwardBundleInner &&
+                    isMe &&
+                    !leftAlignAll &&
+                    !!next &&
+                    currentUserId != null &&
+                    String(next.senderId) === String(currentUserId)
+                  /** Внутри общего конверта цитируемый бабл без хвостика (как в макете пачки). */
+                  const wantsBubbleTail = forwardBundleInner
+                    ? false
+                    : isLastOfRun || forwardBundleInnerContinuationTail || soloForwardedContinuationTail
+                  const bubbleClass = wantsBubbleTail
+                    ? `${baseBubble} ${isMe && !leftAlignAll ? 'tail-right' : 'tail-left'}`
+                    : baseBubble
+                  const forwardBubbleMods = !isForwardedBubble ? '' : ' msg-bubble--forward msg-bubble--forward-quote'
+                  /** Выделение рисуем только на строке-хосте конверта; внутри пачки anchor общий с хостом, но класс/bg не дублируем. */
+                  const multiSelectAnchorSelected =
+                    multiSelectMode && canSelectForMulti && selectedMessageIds.includes(multiSelectAnchorId)
+                  const isSelectedInMulti = multiSelectAnchorSelected && !forwardBundleInner
+                  const bubbleFg = isSelectedInMulti ? '#0a0a0a' : fg
+                  const senderAccentColor = nameColorForUser(m.senderId)
+                  const showGroupSenderName = isGroupConv && !isPrevSame
+                  const replyPayload = m.replyTo as { id?: string; content?: string | null; senderId?: string } | undefined
+                  const quotedSenderId = replyPayload?.senderId
+                  const quotedUserForReply = quotedSenderId ? usersById[quotedSenderId] : undefined
+                  const quotedAuthorLabel =
+                    quotedUserForReply?.displayName?.trim() ||
+                    quotedUserForReply?.username?.trim() ||
+                    'Участник'
+                  const quoteBarColor = quotedSenderId ? nameColorForUser(quotedSenderId) : '#8e8e93'
+                  const quotedMessageForSingleReply =
+                    replyPayload?.id ? fullList.find((x: any) => x && String(x.id) === String(replyPayload.id)) : undefined
+                  const singleReplyQV = replyQuoteVisual(
+                    quotedMessageForSingleReply,
+                    typeof replyPayload?.content === 'string' ? replyPayload.content : '',
+                  )
+                  const singleReplyQuotedAt = quotedMessageForSingleReply?.createdAt
+                    ? coerceParsedMessageInstant(quotedMessageForSingleReply.createdAt)
+                    : null
+                  const singleReplyInnerTimeLabel = formatMessageClockLabel(singleReplyQuotedAt)
+                  const replyBundleEntries = parseReplyQuoteBundleEntries(m)
+                  const showMultiReplyQuote = !!(replyBundleEntries && replyBundleEntries.length >= 2)
+                  const hasReplyUi = !!(m.replyTo || showMultiReplyQuote)
+                  const replySenderActionPhrase =
+                    !forwardBundleInner && hasReplyUi
+                      ? showMultiReplyQuote && replyBundleEntries
+                        ? formatSenderReplyActionPhrase(replyBundleEntries.length)
+                        : m.replyTo
+                          ? formatSenderReplySingleActionPhrase()
+                          : null
+                      : null
+                  const showSenderContextRow =
+                    !forwardBundleInner && (showGroupSenderName || replySenderActionPhrase)
+                  const forwardFrom = (() => {
+                    const normalized = normalizedForwardFromEarly
+                    if (!normalized) return null
+                    const authorName =
+                      typeof normalized.authorName === 'string' ? String(normalized.authorName).trim() : ''
+                    if (!authorName) return null
+                    const isGroupSource = !!normalized.isGroupSource
+                    const st = normalized.sourceChatTitle
+                    const sourceChatTitle = typeof st === 'string' && st.trim() ? st.trim() : null
+                    const originalPostedAt = extractOriginalForwardedInstantFromMessage(m)
+                    return { authorName, sourceChatTitle, isGroupSource, originalPostedAt }
+                  })()
                   // In wide mode all rows are left-aligned and the avatar is always on the left.
                   // In narrow mode for group chats we still want to show who sent the message,
                   // so we render the avatar on the appropriate side of the row (left for them, right for me).
                   const showAvatarBlock = leftAlignAll || isGroupConv
-                  const showAvatar = showAvatarBlock && isLastOfRun
+                  /** Аватар пересылающего у пачки — снаружи конверта на хосте, не внутри .msg-forward-bundle-outer */
+                  const showAvatar =
+                    showAvatarBlock && isLastOfRun && !forwardBundleInner
                   const avatarOnRight = !leftAlignAll && isGroupConv && isMe
                   const avatarOnLeft = showAvatarBlock && !avatarOnRight
                   const renderAvatarOrSpacer = () => (
@@ -7335,28 +8716,33 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     )
                   )
                   const createdAt = m.createdAt ? new Date(m.createdAt) : null
-                  const timeLabel = createdAt ? createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+                  const extractedOriginalPostedAt = extractOriginalForwardedInstantFromMessage(m)
+                  const timeLabelDate =
+                    isForwardedBubble && extractedOriginalPostedAt ? extractedOriginalPostedAt : createdAt
+                  const timeLabel = formatMessageClockLabel(timeLabelDate)
+                  const participantRecencyEligible =
+                    !!timeLabelDate &&
+                    !!timeLabel &&
+                    Number.isFinite(timeLabelDate.getTime()) &&
+                    (forwardBundleInner || !isMe || isForwardedBubble)
+                  const participantRecencyLine = participantRecencyEligible
+                    ? formatRuRelativeSendDay(timeLabelDate)
+                    : null
+                  const timeAndRecencyLabel =
+                    participantRecencyLine != null && participantRecencyLine.trim() !== ''
+                      ? `${timeLabel}, ${participantRecencyLine}`
+                      : timeLabel
                   const editedAtRaw = (m as any)?.metadata?.editedAt
                   const isEdited = typeof editedAtRaw === 'string' && editedAtRaw.length > 0
                   const otherIds: string[] = (activeConversation?.participants || []).map((p: any) => p.user.id).filter((id: string) => (currentUserId ? id !== currentUserId : true))
                   const receipts = (m.receipts || []) as Array<any>
                   const readByAny = isMe && otherIds.some((uid) => receipts.some((r) => r.userId === uid && (r.status === 'READ' || r.status === 'SEEN')))
-                  const isPendingMessage = (() => {
-                    try {
-                      if (typeof (m as any)?.__pending === 'boolean') return (m as any).__pending
-                      if (typeof m.id === 'string' && m.id.startsWith('tmp-')) return true
-                      const atts = (m as any)?.attachments
-                      if (Array.isArray(atts) && atts.some((a: any) => !!a?.__pending)) return true
-                      return false
-                    } catch {
-                      return false
-                    }
-                  })()
                   const ackedOnServer = isMe && !!m.id && !isPendingMessage
                   const tickVariant: 'none' | 'ack' | 'read' = isMe ? (readByAny ? 'read' : (ackedOnServer ? 'ack' : 'none')) : 'none'
                   const renderTicks = (opts?: { withLeftMargin?: boolean }) => {
+                    if (isForwardedBubble) return null
                     if (tickVariant === 'none') return null
-                    const color = tickVariant === 'read' ? '#d97706' : '#9aa0a8'
+                    const color = tickVariant === 'read' ? (isSelectedInMulti ? '#451a03' : '#d97706') : isSelectedInMulti ? '#27272a' : '#9aa0a8'
                     const withLeftMargin = opts?.withLeftMargin ?? false
                     const common: React.CSSProperties = {
                       display: 'inline-flex',
@@ -7393,18 +8779,22 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     e.preventDefault()
                         openMenuAt(e.clientX, e.clientY)
                   }
-                  const scrollToQuoted = () => {
-                    const qid = (m as any).replyTo?.id as string | undefined
+                  const scrollToMessageById = (qid: string | undefined) => {
                     if (!qid) return
                     const el = nodesByMessageId.current.get(qid)
                     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
                   }
+                  const scrollToQuoted = () => scrollToMessageById((m as any).replyTo?.id as string | undefined)
                   // Lightbox should be scoped to this message (not the whole chat).
                   const imagesInMessage = (m.attachments || [])
                     .filter((a: any) => a?.type === 'IMAGE')
                     .map((a: any) => resolveAttachmentUrl(a))
                     .filter((u: string | null): u is string => !!u)
                   const openLightbox = (url: string) => {
+                    if (multiSelectMode && canSelectForMulti) {
+                      toggleMessageMultiSelect(multiSelectAnchorId)
+                      return
+                    }
                     const index = imagesInMessage.findIndex((u: string) => u === url)
                     setLightbox({ open: true, index: index >= 0 ? index : 0, items: imagesInMessage })
                   }
@@ -7418,19 +8808,67 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         }
                       }
                       const rowHandlers = isMobile ? {} : { onContextMenu, ...onLongPress }
+                      const multiSelectCheckboxEl =
+                        multiSelectMode && canSelectForMulti ? (
+                          <button
+                            type="button"
+                            className={
+                              `msg-multi-checkbox${selectedMessageIds.includes(multiSelectAnchorId) ? ' msg-multi-checkbox--checked' : ''}`
+                            }
+                            aria-label={
+                              selectedMessageIds.includes(multiSelectAnchorId)
+                                ? 'Снять выделение'
+                                : 'Выбрать сообщение'
+                            }
+                            aria-pressed={selectedMessageIds.includes(multiSelectAnchorId)}
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              toggleMessageMultiSelect(multiSelectAnchorId)
+                            }}
+                          >
+                            {selectedMessageIds.includes(multiSelectAnchorId) ? <Check size={16} strokeWidth={2.8} /> : null}
+                          </button>
+                        ) : null
+                      const onRowMultiSelectClick = (e: React.MouseEvent) => {
+                        if (!multiSelectMode || !canSelectForMulti) return
+                        const t = e.target as HTMLElement
+                        if (t.closest('a[href], button, .reaction-emoji, img, video, .msg-media-tile, .video-message-bubble')) return
+                        const sel = typeof window.getSelection === 'function' ? window.getSelection() : null
+                        if (sel && sel.toString().length > 0) return
+                        e.preventDefault()
+                        toggleMessageMultiSelect(multiSelectAnchorId)
+                      }
                       return (
-                        <div key={m.id} className={rowClass} {...rowHandlers}>
-                      {avatarOnLeft && renderAvatarOrSpacer()}
+                        <div
+                          key={m.id}
+                          className={rowClass}
+                          {...rowHandlers}
+                          onClick={onRowMultiSelectClick}
+                        >
+                      {!forwardBundleInner && !leftAlignAll && !isMe && multiSelectCheckboxEl}
+                      {avatarOnLeft && !forwardBundleInner && renderAvatarOrSpacer()}
                       <div
-                        className={hasAnyLink ? `${bubbleClass} has-link-preview${previewMedia ? ' has-link-preview-media' : ''}` : bubbleClass}
+                        className={
+                          (hasAnyLink ? `${bubbleClass} has-link-preview${previewMedia ? ' has-link-preview-media' : ''}` : bubbleClass) +
+                          forwardBubbleMods +
+                          (isSelectedInMulti ? ' msg-bubble--selected' : '')
+                        }
                         data-mid={m.id}
                         ref={(el) => {
-                          if (!el) { nodesByMessageId.current.delete(m.id); return }
+                          if (skipInnerBubbleAnchorRef) return
+                          if (!el) {
+                            nodesByMessageId.current.delete(m.id)
+                            return
+                          }
                           nodesByMessageId.current.set(m.id, el)
                           visibleObserver.current?.observe(el)
                         }}
-                        style={{ ['--bubble-bg' as any]: bg, ['--bubble-fg' as any]: fg }}
+                        style={{ ['--bubble-bg' as any]: bg, ['--bubble-fg' as any]: bubbleFg }}
                         onClick={(e) => {
+                          if (multiSelectMode && canSelectForMulti) {
+                            return
+                          }
                           if (!isMobile) return
                           const target = e.target as HTMLElement
                           if (target.closest('a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble')) return
@@ -7459,16 +8897,42 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                               grouped[r.emoji].hasMine = true
                             }
                           }
+                          const reactionActorLabel = (r: any): string => {
+                            const inline = r?.user
+                            if (inline && typeof inline === 'object') {
+                              const dn = typeof inline.displayName === 'string' ? inline.displayName.trim() : ''
+                              const un = typeof inline.username === 'string' ? inline.username.trim() : ''
+                              if (dn) return dn
+                              if (un) return `@${un}`
+                            }
+                            if (r.userId === me?.id) return 'Вы'
+                            const parts = activeConversation?.participants as any[] | undefined
+                            const p = parts?.find((x: any) => x?.user?.id === r.userId)
+                            const u = p?.user
+                            if (u) {
+                              const dn = typeof u.displayName === 'string' ? u.displayName.trim() : ''
+                              const un = typeof u.username === 'string' ? u.username.trim() : ''
+                              if (dn) return dn
+                              if (un) return `@${un}`
+                            }
+                            return 'Участник'
+                          }
+                          const reactionTooltipForEmoji = (emoji: string) => {
+                            const reactors = (m.reactions as any[]).filter((x) => x?.emoji === emoji)
+                            if (!reactors.length) return undefined
+                            return reactors.map(reactionActorLabel).join(', ')
+                          }
                           return (
                             <div style={{ position: 'absolute', bottom: -18, right: isMe ? 8 : undefined, left: !isMe ? 8 : undefined, display: 'flex', gap: 6, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', borderRadius: 12, padding: '2px 6px', zIndex: 5, pointerEvents: 'auto' }}>
                               {Object.entries(grouped).map(([emo, data], idx) => {
                                 const isHeart = emo === '❤️'
-                                const color = isHeart ? '#ef4444' : '#ffc46b'
+                                const color = isHeart ? '#ef4444' : isSelectedInMulti ? '#713f12' : '#ffc46b'
                                 return (
                                   <button
                                     key={emo}
                                     type="button"
                                     className="reaction-emoji"
+                                    title={reactionTooltipForEmoji(emo)}
                                     onClick={async (e) => {
                                       e.preventDefault()
                                       e.stopPropagation()
@@ -7507,23 +8971,296 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             </div>
                           )
                         })()}
-                        {m.replyTo && (
+                        {forwardBundleInner && forwardFrom && (
                           <div
-                            onClick={scrollToQuoted}
                             style={{
-                              cursor: 'pointer',
-                              fontSize: 12,
-                              padding: '6px 8px',
-                              borderRadius: 8,
-                              marginBottom: 6,
-                              background: isMe ? '#303845' : '#191d23',
-                              color: '#f1f3f6',
-                              borderLeft: isMe ? '3px solid #ff9e1a' : '3px solid #ff9e1a',
+                              fontSize: 13,
+                              fontWeight: 700,
+                              lineHeight: 1.25,
+                              marginBottom: hasReplyUi ? 6 : 5,
+                              color: isSelectedInMulti ? '#292524' : nameColorForUser(forwardHueKey),
                             }}
                           >
-                            Ответ на: {(m.replyTo.content ?? 'сообщение')}
+                            {forwardFrom.authorName}
                           </div>
                         )}
+                        {showSenderContextRow && (
+                          <div
+                            style={{
+                              display: 'inline-flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              gap: 5,
+                              width: 'max-content',
+                              maxWidth: '100%',
+                              fontSize: 14,
+                              fontWeight: 700,
+                              lineHeight: 1.25,
+                              marginBottom: hasReplyUi ? 6 : 4,
+                              color: isSelectedInMulti ? '#292524' : senderAccentColor,
+                            }}
+                          >
+                            <span style={{ flexShrink: 0 }}>
+                              {replySenderActionPhrase
+                                ? `${String(avatarName).trim()} ${replySenderActionPhrase}`
+                                : avatarName}
+                            </span>
+                            {replySenderActionPhrase ? (
+                              <Quote
+                                size={14}
+                                strokeWidth={2.6}
+                                style={{
+                                  opacity: 0.9,
+                                  flexShrink: 0,
+                                  color: isSelectedInMulti ? '#b45309' : 'var(--brand)',
+                                }}
+                                aria-hidden
+                              />
+                            ) : null}
+                          </div>
+                        )}
+                        {showMultiReplyQuote && replyBundleEntries ? (
+                          <div className="msg-reply-quote-bundle">
+                            {replyBundleEntries.map((entry) => {
+                              const uid = entry.senderId
+                              const label =
+                                uid && usersById[uid]
+                                  ? usersById[uid].displayName?.trim() || usersById[uid].username?.trim() || 'Участник'
+                                  : 'Участник'
+                              const barColor = uid ? nameColorForUser(uid) : '#8e8e93'
+                              const innerBubbleBg = groupIncomingBubbleBg(uid || entry.id)
+                              const quotedEntryMsg = fullList.find((x: any) => x && String(x.id) === String(entry.id))
+                              const innerQuotedAt =
+                                (entry.createdAt ? coerceParsedMessageInstant(entry.createdAt) : null) ??
+                                (quotedEntryMsg?.createdAt ? coerceParsedMessageInstant(quotedEntryMsg.createdAt) : null)
+                              const innerTimeLabel = formatMessageClockLabel(innerQuotedAt)
+                              const entryQV = replyQuoteVisual(quotedEntryMsg, entry.preview || '')
+                              return (
+                                <div key={entry.id} className="msg-forward-bundle__item">
+                                  <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="msg-bubble msg-bubble--forward msg-bubble--forward-quote msg-reply-quote-bundle__bubble"
+                                    style={{
+                                      ['--bubble-bg' as string]: innerBubbleBg,
+                                      ['--bubble-fg' as string]: fg,
+                                      cursor: 'pointer',
+                                      textAlign: 'left',
+                                    }}
+                                    onClick={(e) => {
+                                      if (multiSelectMode && canSelectForMulti) {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        toggleMessageMultiSelect(multiSelectAnchorId)
+                                        return
+                                      }
+                                      e.stopPropagation()
+                                      scrollToMessageById(entry.id)
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key !== 'Enter' && e.key !== ' ') return
+                                      e.preventDefault()
+                                      if (multiSelectMode && canSelectForMulti) {
+                                        e.stopPropagation()
+                                        toggleMessageMultiSelect(multiSelectAnchorId)
+                                        return
+                                      }
+                                      e.stopPropagation()
+                                      scrollToMessageById(entry.id)
+                                    }}
+                                  >
+                                    <div style={{ fontSize: 13, fontWeight: 700, color: barColor, lineHeight: 1.25 }}>
+                                      {label}
+                                    </div>
+                                    {entryQV.thumbUrl ? (
+                                      <div
+                                        style={{
+                                          marginTop: 5,
+                                          lineHeight: 0,
+                                          borderRadius: 8,
+                                          overflow: 'hidden',
+                                          maxWidth: 112,
+                                          maxHeight: 72,
+                                          alignSelf: 'flex-start',
+                                        }}
+                                      >
+                                        <img
+                                          src={entryQV.thumbUrl}
+                                          alt=""
+                                          style={{
+                                            display: 'block',
+                                            width: '100%',
+                                            height: 'auto',
+                                            maxHeight: 72,
+                                            objectFit: 'cover',
+                                          }}
+                                        />
+                                      </div>
+                                    ) : null}
+                                    {entryQV.showText ? (
+                                      <div
+                                        style={{
+                                          marginTop: entryQV.thumbUrl ? 6 : 5,
+                                          fontSize: 13,
+                                          fontWeight: 400,
+                                          color: fg,
+                                          opacity: 0.95,
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'anywhere',
+                                          whiteSpace: 'pre-wrap',
+                                          lineHeight: 1.35,
+                                        }}
+                                      >
+                                        {entryQV.line}
+                                      </div>
+                                    ) : null}
+                                    {entryQV.showPlaceholder ? (
+                                      <div
+                                        style={{
+                                          marginTop: 5,
+                                          fontSize: 13,
+                                          fontWeight: 400,
+                                          color: fg,
+                                          opacity: 0.95,
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'anywhere',
+                                          whiteSpace: 'pre-wrap',
+                                          lineHeight: 1.35,
+                                        }}
+                                      >
+                                        Сообщение
+                                      </div>
+                                    ) : null}
+                                    {innerTimeLabel ? (
+                                      <div
+                                        style={{
+                                          marginTop: 6,
+                                          fontSize: 11,
+                                          fontWeight: 500,
+                                          color: '#9aa0a8',
+                                          textAlign: 'right',
+                                          lineHeight: 1.2,
+                                        }}
+                                      >
+                                        {innerTimeLabel}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        ) : m.replyTo ? (
+                          <div className="msg-reply-quote-bundle">
+                            <div className="msg-forward-bundle__item">
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                className="msg-bubble msg-bubble--forward msg-bubble--forward-quote msg-reply-quote-bundle__bubble"
+                                style={{
+                                  ['--bubble-bg' as string]: groupIncomingBubbleBg(
+                                    quotedSenderId || replyPayload?.id || m.id || 'q',
+                                  ),
+                                  ['--bubble-fg' as string]: fg,
+                                  cursor: 'pointer',
+                                  textAlign: 'left',
+                                }}
+                                onClick={(e) => {
+                                  if (multiSelectMode && canSelectForMulti) {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    toggleMessageMultiSelect(multiSelectAnchorId)
+                                    return
+                                  }
+                                  e.stopPropagation()
+                                  scrollToQuoted()
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key !== 'Enter' && e.key !== ' ') return
+                                  e.preventDefault()
+                                  if (multiSelectMode && canSelectForMulti) {
+                                    e.stopPropagation()
+                                    toggleMessageMultiSelect(multiSelectAnchorId)
+                                    return
+                                  }
+                                  e.stopPropagation()
+                                  scrollToQuoted()
+                                }}
+                              >
+                                <div style={{ fontSize: 13, fontWeight: 700, color: quoteBarColor, lineHeight: 1.25 }}>
+                                  {quotedAuthorLabel}
+                                </div>
+                                {singleReplyQV.thumbUrl ? (
+                                  <div
+                                    style={{
+                                      marginTop: 5,
+                                      lineHeight: 0,
+                                      borderRadius: 8,
+                                      overflow: 'hidden',
+                                      maxWidth: 112,
+                                      maxHeight: 72,
+                                      alignSelf: 'flex-start',
+                                    }}
+                                  >
+                                    <img
+                                      src={singleReplyQV.thumbUrl}
+                                      alt=""
+                                      style={{ display: 'block', width: '100%', height: 'auto', maxHeight: 72, objectFit: 'cover' }}
+                                    />
+                                  </div>
+                                ) : null}
+                                {singleReplyQV.showText ? (
+                                  <div
+                                    style={{
+                                      marginTop: singleReplyQV.thumbUrl ? 6 : 5,
+                                      fontSize: 13,
+                                      fontWeight: 400,
+                                      color: fg,
+                                      opacity: 0.95,
+                                      wordBreak: 'break-word',
+                                      overflowWrap: 'anywhere',
+                                      whiteSpace: 'pre-wrap',
+                                      lineHeight: 1.35,
+                                    }}
+                                  >
+                                    {singleReplyQV.line}
+                                  </div>
+                                ) : null}
+                                {singleReplyQV.showPlaceholder ? (
+                                  <div
+                                    style={{
+                                      marginTop: 5,
+                                      fontSize: 13,
+                                      fontWeight: 400,
+                                      color: fg,
+                                      opacity: 0.95,
+                                      wordBreak: 'break-word',
+                                      overflowWrap: 'anywhere',
+                                      whiteSpace: 'pre-wrap',
+                                      lineHeight: 1.35,
+                                    }}
+                                  >
+                                    Сообщение
+                                  </div>
+                                ) : null}
+                                {singleReplyInnerTimeLabel ? (
+                                  <div
+                                    style={{
+                                      marginTop: 6,
+                                      fontSize: 11,
+                                      fontWeight: 500,
+                                      color: '#9aa0a8',
+                                      textAlign: 'right',
+                                      lineHeight: 1.2,
+                                    }}
+                                  >
+                                    {singleReplyInnerTimeLabel}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
                         <>
                           <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                             {renderMessageText(m.content)}
@@ -7562,9 +9299,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           {(() => {
                             const attachments = (m.attachments || []) as any[]
                             const imageAtts = attachments.filter((a) => a?.type === 'IMAGE')
-                            const hasText = typeof m.content === 'string' ? m.content.trim().length > 0 : !!m.content
-                            const hasNonImage = attachments.some((a) => a?.type && a.type !== 'IMAGE')
-                            const imageOnly = imageAtts.length > 0 && !hasText && !hasNonImage
                             const ordered: Array<
                               | { kind: 'imageGroup'; atts: any[] }
                               | { kind: 'single'; att: any; idx: number }
@@ -7666,12 +9400,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                       boxSizing: 'border-box',
                                     }}
                                   >
-                                    {imageOnly && (
-                                      <div className="msg-media-meta">
-                                        <span>{timeLabel}</span>
-                                        {renderTicks()}
-                                      </div>
-                                    )}
                                     {showPending && (
                                       <div
                                         style={{
@@ -7978,12 +9706,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                   className="msg-media-grid"
                                   style={{ maxWidth: gridMaxWidth, width: '100%' }}
                                 >
-                                  {imageOnly && (
-                                    <div className="msg-media-meta">
-                                      <span>{timeLabel}</span>
-                                      {renderTicks()}
-                                    </div>
-                                  )}
                                   {visible.length === 2 && (() => {
                                     const r0 = getRatio(visible[0], 0)
                                     const r1 = getRatio(visible[1], 1)
@@ -8238,24 +9960,579 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           })()}
                         </>
                         {(() => {
-                          const attachments = (m.attachments || []) as any[]
-                          const hasText = typeof m.content === 'string' ? m.content.trim().length > 0 : !!m.content
-                          const hasNonImage = attachments.some((a) => a?.type && a.type !== 'IMAGE')
-                          const hasImages = attachments.some((a) => a?.type === 'IMAGE')
-                          const imageOnly = hasImages && !hasText && !hasNonImage
-                          if (imageOnly) return null
+                          if (suppressFwdComposeMetaFooter) return null
                           return (
-                            <div className="msg-meta" style={{ color: '#9aa0a8' }}>
-                              <span>{timeLabel}</span>
+                            <div className="msg-meta" style={{ color: isSelectedInMulti ? '#27272a' : '#9aa0a8' }}>
+                              <span>{timeAndRecencyLabel}</span>
                               {isEdited && <span style={{ fontSize: 11, opacity: 0.9 }}>изменено</span>}
                               {renderTicks({ withLeftMargin: false })}
                             </div>
                           )
                         })()}
                       </div>
-                      {avatarOnRight && renderAvatarOrSpacer()}
+                      {avatarOnRight && !forwardBundleInner && renderAvatarOrSpacer()}
+                      {(leftAlignAll || isMe) && !forwardBundleInner && multiSelectCheckboxEl}
                     </div>
                   )
+                }
+                return fullList.map((m: any, mapIndex: number) => {
+                  if (m.deletedAt) return null
+                  if (m.type === 'SYSTEM') {
+                    return (
+                      <div key={m.id} style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '12px 16px', marginTop: 8 }}>
+                        <div style={{ 
+                          fontSize: 13, 
+                          color: 'var(--text-muted)', 
+                          textAlign: 'center',
+                          fontStyle: 'italic',
+                          opacity: 0.8
+                        }}>
+                          {renderMessageText(renderSystemMessageContent(m, currentUserId))}
+                        </div>
+                      </div>
+                    )
+                  }
+                  if (__fwdSkip.has(mapIndex)) return null
+                  const __fwdBundle = __fwdBundles.find((b) => b.start === mapIndex)
+                  if (__fwdBundle) {
+                    const m0 = fullList[__fwdBundle.start]
+                    const prev0 = fullList[__fwdBundle.start - 1]
+                    const isPrevSame0 = !!prev0 && prev0.senderId === m0.senderId
+                    const isMe0 =
+                      currentUserId != null &&
+                      m0.senderId != null &&
+                      String(m0.senderId) === String(currentUserId)
+                    const baseRow0 = leftAlignAll ? 'msg left' : (isMe0 ? 'msg me' : 'msg them')
+                    const bundleCanSel0 = forwardBundleHostCanMultiSelect(m0)
+                    const bundleOuterSel0 =
+                      multiSelectMode && bundleCanSel0 && selectedMessageIds.includes(String(m0.id))
+                    const spacingClass0 = isPrevSame0 ? 'compact' : 'gap'
+                    const rowClass0 = `${baseRow0} ${spacingClass0}${
+                      multiSelectMode && bundleCanSel0 && leftAlignAll ? ' msg--multiselect-wide' : ''
+                    }`
+                    const idxs = Array.from(
+                      { length: __fwdBundle.end - __fwdBundle.start + 1 },
+                      (_, k) => __fwdBundle.start + k,
+                    )
+                    const isGroupConv0 = !!(activeConversation?.isGroup || (activeConversation?.participants?.length ?? 0) > 2)
+                    const showAvatarBlock0 = leftAlignAll || isGroupConv0
+                    const nextAfterBundle = fullList[__fwdBundle.end + 1]
+                    const isLastOfRun0 =
+                      !nextAfterBundle ||
+                      nextAfterBundle.senderId == null ||
+                      String(nextAfterBundle.senderId) !== String(m0.senderId)
+                    const showAvatar0 = showAvatarBlock0 && isLastOfRun0
+                    const avatarOnRight0 = !leftAlignAll && isGroupConv0 && isMe0
+                    const avatarOnLeft0 = (leftAlignAll || isGroupConv0) && !avatarOnRight0
+                    const senderUser0 = usersById[m0.senderId]
+                    const avatarName0 =
+                      senderUser0?.displayName ??
+                      senderUser0?.username ??
+                      (isMe0 ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
+                    const avatarId0 = senderUser0?.id ?? (isMe0 ? (me?.id ?? 'me') : 'user')
+                    const avatarUrl0 =
+                      senderUser0?.avatarUrl && String(senderUser0.avatarUrl).trim() ? senderUser0.avatarUrl : undefined
+                    const bundleAvatarSlot = showAvatar0 ? (
+                      <Avatar name={avatarName0} id={avatarId0} avatarUrl={avatarUrl0} />
+                    ) : (
+                      <div className="avatar-spacer" />
+                    )
+                    const fwdComposerCaption0 = extractForwardComposerCaption(m0)
+                    const baseBubble0Outer = leftAlignAll ? 'msg-bubble left' : isMe0 ? 'msg-bubble me' : 'msg-bubble them'
+                    const soloForwardedContinuationTail0Outer =
+                      hasForwardFromMeta(m0) &&
+                      isMe0 &&
+                      !leftAlignAll &&
+                      !!nextAfterBundle &&
+                      currentUserId != null &&
+                      nextAfterBundle.senderId != null &&
+                      String(nextAfterBundle.senderId) === String(currentUserId)
+                    const wantsBubbleTail0Outer = isLastOfRun0 || soloForwardedContinuationTail0Outer
+                    const bubbleClass0Outer = wantsBubbleTail0Outer
+                      ? `${baseBubble0Outer} ${isMe0 && !leftAlignAll ? 'tail-right' : 'tail-left'}`
+                      : baseBubble0Outer
+                    const outerBg0Bubble =
+                      isMe0 ? '#303845' : isGroupConv0 ? groupIncomingBubbleBg(m0.senderId) : hashToGray(m0.senderId)
+                    const bubbleFg0Bubble = bundleOuterSel0 ? '#0a0a0a' : '#f1f3f6'
+                    const bundleMessagesSlice0 = idxs.map((j) => fullList[j])
+                    const forwardPhraseAfterName0 = formatForwardSourcePhraseAfterName(bundleMessagesSlice0)
+                    const fwdCaptionNameColor0 = bundleOuterSel0 ? '#292524' : nameColorForUser(m0.senderId)
+                    const onOuterFwdBubbleMultiClick0 = (e: React.MouseEvent) => {
+                      if (!multiSelectMode || !bundleCanSel0) return
+                      const t = e.target as HTMLElement
+                      if (
+                        t.closest(
+                          '.msg-forward-bundle__item .msg,.msg-forward-bundle__item a[href],.msg-forward-bundle__item button,.msg-forward-bundle__item .reaction-emoji,.msg-forward-bundle__item img,.msg-forward-bundle__item video,.msg-forward-bundle__item .msg-media-tile,.msg-forward-bundle__item .video-message-bubble',
+                        )
+                      )
+                        return
+                      const sel = typeof window.getSelection === 'function' ? window.getSelection() : null
+                      if (sel && sel.toString().length > 0) return
+                      e.preventDefault()
+                      toggleMessageMultiSelect(m0.id)
+                    }
+                    if (!fwdComposerCaption0) {
+                      return (
+                        <div
+                          key={`multi-fwd-${m0.id}`}
+                          className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClass0}`}
+                          onClick={(e) => onForwardBundleHostMultiClick(e, m0.id)}
+                        >
+                          {!leftAlignAll && !isMe0 ? renderForwardBundleHostCheckbox(m0) : null}
+                          {avatarOnLeft0 ? bundleAvatarSlot : null}
+                          <div
+                            className={`forward-comment-wrap ${bubbleClass0Outer}${bundleOuterSel0 ? ' msg-bubble--selected' : ''}`}
+                            data-mid={m0.id}
+                            ref={(el) => {
+                              if (!el) {
+                                nodesByMessageId.current.delete(m0.id)
+                                return
+                              }
+                              nodesByMessageId.current.set(m0.id, el)
+                              visibleObserver.current?.observe(el)
+                            }}
+                            style={{ ['--bubble-bg' as any]: outerBg0Bubble, ['--bubble-fg' as any]: bubbleFg0Bubble }}
+                            onClick={(e) => {
+                              onOuterFwdBubbleMultiClick0(e)
+                              if (multiSelectMode && bundleCanSel0) return
+                              if (!isMobile) return
+                              const target = e.target as HTMLElement
+                              if (
+                                target.closest(
+                                  'a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                                )
+                              )
+                                return
+                              const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                              if (selection && selection.toString().length > 0) return
+                              setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: m0.id })
+                            }}
+                            onContextMenu={(e) => {
+                              const target = e.target as HTMLElement
+                              if (target.closest('.reaction-emoji')) {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                return
+                              }
+                              if (
+                                target.closest(
+                                  '.msg-forward-bundle__item .msg-bubble, .msg-forward-bundle__item a[href]',
+                                )
+                              )
+                                return
+                              e.preventDefault()
+                              setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: m0.id })
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'inline-flex',
+                                flexWrap: 'wrap',
+                                alignItems: 'center',
+                                gap: 5,
+                                width: 'max-content',
+                                maxWidth: '100%',
+                                fontSize: 14,
+                                fontWeight: 700,
+                                lineHeight: 1.3,
+                                marginBottom: 8,
+                                color: fwdCaptionNameColor0,
+                              }}
+                            >
+                              <span style={{ flexShrink: 0 }}>
+                                {`${String(avatarName0).trim()} ${forwardPhraseAfterName0}`}
+                              </span>
+                              <Forward
+                                size={14}
+                                strokeWidth={2.6}
+                                aria-hidden
+                                style={{
+                                  flexShrink: 0,
+                                  opacity: 0.9,
+                                  color: bundleOuterSel0 ? '#b45309' : 'var(--brand)',
+                                }}
+                              />
+                            </div>
+                            <div className="msg-forward-bundle-outer msg-forward-bundle-outer--nested-in-msg">
+                              {idxs.map((j) => (
+                                <div key={fullList[j].id} className="msg-forward-bundle__item">
+                                  {renderChatMessageAtIndex(j, true, j === __fwdBundle.end, m0.senderId, m0.id, true)}
+                                </div>
+                              ))}
+                            </div>
+                            {renderForwardCaptionOuterBubbleMeta(m0, isMe0, !!bundleOuterSel0)}
+                          </div>
+                          {avatarOnRight0 ? bundleAvatarSlot : null}
+                          {(leftAlignAll || isMe0) ? renderForwardBundleHostCheckbox(m0) : null}
+                        </div>
+                      )
+                    }
+
+                    return (
+                      <div
+                        key={`multi-fwd-${m0.id}`}
+                        className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClass0}`}
+                        onClick={(e) => onForwardBundleHostMultiClick(e, m0.id)}
+                      >
+                        {!leftAlignAll && !isMe0 ? renderForwardBundleHostCheckbox(m0) : null}
+                        {avatarOnLeft0 ? bundleAvatarSlot : null}
+                        <div
+                          className={`forward-comment-wrap ${bubbleClass0Outer}${bundleOuterSel0 ? ' msg-bubble--selected' : ''}`}
+                          data-mid={m0.id}
+                          ref={(el) => {
+                            if (!el) {
+                              nodesByMessageId.current.delete(m0.id)
+                              return
+                            }
+                            nodesByMessageId.current.set(m0.id, el)
+                            visibleObserver.current?.observe(el)
+                          }}
+                          style={{ ['--bubble-bg' as any]: outerBg0Bubble, ['--bubble-fg' as any]: bubbleFg0Bubble }}
+                          onClick={(e) => {
+                            onOuterFwdBubbleMultiClick0(e)
+                            if (multiSelectMode && bundleCanSel0) return
+                            if (!isMobile) return
+                            const target = e.target as HTMLElement
+                            if (
+                              target.closest(
+                                'a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                              )
+                            )
+                              return
+                            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                            if (selection && selection.toString()) return
+                            setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: m0.id })
+                          }}
+                          onContextMenu={(e) => {
+                            const target = e.target as HTMLElement
+                            if (target.closest('.reaction-emoji')) {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              return
+                            }
+                            if (
+                              target.closest(
+                                '.msg-forward-bundle__item .msg-bubble, .msg-forward-bundle__item a[href]',
+                              )
+                            )
+                              return
+                            e.preventDefault()
+                            setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: m0.id })
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'inline-flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              gap: 5,
+                              width: 'max-content',
+                              maxWidth: '100%',
+                              fontSize: 14,
+                              fontWeight: 700,
+                              lineHeight: 1.3,
+                              marginBottom: 8,
+                              color: fwdCaptionNameColor0,
+                            }}
+                          >
+                            <span style={{ flexShrink: 0 }}>
+                              {`${String(avatarName0).trim()} ${forwardPhraseAfterName0}`}
+                            </span>
+                            <Forward
+                              size={14}
+                              strokeWidth={2.6}
+                              aria-hidden
+                              style={{
+                                flexShrink: 0,
+                                opacity: 0.9,
+                                color: bundleOuterSel0 ? '#b45309' : 'var(--brand)',
+                              }}
+                            />
+                          </div>
+                          <div className="msg-forward-bundle-outer msg-forward-bundle-outer--nested-in-msg">
+                            {idxs.map((j) => (
+                              <div key={fullList[j].id} className="msg-forward-bundle__item">
+                                {renderChatMessageAtIndex(j, true, j === __fwdBundle.end, m0.senderId, m0.id, true)}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="forward-composer-caption" style={{ marginTop: 10, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                            {renderMessageText(fwdComposerCaption0)}
+                          </div>
+                          {renderForwardCaptionOuterBubbleMeta(m0, isMe0, !!bundleOuterSel0)}
+                        </div>
+                        {avatarOnRight0 ? bundleAvatarSlot : null}
+                        {(leftAlignAll || isMe0) ? renderForwardBundleHostCheckbox(m0) : null}
+                      </div>
+                    )
+                  }
+                  const inAnyForwardBundle = __fwdBundles.some(
+                    (b) => mapIndex >= b.start && mapIndex <= b.end,
+                  )
+                  if (hasForwardFromMeta(m) && !inAnyForwardBundle) {
+                    const mS = m
+                    const prevS = fullList[mapIndex - 1]
+                    const isPrevSameS = !!prevS && prevS.senderId === mS.senderId
+                    const isMeS =
+                      currentUserId != null &&
+                      mS.senderId != null &&
+                      String(mS.senderId) === String(currentUserId)
+                    const baseRowS = leftAlignAll ? 'msg left' : (isMeS ? 'msg me' : 'msg them')
+                    const bundleCanSelS = forwardBundleHostCanMultiSelect(mS)
+                    const bundleOuterSelS =
+                      multiSelectMode && bundleCanSelS && selectedMessageIds.includes(String(mS.id))
+                    const spacingClassS = isPrevSameS ? 'compact' : 'gap'
+                    const rowClassS = `${baseRowS} ${spacingClassS}${
+                      multiSelectMode && bundleCanSelS && leftAlignAll ? ' msg--multiselect-wide' : ''
+                    }`
+                    const isGroupConvS = !!(activeConversation?.isGroup || (activeConversation?.participants?.length ?? 0) > 2)
+                    const showAvatarBlockS = leftAlignAll || isGroupConvS
+                    const nextS = fullList[mapIndex + 1]
+                    const isLastOfRunS =
+                      !nextS ||
+                      nextS.senderId == null ||
+                      String(nextS.senderId) !== String(mS.senderId)
+                    const showAvatarS = showAvatarBlockS && isLastOfRunS
+                    const avatarOnRightS = !leftAlignAll && isGroupConvS && isMeS
+                    const avatarOnLeftS = (leftAlignAll || isGroupConvS) && !avatarOnRightS
+                    const senderUserS = usersById[mS.senderId]
+                    const avatarNameS =
+                      senderUserS?.displayName ??
+                      senderUserS?.username ??
+                      (isMeS ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
+                    const avatarIdS = senderUserS?.id ?? (isMeS ? (me?.id ?? 'me') : 'user')
+                    const avatarUrlS =
+                      senderUserS?.avatarUrl && String(senderUserS.avatarUrl).trim() ? senderUserS.avatarUrl : undefined
+                    const singleFwdAvatarSlot = showAvatarS ? (
+                      <Avatar name={avatarNameS} id={avatarIdS} avatarUrl={avatarUrlS} />
+                    ) : (
+                      <div className="avatar-spacer" />
+                    )
+                    const fwdComposerCaptionS = extractForwardComposerCaption(mS)
+                    const baseBubbleSOuter = leftAlignAll ? 'msg-bubble left' : isMeS ? 'msg-bubble me' : 'msg-bubble them'
+                    const soloForwardedContinuationTailSOuter =
+                      hasForwardFromMeta(mS) &&
+                      isMeS &&
+                      !leftAlignAll &&
+                      !!nextS &&
+                      currentUserId != null &&
+                      nextS.senderId != null &&
+                      String(nextS.senderId) === String(currentUserId)
+                    const wantsBubbleTailSOuter = isLastOfRunS || soloForwardedContinuationTailSOuter
+                    const bubbleClassSOuter = wantsBubbleTailSOuter
+                      ? `${baseBubbleSOuter} ${isMeS && !leftAlignAll ? 'tail-right' : 'tail-left'}`
+                      : baseBubbleSOuter
+                    const outerBgSBubble =
+                      isMeS ? '#303845' : isGroupConvS ? groupIncomingBubbleBg(mS.senderId) : hashToGray(mS.senderId)
+                    const bubbleFgSBubble = bundleOuterSelS ? '#0a0a0a' : '#f1f3f6'
+                    const forwardPhraseAfterNameS = formatForwardSourcePhraseAfterName([mS])
+                    const fwdCaptionNameColorS = bundleOuterSelS ? '#292524' : nameColorForUser(mS.senderId)
+                    const onOuterFwdBubbleMultiClickS = (e: React.MouseEvent) => {
+                      if (!multiSelectMode || !bundleCanSelS) return
+                      const t = e.target as HTMLElement
+                      if (
+                        t.closest(
+                          '.msg-forward-bundle__item .msg,.msg-forward-bundle__item a[href],.msg-forward-bundle__item button,.msg-forward-bundle__item .reaction-emoji,.msg-forward-bundle__item img,.msg-forward-bundle__item video,.msg-forward-bundle__item .msg-media-tile,.msg-forward-bundle__item .video-message-bubble',
+                        )
+                      )
+                        return
+                      const sel = typeof window.getSelection === 'function' ? window.getSelection() : null
+                      if (sel && sel.toString().length > 0) return
+                      e.preventDefault()
+                      toggleMessageMultiSelect(mS.id)
+                    }
+                    if (!fwdComposerCaptionS) {
+                      return (
+                        <div
+                          key={`single-fwd-${mS.id}`}
+                          className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClassS}`}
+                          onClick={(e) => onForwardBundleHostMultiClick(e, mS.id)}
+                        >
+                          {!leftAlignAll && !isMeS ? renderForwardBundleHostCheckbox(mS) : null}
+                          {avatarOnLeftS ? singleFwdAvatarSlot : null}
+                          <div
+                            className={`forward-comment-wrap ${bubbleClassSOuter}${bundleOuterSelS ? ' msg-bubble--selected' : ''}`}
+                            data-mid={mS.id}
+                            ref={(el) => {
+                              if (!el) {
+                                nodesByMessageId.current.delete(mS.id)
+                                return
+                              }
+                              nodesByMessageId.current.set(mS.id, el)
+                              visibleObserver.current?.observe(el)
+                            }}
+                            style={{ ['--bubble-bg' as any]: outerBgSBubble, ['--bubble-fg' as any]: bubbleFgSBubble }}
+                            onClick={(e) => {
+                              onOuterFwdBubbleMultiClickS(e)
+                              if (multiSelectMode && bundleCanSelS) return
+                              if (!isMobile) return
+                              const target = e.target as HTMLElement
+                              if (
+                                target.closest(
+                                  'a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                                )
+                              )
+                                return
+                              const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                              if (selection && selection.toString().length > 0) return
+                              setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: mS.id })
+                            }}
+                            onContextMenu={(e) => {
+                              const target = e.target as HTMLElement
+                              if (target.closest('.reaction-emoji')) {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                return
+                              }
+                              if (
+                                target.closest(
+                                  '.msg-forward-bundle__item .msg-bubble, .msg-forward-bundle__item a[href]',
+                                )
+                              )
+                                return
+                              e.preventDefault()
+                              setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: mS.id })
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'inline-flex',
+                                flexWrap: 'wrap',
+                                alignItems: 'center',
+                                gap: 5,
+                                width: 'max-content',
+                                maxWidth: '100%',
+                                fontSize: 14,
+                                fontWeight: 700,
+                                lineHeight: 1.3,
+                                marginBottom: 8,
+                                color: fwdCaptionNameColorS,
+                              }}
+                            >
+                              <span style={{ flexShrink: 0 }}>
+                                {`${String(avatarNameS).trim()} ${forwardPhraseAfterNameS}`}
+                              </span>
+                              <Forward
+                                size={14}
+                                strokeWidth={2.6}
+                                aria-hidden
+                                style={{
+                                  flexShrink: 0,
+                                  opacity: 0.9,
+                                  color: bundleOuterSelS ? '#b45309' : 'var(--brand)',
+                                }}
+                              />
+                            </div>
+                            <div className="msg-forward-bundle-outer msg-forward-bundle-outer--nested-in-msg">
+                              <div className="msg-forward-bundle__item">
+                                {renderChatMessageAtIndex(mapIndex, true, true, null, mS.id, true)}
+                              </div>
+                            </div>
+                            {renderForwardCaptionOuterBubbleMeta(mS, isMeS, !!bundleOuterSelS)}
+                          </div>
+                          {avatarOnRightS ? singleFwdAvatarSlot : null}
+                          {(leftAlignAll || isMeS) ? renderForwardBundleHostCheckbox(mS) : null}
+                        </div>
+                      )
+                    }
+
+                    return (
+                      <div
+                        key={`single-fwd-${mS.id}`}
+                        className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClassS}`}
+                        onClick={(e) => onForwardBundleHostMultiClick(e, mS.id)}
+                      >
+                        {!leftAlignAll && !isMeS ? renderForwardBundleHostCheckbox(mS) : null}
+                        {avatarOnLeftS ? singleFwdAvatarSlot : null}
+                        <div
+                          className={`forward-comment-wrap ${bubbleClassSOuter}${bundleOuterSelS ? ' msg-bubble--selected' : ''}`}
+                          data-mid={mS.id}
+                          ref={(el) => {
+                            if (!el) {
+                              nodesByMessageId.current.delete(mS.id)
+                              return
+                            }
+                            nodesByMessageId.current.set(mS.id, el)
+                            visibleObserver.current?.observe(el)
+                          }}
+                          style={{ ['--bubble-bg' as any]: outerBgSBubble, ['--bubble-fg' as any]: bubbleFgSBubble }}
+                          onClick={(e) => {
+                            onOuterFwdBubbleMultiClickS(e)
+                            if (multiSelectMode && bundleCanSelS) return
+                            if (!isMobile) return
+                            const target = e.target as HTMLElement
+                            if (
+                              target.closest(
+                                'a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                              )
+                            )
+                              return
+                            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                            if (selection && selection.toString()) return
+                            setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: mS.id })
+                          }}
+                          onContextMenu={(e) => {
+                            const target = e.target as HTMLElement
+                            if (target.closest('.reaction-emoji')) {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              return
+                            }
+                            if (
+                              target.closest(
+                                '.msg-forward-bundle__item .msg-bubble, .msg-forward-bundle__item a[href]',
+                              )
+                            )
+                              return
+                            e.preventDefault()
+                            setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: mS.id })
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'inline-flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              gap: 5,
+                              width: 'max-content',
+                              maxWidth: '100%',
+                              fontSize: 14,
+                              fontWeight: 700,
+                              lineHeight: 1.3,
+                              marginBottom: 8,
+                              color: fwdCaptionNameColorS,
+                            }}
+                          >
+                            <span style={{ flexShrink: 0 }}>
+                              {`${String(avatarNameS).trim()} ${forwardPhraseAfterNameS}`}
+                            </span>
+                            <Forward
+                              size={14}
+                              strokeWidth={2.6}
+                              aria-hidden
+                              style={{
+                                flexShrink: 0,
+                                opacity: 0.9,
+                                color: bundleOuterSelS ? '#b45309' : 'var(--brand)',
+                              }}
+                            />
+                          </div>
+                          <div className="msg-forward-bundle-outer msg-forward-bundle-outer--nested-in-msg">
+                            <div className="msg-forward-bundle__item">
+                              {renderChatMessageAtIndex(mapIndex, true, true, null, mS.id, true)}
+                            </div>
+                          </div>
+                          <div className="forward-composer-caption" style={{ marginTop: 10, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                            {renderMessageText(fwdComposerCaptionS)}
+                          </div>
+                          {renderForwardCaptionOuterBubbleMeta(mS, isMeS, !!bundleOuterSelS)}
+                        </div>
+                        {avatarOnRightS ? singleFwdAvatarSlot : null}
+                        {(leftAlignAll || isMeS) ? renderForwardBundleHostCheckbox(mS) : null}
+                      </div>
+                    )
+                  }
+                  return renderChatMessageAtIndex(mapIndex, false)
                 })
               })()
             )}
@@ -8485,12 +10762,139 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 </div>
               </div>
             )}
-            {replyTo && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, background: 'var(--surface-100)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
-                <Reply size={16} color="var(--text-muted)" />
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Ответ на:</div>
-                <div style={{ fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>{replyTo.preview}</div>
-                <button className="btn btn-icon btn-ghost" onClick={() => setReplyTo(null)} style={{ marginLeft: 'auto', flexShrink: 0 }}>
+            {replyTo && !forwardComposerDraft && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10, background: 'var(--surface-100)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
+                <Quote size={16} strokeWidth={2.4} style={{ flexShrink: 0, marginTop: 2, color: 'var(--brand)' }} aria-hidden />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: replyTo.quoted.length > 1 ? 6 : 0 }}>
+                    {formatReplyBundleHeader(replyTo.quoted.length)}
+                  </div>
+                  {replyTo.quoted.length === 1 ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      {(() => {
+                        const q0 = replyTo.quoted[0]
+                        const turl = q0.replyImageStub ? resolveAttachmentUrl(q0.replyImageStub) : null
+                        return turl ? (
+                          <img
+                            src={turl}
+                            alt=""
+                            style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
+                          />
+                        ) : null
+                      })()}
+                      {(() => {
+                        const q0 = replyTo.quoted[0]
+                        const turl = q0.replyImageStub ? resolveAttachmentUrl(q0.replyImageStub) : null
+                        const txt = q0.preview
+                        if (turl && replySnippetIsGenericRu(txt)) return null
+                        return (
+                          <div
+                            style={{
+                              flex: 1,
+                              fontSize: 12,
+                              color: 'var(--text-primary)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {txt}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 96, overflow: 'hidden' }}>
+                      {replyTo.quoted.slice(0, 5).map((q) => {
+                        const tu = q.replyImageStub ? resolveAttachmentUrl(q.replyImageStub) : null
+                        const hideTxt = !!(tu && replySnippetIsGenericRu(q.preview))
+                        return (
+                          <div key={q.id} style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: 0 }}>
+                            {tu ? (
+                              <img
+                                src={tu}
+                                alt=""
+                                style={{ width: 28, height: 28, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }}
+                              />
+                            ) : null}
+                            {!hideTxt ? (
+                              <div style={{ flex: 1, fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {q.preview}
+                              </div>
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                      {replyTo.quoted.length > 5 ? (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>…ещё {replyTo.quoted.length - 5}</div>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => setReplyTo(null)} style={{ marginLeft: 'auto', flexShrink: 0 }}>
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+            {forwardComposerDraft && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10, background: 'var(--surface-100)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
+                <Forward size={16} strokeWidth={2.4} style={{ flexShrink: 0, marginTop: 2, color: 'var(--brand)' }} aria-hidden />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: forwardComposerDraft.previews.length > 1 ? 6 : 0 }}>
+                    {forwardComposerDraft.previews.length > 1
+                      ? `Переслать сообщения (${forwardComposerDraft.previews.length})`
+                      : 'Переслать'}
+                  </div>
+                  {forwardComposerDraft.previews.length === 1 ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      {(() => {
+                        const row = forwardComposerDraft.previews[0]
+                        const turl = row.imageStub ? resolveAttachmentUrl(row.imageStub) : null
+                        return turl ? (
+                          <img
+                            src={turl}
+                            alt=""
+                            style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
+                          />
+                        ) : null
+                      })()}
+                      {(() => {
+                        const row = forwardComposerDraft.previews[0]
+                        const turl = row.imageStub ? resolveAttachmentUrl(row.imageStub) : null
+                        const hide = !!(turl && replySnippetIsGenericRu(row.text))
+                        if (hide) return null
+                        return (
+                          <div style={{ flex: 1, fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {row.text}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 96, overflow: 'hidden' }}>
+                      {forwardComposerDraft.previews.slice(0, 5).map((row, idx) => {
+                        const turl = row.imageStub ? resolveAttachmentUrl(row.imageStub) : null
+                        const hide = !!(turl && replySnippetIsGenericRu(row.text))
+                        return (
+                          <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            {turl ? (
+                              <img src={turl} alt="" style={{ width: 28, height: 28, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }} />
+                            ) : null}
+                            {!hide ? (
+                              <div style={{ flex: 1, fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {row.text}
+                              </div>
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                      {forwardComposerDraft.previews.length > 5 ? (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>…ещё {forwardComposerDraft.previews.length - 5}</div>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => setForwardComposerDraft(null)} style={{ marginLeft: 'auto', flexShrink: 0 }} aria-label="Отменить пересылку">
                   <X size={16} />
                 </button>
               </div>
@@ -8591,6 +10995,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               const files = Array.from(e.target.files || [])
               if (!activeId || files.length === 0) return
               if (editState) {
+                e.target.value = ''
+                return
+              }
+              if (forwardComposerDraft) {
+                systemToast.error('Сначала отправьте или отмените пересылку — файлы из композера с ней не смешиваем.')
                 e.target.value = ''
                 return
               }
@@ -8779,6 +11188,38 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 return
               }
 
+              const draftFw = forwardComposerDraft
+              if (
+                draftFw &&
+                activeConversation &&
+                String(activeConversation.id) === draftFw.destinationConversationId
+              ) {
+                if (pendingImages.length > 0 || pendingFiles.length > 0) {
+                  systemToast.error(
+                    'При пересылке нельзя прикреплять файлы из композера. Отправьте без вложений или отмените пересылку крестиком.',
+                  )
+                  return
+                }
+                const comment = value
+                const { lastOutcome } = await executeForwardPayloadDelivery(
+                  activeConversation,
+                  draftFw.payloads,
+                  draftFw.mergeAsImageBulk,
+                  comment,
+                )
+                if (lastOutcome?.outcome === 'blocked') return
+                setForwardComposerDraft(null)
+                setComposerValue('')
+                setReplyTo(null)
+                if (activeId) {
+                  client.invalidateQueries({ queryKey: ['messages', activeId] })
+                }
+                setTimeout(() => {
+                  if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight
+                }, 0)
+                return
+              }
+
               if (pendingImages.length > 0 || pendingFiles.length > 0) {
                 const imagesSnapshot = pendingImages.map((img) => ({ file: img.file, previewUrl: img.previewUrl }))
                 const filesSnapshot = pendingFiles.map((f) => f.file)
@@ -8786,11 +11227,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 setPendingFiles([])
                 setEditingImageId(null)
                 imagesSnapshot.forEach((entry) => releasePreviewUrl(entry.previewUrl))
-                await uploadAndSendAttachments([...imagesSnapshot.map((entry) => entry.file), ...filesSnapshot], value || '', replyTo?.id)
+                await uploadAndSendAttachments([...imagesSnapshot.map((entry) => entry.file), ...filesSnapshot], value || '', replyTo)
                 setComposerValue('')
                 setReplyTo(null)
               } else if (value) {
-                    const r = await sendMessageToConversation(activeConversation, { type: 'TEXT', content: value, replyToId: replyTo?.id })
+                    const replyMeta = buildReplyQuoteMetadataForSend(replyTo)
+                    const r = await sendMessageToConversation(activeConversation, {
+                      type: 'TEXT',
+                      content: value,
+                      replyToId: replyTo?.replyToId,
+                      ...(replyMeta ? { metadata: replyMeta } : {}),
+                    })
                     if (r?.outcome === 'blocked') return
                     setComposerValue('')
                     setReplyTo(null)
@@ -8804,7 +11251,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               type="button"
               className="btn btn-secondary"
               onClick={() => attachInputRef.current?.click()}
-              disabled={!!editState}
+              disabled={!!editState || !!forwardComposerDraft}
               style={{
                 flexShrink: 0,
                 display: 'inline-flex',
@@ -8836,7 +11283,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       lineHeight: '20px',
                     }}
                   >
-                    {(pendingImages.length > 0 || pendingFiles.length > 0) ? 'Добавьте подпись к вложениям...' : 'Напишите сообщение...'}
+                    {(pendingImages.length > 0 || pendingFiles.length > 0)
+                      ? 'Добавьте подпись к вложениям...'
+                      : forwardComposerDraft
+                        ? 'Комментарий к пересылке (необязательно)…'
+                        : 'Напишите сообщение...'}
                   </div>
                 )}
                 <div
@@ -8845,7 +11296,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   suppressContentEditableWarning
                   role="textbox"
                   aria-multiline="true"
-                  aria-placeholder={(pendingImages.length > 0 || pendingFiles.length > 0) ? 'Добавьте подпись к вложениям...' : 'Напишите сообщение...'}
+                  aria-placeholder={(pendingImages.length > 0 || pendingFiles.length > 0)
+                      ? 'Добавьте подпись к вложениям...'
+                      : forwardComposerDraft
+                        ? 'Комментарий к пересылке (необязательно)…'
+                        : 'Напишите сообщение...'}
                   onFocus={() => setComposerFocused(true)}
                   onBlur={() => {
                     setComposerFocused(false)
@@ -8873,10 +11328,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         closeComposerSelectionToolbar({ collapseSelection: true })
                         return
                       }
+                      if (forwardComposerDraft) {
+                        e.preventDefault()
+                        setForwardComposerDraft(null)
+                        return
+                      }
                     }
                     if (e.key === 'ArrowUp' && !editState) {
                       const noAttachments = pendingImages.length === 0 && pendingFiles.length === 0
-                      if (composerEmpty && noAttachments) {
+                      if (composerEmpty && noAttachments && !forwardComposerDraft) {
                         const list = (displayedMessages ? [...displayedMessages] : [])
                           .filter((m: any) => !m?.deletedAt)
                           .sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
@@ -8924,6 +11384,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   }}
                   onPaste={(e) => {
                     if (!activeId) return
+                    if (forwardComposerDraft) {
+                      const clipItems = e.clipboardData?.items
+                      const hasClipboardImage =
+                        !!clipItems &&
+                        Array.from(clipItems).some((it) => typeof it.type === 'string' && it.type.indexOf('image') !== -1)
+                      if (hasClipboardImage) {
+                        e.preventDefault()
+                        systemToast.error('При пересылке нельзя вставлять изображения из буфера. Вставьте только текст или отмените пересылку.')
+                        return
+                      }
+                    }
                     const items = e.clipboardData?.items
                     if (!items) return
                     let hasText = false
@@ -8979,8 +11450,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               <button
                 type="button"
                 className="btn btn-secondary"
-                onClick={startVoiceRecording}
-                disabled={!!editState}
+                  onClick={startVoiceRecording}
+                  disabled={!!editState || !!forwardComposerDraft}
                 style={{
                   flexShrink: 0,
                   display: 'inline-flex',
@@ -9439,6 +11910,88 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         }
       })
     }
+  }
+
+  function receiptStatusRank(status: string | null | undefined) {
+    if (status === 'SEEN') return 3
+    if (status === 'READ') return 2
+    if (status === 'DELIVERED') return 1
+    return 0
+  }
+
+  function applyReceiptUpdateToCache(payload: {
+    conversationId: string
+    messageIds: string[]
+    userId?: string
+    status?: 'DELIVERED' | 'READ' | 'SEEN'
+    receipts?: Array<any>
+  }) {
+    const messageIds = Array.isArray(payload.messageIds) ? payload.messageIds.filter(Boolean) : []
+    if (!payload.conversationId || messageIds.length === 0) return false
+
+    const incomingReceipts = Array.isArray(payload.receipts)
+      ? payload.receipts.filter((receipt) => receipt?.messageId && receipt?.userId && receipt?.status)
+      : []
+    const updates = incomingReceipts.length > 0
+      ? incomingReceipts
+      : (payload.userId && payload.status
+          ? messageIds.map((messageId) => ({ messageId, userId: payload.userId, status: payload.status }))
+          : [])
+
+    if (updates.length === 0) return false
+
+    const updatesByMessageId = new Map<string, any[]>()
+    for (const receipt of updates) {
+      const key = String(receipt.messageId)
+      updatesByMessageId.set(key, [...(updatesByMessageId.get(key) || []), receipt])
+    }
+
+    let applied = false
+    client.setQueryData(['messages', payload.conversationId], (old: any) => {
+      if (!Array.isArray(old)) return old
+      let changed = false
+      const next = old.map((message: any) => {
+        const perMessage = updatesByMessageId.get(String(message?.id ?? ''))
+        if (!perMessage || perMessage.length === 0) return message
+
+        let messageChanged = false
+        const receipts = Array.isArray(message.receipts) ? [...message.receipts] : []
+        for (const receipt of perMessage) {
+          const userId = String(receipt.userId ?? '')
+          const status = String(receipt.status ?? '')
+          if (!userId || !status) continue
+
+          const existingIndex = receipts.findIndex((item: any) => String(item?.userId ?? '') === userId)
+          if (existingIndex === -1) {
+            receipts.push({ ...receipt, messageId: message.id })
+            messageChanged = true
+            continue
+          }
+
+          const existing = receipts[existingIndex]
+          const nextStatus = receiptStatusRank(status) >= receiptStatusRank(existing?.status)
+            ? status
+            : existing?.status
+          const nextReceipt = { ...existing, ...receipt, messageId: message.id, status: nextStatus }
+          if (
+            nextReceipt.status !== existing?.status ||
+            nextReceipt.id !== existing?.id ||
+            nextReceipt.createdAt !== existing?.createdAt
+          ) {
+            receipts[existingIndex] = nextReceipt
+            messageChanged = true
+          }
+        }
+
+        if (!messageChanged) return message
+        changed = true
+        return { ...message, receipts }
+      })
+
+      if (changed) applied = true
+      return changed ? next : old
+    })
+    return applied
   }
 
   const incomingCount = incomingContactsQuery.data?.length ?? 0
@@ -11699,77 +14252,233 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           style={{ position: 'absolute', left: contextMenu.x, top: contextMenu.y, color: '#ffffff' }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div style={{ display: 'flex', gap: 6, padding: 6, borderBottom: '1px solid var(--surface-border)' }}>
-            {['👍','❤️','👎','🔥','🤝','😆'].map((emo, idx) => {
-              const isHeart = emo === '❤️'
-              const color = isHeart ? '#ef4444' : '#ffffff'
+          {(() => {
+            const bulk = multiSelectMode && selectedMessageIds.length > 0
+            if (bulk) {
               return (
-                <button key={emo} onClick={async () => {
-                  try {
-                    const mid = contextMenu.messageId!
-                    // toggle: если уже есть моя реакция этим эмодзи — удаляем
-                    const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
-                    const mine = (found?.reactions || []).some((r: any) => r.userId === me?.id && r.emoji === emo)
-                    if (mine) await api.post('/messages/unreact', { messageId: mid, emoji: emo })
-                    else await api.post('/messages/react', { messageId: mid, emoji: emo })
-                    if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
-                  } catch {}
-                  setContextMenu({ open: false, x: 0, y: 0, messageId: null })
-                }} style={{ 
-                  fontSize: 16, 
-                  color: color, 
-                  cursor: 'pointer', 
-                  transition: 'transform 0.2s ease', 
-                  animation: `reactionPop 0.3s ease ${idx * 0.05}s both`
-                }} onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.2)' }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)' }}>{emo}</button>
+                <>
+                  <button
+                    type="button"
+                    style={{ color: '#ffffff' }}
+                    onClick={() => {
+                      const msgs = getSelectedMessagesOrdered()
+                      const draft = buildReplyDraftFromMessages(msgs)
+                      if (draft) {
+                        setForwardComposerDraft(null)
+                        setReplyTo(draft)
+                      }
+                      clearMessageMultiSelect()
+                      setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                    }}
+                  >
+                    Ответить
+                  </button>
+                  <button
+                    type="button"
+                    style={{ color: '#ffffff' }}
+                    onClick={() => {
+                      const ids = getSelectedMessagesOrdered().map((m) => m.id)
+                      if (!ids.length) return
+                      setForwardComposerDraft(null)
+                      setForwardModal({ open: true, messageIds: ids })
+                      setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                    }}
+                  >
+                    Переслать ({selectedMessageIds.length})
+                  </button>
+                  <button
+                    type="button"
+                    style={{ color: '#ffffff' }}
+                    onClick={async () => {
+                      const msgs = getSelectedMessagesOrdered()
+                      const mine = msgs.filter((m) => m.senderId === me?.id)
+                      if (!mine.length) {
+                        systemToast.error('Среди выбранных нет ваших сообщений')
+                        setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                        return
+                      }
+                      const ok = await systemConfirm({
+                        title: 'Удалить сообщения',
+                        message: `Удалить ${mine.length} ваших сообщений?`,
+                        confirmText: 'Удалить',
+                        cancelText: 'Отмена',
+                        danger: true,
+                      })
+                      if (!ok) return
+                      for (const m of mine) {
+                        try {
+                          await api.post('/messages/delete', { messageId: m.id })
+                        } catch {
+                          /* next */
+                        }
+                      }
+                      if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                      clearMessageMultiSelect()
+                      setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                    }}
+                  >
+                    Удалить ({selectedMessageIds.length})
+                  </button>
+                  <button
+                    type="button"
+                    style={{ color: '#ffffff' }}
+                    onClick={() => {
+                      clearMessageMultiSelect()
+                      setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                    }}
+                  >
+                    Отменить выбор
+                  </button>
+                </>
               )
-            })}
-          </div>
-          <button style={{ color: '#ffffff' }} onClick={() => {
-            const mid = contextMenu.messageId!
-            const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
-            setReplyTo({ id: mid, preview: (found?.content ?? '').slice(0, 100) })
-            setContextMenu({ open: false, x: 0, y: 0, messageId: null })
-          }}>Цитировать</button>
-          {(() => {
-            const mid = contextMenu.messageId!
-            const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
-            const canEdit =
-              !!found &&
-              found?.senderId === me?.id &&
-              !found?.deletedAt &&
-              (found?.type || 'TEXT') === 'TEXT' &&
-              (!found?.attachments || found.attachments.length === 0)
-            if (!canEdit) return null
+            }
+            if (multiSelectMode) {
+              return (
+                <button
+                  type="button"
+                  style={{ color: '#ffffff' }}
+                  onClick={() => {
+                    clearMessageMultiSelect()
+                    setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                  }}
+                >
+                  Отменить выбор
+                </button>
+              )
+            }
             return (
-              <button style={{ color: '#ffffff' }} onClick={() => {
-                startEdit(found)
-                setContextMenu({ open: false, x: 0, y: 0, messageId: null })
-              }}>Редактировать</button>
+              <>
+                <div style={{ display: 'flex', gap: 6, padding: 6, borderBottom: '1px solid var(--surface-border)' }}>
+                  {['👍','❤️','👎','🔥','🤝','😆'].map((emo, idx) => {
+                    const isHeart = emo === '❤️'
+                    const color = isHeart ? '#ef4444' : '#ffffff'
+                    return (
+                      <button key={emo} onClick={async () => {
+                        try {
+                          const mid = contextMenu.messageId!
+                          // toggle: если уже есть моя реакция этим эмодзи — удаляем
+                          const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                          const mine = (found?.reactions || []).some((r: any) => r.userId === me?.id && r.emoji === emo)
+                          if (mine) await api.post('/messages/unreact', { messageId: mid, emoji: emo })
+                          else await api.post('/messages/react', { messageId: mid, emoji: emo })
+                          if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                        } catch {}
+                        setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                      }} style={{
+                        fontSize: 16,
+                        color: color,
+                        cursor: 'pointer',
+                        transition: 'transform 0.2s ease',
+                        animation: `reactionPop 0.3s ease ${idx * 0.05}s both`
+                      }} onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.2)' }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)' }}>{emo}</button>
+                    )
+                  })}
+                </div>
+                <button style={{ color: '#ffffff' }} onClick={() => {
+                  const mid = contextMenu.messageId!
+                  const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                  const draft = found ? buildReplyDraftFromMessages([found]) : null
+                  if (draft) {
+                    setForwardComposerDraft(null)
+                    setReplyTo(draft)
+                  }
+                  setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                }}>Ответить</button>
+                {(() => {
+                  const mid = contextMenu.messageId!
+                  const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                  const canEdit =
+                    !!found &&
+                    found?.senderId === me?.id &&
+                    !found?.deletedAt &&
+                    (found?.type || 'TEXT') === 'TEXT' &&
+                    (!found?.attachments || found.attachments.length === 0)
+                  if (!canEdit) return null
+                  return (
+                    <button style={{ color: '#ffffff' }} onClick={() => {
+                      startEdit(found)
+                      setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                    }}>Редактировать</button>
+                  )
+                })()}
+                {(() => {
+                  const mid = contextMenu.messageId!
+                  const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                  const canDelete = found?.senderId === me?.id
+                  if (!canDelete) return null
+                  return (
+                    <button style={{ color: '#ffffff' }} onClick={async () => {
+                      try {
+                        await api.post('/messages/delete', { messageId: contextMenu.messageId })
+                        if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                      } catch {}
+                      setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                    }}>Удалить</button>
+                  )
+                })()}
+                {(() => {
+                  const mid = contextMenu.messageId!
+                  const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                  const textToCopy = buildMessageCopyText(found)
+                  const imageUrl = resolveFirstImageAttachmentUrl(found)
+                  if (!textToCopy || !imageUrl) return null
+                  return (
+                    <button style={{ color: '#ffffff' }} onClick={async () => {
+                      const copied = await copyImageFromUrl(imageUrl)
+                      if (!copied) {
+                        systemToast.error('Не удалось скопировать изображение')
+                      }
+                      setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                    }}>Копировать изображение</button>
+                  )
+                })()}
+                <button style={{ color: '#ffffff' }} onClick={async () => {
+                  const mid = contextMenu.messageId!
+                  const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                  const textToCopy = buildMessageCopyText(found)
+                  const imageUrl = resolveFirstImageAttachmentUrl(found)
+                  const copied = textToCopy
+                    ? await copyPlainText(textToCopy)
+                    : (imageUrl ? await copyImageFromUrl(imageUrl) : false)
+                  if (!copied) {
+                    systemToast.error(imageUrl ? 'Не удалось скопировать изображение' : 'Не удалось скопировать сообщение')
+                  }
+                  setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                }}>Копировать</button>
+                <button style={{ color: '#ffffff' }} onClick={() => { setForwardComposerDraft(null); setForwardModal({ open: true, messageIds: contextMenu.messageId ? [contextMenu.messageId] : [] }); setContextMenu({ open: false, x: 0, y: 0, messageId: null }) }}>Переслать</button>
+                <button
+                  type="button"
+                  style={{ color: '#ffffff' }}
+                  onClick={() => {
+                    setMultiSelectMode(true)
+                    const mid = contextMenu.messageId
+                    if (mid) {
+                      const list = [...(displayedMessages || []), ...(activePendingMessages || [])]
+                      const fm = list.find((x: any) => x.id === mid)
+                      const isPend = (() => {
+                        if (!fm) return true
+                        try {
+                          if (typeof (fm as any)?.__pending === 'boolean') return (fm as any).__pending
+                          if (typeof fm.id === 'string' && fm.id.startsWith('tmp-')) return true
+                          const atts = (fm as any)?.attachments
+                          if (Array.isArray(atts) && atts.some((a: any) => !!a?.__pending)) return true
+                          return false
+                        } catch {
+                          return true
+                        }
+                      })()
+                      if (fm && fm.type !== 'SYSTEM' && !isPend) {
+                        setSelectedMessageIds((prev) => (prev.includes(mid) ? prev : [...prev, mid]))
+                      }
+                    }
+                    setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                  }}
+                >
+                  Выбрать несколько
+                </button>
+              </>
             )
           })()}
-          {(() => {
-            const mid = contextMenu.messageId!
-            const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
-            const canDelete = found?.senderId === me?.id
-            if (!canDelete) return null
-            return (
-              <button style={{ color: '#ffffff' }} onClick={async () => {
-                try {
-                  await api.post('/messages/delete', { messageId: contextMenu.messageId })
-                  if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
-                } catch {}
-                setContextMenu({ open: false, x: 0, y: 0, messageId: null })
-              }}>Удалить</button>
-            )
-          })()}
-          <button style={{ color: '#ffffff' }} onClick={async () => {
-            const mid = contextMenu.messageId!
-            const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
-            try { await navigator.clipboard.writeText(found?.content || '') } catch {}
-            setContextMenu({ open: false, x: 0, y: 0, messageId: null })
-          }}>Копировать</button>
-          <button style={{ color: '#ffffff' }} onClick={() => { setForwardModal({ open: true, messageId: contextMenu.messageId }); setContextMenu({ open: false, x: 0, y: 0, messageId: null }) }}>Переслать</button>
         </div>
       </div>
     )}
@@ -11787,32 +14496,242 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       onClose={() => setVideoViewer({ open: false, url: '', fileName: undefined })}
     />
     {forwardModal.open && (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setForwardModal({ open: false, messageId: null })}>
-        <div style={{ background: 'var(--surface-200)', padding: 16, borderRadius: 12, width: 420, border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-sharp)', color: 'var(--text-primary)' }} onClick={(e) => e.stopPropagation()}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>Переслать сообщение</div>
-          <div style={{ maxHeight: 320, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(conversationsQuery.data || []).map((row: any) => {
-              const c = row.conversation
-              const othersArr = c.participants.filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true)).map((p: any) => p.user)
-              const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
-              const title = c.title ?? fallbackName
-              return (
-                <div key={c.id} className="tile" onClick={async () => {
-                  const mid = forwardModal.messageId!
-                  const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
-                  if (!found) return
-                  const r = await sendMessageToConversation(c, { type: 'TEXT', content: `↪ ${found.content ?? ''}`, replyToId: undefined })
-                  if (r?.outcome !== 'blocked') {
-                    setForwardModal({ open: false, messageId: null })
-                  }
-                }}>
-                  <div style={{ fontWeight: 600 }}>{title}</div>
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(10,12,16,0.6)',
+          backdropFilter: 'blur(6px) saturate(120%)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 80,
+          padding: 16,
+        }}
+        onClick={() => setForwardModal({ open: false, messageIds: [] })}
+      >
+        <div
+          style={{
+            background: 'var(--surface-200)',
+            borderRadius: 16,
+            width: 'min(480px, 100%)',
+            maxWidth: 480,
+            border: '1px solid var(--surface-border)',
+            boxShadow: 'var(--shadow-medium)',
+            color: 'var(--text-primary)',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+            maxHeight: 'min(560px, 92vh)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+            <div style={{ padding: '18px 18px 14px', borderBottom: '1px solid var(--surface-border)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 19 }}>
+                  {forwardModal.messageIds.length > 1
+                    ? `Переслать сообщения (${forwardModal.messageIds.length})`
+                    : 'Переслать сообщение'}
                 </div>
-              )
-            })}
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 5, lineHeight: 1.4 }}>
+                  {forwardModal.messageIds.length > 1
+                    ? 'Выберите беседу — откроется чат, можно добавить комментарий и отправить.'
+                    : 'Выберите беседу — откроется чат, можно добавить комментарий и отправить.'}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-icon btn-ghost"
+                aria-label="Закрыть"
+                onClick={() => setForwardModal({ open: false, messageIds: [] })}
+              >
+                <X size={20} />
+              </button>
+            </div>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
-            <button className="btn btn-secondary" onClick={() => setForwardModal({ open: false, messageId: null })}>Отмена</button>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: 'auto',
+              padding: '10px 12px 14px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+            }}
+          >
+            {(() => {
+              const rows = (conversationsQuery.data || [])
+                .map((row: any) => {
+                  const c = row.conversation
+                  const othersArr = c.participants
+                    .filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
+                    .map((p: any) => p.user)
+                  const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
+                  const title = c.title ?? fallbackName
+                  return { row, c, title, othersArr }
+                })
+                .filter((x: { c: any }) => x.c.id !== activeId)
+                .sort(
+                  (a: { row: any }, b: { row: any }) =>
+                    recencyTimestampForConversationRow(b.row) - recencyTimestampForConversationRow(a.row),
+                )
+
+              if (rows.length === 0) {
+                return (
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 14, padding: '28px 12px', lineHeight: 1.5 }}>
+                    Нет других бесед для пересылки. Откройте ещё один диалог или группу.
+                  </div>
+                )
+              }
+
+              return rows.map(({ c, title, othersArr }: { c: any; title: string; othersArr: any[] }) => {
+                const isGroup = c.isGroup || c.participants.length > 2
+                const isSecretV2 = String(c?.type ?? '').toUpperCase() === 'SECRET'
+                const isLegacySecret = !!c.isSecret
+                const n = c.participants?.length ?? 0
+                let subtitle: string
+                if (isSecretV2) {
+                  subtitle = 'Секретный чат'
+                } else if (isLegacySecret) {
+                  subtitle = 'Секретный чат (классический)'
+                } else if (isGroup) {
+                  const ruPart = (num: number) => {
+                    const nn = num % 100
+                    if (nn >= 11 && nn <= 14) return 'участников'
+                    const k = num % 10
+                    if (k === 1) return 'участник'
+                    if (k >= 2 && k <= 4) return 'участника'
+                    return 'участников'
+                  }
+                  subtitle = `Группа · ${n} ${ruPart(n)}`
+                } else {
+                  const peer = othersArr[0]
+                  subtitle = peer ? formatPresence(peer) : 'Личные сообщения'
+                }
+
+                return (
+                  <div
+                    key={c.id}
+                    className="tile"
+                    onClick={async () => {
+                      const ids = (forwardModal.messageIds || []).filter(Boolean)
+                      if (!ids.length) return
+                      if (!activeConversation) {
+                        systemToast.error('Не удалось определить исходный чат.')
+                        return
+                      }
+                      const src = activeConversation
+                      const isTargetSecretV2 = String(c?.type ?? '').toUpperCase() === 'SECRET'
+                      const isTargetLegacySecret = !!c?.isSecret && !isTargetSecretV2
+
+                      type SendPayloadArg = Parameters<typeof sendMessageToConversation>[1]
+                      const forwardPayloads: SendPayloadArg[] = []
+                      const fwdPreviews: Array<{
+                        text: string
+                        imageStub?: { url: string; type: 'IMAGE'; metadata?: Record<string, unknown> } | null
+                      }> = []
+                      for (const mid of ids) {
+                        const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
+                        if (!found) continue
+                        fwdPreviews.push({
+                          text: previewTextForReplyDraft(found),
+                          imageStub: firstImageAttachmentStubForQuote(found),
+                        })
+                        const fctx = buildForwardSourceContextForSend(found, src, currentUserId, usersById)
+                        const built = buildForwardSendPayload(found, fctx)
+                        if (!built.ok) {
+                          systemToast.error(built.error)
+                          return
+                        }
+                        const attCount = built.payload.attachments?.length ?? 0
+                        if (attCount > 0 && (isTargetSecretV2 || isTargetLegacySecret)) {
+                          systemToast.error('Пересылка фото и файлов в секретный чат пока не поддерживается.')
+                          return
+                        }
+                        forwardPayloads.push({ ...built.payload, replyToId: undefined })
+                      }
+
+                      if (!forwardPayloads.length) {
+                        systemToast.error('Не удалось найти сообщения для пересылки.')
+                        return
+                      }
+
+                      /** Несколько картинок — один бабл с альбомом, как при немедленной отправке */
+                      const mergeAsImageBulk =
+                        forwardPayloads.length > 1 &&
+                        forwardPayloads.every((p) => String(p.type) === 'IMAGE')
+
+                      setReplyTo(null)
+                      setForwardComposerDraft({
+                        destinationConversationId: String(c.id),
+                        payloads: forwardPayloads.map((p) => ({ ...p })),
+                        mergeAsImageBulk,
+                        previews: fwdPreviews,
+                      })
+                      selectConversation(c.id)
+                      setForwardModal({ open: false, messageIds: [] })
+                      clearMessageMultiSelect()
+                      requestAnimationFrame(() => {
+                        try {
+                          composerEditorRef.current?.focus()
+                        } catch {
+                          /* ignore */
+                        }
+                      })
+                    }}
+                    style={{
+                      minHeight: 56,
+                      alignItems: 'center',
+                      gap: 12,
+                      ...(isSecretV2
+                        ? {
+                            background: 'linear-gradient(135deg, rgba(34,197,94,0.09) 0%, rgba(34,197,94,0.04) 100%)',
+                            borderColor: 'rgba(34,197,94,0.28)',
+                          }
+                        : {}),
+                    }}
+                  >
+                    {isGroup ? (
+                      <Avatar
+                        name={title.trim().charAt(0) || 'Г'}
+                        id={c.id}
+                        avatarUrl={c.avatarUrl && String(c.avatarUrl).trim() ? c.avatarUrl : undefined}
+                        size={44}
+                      />
+                    ) : (
+                      (() => {
+                        const peerUser = othersArr[0]
+                        return (
+                          <Avatar
+                            name={peerUser?.displayName ?? peerUser?.username ?? '?'}
+                            id={peerUser?.id ?? c.id}
+                            avatarUrl={peerUser?.avatarUrl ?? undefined}
+                            presence={peerUser ? avatarPresenceForUser(peerUser) : undefined}
+                            size={44}
+                          />
+                        )
+                      })()
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 15, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 3, lineHeight: 1.35, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {subtitle}
+                      </div>
+                    </div>
+                    {isGroup && (
+                      <Users size={18} style={{ flexShrink: 0, opacity: 0.45, color: 'var(--text-muted)' }} aria-hidden />
+                    )}
+                  </div>
+                )
+              })
+            })()}
+          </div>
+          <div style={{ padding: '12px 16px', borderTop: '1px solid var(--surface-border)', display: 'flex', justifyContent: 'flex-end' }}>
+            <button type="button" className="btn btn-secondary" onClick={() => setForwardModal({ open: false, messageIds: [] })}>
+              Отмена
+            </button>
           </div>
         </div>
       </div>

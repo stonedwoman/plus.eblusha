@@ -627,6 +627,517 @@ a {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
+/* Переслано: тот же msg-bubble + модификаторы .msg-bubble--forward + .msg-bubble--forward-shell (отдельный «конверт»). Фон совпадает с .msg-forward-bundle-outer. */
+.msg-bubble.msg-bubble--forward.msg-bubble--forward-shell {
+  border-radius: 14px;
+  border: 2px solid rgba(217, 119, 6, 0.5);
+  box-shadow:
+    0 0 0 1px rgba(217, 119, 6, 0.22),
+    0 6px 22px rgba(217, 119, 6, 0.12);
+  background-repeat: repeat, no-repeat;
+  background-color: transparent;
+  background-image:
+    repeating-linear-gradient(
+      -32deg,
+      transparent 0px,
+      transparent 8px,
+      rgba(255, 255, 255, 0.07) 8px,
+      rgba(255, 255, 255, 0.07) 9px
+    ),
+    linear-gradient(
+      165deg,
+      rgba(61, 48, 32, 0.35) 0%,
+      rgba(22, 26, 34, 0.92) 55%,
+      rgba(18, 22, 30, 0.98) 100%
+    );
+}
+.msg-bubble.msg-bubble--forward.msg-bubble--forward-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Строка-цитата внутри конверта: тот же бабл + .msg-bubble--forward /.msg-bubble--forward-quote, без orange shell (его даёт родитель msg-forward-bundle-outer). */
+
+/* Переслано + свой комментарий: основной серый бабл, «Из переписки с …» и пересланое — внутри */
+.msg-forward-bundle-host.msg-forward-caption-nested.msg.me > .forward-comment-wrap,
+.msg.forward-comment-wrap-host.msg.me > .forward-comment-wrap {
+  margin-left: auto;
+}
+.msg-forward-bundle-host.msg-forward-caption-nested.msg.them > .forward-comment-wrap,
+.msg-forward-bundle-host.msg-forward-caption-nested.msg.left > .forward-comment-wrap {
+  margin-right: auto;
+}
+
+.msg-forward-bundle-outer.msg-forward-bundle-outer--nested-in-msg {
+  max-width: 100%;
+  width: 100%;
+  align-self: stretch;
+  flex: 0 0 auto;
+}
+
+.msg.forward-comment-wrap-host.msg.me .msg-forward-bundle-outer.msg-forward-bundle-outer--nested-in-msg,
+.msg-forward-bundle-host.msg-forward-caption-nested.msg.me .msg-forward-bundle-outer.msg-forward-bundle-outer--nested-in-msg {
+  margin-left: 0;
+  margin-right: 0;
+}
+.msg.forward-comment-wrap-host.msg.them .msg-forward-bundle-outer.msg-forward-bundle-outer--nested-in-msg,
+.msg-forward-bundle-host.msg-forward-caption-nested.msg.them .msg-forward-bundle-outer.msg-forward-bundle-outer--nested-in-msg,
+.msg.forward-comment-wrap-host.msg.left .msg-forward-bundle-outer.msg-forward-bundle-outer--nested-in-msg,
+.msg-forward-bundle-host.msg-forward-caption-nested.msg.left .msg-forward-bundle-outer.msg-forward-bundle-outer--nested-in-msg {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* Пачка пересылок: общий блок — та же округлая геометрия + рамка/свечение; без хвоста. */
+.msg-forward-bundle-outer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* Как бабл: до 70% строки; без фиксированной width — рядом с аватаром не вылезает за экран */
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 70%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding: 10px 12px 12px;
+  border-radius: 14px;
+  border: 2px solid rgba(217, 119, 6, 0.5);
+  box-shadow:
+    0 0 0 1px rgba(217, 119, 6, 0.22),
+    0 6px 22px rgba(217, 119, 6, 0.12);
+  background-repeat: repeat, no-repeat;
+  background-color: transparent;
+  background-image:
+    repeating-linear-gradient(
+      -32deg,
+      transparent 0px,
+      transparent 8px,
+      rgba(255, 255, 255, 0.07) 8px,
+      rgba(255, 255, 255, 0.07) 9px
+    ),
+    linear-gradient(
+      165deg,
+      rgba(61, 48, 32, 0.35) 0%,
+      rgba(22, 26, 34, 0.92) 55%,
+      rgba(18, 22, 30, 0.98) 100%
+    );
+}
+
+.msg-forward-bundle-host.msg.me .msg-forward-bundle-outer {
+  margin-left: auto;
+  align-items: stretch;
+}
+
+.msg-forward-bundle-host.msg.me .msg-forward-bundle__header,
+.msg-forward-bundle-host.msg.me .msg-forward-bundle__footer {
+  align-self: stretch;
+  text-align: right;
+}
+
+.msg-forward-bundle-host.msg.them .msg-forward-bundle-outer {
+  margin-right: auto;
+  align-items: stretch;
+}
+
+.msg-forward-bundle-host.msg.them .msg-forward-bundle__header,
+.msg-forward-bundle-host.msg.them .msg-forward-bundle__footer {
+  align-self: stretch;
+  text-align: left;
+}
+
+.msg-forward-bundle-host.msg.left .msg-forward-bundle-outer {
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 70%;
+  min-width: 0;
+  margin-left: 0;
+  margin-right: auto;
+}
+
+.msg.me .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-bundle__header {
+  align-self: stretch;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  text-align: right;
+  justify-content: flex-end;
+}
+
+.msg.me .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-bundle__footer {
+  align-self: stretch;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  text-align: right;
+}
+
+.msg.them .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-bundle__header {
+  align-self: stretch;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.msg.them .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-bundle__footer {
+  align-self: stretch;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.msg.left .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-bundle__header {
+  align-self: stretch;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.msg.left .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-bundle__footer {
+  align-self: stretch;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.msg.me .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-shell-original-author,
+.msg.them .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-shell-original-author,
+.msg.left .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-shell-original-author {
+  align-self: stretch;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.msg.me .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-shell-original-author {
+  text-align: right;
+}
+
+.msg.them .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-shell-original-author,
+.msg.left .msg-bubble.msg-bubble--forward.msg-bubble--forward-shell .msg-forward-shell-original-author {
+  text-align: left;
+}
+
+.msg-bubble.msg-bubble--forward.msg-bubble--forward-shell.msg-bubble--selected .msg-forward-shell-original-author {
+  color: rgba(28, 25, 23, 0.96);
+}
+
+.msg-forward-bundle__header {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  color: rgba(190, 194, 203, 0.95);
+  margin: 0 0 10px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.msg-forward-bundle__header-icon {
+  flex-shrink: 0;
+  color: var(--brand);
+}
+
+/* Выделение: шапка внутри штрихованного конверта (вложена в серый msg-bubble) */
+.forward-comment-wrap.msg-bubble--selected .msg-forward-bundle-outer--nested-in-msg .msg-forward-bundle__header {
+  color: rgba(28, 25, 23, 0.96);
+  border-bottom-color: rgba(41, 37, 36, 0.22);
+}
+
+.forward-comment-wrap.msg-bubble--selected .msg-forward-bundle-outer--nested-in-msg .msg-forward-bundle__header-icon {
+  color: var(--brand-700);
+}
+
+.msg-forward-bundle-host.msg.me .msg-forward-bundle__header {
+  justify-content: flex-end;
+}
+
+.msg-forward-bundle-host.msg.them .msg-forward-bundle__header,
+.msg-forward-bundle-host.msg.left .msg-forward-bundle__header {
+  justify-content: flex-start;
+}
+
+.msg-forward-bundle__footer {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 500;
+  color: rgba(154, 160, 168, 0.95);
+}
+
+.msg-forward-bundle__item {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+}
+
+.msg-forward-bundle-host.msg.me .msg-forward-bundle__item {
+  align-items: stretch;
+  align-self: stretch;
+  width: 100%;
+}
+
+.msg-forward-bundle-host.msg.them .msg-forward-bundle__item {
+  align-items: stretch;
+  align-self: stretch;
+  width: 100%;
+}
+
+.msg-forward-bundle__item + .msg-forward-bundle__item {
+  margin-top: 6px;
+}
+
+.msg-forward-bundle__item .msg {
+  margin-top: 0;
+  margin-bottom: 0;
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Внутри конверта ограничение 70% не от узкого предка — баблу можно всю доступную ширину ряда */
+.msg-forward-bundle-outer .msg-bubble {
+  max-width: 100%;
+}
+
+/*
+ * Мультивыбор: общий конверт .msg-forward-bundle-outer не является .msg-bubble —
+ * после отключения .msg-bubble--selected у внутренних строк здесь задаём те же акценты, что у выбранного бабла.
+ */
+.msg-forward-bundle-outer.msg-forward-bundle-outer--selected {
+  --bubble-fg: #0a0a0a;
+  color: rgba(250, 250, 249, 0.98);
+  border: 1px solid var(--brand-600);
+  box-shadow:
+    0 0 0 1px rgba(217, 119, 6, 0.45),
+    0 2px 14px rgba(217, 119, 6, 0.28);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.06) 55%, rgba(0, 0, 0, 0.04) 100%),
+    repeating-linear-gradient(
+      -32deg,
+      transparent 0 8px,
+      rgba(255, 255, 255, 0.14) 8px 9px
+    ),
+    repeating-linear-gradient(
+      32deg,
+      transparent 0 12px,
+      rgba(0, 0, 0, 0.05) 12px 13px
+    ),
+    linear-gradient(158deg, var(--brand-700) 0%, var(--brand-600) 48%, var(--brand) 100%);
+}
+
+.msg-forward-bundle-outer.msg-forward-bundle-outer--selected .msg-forward-bundle__header {
+  color: rgba(28, 25, 23, 0.96);
+  border-bottom-color: rgba(41, 37, 36, 0.22);
+}
+
+.msg-forward-bundle-outer.msg-forward-bundle-outer--selected .msg-forward-bundle__footer {
+  color: #27272a;
+  border-top-color: rgba(41, 37, 36, 0.22);
+}
+
+.msg-forward-bundle-outer.msg-forward-bundle-outer--selected .msg-forward-bundle__header-icon {
+  color: var(--brand-700);
+}
+
+/* Ответ на несколько сообщений — конверт внутри обычного бабла (та же штриховка и рамка, что у пересылки). */
+.msg-reply-quote-bundle {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  padding: 8px 10px 10px;
+  border-radius: 12px;
+  border: 2px solid rgba(217, 119, 6, 0.5);
+  box-shadow:
+    0 0 0 1px rgba(217, 119, 6, 0.22),
+    0 4px 16px rgba(217, 119, 6, 0.1);
+  background-repeat: repeat, no-repeat;
+  background-color: transparent;
+  background-image:
+    repeating-linear-gradient(
+      -32deg,
+      transparent 0px,
+      transparent 8px,
+      rgba(255, 255, 255, 0.07) 8px,
+      rgba(255, 255, 255, 0.07) 9px
+    ),
+    linear-gradient(
+      165deg,
+      rgba(61, 48, 32, 0.35) 0%,
+      rgba(22, 26, 34, 0.92) 55%,
+      rgba(18, 22, 30, 0.98) 100%
+    );
+}
+
+.msg-reply-quote-bundle__header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  color: rgba(190, 194, 203, 0.95);
+  margin: 0 0 8px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.msg-reply-quote-bundle__header-icon {
+  flex-shrink: 0;
+  color: var(--brand);
+}
+
+.msg.them .msg-reply-quote-bundle__header,
+.msg.left .msg-reply-quote-bundle__header {
+  justify-content: flex-start;
+}
+
+.msg-reply-quote-bundle .msg-forward-bundle__item {
+  align-items: stretch;
+  align-self: stretch;
+  width: 100%;
+}
+
+.msg-reply-quote-bundle .msg-bubble.msg-reply-quote-bundle__bubble {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+.msg-bubble.msg-bubble--selected .msg-reply-quote-bundle__header {
+  color: rgba(28, 25, 23, 0.96);
+  border-bottom-color: rgba(41, 37, 36, 0.22);
+}
+
+.msg-bubble.msg-bubble--selected .msg-reply-quote-bundle__header-icon,
+.msg-bubble.msg-bubble--selected .msg-forward-bundle__header-icon {
+  color: var(--brand-700);
+}
+
+.msg-bubble.msg-bubble--forward.msg-bubble--forward-shell.msg-bubble--selected .msg-forward-bundle__header-icon {
+  color: var(--brand-700);
+}
+.msg-bubble.msg-bubble--selected {
+  --bubble-fg: #0a0a0a;
+  --text: #0a0a0a;
+  --text-primary: #0a0a0a;
+  --text-muted: #27272a;
+  color: var(--bubble-fg);
+  /* Совпадает с толщиной обычного бабла (1px), иначе при выборе рамка 2px даёт сдвиг ~1px */
+  border: 1px solid var(--brand-600);
+  box-shadow:
+    0 0 0 1px rgba(217, 119, 6, 0.45),
+    0 2px 14px rgba(217, 119, 6, 0.28);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.06) 55%, rgba(0, 0, 0, 0.04) 100%),
+    repeating-linear-gradient(
+      -32deg,
+      transparent 0 8px,
+      rgba(255, 255, 255, 0.14) 8px 9px
+    ),
+    repeating-linear-gradient(
+      32deg,
+      transparent 0 12px,
+      rgba(0, 0, 0, 0.05) 12px 13px
+    ),
+    linear-gradient(158deg, var(--brand-700) 0%, var(--brand-600) 48%, var(--brand) 100%);
+}
+
+.msg-bubble.msg-bubble--selected a:not(.reaction-emoji) {
+  color: #1c0a00;
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+
+.msg-bubble.msg-bubble--selected .msg-meta {
+  color: #27272a !important;
+}
+
+.msg-bubble.msg-bubble--forward.msg-bubble--forward-shell.msg-bubble--selected .msg-forward-bundle__header {
+  color: rgba(28, 25, 23, 0.96);
+  border-bottom-color: rgba(41, 37, 36, 0.22);
+}
+
+.msg-bubble.msg-bubble--forward.msg-bubble--forward-shell.msg-bubble--selected .msg-forward-bundle__footer {
+  color: #27272a;
+  border-top-color: rgba(41, 37, 36, 0.22);
+}
+
+.msg-bubble.msg-bubble--selected .chat-md code {
+  color: #0a0a0a;
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(41, 37, 36, 0.35);
+}
+
+.msg-bubble.msg-bubble--selected .chat-md pre {
+  color: #0a0a0a;
+  background: rgba(255, 255, 255, 0.5);
+  border-color: rgba(41, 37, 36, 0.32);
+}
+
+.msg-bubble.msg-bubble--selected .chat-md blockquote {
+  background: rgba(255, 255, 255, 0.45);
+  border-left-color: #1c1917;
+  color: #0a0a0a;
+}
+.msg-multi-checkbox {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid rgba(148, 163, 184, 0.45);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  align-self: center;
+  margin-bottom: 4px;
+  box-sizing: border-box;
+}
+.msg-multi-checkbox.msg-multi-checkbox--checked {
+  background: var(--brand-600);
+  border-color: var(--brand-600);
+  color: #ffffff;
+}
+
+/* Широкий режим выбора: чекбокс всегда у правого края строки */
+.msg.msg--multiselect-wide .msg-multi-checkbox {
+  margin-left: auto;
+}
+
 /* Wider bubbles for link previews (so media doesn't feel "shrunk") */
 .msg-bubble.has-link-preview {
   max-width: min(92%, 720px);
@@ -651,8 +1162,9 @@ a {
   text-align: right;
   display: flex;
   align-items: center;
-  justify-content: flex-end; /* keep time + ticks on the right */
+  justify-content: flex-end;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 /* Composer selection toolbar (B / I / U) */
@@ -967,6 +1479,8 @@ a {
   bottom: 0;
   width: 0; height: 0;
   border: 8px solid transparent;
+  pointer-events: none;
+  z-index: 2;
 }
 .msg-bubble.tail-left::after {
   left: -4px;
@@ -979,6 +1493,12 @@ a {
   border-left-color: var(--bubble-bg, #303845);
   border-right-width: 0;
   margin-bottom: 6px;
+}
+
+/* Multi-select: хвост не перекрашивается в фон выделения (остаётся старый --bubble-bg) и мешает — убираем */
+.msg-bubble.msg-bubble--selected.tail-left::after,
+.msg-bubble.msg-bubble--selected.tail-right::after {
+  display: none;
 }
 
 .contacts-page {
@@ -1346,25 +1866,6 @@ a {
   font-size: 28px;
   font-weight: 700;
   z-index: 3;
-}
-
-.msg-media-meta {
-  position: absolute;
-  right: 10px;
-  bottom: 8px;
-  z-index: 5;
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(255,255,255,0.96);
-  text-shadow: 0 2px 10px rgba(0,0,0,0.8);
-  pointer-events: none;
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  padding: 3px 6px;
-  border-radius: 10px;
-  background: rgba(0,0,0,0.28);
-  backdrop-filter: blur(2px);
 }
 
 /* Loading animations */

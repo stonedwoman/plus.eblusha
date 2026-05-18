@@ -131,7 +131,11 @@ function emitPresenceStateNow(opts?: { force?: boolean }) {
 
   lastSentPresenceState = payload
   dbg('presence:state ->', payload)
-  socket.emit('presence:state', payload)
+  try {
+    socket.emit('presence:state', payload)
+  } catch {
+    /* WebSocket может быть уже в CLOSING/CLOSED при реконнекте */
+  }
 }
 
 function scheduleEmitPresenceState(opts?: { force?: boolean }) {
@@ -257,7 +261,7 @@ socket.on('device:revoked', () => {
   } catch {}
 })
 
-export function onSessionNew(cb: (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; ts: number }) => void) {
+export function onSessionNew(cb: (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number }) => void) {
   socket.on('session:new', cb)
   return () => {
     try {
@@ -310,6 +314,9 @@ export function onContactRequest(cb: (payload: any) => void) {
 export function onContactAccepted(cb: (payload: any) => void) {
   socket.on('contacts:request:accepted', cb)
 }
+export function onContactRejected(cb: (payload: { contactId: string; friend?: { id: string; username: string; displayName: string | null } }) => void) {
+  socket.on('contacts:request:rejected', cb)
+}
 export function onContactRemoved(cb: (payload: { contactId: string }) => void) {
   socket.on('contacts:removed', cb)
 }
@@ -326,7 +333,7 @@ export function onConversationMemberRemoved(cb: (payload: any) => void) {
   socket.on('conversations:member:removed', cb)
 }
 
-export function onReceiptsUpdate(cb: (payload: { conversationId: string; messageIds: string[] }) => void) {
+export function onReceiptsUpdate(cb: (payload: { conversationId: string; messageIds: string[]; userId?: string; status?: 'DELIVERED' | 'READ' | 'SEEN'; receipts?: any[] }) => void) {
   socket.on('receipts:update', cb)
 }
 
@@ -417,6 +424,10 @@ type CallStatusPayload = {
   startedAt?: number
   elapsedMs?: number
   participants?: string[]
+  isGroup?: boolean
+  aloneSince?: number
+  autoEndAt?: number
+  aloneReminder?: boolean
 }
 type CallStatusBulkPayload = {
   statuses: Record<string, CallStatusPayload>

@@ -40,10 +40,10 @@ ru.eblusha.org {
 
     # ===== Проксирование API и файлов через backend (Express) =====
     handle /api/files/* {
-        # ВАЖНО: порт 4000 обычно НЕ открыт наружу (это внутренний upstream для nginx на plus).
-        # Поэтому проксируем на публичный HTTPS + правильный Host, чтобы попали в нужный vhost.
-        reverse_proxy https://plus.eblusha.org {
-            header_up Host plus.eblusha.org
+        # ВАЖНО: порт 4000 обычно НЕ открыт наружу (это внутренний upstream для nginx на EU).
+        # Проксируем на публичный HTTPS + правильный Host, чтобы попали в нужный vhost.
+        reverse_proxy https://eblusha.org {
+            header_up Host eblusha.org
             header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
             header_up X-Real-IP {remote_host}
@@ -51,8 +51,8 @@ ru.eblusha.org {
     }
 
     handle /api/* {
-        reverse_proxy https://plus.eblusha.org {
-            header_up Host plus.eblusha.org
+        reverse_proxy https://eblusha.org {
+            header_up Host eblusha.org
             header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
             header_up X-Real-IP {remote_host}
@@ -61,18 +61,18 @@ ru.eblusha.org {
 
     # Socket.IO / WebSocket
     handle /socket.io/* {
-        reverse_proxy https://plus.eblusha.org {
-            header_up Host plus.eblusha.org
+        reverse_proxy https://eblusha.org {
+            header_up Host eblusha.org
             header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
             header_up X-Real-IP {remote_host}
         }
     }
 
-    # ===== Остальные запросы — SPA через plus.eblusha.org =====
+    # ===== Остальные запросы — SPA с основного домена =====
     handle {
-        reverse_proxy https://plus.eblusha.org {
-            header_up Host plus.eblusha.org
+        reverse_proxy https://eblusha.org {
+            header_up Host eblusha.org
             header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
             header_up X-Real-IP {remote_host}

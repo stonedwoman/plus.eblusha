@@ -10,7 +10,7 @@
 1. Откройте PowerShell или CMD
 2. Перейдите в папку capacitor:
    ```cmd
-   cd C:\projects\plus.eblusha\capacitor
+   cd C:\projects\eblusha-plus\capacitor
    ```
 3. Выполните команду для создания Android проекта:
    ```cmd
@@ -24,7 +24,7 @@
 Если у вас уже открыт проект в Android Studio:
 
 1. В Android Studio: `File → Open`
-2. Выберите папку: `C:\projects\plus.eblusha\capacitor`
+2. Выберите папку: `C:\projects\eblusha-plus\capacitor`
 3. Android Studio может предложить создать Android проект
 4. Или выполните в терминале Android Studio:
    ```
@@ -36,7 +36,7 @@
 Убедитесь, что вы в правильной папке и зависимости установлены:
 
 ```cmd
-cd C:\projects\plus.eblusha\capacitor
+cd C:\projects\eblusha-plus\capacitor
 npm install
 npx cap add android
 ```
@@ -45,7 +45,7 @@ npx cap add android
 
 1. Откройте Android Studio
 2. `File → Open`
-3. Выберите: `C:\projects\plus.eblusha\capacitor\android`
+3. Выберите: `C:\projects\eblusha-plus\capacitor\android`
 4. Дождитесь синхронизации Gradle
 5. Создайте конфигурацию запуска (теперь модуль `app` должен появиться)
 
@@ -54,7 +54,7 @@ npx cap add android
 После выполнения `npx cap add android` проверьте:
 
 ```cmd
-dir C:\projects\plus.eblusha\capacitor\android
+dir C:\projects\eblusha-plus\capacitor\android
 ```
 
 Должны быть видны:

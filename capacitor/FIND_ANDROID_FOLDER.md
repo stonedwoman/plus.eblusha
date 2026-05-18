@@ -4,7 +4,7 @@
 
 Папка `android` находится по пути:
 ```
-C:\projects\plus.eblusha\capacitor\android
+C:\projects\eblusha-plus\capacitor\android
 ```
 
 ## Почему её может быть не видно:
@@ -21,12 +21,12 @@ C:\projects\plus.eblusha\capacitor\android
 
 В адресной строке проводника введите:
 ```
-C:\projects\plus.eblusha\capacitor\android
+C:\projects\eblusha-plus\capacitor\android
 ```
 
 Или через "Выполнить" (Win+R):
 ```
-explorer C:\projects\plus.eblusha\capacitor\android
+explorer C:\projects\eblusha-plus\capacitor\android
 ```
 
 ## Как открыть в Android Studio:
@@ -35,19 +35,19 @@ explorer C:\projects\plus.eblusha\capacitor\android
 1. В Android Studio: `File → Open`
 2. В адресной строке введите или перейдите к:
    ```
-   C:\projects\plus.eblusha\capacitor\android
+   C:\projects\eblusha-plus\capacitor\android
    ```
 3. Нажмите `OK`
 
 ### Способ 2: Перетащить папку
 1. Откройте проводник
-2. Перейдите к: `C:\projects\plus.eblusha\capacitor`
+2. Перейдите к: `C:\projects\eblusha-plus\capacitor`
 3. Найдите папку `android`
 4. Перетащите её в окно Android Studio
 
 ### Способ 3: Через командную строку
 ```cmd
-cd C:\projects\plus.eblusha\capacitor\android
+cd C:\projects\eblusha-plus\capacitor\android
 start "" "C:\Program Files\Android\Android Studio\bin\studio64.exe" .
 ```
 
@@ -55,7 +55,7 @@ start "" "C:\Program Files\Android\Android Studio\bin\studio64.exe" .
 
 Откройте командную строку (cmd) и выполните:
 ```cmd
-cd C:\projects\plus.eblusha\capacitor
+cd C:\projects\eblusha-plus\capacitor
 dir
 ```
 
@@ -67,7 +67,7 @@ dir
 
 Выполните в терминале (в папке capacitor):
 ```bash
-cd C:\projects\plus.eblusha\capacitor
+cd C:\projects\eblusha-plus\capacitor
 npx cap add android
 ```
 

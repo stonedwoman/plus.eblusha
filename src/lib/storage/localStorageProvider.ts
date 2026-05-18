@@ -34,6 +34,11 @@ export class LocalStorageProvider implements StorageProvider {
 
   constructor(options: LocalStorageProviderOptions) {
     this.basePath = path.resolve(options.basePath);
+    try {
+      fs.mkdirSync(this.basePath, { recursive: true });
+    } catch (e) {
+      // Parent may not be writable; isAvailable() will return false
+    }
   }
 
   isAvailable(): boolean {

@@ -1,13 +1,17 @@
 import axios from 'axios'
 import nacl from 'tweetnacl'
 import { api } from '../../utils/api'
+import { getDefaultStorageAdapter } from '../../core/storage'
 
 const DEVICE_INFO_KEY = 'eb_device_info_v1'
 const DEVICE_SECRET_KEY = 'eb_device_secret_v1'
 const DEFAULT_PREKEY_BATCH = 50
 const MIN_SERVER_PREKEY_RESERVE = 20
+const MAX_LOCAL_PREKEY_RESERVE = 200
 // Keep this low: missing OPKs blocks key delivery. We still guard with rate limiting server-side.
 const PREKEY_PUBLISH_COOLDOWN_MS = 5_000
+const DEVICE_REGISTER_SYNC_TTL_MS = 10 * 60_000
+const storage = getDefaultStorageAdapter()
 
 type StoredDeviceInfo = {
   deviceId: string
@@ -38,13 +42,19 @@ export type DeviceBootstrapResult = {
 
 let bootstrapPromise: Promise<DeviceBootstrapResult | null> | null = null
 let lastForcePublishAt = 0
+let lastSuccessfulRegisterAt = 0
+
+type EnsureDeviceBootstrapOptions = {
+  forceRegister?: boolean
+  skipReserveCheck?: boolean
+}
 
 function secretDebugEnabled(): boolean {
   try {
     if (typeof window === 'undefined') return false
     const q = String(window.location?.search ?? '')
     if (q.includes('SECRET_DEBUG=1')) return true
-    return window.localStorage.getItem('eb_secret_debug') === '1'
+    return storage.getItem('eb_secret_debug') === '1'
   } catch {
     return false
   }
@@ -57,6 +67,56 @@ function isDeviceBelongsToAnotherUserConflict(err: unknown): boolean {
   return msg.includes('another user') || msg.includes('друг') || msg.includes('чуж')
 }
 
+function isDeviceMissingError(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) return false
+  if (err.response?.status !== 404) return false
+  const msg = String((err.response?.data as any)?.message ?? err.message ?? '').toLowerCase()
+  return msg.includes('device not found') || msg.includes('device not available')
+}
+
+function getLocallyBootstrappedDeviceId(): string | null {
+  const info = loadDeviceInfo()
+  const secrets = loadDeviceSecrets()
+  if (!info || !secrets) return null
+  if (info.deviceId !== secrets.deviceId) return null
+  return info.deviceId
+}
+
+function countStoredPrekeys(deviceId: string): number {
+  const secrets = loadDeviceSecrets()
+  if (!secrets || secrets.deviceId !== deviceId) return 0
+  return Object.keys(secrets.prekeys).length
+}
+
+function appendStoredPrekeys(deviceId: string, prekeys: GeneratedPrekey[]) {
+  if (!prekeys.length) return
+  const secrets = loadDeviceSecrets()
+  if (!secrets || secrets.deviceId !== deviceId) return
+  for (const pk of prekeys) {
+    secrets.prekeys[pk.keyId] = pk.secretKey
+  }
+  saveDeviceSecrets(secrets)
+}
+
+function dropStoredPrekeys(deviceId: string, keyIds: string[]) {
+  if (!keyIds.length) return
+  const secrets = loadDeviceSecrets()
+  if (!secrets || secrets.deviceId !== deviceId) return
+  let changed = false
+  for (const keyId of keyIds) {
+    if (!keyId || !secrets.prekeys[keyId]) continue
+    delete secrets.prekeys[keyId]
+    changed = true
+  }
+  if (changed) saveDeviceSecrets(secrets)
+}
+
+function filterAcceptedPrekeys(prekeys: GeneratedPrekey[], insertedKeyIds: unknown): GeneratedPrekey[] {
+  if (!Array.isArray(insertedKeyIds)) return prekeys
+  const accepted = new Set(insertedKeyIds.filter((keyId): keyId is string => typeof keyId === 'string' && !!keyId))
+  return prekeys.filter((pk) => accepted.has(pk.keyId))
+}
+
 async function publishPrekeysBatch(deviceId: string, count: number, opts?: { reason?: string }) {
   const id = String(deviceId ?? '').trim()
   if (!id) return
@@ -65,18 +125,57 @@ async function publishPrekeysBatch(deviceId: string, count: number, opts?: { rea
   if (!secrets || secrets.deviceId !== id) return
 
   const prekeys = generatePrekeys(n)
-  for (const pk of prekeys) {
-    secrets.prekeys[pk.keyId] = pk.secretKey
+  appendStoredPrekeys(id, prekeys)
+
+  try {
+    const response = await api.post<{ insertedKeyIds?: string[] }>(`/devices/${id}/prekeys`, {
+      prekeys: prekeys.map((pk) => ({ keyId: pk.keyId, publicKey: pk.publicKey })),
+    })
+    const acceptedPrekeys = filterAcceptedPrekeys(prekeys, response.data?.insertedKeyIds)
+    const acceptedKeyIds = new Set(acceptedPrekeys.map((pk) => pk.keyId))
+    const skippedKeyIds = prekeys.filter((pk) => !acceptedKeyIds.has(pk.keyId)).map((pk) => pk.keyId)
+    if (skippedKeyIds.length) {
+      dropStoredPrekeys(id, skippedKeyIds)
+    }
+
+    if (secretDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.log('[deviceManager] published prekeys', {
+        deviceId: id,
+        published: acceptedPrekeys.length,
+        skipped: skippedKeyIds.length,
+        reason: opts?.reason ?? null,
+      })
+    }
+  } catch (error) {
+    // For explicit server-side failures we know nothing was accepted, so rollback optimistic secrets.
+    if (axios.isAxiosError(error) && error.response) {
+      dropStoredPrekeys(id, prekeys.map((pk) => pk.keyId))
+    }
+    throw error
   }
-  saveDeviceSecrets(secrets)
+}
 
-  await api.post(`/devices/${id}/prekeys`, {
-    prekeys: prekeys.map((pk) => ({ keyId: pk.keyId, publicKey: pk.publicKey })),
-  })
+function getAllowedPrekeyPublishCount(deviceId: string, requestedCount: number, force: boolean): number {
+  const currentAvailable = countStoredPrekeys(deviceId)
+  if (!force && currentAvailable >= MIN_SERVER_PREKEY_RESERVE) return 0
+  const boundedRequested = Math.max(1, Math.min(200, Math.floor(requestedCount || DEFAULT_PREKEY_BATCH)))
+  const remainingCapacity = Math.max(0, MAX_LOCAL_PREKEY_RESERVE - currentAvailable)
+  return Math.min(boundedRequested, remainingCapacity)
+}
 
-  if (secretDebugEnabled()) {
-    // eslint-disable-next-line no-console
-    console.log('[deviceManager] published prekeys', { deviceId: id, published: prekeys.length, reason: opts?.reason ?? null })
+async function publishPrekeysWithRecovery(deviceId: string, count: number, opts?: { reason?: string }) {
+  if (count <= 0) return
+  try {
+    await publishPrekeysBatch(deviceId, count, { reason: opts?.reason })
+  } catch (error) {
+    if (!isDeviceMissingError(error)) throw error
+    const boot = await ensureDeviceBootstrap({ forceRegister: true, skipReserveCheck: true })
+    const retryDeviceId = String(boot?.deviceId ?? '').trim()
+    if (!retryDeviceId) throw error
+    await publishPrekeysBatch(retryDeviceId, count, {
+      reason: opts?.reason ? `${opts.reason}_after_register` : 'after_register',
+    })
   }
 }
 
@@ -84,26 +183,33 @@ export async function forcePublishPrekeys(opts?: { count?: number; reason?: stri
   const now = Date.now()
   const force = !!opts?.force
   if (!force && now - lastForcePublishAt < PREKEY_PUBLISH_COOLDOWN_MS) return
-  const boot = await ensureDeviceBootstrap()
-  const deviceId = boot?.deviceId
+  let deviceId = getLocallyBootstrappedDeviceId()
+  if (!deviceId) {
+    const boot = await ensureDeviceBootstrap({ skipReserveCheck: true })
+    deviceId = String(boot?.deviceId ?? '').trim() || null
+  }
   if (!deviceId) return
-  await publishPrekeysBatch(deviceId, opts?.count ?? DEFAULT_PREKEY_BATCH, { reason: opts?.reason })
+  const publishCount = getAllowedPrekeyPublishCount(deviceId, opts?.count ?? DEFAULT_PREKEY_BATCH, force)
+  if (publishCount <= 0) return
+  await publishPrekeysWithRecovery(deviceId, publishCount, { reason: opts?.reason })
   // Only advance cooldown after a successful publish.
   lastForcePublishAt = Date.now()
 }
 
-async function maybeReplenishPrekeys(deviceId: string) {
+async function maybeEnsureLocalPrekeyReserve(deviceId: string) {
   try {
-    const resp = await api.get('/devices')
-    const devices = (resp.data?.devices ?? []) as any[]
-    const me = devices.find((d) => String(d?.id ?? '') === deviceId)
-    const available = typeof me?.availablePrekeys === 'number' ? me.availablePrekeys : null
-    if (available != null && available >= MIN_SERVER_PREKEY_RESERVE) return
-
-    await publishPrekeysBatch(deviceId, DEFAULT_PREKEY_BATCH, { reason: 'reserve_low' })
+    if (Date.now() - lastForcePublishAt < PREKEY_PUBLISH_COOLDOWN_MS) return
+    const publishCount = getAllowedPrekeyPublishCount(deviceId, DEFAULT_PREKEY_BATCH, false)
+    if (publishCount <= 0) return
+    await publishPrekeysWithRecovery(deviceId, publishCount, { reason: 'reserve_low' })
+    lastForcePublishAt = Date.now()
     if (secretDebugEnabled()) {
       // eslint-disable-next-line no-console
-      console.log('[deviceManager] replenished prekeys', { deviceId, published: DEFAULT_PREKEY_BATCH, previousAvailable: available })
+      console.log('[deviceManager] replenished prekeys', {
+        deviceId,
+        published: publishCount,
+        previousAvailable: countStoredPrekeys(deviceId),
+      })
     }
   } catch (err) {
     if (secretDebugEnabled()) {
@@ -113,7 +219,7 @@ async function maybeReplenishPrekeys(deviceId: string) {
   }
 }
 
-export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
+export function ensureDeviceBootstrap(opts: EnsureDeviceBootstrapOptions = {}): Promise<DeviceBootstrapResult | null> {
   if (bootstrapPromise) return bootstrapPromise
   bootstrapPromise = (async () => {
     try {
@@ -121,26 +227,35 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
       let storedSecret = loadDeviceSecrets()
 
       if (storedInfo && storedSecret && storedInfo.deviceId === storedSecret.deviceId) {
-        try {
-          const desiredName = detectDeviceName()
-          const desiredPlatform = detectPlatform()
-          // IMPORTANT: always upsert the device server-side.
-          // If the server lost/never had this device row (DB restore, proxy issues, old builds),
-          // we must re-register it; otherwise /devices/:id/prekeys → 404 and /secret/inbox/pull → 400.
-          await api.post('/devices/register', {
-            deviceId: storedInfo.deviceId,
+        const desiredName = detectDeviceName()
+        const desiredPlatform = detectPlatform()
+        if (storedInfo.name !== desiredName || storedInfo.platform !== desiredPlatform) {
+          saveDeviceInfo({
+            ...storedInfo,
             name: desiredName,
             platform: desiredPlatform,
-            publicKey: storedInfo.publicKey,
           })
-          if (storedInfo.name !== desiredName || storedInfo.platform !== desiredPlatform) {
-            saveDeviceInfo({
-              ...storedInfo,
-              name: desiredName,
-              platform: desiredPlatform,
+          storedInfo = {
+            ...storedInfo,
+            name: desiredName,
+            platform: desiredPlatform,
+          }
+        }
+        try {
+          const shouldSyncRegistration =
+            !!opts.forceRegister ||
+            !lastSuccessfulRegisterAt ||
+            Date.now() - lastSuccessfulRegisterAt >= DEVICE_REGISTER_SYNC_TTL_MS
+          if (shouldSyncRegistration) {
+            // Re-register only when forced or on a coarse TTL so we can self-heal after DB restores
+            // without hammering the backend on every publish/poll loop.
+            await api.post('/devices/register', {
+              deviceId: storedInfo.deviceId,
+              name: storedInfo.name,
+              platform: storedInfo.platform,
+              publicKey: storedInfo.publicKey,
             })
-            storedInfo.name = desiredName
-            storedInfo.platform = desiredPlatform
+            lastSuccessfulRegisterAt = Date.now()
           }
         } catch (metadataError) {
           // CRITICAL: If this stored deviceId belongs to another user (e.g. browser reused localStorage across accounts),
@@ -156,8 +271,10 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
         }
 
         if (storedInfo && storedSecret && storedInfo.deviceId === storedSecret.deviceId) {
-          // Best-effort: keep some OPKs on server so other devices can encrypt key packages to us.
-          void maybeReplenishPrekeys(storedInfo.deviceId)
+          if (!opts.skipReserveCheck) {
+            // Best-effort: keep some local OPKs ready, without calling /devices on every bootstrap.
+            void maybeEnsureLocalPrekeyReserve(storedInfo.deviceId)
+          }
           return {
             deviceId: storedInfo.deviceId,
             publicKey: storedInfo.publicKey,
@@ -184,8 +301,9 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
           prekeys: prekeys.map((pk) => ({ keyId: pk.keyId, publicKey: pk.publicKey })),
         }
 
+        let registerResponse: { data?: { insertedKeyIds?: string[] } } | null = null
         try {
-          await api.post('/devices/register', payload)
+          registerResponse = await api.post<{ insertedKeyIds?: string[] }>('/devices/register', payload)
         } catch (registerError) {
           if (isDeviceBelongsToAnotherUserConflict(registerError)) {
             console.warn('[deviceManager] deviceId conflict (belongs to another user), retrying', { attempt })
@@ -194,6 +312,7 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
           throw registerError
         }
 
+        const acceptedPrekeys = filterAcceptedPrekeys(prekeys, registerResponse?.data?.insertedKeyIds)
         saveDeviceInfo({
           deviceId,
           name: payload.name,
@@ -204,14 +323,12 @@ export function ensureDeviceBootstrap(): Promise<DeviceBootstrapResult | null> {
         saveDeviceSecrets({
           deviceId,
           identitySecret,
-          prekeys: prekeys.reduce<Record<string, string>>((acc, pk) => {
+          prekeys: acceptedPrekeys.reduce<Record<string, string>>((acc, pk) => {
             acc[pk.keyId] = pk.secretKey
             return acc
           }, {}),
         })
-
-        // Fire-and-forget replenish check (should be already >= reserve after register, but keep it robust).
-        void maybeReplenishPrekeys(deviceId)
+        lastSuccessfulRegisterAt = Date.now()
 
         return { deviceId, publicKey: identityPublic, name: payload.name, platform: payload.platform ?? undefined }
       }
@@ -251,8 +368,8 @@ export function getIdentityKeyPair(): { publicKey: string; secretKey: string } |
 
 function clearStoredDevice() {
   try {
-    localStorage.removeItem(DEVICE_INFO_KEY)
-    localStorage.removeItem(DEVICE_SECRET_KEY)
+    storage.removeItem(DEVICE_INFO_KEY)
+    storage.removeItem(DEVICE_SECRET_KEY)
   } catch {}
 }
 
@@ -280,7 +397,7 @@ export function consumePrekeySecret(keyId: string): string | null {
 
 function loadDeviceInfo(): StoredDeviceInfo | null {
   try {
-    const raw = localStorage.getItem(DEVICE_INFO_KEY)
+    const raw = storage.getItem(DEVICE_INFO_KEY)
     if (!raw) return null
     return JSON.parse(raw) as StoredDeviceInfo
   } catch {
@@ -290,13 +407,13 @@ function loadDeviceInfo(): StoredDeviceInfo | null {
 
 function saveDeviceInfo(info: StoredDeviceInfo) {
   try {
-    localStorage.setItem(DEVICE_INFO_KEY, JSON.stringify(info))
+    storage.setItem(DEVICE_INFO_KEY, JSON.stringify(info))
   } catch {}
 }
 
 function loadDeviceSecrets(): StoredDeviceSecrets | null {
   try {
-    const raw = localStorage.getItem(DEVICE_SECRET_KEY)
+    const raw = storage.getItem(DEVICE_SECRET_KEY)
     if (!raw) return null
     return JSON.parse(raw) as StoredDeviceSecrets
   } catch {
@@ -306,7 +423,7 @@ function loadDeviceSecrets(): StoredDeviceSecrets | null {
 
 function saveDeviceSecrets(data: StoredDeviceSecrets) {
   try {
-    localStorage.setItem(DEVICE_SECRET_KEY, JSON.stringify(data))
+    storage.setItem(DEVICE_SECRET_KEY, JSON.stringify(data))
   } catch {}
 }
 

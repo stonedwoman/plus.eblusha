@@ -8,7 +8,7 @@
 
 ## curl Commands
 
-Replace `BASE` (e.g. `https://plus.eblusha.org`), `TOKEN`, and `FILE_PATH` (path segment from upload response url, e.g. `uploads/1234567890-xxx.eblusha`).
+Replace `BASE` (e.g. `https://eblusha.org`), `TOKEN`, and `FILE_PATH` (path segment from upload response url, e.g. `uploads/1234567890-xxx.eblusha`).
 
 ```bash
 # 1. Upload a file (get url from response)

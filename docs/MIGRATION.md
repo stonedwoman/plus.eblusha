@@ -40,7 +40,7 @@ Backend и worker собираются из `Dockerfile` в корне прое�
 ```
 NODE_ENV=production
 PORT=4000
-CLIENT_URL=https://plus.eblusha.org          # или ваш домен
+CLIENT_URL=https://eblusha.org          # или ваш домен
 DATABASE_URL=postgresql://eblusha:PASSWORD@postgres:5432/eblusha?schema=public
 REDIS_URL=redis://redis:6379
 
@@ -87,7 +87,7 @@ CHAT_ENC_KEK=<base64, 32 байта — для шифрования DEK не-sec
 ### Опциональные
 
 ```
-APP_ORIGIN=https://plus.eblusha.org
+APP_ORIGIN=https://eblusha.org
 E2EE_1TO1=true
 JWT_ACCESS_EXPIRES_IN=15m
 JWT_REFRESH_EXPIRES_IN=180d
@@ -124,7 +124,7 @@ VITE_LIVEKIT_URL=                # если отличается от серве
 | Host path                | Контейнер                    | Описание              |
 |--------------------------|------------------------------|------------------------|
 | deploy/nginx-docker.conf | /etc/nginx/conf.d/default.conf | Конфиг nginx         |
-| frontend/dist            | /var/www/plus.eblusha.org    | Собранный SPA         |
+| frontend/dist            | /var/www/eblusha.org    | Собранный SPA         |
 
 ### Локальное хранилище (STORAGE_BACKEND=local)
 
@@ -195,13 +195,14 @@ docker run --rm -v eblusha-redis-data:/data -v $(pwd):/backup alpine tar czf /ba
 
 ### Nginx (текущий продакшн, на хосте)
 
-Файл: `deploy/nginx-plus.eblusha.org.conf`
+Файл: `deploy/nginx-eblusha.org.conf`
 
 ```nginx
 server {
-  server_name plus.eblusha.org;
-  client_max_body_size 100m;
-  root /var/www/plus.eblusha.org;
+  server_name eblusha.org;
+  client_max_body_size 1024m;  # Обязательно для загрузки файлов >1MB (nginx default=1m)
+
+  root /var/www/eblusha.org;
   index index.html;
 
   location / {
@@ -215,6 +216,8 @@ server {
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
   }
 
   location /socket.io/ {
@@ -233,11 +236,11 @@ server {
 
 Прокси идёт на `http://backend:4000` вместо `127.0.0.1`.
 
-### Caddy (ru.eblusha.org → plus.eblusha.org)
+### Caddy (ru.eblusha.org → eblusha.org)
 
 Файлы: `deploy/Caddyfile.ru.eblusha.org`, `deploy/Caddyfile.ru.eblusha.org.correct`
 
-РФ-витрина проксирует `/api/*`, `/socket.io/*`, `/api/files/*` на plus.eblusha.org.
+РФ-витрина проксирует `/api/*`, `/socket.io/*`, `/api/files/*` на eblusha.org.
 
 ---
 

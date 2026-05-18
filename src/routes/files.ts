@@ -7,6 +7,7 @@ import {
   isEncryptedPayload,
   parseStorageEncKey,
 } from "../lib/storageEncryption";
+import { getNonSecretConversationDek } from "../lib/nonSecretChatEncryption";
 import { getStorageProvider } from "../lib/storage";
 
 const EBP1_RANGE_SIZE_LIMIT = 50 * 1024 * 1024; // 50MB: above this, EBP1 ignores Range and returns 200
@@ -91,6 +92,15 @@ const decodeKeyFromUrl = (urlPath: string) =>
     .split("/")
     .map((segment) => decodeURIComponent(segment))
     .join("/");
+
+/** S3/metadata иногда даёт смешанный регистр; без нормализации remap и отдача файла могут «не узнать» EBP1. */
+const metaEncTag = (m: Record<string, string>) => String(m?.enc ?? "").trim().toLowerCase();
+const metaIsEbp2 = (m: Record<string, string>) => metaEncTag(m) === "ebp2";
+const metaIsEbp1 = (m: Record<string, string>) =>
+  metaEncTag(m) === "ebp1" ||
+  String((m as any)?.encv ?? (m as any)?.enc_v ?? "")
+    .trim()
+    .toLowerCase() === "1";
 
 const splitPathSegments = (p: string) => p.split("/").filter(Boolean);
 
@@ -335,7 +345,7 @@ router.use(async (req: Request, res: Response, next) => {
         }
 
         const meta = (headResponse?.metadata ?? {}) as Record<string, string>;
-        const isEbp2 = meta?.enc === "ebp2";
+        const isEbp2 = metaIsEbp2(meta);
 
         if (req.method === "HEAD" && headResponse && !isEbp2) {
           res.setHeader("Content-Type", headResponse.contentType || contentType);
@@ -427,11 +437,7 @@ router.use(async (req: Request, res: Response, next) => {
         }
 
         // EBP1 or unencrypted
-        const isEbp1 =
-          meta?.enc === "ebp1" ||
-          meta?.encv === "1" ||
-          (meta as any)?.enc_v === "1" ||
-          false;
+        const isEbp1 = metaIsEbp1(meta);
 
         let rangeOpt: { start: number; end: number } | undefined;
         if (!isEbp1 && headResponse) {
@@ -484,12 +490,51 @@ router.use(async (req: Request, res: Response, next) => {
           }
 
           const encryptedBuf = await readBodyToBuffer(getResult.body);
-          const aadFromMeta = (meta?.aad ?? getResult.metadata?.aad)?.trim?.();
+          const blobMeta = {
+            ...(meta ?? {}),
+            ...((getResult.metadata ?? {}) as Record<string, string>),
+          } as Record<string, string>;
+          const aadFromMetaRaw = blobMeta?.aad?.trim?.() ?? "";
+
+          /** Per-chat DEK blobs (migrate script `encscope=chat` + `cid=<conversation id>`): wrong key → decrypt fails → внешний цикл считает «не найдено» и возвращает 404. Перессылка сохраняет тот же URL — новый диалог всё так же загружает тот же объект. */
+          const isChatScopedEbp =
+            String(blobMeta.encscope || "").toLowerCase() === "chat" &&
+            typeof blobMeta.cid === "string" &&
+            blobMeta.cid.trim().length > 0;
+
+          const aadCandidates: string[] = aadFromMetaRaw
+            ? [aadFromMetaRaw]
+            : [key, ...expandedCandidates.filter((k) => k !== key)];
+
           let decrypted: Buffer | undefined;
-          if (aadFromMeta) {
-            decrypted = decryptBuffer(encryptedBuf, encKey!, { aad: aadFromMeta });
-          } else {
-            const aadCandidates = [key, ...expandedCandidates.filter((k) => k !== key)];
+
+          if (isChatScopedEbp) {
+            try {
+              const dekConv = await getNonSecretConversationDek(blobMeta.cid!.trim());
+              let lastConvErr: Error | null = null;
+              for (const aadCandidate of aadCandidates) {
+                try {
+                  decrypted = decryptBuffer(encryptedBuf, dekConv, { aad: aadCandidate });
+                  break;
+                } catch (e) {
+                  lastConvErr = e as Error;
+                }
+              }
+              if (!decrypted && lastConvErr) {
+                logger.warn(
+                  { err: lastConvErr, cid: blobMeta.cid, key },
+                  "[files] chat-scoped EBP1 decrypt failed (aad candidates exhausted)"
+                );
+              }
+            } catch (e: any) {
+              logger.warn(
+                { err: e, cid: blobMeta.cid, key },
+                "[files] chat-scoped EBP1: could not unwrap conversation DEK",
+              );
+            }
+          }
+
+          if (!decrypted) {
             let lastErr: Error | null = null;
             for (const aadCandidate of aadCandidates) {
               try {

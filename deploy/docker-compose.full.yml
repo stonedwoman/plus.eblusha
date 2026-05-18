@@ -141,8 +141,8 @@ services:
 
   # Nginx: SPA + reverse proxy к backend + LiveKit
   # Требует предварительной сборки frontend: cd frontend && npm run build
-  # Bind mount: ../frontend/dist -> /var/www/plus.eblusha.org (сборка SPA)
-  # Bind mount: ../frontend/public -> /var/www/plus.eblusha.org-public — весь каталог целиком, включая любые подпапки;
+  # Bind mount: ../frontend/dist -> /var/www/eblusha.org (сборка SPA)
+  # Bind mount: ../frontend/public -> /var/www/eblusha.org-public — весь каталог целиком, включая любые подпапки;
   #   новые/изменённые файлы на хосте сразу видны в контейнере (отдельный sync не нужен). Nginx: open_file_cache off в nginx-docker.conf.
   nginx:
     image: nginx:alpine
@@ -156,8 +156,8 @@ services:
       # Доступ: ssh -L 8088:127.0.0.1:8088 host → http://127.0.0.1:8088/admin.html
       - "127.0.0.1:8088:8088"
     volumes:
-      - ../frontend/dist:/var/www/plus.eblusha.org:ro
-      - ../frontend/public:/var/www/plus.eblusha.org-public:ro
+      - ../frontend/dist:/var/www/eblusha.org:ro
+      - ../frontend/public:/var/www/eblusha.org-public:ro
       - ./nginx-docker.conf:/etc/nginx/conf.d/default.conf:ro
       - ./certs:/etc/nginx/certs:ro
     depends_on:

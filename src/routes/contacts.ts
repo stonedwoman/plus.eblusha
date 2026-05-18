@@ -142,7 +142,10 @@ router.post("/respond", async (req, res) => {
   const userId = (req as any).user!.id as string;
   const { contactId, action } = parsed.data;
 
-  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+  const contact = await prisma.contact.findUnique({
+    where: { id: contactId },
+    include: { addressee: { select: { id: true, username: true, displayName: true } } },
+  });
   if (!contact) {
     res.status(404).json({ message: "Contact not found" });
     return;
@@ -154,7 +157,15 @@ router.post("/respond", async (req, res) => {
   }
 
   if (action === "reject") {
+    const requesterId = contact.requesterId;
+    const friend = contact.addressee; // для инициатора запроса "друг" — тот, кто отклонил (addressee)
     await prisma.contact.delete({ where: { id: contactId } });
+    getIO()
+      ?.to(userRoom(requesterId))
+      .emit("contacts:request:rejected", {
+        contactId,
+        ...(friend && { friend: { id: friend.id, username: friend.username, displayName: friend.displayName } }),
+      });
     res.status(204).send();
     return;
   }

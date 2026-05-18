@@ -1,4 +1,5 @@
 import { hasSecretThreadKey } from '../secret/secretThreadKeyStore'
+import { getDefaultStorageAdapter } from '../../core/storage'
 
 export type SecretThreadState = 'NO_KEY' | 'BOOTSTRAPPING_DEVICE' | 'WAITING_KEY_PACKAGE' | 'READY' | 'ERROR'
 
@@ -40,6 +41,7 @@ type RuntimeStore = {
 
 const RUNTIME_KEY = 'eb_secret_v2_runtime_v1'
 const WAIT_TIMEOUT_MS = 120_000
+const storage = getDefaultStorageAdapter()
 
 let cache: RuntimeStore | null = null
 const listeners = new Set<() => void>()
@@ -61,7 +63,7 @@ function notify() {
 function loadStore(): RuntimeStore {
   if (cache) return cache
   try {
-    const raw = localStorage.getItem(RUNTIME_KEY)
+    const raw = storage.getItem(RUNTIME_KEY)
     if (!raw) {
       cache = { version: 1, threads: {} }
       return cache
@@ -82,7 +84,7 @@ function loadStore(): RuntimeStore {
 function saveStore(store: RuntimeStore) {
   cache = store
   try {
-    localStorage.setItem(RUNTIME_KEY, JSON.stringify(store))
+    storage.setItem(RUNTIME_KEY, JSON.stringify(store))
   } catch {}
   notify()
 }
@@ -206,7 +208,7 @@ export function __resetSecretV2StateForTests() {
   cache = null
   listeners.clear()
   try {
-    localStorage.removeItem(RUNTIME_KEY)
+    storage.removeItem(RUNTIME_KEY)
   } catch {}
 }
 

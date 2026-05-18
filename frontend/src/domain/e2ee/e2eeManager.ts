@@ -4,6 +4,7 @@ import { sha256 } from '@noble/hashes/sha256.js'
 import { api } from '../../utils/api'
 import { base64ToBytes, bytesToBase64, bytesToUtf8, utf8ToBytes } from '../../utils/base64'
 import { consumePrekeySecret, getIdentityKeyPair, getStoredDeviceInfo } from '../device/deviceManager'
+import { getDefaultStorageAdapter } from '../../core/storage'
 
 type ConversationRef = {
   id: string
@@ -28,6 +29,7 @@ type SessionRecord = {
 }
 
 const STORAGE_KEY = 'eb_e2ee_sessions_v1'
+const storage = getDefaultStorageAdapter()
 
 class E2EEManager {
   private sessions: Record<string, SessionRecord> = {}
@@ -346,7 +348,7 @@ class E2EEManager {
 
   private load() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
+      const raw = storage.getItem(STORAGE_KEY)
       if (raw) {
         this.sessions = JSON.parse(raw) as Record<string, SessionRecord>
       }
@@ -357,7 +359,7 @@ class E2EEManager {
 
   private persist() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.sessions))
+      storage.setItem(STORAGE_KEY, JSON.stringify(this.sessions))
     } catch {
       // ignore
     }

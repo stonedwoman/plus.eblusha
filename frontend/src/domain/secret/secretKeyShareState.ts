@@ -1,8 +1,11 @@
+import { getDefaultStorageAdapter } from '../../core/storage'
+
 type ReceiptMap = Record<string, Record<string, number>>
 type PendingMap = Record<string, Record<string, { lastSentAt: number; attempts: number; lastMsgId?: string }>>
 
 const KEY = 'eb_secret_keyshare_state_v1'
 const MAX_AGE_MS = 24 * 60 * 60_000
+const storage = getDefaultStorageAdapter()
 
 type State = {
   receipts: ReceiptMap
@@ -11,7 +14,7 @@ type State = {
 
 function load(): State {
   try {
-    const raw = localStorage.getItem(KEY)
+    const raw = storage.getItem(KEY)
     if (!raw) return { receipts: {}, pending: {} }
     const parsed = JSON.parse(raw) as any
     const receipts = parsed?.receipts && typeof parsed.receipts === 'object' ? parsed.receipts : {}
@@ -24,7 +27,7 @@ function load(): State {
 
 function save(state: State) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(state))
+    storage.setItem(KEY, JSON.stringify(state))
   } catch {}
 }
 

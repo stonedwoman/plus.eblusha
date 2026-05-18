@@ -31,6 +31,15 @@ export interface MessageReactionPayload {
 export interface ReceiptsUpdatePayload {
   conversationId: string
   messageIds: string[]
+  userId?: string
+  status?: 'DELIVERED' | 'READ' | 'SEEN'
+  receipts?: Array<{
+    id?: string
+    createdAt?: string
+    messageId: string
+    userId: string
+    status: 'DELIVERED' | 'READ' | 'SEEN'
+  }>
 }
 
 // ========== Беседы ==========
@@ -120,6 +129,10 @@ export interface CallStatusPayload {
   startedAt?: number
   elapsedMs?: number
   participants?: string[]
+  isGroup?: boolean
+  aloneSince?: number
+  autoEndAt?: number
+  aloneReminder?: boolean
 }
 
 export interface CallStatusBulkPayload {

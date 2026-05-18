@@ -6,34 +6,14 @@ import { Suspense } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { appRouter } from './router-app'
 import { useAppStore } from './domain/store/appStore'
-import { connectSocket } from './utils/socket'
-import { api } from './utils/api'
+import { connectSocket } from './core/realtime'
+import { validateStoredSession } from './core/auth'
+import { appLifecycle } from './core/lifecycle/appLifecycle'
+import { nativeBridge } from './platform/native-bridge/bridge'
 
 const queryClient = new QueryClient()
-
-async function validateStoredSession(): Promise<boolean> {
-  const session = useAppStore.getState().session
-  if (!session) return false
-  try {
-    const response = await api.get('/status/me')
-    if (response.data?.user) {
-      useAppStore.getState().setSession({
-        ...session,
-        user: {
-          id: response.data.user.id,
-          username: response.data.user.username,
-          displayName: response.data.user.displayName,
-          avatarUrl: response.data.user.avatarUrl,
-        },
-      })
-      return true
-    }
-    return false
-  } catch {
-    useAppStore.getState().setSession(null)
-    return false
-  }
-}
+appLifecycle.bindBrowserLifecycle()
+nativeBridge.installGlobals()
 
 function AppRoot() {
   const hydrated = useAppStore((s) => s.hydrated)

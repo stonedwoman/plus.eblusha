@@ -321,6 +321,15 @@ async function runDirectCallStaleDeclineTest(baseUrl: string) {
     assert.equal(accepted.conversationId, roomId);
     assert.equal(accepted.by.id, bob.id);
 
+    const statusPromise = waitForSocketEvent<{
+      statuses: Record<string, { active: boolean; participants?: string[]; isGroup?: boolean }>;
+    }>(aliceSocket, "call:status:bulk");
+    aliceSocket.emit("call:status:request", { conversationIds: [roomId] });
+    const statusBulk = await statusPromise;
+    assert.equal(statusBulk.statuses[roomId]?.active, true);
+    assert.equal(statusBulk.statuses[roomId]?.isGroup, false);
+    assert.deepEqual(new Set(statusBulk.statuses[roomId]?.participants ?? []), new Set([alice.id, bob.id]));
+
     const noDeclinePromise = expectNoSocketEvent(aliceSocket, "call:declined");
     bobSecondarySocket.emit("call:decline", { conversationId: roomId });
     await noDeclinePromise;
@@ -338,6 +347,126 @@ async function runDirectCallStaleDeclineTest(baseUrl: string) {
     aliceSocket.disconnect();
     bobPrimarySocket.disconnect();
     bobSecondarySocket.disconnect();
+  }
+}
+
+async function runDirectCallPendingAndStaleAcceptStatusTest(baseUrl: string) {
+  const roomId = `direct-pending-${randomUUID()}`;
+  const alice = await createUser(`direct_pending_a_${Date.now()}`);
+  const bob = await createUser(`direct_pending_b_${Date.now()}`);
+  await prisma.conversation.create({
+    data: {
+      id: roomId,
+      isGroup: false,
+      createdById: alice.id,
+      participants: {
+        create: [{ userId: alice.id }, { userId: bob.id }],
+      },
+    },
+  });
+
+  const aliceToken = signAccessToken({
+    sub: alice.id,
+    tokenId: `tok-${randomUUID()}`,
+  });
+  const bobToken = signAccessToken({
+    sub: bob.id,
+    tokenId: `tok-${randomUUID()}`,
+  });
+
+  const aliceSocket = await connectAuthedSocket(baseUrl, aliceToken);
+  const bobSocket = await connectAuthedSocket(baseUrl, bobToken);
+
+  try {
+    const incomingPromise = waitForSocketEvent<{ conversationId: string; from: { id: string }; video: boolean }>(
+      bobSocket,
+      "call:incoming"
+    );
+
+    aliceSocket.emit("call:invite", { conversationId: roomId, video: false });
+    const incoming = await incomingPromise;
+    assert.equal(incoming.conversationId, roomId);
+    assert.equal(incoming.from.id, alice.id);
+
+    const pendingStatusPromise = waitForSocketEvent<{
+      statuses: Record<string, { active: boolean; participants?: string[]; isGroup?: boolean }>;
+    }>(aliceSocket, "call:status:bulk");
+    aliceSocket.emit("call:status:request", { conversationIds: [roomId] });
+    const pendingStatus = await pendingStatusPromise;
+    assert.equal(pendingStatus.statuses[roomId]?.active, false, "Ringing direct call must not mark users IN_CALL");
+    assert.equal(pendingStatus.statuses[roomId]?.participants, undefined);
+
+    const endedPromise = waitForSocketEvent<{ conversationId: string; by: { id: string } }>(
+      bobSocket,
+      "call:ended"
+    );
+    aliceSocket.emit("call:end", { conversationId: roomId });
+    const ended = await endedPromise;
+    assert.equal(ended.conversationId, roomId);
+    assert.equal(ended.by.id, alice.id);
+
+    const noAcceptedPromise = expectNoSocketEvent(aliceSocket, "call:accepted");
+    bobSocket.emit("call:accept", { conversationId: roomId, video: false });
+    await noAcceptedPromise;
+
+    const afterStaleAcceptStatusPromise = waitForSocketEvent<{
+      statuses: Record<string, { active: boolean; participants?: string[]; isGroup?: boolean }>;
+    }>(aliceSocket, "call:status:bulk");
+    aliceSocket.emit("call:status:request", { conversationIds: [roomId] });
+    const afterStaleAcceptStatus = await afterStaleAcceptStatusPromise;
+    assert.equal(afterStaleAcceptStatus.statuses[roomId]?.active, false, "Stale accept after cancel must not create a one-person direct call");
+    assert.equal(afterStaleAcceptStatus.statuses[roomId]?.participants, undefined);
+  } finally {
+    aliceSocket.disconnect();
+    bobSocket.disconnect();
+  }
+}
+
+async function runGroupSingleParticipantStatusTest(baseUrl: string) {
+  const roomId = `group-call-${randomUUID()}`;
+  const alice = await createUser(`group_call_a_${Date.now()}`);
+  const bob = await createUser(`group_call_b_${Date.now()}`);
+  const carol = await createUser(`group_call_c_${Date.now()}`);
+  await prisma.conversation.create({
+    data: {
+      id: roomId,
+      isGroup: true,
+      title: "Group Call",
+      createdById: alice.id,
+      participants: {
+        create: [{ userId: alice.id }, { userId: bob.id }, { userId: carol.id }],
+      },
+    },
+  });
+
+  const aliceToken = signAccessToken({
+    sub: alice.id,
+    tokenId: `tok-${randomUUID()}`,
+  });
+  const aliceSocket = await connectAuthedSocket(baseUrl, aliceToken);
+
+  try {
+    const statusPromise = waitForSocketEvent<{
+      conversationId: string;
+      active: boolean;
+      participants?: string[];
+      isGroup?: boolean;
+      aloneSince?: number;
+      autoEndAt?: number;
+    }>(aliceSocket, "call:status");
+
+    aliceSocket.emit("call:invite", { conversationId: roomId, video: false });
+
+    const status = await statusPromise;
+    assert.equal(status.conversationId, roomId);
+    assert.equal(status.active, true);
+    assert.equal(status.isGroup, true);
+    assert.deepEqual(status.participants ?? [], [alice.id]);
+    assert.equal(typeof status.aloneSince, "number");
+    assert.equal(typeof status.autoEndAt, "number");
+    assert.ok((status.autoEndAt ?? 0) > (status.aloneSince ?? 0));
+  } finally {
+    aliceSocket.disconnect();
   }
 }
 
@@ -526,6 +655,8 @@ async function main() {
   try {
     await runCallsWebhookTest(baseUrl);
     await runDirectCallStaleDeclineTest(baseUrl);
+    await runDirectCallPendingAndStaleAcceptStatusTest(baseUrl);
+    await runGroupSingleParticipantStatusTest(baseUrl);
     await runConcurrentPrekeyClaimTest(baseUrl);
     await runSecretRelayTest(baseUrl);
   } finally {

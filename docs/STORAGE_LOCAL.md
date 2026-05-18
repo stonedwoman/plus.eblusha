@@ -64,6 +64,28 @@ sudo systemctl restart eblusha
    ls -la /var/lib/eblusha/storage/uploads/
    ```
 
+## Миграция с S3 на local
+
+Если файлы уже в S3, перенесите их локально:
+
+```bash
+# Убедитесь, что STORAGE_BACKEND=local и S3-переменные ещё в .env
+cd /DATA/eblusha-plus
+npm run migrate:s3-to-local
+```
+
+Проверка перед миграцией (без записи):
+```bash
+npm run migrate:s3-to-local -- --dry-run
+```
+
+Миграция первых 10 объектов (тест):
+```bash
+npm run migrate:s3-to-local -- --limit 10
+```
+
+Скрипт идемпотентен: уже скопированные файлы пропускаются. После миграции все ссылки в БД (`/api/files/uploads/xxx.eblusha`) продолжат работать без изменений.
+
 ## Переключение обратно на S3
 
 ```env

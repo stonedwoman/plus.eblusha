@@ -9,6 +9,15 @@ import { initSocket } from "./realtime/socket";
 
 const port = env.PORT;
 
+// Log storage config at startup for debugging (STORAGE_ENC_V2, STORAGE_BACKEND)
+logger.info(
+  {
+    STORAGE_ENC_V2: env.STORAGE_ENC_V2,
+    STORAGE_BACKEND: env.STORAGE_BACKEND,
+  },
+  "Storage config"
+);
+
 // Local uploads are disabled by default when S3 is configured.
 // This enforces "nothing is stored on the server" for media.
 const s3Configured = !!(env.STORAGE_S3_ENDPOINT && env.STORAGE_S3_REGION && env.STORAGE_S3_BUCKET);

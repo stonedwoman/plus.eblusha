@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useChatUiStore } from '../../../../core/chat-sync/chatUiStore'
 
 export function useChatsResponsive(activeId: string | null) {
   const initialIsMobile = typeof window !== 'undefined' ? window.innerWidth <= 768 : false
@@ -8,10 +9,8 @@ export function useChatsResponsive(activeId: string | null) {
   const [isMobile, setIsMobile] = useState(initialIsMobile)
   const isMobileRef = useRef(initialIsMobile)
   const [isNarrowHeaderButtons, setIsNarrowHeaderButtons] = useState(initialIsNarrowHeaderButtons)
-  const [mobileView, setMobileView] = useState<'list' | 'conversation'>(() => {
-    if (!initialIsMobile) return 'conversation'
-    return activeId ? 'conversation' : 'list'
-  })
+  const mobileView = useChatUiStore((state) => state.mobileView)
+  const setMobileView = useChatUiStore((state) => state.setMobileView)
 
   useEffect(() => {
     isMobileRef.current = isMobile

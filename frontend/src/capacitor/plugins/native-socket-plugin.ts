@@ -2,6 +2,8 @@ import { registerPlugin } from '@capacitor/core'
 
 export interface NativeSocketPlugin {
   updateToken(options: { token: string; refreshToken?: string | null }): Promise<{ success: boolean }>
+  getStoredTokens(): Promise<{ token?: string | null; refreshToken?: string | null }>
+  clearTokens(): Promise<{ success: boolean }>
   requestBatteryOptimizationExemption(): Promise<{ granted: boolean; message?: string }>
   setPresenceFocus(options: { focused: boolean }): Promise<{ focused: boolean }>
 }
@@ -9,6 +11,12 @@ export interface NativeSocketPlugin {
 const NativeSocket = registerPlugin<NativeSocketPlugin>('NativeSocket', {
   web: () => ({
     async updateToken() {
+      return { success: true }
+    },
+    async getStoredTokens() {
+      return { token: null, refreshToken: null }
+    },
+    async clearTokens() {
       return { success: true }
     },
     async requestBatteryOptimizationExemption() {

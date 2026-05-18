@@ -1,8 +1,12 @@
 import { LocalNotifications } from '@capacitor/local-notifications'
 import { App } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
-import MessageNotification from '../plugins/message-notification-plugin'
+import MessageNotification, {
+  getMessageNotificationRuntimeStatus,
+} from '../plugins/message-notification-plugin'
 import type { MessageNotifyPayload, MessageNewPayload } from '../types/socket-events'
+import { appLifecycle } from '../../core/lifecycle/appLifecycle'
+import { isAndroidApkShell } from '../../utils/platform'
 
 export interface NotificationData {
   id: string
@@ -22,9 +26,11 @@ export class NotificationService {
   private conversationNotifications = new Map<string, number>() // conversationId -> notificationId
   private isAppActive = true
   private isDocumentVisible = typeof document === 'undefined' ? true : !document.hidden
-  private useMessagePlugin = false
   private appStateWarningLogged = false
   private hasInitialAppState = false
+  private lifecycleBackground = false
+  private lifecycleBound = false
+  private missingMessagePluginLogged = false
 
   /**
    * Инициализация сервиса уведомлений
@@ -46,13 +52,8 @@ export class NotificationService {
     console.log('[NotificationService] ✅ Notification permission granted')
 
     const platform = typeof Capacitor.getPlatform === 'function' ? Capacitor.getPlatform() : 'web'
-    const isNativePlatform =
-      typeof Capacitor.isNativePlatform === 'function' ? Capacitor.isNativePlatform() : platform !== 'web'
-    const pluginAvailable =
-      typeof Capacitor.isPluginAvailable === 'function' ? Capacitor.isPluginAvailable('MessageNotification') : false
-
-    this.useMessagePlugin = isNativePlatform && pluginAvailable
-    console.log('[NotificationService] MessageNotification plugin available:', this.useMessagePlugin)
+    const pluginRuntime = getMessageNotificationRuntimeStatus()
+    console.log('[NotificationService] MessageNotification runtime:', pluginRuntime)
 
     if (platform === 'android') {
       await this.configureChannels()
@@ -82,10 +83,29 @@ export class NotificationService {
       })
     }
 
+    if (!this.lifecycleBound) {
+      this.lifecycleBound = true
+      appLifecycle.on('foreground', () => {
+        this.lifecycleBackground = false
+        this.isAppActive = true
+      })
+      appLifecycle.on('focus', () => {
+        if (this.isDocumentVisible) {
+          this.lifecycleBackground = false
+          this.isAppActive = true
+        }
+      })
+      appLifecycle.on('background', () => {
+        this.lifecycleBackground = true
+        this.isAppActive = false
+      })
+    }
+
     // Обработчик открытия приложения по уведомлению
     App.addListener('appStateChange', (state) => {
       this.isAppActive = state.isActive
       this.hasInitialAppState = true
+      this.lifecycleBackground = !state.isActive
       console.log('[NotificationService] appStateChange event:', state.isActive ? 'active' : 'background')
       if (state.isActive) {
         // Приложение стало активным - можно обновить UI
@@ -96,12 +116,14 @@ export class NotificationService {
     App.addListener('pause', () => {
       this.isAppActive = false
       this.hasInitialAppState = true
+      this.lifecycleBackground = true
       console.log('[NotificationService] pause event received, marking app as background')
     })
 
     App.addListener('resume', () => {
       this.isAppActive = true
       this.hasInitialAppState = true
+      this.lifecycleBackground = false
       console.log('[NotificationService] resume event received, marking app as active')
       this.onAppBecameActive()
     })
@@ -111,8 +133,15 @@ export class NotificationService {
       const extra = notification.notification.extra as any
       if (extra?.conversationId) {
         console.log('[NotificationService] Notification clicked, opening conversation:', extra.conversationId)
-        // Открываем беседу через intent (будет обработано в MainActivity)
-        // Это будет сделано через нативный код или через App plugin
+        if (typeof window !== 'undefined' && typeof window.onNotificationOpened === 'function') {
+          void window.onNotificationOpened({
+            version: 1,
+            target: extra?.callType ? 'call' : 'conversation',
+            conversationId: String(extra.conversationId),
+            messageId: typeof extra?.messageId === 'string' ? extra.messageId : undefined,
+            source: 'local',
+          })
+        }
       }
     })
   }
@@ -136,12 +165,16 @@ export class NotificationService {
     
     // Проверяем, активно ли приложение
     const inForeground = await this.isInForeground()
+    const pluginRuntime = getMessageNotificationRuntimeStatus()
     console.log(
       '[NotificationService] Foreground status:',
       inForeground ? 'active' : 'background',
       JSON.stringify({
         appActive: this.isAppActive,
         documentVisible: this.isDocumentVisible,
+        lifecycleBackground: this.lifecycleBackground,
+        apkShell: isAndroidApkShell(),
+        pluginRuntime,
       })
     )
     if (inForeground) {
@@ -298,6 +331,10 @@ export class NotificationService {
   }): Promise<void> {
     try {
       const delivery = await this.scheduleMessageNotification(options)
+      if (delivery === 'unavailable') {
+        console.warn('[NotificationService] Native message notification skipped: plugin unavailable in APK runtime')
+        return
+      }
       this.notificationIds.add(options.id)
       this.notificationSources.set(options.id, delivery === 'plugin' ? 'message-plugin' : 'message-local')
       this.conversationNotifications.set(options.conversationId, options.id)
@@ -318,8 +355,19 @@ export class NotificationService {
     avatarUrl?: string
     senderId?: string
     messageId?: string
-  }): Promise<'plugin' | 'local'> {
-    if (this.useMessagePlugin) {
+  }): Promise<'plugin' | 'local' | 'unavailable'> {
+    const pluginRuntime = getMessageNotificationRuntimeStatus()
+    const canUseNativeMessagePlugin = pluginRuntime.hasWindowPlugin
+
+    console.info('[NotificationService] Message notification decision', {
+      apkShell: isAndroidApkShell(),
+      conversationId: options.conversationId,
+      messageId: options.messageId,
+      hasWindowPlugin: pluginRuntime.hasWindowPlugin,
+      isPluginAvailable: pluginRuntime.isPluginAvailable,
+    })
+
+    if (canUseNativeMessagePlugin) {
       try {
         await MessageNotification.show({
           id: options.id,
@@ -328,14 +376,29 @@ export class NotificationService {
           messageText: options.body,
           avatarUrl: options.avatarUrl,
         })
+        console.info('[NotificationService] MessageNotification.show succeeded', {
+          conversationId: options.conversationId,
+          messageId: options.messageId,
+          id: options.id,
+        })
         return 'plugin'
       } catch (error) {
         console.warn(
           '[NotificationService] ⚠️ MessageNotification plugin failed, falling back to LocalNotifications',
           error
         )
-        this.useMessagePlugin = false
       }
+    }
+
+    if (isAndroidApkShell() && !pluginRuntime.hasWindowPlugin) {
+      if (!this.missingMessagePluginLogged) {
+        this.missingMessagePluginLogged = true
+        console.warn(
+          '[NotificationService] APK shell detected but window.Capacitor.Plugins.MessageNotification is unavailable; native message notifications cannot be shown from frontend',
+          pluginRuntime,
+        )
+      }
+      return 'unavailable'
     }
 
     await this.scheduleViaLocalNotifications(options)
@@ -460,7 +523,7 @@ export class NotificationService {
       this.isDocumentVisible = !document.hidden
     }
 
-    return this.isAppActive && this.isDocumentVisible
+    return this.isAppActive && this.isDocumentVisible && !this.lifecycleBackground
   }
 }
 

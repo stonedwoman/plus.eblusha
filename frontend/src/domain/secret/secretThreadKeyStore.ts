@@ -1,7 +1,9 @@
 import nacl from 'tweetnacl'
 import { bytesToBase64, base64ToBytes } from '../../utils/base64'
+import { getDefaultStorageAdapter } from '../../core/storage'
 
 const STORAGE_KEY = 'eb_secret_thread_keys_v1'
+const storage = getDefaultStorageAdapter()
 
 export type SecretThreadKeyRecord = {
   key: string // base64(32 bytes)
@@ -13,7 +15,7 @@ type StoreShape = Record<string, SecretThreadKeyRecord>
 
 function loadStore(): StoreShape {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = storage.getItem(STORAGE_KEY)
     if (!raw) return {}
     const parsed = JSON.parse(raw) as StoreShape
     if (!parsed || typeof parsed !== 'object') return {}
@@ -25,7 +27,7 @@ function loadStore(): StoreShape {
 
 function saveStore(next: StoreShape) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    storage.setItem(STORAGE_KEY, JSON.stringify(next))
   } catch {
     // ignore
   }

@@ -1,11 +1,11 @@
 # Cloudflare Tunnel для eblusha.org
 
-Трафик на **eblusha.org** (включая `/v` и Valheim-статику) идёт через Cloudflare Tunnel (`cloudflared`) на машину, где крутится nginx с тем же `root`, что и для plus. **Запасной вход из РФ**, если Cloudflare недоступен: оставьте отдельное имя (например `ru.eblusha.org` или прямой IP/старый frp) **вне** этого туннеля — см. раздел ниже.
+Трафик на **eblusha.org** (включая `/v` и Valheim-статику) идёт через Cloudflare Tunnel (`cloudflared`) на машину, где крутится nginx с тем же `root`, что и для продакшена сайта. **Запасной вход из РФ**, если Cloudflare недоступен: оставьте отдельное имя (например `ru.eblusha.org` или прямой IP/старый frp) **вне** этого туннеля — см. раздел ниже.
 
 ## Что нужно на origin
 
 1. Nginx (или контейнер `eblusha-nginx`) слушает HTTP **80** на `127.0.0.1` — туннель шлёт запросы на `http://localhost:80`.
-2. В `server_name` указаны `eblusha.org`, `www.eblusha.org` и при необходимости `voice.eblusha.org` — см. `deploy/nginx-plus.eblusha.org.conf` (хостовый nginx) или настройте аналог для Docker.
+2. В `server_name` указаны `eblusha.org`, `www.eblusha.org` и при необходимости `voice.eblusha.org` — см. `deploy/nginx-eblusha.org.conf` (хостовый nginx) или настройте аналог для Docker.
 3. Сертификат на origin для **прямого** доступа (запасной путь) может оставаться на 443; для туннеля достаточно HTTP:80.
 
 ## Установка cloudflared (Linux)

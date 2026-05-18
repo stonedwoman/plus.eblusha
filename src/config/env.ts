@@ -8,7 +8,7 @@ dotenv.config({ path: ".env.local", override: true });
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().default(4000),
-  // Один origin или несколько через запятую (http://stoned.local,https://plus.eblusha.org)
+  // Один origin или несколько через запятую (http://stoned.local,https://eblusha.org)
   CLIENT_URL: z
     .string()
     .optional()

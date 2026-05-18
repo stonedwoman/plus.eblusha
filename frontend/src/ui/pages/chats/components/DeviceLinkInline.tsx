@@ -221,7 +221,7 @@ export function DeviceLinkInline(props: {
       if (!token && code.length !== CODE_LEN) throw new Error('Введите 8 цифр')
 
       // Ensure this new device has OPKs so trusted device can encrypt the key package to us.
-      await forcePublishPrekeys({ reason: 'link_device_join', count: 200, force: true })
+      await forcePublishPrekeys({ reason: 'link_device_join', count: 50, force: true })
 
       const devicesResp = await api.get('/devices')
       const deviceIds = ((devicesResp.data?.devices ?? []) as any[])

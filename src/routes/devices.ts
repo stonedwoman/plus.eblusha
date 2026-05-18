@@ -4,6 +4,7 @@ import prisma from "../lib/prisma";
 import { authenticate } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rateLimit";
 import crypto from "crypto";
+import { revokeRefreshTokensForDevice, revokeRefreshTokensForDevices } from "../lib/authSessions";
 import { kickDevice } from "../realtime/socket";
 import { buildIpLocation } from "../lib/ipLocation";
 
@@ -12,6 +13,7 @@ const router = Router();
 router.use(authenticate);
 
 type AuthedRequest = Request & { user?: { id: string }; deviceId?: string };
+const MAX_UNCONSUMED_PREKEYS_PER_DEVICE = 250;
 
 async function resolveCurrentDeviceId(req: Request): Promise<string | null> {
   const r = req as AuthedRequest;
@@ -27,6 +29,33 @@ async function resolveCurrentDeviceId(req: Request): Promise<string | null> {
   });
   if (!device || device.userId !== r.user?.id || device.revokedAt) return null;
   return device.id;
+}
+
+async function getCappedUnconsumedPrekeyCount(deviceId: string): Promise<number> {
+  const rows = await prisma.$queryRaw<Array<{ count: number | bigint }>>`
+    SELECT COUNT(*)::int AS "count"
+    FROM (
+      SELECT 1
+      FROM "DevicePrekey"
+      WHERE "deviceId" = ${deviceId}
+        AND "consumedAt" IS NULL
+      LIMIT ${MAX_UNCONSUMED_PREKEYS_PER_DEVICE}
+    ) AS limited
+  `;
+  const rawCount = rows[0]?.count ?? 0;
+  const numericCount = typeof rawCount === "bigint" ? Number(rawCount) : Number(rawCount ?? 0);
+  return Number.isFinite(numericCount) ? numericCount : 0;
+}
+
+async function getAvailablePrekeySlots(deviceId: string): Promise<number> {
+  const observed = await getCappedUnconsumedPrekeyCount(deviceId);
+  if (observed >= MAX_UNCONSUMED_PREKEYS_PER_DEVICE) return 0;
+  return Math.max(0, MAX_UNCONSUMED_PREKEYS_PER_DEVICE - observed);
+}
+
+function takePrekeysWithinAvailableSlots<T>(prekeys: T[] | undefined, availableSlots: number): T[] {
+  if (!prekeys?.length || availableSlots <= 0) return [];
+  return prekeys.slice(0, availableSlots);
 }
 
 const registerSchema = z.object({
@@ -65,16 +94,18 @@ router.get("/", async (req, res) => {
   const devices = await prisma.userDevice.findMany({
     where: { userId },
     orderBy: { createdAt: "asc" },
-    include: {
-      _count: {
-        select: {
-          prekeys: {
-            where: { consumedAt: null },
-          },
-        },
-      },
-    },
   });
+  const availablePrekeysByDeviceId = new Map<string, number>();
+  await Promise.all(
+    devices.map(async (device) => {
+      if (device.revokedAt) {
+        availablePrekeysByDeviceId.set(device.id, 0);
+        return;
+      }
+      const count = await getCappedUnconsumedPrekeyCount(device.id);
+      availablePrekeysByDeviceId.set(device.id, count);
+    })
+  );
   res.json({
     devices: devices.map((d) => ({
       id: d.id,
@@ -99,7 +130,7 @@ router.get("/", async (req, res) => {
         : null,
       version: d.keyVersion,
       alg: d.keyAlg,
-      availablePrekeys: d._count.prekeys,
+      availablePrekeys: availablePrekeysByDeviceId.get(d.id) ?? 0,
     })),
   });
 });
@@ -237,9 +268,13 @@ router.post(
     },
   });
 
-  if (prekeys && prekeys.length) {
+  const acceptedRegisterPrekeys = prekeys?.length
+    ? takePrekeysWithinAvailableSlots(prekeys, await getAvailablePrekeySlots(deviceId))
+    : [];
+
+  if (acceptedRegisterPrekeys.length) {
     await prisma.devicePrekey.createMany({
-      data: prekeys.map((pk) => ({
+      data: acceptedRegisterPrekeys.map((pk) => ({
         deviceId,
         keyId: pk.keyId,
         publicKey: pk.publicKey,
@@ -252,7 +287,12 @@ router.post(
     });
   }
 
-  res.json({ device });
+  res.json({
+    device,
+    insertedKeyIds: acceptedRegisterPrekeys.map((pk) => pk.keyId),
+    skippedPrekeys: Math.max(0, (prekeys?.length ?? 0) - acceptedRegisterPrekeys.length),
+    maxUnconsumedPrekeys: MAX_UNCONSUMED_PREKEYS_PER_DEVICE,
+  });
   }
 );
 
@@ -296,19 +336,30 @@ router.post(
     res.status(409).json({ message: "Device is revoked" });
     return;
   }
-  await prisma.devicePrekey.createMany({
-    data: parsed.data.prekeys.map((pk) => ({
-      deviceId,
-      keyId: pk.keyId,
-      publicKey: pk.publicKey,
-      oneTimePreKeyId: pk.oneTimePreKeyId ?? pk.keyId,
-      oneTimePreKeyPublic: pk.oneTimePreKeyPublic ?? pk.publicKey,
-      version: pk.version ?? 1,
-      alg: pk.alg ?? "x25519",
-    })),
-    skipDuplicates: true,
+  const acceptedPublishPrekeys = takePrekeysWithinAvailableSlots(
+    parsed.data.prekeys,
+    await getAvailablePrekeySlots(deviceId)
+  );
+  if (acceptedPublishPrekeys.length) {
+    await prisma.devicePrekey.createMany({
+      data: acceptedPublishPrekeys.map((pk) => ({
+        deviceId,
+        keyId: pk.keyId,
+        publicKey: pk.publicKey,
+        oneTimePreKeyId: pk.oneTimePreKeyId ?? pk.keyId,
+        oneTimePreKeyPublic: pk.oneTimePreKeyPublic ?? pk.publicKey,
+        version: pk.version ?? 1,
+        alg: pk.alg ?? "x25519",
+      })),
+      skipDuplicates: true,
+    });
+  }
+  res.json({
+    success: true,
+    insertedKeyIds: acceptedPublishPrekeys.map((pk) => pk.keyId),
+    skippedPrekeys: Math.max(0, parsed.data.prekeys.length - acceptedPublishPrekeys.length),
+    maxUnconsumedPrekeys: MAX_UNCONSUMED_PREKEYS_PER_DEVICE,
   });
-  res.json({ success: true });
   }
 );
 
@@ -401,6 +452,7 @@ router.delete("/:deviceId", async (req, res) => {
     where: { id: deviceId },
     data: { revokedAt: new Date() },
   });
+  await revokeRefreshTokensForDevice(userId, deviceId, "device_revoked");
   try {
     kickDevice(deviceId, { reason: "revoked" });
   } catch {
@@ -431,6 +483,11 @@ router.post("/revoke-others", async (req, res) => {
       // ignore
     }
   }
+  await revokeRefreshTokensForDevices(
+    userId,
+    others.map((row) => row.id),
+    "device_revoked"
+  );
   res.json({ success: true });
 });
 

@@ -37,6 +37,7 @@ export class SocketService {
   private reconnectAttempts = 0
   private maxReconnectAttempts = 10
   private isManuallyDisconnected = false
+  private rawListeners = new Map<string, Set<(payload: unknown) => void>>()
 
   constructor(wsUrl: string) {
     this.wsUrl = wsUrl
@@ -92,6 +93,7 @@ export class SocketService {
     }
 
     this.setupEventHandlers()
+    this.attachRawListeners()
     this.socket.connect()
     console.log('[SocketService] Connection initiated')
   }
@@ -173,6 +175,35 @@ export class SocketService {
     this.reconnect()
   }
 
+  onRaw<T = unknown>(event: string, callback: (payload: T) => void): () => void {
+    const rawCallback = callback as (payload: unknown) => void
+    const listeners = this.rawListeners.get(event) ?? new Set<(payload: unknown) => void>()
+    const alreadyBound = listeners.has(rawCallback)
+
+    if (!alreadyBound) {
+      listeners.add(rawCallback)
+      this.rawListeners.set(event, listeners)
+      this.socket?.on(event, rawCallback)
+    }
+
+    return () => {
+      const current = this.rawListeners.get(event)
+      current?.delete(rawCallback)
+      if (current && current.size === 0) {
+        this.rawListeners.delete(event)
+      }
+      this.socket?.off(event, rawCallback)
+    }
+  }
+
+  emitRaw(event: string, payload: unknown): void {
+    if (!this.socket?.connected) {
+      console.warn(`[SocketService] Socket not connected, cannot emit ${event}`)
+      return
+    }
+    this.socket.emit(event, payload)
+  }
+
   /**
    * Настройка обработчиков событий подключения
    */
@@ -233,6 +264,15 @@ export class SocketService {
       console.error('[SocketService] ❌ Reconnect failed after all attempts')
       // Можно попробовать переподключиться вручную позже
     })
+  }
+
+  private attachRawListeners(): void {
+    if (!this.socket) return
+    for (const [event, listeners] of this.rawListeners.entries()) {
+      for (const listener of listeners) {
+        this.socket.on(event, listener)
+      }
+    }
   }
 
   // ========== Подписки на события (от сервера) ==========
@@ -324,120 +364,69 @@ export class SocketService {
   // ========== Звонки ==========
 
   onCallIncoming(callback: (payload: CallIncomingPayload) => void): () => void {
-    if (!this.socket) return () => {}
-    this.socket.on('call:incoming', callback)
-    return () => this.socket?.off('call:incoming', callback)
+    return this.onRaw('call:incoming', callback)
   }
 
   onCallAccepted(callback: (payload: CallAcceptedPayload) => void): () => void {
-    if (!this.socket) return () => {}
-    this.socket.on('call:accepted', callback)
-    return () => this.socket?.off('call:accepted', callback)
+    return this.onRaw('call:accepted', callback)
   }
 
   onCallDeclined(callback: (payload: CallDeclinedPayload) => void): () => void {
-    if (!this.socket) return () => {}
-    this.socket.on('call:declined', callback)
-    return () => this.socket?.off('call:declined', callback)
+    return this.onRaw('call:declined', callback)
   }
 
   onCallEnded(callback: (payload: CallEndedPayload) => void): () => void {
-    if (!this.socket) return () => {}
-    this.socket.on('call:ended', callback)
-    return () => this.socket?.off('call:ended', callback)
+    return this.onRaw('call:ended', callback)
   }
 
   onCallStatus(callback: (payload: CallStatusPayload) => void): () => void {
-    if (!this.socket) return () => {}
-    this.socket.on('call:status', callback)
-    return () => this.socket?.off('call:status', callback)
+    return this.onRaw('call:status', callback)
   }
 
   onCallStatusBulk(callback: (payload: CallStatusBulkPayload) => void): () => void {
-    if (!this.socket) return () => {}
-    this.socket.on('call:status:bulk', callback)
-    return () => this.socket?.off('call:status:bulk', callback)
+    return this.onRaw('call:status:bulk', callback)
   }
 
   // ========== Отправка событий (к серверу) ==========
 
   emitConversationTyping(payload: ConversationTypingEmitPayload): void {
-    if (!this.socket?.connected) {
-      console.warn('[SocketService] Socket not connected, cannot emit conversation:typing')
-      return
-    }
-    this.socket.emit('conversation:typing', payload)
+    this.emitRaw('conversation:typing', payload)
   }
 
   emitCallInvite(payload: CallInvitePayload): void {
-    if (!this.socket?.connected) {
-      console.warn('[SocketService] Socket not connected, cannot emit call:invite')
-      return
-    }
-    this.socket.emit('call:invite', payload)
+    this.emitRaw('call:invite', payload)
   }
 
   emitCallAccept(payload: CallAcceptPayload): void {
-    if (!this.socket?.connected) {
-      console.warn('[SocketService] Socket not connected, cannot emit call:accept')
-      return
-    }
-    this.socket.emit('call:accept', payload)
+    this.emitRaw('call:accept', payload)
   }
 
   emitCallDecline(payload: CallDeclinePayload): void {
-    if (!this.socket?.connected) {
-      console.warn('[SocketService] Socket not connected, cannot emit call:decline')
-      return
-    }
-    this.socket.emit('call:decline', payload)
+    this.emitRaw('call:decline', payload)
   }
 
   emitCallEnd(payload: CallEndPayload): void {
-    if (!this.socket?.connected) {
-      console.warn('[SocketService] Socket not connected, cannot emit call:end')
-      return
-    }
-    this.socket.emit('call:end', payload)
+    this.emitRaw('call:end', payload)
   }
 
   emitCallRoomJoin(payload: CallRoomJoinPayload): void {
-    if (!this.socket?.connected) {
-      console.warn('[SocketService] Socket not connected, cannot emit call:room:join')
-      return
-    }
-    this.socket.emit('call:room:join', payload)
+    this.emitRaw('call:room:join', payload)
   }
 
   emitCallRoomLeave(payload: CallRoomLeavePayload): void {
-    if (!this.socket?.connected) {
-      console.warn('[SocketService] Socket not connected, cannot emit call:room:leave')
-      return
-    }
-    this.socket.emit('call:room:leave', payload)
+    this.emitRaw('call:room:leave', payload)
   }
 
   emitCallStatusRequest(payload: CallStatusRequestPayload): void {
-    if (!this.socket?.connected) {
-      console.warn('[SocketService] Socket not connected, cannot emit call:status:request')
-      return
-    }
-    this.socket.emit('call:status:request', payload)
+    this.emitRaw('call:status:request', payload)
   }
 
   emitConversationJoin(conversationId: string): void {
-    if (!this.socket?.connected) {
-      console.warn('[SocketService] Socket not connected, cannot emit conversation:join')
-      return
-    }
-    this.socket.emit('conversation:join', conversationId)
+    this.emitRaw('conversation:join', conversationId)
   }
 
   emitPresenceFocus(focused: boolean): void {
-    if (!this.socket?.connected) {
-      return
-    }
-    this.socket.emit('presence:focus', { focused })
+    this.emitRaw('presence:focus', { focused })
   }
 }
 

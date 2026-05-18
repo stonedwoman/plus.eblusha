@@ -1,4 +1,4 @@
-# Deployment steps for plus.eblusha.org
+# Deployment steps for eblusha.org
 
 These files are prefilled for your project and domain.
 
@@ -19,7 +19,7 @@ docker compose -f deploy/docker-compose.full.yml --env-file .env up -d --build
 ```
 
 В `.env` задайте:
-- `LIVEKIT_URL=ws://stoned.local` (для HTTP) или `wss://plus.eblusha.org` (для HTTPS)
+- `LIVEKIT_URL=ws://stoned.local` (для HTTP) или `wss://eblusha.org` (для HTTPS)
 - `LIVEKIT_API_KEY=myapp` и `LIVEKIT_API_SECRET` (должны совпадать с ключами в LiveKit)
 
 ---
@@ -43,7 +43,7 @@ Create `/opt/eblusha-plus/.env` based on below template (values already tailored
 ```
 NODE_ENV=production
 PORT=4000
-APP_ORIGIN=https://plus.eblusha.org
+APP_ORIGIN=https://eblusha.org
 DATABASE_URL=postgresql://eblusha:S3cure_DB_Pass@127.0.0.1:5432/eblusha?schema=public
 JWT_SECRET=replace_with_long_random_hex_64
 JWT_REFRESH_SECRET=replace_with_long_random_hex_64
@@ -87,21 +87,21 @@ sudo journalctl -u eblusha -f
 cd /opt/eblusha-plus/frontend
 npm ci
 npm run build
-sudo mkdir -p /var/www/plus.eblusha.org
-sudo rsync -a dist/ /var/www/plus.eblusha.org/
+sudo mkdir -p /var/www/eblusha.org
+sudo rsync -a dist/ /var/www/eblusha.org/
 ```
 
 ## 7) Nginx
 ```
-sudo cp /opt/eblusha-plus/deploy/nginx-plus.eblusha.org.conf /etc/nginx/sites-available/plus.eblusha.org
-sudo ln -sf /etc/nginx/sites-available/plus.eblusha.org /etc/nginx/sites-enabled/plus.eblusha.org
+sudo cp /opt/eblusha-plus/deploy/nginx-eblusha.org.conf /etc/nginx/sites-available/eblusha.org
+sudo ln -sf /etc/nginx/sites-available/eblusha.org /etc/nginx/sites-enabled/eblusha.org
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ## 8) HTTPS
 ```
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d plus.eblusha.org --redirect --agree-tos -m you@example.com -n
+sudo certbot --nginx -d eblusha.org -d www.eblusha.org --redirect --agree-tos -m you@example.com -n
 ```
 
 ## Крупные файлы (большие не загружаются)
@@ -109,8 +109,7 @@ sudo certbot --nginx -d plus.eblusha.org --redirect --agree-tos -m you@example.c
 1. **Nginx** — любой nginx перед backend обязан иметь:
    - `client_max_body_size 1024m;` (дефолт nginx = 1MB!)
    - `proxy_read_timeout 3600s;` и `proxy_send_timeout 3600s;`
-   Файл `deploy/nginx-plus.eblusha.org.conf` уже содержит это. При кастомном конфиге — добавьте.
+   Файл `deploy/nginx-eblusha.org.conf` уже содержит это. При кастомном конфиге — добавьте.
 
 2. **EBP2** — файлы >50 MB автоматически шифруются потоково (EBP2). `STORAGE_ENC_V2=true` включает EBP2 для всех; без флага — только для больших.
-
 

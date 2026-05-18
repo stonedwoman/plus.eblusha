@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
-import { socket, connectSocket } from '../../utils/socket'
+import { socket, connectSocket } from '../../core/realtime'
 import { ensureDeviceBootstrap, forcePublishPrekeys } from '../device/deviceManager'
 import { exportSecretThreadKeys, getSecretThreadKey, importSecretThreadKeys, setSecretThreadKey } from './secretThreadKeyStore'
 import { decryptSecretThreadText } from './secretThreadCrypto'
@@ -11,6 +11,7 @@ import { markKeyReceipt, markKeyShareSent } from './secretKeyShareState'
 import { createEncryptedKeyPackageToDevice } from './secretKeyPackages'
 import { clientLog } from './secretClientLog'
 import { createAndShareSecretThreadKey } from './secretThreadSetup'
+import { getDefaultStorageAdapter } from '../../core/storage'
 
 type InboxItem = {
   msgId: string
@@ -34,10 +35,17 @@ function secretDebugEnabled(): boolean {
     if (typeof window === 'undefined') return false
     const q = String(window.location?.search ?? '')
     if (q.includes('SECRET_DEBUG=1')) return true
-    return window.localStorage.getItem('eb_secret_debug') === '1'
+    return storage.getItem('eb_secret_debug') === '1'
   } catch {
     return false
   }
+}
+
+function isBootstrapRepairableError(err: any): boolean {
+  const status = typeof err?.response?.status === 'number' ? err.response.status : null
+  const message = String(err?.response?.data?.message ?? err?.message ?? '').toLowerCase()
+  if (status !== 400 && status !== 404) return false
+  return message.includes('device') || message.includes('bootstrap')
 }
 
 type InboxAttemptRec = { count: number; firstAt: number; lastAt: number; rootCause?: string; prekeyId?: string }
@@ -46,10 +54,11 @@ const LAST_ROOT_CAUSE_KEY = 'eb_secret_last_root_cause_v1'
 const ROOT_CAUSE_COUNTS_KEY = 'eb_secret_root_cause_counts_v1'
 const ATTEMPT_TTL_MS = 30 * 60_000
 const POISON_THRESHOLD = 20
+const storage = getDefaultStorageAdapter()
 
 function loadAttempts(): Record<string, InboxAttemptRec> {
   try {
-    const raw = localStorage.getItem(ATTEMPTS_KEY)
+    const raw = storage.getItem(ATTEMPTS_KEY)
     if (!raw) return {}
     const parsed = JSON.parse(raw) as any
     if (!parsed || typeof parsed !== 'object') return {}
@@ -60,7 +69,7 @@ function loadAttempts(): Record<string, InboxAttemptRec> {
 }
 function saveAttempts(next: Record<string, InboxAttemptRec>) {
   try {
-    localStorage.setItem(ATTEMPTS_KEY, JSON.stringify(next))
+    storage.setItem(ATTEMPTS_KEY, JSON.stringify(next))
   } catch {}
 }
 function bumpAttempt(msgId: string, info?: { rootCause?: string; prekeyId?: string }) {
@@ -93,15 +102,15 @@ function bumpAttempt(msgId: string, info?: { rootCause?: string; prekeyId?: stri
 
 function setLastRootCause(code: string, details?: Record<string, any>) {
   try {
-    localStorage.setItem(LAST_ROOT_CAUSE_KEY, JSON.stringify({ code, at: Date.now(), ...(details ? { details } : {}) }))
+    storage.setItem(LAST_ROOT_CAUSE_KEY, JSON.stringify({ code, at: Date.now(), ...(details ? { details } : {}) }))
   } catch {}
   try {
-    const raw = localStorage.getItem(ROOT_CAUSE_COUNTS_KEY)
+    const raw = storage.getItem(ROOT_CAUSE_COUNTS_KEY)
     const parsed = raw ? (JSON.parse(raw) as any) : {}
     const obj = parsed && typeof parsed === 'object' ? parsed : {}
     const prev = typeof obj[code] === 'number' ? obj[code] : 0
     obj[code] = prev + 1
-    localStorage.setItem(ROOT_CAUSE_COUNTS_KEY, JSON.stringify(obj))
+    storage.setItem(ROOT_CAUSE_COUNTS_KEY, JSON.stringify(obj))
   } catch {}
 }
 
@@ -147,6 +156,7 @@ export function SecretInboxPump() {
   const pullingRef = useRef(false)
   const bootstrapReadyRef = useRef<Promise<any> | null>(null)
   const lastSelfHealAtRef = useRef<number>(0)
+  const lastBootstrapRepairAtRef = useRef<number>(0)
 
   useEffect(() => {
     let mounted = true
@@ -162,20 +172,6 @@ export function SecretInboxPump() {
       })
     }
 
-    // Publish OPKs as soon as device bootstrap is ready (do NOT wait for inbox pull success).
-    // This reduces long "No prekeys available" windows when the network is flaky.
-    void (async () => {
-      try {
-        const boot = await (bootstrapReadyRef.current ?? Promise.resolve(null))
-        if (!mounted || !boot) return
-        const now = Date.now()
-        if (now - lastSelfHealAtRef.current > 5_000) {
-          await forcePublishPrekeys({ reason: 'secret_inbox_bootstrap_ready', count: 200 })
-          lastSelfHealAtRef.current = Date.now()
-        }
-      } catch {}
-    })()
-
     const pullOnce = async () => {
       if (!mounted) return
       if (pullingRef.current) return
@@ -185,16 +181,6 @@ export function SecretInboxPump() {
         const bootstrapRes = await (bootstrapReadyRef.current ?? Promise.resolve(null))
         const bootstrapReady = !!bootstrapRes
         if (!bootstrapReady) return
-
-        // Proactively publish OPKs so peers can encrypt key packages to this device.
-        // This removes multi-minute "No prekeys available" windows on fresh/idle clients.
-        try {
-          const now = Date.now()
-          if (now - lastSelfHealAtRef.current > 5_000) {
-            await forcePublishPrekeys({ reason: 'secret_inbox_pull_loop' })
-            lastSelfHealAtRef.current = Date.now()
-          }
-        } catch {}
 
         const resp = await api.get('/secret/inbox/pull', {
           params: { limit: 50 },
@@ -370,7 +356,7 @@ export function SecretInboxPump() {
             // Creator can send this signal when OPK claim fails with "No prekeys available".
             // It does not reveal anything; it only asks the peer device to publish OPKs ASAP.
             try {
-              await forcePublishPrekeys({ reason: 'prekeys_needed', count: 200, force: true })
+              await forcePublishPrekeys({ reason: 'prekeys_needed', count: 50, force: true })
               if (secretDebugEnabled()) {
                 // eslint-disable-next-line no-console
                 console.log('[SecretInboxPump] prekeys_needed: published OPKs')
@@ -456,7 +442,7 @@ export function SecretInboxPump() {
                 })
               }
               try {
-                localStorage.setItem('eb_device_link_last_success', String(Date.now()))
+                storage.setItem('eb_device_link_last_success', String(Date.now()))
                 window.dispatchEvent(new Event('eb:deviceLinked'))
               } catch {}
               client.invalidateQueries({ queryKey: ['conversations'] })
@@ -515,7 +501,7 @@ export function SecretInboxPump() {
               if (now - lastSelfHealAtRef.current > 30_000) {
                 lastSelfHealAtRef.current = now
                 try {
-                  void forcePublishPrekeys({ reason: 'opk_secret_miss' }).catch(() => {})
+                  void forcePublishPrekeys({ reason: 'opk_secret_miss', count: 50, force: true }).catch(() => {})
                 } catch {}
               }
             }
@@ -609,6 +595,13 @@ export function SecretInboxPump() {
           void api.post('/secret/inbox/ack', { msgIds: ackIds }).catch(() => {})
         }
       } catch (err: any) {
+        if (isBootstrapRepairableError(err)) {
+          const now = Date.now()
+          if (now - lastBootstrapRepairAtRef.current > 60_000) {
+            lastBootstrapRepairAtRef.current = now
+            void ensureDeviceBootstrap({ forceRegister: true, skipReserveCheck: true }).catch(() => {})
+          }
+        }
         if (secretDebugEnabled()) {
           // eslint-disable-next-line no-console
           console.warn('[SecretInboxPump] pullOnce failed', {

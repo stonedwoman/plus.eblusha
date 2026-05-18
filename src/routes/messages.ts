@@ -11,6 +11,11 @@ import { rateLimit } from "../middlewares/rateLimit";
 
 const router = Router();
 
+/** Shipped on every Message payload that includes reactions (tooltip / UI). */
+const messageReactionsWithUser = {
+  include: { user: { select: { id: true, username: true, displayName: true } } },
+};
+
 type AuthedRequest = Request & { user?: { id: string } };
 
 router.use(authenticate);
@@ -35,7 +40,7 @@ router.get(
     include: {
       sender: { select: { id: true, username: true, displayName: true } },
       attachments: true,
-      reactions: true,
+      reactions: messageReactionsWithUser,
       receipts: true,
       replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
     }
@@ -84,7 +89,7 @@ router.get(
       include: {
         sender: { select: { id: true, username: true, displayName: true } },
         attachments: true,
-        reactions: true,
+        reactions: messageReactionsWithUser,
         receipts: true,
         replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
       },
@@ -116,7 +121,7 @@ router.get(
     include: {
       sender: { select: { id: true, username: true, displayName: true } },
       attachments: true,
-      reactions: true,
+      reactions: messageReactionsWithUser,
       receipts: true,
       replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
     },
@@ -167,8 +172,15 @@ router.post("/receipts", async (req, res) => {
       list.push(m.id);
       byConv.set(m.conversationId, list);
     }
+    const receiptByMessageId = new Map(receipts.map((receipt) => [receipt.messageId, receipt]));
     for (const [conversationId, ids] of byConv.entries()) {
-      getIO()?.to(conversationId).emit("receipts:update", { conversationId, messageIds: ids });
+      getIO()?.to(conversationId).emit("receipts:update", {
+        conversationId,
+        messageIds: ids,
+        userId,
+        status,
+        receipts: ids.map((id) => receiptByMessageId.get(id)).filter(Boolean),
+      });
     }
   }
 
@@ -342,7 +354,7 @@ router.post("/update", async (req, res) => {
     include: {
       sender: { select: { id: true, username: true, displayName: true } },
       attachments: true,
-      reactions: true,
+      reactions: messageReactionsWithUser,
       receipts: true,
       replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
     },
@@ -379,6 +391,16 @@ router.post("/mark-conversation-read", async (req, res) => {
     },
     select: { id: true },
   });
+  const upgradable = await prisma.message.findMany({
+    where: {
+      conversationId,
+      senderId: { not: userId },
+      receipts: { some: { userId, status: { notIn: ["READ", "SEEN"] } } },
+    },
+    select: { id: true },
+  });
+  const changedIds = Array.from(new Set([...missing.map((m) => m.id), ...upgradable.map((m) => m.id)]));
+
   if (missing.length) {
     await prisma.messageReceipt.createMany({
       data: missing.map((m) => ({ messageId: m.id, userId, status: "READ" })),
@@ -392,7 +414,15 @@ router.post("/mark-conversation-read", async (req, res) => {
     data: { status: "READ" },
   });
 
-  getIO()?.to(conversationId).emit("receipts:update", { conversationId, messageIds: missing.map((m) => m.id) });
+  if (changedIds.length) {
+    getIO()?.to(conversationId).emit("receipts:update", {
+      conversationId,
+      messageIds: changedIds,
+      userId,
+      status: "READ",
+      receipts: changedIds.map((messageId) => ({ messageId, userId, status: "READ" })),
+    });
+  }
   res.json({ success: true });
 });
 

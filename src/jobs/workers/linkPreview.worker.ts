@@ -58,7 +58,9 @@ export function startLinkPreviewWorker() {
         include: {
           sender: { select: { id: true, username: true, displayName: true } },
           attachments: true,
-          reactions: true,
+          reactions: {
+            include: { user: { select: { id: true, username: true, displayName: true } } },
+          },
           receipts: true,
           replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
         },
