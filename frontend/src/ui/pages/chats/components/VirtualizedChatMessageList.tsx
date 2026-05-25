@@ -78,9 +78,6 @@ export const VirtualizedChatMessageList = forwardRef<VirtuosoHandle, Virtualized
       s.initialTopMostItemIndex = count > 0 ? s.firstItemIndex + count - 1 : 0
     }
 
-    // Detect prepend via the parent's prependTick signal. The parent increments
-    // it once per loadOlderMessages merge; we shift firstItemIndex by the count
-    // delta so Virtuoso preserves the user's visual scroll position.
     if (prependTick !== s.prevPrependTick) {
       const delta = count - s.prevCount
       if (delta > 0) s.firstItemIndex -= delta
@@ -156,6 +153,7 @@ export const VirtualizedChatMessageList = forwardRef<VirtuosoHandle, Virtualized
         totalCount={count}
         itemContent={renderItem}
         computeItemKey={computeItemKey}
+        alignToBottom
         initialTopMostItemIndex={s.initialTopMostItemIndex}
         followOutput={followOutput}
         startReached={onStartReached}

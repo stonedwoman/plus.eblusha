@@ -2770,6 +2770,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const meta = olderMetaRef.current
     if (!meta.hasMore || !meta.nextCursor) return
 
+    // Snapshot scroll geometry BEFORE the prepend so we can manually anchor
+    // the user's visual position after Virtuoso re-measures the list.
+    const scroller = messagesRef.current
+    const preScrollTop = scroller?.scrollTop ?? 0
+    const preScrollHeight = scroller?.scrollHeight ?? 0
+
     olderLoadingRef.current = true
     pendingOlderLoadRef.current = false
     try {
@@ -2814,7 +2820,25 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       })
       persistOlderMeta(conversationId, { hasMore, nextCursor })
       lastOlderLoadAtRef.current = Date.now()
-      if (prepended > 0) setPrependTick((t) => t + 1)
+      if (prepended > 0) {
+        setPrependTick((t) => t + 1)
+        // Anchor scroll: after Virtuoso re-measures, restore the visual
+        // position so newly inserted older messages appear *above* the
+        // viewport rather than snapping the user to the very top.
+        // We retry across a couple of animation frames because the new
+        // items may be measured incrementally (images, attachments).
+        const anchor = () => {
+          const el = messagesRef.current
+          if (!el) return
+          const grown = el.scrollHeight - preScrollHeight
+          if (grown <= 0) {
+            requestAnimationFrame(anchor)
+            return
+          }
+          el.scrollTop = preScrollTop + grown
+        }
+        requestAnimationFrame(anchor)
+      }
     } catch (err) {
       console.warn('[ChatsPage] Failed to load older messages', err)
     } finally {
