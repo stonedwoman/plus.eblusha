@@ -38,6 +38,7 @@ import { renderChatMarkdownToHtml, htmlToMarkdown } from '../lib/chatMarkdown'
 import { renderMessageText } from './chats/chatsTextRender'
 import { openUrlSystemBrowser } from './chats/chatsEmbeds'
 import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
+import { MessageReactionRail } from './chats/components/MessageReactionRail'
 import { isChatsRoute, withAppRoutePrefix } from '../../core/navigation/routes'
 import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../utils/apkCallSignal'
 import { shouldShowAudioUnlockPrompt } from '../../utils/audioUnlock'
@@ -1218,6 +1219,8 @@ export default function ChatsPage() {
   const [composerSelectionToolbarSize, setComposerSelectionToolbarSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const messagesRef = useRef<HTMLDivElement | null>(null)
+  type OlderMessagesMeta = { hasMore: boolean; nextCursor: string | null }
+  const olderMetaByConvRef = useRef(new Map<string, OlderMessagesMeta>())
 
   const { isMobile, isMobileRef, isNarrowHeaderButtons, mobileView, setMobileView } = useChatsResponsive(activeId)
   useEffect(() => {
@@ -2223,6 +2226,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           if (prevConv?.isSecret) {
             // Drop cached messages for secret conversations when leaving them
             client.removeQueries({ queryKey: ['messages', prev] })
+            olderMetaByConvRef.current.delete(prev)
           }
         }
       } catch {
@@ -2667,10 +2671,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     },
   })
 
-  const [olderMeta, setOlderMeta] = useState<{ hasMore: boolean; nextCursor: string | null }>({ hasMore: false, nextCursor: null })
+  const [olderMeta, setOlderMeta] = useState<OlderMessagesMeta>({ hasMore: false, nextCursor: null })
   const [olderLoading, setOlderLoading] = useState<boolean>(false)
   const olderLoadingRef = useRef<boolean>(false)
-  const olderMetaRef = useRef<{ hasMore: boolean; nextCursor: string | null }>({ hasMore: false, nextCursor: null })
+  const olderMetaRef = useRef<OlderMessagesMeta>({ hasMore: false, nextCursor: null })
+  const persistOlderMeta = useCallback((conversationId: string, meta: OlderMessagesMeta) => {
+    olderMetaByConvRef.current.set(conversationId, meta)
+    setOlderMeta(meta)
+  }, [])
   useEffect(() => { olderMetaRef.current = olderMeta }, [olderMeta])
 
   const activeConversationRow = useMemo(() => {
@@ -2721,8 +2729,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       })()
       // Initialize cursor/meta only on first load; do not overwrite after older pages are loaded,
       // otherwise periodic refetch would reset `nextCursor` back to the newest page.
+      const savedMeta = olderMetaByConvRef.current.get(conversationId)
       if (!Array.isArray(existing) || existing.length === 0) {
-        setOlderMeta({ hasMore, nextCursor })
+        persistOlderMeta(conversationId, { hasMore, nextCursor })
+      } else if (!savedMeta?.nextCursor && existing.length <= MESSAGES_PAGE_SIZE) {
+        // Cache was populated externally (e.g. inbox pump) with only the first page.
+        persistOlderMeta(conversationId, { hasMore, nextCursor })
       }
       return merged
     },
@@ -2731,10 +2743,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   })
 
   useEffect(() => {
-    // Reset pagination state when switching chats
-    setOlderMeta({ hasMore: false, nextCursor: null })
+    // Restore per-conversation pagination when switching chats (do not drop saved cursors).
     olderLoadingRef.current = false
     setOlderLoading(false)
+    if (!activeId) {
+      setOlderMeta({ hasMore: false, nextCursor: null })
+      return
+    }
+    const saved = olderMetaByConvRef.current.get(activeId) ?? { hasMore: false, nextCursor: null }
+    setOlderMeta(saved)
   }, [activeId])
 
   const loadOlderMessages = useCallback(async () => {
@@ -2784,7 +2801,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         }
         return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
       })
-      setOlderMeta({ hasMore, nextCursor })
+      persistOlderMeta(conversationId, { hasMore, nextCursor })
 
       if (before && messagesRef.current) {
         requestAnimationFrame(() => {
@@ -2802,7 +2819,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       olderLoadingRef.current = false
       setOlderLoading(false)
     }
-  }, [activeId, client, activeConversationRow])
+  }, [activeId, client, activeConversationRow, persistOlderMeta])
 
   // Lazy link preview fetch for older messages (or when socket updates are missed).
   // Server persists preview in message.metadata and may broadcast message:update.
@@ -4073,10 +4090,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!activeId) return
     
     const handlePaste = async (e: ClipboardEvent) => {
-      const target = e.target as HTMLElement
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
-        return
-      }
+      const target = e.target as HTMLElement | null
+      if (!target) return
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+      if (target.isContentEditable || target.closest('[contenteditable="true"]')) return
       const items = e.clipboardData?.items
       if (!items) return
       for (let i = 0; i < items.length; i++) {
@@ -5319,6 +5336,34 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       sel.addRange(range)
     } catch {}
   }
+
+  const insertPlainTextIntoComposer = useCallback((plain: string) => {
+    const editor = composerEditorRef.current
+    if (!editor || !plain) return false
+    try {
+      editor.focus()
+      const sel = window.getSelection()
+      if (!sel) return false
+      let range: Range
+      if (sel.rangeCount > 0 && sel.anchorNode && editor.contains(sel.anchorNode)) {
+        range = sel.getRangeAt(0)
+        range.deleteContents()
+      } else {
+        range = document.createRange()
+        range.selectNodeContents(editor)
+        range.collapse(false)
+      }
+      const textNode = document.createTextNode(plain)
+      range.insertNode(textNode)
+      range.setStartAfter(textNode)
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      return true
+    } catch {
+      return false
+    }
+  }, [])
 
   const resizeComposer = useCallback(() => {
     const el = composerEditorRef.current
@@ -8430,7 +8475,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   const t = e.target as HTMLElement
                   if (
                     t.closest(
-                      '.msg-bubble, a[href], button, .reaction-emoji, img, video, .msg-media-tile, .video-message-bubble',
+                      '.msg-bubble, a[href], button, .reaction-emoji, .msg-reaction-rail-host, img, video, .msg-media-tile, .video-message-bubble',
                     )
                   )
                     return
@@ -8833,7 +8878,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       const onRowMultiSelectClick = (e: React.MouseEvent) => {
                         if (!multiSelectMode || !canSelectForMulti) return
                         const t = e.target as HTMLElement
-                        if (t.closest('a[href], button, .reaction-emoji, img, video, .msg-media-tile, .video-message-bubble')) return
+                        if (t.closest('a[href], button, .reaction-emoji, .msg-reaction-rail-host, img, video, .msg-media-tile, .video-message-bubble')) return
                         const sel = typeof window.getSelection === 'function' ? window.getSelection() : null
                         if (sel && sel.toString().length > 0) return
                         e.preventDefault()
@@ -8852,7 +8897,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         className={
                           (hasAnyLink ? `${bubbleClass} has-link-preview${previewMedia ? ' has-link-preview-media' : ''}` : bubbleClass) +
                           forwardBubbleMods +
-                          (isSelectedInMulti ? ' msg-bubble--selected' : '')
+                          (isSelectedInMulti ? ' msg-bubble--selected' : '') +
+                          ' msg-bubble--reactions-inline' +
+                          (leftAlignAll ? ' msg-bubble--reactions-wide' : '')
                         }
                         data-mid={m.id}
                         ref={(el) => {
@@ -8871,7 +8918,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           }
                           if (!isMobile) return
                           const target = e.target as HTMLElement
-                          if (target.closest('a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble')) return
+                          if (target.closest('a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble')) return
                           const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
                           if (selection && selection.toString()) return
                           openMenuAt(e.clientX, e.clientY)
@@ -8886,91 +8933,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           openMenuAt(e.clientX, e.clientY)
                         }}
                       >
-                        {(m.reactions && m.reactions.length > 0) && (() => {
-                          const grouped: Record<string, { count: number; hasMine: boolean }> = {}
-                          for (const r of m.reactions) {
-                            if (!grouped[r.emoji]) {
-                              grouped[r.emoji] = { count: 0, hasMine: false }
-                            }
-                            grouped[r.emoji].count++
-                            if (r.userId === me?.id) {
-                              grouped[r.emoji].hasMine = true
-                            }
-                          }
-                          const reactionActorLabel = (r: any): string => {
-                            const inline = r?.user
-                            if (inline && typeof inline === 'object') {
-                              const dn = typeof inline.displayName === 'string' ? inline.displayName.trim() : ''
-                              const un = typeof inline.username === 'string' ? inline.username.trim() : ''
-                              if (dn) return dn
-                              if (un) return `@${un}`
-                            }
-                            if (r.userId === me?.id) return 'Вы'
-                            const parts = activeConversation?.participants as any[] | undefined
-                            const p = parts?.find((x: any) => x?.user?.id === r.userId)
-                            const u = p?.user
-                            if (u) {
-                              const dn = typeof u.displayName === 'string' ? u.displayName.trim() : ''
-                              const un = typeof u.username === 'string' ? u.username.trim() : ''
-                              if (dn) return dn
-                              if (un) return `@${un}`
-                            }
-                            return 'Участник'
-                          }
-                          const reactionTooltipForEmoji = (emoji: string) => {
-                            const reactors = (m.reactions as any[]).filter((x) => x?.emoji === emoji)
-                            if (!reactors.length) return undefined
-                            return reactors.map(reactionActorLabel).join(', ')
-                          }
-                          return (
-                            <div style={{ position: 'absolute', bottom: -18, right: isMe ? 8 : undefined, left: !isMe ? 8 : undefined, display: 'flex', gap: 6, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', borderRadius: 12, padding: '2px 6px', zIndex: 5, pointerEvents: 'auto' }}>
-                              {Object.entries(grouped).map(([emo, data], idx) => {
-                                const isHeart = emo === '❤️'
-                                const color = isHeart ? '#ef4444' : isSelectedInMulti ? '#713f12' : '#ffc46b'
-                                return (
-                                  <button
-                                    key={emo}
-                                    type="button"
-                                    className="reaction-emoji"
-                                    title={reactionTooltipForEmoji(emo)}
-                                    onClick={async (e) => {
-                                      e.preventDefault()
-                                      e.stopPropagation()
-                                      try {
-                                        if (data.hasMine) {
-                                          await api.post('/messages/unreact', { messageId: m.id, emoji: emo })
-                                        } else {
-                                          await api.post('/messages/react', { messageId: m.id, emoji: emo })
-                                        }
-                                        if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
-                                      } catch (err) {
-                                        console.error('Error toggling reaction:', err)
-                                      }
-                                    }}
-                                    onMouseDown={(e) => {
-                                      e.stopPropagation()
-                                    }}
-                                    style={{
-                                      fontSize: 12,
-                                      color: color,
-                                      display: 'inline-block',
-                                      animation: `reactionBounce 0.6s ease ${idx * 0.1}s`,
-                                      cursor: 'pointer',
-                                      opacity: data.hasMine ? 1 : 0.8,
-                                      background: 'transparent',
-                                      border: 'none',
-                                      padding: 0,
-                                      margin: 0,
-                                      font: 'inherit',
-                                    }}
-                                  >
-                                    {emo}{data.count > 1 ? ` ${data.count}` : ''}
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          )
-                        })()}
+                        <div className="msg-bubble-body">
                         {forwardBundleInner && forwardFrom && (
                           <div
                             style={{
@@ -9969,6 +9932,21 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             </div>
                           )
                         })()}
+                        </div>
+                      <MessageReactionRail
+                        messageId={String(m.id)}
+                        reactions={m.reactions}
+                        currentUserId={currentUserId}
+                        participants={activeConversation?.participants as any}
+                        meDisplay={me}
+                        isMeBubble={!!isMe}
+                        leftAlignAll={leftAlignAll}
+                        isMobile={isMobile}
+                        isSelectedInMulti={isSelectedInMulti}
+                        onInvalidateMessages={() => {
+                          if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                        }}
+                      />
                       </div>
                       {avatarOnRight && !forwardBundleInner && renderAvatarOrSpacer()}
                       {(leftAlignAll || isMe) && !forwardBundleInner && multiSelectCheckboxEl}
@@ -10062,7 +10040,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       const t = e.target as HTMLElement
                       if (
                         t.closest(
-                          '.msg-forward-bundle__item .msg,.msg-forward-bundle__item a[href],.msg-forward-bundle__item button,.msg-forward-bundle__item .reaction-emoji,.msg-forward-bundle__item img,.msg-forward-bundle__item video,.msg-forward-bundle__item .msg-media-tile,.msg-forward-bundle__item .video-message-bubble',
+                          '.msg-forward-bundle__item .msg,.msg-forward-bundle__item a[href],.msg-forward-bundle__item button,.msg-forward-bundle__item .reaction-emoji,.msg-forward-bundle__item .msg-reaction-rail-host,.msg-forward-bundle__item img,.msg-forward-bundle__item video,.msg-forward-bundle__item .msg-media-tile,.msg-forward-bundle__item .video-message-bubble',
                         )
                       )
                         return
@@ -10099,7 +10077,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                               const target = e.target as HTMLElement
                               if (
                                 target.closest(
-                                  'a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                                  'a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
                                 )
                               )
                                 return
@@ -10195,7 +10173,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             const target = e.target as HTMLElement
                             if (
                               target.closest(
-                                'a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                                'a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
                               )
                             )
                               return
@@ -10332,7 +10310,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       const t = e.target as HTMLElement
                       if (
                         t.closest(
-                          '.msg-forward-bundle__item .msg,.msg-forward-bundle__item a[href],.msg-forward-bundle__item button,.msg-forward-bundle__item .reaction-emoji,.msg-forward-bundle__item img,.msg-forward-bundle__item video,.msg-forward-bundle__item .msg-media-tile,.msg-forward-bundle__item .video-message-bubble',
+                          '.msg-forward-bundle__item .msg,.msg-forward-bundle__item a[href],.msg-forward-bundle__item button,.msg-forward-bundle__item .reaction-emoji,.msg-forward-bundle__item .msg-reaction-rail-host,.msg-forward-bundle__item img,.msg-forward-bundle__item video,.msg-forward-bundle__item .msg-media-tile,.msg-forward-bundle__item .video-message-bubble',
                         )
                       )
                         return
@@ -10369,7 +10347,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                               const target = e.target as HTMLElement
                               if (
                                 target.closest(
-                                  'a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                                  'a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
                                 )
                               )
                                 return
@@ -10463,7 +10441,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             const target = e.target as HTMLElement
                             if (
                               target.closest(
-                                'a, button, input, textarea, img, video, .reaction-emoji, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                                'a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
                               )
                             )
                               return
@@ -10564,7 +10542,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               ↓
             </button>
           )}
-          <div ref={composerBarRef} style={{ flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+          <div ref={composerBarRef} className="chat-composer-bar eb-no-drag" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
           {composerSelectionAnchor && composerSelectionToolbarStyle && createPortal(
             <div
               ref={composerSelectionToolbarRef}
@@ -10651,7 +10629,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               )
             })()}
           </div>
-          <div className="msg-input-bar"
+          <div className="msg-input-bar eb-no-drag"
             style={{
               flexShrink: 0,
               // Keep composer visible even if CSS bundle changes.
@@ -11301,6 +11279,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       : forwardComposerDraft
                         ? 'Комментарий к пересылке (необязательно)…'
                         : 'Напишите сообщение...'}
+                  onContextMenu={(e) => {
+                    e.stopPropagation()
+                  }}
                   onFocus={() => setComposerFocused(true)}
                   onBlur={() => {
                     setComposerFocused(false)
@@ -11420,15 +11401,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       return
                     }
                     if (hasText) {
-                      e.preventDefault()
-                      const html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
-                      document.execCommand('insertHTML', false, html)
-                      setComposerEmpty(false)
-                      notifyTyping()
-                      resizeComposer()
+                      if (insertPlainTextIntoComposer(text)) {
+                        e.preventDefault()
+                        setComposerEmpty(false)
+                        notifyTyping()
+                        resizeComposer()
+                      }
                     }
                   }}
-                  className="chat-md"
+                  className="chat-md eb-no-drag"
                   style={{
                     flex: 1,
                     minWidth: 0,

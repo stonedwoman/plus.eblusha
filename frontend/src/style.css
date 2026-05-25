@@ -132,7 +132,11 @@ a {
   #app .messages-pane,
   #app .messages-pane *,
   #app .messages-container,
-  #app .messages-container * {
+  #app .messages-container *,
+  #app .msg-input-bar,
+  #app .msg-input-bar *,
+  #app .chat-composer-bar,
+  #app .chat-composer-bar * {
     -webkit-app-region: no-drag;
   }
 }
@@ -607,7 +611,7 @@ a {
 }
 
 /* Message rows and bubbles */
-.msg { display: flex; align-items: flex-end; gap: 8px; margin: 0; }
+.msg { display: flex; align-items: flex-end; gap: 8px; margin: 0; container-type: inline-size; }
 .msg.compact { margin-top: 2px; }
 .msg.gap { margin-top: 12px; }
 .msg.left { justify-content: flex-start; width: 100%; }
@@ -625,6 +629,331 @@ a {
   color: var(--bubble-fg, var(--text-primary));
   border: 1px solid rgba(255, 255, 255, 0.04);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* Реакции в том же бабле: полоса добавляется сбоку, ширина текста не сжимается */
+.msg-bubble.msg-bubble--reactions-inline {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 0;
+  vertical-align: bottom;
+  max-width: none;
+}
+
+.msg-bubble.msg-bubble--reactions-inline.msg-bubble.me {
+  flex-direction: row-reverse;
+}
+
+/* Широкий чат (все слева): текст, затем реакции справа — перебивает .msg-bubble.me */
+.msg-bubble.msg-bubble--reactions-inline.msg-bubble--reactions-wide,
+.msg.left .msg-bubble.msg-bubble--reactions-inline {
+  flex-direction: row !important;
+}
+
+.msg-bubble--reactions-inline > .msg-bubble-body {
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  flex-grow: 0;
+  min-width: 0;
+  /* ~как раньше max-width бабла относительно строки .msg */
+  max-width: min(70vw, 560px);
+  padding: 10px 12px;
+}
+
+@supports (max-width: 1cqi) {
+  .msg-bubble--reactions-inline > .msg-bubble-body {
+    max-width: 70cqi;
+  }
+}
+
+.msg-reaction-rail-host.msg-reaction-rail-host--inline {
+  --msg-reaction-emoji: 20px;
+  --msg-reaction-row: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  padding: 0 8px;
+  align-self: stretch;
+  pointer-events: none;
+}
+
+.msg-reaction-rail-host.msg-reaction-rail-host--inline:not(.msg-reaction-rail-host--empty),
+.msg-bubble.msg-bubble--reactions-inline:hover .msg-reaction-rail-host.msg-reaction-rail-host--inline,
+.msg-bubble.msg-bubble--reactions-inline:has(.msg-reaction-rail-host--touch-open)
+  .msg-reaction-rail-host.msg-reaction-rail-host--inline {
+  pointer-events: auto;
+}
+
+.msg-reaction-rail-host--them.msg-reaction-rail-host--inline {
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.msg-reaction-rail-host--me.msg-reaction-rail-host--inline:not(.msg-reaction-rail-host--wide) {
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.msg-reaction-rail-host--inline.msg-reaction-rail-host--empty {
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  padding-left: 0;
+  padding-right: 0;
+  margin: 0;
+  border-left-width: 0 !important;
+  border-right-width: 0 !important;
+  transition:
+    max-width 165ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 150ms ease,
+    padding 165ms ease;
+}
+
+.msg-bubble.msg-bubble--reactions-inline:hover .msg-reaction-rail-host--inline.msg-reaction-rail-host--empty,
+.msg-bubble.msg-bubble--reactions-inline:has(.msg-reaction-rail-host--touch-open)
+  .msg-reaction-rail-host--inline.msg-reaction-rail-host--empty {
+  max-width: 220px;
+  opacity: 1;
+  padding: 4px 10px;
+}
+
+.msg-bubble.msg-bubble--reactions-inline:hover
+  .msg-reaction-rail-host--them.msg-reaction-rail-host--inline.msg-reaction-rail-host--empty,
+.msg-bubble.msg-bubble--reactions-inline:has(.msg-reaction-rail-host--touch-open)
+  .msg-reaction-rail-host--them.msg-reaction-rail-host--inline.msg-reaction-rail-host--empty {
+  border-left-width: 1px !important;
+}
+
+.msg-bubble.msg-bubble--reactions-inline:hover
+  .msg-reaction-rail-host--me.msg-reaction-rail-host--inline.msg-reaction-rail-host--empty:not(.msg-reaction-rail-host--wide),
+.msg-bubble.msg-bubble--reactions-inline:has(.msg-reaction-rail-host--touch-open)
+  .msg-reaction-rail-host--me.msg-reaction-rail-host--inline.msg-reaction-rail-host--empty:not(.msg-reaction-rail-host--wide) {
+  border-right-width: 1px !important;
+}
+
+.msg-reaction-rail-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* Исходящие (узкий): чипы у текста, пикер выезжает наружу */
+.msg-reaction-rail-host--me.msg-reaction-rail-host--inline:not(.msg-reaction-rail-host--wide) .msg-reaction-rail-row {
+  flex-direction: row-reverse;
+}
+
+/* Широкий режим: всегда «уже стоят» слева, предложения справа */
+.msg-reaction-rail-host--wide.msg-reaction-rail-host--inline .msg-reaction-rail-row {
+  flex-direction: row;
+}
+
+/* Широкий режим: полоса справа от текста, разделитель слева у полосы */
+.msg-reaction-rail-host--wide.msg-reaction-rail-host--inline {
+  border-right-width: 0 !important;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.msg-bubble.msg-bubble--reactions-inline:hover
+  .msg-reaction-rail-host--wide.msg-reaction-rail-host--inline.msg-reaction-rail-host--empty,
+.msg-bubble.msg-bubble--reactions-inline:has(.msg-reaction-rail-host--touch-open)
+  .msg-reaction-rail-host--wide.msg-reaction-rail-host--inline.msg-reaction-rail-host--empty {
+  border-right-width: 0 !important;
+  border-left-width: 1px !important;
+}
+
+/* Уже стоят: единый размер эмодзи, без отступов в сетке */
+.msg-reaction-rail-compact {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  align-items: center;
+  justify-items: center;
+  flex-shrink: 0;
+}
+
+/* 1 реакция — по центру двухрядной области */
+.msg-reaction-rail-compact--n1 {
+  grid-template-rows: repeat(2, var(--msg-reaction-row));
+  grid-template-columns: auto;
+}
+
+.msg-reaction-rail-compact--n1 .msg-reaction-rail-chip {
+  grid-row: 1 / -1;
+  grid-column: 1;
+}
+
+/* 2 реакции — столбик 2×1 */
+.msg-reaction-rail-compact--n2 {
+  grid-template-rows: repeat(2, var(--msg-reaction-row));
+  grid-template-columns: auto;
+  grid-auto-flow: row;
+}
+
+/* 3+ — 2 строки, заполнение сверху вниз по колонкам (2×2 и дальше) */
+.msg-reaction-rail-compact--n3 {
+  grid-template-rows: repeat(2, var(--msg-reaction-row));
+  grid-auto-flow: column;
+  grid-auto-columns: auto;
+}
+
+.msg-reaction-rail-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  font-size: var(--msg-reaction-emoji);
+  line-height: var(--msg-reaction-row);
+  height: var(--msg-reaction-row);
+  min-height: 0;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  overflow: visible;
+}
+
+.msg-reaction-rail-chip-emoji {
+  font-size: var(--msg-reaction-emoji);
+  line-height: var(--msg-reaction-row);
+  display: inline-block;
+}
+
+.msg-reaction-rail-chip-count {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.92;
+}
+
+.msg-reaction-rail-more {
+  font-size: 9px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.55);
+  padding: 0;
+  line-height: 1;
+}
+
+.msg-reaction-rail-divider {
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-weight: 300;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.38);
+  transition: opacity 160ms ease, max-width 160ms ease;
+}
+
+.msg-reaction-rail-host--empty .msg-reaction-rail-divider {
+  display: none;
+}
+
+.msg-bubble.msg-bubble--reactions-inline:hover .msg-reaction-rail-divider,
+.msg-bubble.msg-bubble--reactions-inline:has(.msg-reaction-rail-host--touch-open) .msg-reaction-rail-divider {
+  opacity: 0.55;
+  max-width: 18px;
+}
+
+.msg-reaction-rail-expand {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-width 170ms cubic-bezier(0.4, 0, 0.2, 1), opacity 150ms ease;
+}
+
+.msg-bubble.msg-bubble--reactions-inline:hover .msg-reaction-rail-expand,
+.msg-bubble.msg-bubble--reactions-inline:has(.msg-reaction-rail-host--touch-open) .msg-reaction-rail-expand {
+  max-width: 300px;
+  opacity: 1;
+}
+
+.msg-reaction-rail-host .msg-reaction-rail-picker-btn {
+  flex-shrink: 0;
+  font-size: var(--msg-reaction-emoji, 20px);
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  padding: 0 2px;
+  margin: 0;
+  font: inherit;
+}
+
+.msg-reaction-rail-more-picker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  padding: 0 4px;
+}
+
+.msg-reaction-extended-popover-mount {
+  position: fixed;
+  inset: 0;
+  z-index: 10020;
+  pointer-events: none;
+}
+
+.msg-reaction-extended-popover {
+  position: fixed;
+  width: min(248px, calc(100vw - 16px));
+  max-width: min(248px, calc(100vw - 16px));
+  max-height: min(268px, calc(100vh - 16px));
+  margin: 0;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(22, 28, 36, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-sizing: border-box;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.msg-reaction-extended-popover-inner {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 2px;
+  max-height: min(236px, calc(100vh - 140px));
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.msg-reaction-extended-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  width: 100%;
+  height: 34px;
+  border-radius: 6px;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.msg-reaction-extended-cell:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-reaction-rail-divider,
+  .msg-reaction-rail-expand,
+  .msg-reaction-rail-host--inline.msg-reaction-rail-host--empty {
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Переслано: тот же msg-bubble + модификаторы .msg-bubble--forward + .msg-bubble--forward-shell (отдельный «конверт»). Фон совпадает с .msg-forward-bundle-outer. */
@@ -1786,6 +2115,9 @@ a {
 @media (max-width: 768px) {
   .messages-pane header { flex-wrap: wrap; gap: 8px; }
   .msg-bubble { max-width: calc(100vw - 72px); }
+  .msg-bubble--reactions-inline > .msg-bubble-body {
+    max-width: calc(100vw - 72px);
+  }
   .content { padding: 0; }
 }
 

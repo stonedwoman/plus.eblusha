@@ -980,36 +980,86 @@ router.get("/:id/messages", async (req, res) => {
 
   const now = new Date();
 
-  const query: any = {
-    where: {
-      conversationId: id,
-      OR: [
-        { expiresAt: null },
-        { expiresAt: { gt: now } },
-      ],
-    },
-    orderBy: { createdAt: "desc" as const },
-    // Fetch `limit + 1` to detect whether there are more items.
-    take: limit + 1,
-    include: {
-      sender: { select: { id: true, username: true, displayName: true } },
-      attachments: true,
-      reactions: messageReactionsWithUser,
-      receipts: true,
-      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
-    },
+  const expiryFilter = {
+    OR: [
+      { expiresAt: null },
+      { expiresAt: { gt: now } },
+    ],
   };
-  if (cursor) {
-    query.skip = 1;
-    query.cursor = { id: cursor } as any;
+
+  // Cursor format: `${createdAtIso}|${id}` (legacy clients may send bare message id).
+  const cursorParsed = (() => {
+    if (!cursor) return null;
+    if (cursor.includes("|")) {
+      const sep = cursor.indexOf("|");
+      const ts = cursor.slice(0, sep);
+      const msgId = cursor.slice(sep + 1);
+      if (!ts || !msgId) return null;
+      const t = new Date(ts);
+      if (Number.isNaN(t.getTime())) return null;
+      return { createdAt: t, id: msgId };
+    }
+    return { legacyId: cursor };
+  })();
+
+  const include = {
+    sender: { select: { id: true, username: true, displayName: true } },
+    attachments: true,
+    reactions: messageReactionsWithUser,
+    receipts: true,
+    replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+  };
+
+  let messages;
+  if (cursorParsed && "createdAt" in cursorParsed && cursorParsed.createdAt) {
+    const { createdAt, id: cursorId } = cursorParsed;
+    messages = await prisma.message.findMany({
+      where: {
+        conversationId: id,
+        AND: [
+          expiryFilter,
+          {
+            OR: [
+              { createdAt: { lt: createdAt } },
+              { createdAt, id: { lt: cursorId } },
+            ],
+          },
+        ],
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      include,
+    });
+  } else if (cursorParsed && "legacyId" in cursorParsed) {
+    messages = await prisma.message.findMany({
+      where: {
+        conversationId: id,
+        ...expiryFilter,
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      skip: 1,
+      cursor: { id: cursorParsed.legacyId },
+      include,
+    });
+  } else {
+    messages = await prisma.message.findMany({
+      where: {
+        conversationId: id,
+        ...expiryFilter,
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      include,
+    });
   }
-  let messages = await prisma.message.findMany(query);
+
   const hasMore = messages.length > limit;
   if (hasMore) {
     messages = messages.slice(0, limit);
   }
   const last = messages.at(-1);
-  const nextCursor = hasMore && last ? last.id : null;
+  const nextCursor = hasMore && last ? `${last.createdAt.toISOString()}|${last.id}` : null;
 
   // Telegram-like unfurl for older messages: enqueue preview jobs lazily when messages are requested.
   // Actual fetching/parsing is done ONLY by the worker.
