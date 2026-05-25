@@ -8,7 +8,8 @@ tmp/
 !.env.example
 
 # SSL certs (self-signed for stoned.local) — ключи не коммитить
-/deploy/certs/*.pem
+/deploy/coturn/turnserver.conf
+/deploy/coturn/certs/
 
 # build artifacts
 /dist

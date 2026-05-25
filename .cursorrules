@@ -10,4 +10,8 @@
 # Git:
 # - Prefer small, focused commits with clear messages.
 # - Run the relevant build/typecheck when reasonable before pushing.
+#
+# Environments:
+# - RO (this host): full stack in /DATA/eblusha-plus — see .cursor/rules/eblusha-environments.mdc
+# - RU (remote): ssh eblusha-ru — coturn at /opt/eblusha-plus/deploy/coturn
 

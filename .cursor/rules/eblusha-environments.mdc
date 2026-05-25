@@ -1,0 +1,57 @@
+---
+description: RO/RU server environments and SSH access for the agent
+alwaysApply: true
+---
+
+# Eblusha environments
+
+This workspace runs on **RO** (Romania / main stack). **RU** (Russia edge) is reachable via SSH from this host.
+
+## RO — local (current workspace)
+
+- **Host**: `stoned` (this machine)
+- **Repo**: `/DATA/eblusha-plus`
+- **Stack**: `docker compose -f deploy/docker-compose.full.yml --env-file .env`
+- **Services**: postgres, redis, backend, worker, maintenance, livekit, nginx
+- **Deploy**: `PATH=/usr/bin:$PATH npm run deploy`
+
+## RU — remote via SSH
+
+- **Alias**: `ssh eblusha-ru` (configured in `~/.ssh/config` on RO)
+- **Host**: `ru.eblusha.org` (92.255.108.160)
+- **User**: `root`
+- **Role**: TURN relay (coturn) for LiveKit clients in restricted networks
+- **Coturn path**: `/opt/eblusha-plus/deploy/coturn`
+- **Compose**: `docker compose -f docker-compose.ru.yml`
+
+### Common RU commands (run from RO)
+
+```bash
+# status
+ssh eblusha-ru 'docker ps --filter name=eblusha-coturn'
+
+# logs
+ssh eblusha-ru 'docker logs --tail 100 eblusha-coturn'
+
+# restart coturn
+ssh eblusha-ru 'cd /opt/eblusha-plus/deploy/coturn && docker compose -f docker-compose.ru.yml up -d'
+
+# edit config (secrets — do not commit)
+ssh eblusha-ru 'cat /opt/eblusha-plus/deploy/coturn/turnserver.conf'
+```
+
+### RO → RU LiveKit integration
+
+On RO, LiveKit advertises RU TURN via `.env`:
+
+- `LIVEKIT_TURN_HOST=ru.eblusha.org`
+- `LIVEKIT_TURN_SECRET` (must match coturn `static-auth-secret`)
+- `LIVEKIT_TURN_UDP_PORT` / `LIVEKIT_TURN_TCP_PORT` (default 3478)
+
+After coturn changes on RU, redeploy `eblusha-livekit` on RO if TURN env vars changed.
+
+## Agent rules
+
+- Prefer `ssh eblusha-ru '...'` for any RU inspection or docker operations.
+- Never paste `turnserver.conf`, TURN secrets, or `.env` values into chat or commits.
+- RU repo is not a full clone — only `deploy/coturn` is deployed under `/opt/eblusha-plus/deploy/coturn`.
