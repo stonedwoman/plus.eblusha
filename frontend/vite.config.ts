@@ -4,13 +4,21 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom'],
-          'vendor-socket': ['socket.io-client'],
-          'vendor-crypto': ['tweetnacl', '@noble/hashes'],
-          'vendor-query': ['@tanstack/react-query'],
+        manualChunks(id) {
+          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
+            return 'vendor-react'
+          }
+          if (id.includes('node_modules/socket.io-client')) {
+            return 'vendor-socket'
+          }
+          if (id.includes('node_modules/tweetnacl') || id.includes('node_modules/@noble/hashes')) {
+            return 'vendor-crypto'
+          }
+          if (id.includes('node_modules/@tanstack/react-query')) {
+            return 'vendor-query'
+          }
         },
       },
     },

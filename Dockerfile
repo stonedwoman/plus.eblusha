@@ -1,5 +1,5 @@
 # Eblusha Plus backend + worker
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # Production image
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 

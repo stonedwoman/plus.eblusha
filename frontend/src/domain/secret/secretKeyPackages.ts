@@ -1,6 +1,6 @@
 import nacl from 'tweetnacl'
 import { hkdf } from '@noble/hashes/hkdf.js'
-import { sha256 } from '@noble/hashes/sha256.js'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { api } from '../../utils/api'
 import { base64ToBytes, bytesToBase64, utf8ToBytes, bytesToUtf8 } from '../../utils/base64'
 import { consumePrekeySecret, getPrekeySecret, getIdentityKeyPair, getStoredDeviceInfo } from '../device/deviceManager'
