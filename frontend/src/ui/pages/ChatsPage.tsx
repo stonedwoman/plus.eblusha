@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense, Fragment } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense, Fragment, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
@@ -39,10 +39,6 @@ import { renderMessageText } from './chats/chatsTextRender'
 import { openUrlSystemBrowser } from './chats/chatsEmbeds'
 import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
 import { MessageReactionRail } from './chats/components/MessageReactionRail'
-import { VirtualizedChatMessageList, VIRTUOSO_INDEX_BASE, type VirtuosoHandle } from './chats/components/VirtualizedChatMessageList'
-import { usePreparedChatMessageList, resolveVisibleFullListIndex } from './chats/hooks/usePreparedChatMessageList'
-import { trimMessageCache } from './chats/messageCache'
-import { groupIncomingBubbleBg, hashToGray, nameColorForUser } from './chats/messageBubbleStyle'
 import { isChatsRoute, withAppRoutePrefix } from '../../core/navigation/routes'
 import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../utils/apkCallSignal'
 import { shouldShowAudioUnlockPrompt } from '../../utils/audioUnlock'
@@ -1190,6 +1186,70 @@ function buildForwardSendPayload(
   }
 }
 
+const EBLO_MIN_ROWS = 120
+const EBLO_INITIAL_ROWS = 72
+const EBLO_OVERSCAN_PX = 1800
+const EBLO_INDEX_OVERSCAN = 16
+const EBLO_DEFAULT_ROW_HEIGHT = 92
+const EBLO_FORWARD_ROW_HEIGHT = 180
+const EBLO_SYSTEM_ROW_HEIGHT = 48
+
+type EbloRange = { start: number; end: number }
+type EbloRowMeta = { index: number; key: string }
+
+function EbloMeasuredRow({
+  rowKey,
+  onHeightChange,
+  children,
+}: {
+  rowKey: string
+  onHeightChange: (rowKey: string, height: number) => void
+  children: ReactNode
+}) {
+  const nodeRef = useRef<HTMLDivElement | null>(null)
+
+  useLayoutEffect(() => {
+    const node = nodeRef.current
+    if (!node) return
+    let raf = 0
+    const measure = () => {
+      if (raf) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        const child = node.firstElementChild instanceof HTMLElement ? node.firstElementChild : null
+        const rect = child?.getBoundingClientRect() ?? node.getBoundingClientRect()
+        const styles = child ? window.getComputedStyle(child) : null
+        const marginTop = styles ? Number.parseFloat(styles.marginTop || '0') || 0 : 0
+        const marginBottom = styles ? Number.parseFloat(styles.marginBottom || '0') || 0 : 0
+        const height = Math.max(1, Math.ceil(rect.height + marginTop + marginBottom))
+        onHeightChange(rowKey, height)
+      })
+    }
+
+    measure()
+    if (typeof ResizeObserver === 'undefined') {
+      return () => {
+        if (raf) cancelAnimationFrame(raf)
+      }
+    }
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    const child = node.firstElementChild
+    if (child instanceof HTMLElement) observer.observe(child)
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      observer.disconnect()
+    }
+  }, [onHeightChange, rowKey])
+
+  return (
+    <div className="eblo-row" data-eblo-row={rowKey} ref={nodeRef}>
+      {children}
+    </div>
+  )
+}
+
 export default function ChatsPage() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -1223,8 +1283,6 @@ export default function ChatsPage() {
   const [composerSelectionToolbarSize, setComposerSelectionToolbarSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const messagesRef = useRef<HTMLDivElement | null>(null)
-  const virtuosoRef = useRef<VirtuosoHandle>(null)
-  const virtuosoFirstItemIndexRef = useRef(VIRTUOSO_INDEX_BASE)
   type OlderMessagesMeta = { hasMore: boolean; nextCursor: string | null }
   const olderMetaByConvRef = useRef(new Map<string, OlderMessagesMeta>())
 
@@ -1314,6 +1372,19 @@ export default function ChatsPage() {
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
   const nodesByMessageId = useRef<Map<string, HTMLElement>>(new Map())
   const nearBottomRef = useRef<boolean>(true)
+  const [ebloRange, setEbloRange] = useState<EbloRange>(() => ({ start: 0, end: EBLO_INITIAL_ROWS }))
+  const ebloRangeRef = useRef<EbloRange>({ start: 0, end: EBLO_INITIAL_ROWS })
+  const ebloRowsRef = useRef<EbloRowMeta[]>([])
+  const ebloRowHeightsRef = useRef<Map<string, number>>(new Map())
+  const ebloRafRef = useRef<number | null>(null)
+  const userStickyScrollRef = useRef<boolean>(false)
+  const lastRenderedMessagesRef = useRef(0)
+  const lastScrollConvRef = useRef<string | null>(null)
+  // ID последнего (самого нового) сообщения в списке. Используем чтобы отличать
+  // «новое сообщение пришло снизу» от «подгрузилась страница старых сверху»:
+  // в первом случае хвост меняется и можно стикаться к низу, во втором — нельзя,
+  // иначе при подгрузке истории нас выкидывает в самый низ.
+  const lastTailMessageIdRef = useRef<string | null>(null)
   const batchToRead = useRef<Set<string>>(new Set())
   const batchTimer = useRef<number | null>(null)
   const scrollPinTimerRef = useRef<number | null>(null)
@@ -2670,18 +2741,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   })
 
   const [olderMeta, setOlderMeta] = useState<OlderMessagesMeta>({ hasMore: false, nextCursor: null })
+  const [olderLoading, setOlderLoading] = useState<boolean>(false)
   const olderLoadingRef = useRef<boolean>(false)
-  const scrollIdleRef = useRef(true)
-  const scrollIdleTimerRef = useRef<number | null>(null)
-  const pendingOlderLoadRef = useRef(false)
-  const lastOlderLoadAtRef = useRef(0)
   const olderMetaRef = useRef<OlderMessagesMeta>({ hasMore: false, nextCursor: null })
-  const [prependTick, setPrependTick] = useState(0)
   const persistOlderMeta = useCallback((conversationId: string, meta: OlderMessagesMeta) => {
     olderMetaByConvRef.current.set(conversationId, meta)
-    setOlderMeta((prev) =>
-      prev.hasMore === meta.hasMore && prev.nextCursor === meta.nextCursor ? prev : meta,
-    )
+    setOlderMeta(meta)
   }, [])
   useEffect(() => { olderMetaRef.current = olderMeta }, [olderMeta])
 
@@ -2722,9 +2787,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const nextCursor = (fetchedResult.nextCursor ?? null) as string | null
       const hasMore = !!fetchedResult.hasMore
       // Keep older pages already loaded when refetching.
-      // Do NOT trim here: trimming would drop earlier loaded pages and break
-      // Virtuoso's firstItemIndex anchoring (causes scroll jumps). Cache is
-      // trimmed only on conversation unmount.
       const existing = client.getQueryData(['messages', conversationId]) as Array<any> | undefined
       const merged = (() => {
         const all = [...(Array.isArray(existing) ? existing : []), ...sortedFetched]
@@ -2732,10 +2794,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         for (const m of all) {
           if (m && m.id) byId.set(m.id, m)
         }
-        return [...byId.values()].sort(
-          (a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
-        )
+        return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
       })()
+      // Initialize cursor/meta only on first load; do not overwrite after older pages are loaded,
       // otherwise periodic refetch would reset `nextCursor` back to the newest page.
       const savedMeta = olderMetaByConvRef.current.get(conversationId)
       if (!Array.isArray(existing) || existing.length === 0) {
@@ -2753,7 +2814,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   useEffect(() => {
     // Restore per-conversation pagination when switching chats (do not drop saved cursors).
     olderLoadingRef.current = false
-    setPrependTick(0)
+    setOlderLoading(false)
     if (!activeId) {
       setOlderMeta({ hasMore: false, nextCursor: null })
       return
@@ -2766,18 +2827,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const conversationId = activeId
     if (!conversationId) return
     if (olderLoadingRef.current) return
-    if (Date.now() - lastOlderLoadAtRef.current < 600) return
     const meta = olderMetaRef.current
     if (!meta.hasMore || !meta.nextCursor) return
 
-    // Snapshot scroll geometry BEFORE the prepend so we can manually anchor
-    // the user's visual position after Virtuoso re-measures the list.
-    const scroller = messagesRef.current
-    const preScrollTop = scroller?.scrollTop ?? 0
-    const preScrollHeight = scroller?.scrollHeight ?? 0
-
+    const el = messagesRef.current
+    const before = el ? { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight } : null
     olderLoadingRef.current = true
-    pendingOlderLoadRef.current = false
+    setOlderLoading(true)
     try {
       const conv = (activeConversationRow as any)?.conversation
       if (!conv) return
@@ -2806,12 +2862,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const nextCursor = (fetchedResult.nextCursor ?? null) as string | null
       const hasMore = !!fetchedResult.hasMore
 
-      let prepended = 0
       client.setQueryData(['messages', conversationId], (old: any) => {
         const existing = Array.isArray(old) ? old : []
-        const existingIds = new Set<string>()
-        for (const m of existing) if (m && m.id) existingIds.add(m.id)
-        for (const m of sortedFetched) if (m && m.id && !existingIds.has(m.id)) prepended += 1
         const byId = new Map<string, any>()
         for (const m of [...sortedFetched, ...existing]) {
           if (m && m.id) byId.set(m.id, m)
@@ -2819,75 +2871,24 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
       })
       persistOlderMeta(conversationId, { hasMore, nextCursor })
-      lastOlderLoadAtRef.current = Date.now()
-      if (prepended > 0) {
-        setPrependTick((t) => t + 1)
-        // Anchor scroll: after Virtuoso re-measures, restore the visual
-        // position so newly inserted older messages appear *above* the
-        // viewport rather than snapping the user to the very top.
-        // We retry across a couple of animation frames because the new
-        // items may be measured incrementally (images, attachments).
-        const anchor = () => {
-          const el = messagesRef.current
-          if (!el) return
-          const grown = el.scrollHeight - preScrollHeight
-          if (grown <= 0) {
-            requestAnimationFrame(anchor)
-            return
+
+      if (before && messagesRef.current) {
+        requestAnimationFrame(() => {
+          const el2 = messagesRef.current
+          if (!el2) return
+          const delta = el2.scrollHeight - before.scrollHeight
+          if (delta > 0) {
+            el2.scrollTop = before.scrollTop + delta
           }
-          el.scrollTop = preScrollTop + grown
-        }
-        requestAnimationFrame(anchor)
+        })
       }
     } catch (err) {
       console.warn('[ChatsPage] Failed to load older messages', err)
     } finally {
       olderLoadingRef.current = false
+      setOlderLoading(false)
     }
   }, [activeId, client, activeConversationRow, persistOlderMeta])
-
-  const isScrollerNearBottom = useCallback((threshold = 120) => {
-    const el = messagesRef.current
-    if (!el) return nearBottomRef.current
-    return el.scrollHeight - el.scrollTop - el.clientHeight < threshold
-  }, [])
-
-  const loadOlderMessagesRef = useRef(loadOlderMessages)
-  loadOlderMessagesRef.current = loadOlderMessages
-
-  const markChatScrollerActivity = useCallback(() => {
-    scrollIdleRef.current = false
-    if (scrollIdleTimerRef.current != null) window.clearTimeout(scrollIdleTimerRef.current)
-    scrollIdleTimerRef.current = window.setTimeout(() => {
-      scrollIdleRef.current = true
-      if (pendingOlderLoadRef.current && !olderLoadingRef.current) {
-        pendingOlderLoadRef.current = false
-        const top = messagesRef.current?.scrollTop ?? 9999
-        if (top < 200) void loadOlderMessagesRef.current()
-      }
-    }, 200)
-  }, [])
-
-  const handleStartReached = useCallback(() => {
-    if (olderLoadingRef.current) return
-    if (Date.now() - lastOlderLoadAtRef.current < 600) return
-    if (!scrollIdleRef.current) {
-      pendingOlderLoadRef.current = true
-      return
-    }
-    void loadOlderMessagesRef.current()
-  }, [])
-
-  useEffect(() => {
-    if (!activeId) return
-    const conversationId = activeId
-    return () => {
-      client.setQueryData(['messages', conversationId], (old: any) => {
-        if (!Array.isArray(old)) return old
-        return trimMessageCache(old)
-      })
-    }
-  }, [activeId, client])
 
   // Lazy link preview fetch for older messages (or when socket updates are missed).
   // Server persists preview in message.metadata and may broadcast message:update.
@@ -2897,7 +2898,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const row = (conversationsQuery.data || []).find((r: any) => r?.conversation?.id === activeId)
     const isSecret = !!row?.conversation?.isSecret
     if (isSecret) return
-    if (olderLoadingRef.current) return
     const list = (messagesQuery.data || []) as any[]
     if (!list.length) return
     const candidates = list
@@ -2918,7 +2918,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         .then((r) => {
           const updated = r.data?.message
           if (updated && updated.id) {
-            updateMessageInCache(activeId, updated)
+            updateMessageInCache(activeId, updated, { preserveScroll: true })
           } else {
             // fallback
             messagesQuery.refetch().catch(() => {})
@@ -3454,40 +3454,106 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       .map((msg: any) => e2eeManager.transformMessage(activeConversation.id, msg))
   }, [messagesQuery.data, activeConversation?.id, activeConversation?.isSecret, e2eeVersion])
 
-  const preparedChatMessages = usePreparedChatMessageList(displayedMessages, activePendingMessages)
+  useEffect(() => {
+    ebloRangeRef.current = ebloRange
+  }, [ebloRange])
 
-  const preparedChatMessagesRef = useRef(preparedChatMessages)
-  preparedChatMessagesRef.current = preparedChatMessages
-
-  const scrollChatToBottom = useCallback((behavior: 'auto' | 'smooth' = 'auto') => {
-    if (olderLoadingRef.current) return
-    const count = preparedChatMessagesRef.current.visibleIndices.length
-    if (count <= 0) return
-    virtuosoRef.current?.scrollToIndex({
-      index: virtuosoFirstItemIndexRef.current + count - 1,
-      behavior,
-      align: 'end',
-    })
+  const estimateEbloRowHeight = useCallback((rowKey: string) => {
+    const cached = ebloRowHeightsRef.current.get(rowKey)
+    if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) return cached
+    if (rowKey.startsWith('bundle:') || rowKey.startsWith('forward:')) return EBLO_FORWARD_ROW_HEIGHT
+    if (rowKey.startsWith('system:')) return EBLO_SYSTEM_ROW_HEIGHT
+    return EBLO_DEFAULT_ROW_HEIGHT
   }, [])
 
-  const scrollToMessageById = useCallback((messageId: string | undefined) => {
-    if (!messageId) return
-    const prepared = preparedChatMessagesRef.current
-    const fullIdx = prepared.fullList.findIndex((m) => m?.id === messageId)
-    if (fullIdx < 0) return
-    const visibleIdx = resolveVisibleFullListIndex(
-      fullIdx,
-      prepared.visibleIndices,
-      prepared.fwdBundles,
-      prepared.fwdSkip,
-    )
-    if (visibleIdx < 0) return
-    virtuosoRef.current?.scrollToIndex({
-      index: virtuosoFirstItemIndexRef.current + visibleIdx,
-      behavior: 'smooth',
-      align: 'center',
-    })
+  const setEbloRangeIfChanged = useCallback((next: EbloRange) => {
+    const prev = ebloRangeRef.current
+    if (prev.start === next.start && prev.end === next.end) return
+    ebloRangeRef.current = next
+    setEbloRange(next)
   }, [])
+
+  const updateEblo = useCallback(() => {
+    const rows = ebloRowsRef.current
+    const el = messagesRef.current
+    if (!el || rows.length <= EBLO_MIN_ROWS) {
+      setEbloRangeIfChanged({ start: 0, end: Number.MAX_SAFE_INTEGER })
+      return
+    }
+
+    const viewportTop = Math.max(0, el.scrollTop - Math.max(EBLO_OVERSCAN_PX, el.clientHeight * 2))
+    const viewportBottom = el.scrollTop + el.clientHeight + Math.max(EBLO_OVERSCAN_PX, el.clientHeight * 2)
+    let y = 0
+    let start = 0
+    let end = Math.min(rows.length - 1, EBLO_INITIAL_ROWS)
+    let foundStart = false
+
+    for (let i = 0; i < rows.length; i++) {
+      const height = estimateEbloRowHeight(rows[i].key)
+      const rowBottom = y + height
+      if (!foundStart && rowBottom >= viewportTop) {
+        start = Math.max(0, i - EBLO_INDEX_OVERSCAN)
+        foundStart = true
+      }
+      if (y <= viewportBottom) {
+        end = Math.min(rows.length - 1, i + EBLO_INDEX_OVERSCAN)
+      } else if (foundStart) {
+        break
+      }
+      y = rowBottom
+    }
+
+    if (!foundStart) {
+      start = Math.max(0, rows.length - EBLO_INITIAL_ROWS)
+      end = rows.length - 1
+    }
+
+    const actualNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < Math.max(80, el.clientHeight * 0.5)
+    if (nearBottomRef.current && actualNearBottom) {
+      start = Math.min(start, Math.max(0, rows.length - EBLO_INITIAL_ROWS))
+      end = rows.length - 1
+    }
+
+    if (end < start) end = start
+    setEbloRangeIfChanged({ start, end })
+  }, [estimateEbloRowHeight, setEbloRangeIfChanged])
+
+  const scheduleEbloUpdate = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (ebloRafRef.current !== null) return
+    ebloRafRef.current = window.requestAnimationFrame(() => {
+      ebloRafRef.current = null
+      updateEblo()
+    })
+  }, [updateEblo])
+
+  const handleEbloRowHeightChange = useCallback((rowKey: string, height: number) => {
+    if (!Number.isFinite(height) || height <= 0) return
+    const next = Math.max(1, Math.ceil(height))
+    const prev = ebloRowHeightsRef.current.get(rowKey)
+    if (typeof prev === 'number' && Math.abs(prev - next) < 2) return
+    ebloRowHeightsRef.current.set(rowKey, next)
+    scheduleEbloUpdate()
+  }, [scheduleEbloUpdate])
+
+  useEffect(() => {
+    return () => {
+      if (ebloRafRef.current !== null) {
+        window.cancelAnimationFrame(ebloRafRef.current)
+        ebloRafRef.current = null
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    ebloRowHeightsRef.current.clear()
+    setEbloRangeIfChanged({ start: 0, end: EBLO_INITIAL_ROWS })
+    scheduleEbloUpdate()
+  }, [activeId, leftAlignAll, setEbloRangeIfChanged, scheduleEbloUpdate])
+
+  useLayoutEffect(() => {
+    scheduleEbloUpdate()
+  }, [activeId, displayedMessages.length, activePendingMessages.length, olderLoading, scheduleEbloUpdate])
 
   const clearMessageMultiSelect = useCallback(() => {
     setMultiSelectMode(false)
@@ -4135,6 +4201,59 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return () => { socket.off('profile:update', handler as any) }
   }, [client, me?.id])
 
+  function hashToGray(userId: string | null | undefined) {
+    // Все сообщения собеседника используют один цвет
+    return '#191d23'
+  }
+
+  function hashStringToUint(s: string | null | undefined): number {
+    if (!s) return 0
+    let h = 0
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+    return h
+  }
+
+  /** Стабильный пастельный цвет имени, как в Telegram-группах */
+  function nameColorForUser(userId: string | null | undefined): string {
+    const palette = [
+      '#b39ddb',
+      '#a5d6a7',
+      '#90caf9',
+      '#ffcc80',
+      '#f48fb1',
+      '#80cbc4',
+      '#ce93d8',
+      '#ffab91',
+      '#9fa8da',
+      '#aed581',
+      '#ffecb3',
+      '#ef9a9a',
+      '#81d4fa',
+    ]
+    return palette[hashStringToUint(userId) % palette.length]
+  }
+
+  /**
+   * Фон входящих/пересланных по участнику: намеренно разные hue при тёмной яркости,
+   * чтобы отличать авторов; часть тонов тёплая (умбра / медь) в духе бренда Eblusha.
+   */
+  function groupIncomingBubbleBg(userId: string | null | undefined): string {
+    const bases = [
+      '#2a1f16', // тёплый умбра (рядом с бренд-янтарём)
+      '#1a2836', // глубокий сине-сланцевый
+      '#152820', // тёмный хвойный
+      '#281a2c', // сливовый
+      '#162a2e', // бирюза / петроль
+      '#2d2418', // бронза / кофе с тёплым подтоном
+      '#1f2440', // индиго
+      '#223016', // оливковый мох
+      '#301c22', // винный дымчатый
+      '#14222c', // ледяной графит
+      '#2f2218', // сепия / «золотая тень» (фирменное тепло)
+      '#241c30', // лилово-серый
+    ]
+    return bases[hashStringToUint(userId) % bases.length]
+  }
 
   // Глобальный обработчик paste для вставки изображений из буфера обмена (когда фокус не в поле ввода)
   useEffect(() => {
@@ -4926,20 +5045,102 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     playNotifySoundIfAllowed,
   })
 
-  // Reset jump-to-bottom UI when switching conversations (Virtuoso handles scroll position).
+  // Auto-stick to bottom when new messages render (but respect manual scroll)
+  useLayoutEffect(() => {
+    if (!activeId) {
+      lastScrollConvRef.current = null
+      lastRenderedMessagesRef.current = 0
+      lastTailMessageIdRef.current = null
+      return
+    }
+    if (lastScrollConvRef.current !== activeId) {
+      lastScrollConvRef.current = activeId
+      lastRenderedMessagesRef.current = 0
+      lastTailMessageIdRef.current = null
+    }
+    const renderedCount = (displayedMessages?.length ?? 0) + activePendingMessages.length
+    const prevCount = lastRenderedMessagesRef.current
+    const prevTailId = lastTailMessageIdRef.current
+    lastRenderedMessagesRef.current = renderedCount
+    if (!messagesRef.current) return
+    if (renderedCount === 0) return
+    const fullList = [
+      ...(displayedMessages || []),
+      ...activePendingMessages,
+    ]
+    const lastMessage = fullList[fullList.length - 1]
+    const tailId = (lastMessage as any)?.id ?? (lastMessage as any)?.tempId ?? null
+    lastTailMessageIdRef.current = tailId
+    // Если хвост (самое последнее сообщение) не изменился, значит это либо ничего не
+    // поменялось, либо подгрузилась страница СТАРЫХ сверху. В обоих случаях
+    // автоскролл вниз делать нельзя — иначе при загрузке истории нас выбрасывает
+    // в самый низ беседы.
+    if (renderedCount <= prevCount && tailId === prevTailId) return
+    if (tailId === prevTailId) return
+    const isMine = lastMessage?.senderId && me?.id ? lastMessage.senderId === me.id : false
+    const shouldStick = isMine || !userStickyScrollRef.current || nearBottomRef.current
+    if (!shouldStick) return
+    requestAnimationFrame(() => {
+      const el = messagesRef.current
+      if (!el) return
+      el.scrollTop = el.scrollHeight
+      nearBottomRef.current = true
+      if (isMine) {
+        userStickyScrollRef.current = false
+      }
+      scheduleEbloUpdate()
+    })
+  }, [activeId, activePendingMessages, displayedMessages, me?.id, scheduleEbloUpdate])
+
+  // notifications disabled
+
+  // autoscroll to bottom when chat opens (агрессивно только на мобильных)
   useEffect(() => {
     if (!activeId) return
+    // When we enter a conversation, we always start in "stick to bottom" mode.
+    // Otherwise the first async render (messages/preview/toolbars) can leave us above the bottom
+    // until the second interaction.
     nearBottomRef.current = true
+    userStickyScrollRef.current = false
     setShowJump(false)
-  }, [activeId])
+
+    const scrollToBottom = () => {
+      const el = messagesRef.current
+      if (!el) return
+      el.scrollTop = el.scrollHeight
+      nearBottomRef.current = true
+      userStickyScrollRef.current = false
+      scheduleEbloUpdate()
+    }
+
+    // Do several attempts to cover: async message fetch, image decode, font/layout settling,
+    // and composer height animations.
+    scrollToBottom()
+    requestAnimationFrame(scrollToBottom)
+    const t0 = window.setTimeout(scrollToBottom, 0)
+    const t1 = window.setTimeout(scrollToBottom, 50)
+    const t2 = window.setTimeout(scrollToBottom, 200)
+    const t3 = window.setTimeout(scrollToBottom, 600)
+    return () => {
+      window.clearTimeout(t0)
+      window.clearTimeout(t1)
+      window.clearTimeout(t2)
+      window.clearTimeout(t3)
+    }
+  }, [activeId, scheduleEbloUpdate])
 
   // keep pinned to bottom while keyboard is opening/moving on mobile (iOS visualViewport)
   useEffect(() => {
     if (!isMobileRef.current) return
+    const el = messagesRef.current
+    if (!el) return
     const handleVV = () => {
       const active = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
       if (active && active === composerEditorRef.current) {
-        scrollChatToBottom('auto')
+        el.scrollTop = el.scrollHeight
+        nearBottomRef.current = true
+        userStickyScrollRef.current = false
+        scheduleEbloUpdate()
       }
     }
     if (window.visualViewport) {
@@ -4952,7 +5153,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         window.visualViewport.removeEventListener('scroll', handleVV as any)
       }
     }
-  }, [activeId, scrollChatToBottom])
+  }, [activeId, scheduleEbloUpdate])
 
   // Dev-only: warn if credential-like inputs are present on chat page
   useEffect(() => {
@@ -4966,7 +5167,61 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [])
 
-  // Jump-to-bottom visibility and load-older are handled by VirtualizedChatMessageList (Virtuoso).
+  // автопрокрутка по новым сообщениям отключена, чтобы не мешать ручному скроллу
+
+  // Show jump-to-bottom button when user scrolls up
+  useEffect(() => {
+    const el = messagesRef.current
+    if (!el) return
+    let raf = 0
+    let lastScrollTop = el.scrollTop
+    const onScroll = () => {
+      if (raf) cancelAnimationFrame(raf)
+      const currentScrollTop = el.scrollTop
+      const scrollDelta = Math.abs(currentScrollTop - lastScrollTop)
+      // Only mark as user scroll if there's actual movement (not just programmatic scroll)
+      if (scrollDelta > 1) {
+        userStickyScrollRef.current = true
+      }
+      raf = requestAnimationFrame(() => {
+        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8
+        nearBottomRef.current = nearBottom
+        setShowJump(!nearBottom)
+        scheduleEbloUpdate()
+        // Infinite scroll: when user reaches near-top, load older messages.
+        // We keep scroll position stable in `loadOlderMessages`.
+        if (el.scrollTop < 420) {
+          void loadOlderMessages()
+        }
+        if (nearBottom) {
+          // Only reset user sticky scroll if we're actually near bottom
+          // Give a small delay to allow programmatic scrolls
+          window.setTimeout(() => {
+            if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
+              userStickyScrollRef.current = false
+            }
+          }, 100)
+        }
+        lastScrollTop = el.scrollTop
+      })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [activeId, loadOlderMessages, scheduleEbloUpdate])
+
+  useEffect(() => {
+    if (!activeId) return
+    if (!olderMeta.hasMore || olderLoading) return
+    const el = messagesRef.current
+    if (!el) return
+    if (el.scrollHeight <= el.clientHeight + 420) {
+      void loadOlderMessages()
+    }
+  }, [activeId, displayedMessages.length, activePendingMessages.length, olderMeta.hasMore, olderLoading, loadOlderMessages])
 
   // detect wide area to left-align all messages
   useEffect(() => {
@@ -5643,14 +5898,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   }, [attachUploadState])
 
   // Keep CSS var in sync for any layout changes (e.g. fonts/viewport).
-  // Note: we deliberately don't trigger scrollChatToBottom here — Virtuoso
-  // with alignToBottom keeps the view pinned naturally, and forcing scroll
-  // produces dragging when composer resizes mid-scroll.
   useEffect(() => {
     const bar = composerBarRef.current
     if (!bar || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
       syncComposerBarHeightVar()
+      // If the user was at the bottom, keep the view pinned when composer grows/shrinks
+      // (e.g. toolbar appears, attachments preview, reply/edit bars).
+      const el = messagesRef.current
+      if (el && nearBottomRef.current) {
+        try { el.scrollTop = el.scrollHeight } catch {}
+      }
     })
     ro.observe(bar)
     return () => ro.disconnect()
@@ -8308,19 +8566,39 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             zIndex: 10
           }} />
           <div
+            ref={messagesRef}
             style={{
               flex: 1,
               minHeight: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              minWidth: 0,
+              overflow: 'auto',
+              padding: 16,
+              display: 'block',
             }}
           >
+            {activeId && olderLoading && (
+              <div
+                aria-live="polite"
+                style={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  padding: '6px 0 14px',
+                  color: 'var(--text-muted)',
+                  fontSize: 13,
+                }}
+              >
+                Загружаем…
+              </div>
+            )}
             {!activeId ? (
               <div className="messages-empty">Сообщения появятся здесь</div>
             ) : (
               (() => {
-                const { fullList, visibleIndices, fwdBundles: __fwdBundles, fwdSkip: __fwdSkip } = preparedChatMessages
+                const list = (displayedMessages ? [...displayedMessages] : []).
+                  filter((m: any) => !m.deletedAt).
+                  sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
+                const pending = activePendingMessages
+                const fullList = [...(list || []), ...pending]
+                if (!fullList) return null
                 const replyQuoteVisual = (
                   quotedMsg: any | undefined | null,
                   snippetFromApi: string,
@@ -8335,6 +8613,39 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   const showPlaceholder = !thumbUrl && !showText
                   return { thumbUrl, line, showText, showPlaceholder }
                 }
+                const __fwdBundles = computeMultiSourceForwardBundles(fullList)
+                const __fwdSkip = new Set<number>()
+                for (const b of __fwdBundles) {
+                  for (let k = b.start + 1; k <= b.end; k++) __fwdSkip.add(k)
+                }
+                const __fwdBundleByStart = new Map<number, (typeof __fwdBundles)[number]>()
+                for (const b of __fwdBundles) __fwdBundleByStart.set(b.start, b)
+                const ebloRowPositionByIndex = new Map<number, number>()
+                const ebloRowKeyByIndex = new Map<number, string>()
+                const ebloRows: EbloRowMeta[] = []
+                for (let i = 0; i < fullList.length; i++) {
+                  const row = fullList[i]
+                  if (!row || row.deletedAt || __fwdSkip.has(i)) continue
+                  const keyPrefix = __fwdBundleByStart.has(i)
+                    ? 'bundle'
+                    : row.type === 'SYSTEM'
+                      ? 'system'
+                      : hasForwardFromMeta(row)
+                        ? 'forward'
+                        : 'msg'
+                  const rowKey = `${keyPrefix}:${row.id ?? row.tempId ?? i}`
+                  ebloRowPositionByIndex.set(i, ebloRows.length)
+                  ebloRowKeyByIndex.set(i, rowKey)
+                  ebloRows.push({ index: i, key: rowKey })
+                }
+                ebloRowsRef.current = ebloRows
+                const effectiveEbloRange =
+                  ebloRows.length > EBLO_MIN_ROWS && ebloRange.end === Number.MAX_SAFE_INTEGER
+                    ? {
+                        start: Math.max(0, ebloRows.length - EBLO_INITIAL_ROWS),
+                        end: ebloRows.length - 1,
+                      }
+                    : ebloRange
                 const repMessagePendingForMulti = (rep: any) =>
                   !!rep &&
                   (() => {
@@ -8725,6 +9036,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       const onContextMenu = (e: React.MouseEvent) => {
                     e.preventDefault()
                         openMenuAt(e.clientX, e.clientY)
+                  }
+                  const scrollToMessageById = (qid: string | undefined) => {
+                    if (!qid) return
+                    const el = nodesByMessageId.current.get(qid)
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
                   }
                   const scrollToQuoted = () => scrollToMessageById((m as any).replyTo?.id as string | undefined)
                   // Lightbox should be scoped to this message (not the whole chat).
@@ -9386,6 +9702,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                           }
                                           setFailedImages((prev) => ({ ...prev, [placeholderKey]: false }))
                                           setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
+                                          if (messagesRef.current && nearBottomRef.current) {
+                                            const el = messagesRef.current
+                                            el.scrollTop = el.scrollHeight
+                                          }
                                         }}
                                         onError={() => {
                                           setFailedImages((prev) => ({ ...prev, [placeholderKey]: true }))
@@ -9846,14 +10166,37 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     </div>
                   )
                 }
-                const renderChatListItem = (mapIndex: number) => {
-                  const m = fullList[mapIndex]
-                  if (!m || m.deletedAt) {
-                    return <div aria-hidden style={{ minHeight: 1 }} />
-                  }
-                  if (m.type === 'SYSTEM') {
+                return fullList.map((m: any, mapIndex: number) => {
+                  if (!m || m.deletedAt) return null
+                  if (__fwdSkip.has(mapIndex)) return null
+                  const ebloRowKey = ebloRowKeyByIndex.get(mapIndex)
+                  const ebloRowPosition = ebloRowPositionByIndex.get(mapIndex)
+                  if (ebloRowKey == null || ebloRowPosition == null) return null
+                  const ebloShouldRender =
+                    ebloRows.length <= EBLO_MIN_ROWS ||
+                    (ebloRowPosition >= effectiveEbloRange.start && ebloRowPosition <= effectiveEbloRange.end)
+                  if (!ebloShouldRender) {
                     return (
-                      <div key={m.id} style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '12px 16px', marginTop: 8 }}>
+                      <div
+                        key={`eblo-placeholder-${ebloRowKey}`}
+                        className="eblo-placeholder"
+                        style={{ height: estimateEbloRowHeight(ebloRowKey) }}
+                        aria-hidden
+                      />
+                    )
+                  }
+                  const wrapEbloRow = (node: ReactNode) => (
+                    <EbloMeasuredRow
+                      key={`eblo-row-${ebloRowKey}`}
+                      rowKey={ebloRowKey}
+                      onHeightChange={handleEbloRowHeightChange}
+                    >
+                      {node}
+                    </EbloMeasuredRow>
+                  )
+                  if (m.type === 'SYSTEM') {
+                    return wrapEbloRow(
+                      <div key={m.id} className="chat-system-message" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '12px 16px', marginTop: 8 }}>
                         <div style={{ 
                           fontSize: 13, 
                           color: 'var(--text-muted)', 
@@ -9866,11 +10209,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       </div>
                     )
                   }
-                  if (__fwdSkip.has(mapIndex)) {
-                    // Should not happen — skipped indices are excluded from visibleIndices.
-                    return <div className="virtuoso-row-fallback" aria-hidden style={{ minHeight: 1 }} />
-                  }
-                  const __fwdBundle = __fwdBundles.find((b) => b.start === mapIndex)
+                  const __fwdBundle = __fwdBundleByStart.get(mapIndex)
                   if (__fwdBundle) {
                     const m0 = fullList[__fwdBundle.start]
                     const prev0 = fullList[__fwdBundle.start - 1]
@@ -9949,7 +10288,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       toggleMessageMultiSelect(m0.id)
                     }
                     if (!fwdComposerCaption0) {
-                      return (
+                      return wrapEbloRow(
                         <div
                           key={`multi-fwd-${m0.id}`}
                           className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClass0}`}
@@ -10045,7 +10384,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       )
                     }
 
-                    return (
+                    return wrapEbloRow(
                       <div
                         key={`multi-fwd-${m0.id}`}
                         className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClass0}`}
@@ -10219,7 +10558,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       toggleMessageMultiSelect(mS.id)
                     }
                     if (!fwdComposerCaptionS) {
-                      return (
+                      return wrapEbloRow(
                         <div
                           key={`single-fwd-${mS.id}`}
                           className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClassS}`}
@@ -10313,7 +10652,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       )
                     }
 
-                    return (
+                    return wrapEbloRow(
                       <div
                         key={`single-fwd-${mS.id}`}
                         className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClassS}`}
@@ -10409,27 +10748,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       </div>
                     )
                   }
-                  return renderChatMessageAtIndex(mapIndex, false)
-                }
-                return (
-                  <VirtualizedChatMessageList
-                    ref={virtuosoRef}
-                    conversationKey={activeId}
-                    scrollerRef={messagesRef}
-                    firstItemIndexRef={virtuosoFirstItemIndexRef}
-                    count={visibleIndices.length}
-                    prependTick={prependTick}
-                    getItemKey={(vi) => fullList[visibleIndices[vi]]?.id ?? visibleIndices[vi]}
-                    itemContent={(vi) => renderChatListItem(visibleIndices[vi])}
-                    suppressFollowOutputRef={olderLoadingRef}
-                    onScrollerScroll={markChatScrollerActivity}
-                    onStartReached={handleStartReached}
-                    onAtBottomChange={(atBottom) => {
-                      nearBottomRef.current = atBottom
-                      setShowJump(!atBottom)
-                    }}
-                  />
-                )
+                  return wrapEbloRow(renderChatMessageAtIndex(mapIndex, false))
+                })
               })()
             )}
           </div>
@@ -10439,13 +10759,23 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               onMouseDown={(e) => {
                 // Prevent composer blur (toolbar collapse) from swallowing the click.
                 e.preventDefault()
-                scrollChatToBottom('smooth')
+                if (messagesRef.current) {
+                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
+                }
+                nearBottomRef.current = true
+                userStickyScrollRef.current = false
+                scheduleEbloUpdate()
                 setShowJump(false)
               }}
               onClick={(e) => {
                 // Keyboard activation: click has detail===0 (mouse is handled above).
                 if ((e as any)?.detail > 0) return
-                scrollChatToBottom('smooth')
+                if (messagesRef.current) {
+                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
+                }
+                nearBottomRef.current = true
+                userStickyScrollRef.current = false
+                scheduleEbloUpdate()
                 setShowJump(false)
               }}
             >
@@ -11102,7 +11432,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 if (activeId) {
                   client.invalidateQueries({ queryKey: ['messages', activeId] })
                 }
-                setTimeout(() => { scrollChatToBottom('auto') }, 0)
+                setTimeout(() => {
+                  if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight
+                }, 0)
                 return
               }
 
@@ -11131,7 +11463,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     if (activeId) {
                       client.invalidateQueries({ queryKey: ['messages', activeId] })
                     }
-                    setTimeout(() => { scrollChatToBottom('auto') }, 0)
+                    setTimeout(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight }, 0)
             }} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <button
               type="button"
@@ -11776,8 +12108,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     })
   }
 
-  function updateMessageInCache(conversationId: string, msg: any) {
+  function updateMessageInCache(conversationId: string, msg: any, opts?: { preserveScroll?: boolean }) {
     if (!msg) return
+    const el = messagesRef.current
+    const preserve = !!opts?.preserveScroll && !!el && !nearBottomRef.current
+    const before = preserve && el ? { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight } : null
     client.setQueryData(['messages', conversationId], (old: any) => {
       if (!Array.isArray(old)) return old
       const idx = old.findIndex((m: any) => m.id === msg.id)
@@ -11786,6 +12121,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       next[idx] = { ...next[idx], ...msg }
       return next
     })
+    if (preserve && before) {
+      requestAnimationFrame(() => {
+        const el2 = messagesRef.current
+        if (!el2) return
+        const delta = el2.scrollHeight - before.scrollHeight
+        if (delta > 0) {
+          el2.scrollTop = before.scrollTop + delta
+        }
+      })
+    }
   }
 
   function receiptStatusRank(status: string | null | undefined) {
@@ -15420,6 +15765,3 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 function makeParticipantsKey(list: Array<{ user: { id: string } }> | undefined | null): string {
   return (list ?? []).map((p) => p.user.id).sort().join(',')
 }
-
-
-

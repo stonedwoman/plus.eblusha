@@ -28,57 +28,38 @@ export function LazyImage({
     if (!src) return
     if (shouldLoad) return
 
-    if (typeof window === 'undefined' || typeof window.IntersectionObserver !== 'function') {
+    // If IO is missing, load immediately.
+    if (typeof window === 'undefined' || typeof (window as any).IntersectionObserver !== 'function') {
       setShouldLoad(true)
       return
     }
 
     const el = imgRef.current
     if (!el) {
+      // In case ref isn't ready yet, fallback to eager load.
       setShouldLoad(true)
       return
     }
 
-    let observer: IntersectionObserver | null = null
-
-    const startObserver = () => {
-      observer?.disconnect()
-      observer = new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            if (entry.isIntersecting) {
-              setShouldLoad(true)
-              observer?.disconnect()
-              break
-            }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setShouldLoad(true)
+            observer.disconnect()
+            break
           }
-        },
-        {
-          root: rootRef?.current ?? null,
-          rootMargin,
-          threshold: 0.01,
-        },
-      )
-      observer.observe(el)
-    }
-
-    startObserver()
-
-    // Scroll root (Virtuoso scroller) may attach after first paint.
-    if (!rootRef?.current) {
-      const retryId = window.setInterval(() => {
-        if (rootRef?.current) {
-          window.clearInterval(retryId)
-          startObserver()
         }
-      }, 100)
-      return () => {
-        window.clearInterval(retryId)
-        observer?.disconnect()
-      }
-    }
+      },
+      {
+        root: rootRef?.current ?? null,
+        rootMargin,
+        threshold: 0.01,
+      },
+    )
 
-    return () => observer?.disconnect()
+    observer.observe(el)
+    return () => observer.disconnect()
   }, [src, shouldLoad, rootMargin, rootRef])
 
   return (

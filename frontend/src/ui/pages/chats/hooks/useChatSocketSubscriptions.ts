@@ -7,7 +7,7 @@ export function useChatSocketSubscriptions(opts: {
   client: any
   messagesQuery: any
   appendMessageToCache: (conversationId: string, incoming: any) => void
-  updateMessageInCache: (conversationId: string, message: any) => void
+  updateMessageInCache: (conversationId: string, message: any, opts?: any) => void
   setPendingByConv: Dispatch<SetStateAction<Record<string, any[]>>>
   isSecretBlockedForDevice: (conversationId: string) => boolean
   onIncomingTyping: (p: any) => void
@@ -100,7 +100,7 @@ export function useChatSocketSubscriptions(opts: {
       const conversationId = payload.conversationId
       if (!activeId || conversationId !== activeId) return
       if (payload.message && payload.message.id) {
-        updateMessageInCache(activeId, payload.message)
+        updateMessageInCache(activeId, payload.message, { preserveScroll: payload.reason === 'link_preview' })
       } else if (payload.messageId) {
         messagesQuery.refetch().catch(() => {})
       }

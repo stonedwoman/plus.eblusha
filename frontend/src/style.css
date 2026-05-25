@@ -610,19 +610,36 @@ a {
   color: var(--text-muted);
 }
 
-/* Virtuoso scroller: padding for messages list (replaces custom List component). */
-[data-testid="virtuoso-item-list"] {
-  padding: 16px;
-  box-sizing: border-box;
-}
-
 /* Message rows and bubbles */
-.msg { display: flex; align-items: flex-end; gap: 8px; margin: 0; }
+.msg { display: flex; align-items: flex-end; gap: 8px; margin: 0; container-type: inline-size; }
 .msg.compact { margin-top: 2px; }
 .msg.gap { margin-top: 12px; }
 .msg.left { justify-content: flex-start; width: 100%; }
 .msg.them { justify-content: flex-start; width: 100%; }
 .msg.me { justify-content: flex-end; width: 100%; }
+
+.eblo-row {
+  display: flow-root;
+  width: 100%;
+}
+
+.eblo-placeholder {
+  width: 100%;
+  min-height: 1px;
+  pointer-events: none;
+}
+
+@supports (content-visibility: auto) {
+  .messages-pane .msg,
+  .messages-pane .chat-system-message {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 88px;
+  }
+
+  .messages-pane .msg-forward-bundle-host {
+    contain-intrinsic-size: auto 180px;
+  }
+}
 
 .avatar-spacer { width: 40px; flex: 0 0 40px; height: 0; }
 
