@@ -1,7 +1,7 @@
 {
   "activeSchematic": "Веха None",
   "autoLoadSessionName": "koban",
-  "averageTickRate": 29.9381160736084,
+  "averageTickRate": 29.930328369140625,
   "connectAddress": "ru.eblusha.org:1173",
   "gamePhase": "Проект «Сборка»: фаза 2 — Строительный док",
   "health": "healthy",
@@ -50,6 +50,6 @@
   "sessionName": "koban",
   "techTier": 4,
   "techTierLabel": "Технологический уровень 4",
-  "totalGameDurationSec": 87742,
-  "updatedAt": "2026-05-18T18:36:56Z"
+  "totalGameDurationSec": 87952,
+  "updatedAt": "2026-05-25T13:02:53Z"
 }

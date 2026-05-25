@@ -9,28 +9,22 @@
     {
       "name": "Валян",
       "alive": true,
-      "x": 215841.14,
-      "y": -803695.39,
-      "z": 229.32
+      "x": 211849.05,
+      "y": -801297.85,
+      "z": 198.72
     }
   ],
-  "recentPlayers": [
-    {
-      "name": "Роман",
-      "lastSeen": "2026-05-17T18:00:11Z",
-      "online": false
-    }
-  ],
-  "updated": "2026-05-18T18:37:09Z",
-  "updatedAt": "2026-05-18T18:37:09Z",
+  "recentPlayers": [],
+  "updated": "2026-05-25T13:02:54Z",
+  "updatedAt": "2026-05-25T13:02:54Z",
   "serverStatus": {
     "container": "windrose-server",
     "dockerRunning": true,
-    "uptimeSec": 33659,
+    "uptimeSec": 244988,
     "state": "running",
     "health": "healthy",
-    "restartCount": 0,
-    "startedAt": "2026-05-18T09:16:09.973075Z"
+    "restartCount": 2,
+    "startedAt": "2026-05-22T16:59:45.914429Z"
   },
   "world": {
     "name": null,
@@ -41,7 +35,7 @@
     "p2pProxy": "192.168.1.129",
     "gameVersion": "0.10.0.6.213",
     "deploymentId": "0.10.0.6.213-f90b3bc1",
-    "windrosePlusVersion": "1.3.4",
+    "windrosePlusVersion": "1.3.5",
     "windrosePlusEnabled": true,
     "multipliers": {
       "loot": 1,
@@ -56,19 +50,11 @@
       "craft_cost": 1
     },
     "stats": {
-      "mobCount": 12,
-      "nodeCount": 17,
+      "mobCount": 9,
+      "nodeCount": 144,
       "topMobs": [
         [
           "GalenSkelton",
-          2
-        ],
-        [
-          "Ketch",
-          2
-        ],
-        [
-          "Cutter",
           2
         ],
         [
@@ -76,22 +62,34 @@
           2
         ],
         [
-          "Brig",
+          "ShallowBoat",
           1
         ],
         [
           "01",
           1
+        ],
+        [
+          "02",
+          1
+        ],
+        [
+          "Brig",
+          1
         ]
       ],
       "topNodes": [
         [
-          "CoastJungleMineralNestDodo",
-          10
+          "Shared",
+          72
         ],
         [
           "Mineral",
-          3
+          58
+        ],
+        [
+          "CoastJungleMineralNestDodo",
+          10
         ],
         [
           "CoastJungleMineralSticksRocksDebris",
@@ -129,7 +127,7 @@
       "ts": 1778530998
     },
     "upstream": {
-      "checkedAt": "2026-05-18T18:03:28Z",
+      "checkedAt": "2026-05-25T12:52:17Z",
       "repo": "HumanGenome/WindrosePlus",
       "issueNumber": 77,
       "issueState": "closed",
@@ -137,9 +135,9 @@
       "issueLabels": [],
       "issueUrl": "https://github.com/humangenome/WindrosePlus/issues/77",
       "issueClosedAt": "2026-05-05T20:15:34Z",
-      "latestTag": "v1.3.4",
-      "latestPublishedAt": "2026-05-12T00:34:25Z",
-      "latestUrl": "https://github.com/humangenome/WindrosePlus/releases/tag/v1.3.4",
+      "latestTag": "v1.3.5",
+      "latestPublishedAt": "2026-05-20T05:33:52Z",
+      "latestUrl": "https://github.com/humangenome/WindrosePlus/releases/tag/v1.3.5",
       "newerReleaseAvailable": false,
       "hasLocalHeightmaps": true,
       "heightmapsCount": 1252,

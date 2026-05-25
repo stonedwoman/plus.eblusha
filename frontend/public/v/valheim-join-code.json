@@ -1,9 +1,9 @@
 {
-  "code": "080216",
-  "worldCode": "080216",
+  "code": "663354",
+  "worldCode": "663354",
   "serverName": "Koban",
-  "updated": "2026-05-18T18:36:56Z",
-  "updatedAt": "2026-05-18T18:36:56Z",
+  "updated": "2026-05-25T13:02:48Z",
+  "updatedAt": "2026-05-25T13:02:48Z",
   "ok": true,
   "playersOnline": 0,
   "players": [],
@@ -52,7 +52,7 @@
         "nameRu": "Незваные кости",
         "unknown": false,
         "occurredAt": "2026-04-16T00:25:23",
-        "gameDaysAgo": 1578,
+        "gameDaysAgo": 1903,
         "eventDay": 1
       },
       {
@@ -60,7 +60,7 @@
         "nameRu": "По Вам пробежал холодок",
         "unknown": false,
         "occurredAt": "2026-04-22T22:00:55",
-        "gameDaysAgo": 1246,
+        "gameDaysAgo": 1571,
         "eventDay": 1
       }
     ]
@@ -68,6 +68,6 @@
   "serverStatus": {
     "dockerRunning": true,
     "container": "valheim",
-    "logTimestamp": "2026-05-18T21:30:50"
+    "logTimestamp": "2026-05-25T16:00:46"
   }
 }
