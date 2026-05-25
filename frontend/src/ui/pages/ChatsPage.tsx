@@ -2676,6 +2676,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const pendingOlderLoadRef = useRef(false)
   const lastOlderLoadAtRef = useRef(0)
   const olderMetaRef = useRef<OlderMessagesMeta>({ hasMore: false, nextCursor: null })
+  const [prependTick, setPrependTick] = useState(0)
   const persistOlderMeta = useCallback((conversationId: string, meta: OlderMessagesMeta) => {
     olderMetaByConvRef.current.set(conversationId, meta)
     setOlderMeta((prev) =>
@@ -2752,6 +2753,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   useEffect(() => {
     // Restore per-conversation pagination when switching chats (do not drop saved cursors).
     olderLoadingRef.current = false
+    setPrependTick(0)
     if (!activeId) {
       setOlderMeta({ hasMore: false, nextCursor: null })
       return
@@ -2798,8 +2800,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const nextCursor = (fetchedResult.nextCursor ?? null) as string | null
       const hasMore = !!fetchedResult.hasMore
 
+      let prepended = 0
       client.setQueryData(['messages', conversationId], (old: any) => {
         const existing = Array.isArray(old) ? old : []
+        const existingIds = new Set<string>()
+        for (const m of existing) if (m && m.id) existingIds.add(m.id)
+        for (const m of sortedFetched) if (m && m.id && !existingIds.has(m.id)) prepended += 1
         const byId = new Map<string, any>()
         for (const m of [...sortedFetched, ...existing]) {
           if (m && m.id) byId.set(m.id, m)
@@ -2808,6 +2814,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       })
       persistOlderMeta(conversationId, { hasMore, nextCursor })
       lastOlderLoadAtRef.current = Date.now()
+      if (prepended > 0) setPrependTick((t) => t + 1)
     } catch (err) {
       console.warn('[ChatsPage] Failed to load older messages', err)
     } finally {
@@ -10387,6 +10394,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     scrollerRef={messagesRef}
                     firstItemIndexRef={virtuosoFirstItemIndexRef}
                     count={visibleIndices.length}
+                    prependTick={prependTick}
                     getItemKey={(vi) => fullList[visibleIndices[vi]]?.id ?? visibleIndices[vi]}
                     itemContent={(vi) => renderChatListItem(visibleIndices[vi])}
                     suppressFollowOutputRef={olderLoadingRef}

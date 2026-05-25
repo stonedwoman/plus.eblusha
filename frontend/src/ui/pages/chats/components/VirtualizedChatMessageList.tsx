@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react'
+import { forwardRef, useCallback, useEffect, useRef, type ReactNode, type RefObject } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 export const VIRTUOSO_INDEX_BASE = 1_000_000
@@ -9,6 +9,13 @@ export type VirtualizedChatMessageListProps = {
   scrollerRef: RefObject<HTMLDivElement | null>
   /** Updated synchronously each render; use for scrollToIndex with firstItemIndex offset. */
   firstItemIndexRef: RefObject<number>
+  /**
+   * Monotonic counter incremented by the parent whenever it actually prepends
+   * older messages to the head of the list. Used as the SOLE trigger for
+   * shifting firstItemIndex — this is more reliable than guessing from
+   * count/first-key heuristics, which break when visibility filtering changes.
+   */
+  prependTick?: number
   getItemKey?: (index: number) => string | number
   onStartReached?: () => void
   onAtBottomChange?: (atBottom: boolean) => void
@@ -25,6 +32,7 @@ export const VirtualizedChatMessageList = forwardRef<VirtuosoHandle, Virtualized
       itemContent,
       scrollerRef,
       firstItemIndexRef,
+      prependTick = 0,
       getItemKey,
       onStartReached,
       onAtBottomChange,
@@ -44,57 +52,39 @@ export const VirtualizedChatMessageList = forwardRef<VirtuosoHandle, Virtualized
     const countRef = useRef(count)
     countRef.current = count
 
-    // Per-conversation Virtuoso state. We compute firstItemIndex below so it
-    // updates only when count grows AND the previous-first-key now appears later
-    // in the list (true prepend) — never on equal-count re-renders or appends.
+    // Per-conversation Virtuoso state.
     const stateRef = useRef<{
       convKey: string | null | undefined
       prevCount: number
-      prevFirstKey: string | number | undefined
+      prevPrependTick: number
       firstItemIndex: number
       initialTopMostItemIndex: number
     }>({
       convKey: undefined,
       prevCount: 0,
-      prevFirstKey: undefined,
+      prevPrependTick: 0,
       firstItemIndex: VIRTUOSO_INDEX_BASE,
       initialTopMostItemIndex: 0,
     })
 
-    const nextFirstKey = count > 0 ? getItemKey?.(0) : undefined
     const s = stateRef.current
 
     // On conversation switch — fully reset state.
     if (s.convKey !== conversationKey) {
       s.convKey = conversationKey
       s.prevCount = 0
-      s.prevFirstKey = undefined
+      s.prevPrependTick = prependTick
       s.firstItemIndex = VIRTUOSO_INDEX_BASE
       s.initialTopMostItemIndex = count > 0 ? s.firstItemIndex + count - 1 : 0
     }
 
-    // Detect prepend: count grew AND the previously-first key now appears at a
-    // later index (i.e. new items inserted before it). This is more robust than
-    // just comparing first keys, because the first message can also change due
-    // to delete/transform without an actual prepend happening.
-    if (
-      count > s.prevCount &&
-      s.prevFirstKey !== undefined &&
-      nextFirstKey !== undefined &&
-      nextFirstKey !== s.prevFirstKey
-    ) {
+    // Detect prepend via the parent's prependTick signal. The parent increments
+    // it once per loadOlderMessages merge; we shift firstItemIndex by the count
+    // delta so Virtuoso preserves the user's visual scroll position.
+    if (prependTick !== s.prevPrependTick) {
       const delta = count - s.prevCount
-      // Look up prevFirstKey at exactly `delta` to confirm it's a clean prepend.
-      let isPrepend = false
-      if (getItemKey) {
-        const probed = getItemKey(delta)
-        if (probed !== undefined && probed === s.prevFirstKey) isPrepend = true
-      } else {
-        isPrepend = true
-      }
-      if (isPrepend) {
-        s.firstItemIndex -= delta
-      }
+      if (delta > 0) s.firstItemIndex -= delta
+      s.prevPrependTick = prependTick
     }
 
     // First-time render with items: lock initial topmost (only once).
@@ -103,7 +93,6 @@ export const VirtualizedChatMessageList = forwardRef<VirtuosoHandle, Virtualized
     }
 
     s.prevCount = count
-    s.prevFirstKey = nextFirstKey
 
     const firstItemIndex = s.firstItemIndex
     firstItemIndexRef.current = firstItemIndex
@@ -145,20 +134,12 @@ export const VirtualizedChatMessageList = forwardRef<VirtuosoHandle, Virtualized
       return k ?? virtuosoIndex
     }, [])
 
-    // followOutput stable — reads via ref.
     const followOutput = useCallback(
       (atBottom: boolean) => {
         if (suppressFollowOutputRef?.current) return false
         return atBottom ? 'auto' : false
       },
       [suppressFollowOutputRef],
-    )
-
-    // Initial topmost is captured once per conversation; don't change after.
-    const initialTopMostItemIndex = useMemo(
-      () => s.initialTopMostItemIndex,
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      [conversationKey, s.initialTopMostItemIndex > 0 ? 'set' : 'unset'],
     )
 
     if (count === 0) {
@@ -175,7 +156,7 @@ export const VirtualizedChatMessageList = forwardRef<VirtuosoHandle, Virtualized
         totalCount={count}
         itemContent={renderItem}
         computeItemKey={computeItemKey}
-        initialTopMostItemIndex={initialTopMostItemIndex}
+        initialTopMostItemIndex={s.initialTopMostItemIndex}
         followOutput={followOutput}
         startReached={onStartReached}
         atBottomStateChange={onAtBottomChange}
