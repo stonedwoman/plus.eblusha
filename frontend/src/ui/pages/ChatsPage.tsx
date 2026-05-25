@@ -39,6 +39,8 @@ import { renderMessageText } from './chats/chatsTextRender'
 import { openUrlSystemBrowser } from './chats/chatsEmbeds'
 import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
 import { MessageReactionRail } from './chats/components/MessageReactionRail'
+import { VirtualizedChatMessageList, type VirtuosoHandle } from './chats/components/VirtualizedChatMessageList'
+import { usePreparedChatMessageList } from './chats/hooks/usePreparedChatMessageList'
 import { isChatsRoute, withAppRoutePrefix } from '../../core/navigation/routes'
 import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../utils/apkCallSignal'
 import { shouldShowAudioUnlockPrompt } from '../../utils/audioUnlock'
@@ -1219,6 +1221,7 @@ export default function ChatsPage() {
   const [composerSelectionToolbarSize, setComposerSelectionToolbarSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const messagesRef = useRef<HTMLDivElement | null>(null)
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
   type OlderMessagesMeta = { hasMore: boolean; nextCursor: string | null }
   const olderMetaByConvRef = useRef(new Map<string, OlderMessagesMeta>())
 
@@ -2761,8 +2764,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const meta = olderMetaRef.current
     if (!meta.hasMore || !meta.nextCursor) return
 
-    const el = messagesRef.current
-    const before = el ? { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight } : null
     olderLoadingRef.current = true
     setOlderLoading(true)
     try {
@@ -2802,17 +2803,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
       })
       persistOlderMeta(conversationId, { hasMore, nextCursor })
-
-      if (before && messagesRef.current) {
-        requestAnimationFrame(() => {
-          const el2 = messagesRef.current
-          if (!el2) return
-          const delta = el2.scrollHeight - before.scrollHeight
-          if (delta > 0) {
-            el2.scrollTop = before.scrollTop + delta
-          }
-        })
-      }
     } catch (err) {
       console.warn('[ChatsPage] Failed to load older messages', err)
     } finally {
@@ -3384,6 +3374,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       })
       .map((msg: any) => e2eeManager.transformMessage(activeConversation.id, msg))
   }, [messagesQuery.data, activeConversation?.id, activeConversation?.isSecret, e2eeVersion])
+
+  const preparedChatMessages = usePreparedChatMessageList(displayedMessages, activePendingMessages)
+
+  const scrollChatToBottom = useCallback((behavior: 'auto' | 'smooth' = 'auto') => {
+    const count = preparedChatMessages.fullList.length
+    if (count <= 0) return
+    virtuosoRef.current?.scrollToIndex({
+      index: count - 1,
+      behavior,
+      align: 'end',
+    })
+    nearBottomRef.current = true
+  }, [preparedChatMessages.fullList.length])
 
   const clearMessageMultiSelect = useCallback(() => {
     setMultiSelectMode(false)
@@ -4911,15 +4914,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const shouldStick = isMine || !userStickyScrollRef.current || nearBottomRef.current
     if (!shouldStick) return
     requestAnimationFrame(() => {
-      const el = messagesRef.current
-      if (!el) return
-      el.scrollTop = el.scrollHeight
-      nearBottomRef.current = true
+      scrollChatToBottom('auto')
       if (isMine) {
         userStickyScrollRef.current = false
       }
     })
-  }, [activeId, activePendingMessages, displayedMessages, me?.id])
+  }, [activeId, activePendingMessages, displayedMessages, me?.id, scrollChatToBottom])
 
   // notifications disabled
 
@@ -4934,10 +4934,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     setShowJump(false)
 
     const scrollToBottom = () => {
-      const el = messagesRef.current
-      if (!el) return
-      el.scrollTop = el.scrollHeight
-      nearBottomRef.current = true
+      scrollChatToBottom('auto')
       userStickyScrollRef.current = false
     }
 
@@ -4955,18 +4952,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       window.clearTimeout(t2)
       window.clearTimeout(t3)
     }
-  }, [activeId])
+  }, [activeId, scrollChatToBottom])
 
   // keep pinned to bottom while keyboard is opening/moving on mobile (iOS visualViewport)
   useEffect(() => {
     if (!isMobileRef.current) return
-    const el = messagesRef.current
-    if (!el) return
     const handleVV = () => {
       const active = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
       if (active && active === composerEditorRef.current) {
-        el.scrollTop = el.scrollHeight
-        nearBottomRef.current = true
+        scrollChatToBottom('auto')
         userStickyScrollRef.current = false
       }
     }
@@ -4980,7 +4974,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         window.visualViewport.removeEventListener('scroll', handleVV as any)
       }
     }
-  }, [activeId])
+  }, [activeId, scrollChatToBottom])
 
   // Dev-only: warn if credential-like inputs are present on chat page
   useEffect(() => {
@@ -4994,50 +4988,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [])
 
-  // автопрокрутка по новым сообщениям отключена, чтобы не мешать ручному скроллу
-
-  // Show jump-to-bottom button when user scrolls up
-  useEffect(() => {
-    const el = messagesRef.current
-    if (!el) return
-    let raf = 0
-    let lastScrollTop = el.scrollTop
-    const onScroll = () => {
-      if (raf) cancelAnimationFrame(raf)
-      const currentScrollTop = el.scrollTop
-      const scrollDelta = Math.abs(currentScrollTop - lastScrollTop)
-      // Only mark as user scroll if there's actual movement (not just programmatic scroll)
-      if (scrollDelta > 1) {
-        userStickyScrollRef.current = true
-      }
-      raf = requestAnimationFrame(() => {
-        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8
-        nearBottomRef.current = nearBottom
-        setShowJump(!nearBottom)
-        // Infinite scroll: when user reaches near-top, load older messages.
-        // We keep scroll position stable in `loadOlderMessages`.
-        if (el.scrollTop < 140) {
-          void loadOlderMessages()
-        }
-        if (nearBottom) {
-          // Only reset user sticky scroll if we're actually near bottom
-          // Give a small delay to allow programmatic scrolls
-          window.setTimeout(() => {
-            if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
-              userStickyScrollRef.current = false
-            }
-          }, 100)
-        }
-        lastScrollTop = el.scrollTop
-      })
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    onScroll()
-    return () => {
-      el.removeEventListener('scroll', onScroll)
-      if (raf) cancelAnimationFrame(raf)
-    }
-  }, [activeId, loadOlderMessages])
+  // Jump-to-bottom visibility and load-older are handled by VirtualizedChatMessageList (Virtuoso).
 
   // detect wide area to left-align all messages
   useEffect(() => {
@@ -5721,14 +5672,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       syncComposerBarHeightVar()
       // If the user was at the bottom, keep the view pinned when composer grows/shrinks
       // (e.g. toolbar appears, attachments preview, reply/edit bars).
-      const el = messagesRef.current
-      if (el && nearBottomRef.current) {
-        try { el.scrollTop = el.scrollHeight } catch {}
+      if (nearBottomRef.current) {
+        try { scrollChatToBottom('auto') } catch {}
       }
     })
     ro.observe(bar)
     return () => ro.disconnect()
-  }, [syncComposerBarHeightVar])
+  }, [syncComposerBarHeightVar, scrollChatToBottom])
 
   const beginAttachUploadTracking = useCallback(() => {
     attachUploadStartedAtRef.current = Date.now()
@@ -8382,38 +8332,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             zIndex: 10
           }} />
           <div
-            ref={messagesRef}
             style={{
               flex: 1,
               minHeight: 0,
-              overflow: 'auto',
-              padding: 16,
-              display: 'block',
+              display: 'flex',
+              flexDirection: 'column',
+              minWidth: 0,
             }}
           >
-            {activeId && (olderMeta.hasMore || olderLoading) && (
-              <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0 14px' }}>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled={!olderMeta.hasMore || olderLoading}
-                  onClick={() => { void loadOlderMessages() }}
-                  style={{ opacity: olderLoading ? 0.85 : 1 }}
-                >
-                  {olderLoading ? 'Загружаем…' : 'Показать более ранние'}
-                </button>
-              </div>
-            )}
             {!activeId ? (
               <div className="messages-empty">Сообщения появятся здесь</div>
             ) : (
               (() => {
-                const list = (displayedMessages ? [...displayedMessages] : []).
-                  filter((m: any) => !m.deletedAt).
-                  sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
-                const pending = activePendingMessages
-                const fullList = [...(list || []), ...pending]
-                if (!fullList) return null
+                const { fullList, fwdBundles: __fwdBundles, fwdSkip: __fwdSkip } = preparedChatMessages
                 const replyQuoteVisual = (
                   quotedMsg: any | undefined | null,
                   snippetFromApi: string,
@@ -8427,11 +8358,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   const showText = !!line && !hideLineForThumb
                   const showPlaceholder = !thumbUrl && !showText
                   return { thumbUrl, line, showText, showPlaceholder }
-                }
-                const __fwdBundles = computeMultiSourceForwardBundles(fullList)
-                const __fwdSkip = new Set<number>()
-                for (const b of __fwdBundles) {
-                  for (let k = b.start + 1; k <= b.end; k++) __fwdSkip.add(k)
                 }
                 const repMessagePendingForMulti = (rep: any) =>
                   !!rep &&
@@ -9489,9 +9415,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                           }
                                           setFailedImages((prev) => ({ ...prev, [placeholderKey]: false }))
                                           setLoadedImages((prev) => ({ ...prev, [placeholderKey]: true }))
-                                          if (messagesRef.current && nearBottomRef.current) {
-                                            const el = messagesRef.current
-                                            el.scrollTop = el.scrollHeight
+                                          if (nearBottomRef.current) {
+                                            scrollChatToBottom('auto')
                                           }
                                         }}
                                         onError={() => {
@@ -9953,8 +9878,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     </div>
                   )
                 }
-                return fullList.map((m: any, mapIndex: number) => {
-                  if (m.deletedAt) return null
+                const renderChatListItem = (mapIndex: number) => {
+                  const m = fullList[mapIndex]
+                  if (!m || m.deletedAt) return null
                   if (m.type === 'SYSTEM') {
                     return (
                       <div key={m.id} style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '12px 16px', marginTop: 8 }}>
@@ -10511,7 +10437,46 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     )
                   }
                   return renderChatMessageAtIndex(mapIndex, false)
-                })
+                }
+                const olderHeader =
+                  olderMeta.hasMore || olderLoading ? (
+                    <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0 14px' }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        disabled={!olderMeta.hasMore || olderLoading}
+                        onClick={() => { void loadOlderMessages() }}
+                        style={{ opacity: olderLoading ? 0.85 : 1 }}
+                      >
+                        {olderLoading ? 'Загружаем…' : 'Показать более ранние'}
+                      </button>
+                    </div>
+                  ) : undefined
+                return (
+                  <VirtualizedChatMessageList
+                    ref={virtuosoRef}
+                    conversationKey={activeId}
+                    scrollerRef={messagesRef}
+                    count={fullList.length}
+                    getItemKey={(i) => fullList[i]?.id ?? i}
+                    itemContent={renderChatListItem}
+                    header={olderHeader}
+                    onStartReached={() => { void loadOlderMessages() }}
+                    onAtBottomChange={(atBottom) => {
+                      nearBottomRef.current = atBottom
+                      setShowJump(!atBottom)
+                      if (atBottom) {
+                        window.setTimeout(() => {
+                          if (nearBottomRef.current) {
+                            userStickyScrollRef.current = false
+                          }
+                        }, 100)
+                      } else {
+                        userStickyScrollRef.current = true
+                      }
+                    }}
+                  />
+                )
               })()
             )}
           </div>
@@ -10521,20 +10486,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               onMouseDown={(e) => {
                 // Prevent composer blur (toolbar collapse) from swallowing the click.
                 e.preventDefault()
-                if (messagesRef.current) {
-                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
-                }
-                nearBottomRef.current = true
+                scrollChatToBottom('smooth')
                 userStickyScrollRef.current = false
                 setShowJump(false)
               }}
               onClick={(e) => {
                 // Keyboard activation: click has detail===0 (mouse is handled above).
                 if ((e as any)?.detail > 0) return
-                if (messagesRef.current) {
-                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
-                }
-                nearBottomRef.current = true
+                scrollChatToBottom('smooth')
                 userStickyScrollRef.current = false
                 setShowJump(false)
               }}
@@ -11192,9 +11151,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 if (activeId) {
                   client.invalidateQueries({ queryKey: ['messages', activeId] })
                 }
-                setTimeout(() => {
-                  if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight
-                }, 0)
+                setTimeout(() => { scrollChatToBottom('auto') }, 0)
                 return
               }
 
@@ -11223,7 +11180,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     if (activeId) {
                       client.invalidateQueries({ queryKey: ['messages', activeId] })
                     }
-                    setTimeout(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight }, 0)
+                    setTimeout(() => { scrollChatToBottom('auto') }, 0)
             }} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <button
               type="button"
