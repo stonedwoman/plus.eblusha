@@ -41,6 +41,8 @@ import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
 import { MessageReactionRail } from './chats/components/MessageReactionRail'
 import { VirtualizedChatMessageList, type VirtuosoHandle } from './chats/components/VirtualizedChatMessageList'
 import { usePreparedChatMessageList } from './chats/hooks/usePreparedChatMessageList'
+import { trimMessageCache } from './chats/messageCache'
+import { groupIncomingBubbleBg, hashToGray, nameColorForUser } from './chats/messageBubbleStyle'
 import { isChatsRoute, withAppRoutePrefix } from '../../core/navigation/routes'
 import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../utils/apkCallSignal'
 import { shouldShowAudioUnlockPrompt } from '../../utils/audioUnlock'
@@ -2728,9 +2730,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         for (const m of all) {
           if (m && m.id) byId.set(m.id, m)
         }
-        return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+        return trimMessageCache(
+          [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()),
+        )
       })()
-      // Initialize cursor/meta only on first load; do not overwrite after older pages are loaded,
       // otherwise periodic refetch would reset `nextCursor` back to the newest page.
       const savedMeta = olderMetaByConvRef.current.get(conversationId)
       if (!Array.isArray(existing) || existing.length === 0) {
@@ -2800,7 +2803,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         for (const m of [...sortedFetched, ...existing]) {
           if (m && m.id) byId.set(m.id, m)
         }
-        return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+        return trimMessageCache(
+          [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()),
+        )
       })
       persistOlderMeta(conversationId, { hasMore, nextCursor })
     } catch (err) {
@@ -2810,6 +2815,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       setOlderLoading(false)
     }
   }, [activeId, client, activeConversationRow, persistOlderMeta])
+
+  useEffect(() => {
+    if (!activeId) return
+    const conversationId = activeId
+    return () => {
+      client.setQueryData(['messages', conversationId], (old: any) => {
+        if (!Array.isArray(old)) return old
+        return trimMessageCache(old)
+      })
+    }
+  }, [activeId, client])
 
   // Lazy link preview fetch for older messages (or when socket updates are missed).
   // Server persists preview in message.metadata and may broadcast message:update.
@@ -3387,6 +3403,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     })
     nearBottomRef.current = true
   }, [preparedChatMessages.fullList.length])
+
+  const scrollToMessageById = useCallback(
+    (messageId: string | undefined) => {
+      if (!messageId) return
+      const idx = preparedChatMessages.fullList.findIndex((m) => m?.id === messageId)
+      if (idx < 0) return
+      virtuosoRef.current?.scrollToIndex({
+        index: idx,
+        behavior: 'smooth',
+        align: 'center',
+      })
+    },
+    [preparedChatMessages.fullList],
+  )
 
   const clearMessageMultiSelect = useCallback(() => {
     setMultiSelectMode(false)
@@ -4034,59 +4064,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return () => { socket.off('profile:update', handler as any) }
   }, [client, me?.id])
 
-  function hashToGray(userId: string | null | undefined) {
-    // Все сообщения собеседника используют один цвет
-    return '#191d23'
-  }
-
-  function hashStringToUint(s: string | null | undefined): number {
-    if (!s) return 0
-    let h = 0
-    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
-    return h
-  }
-
-  /** Стабильный пастельный цвет имени, как в Telegram-группах */
-  function nameColorForUser(userId: string | null | undefined): string {
-    const palette = [
-      '#b39ddb',
-      '#a5d6a7',
-      '#90caf9',
-      '#ffcc80',
-      '#f48fb1',
-      '#80cbc4',
-      '#ce93d8',
-      '#ffab91',
-      '#9fa8da',
-      '#aed581',
-      '#ffecb3',
-      '#ef9a9a',
-      '#81d4fa',
-    ]
-    return palette[hashStringToUint(userId) % palette.length]
-  }
-
-  /**
-   * Фон входящих/пересланных по участнику: намеренно разные hue при тёмной яркости,
-   * чтобы отличать авторов; часть тонов тёплая (умбра / медь) в духе бренда Eblusha.
-   */
-  function groupIncomingBubbleBg(userId: string | null | undefined): string {
-    const bases = [
-      '#2a1f16', // тёплый умбра (рядом с бренд-янтарём)
-      '#1a2836', // глубокий сине-сланцевый
-      '#152820', // тёмный хвойный
-      '#281a2c', // сливовый
-      '#162a2e', // бирюза / петроль
-      '#2d2418', // бронза / кофе с тёплым подтоном
-      '#1f2440', // индиго
-      '#223016', // оливковый мох
-      '#301c22', // винный дымчатый
-      '#14222c', // ледяной графит
-      '#2f2218', // сепия / «золотая тень» (фирменное тепло)
-      '#241c30', // лилово-серый
-    ]
-    return bases[hashStringToUint(userId) % bases.length]
-  }
 
   // Глобальный обработчик paste для вставки изображений из буфера обмена (когда фокус не в поле ввода)
   useEffect(() => {
@@ -8749,11 +8726,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       const onContextMenu = (e: React.MouseEvent) => {
                     e.preventDefault()
                         openMenuAt(e.clientX, e.clientY)
-                  }
-                  const scrollToMessageById = (qid: string | undefined) => {
-                    if (!qid) return
-                    const el = nodesByMessageId.current.get(qid)
-                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
                   }
                   const scrollToQuoted = () => scrollToMessageById((m as any).replyTo?.id as string | undefined)
                   // Lightbox should be scoped to this message (not the whole chat).

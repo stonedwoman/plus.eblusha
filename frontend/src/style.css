@@ -611,7 +611,8 @@ a {
 }
 
 /* Message rows and bubbles */
-.msg { display: flex; align-items: flex-end; gap: 8px; margin: 0; container-type: inline-size; }
+.msg { display: flex; align-items: flex-end; gap: 8px; margin: 0; container-type: inline-size; content-visibility: auto; contain-intrinsic-size: auto 72px; }
+.msg-forward-bundle-host { content-visibility: auto; contain-intrinsic-size: auto 120px; }
 .msg.compact { margin-top: 2px; }
 .msg.gap { margin-top: 12px; }
 .msg.left { justify-content: flex-start; width: 100%; }
