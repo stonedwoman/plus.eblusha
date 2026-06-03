@@ -3,7 +3,7 @@ import { z } from "zod";
 import env from "../config/env";
 import { authenticate } from "../middlewares/auth";
 import prisma from "../lib/prisma";
-import { getCallE2eeKey } from "../lib/callE2ee";
+import { getOrCreateCallE2eeKey } from "../lib/callE2ee";
 
 const router = Router();
 
@@ -57,11 +57,9 @@ router.get("/:callId/e2ee-key", async (req, res) => {
     return;
   }
 
-  const key = await getCallE2eeKey(callId);
-  if (!key) {
-    res.status(404).json({ message: "E2EE key not found" });
-    return;
-  }
+  // Create-if-absent so caller (who fetches around invite time) and callee converge on
+  // ONE stable key, independent of fetch ordering / invite regeneration.
+  const key = await getOrCreateCallE2eeKey(callId);
 
   // Never cache key responses.
   res.setHeader("Cache-Control", "no-store");

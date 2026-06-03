@@ -45,10 +45,7 @@ export async function createE2eeRoomOptions(keyBase64: string): Promise<{
   }
 
   const keyProvider = new ExternalE2EEKeyProvider()
-  // Ensure we always pass a plain ArrayBuffer (not SharedArrayBuffer) to the SDK.
-  const keyBuf = new ArrayBuffer(raw.byteLength)
-  new Uint8Array(keyBuf).set(raw)
-  await keyProvider.setKey(keyBuf)
+  await keyProvider.setKey(keyBase64.trim()) // PBKDF2 passphrase: native mobile interop needs the string, not bytes
 
   // LiveKit E2EE worker (Vite-friendly).
   const worker = new Worker(new URL('livekit-client/e2ee-worker', import.meta.url), { type: 'module' })

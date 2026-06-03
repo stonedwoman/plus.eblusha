@@ -3,28 +3,20 @@
   "code": "deadbaba",
   "worldCode": "deadbaba",
   "serverName": "Eblusha Windrose",
-  "playersOnline": 1,
+  "playersOnline": 0,
   "playerLimit": 10,
-  "onlinePlayers": [
-    {
-      "name": "Валян",
-      "alive": true,
-      "x": 211849.05,
-      "y": -801297.85,
-      "z": 198.72
-    }
-  ],
+  "onlinePlayers": [],
   "recentPlayers": [],
-  "updated": "2026-05-25T13:02:54Z",
-  "updatedAt": "2026-05-25T13:02:54Z",
+  "updated": "2026-06-03T00:50:44Z",
+  "updatedAt": "2026-06-03T00:50:44Z",
   "serverStatus": {
     "container": "windrose-server",
     "dockerRunning": true,
-    "uptimeSec": 244988,
+    "uptimeSec": 466539,
     "state": "running",
     "health": "healthy",
-    "restartCount": 2,
-    "startedAt": "2026-05-22T16:59:45.914429Z"
+    "restartCount": 4,
+    "startedAt": "2026-05-28T15:15:05.425734Z"
   },
   "world": {
     "name": null,
@@ -50,56 +42,10 @@
       "craft_cost": 1
     },
     "stats": {
-      "mobCount": 9,
-      "nodeCount": 144,
-      "topMobs": [
-        [
-          "GalenSkelton",
-          2
-        ],
-        [
-          "Crab",
-          2
-        ],
-        [
-          "ShallowBoat",
-          1
-        ],
-        [
-          "01",
-          1
-        ],
-        [
-          "02",
-          1
-        ],
-        [
-          "Brig",
-          1
-        ]
-      ],
-      "topNodes": [
-        [
-          "Shared",
-          72
-        ],
-        [
-          "Mineral",
-          58
-        ],
-        [
-          "CoastJungleMineralNestDodo",
-          10
-        ],
-        [
-          "CoastJungleMineralSticksRocksDebris",
-          3
-        ],
-        [
-          "Shipwreck",
-          1
-        ]
-      ],
+      "mobCount": 0,
+      "nodeCount": 0,
+      "topMobs": [],
+      "topNodes": [],
       "poiCount": 434
     },
     "settings": {
@@ -127,7 +73,7 @@
       "ts": 1778530998
     },
     "upstream": {
-      "checkedAt": "2026-05-25T12:52:17Z",
+      "checkedAt": "2026-06-03T00:09:43Z",
       "repo": "HumanGenome/WindrosePlus",
       "issueNumber": 77,
       "issueState": "closed",

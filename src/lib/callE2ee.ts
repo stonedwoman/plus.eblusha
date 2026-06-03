@@ -31,3 +31,14 @@ export async function deleteCallE2eeKey(callId: string): Promise<void> {
   await redis.del(redisKey(callId));
 }
 
+
+export async function getOrCreateCallE2eeKey(callId: string): Promise<string> {
+  const redis = await getRedisClient();
+  const fresh = generateCallE2eeSharedKeyBase64();
+  // SET NX: atomically create ONLY if absent, so a caller fetch, a callee fetch and the
+  // call:invite handler all converge on ONE shared key instead of racing/regenerating.
+  const created = await redis.set(redisKey(callId), fresh, { EX: CALL_E2EE_KEY_TTL_SECONDS, NX: true });
+  if (created) return fresh;
+  const existing = await getCallE2eeKey(callId);
+  return existing ?? fresh;
+}

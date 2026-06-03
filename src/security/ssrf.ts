@@ -6,6 +6,14 @@ export type SsrfFetchOptions = {
   timeoutMs?: number;
   maxBodyBytes?: number;
   allowedContentTypes?: ReadonlyArray<string>;
+  /**
+   * When the response body exceeds maxBodyBytes:
+   *  - false (default): throw "body_too_large" (strict — for JSON/API responses).
+   *  - true: read up to maxBodyBytes and return the truncated buffer instead of throwing.
+   * Used for link-preview HTML where the og/meta tags live in <head> (early in the body),
+   * so large pages (e.g. github.com ~570KB, Wikipedia ~1MB) should still yield a preview.
+   */
+  truncateBody?: boolean;
 };
 
 const DEFAULT_ALLOWED_CONTENT_TYPES = [
@@ -90,7 +98,7 @@ export async function assertSafeUrl(url: URL): Promise<void> {
   }
 }
 
-async function readBodyUpTo(res: Response, maxBytes: number): Promise<Buffer> {
+async function readBodyUpTo(res: Response, maxBytes: number, truncate = false): Promise<Buffer> {
   if (!res.body) return Buffer.alloc(0);
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -100,7 +108,18 @@ async function readBodyUpTo(res: Response, maxBytes: number): Promise<Buffer> {
     if (done) break;
     if (!value) continue;
     total += value.byteLength;
-    if (total > maxBytes) throw new Error("body_too_large");
+    if (total > maxBytes) {
+      if (!truncate) throw new Error("body_too_large");
+      // Keep only the bytes up to the limit, stop reading, and return what we have.
+      const keep = value.byteLength - (total - maxBytes);
+      if (keep > 0) chunks.push(value.subarray(0, keep));
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore — we already have enough bytes
+      }
+      break;
+    }
     chunks.push(value);
   }
   return Buffer.concat(chunks);
@@ -188,7 +207,7 @@ export async function ssrfFetch(
     throw new Error("content_type_blocked");
   }
 
-  const body = await readBodyUpTo(res, maxBodyBytes);
+  const body = await readBodyUpTo(res, maxBodyBytes, opts.truncateBody === true);
   return { finalUrl: current.toString(), status: res.status, headers: res.headers, body };
 }
 

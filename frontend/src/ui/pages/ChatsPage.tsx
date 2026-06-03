@@ -938,6 +938,18 @@ function ruPluralDaysAgo(daysAgoFromToday: number): string {
   return `${n} дней назад`
 }
 
+/**
+ * Время для маленьких бабблов (карточки ответа/пересылки), право-выровненное.
+ * Сегодня → «19:32»; иначе → «<день>, 19:32» («вчера, 19:32», «2 дня назад, 19:32», «14 авг, 19:32»).
+ */
+function formatSmallBubbleTimeLabel(d: Date | null): string {
+  const clock = formatMessageClockLabel(d)
+  if (!clock) return ''
+  const rel = formatRuRelativeSendDay(d)
+  if (!rel || rel === 'сегодня') return clock
+  return `${rel}, ${clock}`
+}
+
 type ForwardAttachment = { url: string; type: string; size?: number; metadata?: Record<string, unknown> }
 
 /** Сохраняется в Message.metadata при пересылке */
@@ -1136,6 +1148,22 @@ function buildForwardSendPayload(
         }
       })()
     : undefined
+  // Carry media-display metadata from the original message so forwarded media keeps its
+  // duration/dimensions — e.g. a forwarded voice message shows its real length (not 0:00)
+  // instead of the lost message-level metadata.duration.
+  const srcMeta =
+    message.metadata && typeof message.metadata === 'object'
+      ? (message.metadata as Record<string, unknown>)
+      : {}
+  const carriedMediaMeta: Record<string, unknown> = {}
+  for (const key of ['duration', 'width', 'height'] as const) {
+    const v = srcMeta[key]
+    if (typeof v === 'number' && Number.isFinite(v)) carriedMediaMeta[key] = v
+  }
+  const forwardPayloadMeta: Record<string, unknown> | undefined =
+    forwardMetadata || Object.keys(carriedMediaMeta).length > 0
+      ? { ...(forwardMetadata ?? {}), ...carriedMediaMeta }
+      : undefined
   const usePlainContent = !!forwardCtx
   const attsIn: any[] = Array.isArray(message.attachments) ? message.attachments : []
   if (attsIn.some((a: any) => a?.metadata?.e2ee?.kind === 'ciphertext')) {
@@ -1161,7 +1189,7 @@ function buildForwardSendPayload(
       payload: {
         type: 'TEXT',
         content: textBody,
-        ...(forwardMetadata ? { metadata: forwardMetadata } : {}),
+        ...(forwardPayloadMeta ? { metadata: forwardPayloadMeta } : {}),
         replyToId: undefined,
       },
     }
@@ -1294,22 +1322,28 @@ export default function ChatsPage() {
     }
   }, [activeId, params.conversationId, setActiveId])
 
+  const mobileNavGuardRef = useRef<{ from: string; to: string; at: number }>({ from: '', to: '', at: 0 })
   useEffect(() => {
     if (typeof window === 'undefined') return
     const mobile = window.innerWidth <= 768
     if (!mobile) return
     if (!isChatsRoute(location.pathname)) return
-    if (mobileView === 'list') {
-      const listRoute = withAppRoutePrefix(location.pathname, '/chats')
-      if (location.pathname !== listRoute) {
-        navigate(listRoute, { replace: true })
-      }
-      return
-    }
-    const conversationRoute = activeId ? withAppRoutePrefix(location.pathname, `/chats/${activeId}`) : null
-    if (activeId && conversationRoute && location.pathname !== conversationRoute) {
-      navigate(conversationRoute, { replace: true })
-    }
+    const target =
+      mobileView === 'list'
+        ? withAppRoutePrefix(location.pathname, '/chats')
+        : activeId
+          ? withAppRoutePrefix(location.pathname, `/chats/${activeId}`)
+          : null
+    if (!target || location.pathname === target) return
+    // Oscillation guard. This effect syncs mobile view-state -> URL; AppRuntimeCoordinator syncs
+    // URL -> view-state. A one-render lag between them can ping-pong /chats <-> /chats/<id> ~50x/s,
+    // remounting the whole screen (the "everything jitters" bug). If we are about to bounce straight
+    // back to the route we just navigated away from, skip it and let the URL settle.
+    const now = Date.now()
+    const g = mobileNavGuardRef.current
+    if (g.from === target && g.to === location.pathname && now - g.at < 700) return
+    mobileNavGuardRef.current = { from: location.pathname, to: target, at: now }
+    navigate(target, { replace: true })
   }, [activeId, location.pathname, mobileView, navigate])
 
   const {
@@ -6677,12 +6711,31 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }
 
+  const fwdDraftArrivedRef = useRef(false)
+  const fwdDraftPrevDestRef = useRef<string | null>(null)
   useEffect(() => {
+    // Reset the "arrived at destination" latch whenever a new forward draft (destination) is created.
+    if (fwdDraftDestinationId !== fwdDraftPrevDestRef.current) {
+      fwdDraftPrevDestRef.current = fwdDraftDestinationId
+      fwdDraftArrivedRef.current = false
+    }
     if (!fwdDraftDestinationId || !activeId) return
-    if (fwdDraftDestinationId !== activeId) {
+    const routeId = typeof params.conversationId === 'string' ? params.conversationId : null
+    // "Arrived" requires BOTH activeId and the URL to agree on the destination (desktop carries no
+    // conversation id in the URL, so routeId === null counts as arrived there).
+    if (activeId === fwdDraftDestinationId && (routeId === null || routeId === fwdDraftDestinationId)) {
+      fwdDraftArrivedRef.current = true
+      return
+    }
+    // Not at the destination. Clear the draft ONLY if we had already fully arrived and then the user
+    // genuinely moved to another chat. Before arrival the URL->activeId sync can briefly revert
+    // activeId to the SOURCE chat (mobile), and source-activeId + source-URL momentarily look
+    // "settled" — clearing then would wipe the freshly-created forward draft (the "just navigates,
+    // no draft" bug).
+    if (fwdDraftArrivedRef.current) {
       setForwardComposerDraft(null)
     }
-  }, [activeId, fwdDraftDestinationId])
+  }, [activeId, params.conversationId, fwdDraftDestinationId])
 
   // Cleanup voice recorder on unmount
   useEffect(() => {
@@ -8928,7 +8981,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   const singleReplyQuotedAt = quotedMessageForSingleReply?.createdAt
                     ? coerceParsedMessageInstant(quotedMessageForSingleReply.createdAt)
                     : null
-                  const singleReplyInnerTimeLabel = formatMessageClockLabel(singleReplyQuotedAt)
+                  const singleReplyInnerTimeLabel = formatSmallBubbleTimeLabel(singleReplyQuotedAt)
                   const replyBundleEntries = parseReplyQuoteBundleEntries(m)
                   const showMultiReplyQuote = !!(replyBundleEntries && replyBundleEntries.length >= 2)
                   const hasReplyUi = !!(m.replyTo || showMultiReplyQuote)
@@ -8990,6 +9043,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     participantRecencyLine != null && participantRecencyLine.trim() !== ''
                       ? `${timeLabel}, ${participantRecencyLine}`
                       : timeLabel
+                  // Пересланный бабл повторяет формат карточки ответа: оригинальное время отправки
+                  // показываем компактной право-выровненной строкой (и убираем его из мета-строки ниже).
+                  const forwardedInnerTimeLabel = isForwardedBubble ? formatSmallBubbleTimeLabel(timeLabelDate) : null
                   const editedAtRaw = (m as any)?.metadata?.editedAt
                   const isEdited = typeof editedAtRaw === 'string' && editedAtRaw.length > 0
                   const otherIds: string[] = (activeConversation?.participants || []).map((p: any) => p.user.id).filter((id: string) => (currentUserId ? id !== currentUserId : true))
@@ -9209,7 +9265,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                               const innerQuotedAt =
                                 (entry.createdAt ? coerceParsedMessageInstant(entry.createdAt) : null) ??
                                 (quotedEntryMsg?.createdAt ? coerceParsedMessageInstant(quotedEntryMsg.createdAt) : null)
-                              const innerTimeLabel = formatMessageClockLabel(innerQuotedAt)
+                              const innerTimeLabel = formatSmallBubbleTimeLabel(innerQuotedAt)
                               const entryQV = replyQuoteVisual(quotedEntryMsg, entry.preview || '')
                               return (
                                 <div key={entry.id} className="msg-forward-bundle__item">
@@ -10139,27 +10195,41 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                           if (suppressFwdComposeMetaFooter) return null
                           return (
                             <div className="msg-meta" style={{ color: isSelectedInMulti ? '#27272a' : '#9aa0a8' }}>
-                              <span>{timeAndRecencyLabel}</span>
+                              <MessageReactionRail
+                                messageId={String(m.id)}
+                                reactions={m.reactions}
+                                currentUserId={currentUserId}
+                                participants={activeConversation?.participants as any}
+                                meDisplay={me}
+                                isMeBubble={!!isMe}
+                                leftAlignAll={leftAlignAll}
+                                isMobile={isMobile}
+                                isSelectedInMulti={isSelectedInMulti}
+                                onInvalidateMessages={() => {
+                                  if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                                }}
+                              />
+                              {isForwardedBubble ? null : <span>{timeAndRecencyLabel}</span>}
                               {isEdited && <span style={{ fontSize: 11, opacity: 0.9 }}>изменено</span>}
                               {renderTicks({ withLeftMargin: false })}
                             </div>
                           )
                         })()}
+                        {forwardedInnerTimeLabel ? (
+                          <div
+                            style={{
+                              marginTop: 6,
+                              fontSize: 11,
+                              fontWeight: 500,
+                              color: '#9aa0a8',
+                              textAlign: 'right',
+                              lineHeight: 1.2,
+                            }}
+                          >
+                            {forwardedInnerTimeLabel}
+                          </div>
+                        ) : null}
                         </div>
-                      <MessageReactionRail
-                        messageId={String(m.id)}
-                        reactions={m.reactions}
-                        currentUserId={currentUserId}
-                        participants={activeConversation?.participants as any}
-                        meDisplay={me}
-                        isMeBubble={!!isMe}
-                        leftAlignAll={leftAlignAll}
-                        isMobile={isMobile}
-                        isSelectedInMulti={isSelectedInMulti}
-                        onInvalidateMessages={() => {
-                          if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
-                        }}
-                      />
                       </div>
                       {avatarOnRight && !forwardBundleInner && renderAvatarOrSpacer()}
                       {(leftAlignAll || isMe) && !forwardBundleInner && multiSelectCheckboxEl}
@@ -14569,32 +14639,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             }
             return (
               <>
-                <div style={{ display: 'flex', gap: 6, padding: 6, borderBottom: '1px solid var(--surface-border)' }}>
-                  {['👍','❤️','👎','🔥','🤝','😆'].map((emo, idx) => {
-                    const isHeart = emo === '❤️'
-                    const color = isHeart ? '#ef4444' : '#ffffff'
-                    return (
-                      <button key={emo} onClick={async () => {
-                        try {
-                          const mid = contextMenu.messageId!
-                          // toggle: если уже есть моя реакция этим эмодзи — удаляем
-                          const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
-                          const mine = (found?.reactions || []).some((r: any) => r.userId === me?.id && r.emoji === emo)
-                          if (mine) await api.post('/messages/unreact', { messageId: mid, emoji: emo })
-                          else await api.post('/messages/react', { messageId: mid, emoji: emo })
-                          if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
-                        } catch {}
-                        setContextMenu({ open: false, x: 0, y: 0, messageId: null })
-                      }} style={{
-                        fontSize: 16,
-                        color: color,
-                        cursor: 'pointer',
-                        transition: 'transform 0.2s ease',
-                        animation: `reactionPop 0.3s ease ${idx * 0.05}s both`
-                      }} onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.2)' }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)' }}>{emo}</button>
-                    )
-                  })}
-                </div>
                 <button style={{ color: '#ffffff' }} onClick={() => {
                   const mid = contextMenu.messageId!
                   const found = (displayedMessages || []).find((mm: any) => mm.id === mid)

@@ -9,6 +9,11 @@ const SSRF_MAX_REDIRECTS = 3;
 const SSRF_TIMEOUT_MS = 5_000;
 const SSRF_MAX_BODY_BYTES = 512 * 1024;
 const SSRF_MAX_JSON_BODY_BYTES = 256 * 1024;
+// HTML preview pages can be large (github.com ~570KB, Wikipedia ~1MB, some SPAs a few MB) and the
+// og/meta tags can sit deeper than 512KB. Read the whole page up to a generous 10MB cap and
+// truncate (don't fail) beyond that — so any real page yields a preview, while a malicious
+// multi-GB stream stays bounded (also guarded by the 5s timeout).
+const SSRF_HTML_MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 const YOUTUBE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const youtubeCache = new Map<string, { value: LinkPreview | null; expiresAt: number }>();
@@ -411,7 +416,8 @@ export async function fetchLinkPreview(
       {
         maxRedirects: SSRF_MAX_REDIRECTS,
         timeoutMs: SSRF_TIMEOUT_MS,
-        maxBodyBytes: SSRF_MAX_BODY_BYTES,
+        maxBodyBytes: SSRF_HTML_MAX_BODY_BYTES,
+        truncateBody: true,
         allowedContentTypes: ["text/html", "application/xhtml+xml"],
       }
     );

@@ -8,6 +8,7 @@ export function VoiceMessagePlayer({ url, duration }: { url: string; duration: n
   const [currentTime, setCurrentTime] = useState(0)
   const [waveform, setWaveform] = useState<number[]>([])
   const [loadingWaveform, setLoadingWaveform] = useState(true)
+  const [audioDuration, setAudioDuration] = useState(0)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   // Convert to proxy URL if needed
@@ -46,14 +47,25 @@ export function VoiceMessagePlayer({ url, duration }: { url: string; duration: n
     }
     const handlePlay = () => setPlaying(true)
     const handlePause = () => setPlaying(false)
+    // Real media duration as a fallback — fixes messages whose metadata.duration is missing
+    // (e.g. forwarded voice). Some WebM recordings report Infinity until durationchange fires.
+    const syncDuration = () => {
+      const d = audio.duration
+      if (Number.isFinite(d) && d > 0) setAudioDuration(d)
+    }
+    syncDuration()
 
     audio.addEventListener('timeupdate', updateTime)
     audio.addEventListener('ended', handleEnded)
     audio.addEventListener('play', handlePlay)
     audio.addEventListener('pause', handlePause)
+    audio.addEventListener('loadedmetadata', syncDuration)
+    audio.addEventListener('durationchange', syncDuration)
 
     return () => {
       audio.removeEventListener('timeupdate', updateTime)
+      audio.removeEventListener('loadedmetadata', syncDuration)
+      audio.removeEventListener('durationchange', syncDuration)
       audio.removeEventListener('ended', handleEnded)
       audio.removeEventListener('play', handlePlay)
       audio.removeEventListener('pause', handlePause)
@@ -79,7 +91,16 @@ export function VoiceMessagePlayer({ url, duration }: { url: string; duration: n
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const currentBarIndex = waveform.length > 0 ? Math.floor((currentTime / duration) * waveform.length) : 0
+  const effectiveDuration =
+    Number.isFinite(audioDuration) && audioDuration > 0
+      ? audioDuration
+      : Number.isFinite(duration) && duration > 0
+        ? duration
+        : 0
+  const currentBarIndex =
+    waveform.length > 0 && effectiveDuration > 0
+      ? Math.floor((currentTime / effectiveDuration) * waveform.length)
+      : 0
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)' }}>
@@ -128,7 +149,7 @@ export function VoiceMessagePlayer({ url, duration }: { url: string; duration: n
             ))}
           </div>
         ) : waveform.length > 0 ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 2, height: 24, marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 24, marginBottom: 4, width: '100%' }}>
             {waveform.map((amplitude, index) => {
               const isActive = index <= currentBarIndex
               const height = Math.max(4, (amplitude / 100) * 20)
@@ -136,7 +157,8 @@ export function VoiceMessagePlayer({ url, duration }: { url: string; duration: n
                 <div
                   key={index}
                   style={{
-                    width: 2,
+                    flex: '1 1 0',
+                    minWidth: 0,
                     height: `${height}px`,
                     background: isActive ? 'var(--brand)' : 'var(--surface-border)',
                     borderRadius: 1,
@@ -154,7 +176,7 @@ export function VoiceMessagePlayer({ url, duration }: { url: string; duration: n
         )}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            {formatTime(currentTime)} / {formatTime(duration)}
+            {formatTime(currentTime)} / {formatTime(effectiveDuration)}
           </div>
         </div>
       </div>

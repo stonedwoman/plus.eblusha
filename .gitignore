@@ -10,6 +10,10 @@ tmp/
 # SSL certs (self-signed for stoned.local) — ключи не коммитить
 /deploy/coturn/turnserver.conf
 /deploy/coturn/certs/
+/deploy/certs/
+
+# editor/tooling backup files
+*.bak
 
 # build artifacts
 /dist

@@ -17,29 +17,34 @@ export function useChatsResponsive(activeId: string | null) {
   }, [isMobile])
 
   useEffect(() => {
-    const update = () => {
+    const update = (isResizeEvent: boolean) => {
       const mobile = window.innerWidth <= 768
       setIsMobile(mobile)
       isMobileRef.current = mobile
       // Narrow desktop header: shrink ONLY call buttons to icons.
       setIsNarrowHeaderButtons(!mobile && window.innerWidth <= 1300)
-      if (!mobile) {
-        setMobileView('conversation')
-      } else if (!activeId) {
-        setMobileView('list')
+      // Only adjust mobileView on an ACTUAL resize (crossing the breakpoint), never on the initial
+      // mount: on boot activeId still lags the URL, so forcing 'list' here would fight the URL -> view
+      // sync and start the router ping-pong. Boot view-state comes from the store init + AppRuntimeCoordinator.
+      if (isResizeEvent) {
+        if (!mobile) {
+          setMobileView('conversation')
+        } else if (!activeId) {
+          setMobileView('list')
+        }
       }
     }
-    update()
-    window.addEventListener('resize', update)
-    return () => window.removeEventListener('resize', update)
+    update(false)
+    const onResize = () => update(true)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId])
 
-  useEffect(() => {
-    if (!isMobile) return
-    if (activeId) setMobileView('conversation')
-    else setMobileView('list')
-  }, [isMobile, activeId])
+  // NOTE: mobileView is intentionally NOT derived from activeId here. activeId lags the URL on boot
+  // (it is null until the route effect reads it), so forcing 'list'/'conversation' from it fought the
+  // URL -> view-state sync in AppRuntimeCoordinator and ping-ponged the router ~50x/s. The view is now
+  // driven by explicit actions (selectConversation / backToList) and the URL (AppRuntimeCoordinator).
 
   return {
     isMobile,

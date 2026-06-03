@@ -25,9 +25,18 @@ function resolveUpdater<T>(prev: T, next: Updater<T>): T {
   return typeof next === 'function' ? (next as (value: T) => T)(prev) : next
 }
 
+// Derive the initial mobile view from the current URL. If we boot directly on a conversation
+// route (/chats/<id>), the view must start as 'conversation'; otherwise the URL ('/chats/<id>')
+// and the default 'list' disagree, and the two effects that keep mobile view-state ↔ URL in sync
+// ping-pong /chats ↔ /chats/<id> ~50×/s, remounting the whole screen (the "everything jitters" bug).
+const initialMobileView: MobileView =
+  typeof window !== 'undefined' && /^\/(?:app\/)?chats\/[^/]+/.test(window.location.pathname)
+    ? 'conversation'
+    : 'list'
+
 export const useChatUiStore = create<ChatUiState>((set) => ({
   activeConversationId: null,
-  mobileView: 'list',
+  mobileView: initialMobileView,
   joinedConversationIds: [],
   needsFullSync: true,
   pendingReceipts: [],

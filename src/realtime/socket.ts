@@ -5,7 +5,7 @@ import prisma from "../lib/prisma";
 import { buildIpLocationFromRaw } from "../lib/ipLocation";
 import env from "../config/env";
 import { createDedicatedRedisClient, getRedisClient } from "../lib/redis";
-import { deleteCallE2eeKey, generateCallE2eeSharedKeyBase64, getCallE2eeKey, setCallE2eeKey } from "../lib/callE2ee";
+import { generateCallE2eeSharedKeyBase64, getCallE2eeKey, getOrCreateCallE2eeKey, setCallE2eeKey } from "../lib/callE2ee";
 import { MESSAGE_UPDATE_CHANNEL } from "./events";
 import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
@@ -1623,8 +1623,9 @@ export async function initSocket(
       // Do NOT log the key value.
       if (!isGroup && env.E2EE_1TO1) {
         try {
-          const sharedKey = generateCallE2eeSharedKeyBase64();
-          await setCallE2eeKey(conversationId, sharedKey);
+          // Idempotent create-if-absent: repeated invites / glare must NOT regenerate the
+          // key, or caller and callee land on different generations -> DECRYPTIONFAILED.
+          await getOrCreateCallE2eeKey(conversationId);
         } catch (error) {
           logger.error({ error, conversationId, userId }, "Failed to generate/store call E2EE key");
         }
@@ -1795,11 +1796,8 @@ export async function initSocket(
 
       // Direct (1:1): clear any active-direct-call state and recompute presence for both sides.
       activeDirectCalls.delete(conversationId);
-      if (env.E2EE_1TO1) {
-        void deleteCallE2eeKey(conversationId).catch((error) => {
-          logger.warn({ error, conversationId }, "Failed to delete call E2EE key (decline)");
-        });
-      }
+      // E2EE key intentionally NOT deleted here: it persists via its TTL so caller and
+      // callee never desync on a delete+recreate race (see getOrCreateCallE2eeKey).
       if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
       void emitEffectivePresence(io, userId);
       broadcastCallStatus(conversationId);
@@ -1870,11 +1868,8 @@ export async function initSocket(
 
       // Direct (1:1): clear active call presence state
       activeDirectCalls.delete(conversationId);
-      if (env.E2EE_1TO1) {
-        void deleteCallE2eeKey(conversationId).catch((error) => {
-          logger.warn({ error, conversationId }, "Failed to delete call E2EE key (end)");
-        });
-      }
+      // E2EE key intentionally NOT deleted here: it persists via its TTL, so a quick
+      // re-call or a mid-call socket reconnect reuses the SAME shared key.
       if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
       void emitEffectivePresence(io, userId);
 
@@ -2071,11 +2066,8 @@ export async function initSocket(
           const remainingParticipantIds = listParticipants(callInfo);
           await clearConversationCallPresence(io, conversationId);
           activeDirectCalls.delete(conversationId);
-          if (env.E2EE_1TO1) {
-            void deleteCallE2eeKey(conversationId).catch((error) => {
-              logger.warn({ error, conversationId }, "Failed to delete call E2EE key (room:leave)");
-            });
-          }
+          // E2EE key intentionally NOT deleted here: room:leave fires on transient LiveKit
+          // reconnects / prior-call teardown and would wipe the key mid-call. TTL handles cleanup.
           try {
             const conv = await prisma.conversation.findUnique({
               where: { id: conversationId },
@@ -2133,11 +2125,9 @@ export async function initSocket(
       for (const [conversationId, st] of callState.entries()) {
         if (st.accepted || st.inviterSocketId !== socket.id) continue;
         callState.delete(conversationId);
-        if (env.E2EE_1TO1) {
-          void deleteCallE2eeKey(conversationId).catch((error) => {
-            logger.warn({ error, conversationId }, "Failed to delete call E2EE key (pending inviter disconnect)");
-          });
-        }
+        // Do NOT delete the E2EE key on a transient socket disconnect: the participant may
+        // reconnect (e.g. access-token refresh) mid-call. The key is cleared on explicit
+        // call:end / call:decline / room:leave, and otherwise expires via its TTL.
         try {
           const conv = await prisma.conversation.findUnique({
             where: { id: conversationId },
@@ -2175,11 +2165,8 @@ export async function initSocket(
             await clearConversationCallPresence(io, conversationId);
             activeDirectCalls.delete(conversationId);
             callState.delete(conversationId);
-            if (env.E2EE_1TO1) {
-              void deleteCallE2eeKey(conversationId).catch((error) => {
-                logger.warn({ error, conversationId }, "Failed to delete call E2EE key (disconnecting)");
-              });
-            }
+            // Do NOT delete the E2EE key on a transient socket disconnect (see note above):
+            // wiping it mid-call breaks E2EE when a participant's socket reconnects.
             try {
               const conv = await prisma.conversation.findUnique({
                 where: { id: conversationId },
