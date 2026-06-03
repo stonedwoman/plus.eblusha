@@ -1964,6 +1964,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [describeMediaPermissionError])
   const performAcceptIncomingCall = useCallback(async (call: ResolvedIncomingCall) => {
+    // Silence the ringtone the instant the user accepts — BEFORE awaiting camera/mic permission.
+    // A slow or failing media request (common for video, which also grabs the camera) otherwise
+    // kept the phone ringing, and on failure the function returned below before the old
+    // stopRingtone() at the end ever ran. Stopping here makes accept feel immediate and reliable.
+    stopRingtone()
     if (!(await requireMediaAccess(call.isVideo))) return false
     const convId = call.conversationId
     beginOutgoingCallGuard(convId)
@@ -2083,6 +2088,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     ringingConvIdRef.current = callStore.incoming.conversationId
   }, [callStore.incoming?.conversationId, callStore.incoming?.source, stopRingtone])
+
+  // Safety net: whenever there is no pending incoming call (it was accepted, declined, cancelled or
+  // timed out), make sure the ringtone is silenced — regardless of which code path cleared the call.
+  useEffect(() => {
+    if (!callStore.incoming) stopRingtone()
+  }, [callStore.incoming, stopRingtone])
 
   useEffect(() => {
     const id = window.setInterval(() => setTimerTick((t) => (t + 1) % 1000000), 1000)
