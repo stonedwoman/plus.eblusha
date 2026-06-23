@@ -8,6 +8,22 @@ add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet" always;
 sub_filter_once on;
 sub_filter '<head>' '<head><meta name="robots" content="noindex,nofollow,noarchive,nosnippet">';
 
+# Приём диагностических логов Android-клиента HUILA (кнопка «Отправить логи Роману»).
+# PUT /updates/vpn/logs/<имя>.txt → пишется в отдельный writable-том vpn-logs.
+# Защищено общим токеном (зашит в apk) — отсекает случайный/спам-доступ. GET запрещён:
+# логи читаем только с хоста (/DATA/eblusha-plus/vpn-logs). Отдельный том, т.к. /updates
+# смонтирован read-only. client_body_temp_path на том же томе — иначе dav rename() падает
+# (cross-device link) между client_temp в образе и bind-mount тома.
+location ^~ /updates/vpn/logs/ {
+  if ($http_x_eblusha_logs != "f947d1a91f4a11a24a5c51a1c0885328") { return 403; }
+  limit_except PUT { deny all; }
+  client_max_body_size 15m;
+  client_body_temp_path /var/www/vpn-logs/.tmp;
+  dav_methods PUT;
+  create_full_put_path on;
+  alias /var/www/vpn-logs/;
+}
+
 location = /admin.html { return 404; }
 location ^~ /api/admin/ { return 404; }
 

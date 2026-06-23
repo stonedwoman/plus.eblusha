@@ -28,3 +28,6 @@ frontend/public/test200.bin
 
 # accidental pasted shell artifact at repo root
 /ing-box*
+
+# Диагностические логи VPN-клиента, загруженные через PUT (runtime, не в git)
+vpn-logs/
