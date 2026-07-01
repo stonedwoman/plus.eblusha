@@ -370,6 +370,30 @@ async function resolveDeviceId(socket: any, userId: string, jwtDid: string | nul
 let ioInstance: Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData> | null = null;
 // Track call state per conversation to detect missed calls
 const callState: Map<string, { inviterId: string; inviterSocketId?: string; accepted: boolean; video: boolean; startedAt?: number }> = new Map();
+// Minimum interval between call:invite emits for the same (user, conversation). Legit
+// re-invites (reconnect / glare re-delivery) never fire faster than this; a buggy
+// reconnect loop or a malicious client cannot hold a callee in a permanent ring.
+const CALL_INVITE_MIN_INTERVAL_MS = 2_000;
+const lastCallInviteAt: Map<string, number> = new Map();
+// Entries are only useful within the throttle window; sweep stale ones so the map
+// stays bounded regardless of how many (user, conversation) pairs ever placed a call.
+const CALL_INVITE_SWEEP_THRESHOLD = 1_000;
+function sweepCallInviteThrottle(now: number): void {
+  if (lastCallInviteAt.size < CALL_INVITE_SWEEP_THRESHOLD) return;
+  for (const [key, ts] of lastCallInviteAt) {
+    if (now - ts >= CALL_INVITE_MIN_INTERVAL_MS) lastCallInviteAt.delete(key);
+  }
+}
+// Grace window: a live 1:1 call must NOT be torn down the instant one party's socket
+// blips (cell handoff, tab backgrounded, token refresh). We wait this long for them to
+// reconnect and re-join before declaring the call ended for the remaining peer.
+const DIRECT_CALL_GRACE_MS = 15_000;
+const directCallGraceTimers: Map<string, NodeJS.Timeout> = new Map();
+// Server-side no-answer backstop for un-accepted 1:1 calls: if no client ever tears the
+// ringing call down (both sides dropped, buggy client), the state must not live forever.
+// Set beyond the clients' own ring timeouts (~25–30s) so the server is a pure backstop.
+const CALL_RING_TIMEOUT_MS = 60_000;
+const callRingTimers: Map<string, NodeJS.Timeout> = new Map();
 type ActiveCallInfo = { startedAt: number; participantsByUser: Map<string, Set<string>> };
 // Track active group calls: conversationId -> { startedAt: number, participantsByUser: Map<userId, Set<socketId>> }
 const activeGroupCalls: Map<string, ActiveCallInfo> = new Map();
@@ -944,6 +968,155 @@ export async function initSocket(
     for (const pid of participantsBeforeClear) {
       void emitEffectivePresence(io, pid);
     }
+  };
+
+  const clearDirectCallGraceTimer = (conversationId: string) => {
+    const t = directCallGraceTimers.get(conversationId);
+    if (t) {
+      clearTimeout(t);
+      directCallGraceTimers.delete(conversationId);
+    }
+  };
+
+  const clearCallRingTimer = (conversationId: string) => {
+    const t = callRingTimers.get(conversationId);
+    if (t) {
+      clearTimeout(t);
+      callRingTimers.delete(conversationId);
+    }
+  };
+
+  // Teardown for a live 1:1 call (used by the disconnect grace timer). Only fires if the
+  // call is still effectively empty (nobody rejoined during the grace window).
+  const endActiveDirectCall = async (conversationId: string, endedByUserId: string) => {
+    const info = activeDirectCalls.get(conversationId);
+    if (!info) return;
+    if (info.participantsByUser.size >= 2) return; // peer rejoined during grace — keep the call alive
+    const remainingParticipantIds = listParticipants(info);
+    await clearConversationCallPresence(io, conversationId);
+    activeDirectCalls.delete(conversationId);
+    callState.delete(conversationId);
+    clearCallRingTimer(conversationId);
+    try {
+      const conv = await prisma.conversation.findUnique({
+        where: { id: conversationId },
+        include: { participants: true },
+      });
+      for (const p of conv?.participants ?? []) {
+        io.to(userRoom(p.userId)).emit("call:ended", { conversationId, by: { id: endedByUserId } });
+      }
+    } catch (error) {
+      logger.warn({ error, conversationId }, "Failed to emit direct call ended after grace");
+    }
+    for (const pid of remainingParticipantIds) {
+      void emitEffectivePresence(io, pid);
+    }
+    broadcastCallStatus(conversationId);
+  };
+
+  const scheduleActiveDirectCallGraceTeardown = (conversationId: string, endedByUserId: string) => {
+    if (directCallGraceTimers.has(conversationId)) return;
+    const timer = setTimeout(() => {
+      directCallGraceTimers.delete(conversationId);
+      void endActiveDirectCall(conversationId, endedByUserId);
+    }, DIRECT_CALL_GRACE_MS);
+    directCallGraceTimers.set(conversationId, timer);
+  };
+
+  // Server backstop: cancel an un-accepted 1:1 ringing call that nothing ever cleaned up.
+  const scheduleCallRingTimeout = (conversationId: string, inviterId: string) => {
+    clearCallRingTimer(conversationId);
+    const timer = setTimeout(() => {
+      callRingTimers.delete(conversationId);
+      void (async () => {
+        const st = callState.get(conversationId);
+        // Only act on a still-pending invite from the same call. If it was accepted,
+        // ended, declined, or replaced, another path already handled it.
+        if (!st || st.accepted) return;
+        // Safety: never destroy a call that is actually live. A 1:1 can become active via
+        // call:room:join (the "join active call" button) WITHOUT a call:accept, leaving
+        // st.accepted=false. If both sides are present in the room, treat it as accepted
+        // and leave it alone instead of tearing down a healthy call.
+        const liveInfo = activeDirectCalls.get(conversationId);
+        if (liveInfo && liveInfo.participantsByUser.size >= 2) {
+          callState.set(conversationId, { ...st, accepted: true });
+          return;
+        }
+        callState.delete(conversationId);
+        activeDirectCalls.delete(conversationId);
+        clearDirectCallGraceTimer(conversationId);
+        try {
+          const conv = await prisma.conversation.findUnique({
+            where: { id: conversationId },
+            include: { participants: true },
+          });
+          if (!conv || conv.isGroup) return;
+          for (const p of conv.participants) {
+            io.to(userRoom(p.userId)).emit("call:ended", { conversationId, by: { id: inviterId } });
+          }
+          // Record the unanswered call as missed (read for the caller) if the client
+          // never did. Guarded by the pending-state check above, so no duplicate.
+          try {
+            const now = new Date();
+            const msg = await prisma.message.create({
+              data: {
+                conversationId,
+                senderId: inviterId,
+                type: "SYSTEM",
+                content: `Пропущенный звонок ${formatTime(now)}`,
+                metadata: { missed: true, video: !!st.video } as any,
+              },
+            });
+            await prisma.messageReceipt.create({ data: { messageId: msg.id, userId: inviterId, status: "READ" } });
+            io.to(conversationId).emit("message:new", {
+              conversationId,
+              messageId: msg.id,
+              senderId: inviterId,
+              message: msg,
+            });
+          } catch (error) {
+            logger.warn({ error, conversationId }, "Failed to record missed-call on ring timeout");
+          }
+        } catch (error) {
+          logger.warn({ error, conversationId }, "Failed to expire ringing call on timeout");
+        }
+        for (const p of [inviterId]) void emitEffectivePresence(io, p);
+        broadcastCallStatus(conversationId);
+      })();
+    }, CALL_RING_TIMEOUT_MS);
+    callRingTimers.set(conversationId, timer);
+  };
+
+  // Grace for an un-accepted 1:1 invite whose inviter's socket dropped: give them a
+  // window to reconnect (token refresh / cell handoff) before cancelling the ring, so a
+  // transient blip does not orphan callState (which would make the callee's accept a no-op).
+  const schedulePendingInviteGraceTeardown = (conversationId: string, deadSocketId: string, inviterId: string) => {
+    if (directCallGraceTimers.has(conversationId)) return;
+    const timer = setTimeout(() => {
+      directCallGraceTimers.delete(conversationId);
+      void (async () => {
+        const st = callState.get(conversationId);
+        // Skip if reconnected/re-invited (inviterSocketId changed), accepted, or replaced.
+        if (!st || st.accepted || st.inviterSocketId !== deadSocketId) return;
+        callState.delete(conversationId);
+        clearCallRingTimer(conversationId);
+        try {
+          const conv = await prisma.conversation.findUnique({
+            where: { id: conversationId },
+            include: { participants: true },
+          });
+          for (const p of conv?.participants ?? []) {
+            if (p.userId !== inviterId) {
+              io.to(userRoom(p.userId)).emit("call:ended", { conversationId, by: { id: inviterId } });
+            }
+          }
+        } catch (error) {
+          logger.warn({ error, conversationId }, "Failed to end pending call after inviter-drop grace");
+        }
+        broadcastCallStatus(conversationId);
+      })();
+    }, DIRECT_CALL_GRACE_MS);
+    directCallGraceTimers.set(conversationId, timer);
   };
 
   const syncGroupAloneTimer = (conversationId: string) => {
@@ -1554,6 +1727,20 @@ export async function initSocket(
         logger.warn({ conversationId, userId }, "User is not a member of conversation in call:invite");
         return;
       }
+      // Rate-limit invites to prevent ring-spam / re-ring loops. Only throttle while a call
+      // for this conversation is ALREADY tracked (re-emitting call:incoming resets the
+      // callee's ringtone) — a fresh call, or one just ended, is never throttled.
+      const inviteThrottleKey = `${userId}:${conversationId}`;
+      const nowTs = Date.now();
+      if (callState.has(conversationId)) {
+        const lastInviteTs = lastCallInviteAt.get(inviteThrottleKey) ?? 0;
+        if (nowTs - lastInviteTs < CALL_INVITE_MIN_INTERVAL_MS) {
+          logger.info({ conversationId, userId }, "call:invite throttled (too frequent)");
+          return;
+        }
+      }
+      sweepCallInviteThrottle(nowTs);
+      lastCallInviteAt.set(inviteThrottleKey, nowTs);
       const recipients = conv.participants
         .map((p) => p.userId)
         .filter((id) => id !== userId);
@@ -1699,6 +1886,8 @@ export async function initSocket(
         for (const rid of recipients) {
           io.to(userRoom(rid)).emit("call:incoming", incomingPayload);
         }
+        // Server-side no-answer backstop so an un-accepted call can't ring/live forever.
+        scheduleCallRingTimeout(conversationId, userId);
       }
 
       if (isGroup) {
@@ -1713,6 +1902,10 @@ export async function initSocket(
         include: { participants: true },
       });
       if (!conv) return;
+      if (!conv.participants.some((p) => p.userId === userId)) {
+        logger.warn({ conversationId, userId }, "Non-member call:accept ignored");
+        return;
+      }
       const recipients = conv.participants.map((p) => p.userId).filter((id) => id !== userId);
       const st = callState.get(conversationId);
       const isGroup = !!conv.isGroup;
@@ -1724,6 +1917,9 @@ export async function initSocket(
           return;
         }
         callState.set(conversationId, { ...st, accepted: true });
+        // Call is answered — cancel the no-answer backstop and any disconnect grace.
+        clearCallRingTimer(conversationId);
+        clearDirectCallGraceTimer(conversationId);
       } else if (st) {
         callState.set(conversationId, { ...st, accepted: true });
       }
@@ -1774,6 +1970,10 @@ export async function initSocket(
         include: { participants: true },
       });
       if (!conv) return;
+      if (!conv.participants.some((p) => p.userId === userId)) {
+        logger.warn({ conversationId, userId }, "Non-member call:decline ignored");
+        return;
+      }
       const recipients = conv.participants.map((p) => p.userId).filter((id) => id !== userId);
       const isGroup = !!conv.isGroup;
       const st = callState.get(conversationId);
@@ -1789,6 +1989,9 @@ export async function initSocket(
       for (const rid of recipients) {
         io.to(userRoom(rid)).emit("call:declined", { conversationId, by: { id: userId } });
       }
+      // Also dismiss the ringing UI on the decliner's OWN other devices so a second
+      // device does not keep ringing until its local auto-decline timeout.
+      socket.to(userRoom(userId)).emit("call:declined", { conversationId, by: { id: userId } });
       if (isGroup) {
         await finishGroupCall(conversationId, st?.inviterId ?? userId, "decline");
         return;
@@ -1796,6 +1999,8 @@ export async function initSocket(
 
       // Direct (1:1): clear any active-direct-call state and recompute presence for both sides.
       activeDirectCalls.delete(conversationId);
+      clearCallRingTimer(conversationId);
+      clearDirectCallGraceTimer(conversationId);
       // E2EE key intentionally NOT deleted here: it persists via its TTL so caller and
       // callee never desync on a delete+recreate race (see getOrCreateCallE2eeKey).
       if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
@@ -1836,12 +2041,18 @@ export async function initSocket(
         include: { participants: true },
       });
       if (!conv) return;
+      if (!conv.participants.some((p) => p.userId === userId)) {
+        logger.warn({ conversationId, userId }, "Non-member call:end ignored");
+        return;
+      }
       const recipients = conv.participants.map((p) => p.userId).filter((id) => id !== userId);
       const isGroup = !!conv.isGroup;
       if (!isGroup) {
         for (const rid of recipients) {
           io.to(userRoom(rid)).emit("call:ended", { conversationId, by: { id: userId } });
         }
+        // Also stop any ringing/overlay on the ender's OWN other devices.
+        socket.to(userRoom(userId)).emit("call:ended", { conversationId, by: { id: userId } });
       }
       const st = callState.get(conversationId);
       const callInfo = activeGroupCalls.get(conversationId);
@@ -1868,6 +2079,8 @@ export async function initSocket(
 
       // Direct (1:1): clear active call presence state
       activeDirectCalls.delete(conversationId);
+      clearCallRingTimer(conversationId);
+      clearDirectCallGraceTimer(conversationId);
       // E2EE key intentionally NOT deleted here: it persists via its TTL, so a quick
       // re-call or a mid-call socket reconnect reuses the SAME shared key.
       if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
@@ -1945,7 +2158,11 @@ export async function initSocket(
       if (!conv) return;
       const isMember = conv.participants.some((p) => p.userId === userId);
       if (!isMember) return;
-      
+
+      // A (re)join cancels any pending disconnect-grace teardown for this call: the peer
+      // came back within the grace window, so the call must stay alive.
+      clearDirectCallGraceTimer(conversationId);
+
       const isGroup = !!conv.isGroup;
       logger.info({ conversationId, userId, isGroup, participantCount: conv.participants.length }, "call:room:join received");
 
@@ -1955,10 +2172,14 @@ export async function initSocket(
       // Track call participation for presence (both group and direct)
       const targetMap = isGroup ? activeGroupCalls : activeDirectCalls;
       
-      // Отмечаем звонок как принятый ТОЛЬКО когда присоединился кто-то кроме инициатора
+      // Отмечаем звонок как принятый ТОЛЬКО когда присоединился кто-то кроме инициатора.
+      // For 1:1 this also covers the "join active call" button (call:room:join with no
+      // call:accept): mark accepted AND clear the no-answer ring timer, otherwise the
+      // server backstop would later tear down a healthy, connected call.
       const st = callState.get(conversationId);
-      if (isGroup && st && !st.accepted && userId !== st.inviterId) {
+      if (st && !st.accepted && userId !== st.inviterId) {
         callState.set(conversationId, { ...st, accepted: true });
+        clearCallRingTimer(conversationId);
       }
       
       let callInfo = targetMap.get(conversationId);
@@ -2105,8 +2326,29 @@ export async function initSocket(
     socket.on("call:status:request", async ({ conversationIds }) => {
       if (!Array.isArray(conversationIds) || conversationIds.length === 0) return;
 
+      // Only report call state for conversations the requester actually belongs to —
+      // otherwise this is a presence/social-graph oracle (who is in which call, when it
+      // started) for arbitrary conversation ids.
+      const requested = Array.from(
+        new Set(conversationIds.filter((id) => typeof id === "string" && id.trim().length > 0)),
+      ).slice(0, 200);
+      if (requested.length === 0) return;
+
+      let allowed: Set<string>;
+      try {
+        const memberships = await prisma.conversationParticipant.findMany({
+          where: { userId, conversationId: { in: requested } },
+          select: { conversationId: true },
+        });
+        allowed = new Set(memberships.map((m) => m.conversationId));
+      } catch (error) {
+        logger.warn({ error, userId }, "Failed to resolve memberships for call:status:request");
+        return;
+      }
+
       const statuses: Record<string, CallStatusPayload> = {};
-      for (const conversationId of conversationIds) {
+      for (const conversationId of requested) {
+        if (!allowed.has(conversationId)) continue;
         statuses[conversationId] = buildCallStatus(conversationId);
       }
 
@@ -2124,26 +2366,16 @@ export async function initSocket(
 
       for (const [conversationId, st] of callState.entries()) {
         if (st.accepted || st.inviterSocketId !== socket.id) continue;
-        callState.delete(conversationId);
-        // Do NOT delete the E2EE key on a transient socket disconnect: the participant may
-        // reconnect (e.g. access-token refresh) mid-call. The key is cleared on explicit
-        // call:end / call:decline / room:leave, and otherwise expires via its TTL.
-        try {
-          const conv = await prisma.conversation.findUnique({
-            where: { id: conversationId },
-            include: { participants: true },
-          });
-          for (const p of conv?.participants ?? []) {
-            if (p.userId !== userId) {
-              io.to(userRoom(p.userId)).emit("call:ended", { conversationId, by: { id: userId } });
-            }
-          }
-        } catch (error) {
-          logger.warn({ error, conversationId, userId }, "Failed to emit pending direct call ended on inviter disconnect");
-        }
-        broadcastCallStatus(conversationId);
+        // Un-accepted invite whose inviter's socket just dropped. Do NOT cancel the ring
+        // immediately — a transient blip (token refresh / cell handoff) would orphan the
+        // call and make the callee's accept a no-op. Give the inviter a grace window to
+        // reconnect and re-invite; if they don't, the pending call is ended then.
+        // (For group calls the activeGroupCalls sweep below cleans up immediately, and
+        // this grace timer then no-ops because callState is already gone.)
+        // The E2EE key is intentionally left to its TTL so a reconnect reuses the same key.
+        schedulePendingInviteGraceTeardown(conversationId, socket.id, userId);
       }
-      
+
       // Удаляем пользователя из всех активных звонков
       for (const [conversationId, callInfo] of activeGroupCalls.entries()) {
         if (callInfo.participantsByUser.has(userId)) {
@@ -2161,28 +2393,15 @@ export async function initSocket(
         if (callInfo.participantsByUser.has(userId)) {
           removeParticipant(callInfo, userId, socket.id);
           if (callInfo.participantsByUser.size <= 1) {
-            const remainingParticipantIds = listParticipants(callInfo);
-            await clearConversationCallPresence(io, conversationId);
-            activeDirectCalls.delete(conversationId);
-            callState.delete(conversationId);
-            // Do NOT delete the E2EE key on a transient socket disconnect (see note above):
-            // wiping it mid-call breaks E2EE when a participant's socket reconnects.
-            try {
-              const conv = await prisma.conversation.findUnique({
-                where: { id: conversationId },
-                include: { participants: true },
-              });
-              for (const p of conv?.participants ?? []) {
-                if (p.userId !== userId) {
-                  io.to(userRoom(p.userId)).emit("call:ended", { conversationId, by: { id: userId } });
-                }
-              }
-            } catch (error) {
-              logger.warn({ error, conversationId, userId }, "Failed to emit direct call ended on disconnect");
-            }
-            for (const pid of remainingParticipantIds) {
-              void emitEffectivePresence(io, pid);
-            }
+            // CRITICAL: do NOT tear down the live call the instant a socket drops. A
+            // transient blip on ONE side (cell handoff, backgrounded tab, token refresh)
+            // would otherwise permanently end the call for BOTH parties. Instead, keep the
+            // call and give the dropped peer a grace window to reconnect and re-join
+            // (web restoreCallPresence / android connectionState observer re-emit
+            // call:room:join, which clears this timer). If nobody rejoins within the
+            // window, endActiveDirectCall notifies the remaining peer.
+            // The E2EE key is left to its TTL so a reconnect reuses the same key.
+            scheduleActiveDirectCallGraceTeardown(conversationId, userId);
           }
           broadcastCallStatus(conversationId);
         }

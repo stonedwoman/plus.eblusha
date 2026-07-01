@@ -39,9 +39,17 @@ async function ensureSession(tx: TxLike, roomName: string, participantIdentity: 
   });
 }
 
+// LiveKit participant identity is `<userId>#<deviceSuffix>` (unique per device); the
+// app-level user id is the part before the first '#'.
+function identityToUserId(identity?: string | null): string | null {
+  const trimmed = identity?.trim();
+  if (!trimmed) return null;
+  return trimmed.split("#", 1)[0] || null;
+}
+
 async function applyParticipantLeft(tx: TxLike, evt: LivekitEventInput, at: Date) {
   const roomName = evt.roomName?.trim();
-  const userId = evt.participantIdentity?.trim();
+  const userId = identityToUserId(evt.participantIdentity);
   if (!roomName || !userId) return;
   const session =
     (await findActiveSession(tx, roomName)) ??
@@ -60,7 +68,7 @@ async function applyParticipantLeft(tx: TxLike, evt: LivekitEventInput, at: Date
 export async function applyLivekitFactsEvent(tx: TxLike, evt: LivekitEventInput): Promise<void> {
   const at = eventTimestamp(evt.createdAtSeconds);
   const roomName = evt.roomName?.trim();
-  const userId = evt.participantIdentity?.trim() || null;
+  const userId = identityToUserId(evt.participantIdentity);
 
   switch (evt.event) {
     case "room_started": {

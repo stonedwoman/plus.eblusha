@@ -1,7 +1,7 @@
 import { baseURL as axiosApiBase } from '../core/api/httpClient'
 
 export type MediaPermissionResult =
-  | { ok: true }
+  | { ok: true; videoUnavailable?: boolean }
   | { ok: false; error: DOMException | Error }
 
 type MediaOptions = {
@@ -21,49 +21,57 @@ export async function ensureMediaPermissions(options: MediaOptions = {}): Promis
     return { ok: true }
   }
 
-  const constraints: MediaStreamConstraints = {
-    audio: wantsAudio,
-    video: wantsVideo,
-  }
-
   // A capture device can be momentarily "busy" (NotReadableError / TrackStartError / AbortError) when
   // a previous getUserMedia hasn't released it yet — e.g. this very permission pre-check on a prior
   // attempt, or a call that just ended. For video that window is wider (the camera frees slower than
-  // the mic), which is why accepting a video call used to need several button presses: each press
-  // failed the pre-check and left the incoming dialog up. Retry transient busy errors with a short
-  // backoff so a single press succeeds on its own. Permission denials / missing devices are NOT
-  // transient and fail immediately.
+  // the mic). Retry transient busy errors with a short backoff so a single press succeeds on its own.
+  // Permission denials / missing devices are NOT transient and fail immediately.
   const TRANSIENT_ERRORS = new Set(['NotReadableError', 'TrackStartError', 'AbortError'])
   const MAX_ATTEMPTS = 3
-  let lastError: DOMException | Error = new Error('Unknown media error')
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    let stream: MediaStream | null = null
-    try {
-      stream = await navigator.mediaDevices.getUserMedia(constraints)
-      return { ok: true }
-    } catch (error) {
-      lastError = (error as DOMException | Error) ?? new Error('Unknown media error')
-      const name = (lastError as { name?: string })?.name ?? ''
-      if (!TRANSIENT_ERRORS.has(name) || attempt === MAX_ATTEMPTS) {
-        return { ok: false, error: lastError }
-      }
-      // Device busy — wait for it to free up, then retry (250ms, then 500ms).
-      await new Promise((resolve) => setTimeout(resolve, 250 * attempt))
-    } finally {
-      if (stream) {
-        stream.getTracks().forEach((track) => {
-          try {
-            track.stop()
-          } catch {
-            // ignore
-          }
-        })
+  const probe = async (constraints: MediaStreamConstraints): Promise<MediaPermissionResult> => {
+    let lastError: DOMException | Error = new Error('Unknown media error')
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      let stream: MediaStream | null = null
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints)
+        return { ok: true }
+      } catch (error) {
+        lastError = (error as DOMException | Error) ?? new Error('Unknown media error')
+        const name = (lastError as { name?: string })?.name ?? ''
+        if (!TRANSIENT_ERRORS.has(name) || attempt === MAX_ATTEMPTS) {
+          return { ok: false, error: lastError }
+        }
+        // Device busy — wait for it to free up, then retry (250ms, then 500ms).
+        await new Promise((resolve) => setTimeout(resolve, 250 * attempt))
+      } finally {
+        if (stream) {
+          stream.getTracks().forEach((track) => {
+            try {
+              track.stop()
+            } catch {
+              // ignore
+            }
+          })
+        }
       }
     }
+    return { ok: false, error: lastError }
   }
 
-  return { ok: false, error: lastError }
+  const primary = await probe({ audio: wantsAudio, video: wantsVideo })
+  if (primary.ok) return { ok: true }
+
+  // Video call whose combined audio+video capture failed: the camera may be
+  // denied/busy/absent while the microphone is perfectly fine. Do NOT block the whole
+  // call over a camera problem — fall back to an audio-only probe. If audio works, the
+  // call proceeds audio-only (video stays best-effort and is published opportunistically).
+  if (wantsVideo && wantsAudio) {
+    const audioOnly = await probe({ audio: true, video: false })
+    if (audioOnly.ok) return { ok: true, videoUnavailable: true }
+  }
+
+  return primary
 }
 
 /** Склеенное имя зашифрованного файла на сторедже: `<ms>-<uuid>.eblusha`. */

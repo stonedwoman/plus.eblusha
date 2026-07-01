@@ -76,6 +76,13 @@ function readEnvBool(v: unknown): boolean {
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on'
 }
 
+// LiveKit participant identity is `<userId>#<deviceSuffix>` (unique per device, so the
+// same user on two devices does not collide); the app-level userId is the part before
+// the first '#'.
+function identityToUserId(identity: unknown): string {
+  return String(identity ?? '').split('#')[0].trim()
+}
+
 function describeE2eeSetupError(err: unknown): string {
   const status = (err as any)?.response?.status as number | undefined
   if (status === 403) return 'Нет доступа к ключу E2EE для этого звонка.'
@@ -351,6 +358,23 @@ function ParticipantVolumeUpdater() {
     }
   }
 
+  // Close the volume-amplification AudioContext on unmount. Without this we leak one
+  // AudioContext per CallOverlay mount; browsers cap live contexts (~6 in Chrome), after
+  // which amplification silently stops working for the rest of the session.
+  useEffect(() => {
+    return () => {
+      const ctx = audioCtxRef.current
+      audioCtxRef.current = null
+      if (ctx) {
+        try {
+          void ctx.close()
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }, [])
+
   const parseParticipantMeta = (p: any): { userId?: string; displayName?: string } | null => {
     const raw = p?.metadata
     if (!raw || typeof raw !== 'string') return null
@@ -382,7 +406,10 @@ function ParticipantVolumeUpdater() {
     for (const p of room.remoteParticipants.values()) {
       try {
         if (wantUser && String(p.identity) === wantUser) return p
+        // identity carries a per-device suffix (`userId#device`); match on the userId part
+        if (wantUser && identityToUserId(p.identity) === wantUser) return p
         if (wantKey && String(p.identity) === wantKey) return p
+        if (wantKey && identityToUserId(p.identity) === wantKey) return p
         if (wantName && String((p as any).name || '').trim() === wantName) return p
         const meta = parseParticipantMeta(p)
         if (wantUser && meta?.userId && meta.userId === wantUser) return p
@@ -2705,10 +2732,19 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         setE2eeEnabled(true)
 
         // Only publish after E2EE is confirmed enabled.
-        await Promise.all([
-          room.localParticipant.setMicrophoneEnabled(!muted),
-          room.localParticipant.setCameraEnabled(!!camera),
-        ])
+        // Microphone is essential to the call; a failure here is fatal.
+        await room.localParticipant.setMicrophoneEnabled(!muted)
+        // Camera is best-effort: a denied/busy/absent camera must NOT tear down a call
+        // that can still carry audio. Downgrade to audio-only and reflect it in the UI.
+        if (camera) {
+          try {
+            await room.localParticipant.setCameraEnabled(true)
+          } catch (camErr) {
+            // eslint-disable-next-line no-console
+            console.warn('[CallOverlay] camera enable failed — continuing audio-only', camErr)
+            setCamera(false)
+          }
+        }
       } catch (err) {
         const msg = describeE2eeSetupError(err)
         setE2eeError(msg)
@@ -3071,7 +3107,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           const idEl = tile.querySelector('[data-lk-participant-identity]') as HTMLElement | null
           if (idEl) identity = idEl.getAttribute('data-lk-participant-identity') || ''
         }
-        const identityMatchesLocal = !!(identity && localIdRef && identity === localIdRef)
+        const identityMatchesLocal = !!(identity && localIdRef && identityToUserId(identity) === localIdRef)
         const isLocal = isLocalByAttr || identityMatchesLocal
 
         if (!isLocal) return
@@ -3229,6 +3265,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         // 6. Извлекаем identity из метаданных (приоритет метаданных)
         if (participantMeta?.userId) {
           identity = String(participantMeta.userId).trim()
+        } else if (identity) {
+          // identity из LiveKit-атрибутов несёт девайс-суффикс (`userId#device`) —
+          // для поиска аватара и определения локального участника нужен чистый userId
+          identity = identityToUserId(identity)
         }
         
         // 7. Если identity все еще пустой, логируем только один раз (не для каждого обновления)

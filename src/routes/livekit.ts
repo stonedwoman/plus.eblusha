@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { randomBytes } from "crypto";
 import { AccessToken, WebhookReceiver } from "livekit-server-sdk";
 import { z } from "zod";
 import env from "../config/env";
@@ -75,6 +76,16 @@ const tokenSchema = z.object({
   participantMetadata: z.record(z.string(), z.unknown()).optional(),
 });
 
+// Call rooms are always named `conv-<conversationId>` (see the web CallOverlay and
+// android LiveKitRepository). Tokens are minted ONLY for such rooms, and ONLY for a
+// member of that conversation — otherwise any authenticated user could mint a
+// join-token for an arbitrary room and eavesdrop on / disrupt any ongoing call.
+const CONV_ROOM_PREFIX = "conv-";
+// Comfortable margin so a normal-length call (or a held reconnection) never crosses
+// token expiry mid-call. LiveKit reuses the existing token across its own reconnects,
+// so this only matters for very long sessions.
+const CALL_TOKEN_TTL_SECONDS = 12 * 60 * 60;
+
 router.post("/token", async (req, res) => {
   const parsed = tokenSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -82,18 +93,61 @@ router.post("/token", async (req, res) => {
     return;
   }
 
-  const { room, participantName, participantMetadata } = parsed.data;
+  const { room, participantMetadata } = parsed.data;
 
-  type AuthedRequest = Request & { user?: { id: string; username: string; displayName?: string | null } };
-  const user = (req as AuthedRequest).user!;
+  type AuthedRequest = Request & {
+    user?: { id: string; username: string; displayName?: string | null };
+    deviceId?: string;
+  };
+  const authed = req as AuthedRequest;
+  const user = authed.user!;
+
+  // ── Authorization: only conversation call rooms, only for members. ──
+  if (!room.startsWith(CONV_ROOM_PREFIX)) {
+    res.status(403).json({ message: "Forbidden room" });
+    return;
+  }
+  const conversationId = room.slice(CONV_ROOM_PREFIX.length).trim();
+  if (!conversationId) {
+    res.status(400).json({ message: "Invalid room" });
+    return;
+  }
+  const membership = await prisma.conversationParticipant.findFirst({
+    where: { conversationId, userId: user.id },
+    select: { id: true },
+  });
+  if (!membership) {
+    res.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  // Unique identity per device: the same user joining from two devices must NOT
+  // collide on a single LiveKit identity (LiveKit evicts the older participant on a
+  // clash, kicking the first device off the call). The app-level userId travels in
+  // server-controlled metadata, so participant→user mapping stays correct.
+  const deviceSuffix =
+    authed.deviceId && authed.deviceId.trim() ? authed.deviceId.trim() : randomBytes(6).toString("hex");
+  const identity = `${user.id}#${deviceSuffix}`;
+  const displayName = user.displayName ?? user.username;
+
+  // Metadata is SERVER-controlled for the identity fields (anti-spoofing): a client
+  // cannot claim another user's id/name in the call roster. Cosmetic client fields
+  // (e.g. avatarUrl) are passed through but can never override userId/displayName.
+  const clientMeta =
+    participantMetadata && typeof participantMetadata === "object" ? { ...participantMetadata } : {};
+  const metadata = {
+    ...clientMeta,
+    app: "eblusha",
+    userId: user.id,
+    displayName,
+  };
 
   const opts: any = {
-    identity: user.id,
-    name: participantName ?? user.displayName ?? user.username,
+    identity,
+    name: displayName,
+    ttl: CALL_TOKEN_TTL_SECONDS,
+    metadata: JSON.stringify(metadata),
   };
-  if (participantMetadata) {
-    opts.metadata = JSON.stringify(participantMetadata);
-  }
 
   const token = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, opts);
 
