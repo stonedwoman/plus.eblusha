@@ -8,7 +8,6 @@ const AppLayout = lazy(() => import('./ui/layouts/AppLayout'))
 const ChatsPage = lazy(() => import('./ui/pages/ChatsPage'))
 const MobileChatsRoute = lazy(() => import('./ui/web-mobile/MobileChatsRoute').then((module) => ({ default: module.MobileChatsRoute })))
 const ContactsPage = lazy(() => import('./ui/pages/ContactsPage'))
-const CallsPage = lazy(() => import('./ui/pages/CallsPage'))
 const SettingsPage = lazy(() => import('./ui/pages/SettingsPage'))
 
 const withSuspense = (node: ReactNode) => (
@@ -28,7 +27,6 @@ export const appRouter = createBrowserRouter([
           { path: 'chats', element: withSuspense(<MobileChatsRoute />) },
           { path: 'chats/:conversationId', element: withSuspense(<MobileChatsRoute />) },
           { path: 'contacts', element: withSuspense(<ContactsPage />) },
-          { path: 'calls', element: withSuspense(<CallsPage />) },
           { path: 'settings', element: withSuspense(<SettingsPage />) },
           { path: '*', element: <Static404Redirect /> },
         ],
@@ -47,7 +45,6 @@ export const appRouter = createBrowserRouter([
           { path: 'chats', element: withSuspense(<MobileChatsRoute />) },
           { path: 'chats/:conversationId', element: withSuspense(<MobileChatsRoute />) },
           { path: 'contacts', element: withSuspense(<ContactsPage />) },
-          { path: 'calls', element: withSuspense(<CallsPage />) },
           { path: 'settings', element: withSuspense(<SettingsPage />) },
           { path: '*', element: <Static404Redirect /> },
         ],

@@ -31,3 +31,13 @@ frontend/public/test200.bin
 
 # Диагностические логи VPN-клиента, загруженные через PUT (runtime, не в git)
 vpn-logs/
+
+# Приватные ключи и локальные бинарники — не в git
+ssh-key-*.zip
+/mc
+
+# Рантайм-статусы игровых серверов: приложение перезаписывает их постоянно,
+# в git им не место (см. CLAUDE.md)
+/frontend/public/s/*.json
+/frontend/public/v/*.json
+/frontend/public/w/*.json

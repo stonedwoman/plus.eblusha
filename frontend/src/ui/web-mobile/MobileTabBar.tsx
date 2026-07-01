@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { MessageCircle, Phone, Settings, Users } from 'lucide-react'
+import { MessageCircle, Settings, Users } from 'lucide-react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { withAppRoutePrefix } from '../../core/navigation/routes'
 import { isNativePlatform } from '../../utils/platform'
@@ -77,7 +77,6 @@ export function MobileTabBar() {
     >
       <MobileTabLink to={withAppRoutePrefix(location.pathname, '/chats')} label="Чаты" icon={<MessageCircle size={18} />} />
       <MobileTabLink to={withAppRoutePrefix(location.pathname, '/contacts')} label="Контакты" icon={<Users size={18} />} />
-      <MobileTabLink to={withAppRoutePrefix(location.pathname, '/calls')} label="Звонки" icon={<Phone size={18} />} />
       <MobileTabLink to={withAppRoutePrefix(location.pathname, '/settings')} label="Настройки" icon={<Settings size={18} />} />
     </nav>
   )
