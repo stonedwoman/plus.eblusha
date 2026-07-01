@@ -15,6 +15,7 @@ import kotlinx.coroutines.delay
 import org.eblusha.plus.core.di.AppContainer
 import org.eblusha.plus.data.livekit.LiveKitRepository
 import org.eblusha.plus.data.realtime.RealtimeService
+import org.eblusha.plus.data.realtime.ConnectionState
 import org.eblusha.plus.feature.session.SessionUser
 import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
@@ -173,6 +174,17 @@ class CallViewModel(
                         android.util.Log.d("CallViewModel", "RoomEvent.Reconnecting")
                         // Keep current state but could show reconnecting indicator
                     }
+                    is RoomEvent.Reconnected -> {
+                        android.util.Log.d("CallViewModel", "RoomEvent.Reconnected — re-registering call room + tracks")
+                        // LiveKit media recovered. Re-join the server call room (presence was
+                        // cleared while the socket was down) and re-subscribe to remote tracks.
+                        realtimeService.joinCallRoom(conversationId, isVideoCall)
+                        if (isGroup) {
+                            realtimeService.requestCallStatuses(listOf(conversationId))
+                        }
+                        r.remoteParticipants.values.forEach { subscribeToRemoteTracks(it) }
+                        refreshParticipants()
+                    }
                     is RoomEvent.ParticipantConnected -> {
                         android.util.Log.d("CallViewModel", "RoomEvent.ParticipantConnected: ${event.participant.identity}")
                         subscribeToRemoteTracks(event.participant)
@@ -217,8 +229,30 @@ class CallViewModel(
                 }
             }
         }
+
+        // Re-join the server-side call room whenever the signaling socket reconnects. The
+        // socket.io connection can drop and reconnect (cell handoff, backgrounded tab, mid-call
+        // token refresh) while LiveKit media stays alive; on reconnect the server has cleared
+        // our call presence. Without re-joining we become a ghost/absent participant, and in a
+        // 1:1 the peer's call would be torn down (the server's disconnect-grace window is what
+        // keeps it alive long enough for this re-join to land).
+        viewModelScope.launch {
+            var sawConnected = false
+            realtimeService.connectionState.collect { state ->
+                if (state is ConnectionState.Connected) {
+                    if (sawConnected) {
+                        android.util.Log.d("CallViewModel", "Socket reconnected — re-joining call room")
+                        realtimeService.joinCallRoom(conversationId, isVideoCall)
+                        if (isGroup) {
+                            realtimeService.requestCallStatuses(listOf(conversationId))
+                        }
+                    }
+                    sawConnected = true
+                }
+            }
+        }
     }
-    
+
     private fun updateLocalVideoTrack(participant: LocalParticipant) {
         viewModelScope.launch {
             try {

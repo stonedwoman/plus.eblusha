@@ -95,7 +95,12 @@ class MainActivity : ComponentActivity() {
         SessionViewModelFactory(container)
     }
     private var backgroundServiceStarted = false
-    
+    // Bumped whenever a new intent is delivered to this (singleTask) activity, so the
+    // Compose intent-action handler re-runs. Without this, tapping the incoming-call
+    // full-screen notification or its Accept action does nothing while the activity
+    // already exists (onCreate/LaunchedEffect(Unit) never re-run for a warm activity).
+    private val intentEpoch = mutableStateOf(0)
+
     // Request permissions on app startup
     private val requestPermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -159,6 +164,7 @@ class MainActivity : ComponentActivity() {
                     SessionScreen(
                         container = container,
                         state = state,
+                        intentEpoch = intentEpoch.value,
                         onSubmitToken = sessionViewModel::submitToken,
                         onLogin = sessionViewModel::login,
                         onRefresh = sessionViewModel::refresh,
@@ -183,6 +189,14 @@ class MainActivity : ComponentActivity() {
         }
     }
     
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        // Make getIntent() return the fresh intent and force the Compose intent-action
+        // handler to re-run so accept_call / incoming_call / open_conversation are processed.
+        setIntent(intent)
+        intentEpoch.value = intentEpoch.value + 1
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         // Останавливаем фоновый сервис только при полном уничтожении Activity
@@ -233,6 +247,7 @@ class MainActivity : ComponentActivity() {
 private fun SessionScreen(
     container: AppContainer,
     state: SessionUiState,
+    intentEpoch: Int,
     onSubmitToken: (String) -> Unit,
     onLogin: (String, String) -> Unit,
     onRefresh: () -> Unit,
@@ -270,6 +285,7 @@ private fun SessionScreen(
                         activeCall = activeCall,
                         isCallMinimized = isCallMinimized,
                         callHandle = callHandle,
+                        intentEpoch = intentEpoch,
                         onStartCall = onStartCall,
                         onMinimizeChange = onMinimizeChange,
                     )
@@ -298,6 +314,7 @@ private fun MessengerNavHost(
     activeCall: ActiveCallSession?,
     isCallMinimized: Boolean,
     callHandle: CallOverlayHandle?,
+    intentEpoch: Int,
     onStartCall: (ActiveCallSession) -> Unit,
     onMinimizeChange: (Boolean) -> Unit,
 ) {
@@ -397,8 +414,9 @@ private fun MessengerNavHost(
         }
     }
     
-    // Handle intent actions
-    androidx.compose.runtime.LaunchedEffect(Unit) {
+    // Handle intent actions. Keyed on intentEpoch (bumped by onNewIntent) so a notification
+    // Accept/Open tap is processed even when the singleTask activity already exists.
+    androidx.compose.runtime.LaunchedEffect(intentEpoch) {
         val intent = (context as? android.app.Activity)?.intent
         when (intent?.getStringExtra("action")) {
             "accept_call" -> {

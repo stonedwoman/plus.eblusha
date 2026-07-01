@@ -214,8 +214,24 @@ class IncomingCallService : Service() {
             .setOngoing(true)
             .setAutoCancel(false)
             .build()
-        
-        startForeground(NOTIFICATION_ID, notification)
+
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            // Starting a foreground service from the background can be denied on Android 12+
+            // (ForegroundServiceStartNotAllowedException) or fail on a FGS-type mismatch.
+            // Never crash the app, and never leave the ringtone/vibration running with no
+            // service left to stop it. Surface the call via a plain notification best-effort,
+            // then tear down cleanly.
+            android.util.Log.e("IncomingCallService", "startForeground failed", e)
+            try {
+                getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
+            } catch (_: Exception) {
+                // ignore
+            }
+            stopRinging()
+            stopSelf()
+        }
     }
     
     private fun createNotificationChannel() {
