@@ -440,10 +440,6 @@ router.put("/:id/availability/proposals/:proposalId/reaction", async (req, res) 
 
 router.get("/", async (req, res) => {
   const userId = (req as AuthedRequest).user!.id;
-  // Deduplicate conversations for this user before returning list
-  try {
-    await deduplicateUserConversations(userId);
-  } catch {}
 
   const conversations = await prisma.conversationParticipant.findMany({
     where: { userId },
@@ -1315,50 +1311,4 @@ router.post(
 );
 
 export default router;
-
-// Utilities
-async function deduplicateUserConversations(userId: string) {
-  // Pull all conversations user participates in
-  const list = await prisma.conversation.findMany({
-    where: { participants: { some: { userId } } },
-    include: { participants: true },
-    orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
-  }) as any[];
-
-  // Group by participants set + isGroup + isSecret
-  const groups = new Map<string, typeof list>();
-  for (const c of list) {
-    const key = `${c.isGroup ? "G" : "D"}:${(c as any).isSecret ? "S" : "N"}:${c.participants
-      .map((p: any) => p.userId)
-      .sort()
-      .join(",")}`;
-    const arr = (groups.get(key) as any[]) || [];
-    arr.push(c);
-    groups.set(key, arr as any);
-  }
-
-  // For each duplicate group, keep the newest; delete the others entirely
-  for (const [, arr] of groups) {
-    if (arr.length <= 1) continue;
-    const sorted = arr.sort((a, b) => {
-      const ta = (a as any).lastMessageAt ?? (a as any).createdAt;
-      const tb = (b as any).lastMessageAt ?? (b as any).createdAt;
-      return new Date(tb as any).getTime() - new Date(ta as any).getTime();
-    });
-    const keep = sorted[0];
-    const toDelete = sorted.slice(1);
-    for (const conv of toDelete) {
-      try {
-        await prisma.$transaction([
-          prisma.messageReceipt.deleteMany({ where: { message: { conversationId: conv.id } } }),
-          prisma.messageAttachment.deleteMany({ where: { message: { conversationId: conv.id } } }),
-          prisma.messageReaction.deleteMany({ where: { message: { conversationId: conv.id } } }),
-          prisma.message.deleteMany({ where: { conversationId: conv.id } }),
-          prisma.conversationParticipant.deleteMany({ where: { conversationId: conv.id } }),
-          prisma.conversation.delete({ where: { id: conv.id } }),
-        ]);
-      } catch {}
-    }
-  }
-}
 
