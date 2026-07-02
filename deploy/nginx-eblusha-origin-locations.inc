@@ -32,6 +32,7 @@ location ^~ /updates/vpn/logs/ {
 location ^~ /updates/ {
   root /var/www/eblusha.org-public;
   charset utf-8;
+  disable_symlinks on;  # симлинк внутри updates не должен выводить наружу
   autoindex on;
   autoindex_exact_size off;
   autoindex_localtime on;
