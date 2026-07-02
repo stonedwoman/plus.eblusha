@@ -24,6 +24,21 @@ location ^~ /updates/vpn/logs/ {
   alias /var/www/vpn-logs/;
 }
 
+# Каталог обновлений: файлы + браузерный листинг (autoindex) любых подпапок на любой
+# глубине. Раздаётся напрямую из bind mount public/updates — новое видно сразу, без
+# reload. Без try_files: для папки без слеша nginx сам отдаёт 301 на $uri/, иначе
+# относительные ссылки в листинге ломаются. ^~ /updates/vpn/logs/ выше — более длинный
+# префикс, перехват логов работает как раньше. Права: default ACL на дереве (g:101:rX).
+location ^~ /updates/ {
+  root /var/www/eblusha.org-public;
+  charset utf-8;
+  autoindex on;
+  autoindex_exact_size off;
+  autoindex_localtime on;
+  add_header Cache-Control "no-cache, must-revalidate" always;
+  add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet" always;
+}
+
 location = /admin.html { return 404; }
 location ^~ /api/admin/ { return 404; }
 
