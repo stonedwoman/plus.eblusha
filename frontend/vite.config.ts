@@ -5,9 +5,9 @@ import react from '@vitejs/plugin-react'
 
 // Тяжёлые файлы nginx раздаёт напрямую из public/ (bind mount; try_files $uri идёт
 // раньше @spa-фолбэка в dist), поэтому их копии в dist/ не используются никогда:
-// updates/ (гигабайты VPN-инсталляторов, location ^~ /updates/) и test200.bin
-// (тестовый файл на 200 МБ). У Vite нет фильтра для copyPublicDir, поэтому
-// копируем publicDir в dist сами, пропуская их.
+// updates/ (гигабайты VPN-инсталляторов, location ^~ /updates/), test200.bin
+// (тестовый файл на 200 МБ), vpn.apk и VPN.exe (инсталляторы, ~62 МБ). У Vite нет
+// фильтра для copyPublicDir, поэтому копируем publicDir в dist сами, пропуская их.
 function copyPublicDirWithoutUpdates(): Plugin {
   let publicDir = ''
   let outDir = ''
@@ -20,7 +20,9 @@ function copyPublicDirWithoutUpdates(): Plugin {
     },
     closeBundle() {
       if (!publicDir || !fs.existsSync(publicDir)) return
-      const skips = [path.join(publicDir, 'updates'), path.join(publicDir, 'test200.bin')]
+      const skips = ['updates', 'test200.bin', 'vpn.apk', 'VPN.exe'].map((name) =>
+        path.join(publicDir, name),
+      )
       fs.cpSync(publicDir, outDir, {
         recursive: true,
         filter: (src) => !skips.some((skip) => src === skip || src.startsWith(skip + path.sep)),
@@ -32,7 +34,7 @@ function copyPublicDirWithoutUpdates(): Plugin {
 export default defineConfig({
   plugins: [react(), copyPublicDirWithoutUpdates()],
   build: {
-    // копирование public/ делает copyPublicDirWithoutUpdates (без updates/ и test200.bin)
+    // копирование public/ делает copyPublicDirWithoutUpdates (без updates/ и тяжёлых файлов)
     copyPublicDir: false,
     rolldownOptions: {
       output: {
