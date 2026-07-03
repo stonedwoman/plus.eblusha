@@ -68,7 +68,7 @@ export default function SettingsPage() {
           <input name="displayName" defaultValue={user?.displayName ?? ''} placeholder="Как вас будут видеть" />
           </label>
         </div>
-        <button type="submit" disabled={mutation.isPending}>
+        <button type="submit" className="btn btn-primary" disabled={mutation.isPending}>
           Сохранить
         </button>
       </form>

@@ -215,7 +215,7 @@ export default function ContactsPage() {
         </div>
         <form onSubmit={handleSubmit}>
           <input name="identifier" placeholder="ID / логин / email" required />
-          <button type="submit" disabled={addMutation.isPending}>
+          <button type="submit" className="btn btn-primary" disabled={addMutation.isPending}>
             Добавить
           </button>
         </form>
@@ -259,10 +259,10 @@ export default function ContactsPage() {
             <span style={{ textTransform: 'lowercase' }}>{contact.status.toLowerCase()}</span>
             {contact.status === 'PENDING' && contact.direction === 'incoming' && (
               <>
-                <button onClick={() => respondMutation.mutate({ contactId: contact.id, action: 'accept' })}>
+                <button className="btn btn-primary" onClick={() => respondMutation.mutate({ contactId: contact.id, action: 'accept' })}>
                   Принять
                 </button>
-                <button onClick={() => respondMutation.mutate({ contactId: contact.id, action: 'reject' })}>
+                <button className="btn btn-secondary" onClick={() => respondMutation.mutate({ contactId: contact.id, action: 'reject' })}>
                   Отклонить
                 </button>
               </>
@@ -281,6 +281,7 @@ export default function ContactsPage() {
                   <X size={16} />
                 </button>
                 <button
+                  className="btn btn-primary"
                   onClick={async () => {
                     const response = await api.post('/conversations/with', { userId: contact.friend.id })
                     const conversationId = String(response.data?.conversation?.id ?? response.data?.id ?? '').trim()
