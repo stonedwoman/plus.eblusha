@@ -1344,6 +1344,8 @@ export default function ChatsPage() {
   const [composerSelectionToolbarSize, setComposerSelectionToolbarSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const messagesRef = useRef<HTMLDivElement | null>(null)
+  const messagesContentRef = useRef<HTMLDivElement | null>(null)
+  const pinBurstRafRef = useRef<number>(0)
   type OlderMessagesMeta = { hasMore: boolean; nextCursor: string | null }
   const olderMetaByConvRef = useRef(new Map<string, OlderMessagesMeta>())
 
@@ -3757,14 +3759,47 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     })
   }, [updateEblo])
 
+  // Прижать к низу «пачкой» кадров. Одного присвоения scrollTop мало: виртуализация
+  // (Eblo) после этого ре-рендерится в rAF и может сдвинуть scrollHeight, сбив нас с
+  // низа. Поэтому переякориваемся ещё несколько кадров подряд, пока раскладка не
+  // устаканится. Используется при открытии беседы и при росте высоты контента.
+  const pinToBottomBurst = useCallback(() => {
+    const el = messagesRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    if (pinBurstRafRef.current) cancelAnimationFrame(pinBurstRafRef.current)
+    let frames = 0
+    const step = () => {
+      const el2 = messagesRef.current
+      if (!el2) return
+      el2.scrollTop = el2.scrollHeight
+      nearBottomRef.current = true
+      frames += 1
+      if (frames < 5) {
+        pinBurstRafRef.current = requestAnimationFrame(step)
+      } else {
+        pinBurstRafRef.current = 0
+      }
+    }
+    pinBurstRafRef.current = requestAnimationFrame(step)
+  }, [])
+
   const handleEbloRowHeightChange = useCallback((rowKey: string, height: number) => {
     if (!Number.isFinite(height) || height <= 0) return
     const next = Math.max(1, Math.ceil(height))
     const prev = ebloRowHeightsRef.current.get(rowKey)
     if (typeof prev === 'number' && Math.abs(prev - next) < 2) return
+    const grew = typeof prev === 'number' ? next > prev : true
     ebloRowHeightsRef.current.set(rowKey, next)
     scheduleEbloUpdate()
-  }, [scheduleEbloUpdate])
+    // Пока мы «прилипли» к низу, любой рост высоты строки (догрузилась картинка,
+    // превью ссылки, видео, реакции) должен возвращать нас на самый низ — иначе
+    // последнее сообщение уезжает вниз за край. Работает для контента, который
+    // приходит в ЛЮБОЙ момент, а не только в первые сотни мс после открытия.
+    if (grew && nearBottomRef.current) {
+      pinToBottomBurst()
+    }
+  }, [scheduleEbloUpdate, pinToBottomBurst])
 
   useEffect(() => {
     return () => {
@@ -5338,30 +5373,34 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     userStickyScrollRef.current = false
     setShowJump(false)
 
-    const scrollToBottom = () => {
-      const el = messagesRef.current
-      if (!el) return
-      el.scrollTop = el.scrollHeight
-      nearBottomRef.current = true
-      userStickyScrollRef.current = false
-      scheduleEbloUpdate()
-    }
-
-    // Do several attempts to cover: async message fetch, image decode, font/layout settling,
-    // and composer height animations.
-    scrollToBottom()
-    requestAnimationFrame(scrollToBottom)
-    const t0 = window.setTimeout(scrollToBottom, 0)
-    const t1 = window.setTimeout(scrollToBottom, 50)
-    const t2 = window.setTimeout(scrollToBottom, 200)
-    const t3 = window.setTimeout(scrollToBottom, 600)
+    // Первичная фиксация к низу «пачкой» кадров. Поздние изменения высоты (декод
+    // картинок, мозаик, превью, видео — в любой момент, а не только в первые мс)
+    // держат ResizeObserver контента и handleEbloRowHeightChange, поэтому прежнее
+    // «распыление» скроллов на 0/50/200/600мс больше не нужно.
+    scheduleEbloUpdate()
+    pinToBottomBurst()
     return () => {
-      window.clearTimeout(t0)
-      window.clearTimeout(t1)
-      window.clearTimeout(t2)
-      window.clearTimeout(t3)
+      if (pinBurstRafRef.current) {
+        cancelAnimationFrame(pinBurstRafRef.current)
+        pinBurstRafRef.current = 0
+      }
     }
-  }, [activeId, scheduleEbloUpdate])
+  }, [activeId, scheduleEbloUpdate, pinToBottomBurst])
+
+  // Пуленепробиваемое «прилипание» к низу: единый ResizeObserver на контейнере
+  // сообщений. КАКОЕ БЫ содержимое ни изменило высоту (догрузка картинок/мозаик/
+  // видео/превью, разворачивание строки виртуализации из плейсхолдера в реальную
+  // строку) — пока мы у низа, возвращаемся точно на низ. Это и есть «раз и навсегда».
+  useEffect(() => {
+    if (!activeId) return
+    const content = messagesContentRef.current
+    if (!content || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (nearBottomRef.current) pinToBottomBurst()
+    })
+    ro.observe(content)
+    return () => ro.disconnect()
+  }, [activeId, pinToBottomBurst])
 
   // keep pinned to bottom while keyboard is opening/moving on mobile (iOS visualViewport)
   useEffect(() => {
@@ -8989,7 +9028,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             {!activeId ? (
               <div className="messages-empty">Сообщения появятся здесь</div>
             ) : (
-              (() => {
+              <div ref={messagesContentRef}>{(() => {
                 const list = (displayedMessages ? [...displayedMessages] : []).
                   filter((m: any) => !m.deletedAt).
                   sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
@@ -11164,7 +11203,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   }
                   return wrapEbloRow(renderChatMessageAtIndex(mapIndex, false))
                 })
-              })()
+              })()}</div>
             )}
           </div>
           {activeId && (
