@@ -6967,13 +6967,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const uid = typeof u?.id === 'string' ? u.id : null
     const playing = uid ? presenceGameByUserId[uid]?.game : undefined
     const last = u.lastSeenAt ? new Date(u.lastSeenAt) : null
-    if (playing?.name && status === 'IN_CALL') return `В ЗВОНКЕ И В ${playing.name}`
+    if (playing?.name && status === 'IN_CALL') return `В звонке и в ${playing.name}`
     if (playing?.name && (status === 'ONLINE' || status === 'BACKGROUND')) return `Играет в ${playing.name}`
-    if (status === 'ONLINE') return 'ОНЛАЙН'
-    if (status === 'BACKGROUND') return 'В ФОНЕ'
+    if (status === 'ONLINE') return 'В сети'
+    if (status === 'BACKGROUND') return 'В фоне'
     if (status === 'IN_CALL') {
-      if (uid && groupCallParticipantIds.has(uid)) return 'В БЕСЕДЕ'
-      return 'В ЗВОНКЕ'
+      if (uid && groupCallParticipantIds.has(uid)) return 'В беседе'
+      return 'В звонке'
     }
     if (!last) return 'оффлайн'
     const now = new Date()
@@ -12036,7 +12036,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     minWidth: 0,
                     padding: '12px 16px',
                     borderRadius: 'var(--radius-sm)',
-                    border: '1px solid var(--surface-border)',
+                    border: `1px solid ${composerFocused ? 'var(--brand-600)' : 'var(--surface-border)'}`,
+                    boxShadow: composerFocused ? '0 0 0 3px rgba(217,119,6,0.15)' : 'none',
                     background: 'var(--surface-100)',
                     color: 'var(--text-primary)',
                     fontSize: 16,
@@ -12046,6 +12047,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     lineHeight: '20px',
                     overflowY: 'hidden',
                     outline: 'none',
+                    transition: 'border-color .2s ease, box-shadow .2s ease',
                   }}
                 />
               </div>

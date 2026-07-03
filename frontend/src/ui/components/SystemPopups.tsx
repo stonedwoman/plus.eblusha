@@ -54,7 +54,7 @@ function NewSessionBar(props: {
         top: 0,
         left: 0,
         right: 0,
-        zIndex: 215,
+        zIndex: 1200,
         marginTop: isElectron() ? 24 : 0,
         transform: entered ? 'translateY(0)' : 'translateY(-100%)',
         transition: 'transform 0.25s ease-out',
@@ -164,7 +164,7 @@ export function SystemPopups() {
       <div
         style={{
           position: 'fixed',
-          zIndex: 200,
+          zIndex: 1100,
           ...(isMobile
             ? { top: 12, left: 12, right: 12 }
             : { bottom: 14, right: 14, width: 380, maxWidth: 'calc(100vw - 28px)' }),
@@ -251,7 +251,7 @@ export function SystemPopups() {
           style={{
             position: 'fixed',
             inset: 0,
-            zIndex: 210,
+            zIndex: 1200,
             background: 'rgba(10,12,16,0.62)',
             backdropFilter: 'blur(8px) saturate(120%)',
             display: 'flex',

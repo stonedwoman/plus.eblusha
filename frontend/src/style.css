@@ -592,7 +592,7 @@ a {
 }
 
 .chats-page.mobile-slider .conversations-list {
-  padding: 16px;
+  padding: calc(16px + var(--safe-top)) 16px 16px;
 }
 
 @media (max-width: 768px) {

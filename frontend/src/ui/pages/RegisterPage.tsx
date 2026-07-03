@@ -118,7 +118,7 @@ export default function RegisterPage() {
         return
       }
       if (msg === 'Invalid data') {
-        setStep2Error('Проверьте логин, имя в чате и пароль')
+        setStep2Error('Проверьте логин, имя и пароль')
         return
       }
       if (msg === 'Registration requires invite code' || msg === 'Invalid or expired registration invite') {
@@ -218,7 +218,7 @@ export default function RegisterPage() {
       return
     }
     if (displayName.length < MIN_DISPLAY_NAME) {
-      setStep2Error('Ник не менее 2 символов')
+      setStep2Error('Имя не менее 2 символов')
       return
     }
     mutation.mutate({ username, password, displayName, registrationInviteToken })
@@ -603,7 +603,7 @@ export default function RegisterPage() {
                 </div>
               </div>
               <label style={labelBlockStyle}>
-                Ник
+                Имя
                 <input
                   name="displayName"
                   type="text"
