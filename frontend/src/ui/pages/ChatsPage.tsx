@@ -53,6 +53,18 @@ import { useChatTyping } from './chats/hooks/useChatTyping'
 import { useChatsResponsive } from './chats/hooks/useChatsResponsive'
 import { useChatUiStore } from '../../core/chat-sync/chatUiStore'
 import {
+  EBLO_MIN_ROWS,
+  EBLO_INITIAL_ROWS,
+  EBLO_OVERSCAN_PX,
+  EBLO_INDEX_OVERSCAN,
+  EBLO_DEFAULT_ROW_HEIGHT,
+  EBLO_FORWARD_ROW_HEIGHT,
+  EBLO_SYSTEM_ROW_HEIGHT,
+  EbloMeasuredRow,
+  type EbloRange,
+  type EbloRowMeta,
+} from './chats/chatsEblo'
+import {
   acceptIncomingCallAction,
   declineIncomingCallAction,
   endActiveCallAction,
@@ -61,45 +73,20 @@ import {
   type ResolvedActiveCall,
   type ResolvedIncomingCall,
 } from '../../core/call-state/incomingCallActions'
+import {
+  NAME_COLOR_PALETTE_13,
+  NAME_COLOR_PALETTE_26,
+  BUBBLE_BG_BASES,
+} from './chats/chatsColors'
+import {
+  LAST_ACTIVE_CONVERSATION_KEY,
+  MIN_OUTGOING_CALL_DURATION_MS,
+  MAX_PENDING_IMAGES,
+  MAX_PENDING_FILES,
+  MESSAGES_PAGE_SIZE,
+  EMPTY_EBLID_DIGITS,
+} from './chats/chatsConstants'
 
-const LAST_ACTIVE_CONVERSATION_KEY = 'eblusha:last-active-conversation'
-const MIN_OUTGOING_CALL_DURATION_MS = 30_000
-const MAX_PENDING_IMAGES = 10
-const MAX_PENDING_FILES = 10
-const MESSAGES_PAGE_SIZE = 80
-const EMPTY_EBLID_DIGITS = ['', '', '', '']
-
-// Пастельные цвета имён участников в беседе. Цвет назначается по позиции
-// участника внутри беседы (см. nameColorForUser), поэтому в одной группе двое
-// не получат одинаковый цвет, пока участников не больше размера палитры.
-const NAME_COLOR_PALETTE_13 = [
-  '#b39ddb', '#a5d6a7', '#90caf9', '#ffcc80', '#f48fb1', '#80cbc4', '#ce93d8',
-  '#ffab91', '#9fa8da', '#aed581', '#ffecb3', '#ef9a9a', '#81d4fa',
-]
-// Резерв на случай беседы с >13 участниками (маловероятно) — ещё 13 различимых тонов.
-const NAME_COLOR_PALETTE_26 = [
-  ...NAME_COLOR_PALETTE_13,
-  '#9575cd', '#4db6ac', '#64b5f6', '#ff8a65', '#f06292', '#ba68c8', '#4fc3f7',
-  '#81c784', '#dce775', '#ffd54f', '#a1887f', '#90a4ae', '#7986cb',
-]
-
-// Тёмные фоны пузырей участников группы. Назначаются по позиции участника
-// (тем же индексом, что и цвет имени), поэтому у двух авторов в одной беседе
-// фон не совпадёт и слот «имя+фон» согласован. Тона намеренно разного hue.
-const BUBBLE_BG_BASES = [
-  '#2a1f16', // тёплый умбра (рядом с бренд-янтарём)
-  '#1a2836', // глубокий сине-сланцевый
-  '#152820', // тёмный хвойный
-  '#281a2c', // сливовый
-  '#162a2e', // бирюза / петроль
-  '#2d2418', // бронза / кофе с тёплым подтоном
-  '#1f2440', // индиго
-  '#223016', // оливковый мох
-  '#301c22', // винный дымчатый
-  '#14222c', // ледяной графит
-  '#2f2218', // сепия / «золотая тень» (фирменное тепло)
-  '#241c30', // лилово-серый
-]
 
 type AttachmentFileKind =
   | 'document'
@@ -1247,69 +1234,6 @@ function buildForwardSendPayload(
   }
 }
 
-const EBLO_MIN_ROWS = 120
-const EBLO_INITIAL_ROWS = 72
-const EBLO_OVERSCAN_PX = 1800
-const EBLO_INDEX_OVERSCAN = 16
-const EBLO_DEFAULT_ROW_HEIGHT = 92
-const EBLO_FORWARD_ROW_HEIGHT = 180
-const EBLO_SYSTEM_ROW_HEIGHT = 48
-
-type EbloRange = { start: number; end: number }
-type EbloRowMeta = { index: number; key: string }
-
-function EbloMeasuredRow({
-  rowKey,
-  onHeightChange,
-  children,
-}: {
-  rowKey: string
-  onHeightChange: (rowKey: string, height: number) => void
-  children: ReactNode
-}) {
-  const nodeRef = useRef<HTMLDivElement | null>(null)
-
-  useLayoutEffect(() => {
-    const node = nodeRef.current
-    if (!node) return
-    let raf = 0
-    const measure = () => {
-      if (raf) cancelAnimationFrame(raf)
-      raf = requestAnimationFrame(() => {
-        raf = 0
-        const child = node.firstElementChild instanceof HTMLElement ? node.firstElementChild : null
-        const rect = child?.getBoundingClientRect() ?? node.getBoundingClientRect()
-        const styles = child ? window.getComputedStyle(child) : null
-        const marginTop = styles ? Number.parseFloat(styles.marginTop || '0') || 0 : 0
-        const marginBottom = styles ? Number.parseFloat(styles.marginBottom || '0') || 0 : 0
-        const height = Math.max(1, Math.ceil(rect.height + marginTop + marginBottom))
-        onHeightChange(rowKey, height)
-      })
-    }
-
-    measure()
-    if (typeof ResizeObserver === 'undefined') {
-      return () => {
-        if (raf) cancelAnimationFrame(raf)
-      }
-    }
-
-    const observer = new ResizeObserver(measure)
-    observer.observe(node)
-    const child = node.firstElementChild
-    if (child instanceof HTMLElement) observer.observe(child)
-    return () => {
-      if (raf) cancelAnimationFrame(raf)
-      observer.disconnect()
-    }
-  }, [onHeightChange, rowKey])
-
-  return (
-    <div className="eblo-row" data-eblo-row={rowKey} ref={nodeRef}>
-      {children}
-    </div>
-  )
-}
 
 export default function ChatsPage() {
   const navigate = useNavigate()
