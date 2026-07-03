@@ -87,6 +87,11 @@ export type SessionNewPayload = {
   ts: number
 }
 
+export type SecretChatAcceptedPayload = {
+  conversationId: string
+  peerDeviceId: string
+}
+
 export type SecretNotifyPayload = {
   conversationId?: string
   threadId?: string
@@ -127,6 +132,7 @@ export type RealtimeInboundEventMap = {
   'availability:proposals:updated': AvailabilityProposalsUpdatedPayload
   'session:new': SessionNewPayload
   'secret:notify': SecretNotifyPayload
+  'secret:chat:accepted': SecretChatAcceptedPayload
 }
 
 export type RealtimeOutboundEventMap = {

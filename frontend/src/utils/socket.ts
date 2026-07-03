@@ -332,6 +332,15 @@ export function onConversationUpdated(cb: (payload: any) => void) {
 export function onConversationMemberRemoved(cb: (payload: any) => void) {
   socket.on('conversations:member:removed', cb)
 }
+// Peer accepted a secret-chat invite on ONE of their devices → the creator keys exactly that device.
+export function onSecretChatAccepted(cb: (payload: { conversationId: string; peerDeviceId: string }) => void) {
+  socket.on('secret:chat:accepted', cb)
+  return () => {
+    try {
+      socket.off('secret:chat:accepted', cb)
+    } catch {}
+  }
+}
 
 export function onReceiptsUpdate(cb: (payload: { conversationId: string; messageIds: string[]; userId?: string; status?: 'DELIVERED' | 'READ' | 'SEEN'; receipts?: any[] }) => void) {
   socket.on('receipts:update', cb)

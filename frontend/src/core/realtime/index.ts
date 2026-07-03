@@ -126,6 +126,12 @@ export function onConversationMemberRemoved(
   return getRealtimeClient().on('conversations:member:removed', cb)
 }
 
+export function onSecretChatAccepted(
+  cb: (payload: RealtimeInboundEventMap['secret:chat:accepted']) => void,
+) {
+  return getRealtimeClient().on('secret:chat:accepted', cb)
+}
+
 export function onReceiptsUpdate(
   cb: (payload: RealtimeInboundEventMap['receipts:update']) => void,
 ) {

@@ -24,6 +24,7 @@ model User {
   displayName       String?
   bio               String?
   avatarUrl         String?
+  avatarHistory     String[]                    @default([])
   passwordHash      String
   status            UserStatus                  @default(OFFLINE)
   lastSeenAt        DateTime?

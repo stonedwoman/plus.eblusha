@@ -9,6 +9,8 @@ type Props = {
   presence?: 'ONLINE' | 'AWAY' | 'BACKGROUND' | 'OFFLINE' | 'IN_CALL' | 'PLAYING'
   inCall?: boolean
   avatarUrl?: string | null
+  /** Opens the user card. stopPropagation is applied so host tiles don't also fire. */
+  onClick?: () => void
 }
 
 function colorFromId(id: string) {
@@ -36,7 +38,7 @@ function initialsFromName(name: string): string {
   return s.charAt(0).toUpperCase()
 }
 
-export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl }: Props) {
+export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl, onClick }: Props) {
   const bg = colorFromId(id)
   const initial = initialsFromName(name)
   const isEmoji = !!avatarUrl?.startsWith('emoji:')
@@ -181,6 +183,7 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
   const showImage = currentImageUrl && !isEmoji && !imageError
   return (
     <div
+      onClick={onClick ? (e) => { e.stopPropagation(); onClick() } : undefined}
       style={{
         width: size,
         height: size,
@@ -192,6 +195,7 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
         justifyContent: 'center',
         fontWeight: 700,
         position: 'relative',
+        cursor: onClick ? 'pointer' : undefined,
       }}
     >
       {showImage ? (

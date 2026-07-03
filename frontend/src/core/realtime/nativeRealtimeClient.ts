@@ -51,6 +51,7 @@ export class NativeRealtimeClient implements RealtimeClient {
       this.bindIncoming(service, 'availability:proposals:updated'),
       this.bindIncoming(service, 'session:new'),
       this.bindIncoming(service, 'secret:notify'),
+      this.bindIncoming(service, 'secret:chat:accepted'),
     ]
     this.flushPendingActions()
   }

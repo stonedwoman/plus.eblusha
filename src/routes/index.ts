@@ -16,6 +16,7 @@ import threadsRouter from "./threads";
 import e2eeRouter from "./e2ee";
 import debugRouter from "./debug";
 import adminRouter from "./admin";
+import usersRouter from "./users";
 
 const router = Router();
 
@@ -27,6 +28,7 @@ router.use("/calls", callsRouter);
 router.use("/messages", messagesRouter);
 router.use("/mobile", mobileRouter);
 router.use("/status", statusRouter);
+router.use("/users", usersRouter);
 router.use("/upload", uploadRouter);
 router.use("/attachments", attachmentsRouter);
 router.use("/devices", devicesRouter);

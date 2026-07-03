@@ -49,6 +49,7 @@ router.get("/me", async (req, res) => {
       displayName: true,
       bio: true,
       avatarUrl: true,
+      avatarHistory: true,
       status: true,
       lastSeenAt: true,
     },
@@ -73,7 +74,20 @@ router.patch("/me", async (req, res) => {
     data.status = status;
     data.lastSeenAt = status === "ONLINE" ? new Date() : undefined;
   }
-  if (avatarUrl !== undefined) data.avatarUrl = avatarUrl ?? null;
+  if (avatarUrl !== undefined) {
+    data.avatarUrl = avatarUrl ?? null;
+    // Keep the previous avatar in history (newest-first, de-duped, capped at 30) so it
+    // can be viewed later. Emoji avatars ("emoji:…") are kept too — the viewer skips them.
+    const prev = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { avatarUrl: true, avatarHistory: true },
+    });
+    const old = prev?.avatarUrl ?? null;
+    if (old && old !== (avatarUrl ?? null)) {
+      const hist = [old, ...(prev?.avatarHistory ?? []).filter((u) => u !== old)].slice(0, 30);
+      data.avatarHistory = hist;
+    }
+  }
 
   const updated = await prisma.user.update({
     where: { id: userId },
@@ -85,6 +99,7 @@ router.patch("/me", async (req, res) => {
       displayName: true,
       bio: true,
       avatarUrl: true,
+      avatarHistory: true,
       status: true,
       lastSeenAt: true,
     },
@@ -94,6 +109,24 @@ router.patch("/me", async (req, res) => {
   getIO()?.emit("profile:update", { userId, avatarUrl: updated.avatarUrl, displayName: updated.displayName });
 
   res.json({ user: updated });
+});
+
+// POST /status/me/avatars/remove { url } — drop a past avatar from the owner's history.
+router.post("/me/avatars/remove", async (req, res) => {
+  const userId = (req as AuthedRequest).user!.id;
+  const url = String((req.body as any)?.url ?? "").trim();
+  if (!url) {
+    res.status(400).json({ message: "url is required" });
+    return;
+  }
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { avatarHistory: true } });
+  const next = (me?.avatarHistory ?? []).filter((u) => u !== url);
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { avatarHistory: next },
+    select: { avatarHistory: true },
+  });
+  res.json({ avatarHistory: updated.avatarHistory });
 });
 
 export default router;

@@ -154,6 +154,9 @@ function toMessageObject(threadId: string, item: InboxItem, decryptedContent: st
 export function SecretInboxPump() {
   const client = useQueryClient()
   const pullingRef = useRef(false)
+  // A secret:notify that lands while a pull is in flight must not be dropped — queue ONE
+  // trailing pull (dropping it used to leave delivery to the slow poll/history fallback).
+  const pendingPullRef = useRef(false)
   const bootstrapReadyRef = useRef<Promise<any> | null>(null)
   const lastSelfHealAtRef = useRef<number>(0)
   const lastBootstrapRepairAtRef = useRef<number>(0)
@@ -174,7 +177,10 @@ export function SecretInboxPump() {
 
     const pullOnce = async () => {
       if (!mounted) return
-      if (pullingRef.current) return
+      if (pullingRef.current) {
+        pendingPullRef.current = true
+        return
+      }
       pullingRef.current = true
       try {
         // Ensure device keys exist before we attempt to decrypt key packages.
@@ -184,6 +190,9 @@ export function SecretInboxPump() {
 
         const resp = await api.get('/secret/inbox/pull', {
           params: { limit: 50 },
+          // A hung pull would freeze the pump behind pullingRef for the default 15 s axios
+          // timeout, no-op'ing every 3.5 s tick meanwhile — cap it, the next tick retries.
+          timeout: 5000,
           // Avoid conditional caching (If-None-Match → 304) for polling endpoints.
           headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
         })
@@ -611,6 +620,11 @@ export function SecretInboxPump() {
         }
       } finally {
         pullingRef.current = false
+        if (pendingPullRef.current && mounted) {
+          pendingPullRef.current = false
+          // Run the trailing pull queued by a notify that arrived mid-flight.
+          window.setTimeout(() => { void pullOnce() }, 0)
+        }
       }
     }
 
@@ -627,8 +641,17 @@ export function SecretInboxPump() {
     }, 3500)
 
     // Faster wake-up on realtime notify
-    const onNotify = () => {
+    const onNotify = (payload?: any) => {
       void pullOnce()
+      // The user-room fallback notify carries the threadId — refetch that thread's history
+      // right away so delivery never waits for the 15 s poll even when the device-room
+      // inbox path is broken for this session.
+      const tid = String(payload?.threadId ?? '').trim()
+      if (tid) {
+        try {
+          client.invalidateQueries({ queryKey: ['messages', tid] })
+        } catch {}
+      }
     }
     if (!socket.connected) {
       connectSocket()

@@ -414,6 +414,8 @@ const broadcastedPresenceByUser: Map<string, BroadcastPresenceStatus> = new Map(
 const presenceUpdateQueue: Map<string, Promise<void>> = new Map();
 const lastPresenceDbWriteAtByUser: Map<string, number> = new Map();
 const lastObservedPresenceByUser: Map<string, PresenceStatus> = new Map();
+// Writes skipped by the throttle below MUST still land eventually — one deferred flush per user.
+const pendingPresenceDbFlushByUser: Map<string, NodeJS.Timeout> = new Map();
 const PRESENCE_DB_MIN_INTERVAL_MS = 2 * 60 * 1000;
 
 const PRESENCE_GAME_TTL_MS = 60_000;
@@ -662,7 +664,39 @@ async function persistPresenceToDb(userId: string, status: PresenceStatus) {
     previous === undefined ||
     previous === "OFFLINE" ||
     now - lastWriteAt > PRESENCE_DB_MIN_INTERVAL_MS;
-  if (!shouldWrite) return;
+  if (!shouldWrite) {
+    // A skipped transition must still land in the DB eventually. Without this, a user who
+    // flipped ONLINE->BACKGROUND inside the throttle window and then simply STAYED
+    // backgrounded produced no further transitions (the observed-cache above dedupes them),
+    // so user.status froze as ONLINE — and every cold client load (GET /conversations reads
+    // the DB) showed them online until they toggled state back and forth.
+    schedulePresenceDbFlush(userId, Math.max(1_000, PRESENCE_DB_MIN_INTERVAL_MS - (now - lastWriteAt)));
+    return;
+  }
+
+  await writePresenceToDb(userId, status, now);
+}
+
+/** One deferred flush per user; it persists the LATEST observed status at fire time. */
+function schedulePresenceDbFlush(userId: string, delayMs: number) {
+  if (pendingPresenceDbFlushByUser.has(userId)) return;
+  const timer = setTimeout(() => {
+    pendingPresenceDbFlushByUser.delete(userId);
+    const latest = lastObservedPresenceByUser.get(userId);
+    if (latest === undefined) return;
+    void writePresenceToDb(userId, latest, Date.now());
+  }, delayMs);
+  timer.unref?.();
+  pendingPresenceDbFlushByUser.set(userId, timer);
+}
+
+async function writePresenceToDb(userId: string, status: PresenceStatus, now: number) {
+  // A direct write supersedes any pending flush (it would only repeat this value).
+  const pending = pendingPresenceDbFlushByUser.get(userId);
+  if (pending) {
+    clearTimeout(pending);
+    pendingPresenceDbFlushByUser.delete(userId);
+  }
 
   const data: { status: PresenceStatus; lastSeenAt?: Date } = { status };
   if (status === "OFFLINE") data.lastSeenAt = new Date();

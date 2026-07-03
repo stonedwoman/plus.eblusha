@@ -1,5 +1,34 @@
 @import "./ui/style/chat-markdown.css";
 
+@keyframes ebCardPop {
+  from { opacity: 0; transform: translateY(10px) scale(0.965); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Group-header member name → opens the user card; its avatar slides in on hover. */
+.eb-member-chip {
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: color .15s ease;
+}
+.eb-member-chip:hover { color: var(--text-primary); }
+.eb-member-ava {
+  display: inline-flex;
+  vertical-align: middle;
+  width: 0;
+  opacity: 0;
+  transform: scale(.5);
+  overflow: hidden;
+  margin-right: 0;
+  transition: width .2s ease, opacity .2s ease, transform .2s ease, margin-right .2s ease;
+}
+.eb-member-chip:hover .eb-member-ava {
+  width: 18px;
+  opacity: 1;
+  transform: scale(1);
+  margin-right: 5px;
+}
+
 :root {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
   color: #f1f3f6;
@@ -780,9 +809,10 @@ a {
   flex-direction: row-reverse;
 }
 
-/* Широкий режим: всегда «уже стоят» слева, предложения справа */
+/* Широкий режим: сначала кандидаты (слева), затем уже поставленные реакции (справа).
+   Рельса как целое стоит справа от текста (см. --reactions-wide на бабле). */
 .msg-reaction-rail-host--wide.msg-reaction-rail-host--inline .msg-reaction-rail-row {
-  flex-direction: row;
+  flex-direction: row-reverse;
 }
 
 /* Широкий режим: полоса справа от текста, разделитель слева у полосы */

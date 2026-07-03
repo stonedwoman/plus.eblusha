@@ -4,8 +4,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, getUploadUrl } from '../../utils/api'
 import type { AxiosError } from 'axios'
-import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, onCallGlare, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../core/realtime'
-import { Phone, Video, X, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp, RefreshCw, Check, Forward } from 'lucide-react'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, onSecretChatAccepted, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, onCallGlare, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../core/realtime'
+import { Phone, Video, X, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp, RefreshCw, Check, Forward, Pencil } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../features/availability/availability.time'
@@ -13,6 +13,7 @@ const CallOverlay = lazy(() => import('../components/CallOverlay').then(m => ({ 
 const preloadCallOverlay = () => import('../components/CallOverlay')
 import { useAppStore } from '../../domain/store/appStore'
 import { Avatar } from '../components/Avatar'
+import { UserProfileCard, UserProfileHero } from '../components/UserProfileCard'
 import { ImageEditorModal } from '../components/ImageEditorModal'
 import { ImageLightbox } from '../components/ImageLightbox'
 import { VideoViewer } from '../components/VideoViewer'
@@ -26,7 +27,7 @@ import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice, isElectr
 import { wipeLocalDeviceData } from '../../domain/device/deviceWipe'
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
-import { createAndShareSecretThreadKey } from '../../domain/secret/secretThreadSetup'
+import { shareSecretThreadKeyToDevice } from '../../domain/secret/secretThreadSetup'
 import { fetchSecretHistory, sendSecretThreadText, transformSecretHistoryItemToMessage } from '../../domain/secret/secretThreadMessaging'
 import { getLastPendingShareAt, getPendingDeviceIds, getReceiptDeviceIds } from '../../domain/secret/secretKeyShareState'
 import { isSecretEngineV2Enabled } from '../../domain/secretV2/featureFlag'
@@ -1713,6 +1714,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const secretBootFlushInFlightRef = useRef<Record<string, boolean>>({})
   const menuRef = useRef<HTMLDivElement | null>(null)
   const me = useAppStore((s) => s.session?.user)
+  // Universal user card: opened by clicking any avatar. Self routes to the profile popup.
+  const [userCardUser, setUserCardUser] = useState<any | null>(null)
+  const openUserCard = useCallback((u: any) => {
+    if (!u || typeof u !== 'object' || !u.id) return
+    if (me?.id && String(u.id) === String(me.id)) { setMePopupOpen(true); return }
+    setUserCardUser(u)
+    // Enrich with bio/createdAt from the public mini-profile endpoint (best-effort).
+    void api.get(`/users/${encodeURIComponent(String(u.id))}`)
+      .then((r) => {
+        const full = r.data?.user
+        if (full?.id) setUserCardUser((cur: any) => (cur && String(cur.id) === String(full.id) ? { ...cur, ...full } : cur))
+      })
+      .catch(() => {})
+  }, [me?.id])
   const storedUserIdRef = useRef<string | null>(null)
   if (storedUserIdRef.current === null && typeof window !== 'undefined') {
     try {
@@ -2386,13 +2401,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       client.invalidateQueries({ queryKey: ['conversations'] })
       if (threadId) {
         const amCreator = created || (!!me?.id && createdById === me.id)
+        const returnedStatus = String(resp.data?.thread?.secretStatus ?? (created ? 'PENDING' : '')).toUpperCase()
+        const initiatorDeviceId = String(resp.data?.thread?.secretInitiatorDeviceId ?? '')
+        const amInitiatorDevice = created || (!!initiatorDeviceId && initiatorDeviceId === device.deviceId)
         // SecretEngine v2 path (feature flag): deterministic state machine + self-heal.
         // Legacy path keeps previous behavior for safe rollback.
-        if (secretEngineV2Enabled) {
+        if (secretEngineV2Enabled && (!amCreator || returnedStatus === 'ACTIVE')) {
+          // While PENDING the creator must NOT run the engine: it fans the key out to every peer
+          // device, which both defeats accept-on-one-device and suppresses the peer's invite card.
           void ensureSecretEngineReady({ threadId, peerUserId: targetUserId, amCreator }).catch(() => {})
-        } else if (amCreator) {
-          // Only the creator generates and shares the thread key.
-          // The other side must wait for the incoming key package (otherwise we'd create conflicting keys).
+        } else if (amCreator && amInitiatorDevice) {
+          // Only the creator's INITIATOR device mints the key (Android enforces the same rule):
+          // a second creator device minting here would diverge from the real key, and the peer's
+          // last-writer-wins import would brick earlier ciphertexts. Other creator devices
+          // onboard via device-linking.
           ensureSecretThreadKey(threadId)
         }
         if (secretDebug) {
@@ -2407,14 +2429,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             localDeviceId: device.deviceId,
           })
         }
+        // Open the thread right away — while PENDING the creator sees the "ждём подтверждения"
+        // blocking card instead of the composer.
         selectConversation(threadId)
-        if (!secretEngineV2Enabled && amCreator) {
-          // Create a thread key locally and share it to all devices (A & B) in background.
-          void createAndShareSecretThreadKey(threadId, targetUserId).catch((err) => {
-            console.warn('[secret] createAndShareSecretThreadKey failed', err)
-            setSecretComposerInlineError('Не удалось расшарить ключи для секретного чата. Проверьте сеть и попробуйте ещё раз.')
-          })
-        }
+        // Accept-on-one-device: the creator generated the key above but does NOT fan it out. It waits
+        // for the peer to accept the invite on ONE device (secret:chat:accepted), then keys exactly
+        // that device (see the socket handler). This removes the "which peer device wins the TTL
+        // lottery" problem; the peer's other devices onboard via "identify on another device".
       }
     } catch (err: any) {
       console.error('Failed to start secret conversation:', err)
@@ -3298,6 +3319,117 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return { isSecret: true, readyState: (ready ? 'ready' : 'bootstrapping') as SecretReadyState, error: null as string | null }
   }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.secretStatus, secretKeysVersion, secretEngineV2Version, secretEngineV2Enabled, e2eeVersion, secretComposerInlineError])
 
+  // A PENDING secret invite that THIS user (not the creator) must accept on ONE device. Drives the
+  // accept/decline card and suppresses the key-wait machinery until accepted.
+  const secretInviteForMe = useMemo(() => {
+    const conv = activeConversation
+    if (!conv) return null
+    if (String(conv?.type ?? '').toUpperCase() !== 'SECRET') return null
+    if (String(conv?.secretStatus ?? '').toUpperCase() !== 'PENDING') return null
+    const myId = me?.id ?? storedUserIdRef.current
+    if (!myId) return null
+    if (String(conv?.createdById ?? '') === myId) return null // the creator waits, does not accept
+    if (hasSecretThreadKey(String(conv.id ?? ''))) return null // already keyed → treat as active
+    const peer = (conv.participants || []).find((p: any) => p?.user?.id && p.user.id !== myId)?.user
+    const fromName = peer?.displayName || peer?.username || 'Собеседник'
+    return { conversationId: String(conv.id ?? ''), fromName }
+  }, [activeConversation?.id, activeConversation?.type, activeConversation?.secretStatus, activeConversation?.createdById, secretKeysVersion, me?.id])
+
+  const [secretInviteBusy, setSecretInviteBusy] = useState(false)
+  const acceptSecretInvite = async () => {
+    const convId = secretInviteForMe?.conversationId
+    if (!convId || secretInviteBusy) return
+    setSecretInviteBusy(true)
+    try {
+      const device = await ensureLocalDevice()
+      const deviceId = device?.deviceId ?? getStoredDeviceInfo()?.deviceId
+      if (!deviceId) {
+        alert('Не удалось определить устройство')
+        return
+      }
+      // Accept on THIS device — the creator will now key exactly this one; the pump imports it.
+      await api.post(`/threads/secret/${convId}/accept`, { deviceId })
+      client.invalidateQueries({ queryKey: ['conversations'] })
+      conversationsQuery.refetch()
+    } catch (err: any) {
+      alert(err?.response?.data?.message || 'Не удалось принять приглашение')
+    } finally {
+      setSecretInviteBusy(false)
+    }
+  }
+  const declineSecretInvite = async () => {
+    const convId = secretInviteForMe?.conversationId
+    if (!convId || secretInviteBusy) return
+    setSecretInviteBusy(true)
+    try {
+      await api.post(`/threads/secret/${convId}/decline`, {})
+      client.invalidateQueries({ queryKey: ['conversations'] })
+    } catch (err: any) {
+      alert(err?.response?.data?.message || 'Не удалось отклонить приглашение')
+    } finally {
+      setSecretInviteBusy(false)
+    }
+  }
+
+  // CREATOR side of a PENDING invite: the chat is open but blocked until the peer accepts.
+  const secretWaitingAsCreator = useMemo(() => {
+    const conv = activeConversation
+    if (!conv) return null
+    if (String(conv?.type ?? '').toUpperCase() !== 'SECRET') return null
+    if (String(conv?.secretStatus ?? '').toUpperCase() !== 'PENDING') return null
+    const myId = me?.id ?? storedUserIdRef.current
+    if (!myId) return null
+    if (String(conv?.createdById ?? '') !== String(myId)) return null // peers get the invite card instead
+    const peer = (conv.participants || []).find((p: any) => p?.user?.id && p.user.id !== myId)?.user
+    const peerName = peer?.displayName || peer?.username || 'собеседника'
+    return { conversationId: String(conv.id ?? ''), peerName }
+  }, [activeConversation?.id, activeConversation?.type, activeConversation?.secretStatus, activeConversation?.createdById, me?.id])
+
+  const cancelSecretInviteAsCreator = async () => {
+    const convId = secretWaitingAsCreator?.conversationId
+    if (!convId || secretInviteBusy) return
+    setSecretInviteBusy(true)
+    try {
+      await api.post(`/threads/secret/${convId}/decline`, {})
+      client.invalidateQueries({ queryKey: ['conversations'] })
+      setActiveId(null)
+      if (isMobile) setMobileView('list')
+    } catch (err: any) {
+      alert(err?.response?.data?.message || 'Не удалось отменить приглашение')
+    } finally {
+      setSecretInviteBusy(false)
+    }
+  }
+
+  // Reconcile: if this creating device holds the key and the peer accepted while we were offline
+  // (secretStatus ACTIVE + secretPeerDeviceId set, but no receipt yet), key that device now. Once per
+  // (thread,device) per session; the peer's key_receipt confirms delivery.
+  const secretReconcileAttemptedRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const list = conversationsQuery.data as any[] | undefined
+    if (!Array.isArray(list)) return
+    const myId = me?.id ?? storedUserIdRef.current
+    if (!myId) return
+    for (const row of list) {
+      const conv = row?.conversation
+      if (!conv) continue
+      if (String(conv.type ?? '').toUpperCase() !== 'SECRET') continue
+      if (String(conv.secretStatus ?? '').toUpperCase() !== 'ACTIVE') continue
+      if (String(conv.createdById ?? '') !== myId) continue
+      const peerDeviceId = String(conv.secretPeerDeviceId ?? '').trim()
+      if (!peerDeviceId) continue
+      const threadId = String(conv.id ?? '')
+      if (!threadId || !hasSecretThreadKey(threadId)) continue
+      if (getReceiptDeviceIds(threadId).includes(peerDeviceId)) continue
+      const k = `${threadId}:${peerDeviceId}`
+      if (secretReconcileAttemptedRef.current.has(k)) continue
+      secretReconcileAttemptedRef.current.add(k)
+      void shareSecretThreadKeyToDevice(threadId, peerDeviceId).catch(() => {
+        secretReconcileAttemptedRef.current.delete(k)
+      })
+    }
+  }, [conversationsQuery.data, me?.id, secretKeysVersion])
+
   const creatorAwaitPeerAccept = useMemo(() => {
     const conv = activeConversation
     if (!conv?.isSecret) return false
@@ -3355,6 +3487,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const threadId = String(activeConversation.id ?? '').trim()
     if (!threadId) return
     const hasKey = hasSecretThreadKey(threadId)
+    if (
+      String(activeConversation?.secretStatus ?? '').toUpperCase() === 'PENDING' &&
+      !(me?.id && String(activeConversation?.createdById ?? '') === me.id) &&
+      !hasKey
+    ) {
+      return
+    }
     const peerUserId =
       activeConversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user?.id ?? null
     const amCreator = !!(me?.id && String(activeConversation?.createdById ?? '') === me.id)
@@ -3445,7 +3584,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       }
     }, Math.max(0, 120_000 - (Date.now() - startedAt)))
     return () => window.clearTimeout(t)
-  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.createdById, secretKeysVersion, currentUserId, me?.id, secretDebug, hasOtherTrustedDevice, secretEngineV2Enabled])
+  }, [activeConversation?.id, activeConversation?.isSecret, activeConversation?.type, activeConversation?.createdById, activeConversation?.secretStatus, secretKeysVersion, currentUserId, me?.id, secretDebug, hasOtherTrustedDevice, secretEngineV2Enabled])
 
   useEffect(() => {
     if (!activeConversation?.isSecret) return
@@ -4371,6 +4510,23 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     })
     onConversationUpdated(() => { conversationsQuery.refetch() })
     onConversationMemberRemoved(() => { conversationsQuery.refetch() })
+    onSecretChatAccepted((payload) => {
+      const convId = payload?.conversationId
+      const peerDeviceId = payload?.peerDeviceId
+      if (!convId || !peerDeviceId) return
+      conversationsQuery.refetch()
+      try {
+        const myId = me?.id ?? storedUserIdRef.current
+        const list = client.getQueryData(['conversations']) as any[] | undefined
+        const conv = Array.isArray(list) ? list.find((r: any) => r?.conversation?.id === convId)?.conversation : null
+        const amCreator = !!conv && !!myId && conv.createdById === myId
+        if (amCreator && hasSecretThreadKey(convId)) {
+          void shareSecretThreadKeyToDevice(convId, peerDeviceId).catch((err) => {
+            console.warn('[secret] shareSecretThreadKeyToDevice failed', err)
+          })
+        }
+      } catch {}
+    })
     onIncomingCall(({ conversationId, from, video }) => {
       // debounce duplicate incoming for same conv
       if (ringingConvIdRef.current && ringingConvIdRef.current === conversationId) return
@@ -6890,12 +7046,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             const rows = (conversationsQuery.data || []) as any[]
             const visible = rows.filter((row: any) => {
               const conv = row.conversation
-              if (conv.isSecret && (conv.secretStatus ?? 'ACTIVE') !== 'ACTIVE') return false
-              return true
+              if (!conv.isSecret) return true
+              const status = String(conv.secretStatus ?? 'ACTIVE').toUpperCase()
+              if (status === 'CANCELLED') return false
+              // V2 secret threads: PENDING is visible to BOTH sides — the peer sees the invite
+              // card, the creator sees the chat blocked by the "ждём подтверждения" card.
+              if (String(conv.type ?? '').toUpperCase() === 'SECRET') return true
+              // Legacy secret chats only show when ACTIVE.
+              return status === 'ACTIVE'
             })
 
             const tsOf = (row: any): number => {
-              const t = row?.conversation?.messages?.[0]?.createdAt
+              // Fallback to the conversation's createdAt: a just-accepted secret thread has no
+              // messages yet and would otherwise sink to the very bottom of the list.
+              const t = row?.conversation?.messages?.[0]?.createdAt ?? row?.conversation?.createdAt
               return t ? new Date(t).getTime() : 0
             }
 
@@ -6956,14 +7120,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               return bs - as
             })
 
-            const flatten: Array<{ row: any; sub: 'cloud' | 'secret' | 'other' }> = []
+            const flatten: Array<{ row: any; sub: 'cloud' | 'secret' | 'other'; hasCloud?: boolean }> = []
             for (const g of groups) {
               if (g.cloud) flatten.push({ row: g.cloud, sub: 'cloud' })
-              if (g.secret) flatten.push({ row: g.secret, sub: 'secret' })
+              if (g.secret) flatten.push({ row: g.secret, sub: 'secret', hasCloud: !!g.cloud })
               for (const r of g.other) flatten.push({ row: r, sub: 'other' })
             }
 
-            return flatten.map(({ row, sub }) => {
+            return flatten.map(({ row, sub, hasCloud }) => {
               const c = row.conversation
             const othersArr = c.participants
               .filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
@@ -7028,7 +7192,22 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     : {}),
                 }}
               >
-                {isGroup ? (
+                {sub === 'secret' ? (
+                  <div
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 999,
+                      background: 'rgba(34,197,94,0.12)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flex: '0 0 auto',
+                    }}
+                  >
+                    <Lock size={20} color="#22c55e" />
+                  </div>
+                ) : isGroup ? (
                   (() => {
                     return (
                       <Avatar 
@@ -7054,14 +7233,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                         presence={avatarPresenceForUser(peerUser)}
                         inCall={peerInCallByPresence}
                         avatarUrl={peerUser?.avatarUrl && peerUser.avatarUrl.trim() ? peerUser.avatarUrl : undefined}
+                        onClick={peerUser?.id ? () => openUserCard(peerUser) : undefined}
                       />
                     )
                   })()
                 )}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span>{title}</span>
-                    {!isGroup && (isSecretV2 || isSecret) && (
+                    <span>{sub === 'secret' ? (hasCloud ? 'СЕКРЕТНЫЙ ЧАТ' : `СЕКРЕТНЫЙ ЧАТ · ${title}`) : title}</span>
+                    {!isGroup && isSecret && !isSecretV2 && (
                       <span
                         style={{
                           display: 'inline-flex',
@@ -7079,6 +7259,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   </div>
                   <div style={{ fontSize: 12, color: row.unreadCount > 0 ? 'var(--brand-600)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
                     {(() => {
+                            // Secret tile: lock + caps label only — no status line at all.
+                            if (sub === 'secret') return null
                             const typingIds = typingByConversationId[c.id] ? Object.keys(typingByConversationId[c.id]).filter((uid) => uid !== me?.id) : []
                             const typingCount = typingIds.length
                             if (typingCount > 0) {
@@ -7396,7 +7578,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     </div>
                     <div style={{ flex: 1, minWidth: 0, order: isMobile ? 1 : 2 }}>
                       <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}>
-                        <span>{title}</span>
+                        <span onClick={() => setGroupAvatarEditor(true)} style={{ cursor: 'pointer' }} title="Настройки группы">{title}</span>
                         {isMobile && (
                           <button
                             className="btn btn-icon btn-ghost"
@@ -7502,7 +7684,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             )
                           })()
                         ) : (
-                          othersArr.map((u: any) => u.displayName ?? u.username).join(', ')
+                          <span style={{ display: 'inline' }}>
+                            {othersArr.map((u: any, i: number) => (
+                              <Fragment key={u.id}>
+                                {i > 0 && ', '}
+                                <span className="eb-member-chip" onClick={(e) => { e.stopPropagation(); openUserCard(u) }}>
+                                  <span className="eb-member-ava">
+                                    <Avatar name={u.displayName ?? 'U'} id={u.id} size={18} avatarUrl={u.avatarUrl && u.avatarUrl.trim() ? u.avatarUrl : undefined} />
+                                  </span>
+                                  {u.displayName ?? u.username}
+                                </span>
+                              </Fragment>
+                            ))}
+                          </span>
                         )}
                       </div>
                     </div>
@@ -7517,6 +7711,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             name={peer?.displayName ?? peer?.username ?? 'D'}
                             id={peer?.id ?? activeConversation.id}
                             avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
+                            onClick={peer?.id ? () => openUserCard(peer) : undefined}
                             presence={avatarPresenceForUser(peer)}
                             // 1:1 conversation header: red dot must mean the peer is actually in a call.
                             // Local dialing / optimistic activeCalls / minimized overlay are our own state
@@ -8548,7 +8743,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           {Boolean(
             activeSecretUiState?.isSecret &&
               String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
-              (activeSecretUiState.readyState === 'bootstrapping' || !!secretBootDonePulse || creatorAwaitPeerAccept)
+              (activeSecretUiState.readyState === 'bootstrapping' || !!secretBootDonePulse || creatorAwaitPeerAccept) &&
+              !secretInviteForMe &&
+              !secretWaitingAsCreator
           ) && (
             <div
               style={{
@@ -8570,7 +8767,110 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             </div>
           )}
 
+          {Boolean(secretWaitingAsCreator) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 23,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(10,12,16,0.5)',
+                backdropFilter: 'blur(8px) saturate(120%)',
+                padding: 16,
+              }}
+            >
+              <div style={{ maxWidth: 360, width: '100%', background: 'var(--surface-100, #1b1f27)', border: '1px solid var(--surface-border-strong, #3b414f)', borderRadius: 16, padding: 20, textAlign: 'center', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}>
+                <div style={{ fontSize: 34, marginBottom: 6 }}>🔒</div>
+                <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>Ждём подтверждения</div>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 18, lineHeight: 1.4 }}>
+                  Попросите {secretWaitingAsCreator?.peerName} принять приглашение — секретный чат откроется, как только его подтвердят на одном из устройств.
+                </div>
+                <button
+                  type="button"
+                  onClick={cancelSecretInviteAsCreator}
+                  disabled={secretInviteBusy}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--surface-border-strong, #3b414f)', background: 'transparent', color: 'var(--text, #e5e7eb)', cursor: 'pointer', fontWeight: 600 }}
+                >
+                  {secretInviteBusy ? '…' : 'Отменить приглашение'}
+                </button>
+              </div>
+            </div>
+          )}
+          {Boolean(secretInviteForMe) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 23,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(10,12,16,0.5)',
+                backdropFilter: 'blur(8px) saturate(120%)',
+                padding: 16,
+              }}
+            >
+              <div
+                style={{
+                  maxWidth: 360,
+                  width: '100%',
+                  background: 'var(--surface-100, #1b1f27)',
+                  border: '1px solid var(--surface-border-strong, #3b414f)',
+                  borderRadius: 16,
+                  padding: 20,
+                  textAlign: 'center',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+                }}
+              >
+                <div style={{ fontSize: 34, marginBottom: 6 }}>🔒</div>
+                <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>Секретный чат</div>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 18, lineHeight: 1.4 }}>
+                  {secretInviteForMe?.fromName} приглашает вас в зашифрованный чат. Примите на этом устройстве, чтобы получить ключи. Остальные устройства подключите через «Добавить устройство».
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={declineSecretInvite}
+                    disabled={secretInviteBusy}
+                    style={{
+                      flex: 1,
+                      padding: '10px 14px',
+                      borderRadius: 12,
+                      border: '1px solid var(--surface-border-strong, #3b414f)',
+                      background: 'transparent',
+                      color: 'var(--text-primary, #f1f3f6)',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Отклонить
+                  </button>
+                  <button
+                    type="button"
+                    onClick={acceptSecretInvite}
+                    disabled={secretInviteBusy}
+                    style={{
+                      flex: 1,
+                      padding: '10px 14px',
+                      borderRadius: 12,
+                      border: 'none',
+                      background: 'var(--brand, #d97706)',
+                      color: '#fff',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {secretInviteBusy ? '…' : 'Принять'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {Boolean(
+            !secretInviteForMe &&
             activeSecretUiState?.isSecret &&
               String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
               // On a brand-new device (no stored secret keys) require linking via code/QR.
@@ -9029,7 +9329,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   const avatarOnLeft = showAvatarBlock && !avatarOnRight
                   const renderAvatarOrSpacer = () => (
                     showAvatar ? (
-                      <Avatar name={avatarName} id={avatarId} avatarUrl={(() => {
+                      <Avatar name={avatarName} id={avatarId} onClick={usersById[m.senderId] ? () => openUserCard(usersById[m.senderId]) : undefined} avatarUrl={(() => {
                         const userAvatar = usersById[m.senderId]?.avatarUrl
                         return userAvatar && userAvatar.trim() ? userAvatar : undefined
                       })()} />
@@ -10330,7 +10630,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     const avatarUrl0 =
                       senderUser0?.avatarUrl && String(senderUser0.avatarUrl).trim() ? senderUser0.avatarUrl : undefined
                     const bundleAvatarSlot = showAvatar0 ? (
-                      <Avatar name={avatarName0} id={avatarId0} avatarUrl={avatarUrl0} />
+                      <Avatar name={avatarName0} id={avatarId0} avatarUrl={avatarUrl0} onClick={senderUser0 ? () => openUserCard(senderUser0) : undefined} />
                     ) : (
                       <div className="avatar-spacer" />
                     )
@@ -10601,7 +10901,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     const avatarUrlS =
                       senderUserS?.avatarUrl && String(senderUserS.avatarUrl).trim() ? senderUserS.avatarUrl : undefined
                     const singleFwdAvatarSlot = showAvatarS ? (
-                      <Avatar name={avatarNameS} id={avatarIdS} avatarUrl={avatarUrlS} />
+                      <Avatar name={avatarNameS} id={avatarIdS} avatarUrl={avatarUrlS} onClick={senderUserS ? () => openUserCard(senderUserS) : undefined} />
                     ) : (
                       <div className="avatar-spacer" />
                     )
@@ -12459,6 +12759,96 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         </>
       )}
     </div>
+    {userCardUser && (
+      <div
+        className="eb-no-drag"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(10,12,16,0.55)',
+          backdropFilter: 'blur(4px) saturate(110%)',
+          display: 'flex',
+          alignItems: isMobile ? 'flex-start' : 'center',
+          justifyContent: 'center',
+          zIndex: 95,
+          padding: isMobile ? '16px 12px' : 16,
+          overflowY: 'auto',
+        }}
+        onClick={() => setUserCardUser(null)}
+      >
+        <div onClick={(e) => e.stopPropagation()} style={{ animation: 'ebCardPop .18s ease' }}>
+          {(() => {
+            const peerId = String(userCardUser.id)
+            const rows = (conversationsQuery.data || []) as any[]
+            const existingDm = rows.find((r: any) => {
+              const c = r?.conversation
+              return c && !c.isGroup && !c.isSecret && (c.participants?.length ?? 0) === 2 && c.participants.some((p: any) => p?.user?.id === peerId)
+            })
+            const sharedGroups = rows.filter((r: any) => {
+              const c = r?.conversation
+              return c && (c.isGroup || (c.participants?.length ?? 0) > 2) && (c.participants || []).some((p: any) => p?.user?.id === peerId)
+            })
+            const isFriend = ((contactsQuery.data || []) as any[]).some((c: any) => c?.friend?.id === peerId)
+            const outPending = ((outgoingContactsQuery.data || []) as any[]).some((c: any) => c?.friend?.id === peerId)
+            const inPending = ((incomingContactsQuery.data || []) as any[]).find((c: any) => c?.friend?.id === peerId)
+            const closeAll = () => { setUserCardUser(null); setContactsOpen(false) }
+            const actions = [
+              existingDm
+                ? { key: 'goto', icon: <MessageCircle size={20} />, label: 'К БЕСЕДЕ', onClick: () => { closeAll(); selectConversation(String(existingDm.conversation.id)) } }
+                : { key: 'msg', icon: <MessageCircle size={20} />, label: 'НАПИСАТЬ', onClick: async () => { closeAll(); try { const resp = await api.post('/conversations', { participantIds: [peerId], isGroup: false }); client.invalidateQueries({ queryKey: ['conversations'] }); const cid = resp.data?.conversation?.id; if (cid) selectConversation(String(cid)) } catch { systemToast.error('Не удалось открыть чат') } } },
+              { key: 'secret', icon: <Lock size={20} />, label: 'СЕКРЕТНЫЙ ЧАТ', tint: '#22c55e', onClick: async () => { closeAll(); await initiateSecretChat(peerId) } },
+            ]
+            const openGroup = (cid: string) => { closeAll(); selectConversation(String(cid)) }
+            return (
+              <UserProfileCard
+                user={userCardUser}
+                statusText={formatPresence(userCardUser)}
+                presence={avatarPresenceForUser(userCardUser)}
+                inCall={effectiveUserStatus(userCardUser) === 'IN_CALL'}
+                eblid={userCardUser.eblid ?? null}
+                avatars={userCardUser.avatars ?? null}
+                isMobile={isMobile}
+                onClose={() => setUserCardUser(null)}
+                actions={actions}
+              >
+                {!isFriend && (
+                  inPending ? (
+                    <button type="button" className="btn btn-primary" style={{ width: '100%' }} onClick={async () => { try { await api.post('/contacts/respond', { contactId: inPending.id, action: 'accept' }); client.invalidateQueries({ queryKey: ['contacts'] }); contactsQuery.refetch(); incomingContactsQuery.refetch(); systemToast.success('Заявка принята') } catch { systemToast.error('Не удалось') } }}>
+                      Принять заявку в друзья
+                    </button>
+                  ) : outPending ? (
+                    <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--text-muted)', padding: '10px 0' }}>Запрос в друзья отправлен</div>
+                  ) : (
+                    <button type="button" className="btn btn-secondary" style={{ width: '100%' }} onClick={async () => { try { await api.post('/contacts/add', { userId: peerId }); await client.refetchQueries({ queryKey: ['contacts', 'outgoing'] }); systemToast.success('Запрос в друзья отправлен') } catch (e: any) { systemToast.error(e?.response?.data?.message === 'Contact already exists' ? 'Вы уже отправляли запрос' : 'Не удалось отправить запрос') } }}>
+                      + Добавить в друзья
+                    </button>
+                  )
+                )}
+                {sharedGroups.length > 0 && (
+                  <div style={{ marginTop: !isFriend ? 14 : 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.3, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>Общие беседы</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {sharedGroups.map((r: any) => {
+                        const c = r.conversation
+                        const gname = c.title ?? 'Беседа'
+                        return (
+                          <div key={c.id} onClick={() => openGroup(String(c.id))} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 12, border: '1px solid var(--surface-border)', background: 'var(--surface-100)', cursor: 'pointer' }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-300)' }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--surface-100)' }}>
+                            <Avatar name={gname?.trim()?.charAt(0) || 'Г'} id={c.id} size={34} avatarUrl={c.avatarUrl && c.avatarUrl.trim() ? c.avatarUrl : undefined} />
+                            <span style={{ fontWeight: 600, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{gname}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </UserProfileCard>
+            )
+          })()}
+        </div>
+      </div>
+    )}
     {mePopupOpen && (
       <div
         className="eb-no-drag"
@@ -12494,27 +12884,34 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexShrink: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Профиль</div>
-            <button className="btn btn-icon btn-ghost" onClick={() => setMePopupOpen(false)}><X size={18} /></button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <button className="btn btn-icon btn-ghost" title="Изменить аватар" onClick={() => fileInputRef.current?.click()}><Pencil size={16} /></button>
+              <button className="btn btn-icon btn-ghost" onClick={() => setMePopupOpen(false)}><X size={18} /></button>
+            </div>
           </div>
           <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: isMobile ? 2 : 4 }}>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
-            <Avatar name={me?.displayName ?? me?.username ?? 'Me'} id={me?.id ?? 'me'} avatarUrl={avatarPreviewUrl ?? meInfoQuery.data?.avatarUrl ?? undefined} />
-            <div>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{me?.displayName ?? me?.username}</div>
-              {(() => {
+          <div style={{ marginBottom: 20, borderRadius: 16, overflow: 'hidden', border: '1px solid var(--surface-border)', background: 'var(--surface-100)', paddingBottom: 16 }}>
+            <UserProfileHero
+              compact
+              user={{
+                id: me?.id ?? 'me',
+                displayName: me?.displayName,
+                avatarUrl: avatarPreviewUrl ?? meInfoQuery.data?.avatarUrl ?? me?.avatarUrl,
+                status: (myPresence ?? (meInfoQuery.data as any)?.status ?? 'ONLINE') as any,
+                bio: (meInfoQuery.data as any)?.bio,
+              }}
+              statusText={(() => {
                 const myId = me?.id
                 const g = myId ? presenceGameByUserId[myId]?.game : undefined
-                if (g?.name) {
-                  return (
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {g.imageUrl ? <img src={g.imageUrl} alt="" style={{ width: 14, height: 14, borderRadius: 4, objectFit: 'cover' }} /> : null}
-                      <span>Играю в {g.name}</span>
-                    </div>
-                  )
-                }
-                return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>EBLID: {meInfoQuery.data?.eblid ?? '— — — —'}</div>
+                if (g?.name) return `Играю в ${g.name}`
+                return formatPresence({ ...(me ?? {}), status: myPresence ?? (meInfoQuery.data as any)?.status })
               })()}
-            </div>
+              presence={avatarPresenceForUser({ ...(me ?? {}), status: myPresence ?? (meInfoQuery.data as any)?.status })}
+              eblid={meInfoQuery.data?.eblid ?? ''}
+              avatars={[avatarPreviewUrl ?? (meInfoQuery.data as any)?.avatarUrl ?? me?.avatarUrl, ...(((meInfoQuery.data as any)?.avatarHistory ?? []) as string[])].filter((u): u is string => typeof u === 'string' && u.length > 0)}
+              canManageAvatars
+              onDeleteAvatar={async (url) => { try { await api.post('/status/me/avatars/remove', { url }); meInfoQuery.refetch() } catch { systemToast.error('Не удалось удалить аватар') } }}
+            />
           </div>
           <input ref={fileInputRef} type="file" accept="image/*" onChange={(e) => {
             const file = e.target.files?.[0]
@@ -12522,37 +12919,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             setSelectedAvatarFile(file)
             try { setAvatarPreviewUrl(URL.createObjectURL(file)) } catch {}
           }} style={{ display: 'none' }} />
-          {!avatarPreviewUrl && (
-            <>
-              <div style={{ marginBottom: 8, color: 'var(--text-muted)', fontSize: 12, fontWeight: 500 }}>Загрузка аватара</div>
-          <div
-            onClick={() => fileInputRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault(); setDragOver(false)
-              const file = e.dataTransfer.files?.[0]
-              if (file) { setSelectedAvatarFile(file); try { setAvatarPreviewUrl(URL.createObjectURL(file)) } catch {} }
-            }}
-            style={{
-                  border: '2px dashed ' + (dragOver ? 'var(--brand-600)' : 'var(--surface-border)'),
-                  borderRadius: 12,
-              padding: 20,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              cursor: 'pointer',
-                  background: dragOver ? 'rgba(217,119,6,0.1)' : 'var(--surface-100)',
-              transition: 'all .2s ease',
-                  marginBottom: 16,
-            }}
-          >
-                <UploadCloud size={18} color="var(--text-muted)" />
-                <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>Перетащите файл сюда или нажмите, чтобы выбрать</div>
-          </div>
-            </>
-          )}
           {avatarPreviewUrl && (
             <div style={{ border: '1px solid var(--surface-border)', borderRadius: 16, padding: 16, marginTop: 16, background: 'var(--surface-100)', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
               <div style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 12, fontWeight: 600 }}>Настройка аватара</div>
@@ -14285,7 +14651,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     border: '1px solid rgba(227,139,10,0.3)',
                   }}
                 >
-                  <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={avatarPresenceForUser(foundUser)} avatarUrl={foundUser.avatarUrl ?? undefined} size={40} />
+                  <Avatar name={foundUser.displayName ?? foundUser.username} id={foundUser.id} presence={avatarPresenceForUser(foundUser)} avatarUrl={foundUser.avatarUrl ?? undefined} size={40} onClick={() => openUserCard(foundUser)} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600 }}>{foundUser.displayName ?? foundUser.username}</div>
                     <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Найден по EBLID</div>
@@ -14492,7 +14858,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <Avatar name={u.displayName ?? u.username} id={u.id} presence={avatarPresenceForUser(u)} avatarUrl={u.avatarUrl ?? undefined} size={44} />
+                        <Avatar name={u.displayName ?? u.username} id={u.id} presence={avatarPresenceForUser(u)} avatarUrl={u.avatarUrl ?? undefined} size={44} onClick={() => openUserCard(u)} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.displayName ?? u.username}</div>
                           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Контакт</div>
@@ -14849,6 +15215,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   return { row, c, title, othersArr }
                 })
                 .filter((x: { c: any }) => x.c.id !== activeId)
+                // Hidden secret threads (creator's PENDING invite, CANCELLED) are not forward targets.
+                .filter((x: { c: any }) => !x.c.isSecret || String(x.c.secretStatus ?? 'ACTIVE').toUpperCase() === 'ACTIVE')
                 .sort(
                   (a: { row: any }, b: { row: any }) =>
                     recencyTimestampForConversationRow(b.row) - recencyTimestampForConversationRow(a.row),
@@ -15191,10 +15559,18 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             const c = row?.conversation || (activeId === convMenu.conversationId ? activeConversation : null)
             const isGroup = !!(c && (c.isGroup || (c.participants?.length ?? 0) > 2))
 
+            const isSecretV2Row = String(c?.type ?? '').toUpperCase() === 'SECRET'
+            const peer = !isGroup ? (c?.participants || []).find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user : null
+            const canStartSecret = !isGroup && !!c && !c.isSecret && !!peer?.id
+
             const handleClick = async () => {
               try {
                 if (isGroup) {
                   await api.delete(`/conversations/${convMenu.conversationId}/participants/me`)
+                } else if (isSecretV2Row) {
+                  // V2 secret threads tear down via decline → CANCELLED everywhere (a hard
+                  // delete would orphan the E2EE transport rows).
+                  await api.post(`/threads/secret/${convMenu.conversationId}/decline`, {})
                 } else {
                   await api.delete(`/conversations/${convMenu.conversationId}`)
                 }
@@ -15210,13 +15586,25 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             }
 
             return (
-              <button
-                onClick={handleClick}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ef4444' }}
-              >
-                {isGroup ? <LogOut size={16} /> : <Trash2 size={16} />}
-                {isGroup ? 'Выйти из беседы' : 'Удалить беседу'}
-              </button>
+              <>
+                {canStartSecret && (
+                  <button
+                    onClick={async () => {
+                      setConvMenu({ open: false, x: 0, y: 0, conversationId: null })
+                      if (peer?.id) await initiateSecretChat(peer.id)
+                    }}
+                    disabled={secretRequestLoading}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                  >
+                    <Lock size={16} color="#22c55e" />
+                    Секретный чат
+                  </button>
+                )}
+                <button onClick={handleClick} style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ef4444' }}>
+                  {isGroup ? <LogOut size={16} /> : <Trash2 size={16} />}
+                  {isGroup ? 'Выйти из беседы' : isSecretV2Row ? 'Закрыть секретный чат' : 'Удалить беседу'}
+                </button>
+              </>
             )
           })()}
         </div>
@@ -15339,16 +15727,26 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     )}
     {groupAvatarEditor && activeConversation && (
       <div className="eb-no-drag" style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }} onClick={() => setGroupAvatarEditor(false)}>
-        <div style={{ background: 'var(--surface-200)', padding: 24, borderRadius: 16, width: 440, maxWidth: '90vw', border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-medium)' }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ background: 'var(--surface-200)', padding: 24, borderRadius: 16, width: 440, maxWidth: '90vw', maxHeight: '90vh', overflowY: 'auto', border: '1px solid var(--surface-border)', boxShadow: 'var(--shadow-medium)' }} onClick={(e) => e.stopPropagation()}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Настройки группы</div>
-            <button className="btn btn-icon btn-ghost" onClick={() => setGroupAvatarEditor(false)}><X size={18} /></button>
-          </div>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
-            <div onClick={() => groupFileInputRef.current?.click()} style={{ cursor: 'pointer' }} title="Нажмите, чтобы изменить аватар">
-              <Avatar name={(groupTitleEditValue || activeConversation.title)?.trim()?.charAt(0) || 'Г'} id={activeConversation.id} avatarUrl={groupAvatarPreviewUrl ?? activeConversation.avatarUrl ?? undefined} size={60} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <button className="btn btn-icon btn-ghost" title="Изменить аватар" onClick={() => groupFileInputRef.current?.click()}><Pencil size={16} /></button>
+              <button className="btn btn-icon btn-ghost" onClick={() => setGroupAvatarEditor(false)}><X size={18} /></button>
             </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
+          </div>
+          <div style={{ marginBottom: 16, borderRadius: 16, overflow: 'hidden', border: '1px solid var(--surface-border)', background: 'var(--surface-100)', paddingBottom: 14 }}>
+            <UserProfileHero
+              compact
+              hideStatusDot
+              user={{
+                id: activeConversation.id,
+                displayName: groupTitleEditValue || activeConversation.title || 'Группа',
+                avatarUrl: groupAvatarPreviewUrl ?? activeConversation.avatarUrl ?? undefined,
+              }}
+              statusText="Групповой чат"
+            />
+            <div style={{ padding: '4px 20px 0' }}>
               <div style={{ marginBottom: 6, color: 'var(--text-muted)', fontSize: 12, fontWeight: 500 }}>Название группы</div>
               <input
                 type="text"
@@ -15356,17 +15754,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 onChange={(e) => setGroupTitleEditValue(e.target.value)}
                 placeholder="Название группы"
                 maxLength={100}
-                style={{
-                  width: '100%',
-                  padding: '8px 10px',
-                  borderRadius: 8,
-                  border: '1px solid var(--surface-border)',
-                  background: 'var(--surface-100)',
-                  color: 'var(--text-primary)',
-                  fontSize: 14,
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
+                style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--surface-border)', background: 'var(--surface-200)', color: 'var(--text-primary)', fontSize: 14, outline: 'none', boxSizing: 'border-box' }}
               />
             </div>
           </div>
@@ -15376,37 +15764,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             setGroupSelectedAvatarFile(file)
             try { setGroupAvatarPreviewUrl(URL.createObjectURL(file)) } catch {}
           }} style={{ display: 'none' }} />
-          {!groupAvatarPreviewUrl && (
-            <>
-              <div style={{ marginBottom: 8, color: 'var(--text-muted)', fontSize: 12, fontWeight: 500 }}>Загрузка аватара</div>
-          <div
-                onClick={() => groupFileInputRef.current?.click()}
-                onDragOver={(e) => { e.preventDefault(); setGroupDragOver(true) }}
-                onDragLeave={() => setGroupDragOver(false)}
-            onDrop={(e) => {
-                  e.preventDefault(); setGroupDragOver(false)
-              const file = e.dataTransfer.files?.[0]
-                  if (file) { setGroupSelectedAvatarFile(file); try { setGroupAvatarPreviewUrl(URL.createObjectURL(file)) } catch {} }
-            }}
-            style={{
-                  border: '2px dashed ' + (groupDragOver ? 'var(--brand-600)' : 'var(--surface-border)'),
-                  borderRadius: 12,
-              padding: 20,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              cursor: 'pointer',
-                  background: groupDragOver ? 'rgba(217,119,6,0.1)' : 'var(--surface-100)',
-              transition: 'all .2s ease',
-                  marginBottom: 16,
-            }}
-          >
-                <UploadCloud size={18} color="var(--text-muted)" />
-                <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>Перетащите файл сюда или нажмите, чтобы выбрать</div>
-          </div>
-            </>
-          )}
           {groupAvatarPreviewUrl && (
             <div style={{ border: '1px solid var(--surface-border)', borderRadius: 16, padding: 16, marginTop: 16, background: 'var(--surface-100)', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
               <div style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 12, fontWeight: 600 }}>Настройка аватара</div>
@@ -15724,6 +16081,32 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               <span>{uploadMessage}</span>
             </div>
           )}
+          <div style={{ marginTop: 20, borderTop: '1px solid var(--surface-border)', paddingTop: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.2, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Участники · {activeConversation.participants?.length ?? 0}</div>
+              <button className="btn btn-ghost" style={{ padding: '6px 10px', height: 32, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={() => { setGroupAvatarEditor(false); setAddParticipantsModal(true) }}>
+                <UserPlus size={15} /> Добавить
+              </button>
+            </div>
+            <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {(activeConversation.participants || []).map((p: any) => {
+                const u = p.user
+                if (!u?.id) return null
+                const isMe = currentUserId && String(u.id) === String(currentUserId)
+                return (
+                  <div key={u.id} onClick={() => { setGroupAvatarEditor(false); openUserCard(u) }} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 8px', borderRadius: 12, cursor: 'pointer' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-100)' }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}>
+                    <Avatar name={u.displayName ?? 'U'} id={u.id} size={38} avatarUrl={u.avatarUrl && u.avatarUrl.trim() ? u.avatarUrl : undefined} presence={avatarPresenceForUser(u)} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{(u.displayName && String(u.displayName).trim()) || 'Без имени'}{isMe ? ' (вы)' : ''}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{formatPresence(u)}</div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         </div>
       </div>
     )}

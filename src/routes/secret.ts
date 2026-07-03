@@ -166,7 +166,7 @@ router.post("/send", rateLimit({ name: "secret_send", windowMs: 60_000, max: 300
 
   const io = getIO();
   for (const result of results) {
-    if (!result.inserted) continue;
+    // No `inserted` gate: retries must re-wake the device (the pull is idempotent).
     io?.to(`device:${result.toDeviceId}`).emit("secret:notify", {
       toDeviceId: result.toDeviceId,
       msgId: result.msgId,
@@ -250,15 +250,26 @@ async function handleInboxPull(req: Request, res: any, raw: unknown) {
   }
 
   const out: any[] = [];
+  const deadIds: string[] = [];
   for (let i = 0; i < uniqueIds.length; i += 1) {
     const id = uniqueIds[i]!;
     const payload = (cached[i] as any) ?? byMsgId.get(id) ?? null;
-    if (!payload) continue;
+    if (!payload) {
+      // Unresolvable: payload cache expired AND no delivery row — it can never be served.
+      // Left in place it clogs the head of the inbox list until fresh messages fall outside
+      // the pull window (head-of-line blocking) — drop it server-side.
+      deadIds.push(id);
+      continue;
+    }
     out.push(payload);
     // Best-effort cache repopulation for DB-sourced payloads.
     if (!cached[i]) {
       void setSecretPayloadCache(redis, id, payload).catch(() => {});
     }
+  }
+
+  if (deadIds.length > 0) {
+    void ackSecretInbox(redis, currentDeviceId, deadIds).catch(() => {});
   }
 
   res.json({
@@ -438,8 +449,15 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
 
   const io = getIO();
   for (const r of results) {
-    if (!r.inserted) continue;
+    // No `inserted` gate: a sender retry after a lost HTTP response must still wake the
+    // device — the notify only triggers an idempotent inbox pull.
     io?.to(`device:${r.toDeviceId}`).emit("secret:notify", { toDeviceId: r.toDeviceId, msgId: r.msgId });
+  }
+  // User-room fallback wake: a socket that missed its device-room join (connected before
+  // device bootstrap or a token without the did claim) would otherwise learn about the
+  // message only from the recipient's slow history poll. No ciphertext in the payload.
+  for (const uid of participantUserIds) {
+    io?.to(`user:${uid}`).emit("secret:notify", { msgId: parsed.data.msgId, threadId } as any);
   }
 
   // Best-effort: if message is an attachment reference, persist metadata-only ref for GC/delete workflows.

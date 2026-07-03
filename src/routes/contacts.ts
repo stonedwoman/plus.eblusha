@@ -68,26 +68,36 @@ router.get("/", async (req, res) => {
 
 // POST /contacts/add { identifier }
 router.post("/add", async (req, res) => {
-  const schema = z.object({ identifier: z.string().min(2) });
+  const schema = z
+    .object({ identifier: z.string().min(2).optional(), userId: z.string().min(1).optional() })
+    .refine((v) => !!v.identifier || !!v.userId, { message: "identifier or userId required" });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ message: "Invalid request" });
     return;
   }
   const userId = (req as any).user!.id as string;
-  const identifier = parsed.data.identifier.trim();
+  const identifier = (parsed.data.identifier ?? "").trim();
+  const byUserId = (parsed.data.userId ?? "").trim();
 
-  const target = await prisma.user.findFirst({
-    where: {
-      OR: [
-        { username: identifier },
-        { email: identifier },
-        { phone: identifier },
-        ...( /^\d{4}$/.test(identifier) ? [{ eblid: identifier }] : [] ),
-      ],
-    },
-    select: { id: true, username: true, displayName: true },
-  });
+  // The user card adds by userId (it never sees the target's username); the contacts
+  // search adds by identifier (username/email/phone/4-digit eblid).
+  const target = byUserId
+    ? await prisma.user.findUnique({
+        where: { id: byUserId },
+        select: { id: true, username: true, displayName: true },
+      })
+    : await prisma.user.findFirst({
+        where: {
+          OR: [
+            { username: identifier },
+            { email: identifier },
+            { phone: identifier },
+            ...( /^\d{4}$/.test(identifier) ? [{ eblid: identifier }] : [] ),
+          ],
+        },
+        select: { id: true, username: true, displayName: true },
+      });
 
   if (!target) {
     res.status(404).json({ message: "User not found" });

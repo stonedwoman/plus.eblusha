@@ -245,6 +245,29 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
   } catch {}
 }
 
+// Accept-on-one-device flow: after the peer accepts on ONE device, the creator shares the thread
+// key to exactly that device (no fanout). The peer's other devices onboard via device-linking.
+export async function shareSecretThreadKeyToDevice(threadId: string, toDeviceId: string): Promise<void> {
+  const t = String(threadId ?? '').trim()
+  const to = String(toDeviceId ?? '').trim()
+  if (!t || !to) return
+  const keyRec = ensureSecretThreadKey(t)
+  try {
+    const env = await createEncryptedKeyPackageToDevice({
+      toDeviceId: to,
+      kind: 'thread_key',
+      payload: { threadId: t, key: keyRec.key },
+      ttlSeconds: 60 * 60,
+    })
+    markKeyShareSent(t, to, String(env.msgId))
+    await api.post('/secret/send', { messages: [env] }, { timeout: 15_000 })
+  } catch (err: any) {
+    const info = classifyShareError(err)
+    if (info.rootCause === 'NO_PREKEYS') void nudgeDeviceToPublishPrekeys(to, t)
+    throw err
+  }
+}
+
 // Dev helper: allow manual resend without exposing UI banners.
 declare global {
   interface Window {
