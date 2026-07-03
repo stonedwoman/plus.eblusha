@@ -1,0 +1,5186 @@
+/**
+ * Рендер-функция renderMessagesPane, вынесена из ChatsPage. Обычная функция (не компонент);
+ * значения компонента получает через объект ctx.
+ */
+
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense, Fragment, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { api, getUploadUrl } from '../../../../utils/api'
+import type { AxiosError } from 'axios'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, onSecretChatAccepted, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, onCallGlare, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../../../core/realtime'
+import { Phone, Video, X, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp, RefreshCw, Check, Forward, Pencil } from 'lucide-react'
+import { AvailabilityButton } from '../../../../features/availability/AvailabilityButton'
+import { AvailabilityOverlay } from '../../../../features/availability/AvailabilityOverlay'
+import { getFallbackTimeZone } from '../../../../features/availability/availability.time'
+const CallOverlay = lazy(() => import('../../../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
+const preloadCallOverlay = () => import('../../../components/CallOverlay')
+import { useAppStore } from '../../../../domain/store/appStore'
+import { Avatar } from '../../../components/Avatar'
+import { UserProfileCard, UserProfileHero } from '../../../components/UserProfileCard'
+import { ImageEditorModal } from '../../../components/ImageEditorModal'
+import { ImageLightbox } from '../../../components/ImageLightbox'
+import { VideoViewer } from '../../../components/VideoViewer'
+import { VideoMessageBubble } from '../../../components/VideoMessageBubble'
+import { LazyImage } from '../../../components/LazyImage'
+import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
+import LoadingSpinner from '../../../components/LoadingSpinner'
+import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
+import { useCallStore } from '../../../../domain/store/callStore'
+import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice, isElectron } from '../../../../domain/device/deviceManager'
+import { wipeLocalDeviceData } from '../../../../domain/device/deviceWipe'
+import { e2eeManager } from '../../../../domain/e2ee/e2eeManager'
+import { hasSecretThreadKey, ensureSecretThreadKey } from '../../../../domain/secret/secretThreadKeyStore'
+import { shareSecretThreadKeyToDevice } from '../../../../domain/secret/secretThreadSetup'
+import { fetchSecretHistory, sendSecretThreadText, transformSecretHistoryItemToMessage } from '../../../../domain/secret/secretThreadMessaging'
+import { getLastPendingShareAt, getPendingDeviceIds, getReceiptDeviceIds } from '../../../../domain/secret/secretKeyShareState'
+import { isSecretEngineV2Enabled } from '../../../../domain/secretV2/featureFlag'
+import { ensureReady as ensureSecretEngineReady, getThreadView as getSecretEngineThreadView, refreshKeysAndRetry, subscribeSecretThreadState, type SecretReasonCode } from '../../../../domain/secretV2'
+import { ensureMediaPermissions, convertToProxyUrl, extractObjectKeyFromUrl } from '../../../../utils/media'
+import { VoiceRecorder } from '../../../../utils/voiceRecorder'
+import { extractFirstPreviewableUrl } from '../../../../js/link-detect'
+import { renderChatMarkdownToHtml, htmlToMarkdown } from '../../../lib/chatMarkdown'
+import { renderMessageText } from '../chatsTextRender'
+import { openUrlSystemBrowser } from '../chatsEmbeds'
+import { LinkPreviewCard } from '../components/LinkPreviewCard'
+import { MessageReactionRail } from '../components/MessageReactionRail'
+import { isChatsRoute, withAppRoutePrefix } from '../../../../core/navigation/routes'
+import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../../../utils/apkCallSignal'
+import { shouldShowAudioUnlockPrompt } from '../../../../utils/audioUnlock'
+import { copyImageFromUrl, copyPlainText } from '../../../../utils/clipboard'
+import { formatRegistrationInviteCodeForDisplay } from '../../../../utils/formatRegistrationInviteCode'
+import { VoiceMessagePlayer } from '../components/VoiceMessagePlayer'
+import { DeviceLinkInline } from '../components/DeviceLinkInline'
+import { useChatAudio } from '../hooks/useChatAudio'
+import { useChatSocketSubscriptions } from '../hooks/useChatSocketSubscriptions'
+import { useChatTyping } from '../hooks/useChatTyping'
+import { useChatsResponsive } from '../hooks/useChatsResponsive'
+import { useChatUiStore } from '../../../../core/chat-sync/chatUiStore'
+import { renderActiveCallOverlay } from '../render/CallOverlayHost'
+import { renderConversationList } from '../render/ConversationListPane'
+import {
+  EBLO_MIN_ROWS,
+  EBLO_INITIAL_ROWS,
+  EBLO_OVERSCAN_PX,
+  EBLO_INDEX_OVERSCAN,
+  EBLO_DEFAULT_ROW_HEIGHT,
+  EBLO_FORWARD_ROW_HEIGHT,
+  EBLO_SYSTEM_ROW_HEIGHT,
+  EbloMeasuredRow,
+  type EbloRange,
+  type EbloRowMeta,
+} from '../chatsEblo'
+import {
+  acceptIncomingCallAction,
+  declineIncomingCallAction,
+  endActiveCallAction,
+  registerActiveCallRuntime,
+  registerIncomingCallRuntime,
+  type ResolvedActiveCall,
+  type ResolvedIncomingCall,
+} from '../../../../core/call-state/incomingCallActions'
+import {
+  NAME_COLOR_PALETTE_13,
+  NAME_COLOR_PALETTE_26,
+  BUBBLE_BG_BASES,
+} from '../chatsColors'
+import {
+  LAST_ACTIVE_CONVERSATION_KEY,
+  MIN_OUTGOING_CALL_DURATION_MS,
+  MAX_PENDING_IMAGES,
+  MAX_PENDING_FILES,
+  MESSAGES_PAGE_SIZE,
+  EMPTY_EBLID_DIGITS,
+} from '../chatsConstants'
+import {
+  FILE_KIND_UI,
+  FILE_EXTENSION_INFO,
+  formatAttachmentFileSize,
+  VIDEO_EXTS,
+  AUDIO_EXTS,
+  ATTACH_PROCESSING_MESSAGES,
+  formatUploadSpeed,
+  isUploadAbortError,
+  getMediaKind,
+  inferAttachmentRenderType,
+  extractFilenameFromUrl,
+  resolveAttachmentFileName,
+  getAttachmentFilePresentation,
+  parseContentDispositionFilename,
+  describeCopyableAttachment,
+  type AttachmentFileKind,
+  type AttachmentFileInfo,
+  type PendingAttachment,
+  type AttachmentDecryptionEntry,
+  type AttachmentHeadInfo,
+  type PendingComposerImage,
+  type PendingComposerFile,
+  type PendingMessage,
+} from '../chatsAttachments'
+import {
+  formatMessageClockLabel,
+  formatRuRelativeSendDay,
+  ruPluralDaysAgo,
+  formatSmallBubbleTimeLabel,
+} from '../chatsTime'
+import {
+  ruPluralSoobsheniya,
+  formatReplyBundleHeader,
+  formatSenderReplyActionPhrase,
+  formatSenderReplySingleActionPhrase,
+  formatForwardSourcePhraseAfterName,
+  buildMessageCopyText,
+  renderSystemMessageContent,
+  previewTextForReplyDraft,
+  firstImageAttachmentStubForQuote,
+  replySnippetIsGenericRu,
+  buildReplyDraftFromMessages,
+  buildReplyQuoteMetadataForSend,
+  MULTI_FWD_MAX_SPAN_MS,
+  MULTI_FWD_GAP_MS,
+  forwardFromAuthorKeyForBundle,
+  hasForwardFromMeta,
+  forwardSourceFingerprintForBundle,
+  computeMultiSourceForwardBundles,
+  formatMultiSourceForwardBundleSourceHeader,
+  parseMessageMetadata,
+  parseReplyQuoteBundleEntries,
+  FORWARD_COMPOSER_CAPTION_META_KEY,
+  extractForwardComposerCaption,
+  directChatPeerDisplayForForwardHeader,
+  coerceParsedMessageInstant,
+  normalizeForwardFromRecord,
+  extractOriginalForwardedInstantFromMessage,
+  buildForwardSourceContextForSend,
+  cloneAttachmentForForward,
+  recencyTimestampForConversationRow,
+  buildForwardSendPayload,
+  type ReplyDraftQuotedEntry,
+  type ReplyDraftState,
+  type ForwardComposerDraftState,
+  type ForwardAttachment,
+  type ForwardFromMeta,
+  type ForwardSourceContext,
+} from '../chatsMessages'
+
+
+
+
+
+
+export interface MessagesPaneCtx {
+  acceptSecretInvite: any
+  activeCalls: any
+  activeConversation: any
+  activeId: any
+  activePendingMessages: any
+  activeSecretQueuedCount: any
+  activeSecretUiState: any
+  addComposerFile: any
+  addComposerImage: any
+  applyComposerImageEdit: any
+  applyComposerSelectionFormat: any
+  applyWysiwygFormat: any
+  attachCanceling: any
+  attachDragDepthRef: any
+  attachDragOver: any
+  attachInputRef: any
+  attachProcessingMessageIndex: any
+  attachProgress: any
+  attachUploadSpeed: any
+  attachUploadState: any
+  attachUploading: any
+  attachmentDecryptMap: any
+  attachmentHeadInfoMap: any
+  avatarPresenceForUser: any
+  backToList: any
+  beginOutgoingCallGuard: any
+  callConvId: any
+  callPermissionError: any
+  callStore: any
+  cancelActiveAttachUpload: any
+  cancelEdit: any
+  cancelSecretInviteAsCreator: any
+  cancelVoiceRecording: any
+  clearMessageMultiSelect: any
+  client: any
+  closeComposerSelectionToolbar: any
+  composerBarRef: any
+  composerEditorRef: any
+  composerEmpty: any
+  composerFocused: any
+  composerSelectionAnchor: any
+  composerSelectionFmt: any
+  composerSelectionToolbarRef: any
+  composerSelectionToolbarStyle: any
+  contactsQuery: any
+  conversationsQuery: any
+  creatorAwaitPeerAccept: any
+  currentUserId: any
+  declineSecretInvite: any
+  deviceLinkInviteOpen: any
+  displayedMessages: any
+  ebloRange: any
+  ebloRowsRef: any
+  editBusy: any
+  editState: any
+  editingImage: any
+  editingImageId: any
+  effectiveUserStatus: any
+  endSecretModalOpen: any
+  estimateEbloRowHeight: any
+  eventHasFiles: any
+  executeForwardPayloadDelivery: any
+  failedImages: any
+  formatDuration: any
+  formatPresence: any
+  forwardComposerDraft: any
+  getComposerValue: any
+  getSelectedMessagesOrdered: any
+  groupIncomingBubbleBg: any
+  handleChatDropFiles: any
+  handleEbloRowHeightChange: any
+  hasAnySecretThreadKeys: any
+  hasOtherTrustedDevice: any
+  hashToGray: any
+  imageDimensions: any
+  insertPlainTextIntoComposer: any
+  isMobile: any
+  isNarrowHeaderButtons: any
+  leftAlignAll: any
+  loadedImages: any
+  me: any
+  messagesContentRef: any
+  messagesRef: any
+  minimizedCallConvId: any
+  multiSelectMode: any
+  nameColorForUser: any
+  nearBottomRef: any
+  nodesByMessageId: any
+  notifyTyping: any
+  olderLoading: any
+  openUserCard: any
+  outgoingCall: any
+  outgoingCallTimerRef: any
+  pendingFiles: any
+  pendingImages: any
+  playEndCallSound: any
+  presenceGameByUserId: any
+  releasePreviewUrl: any
+  removeComposerFile: any
+  removeComposerImage: any
+  replyTo: any
+  requireMediaAccess: any
+  resizeComposer: any
+  resolveAttachmentUrl: any
+  resolveFirstImageAttachmentUrl: any
+  scheduleEbloUpdate: any
+  secretBootDonePulse: any
+  secretComposerInlineError: any
+  secretEngineV2Enabled: any
+  secretInviteBusy: any
+  secretInviteForMe: any
+  secretWaitingAsCreator: any
+  selectedMessageIds: any
+  sendMessageToConversation: any
+  setActiveCalls: any
+  setActiveId: any
+  setAttachDragOver: any
+  setAvailabilityContext: any
+  setCallConvId: any
+  setCallPermissionError: any
+  setComposerEmpty: any
+  setComposerFocused: any
+  setComposerValue: any
+  setContextMenu: any
+  setDeviceLinkInviteOpen: any
+  setEditBusy: any
+  setEditState: any
+  setEditingImageId: any
+  setEndSecretModalOpen: any
+  setFailedImages: any
+  setForwardComposerDraft: any
+  setForwardModal: any
+  setGroupAvatarEditor: any
+  setHeaderMenu: any
+  setImageDimensions: any
+  setLightbox: any
+  setLinkDeviceModalOpen: any
+  setLoadedImages: any
+  setMinimizedCallConvId: any
+  setOutgoingCall: any
+  setPendingFiles: any
+  setPendingImages: any
+  setReplyTo: any
+  setShowJump: any
+  setVideoViewer: any
+  showJump: any
+  startDialingSound: any
+  startEdit: any
+  startVoiceRecording: any
+  stopDialingSound: any
+  stopTyping: any
+  stopVoiceRecording: any
+  toggleMessageMultiSelect: any
+  typingByUserId: any
+  updateComposerSelectionToolbar: any
+  uploadAndSendAttachments: any
+  userStickyScrollRef: any
+  usersById: any
+  visibleObserver: any
+  voiceDuration: any
+  voiceRecording: any
+  voiceWaveform: any
+  waveformContainerRef: any
+  waveformMaxBars: any
+}
+
+export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
+  const { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, ebloRange, ebloRowsRef, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, estimateEbloRowHeight, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, handleEbloRowHeightChange, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, imageDimensions, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, me, messagesContentRef, messagesRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, scheduleEbloUpdate, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setImageDimensions, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars } = ctx
+    const sectionClass = mobile ? 'messages-pane slider-panel' : 'messages-pane'
+    return (
+      <section className={sectionClass}>
+        <header
+          style={{
+            ...(() => {
+              if (!activeId) return {}
+              const callEntry = activeCalls[activeId]
+              const isActive = callEntry?.active
+              const isMinimized = minimizedCallConvId === activeId
+              // Подсвечиваем шапку если звонок активен ИЛИ минимизирован (для всех типов звонков)
+              if (isActive || isMinimized) {
+                return {
+                  background: 'linear-gradient(135deg, rgba(217, 119, 6, 0.15) 0%, rgba(227, 139, 10, 0.2) 100%)',
+                  borderBottom: '2px solid var(--brand)',
+                }
+              }
+              return {}
+            })(),
+            display: isMobile ? 'flex' : 'grid',
+            // True centering: equal side columns so the image stays centered.
+            gridTemplateColumns: isMobile ? undefined : 'minmax(0, 1fr) auto minmax(0, 1fr)',
+            // Match spacing between call control buttons (gap: 8)
+            columnGap: isMobile ? undefined : 8,
+            flexDirection: isMobile ? 'column' : undefined,
+            justifyContent: isMobile ? 'flex-start' : undefined,
+            justifyItems: isMobile ? undefined : 'stretch',
+            alignItems: isMobile ? 'stretch' : 'center',
+            flexShrink: 0,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              minWidth: 0,
+              width: isMobile ? '100%' : 'auto',
+              padding: isMobile ? '0 8px' : '0',
+              gridColumn: isMobile ? undefined : '1 / 2',
+            }}
+          >
+            {mobile && (
+              <button type="button" className="btn btn-icon btn-ghost" onClick={backToList}>
+                <ArrowLeft size={18} />
+              </button>
+            )}
+            {activeConversation ? (
+              (() => {
+                const othersArr = activeConversation.participants.filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true)).map((p: any) => p.user)
+                const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
+                const title = activeConversation.title ?? fallbackName
+                const isGroup = activeConversation.isGroup || activeConversation.participants.length > 2
+                const isSecret = !!activeConversation.isSecret && !isGroup
+                const callEntry = activeCalls[activeConversation.id]
+                const isActive = callEntry?.active
+                return isGroup ? (
+                  <>
+                    <div onClick={() => setGroupAvatarEditor(true)} style={{ cursor: 'pointer' }}>
+                      <Avatar 
+                        name={title?.trim()?.charAt(0) || 'Г'} 
+                        id={activeConversation.id} 
+                        size={60} 
+                        avatarUrl={activeConversation.avatarUrl && activeConversation.avatarUrl.trim() ? activeConversation.avatarUrl : undefined}
+                        presence={isActive ? 'IN_CALL' : undefined}
+                        inCall={!!isActive}
+                      />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0, order: isMobile ? 1 : 2 }}>
+                      <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}>
+                        <span onClick={() => setGroupAvatarEditor(true)} style={{ cursor: 'pointer' }} title="Настройки группы">{title}</span>
+                        {isMobile && (
+                          <button
+                            className="btn btn-icon btn-ghost"
+                            title="Меню"
+                            onClick={(e) => {
+                              setHeaderMenu({ open: true, anchor: e.currentTarget })
+                            }}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: 42,
+                              height: 42,
+                              minWidth: 42,
+                              padding: 0,
+                              margin: 0,
+                              borderRadius: 999,
+                              flexShrink: 0,
+                            }}
+                          >
+                            <MoreVertical size={20} />
+                          </button>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        {isActive ? (
+                          <>
+                            {(() => {
+                              const participants = callEntry.participants || []
+                              const allParticipants = activeConversation.participants || []
+                              // Используем elapsedMs с сервера и добавляем локальный тик для плавного обновления между событиями
+                              // Re-render each second via timerTick, compute from startedAt to avoid double counting
+                              const elapsedMs = callEntry.startedAt ? (Date.now() - callEntry.startedAt) : (typeof callEntry.elapsedMs === 'number' ? callEntry.elapsedMs : 0)
+                              const autoEndRemainingMs =
+                                typeof callEntry.autoEndAt === 'number'
+                                  ? Math.max(0, callEntry.autoEndAt - Date.now())
+                                  : null
+                              return (
+                                <>
+                                  {callEntry.active && <span>{formatDuration(elapsedMs)}</span>}
+                                  {participants.length === 1 && autoEndRemainingMs != null && (
+                                    <span> • один участник, автоотключение через {formatDuration(autoEndRemainingMs)}</span>
+                                  )}
+                                  {allParticipants.length > 0 && (
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                      {callEntry.startedAt && ' • '}
+                                      {allParticipants.map((p: any, idx: number) => {
+                                        const u = p.user
+                                        const isInCall = participants.length > 0 && participants.includes(u.id)
+                                        return (
+                                          <span key={u.id} style={{ fontWeight: isInCall ? 700 : 400, color: isInCall ? 'var(--brand-600)' : 'var(--text-muted)' }}>
+                                            {idx > 0 && ', '}
+                                            {u.displayName ?? u.username}
+                                            {isInCall && ' ✓'}
+                                          </span>
+                                        )
+                                      })}
+                                    </span>
+                                  )}
+                                </>
+                              )
+                            })()}
+                          </>
+                        ) : callEntry && callEntry.endedAt ? (
+                          (() => {
+                            // Звонок завершен
+                            const endedAt = callEntry.endedAt
+                            const now = Date.now()
+                            const diffMs = now - endedAt
+                            const diffMin = Math.floor(diffMs / 60000)
+                            let timeText = ''
+                            if (diffMin < 1) timeText = 'Завершён только что'
+                            else if (diffMin < 60) timeText = `Завершён ${diffMin} мин назад`
+                            else {
+                              const diffH = Math.floor(diffMin / 60)
+                              if (diffH < 24) timeText = `Завершён ${diffH} ч назад`
+                              else {
+                                const endedDate = new Date(endedAt)
+                                const dateStr = endedDate.toLocaleDateString()
+                                const timeStr = endedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })
+                                timeText = `Завершён ${dateStr} в ${timeStr}`
+                              }
+                            }
+                            const allParticipants = activeConversation.participants || []
+                            return (
+                              <>
+                                <span>{timeText}</span>
+                                {allParticipants.length > 0 && (
+                                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    {' • '}
+                                    {allParticipants.map((p: any, idx: number) => {
+                                      const u = p.user
+                                      return (
+                                        <span key={u.id}>
+                                          {idx > 0 && ', '}
+                                          {u.displayName ?? u.username}
+                                        </span>
+                                      )
+                                    })}
+                                  </span>
+                                )}
+                              </>
+                            )
+                          })()
+                        ) : (
+                          <span style={{ display: 'inline' }}>
+                            {othersArr.map((u: any, i: number) => (
+                              <Fragment key={u.id}>
+                                {i > 0 && ', '}
+                                <span className="eb-member-chip" onClick={(e) => { e.stopPropagation(); openUserCard(u) }}>
+                                  <span className="eb-member-ava">
+                                    <Avatar name={u.displayName ?? 'U'} id={u.id} size={18} avatarUrl={u.avatarUrl && u.avatarUrl.trim() ? u.avatarUrl : undefined} />
+                                  </span>
+                                  {u.displayName ?? u.username}
+                                </span>
+                              </Fragment>
+                            ))}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  (() => {
+                    const peer: any = othersArr[0]
+                    return (
+                      <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                        <div style={{ marginRight: 10 }}>
+                          <Avatar
+                            name={peer?.displayName ?? peer?.username ?? 'D'}
+                            id={peer?.id ?? activeConversation.id}
+                            avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
+                            onClick={peer?.id ? () => openUserCard(peer) : undefined}
+                            presence={avatarPresenceForUser(peer)}
+                            // 1:1 conversation header: red dot must mean the peer is actually in a call.
+                            // Local dialing / optimistic activeCalls / minimized overlay are our own state
+                            // and must not paint the peer as IN_CALL during a failed dial-out.
+                            inCall={effectiveUserStatus(peer) === 'IN_CALL'}
+                            size={60}
+                          />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
+                          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+                            {isMobile && (
+                              <button
+                                className="btn btn-icon btn-ghost"
+                                title="Меню"
+                                onClick={(e) => {
+                                  setHeaderMenu({ open: true, anchor: e.currentTarget })
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  width: 42,
+                                  height: 42,
+                                  minWidth: 42,
+                                  padding: 0,
+                                  margin: 0,
+                                  borderRadius: 999,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                <MoreVertical size={20} />
+                              </button>
+                            )}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: 'var(--text-muted)',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'flex-start',
+                              gap: 2,
+                              lineHeight: 1.15,
+                            }}
+                          >
+                            {isSecret && (
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 6,
+                                  padding: 4,
+                                  borderRadius: 0,
+                                  border: '1px solid rgba(245,158,11,0.24)',
+                                  background: 'rgba(245,158,11,0.10)',
+                                  color: 'var(--text-primary)',
+                                  fontWeight: 700,
+                                  letterSpacing: 0.1,
+                                }}
+                              >
+                                {(() => {
+                                  const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+                                  if (isSecretV2) {
+                                    if (activeSecretUiState.readyState === 'ready') return '🔒 Защищено'
+                                    if (activeSecretUiState.readyState === 'error') return '⚠️ Ошибка ключей'
+                                    return '🔒 Настраивается…'
+                                  }
+                                  if (activeSecretUiState.readyState !== 'ready') return '🔒 Настраивается…'
+                                  return '🔒 Защищено'
+                                })()}
+                              </span>
+                            )}
+                            {/* "Добавить устройство" button removed (replaced by header SVG action). */}
+                            {(() => {
+                              const isMinimized = minimizedCallConvId === activeId
+
+                              // Если звонок завершен (и не минимизирован), показываем время завершения
+                              if (callEntry && callEntry.endedAt && !isMinimized) {
+                                const endedAt = callEntry.endedAt
+                                const now = Date.now()
+                                const diffMs = now - endedAt
+                                const diffMin = Math.floor(diffMs / 60000)
+                                if (diffMin < 1) return <span>Завершён только что</span>
+                                if (diffMin < 60) return <span>Завершён {diffMin} мин назад</span>
+                                const diffH = Math.floor(diffMin / 60)
+                                if (diffH < 24) return <span>Завершён {diffH} ч назад</span>
+                                const endedDate = new Date(endedAt)
+                                const dateStr = endedDate.toLocaleDateString()
+                                const timeStr = endedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })
+                                return <span>Завершён {dateStr} в {timeStr}</span>
+                              }
+
+                              // Если звонок минимизирован или активен — показываем статус звонка (с длительностью только участникам)
+                              if ((callEntry?.active || isMinimized) && callEntry) {
+                                const uid = typeof peer?.id === 'string' ? peer.id : null
+                                const g = uid ? presenceGameByUserId[uid]?.game : undefined
+                                const myId = me?.id
+                                const isParticipantByServer =
+                                  !!(myId && callEntry?.active && Array.isArray(callEntry.participants) && callEntry.participants.includes(myId))
+                                const isParticipantByLocalState =
+                                  callConvId === activeId ||
+                                  minimizedCallConvId === activeId ||
+                                  (!!callEntry?.active && callStore.activeConvId === activeId)
+                                const isParticipant = isParticipantByServer || isParticipantByLocalState
+                                const elapsedMs = isParticipant
+                                  ? (callEntry.startedAt ? (Date.now() - callEntry.startedAt) : (typeof callEntry.elapsedMs === 'number' ? callEntry.elapsedMs : 0))
+                                  : null
+
+                                return (
+                                  <>
+                                    <span>{elapsedMs != null ? `В ЗВОНКЕ: ${formatDuration(elapsedMs)}` : 'В ЗВОНКЕ'}</span>
+                                    {g?.name ? (
+                                      <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+                                        ИГРАЕТ В {g.name}
+                                      </span>
+                                    ) : null}
+                                  </>
+                                )
+                              }
+
+                              // Иначе показываем статус пользователя (в две строки, если в игре)
+                              if (!peer) return ''
+                              const uid = typeof peer?.id === 'string' ? peer.id : null
+                              const base = effectiveUserStatus(peer)
+                              const g = uid ? presenceGameByUserId[uid]?.game : undefined
+
+                              if (g?.name && base === 'IN_CALL') {
+                                return (
+                                  <>
+                                    <span>В ЗВОНКЕ</span>
+                                    <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+                                      ИГРАЕТ В {g.name}
+                                    </span>
+                                  </>
+                                )
+                              }
+                              if (g?.name && (base === 'ONLINE' || base === 'BACKGROUND' || base === 'IN_CALL')) {
+                                return (
+                                  <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+                                    ИГРАЕТ В {g.name}
+                                  </span>
+                                )
+                              }
+                              return <span>{formatPresence(peer)}</span>
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })()
+                )
+              })()
+            ) : (
+              <div>Выберите чат</div>
+            )}
+        </div>
+          {/* Center game image (no bubble) */}
+          {activeConversation && (() => {
+            if (isMobile) return null
+            const isGroup = !!(activeConversation.isGroup || (activeConversation.participants?.length ?? 0) > 2)
+            if (isGroup) return null
+            const othersArr = activeConversation.participants
+              .filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
+              .map((p: any) => p.user)
+            const peer: any = othersArr[0]
+            const uid = typeof peer?.id === 'string' ? peer.id : null
+            const baseStatus = peer ? effectiveUserStatus(peer) : 'OFFLINE'
+            const playing = uid ? presenceGameByUserId[uid]?.game : undefined
+            if (!playing?.name || !(baseStatus === 'ONLINE' || baseStatus === 'BACKGROUND' || baseStatus === 'IN_CALL')) return null
+            const steamAppIdRaw = playing?.steamAppId
+            const steamAppId =
+              typeof steamAppIdRaw === 'number'
+                ? (Number.isFinite(steamAppIdRaw) ? String(steamAppIdRaw) : null)
+                : (typeof steamAppIdRaw === 'string' && steamAppIdRaw.trim() ? steamAppIdRaw.trim() : null)
+            const steamUrl = steamAppId ? `https://store.steampowered.com/app/${encodeURIComponent(steamAppId)}/` : null
+
+            return (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '0 14px',
+                  gridColumn: '2 / 3',
+                  justifySelf: 'center',
+                  pointerEvents: 'auto',
+                }}
+              >
+                {playing.imageUrl ? (
+                  <div
+                    title={
+                      steamUrl
+                        ? `Открыть в Steam: ${playing?.name ? playing.name : ''}`.trim()
+                        : `Играет в ${playing.name}`
+                    }
+                    onClick={() => {
+                      if (!steamUrl) return
+                      void openUrlSystemBrowser(steamUrl)
+                    }}
+                    style={{
+                      cursor: steamUrl ? 'pointer' : 'default',
+                      userSelect: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      minWidth: 0,
+                      maxWidth: '100%',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <img
+                      src={playing.imageUrl}
+                      alt=""
+                      style={{
+                        height: 60,
+                        maxHeight: 60,
+                        width: 'auto',
+                        // Keep it large, but allow shrinking to prevent overflow.
+                        maxWidth: '100%',
+                        // Light rounding like buttons.
+                        borderRadius: 10,
+                        objectFit: 'contain',
+                        display: 'block',
+                        flexShrink: 0,
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div style={{ minWidth: 0, maxWidth: 320, lineHeight: 1.1 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{baseStatus === 'IN_CALL' ? 'В звонке' : 'Играет'}</div>
+                    <div
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 650,
+                        color: 'var(--text-primary)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {playing.name}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+          {endSecretModalOpen &&
+            activeConversation &&
+            !!activeConversation.isSecret &&
+            (activeConversation.participants?.length ?? 0) <= 2 &&
+            typeof document !== 'undefined' &&
+            createPortal(
+              <div
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  background: 'rgba(10,12,16,0.6)',
+                  backdropFilter: 'blur(4px) saturate(110%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: isMobile ? '0 16px' : 0,
+                  boxSizing: 'border-box',
+                  zIndex: 80,
+                }}
+                onClick={() => setEndSecretModalOpen(false)}
+              >
+                <div
+                  style={{
+                    background: 'var(--surface-200)',
+                    padding: isMobile ? 16 : 20,
+                    borderRadius: isMobile ? 20 : 16,
+                    width: '100%',
+                    maxWidth: 420,
+                    border: '1px solid var(--surface-border)',
+                    boxShadow: 'var(--shadow-medium)',
+                    color: 'var(--text-primary)',
+                    textAlign: isMobile ? 'center' : 'left',
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 12,
+                      flexDirection: isMobile ? 'column' : 'row',
+                      gap: isMobile ? 8 : 0,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 18, width: '100%' }}>Завершить секретный чат?</div>
+                    <button
+                      className="btn btn-icon btn-ghost"
+                      onClick={() => setEndSecretModalOpen(false)}
+                      style={{ alignSelf: isMobile ? 'flex-end' : undefined }}
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
+                    Сообщения этого секретного чата будут удалены у всех участников. Это действие необратимо.
+                  </div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: isMobile ? 'center' : 'flex-end',
+                      alignItems: 'center',
+                      flexDirection: isMobile ? 'column' : 'row',
+                      gap: isMobile ? 12 : 8,
+                    }}
+                  >
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => setEndSecretModalOpen(false)}
+                      style={isMobile ? { width: '100%' } : undefined}
+                    >
+                      Отменить
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      style={{
+                        background: '#ef4444',
+                        borderColor: '#ef4444',
+                        width: isMobile ? '100%' : undefined,
+                      }}
+                      onClick={async () => {
+                        if (!activeId) return
+                        try {
+                          await api.delete(`/conversations/${activeId}`)
+                          client.invalidateQueries({ queryKey: ['conversations'] })
+                          client.removeQueries({ queryKey: ['messages', activeId] })
+                          setEndSecretModalOpen(false)
+                          setActiveId(null)
+                        } catch (err) {
+                          // eslint-disable-next-line no-console
+                          console.error('Failed to end secret conversation:', err)
+                        }
+                      }}
+                    >
+                      Завершить
+                    </button>
+                  </div>
+                </div>
+              </div>,
+              document.body,
+            )}
+          {activeId && (() => {
+                const callEntry = activeCalls[activeId]
+                const isActive = callEntry?.active
+                const isGroup = activeConversation?.isGroup || (activeConversation?.participants.length ?? 0) > 2
+                const othersArr = activeConversation?.participants
+                  ?.filter((p: any) => (currentUserId ? p.user.id !== currentUserId : true))
+                  .map((p: any) => p.user) ?? []
+                const peerUser = othersArr[0]
+                const fallbackTimeZone = getFallbackTimeZone()
+                const peerTimeZone = (peerUser as any)?.timezone ?? (peerUser as any)?.timeZone ?? fallbackTimeZone
+                const peerName = peerUser?.displayName ?? peerUser?.username ?? 'Собеседник'
+                const canShowAvailability = !isGroup && !!peerUser?.id
+                const isSecretV2Chat = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+                const canShowAddDeviceInHeader = isSecretV2Chat && hasAnySecretThreadKeys
+                const hasHeaderGame = (() => {
+                  if (isMobile) return false
+                  if (isGroup) return false
+                  const uid = typeof peerUser?.id === 'string' ? peerUser.id : null
+                  if (!uid) return false
+                  const base = effectiveUserStatus(peerUser)
+                  const g = presenceGameByUserId[uid]?.game
+                  return !!(g?.name && (base === 'ONLINE' || base === 'BACKGROUND' || base === 'IN_CALL'))
+                })()
+                // Show text labels on wide screens; icons-only on narrow desktop.
+                // If no game info in header, keep labels (there's space).
+                const compactButtons = !isMobile && isNarrowHeaderButtons && hasHeaderGame
+                const handleOpenAvailability = () => {
+                  if (!activeConversation || !peerUser?.id) return
+                  setAvailabilityContext({
+                    conversationId: activeConversation.id,
+                    peerId: peerUser.id,
+                    peerName,
+                    peerTimeZone,
+                  })
+                }
+                const isMinimized = minimizedCallConvId === activeId
+                // Оверлей открыт, только если callConvId установлен И не минимизирован
+                const isOverlayOpen = callConvId === activeId && !isMinimized
+                // Участие в звонке
+                const myId = me?.id
+                // Для групповых: звонок активен И есть в participants
+                const isParticipatingInGroup = isGroup && isActive && myId && callEntry?.participants?.includes(myId)
+                // Для 1:1: pending-дозвон не считается участием; участвуем только
+                // когда есть оверлей/минимизация или сервер уже подтвердил активный звонок.
+                const isParticipatingInDialog = !isGroup && (
+                  isMinimized || // Если минимизирован - точно участвуем
+                  callConvId === activeId || // Если оверлей был открыт/открыт - участвуем
+                  (isActive && (callStore.activeConvId === activeId || callConvId === activeId)) // Звонок активен и есть связь
+                )
+                const isParticipating = isParticipatingInGroup || isParticipatingInDialog
+                // Показываем кнопку "Развернуть" если участвуем и оверлей не открыт (минимизирован или не развернут)
+                // Кнопки управления показываются постоянно, пока пользователь участвует в звонке
+                const shouldShowExpand = isParticipating && !isOverlayOpen
+                const buttonBaseStyle = {
+                  display: 'flex' as const,
+                  alignItems: 'center' as const,
+                  justifyContent: 'center' as const,
+                  gap: compactButtons ? 0 : 6,
+                  padding: isMobile ? '8px 12px' : (!compactButtons ? '12px 16px' : '10px'),
+                  flex: isMobile ? 1 : 'auto' as const,
+                  minWidth: isMobile ? 0 : (!compactButtons ? 'auto' : 44 as any),
+                  width: compactButtons ? 44 : undefined,
+                  fontSize: isMobile ? '14px' : '15px',
+                  fontWeight: isMobile ? 500 : 600,
+                  height: isMobile ? '42px' : '46px',
+                  minHeight: isMobile ? '42px' : '46px',
+                  boxSizing: 'border-box' as const
+                }
+
+                const headerStyle = {
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  width: isMobile ? '100%' : 'auto',
+                  padding: isMobile ? '0 8px' : '0',
+                  justifyContent: isMobile ? 'center' : 'flex-end',
+                  marginLeft: isMobile ? 0 : 0,
+                  // Desktop header uses 3-column grid; controls live in the right column.
+                  gridColumn: isMobile ? undefined : '3 / 4',
+                  justifySelf: isMobile ? undefined : 'end',
+                }
+                
+                const menuButtonStyle = {
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: isMobile ? 42 : 44,
+                  height: isMobile ? 42 : 44,
+                  minWidth: isMobile ? 42 : 44,
+                  padding: 0,
+                  margin: 0,
+                  borderRadius: 999,
+                }
+
+                const handleStartCall = async () => {
+                  if (!activeId) return
+                  if (!(await requireMediaAccess(false))) return
+                  try {
+                    beginOutgoingCallGuard(activeId)
+                    inviteCall(activeId, false)
+                    signalApkOutgoingStarted(activeId, false)
+                    callStore.startOutgoing(activeId, false)
+                    // Проверяем, является ли беседа групповой
+                    const conv = conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
+                    const isGroup = conv?.isGroup || (conv?.participants?.length ?? 0) > 2
+                    if (isGroup) {
+                      setActiveCalls((prev: any) => {
+                        const current = prev[activeId]
+                        const myId = me?.id
+                        if (!current?.active) {
+                          return { ...prev, [activeId]: { startedAt: Date.now(), active: true, endedAt: null, participants: myId ? [myId] : [] } }
+                        }
+                        if (myId && current.participants && !current.participants.includes(myId)) {
+                          return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
+                        }
+                        return prev
+                      })
+                      // Для групповых бесед сразу открываем оверлей, без экрана дозвона
+                      setCallConvId(activeId)
+                      setMinimizedCallConvId((prev: any) => (prev === activeId ? null : prev))
+                    } else {
+                      // Для 1:1 бесед показываем экран дозвона
+                      const convId = activeId
+                      setOutgoingCall({ conversationId: convId, startedAt: Date.now(), video: false })
+                      // Запускаем звук дозвона
+                      startDialingSound()
+                      // Автоматически закрываем через 30 секунд, если звонок не принят
+                      if (outgoingCallTimerRef.current) {
+                        window.clearTimeout(outgoingCallTimerRef.current)
+                      }
+                      outgoingCallTimerRef.current = window.setTimeout(() => {
+                        setOutgoingCall((prev: any) => {
+                          if (prev?.conversationId === convId) {
+                            stopDialingSound()
+                            playEndCallSound()
+                            endCall(convId)
+                            setActiveCalls((prevCalls: any) => {
+                              const current = prevCalls[convId]
+                              if (current?.active) {
+                                return { ...prevCalls, [convId]: { ...current, active: false, endedAt: Date.now() } }
+                              }
+                              const { [convId]: _omit, ...rest } = prevCalls
+                              return rest
+                            })
+                            callStore.endCall()
+                            return null
+                          }
+                          return prev
+                        })
+                        outgoingCallTimerRef.current = null
+                      }, 30000)
+                    }
+                  } catch (err) {
+                    console.error('Error starting call:', err)
+                  }
+                }
+
+                const handleStartVideoCall = async () => {
+                  if (!activeId) return
+                  if (!(await requireMediaAccess(true))) return
+                  try {
+                    beginOutgoingCallGuard(activeId)
+                    inviteCall(activeId, true)
+                    signalApkOutgoingStarted(activeId, true)
+                    callStore.startOutgoing(activeId, true)
+                    // Проверяем, является ли беседа групповой
+                    const conv = conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
+                    const isGroup = conv?.isGroup || (conv?.participants?.length ?? 0) > 2
+                    if (isGroup) {
+                      setActiveCalls((prev: any) => {
+                        const current = prev[activeId]
+                        const myId = me?.id
+                        if (!current?.active) {
+                          return { ...prev, [activeId]: { startedAt: Date.now(), active: true, endedAt: null, participants: myId ? [myId] : [] } }
+                        }
+                        if (myId && current.participants && !current.participants.includes(myId)) {
+                          return { ...prev, [activeId]: { ...current, participants: [...current.participants, myId] } }
+                        }
+                        return prev
+                      })
+                      // Для групповых бесед сразу открываем оверлей, без экрана дозвона
+                      setCallConvId(activeId)
+                      setMinimizedCallConvId((prev: any) => (prev === activeId ? null : prev))
+                    } else {
+                      // Для 1:1 бесед показываем экран дозвона
+                      const convId = activeId
+                      setOutgoingCall({ conversationId: convId, startedAt: Date.now(), video: true })
+                      // Запускаем звук дозвона
+                      startDialingSound()
+                      // Автоматически закрываем через 30 секунд, если звонок не принят
+                      if (outgoingCallTimerRef.current) {
+                        window.clearTimeout(outgoingCallTimerRef.current)
+                      }
+                      outgoingCallTimerRef.current = window.setTimeout(() => {
+                        setOutgoingCall((prev: any) => {
+                          if (prev?.conversationId === convId) {
+                            stopDialingSound()
+                            playEndCallSound()
+                            endCall(convId)
+                            setActiveCalls((prevCalls: any) => {
+                              const current = prevCalls[convId]
+                              if (current?.active) {
+                                return { ...prevCalls, [convId]: { ...current, active: false, endedAt: Date.now() } }
+                              }
+                              const { [convId]: _omit, ...rest } = prevCalls
+                              return rest
+                            })
+                            callStore.endCall()
+                            return null
+                          }
+                          return prev
+                        })
+                        outgoingCallTimerRef.current = null
+                      }, 30000)
+                    }
+                  } catch (err) {
+                    console.error('Error starting call:', err)
+                  }
+                }
+
+                const handleExpandCall = () => {
+                  if (!activeId) return
+                  setCallConvId(activeId)
+                  setMinimizedCallConvId(null)
+                }
+
+                const renderCallControls = () => {
+                  // Если звонок активен ИЛИ минимизирован (минимизированный звонок все еще активен, просто скрыт)
+                  if (isActive || isMinimized) {
+                    if (!isParticipating) {
+                      // «Мой собственный звонок, активный с другого устройства» (1:1):
+                      // подписываем кнопки короче, чтобы влазило на мобилках.
+                      const isMineOnAnotherDevice = !isGroup && !!myId && (callEntry?.participants?.includes(myId) ?? false)
+                      const audioLabel = isMineOnAnotherDevice ? 'Тоже сюда' : 'Подключиться'
+                      const videoLabel = isMineOnAnotherDevice ? 'Видео сюда' : 'Подключиться с видео'
+                      return (
+                        <>
+                          <button 
+                            className="btn btn-secondary" 
+                            title={!isMobile ? audioLabel : undefined}
+                            onClick={() => {
+                              const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
+                              if (isGroupCall) {
+                                setCallConvId(activeId!)
+                                setMinimizedCallConvId((prev: any) => (prev === activeId ? null : prev))
+                                callStore.startOutgoing(activeId!, false)
+                                try { joinCallRoom(activeId!, false) } catch {}
+                              } else {
+                                // Для 1:1 звонков устанавливаем callConvId и callStore.activeConvId для показа кнопок управления.
+                                // joinCallRoom нужен, чтобы сервер зарегистрировал этот сокет в activeDirectCalls
+                                // (важно для presence IN_CALL и для подключения к уже активному 1:1 звонку
+                                // с другого устройства того же аккаунта).
+                                setCallConvId(activeId!)
+                                setMinimizedCallConvId((prev: any) => (prev === activeId ? null : prev))
+                                callStore.startOutgoing(activeId!, false)
+                                try { joinCallRoom(activeId!, false) } catch {}
+                              }
+                            }}
+                            style={buttonBaseStyle}
+                          >
+                            <Phone size={isMobile ? 16 : 18} />
+                            {isMobile ? audioLabel : (compactButtons ? null : ` ${audioLabel}`)}
+                          </button>
+                          <button 
+                            className="btn btn-primary" 
+                            title={!isMobile ? videoLabel : undefined}
+                            onClick={() => {
+                              const isGroupCall = activeConversation?.isGroup || ((activeConversation?.participants?.length ?? 0) > 2)
+                              if (isGroupCall) {
+                                setCallConvId(activeId!)
+                                setMinimizedCallConvId((prev: any) => (prev === activeId ? null : prev))
+                                callStore.startOutgoing(activeId!, true)
+                                try { joinCallRoom(activeId!, true) } catch {}
+                              } else {
+                                // Для 1:1 звонков устанавливаем callConvId и callStore.activeConvId для показа кнопок управления
+                                setCallConvId(activeId!)
+                                setMinimizedCallConvId((prev: any) => (prev === activeId ? null : prev))
+                                callStore.startOutgoing(activeId!, true)
+                                try { joinCallRoom(activeId!, true) } catch {}
+                              }
+                            }}
+                            style={buttonBaseStyle}
+                          >
+                            <Video size={isMobile ? 16 : 18} />
+                            {isMobile ? videoLabel : (compactButtons ? null : ` ${videoLabel}`)}
+                          </button>
+                          {canShowAvailability && !isSecretV2Chat && (
+                            <AvailabilityButton onClick={handleOpenAvailability} style={menuButtonStyle} />
+                          )}
+                          {canShowAvailability && canShowAddDeviceInHeader && (
+                            <button
+                              type="button"
+                              className="btn btn-icon btn-ghost"
+                              title="Добавить устройство"
+                              onClick={() => setDeviceLinkInviteOpen(true)}
+                              style={{
+                                ...menuButtonStyle,
+                                color: '#86efac',
+                                border: '1px solid rgba(34,197,94,0.18)',
+                                background: 'rgba(34,197,94,0.06)',
+                              }}
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true" width={20} height={20}>
+                                <rect x="2" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                                <rect x="13" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                                <rect x="2" y="13" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                                <path d="M17.5 14.5v6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                                <path d="M14.5 17.5h6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                              </svg>
+                            </button>
+                          )}
+                          {!isMobile && (
+                            <button
+                              className="btn btn-icon btn-ghost"
+                              title="Меню"
+                              onClick={(e) => {
+                                setHeaderMenu({ open: true, anchor: e.currentTarget })
+                              }}
+                              style={menuButtonStyle}
+                            >
+                              <MoreVertical size={22} />
+                            </button>
+                          )}
+                        </>
+                      )
+                    }
+
+                    return (
+                      <>
+                        {/* Показываем кнопку "Развернуть" если оверлей не открыт (минимизирован или не развернут) */}
+                        {!isOverlayOpen && (
+                          <button 
+                            className="btn btn-secondary"
+                            title={!isMobile ? 'Развернуть' : undefined}
+                            onClick={handleExpandCall}
+                            style={buttonBaseStyle}
+                          >
+                            <Maximize2 size={isMobile ? 16 : 18} />
+                            {isMobile ? 'Развернуть' : (compactButtons ? null : ' Развернуть')}
+                          </button>
+                        )}
+                        {/* Кнопка "Сбросить" показывается всегда, пока пользователь участвует в звонке */}
+                        <button 
+                          className="btn"
+                          title={!isMobile ? 'Сбросить' : undefined}
+                          onClick={() => {
+                            if (!callConvId) return
+                            void endActiveCallAction(
+                              {
+                                callId: callConvId,
+                                conversationId: callConvId,
+                              },
+                              'web_ui',
+                            )
+                          }}
+                          style={{ 
+                            ...buttonBaseStyle,
+                            background: '#ef4444',
+                            color: '#fff'
+                          }}
+                        >
+                          <PhoneOff size={isMobile ? 16 : 18} />
+                          {isMobile ? 'Сбросить' : (compactButtons ? null : ' Сбросить')}
+                        </button>
+                        {canShowAvailability && !isSecretV2Chat && (
+                          <AvailabilityButton onClick={handleOpenAvailability} style={menuButtonStyle} />
+                        )}
+                        {canShowAvailability && canShowAddDeviceInHeader && (
+                          <button
+                            type="button"
+                            className="btn btn-icon btn-ghost"
+                            title="Добавить устройство"
+                            onClick={() => setDeviceLinkInviteOpen(true)}
+                            style={{
+                              ...menuButtonStyle,
+                              color: '#86efac',
+                              border: '1px solid rgba(34,197,94,0.18)',
+                              background: 'rgba(34,197,94,0.06)',
+                            }}
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true" width={20} height={20}>
+                              <rect x="2" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                              <rect x="13" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                              <rect x="2" y="13" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                              <path d="M17.5 14.5v6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                              <path d="M14.5 17.5h6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                            </svg>
+                          </button>
+                        )}
+                        {!isMobile && (
+                          <button
+                            className="btn btn-icon btn-ghost"
+                            title="Меню"
+                            onClick={(e) => {
+                              setHeaderMenu({ open: true, anchor: e.currentTarget })
+                            }}
+                            style={menuButtonStyle}
+                          >
+                            <MoreVertical size={22} />
+                          </button>
+                        )}
+                      </>
+                    )
+                  }
+
+                  return (
+                    <>
+                      <button 
+                        className="btn btn-secondary" 
+                        title={!isMobile ? 'Звонок' : undefined}
+                        onClick={() => { void handleStartCall() }}
+                        style={buttonBaseStyle}
+                      >
+                        <Phone size={isMobile ? 16 : 18} />
+                        {isMobile ? ' Начать звонок' : (compactButtons ? null : ' Звонок')}
+                      </button>
+                      <button 
+                        className="btn btn-primary" 
+                        title={!isMobile ? 'Видео' : undefined}
+                        onClick={() => { void handleStartVideoCall() }}
+                        style={buttonBaseStyle}
+                      >
+                        <Video size={isMobile ? 16 : 18} />
+                        {isMobile ? ' Начать с видео' : (compactButtons ? null : ' Видео')}
+                      </button>
+                      {canShowAvailability && !isSecretV2Chat && (
+                        <AvailabilityButton onClick={handleOpenAvailability} style={menuButtonStyle} />
+                      )}
+                      {canShowAvailability && canShowAddDeviceInHeader && (
+                        <button
+                          type="button"
+                          className="btn btn-icon btn-ghost"
+                          title="Добавить устройство"
+                          onClick={() => setDeviceLinkInviteOpen(true)}
+                          style={{
+                            ...menuButtonStyle,
+                            color: '#86efac',
+                            border: '1px solid rgba(34,197,94,0.18)',
+                            background: 'rgba(34,197,94,0.06)',
+                          }}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true" width={20} height={20}>
+                            <rect x="2" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                            <rect x="13" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                            <rect x="2" y="13" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="2" />
+                            <path d="M17.5 14.5v6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                            <path d="M14.5 17.5h6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                          </svg>
+                        </button>
+                      )}
+                      {!isMobile && (
+                        <button
+                          className="btn btn-icon btn-ghost"
+                          title="Меню"
+                          onClick={(e) => {
+                            setHeaderMenu({ open: true, anchor: e.currentTarget })
+                          }}
+                          style={menuButtonStyle}
+                        >
+                          <MoreVertical size={22} />
+                        </button>
+                      )}
+                    </>
+                  )
+                }
+
+                return (
+                  <>
+                    <div style={headerStyle}>
+                      {renderCallControls()}
+                    </div>
+                    {callPermissionError && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          padding: '8px 12px',
+                          borderRadius: 10,
+                          border: '1px solid var(--surface-border)',
+                          background: 'rgba(239,68,68,0.08)',
+                          color: '#fca5a5',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          fontSize: 13,
+                          maxWidth: isMobile ? '100%' : 420,
+                          width: isMobile ? '100%' : 'auto',
+                        }}
+                      >
+                        <span style={{ flex: 1 }}>{callPermissionError}</span>
+                        <button
+                          type="button"
+                          onClick={() => setCallPermissionError(null)}
+                          style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', padding: 4 }}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )
+          })()}
+        </header>
+        <div
+          className="messages-container"
+          style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}
+          onDragEnter={(e) => {
+            if (!eventHasFiles(e)) return
+            e.preventDefault()
+            attachDragDepthRef.current += 1
+            setAttachDragOver(true)
+          }}
+          onDragOver={(e) => {
+            if (!eventHasFiles(e)) return
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'copy'
+            setAttachDragOver(true)
+          }}
+          onDragLeave={(e) => {
+            if (!eventHasFiles(e)) return
+            e.preventDefault()
+            attachDragDepthRef.current = Math.max(0, attachDragDepthRef.current - 1)
+            if (attachDragDepthRef.current === 0) setAttachDragOver(false)
+          }}
+          onDrop={async (e) => {
+            if (!eventHasFiles(e)) return
+            e.preventDefault()
+            e.stopPropagation()
+            attachDragDepthRef.current = 0
+            setAttachDragOver(false)
+            const files = Array.from(e.dataTransfer.files || [])
+            if (!files.length) return
+            await handleChatDropFiles(files)
+          }}
+        >
+          {multiSelectMode && activeId && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 15,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+                flexWrap: 'wrap',
+                padding: '10px 14px',
+                borderBottom: '1px solid var(--surface-border)',
+                background: 'var(--surface-200)',
+              }}
+            >
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={selectedMessageIds.length === 0}
+                  style={{
+                    background: selectedMessageIds.length ? 'var(--brand-600)' : 'var(--surface-border)',
+                    color: '#fff',
+                    fontWeight: 700,
+                    fontSize: 12,
+                    letterSpacing: 0.4,
+                    textTransform: 'uppercase',
+                    borderRadius: 10,
+                    padding: '8px 14px',
+                    opacity: selectedMessageIds.length ? 1 : 0.5,
+                  }}
+                  onClick={() => {
+                    const msgs = getSelectedMessagesOrdered()
+                    const draft = buildReplyDraftFromMessages(msgs)
+                    if (draft) {
+                      setForwardComposerDraft(null)
+                      setReplyTo(draft)
+                    }
+                    clearMessageMultiSelect()
+                  }}
+                >
+                  Ответить
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={selectedMessageIds.length === 0}
+                  style={{
+                    background: selectedMessageIds.length ? 'var(--brand-600)' : 'var(--surface-border)',
+                    color: '#fff',
+                    fontWeight: 700,
+                    fontSize: 12,
+                    letterSpacing: 0.4,
+                    textTransform: 'uppercase',
+                    borderRadius: 10,
+                    padding: '8px 14px',
+                    opacity: selectedMessageIds.length ? 1 : 0.5,
+                  }}
+                  onClick={() => {
+                    const ids = getSelectedMessagesOrdered().map((m: any) => m.id)
+                    if (!ids.length) return
+                    setForwardComposerDraft(null)
+                    setForwardModal({ open: true, messageIds: ids })
+                  }}
+                >
+                  Переслать{selectedMessageIds.length > 0 ? ` ${selectedMessageIds.length}` : ''}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={selectedMessageIds.length === 0}
+                  style={{
+                    background: selectedMessageIds.length ? 'var(--brand-600)' : 'var(--surface-border)',
+                    color: '#fff',
+                    fontWeight: 700,
+                    fontSize: 12,
+                    letterSpacing: 0.4,
+                    textTransform: 'uppercase',
+                    borderRadius: 10,
+                    padding: '8px 14px',
+                    opacity: selectedMessageIds.length ? 1 : 0.5,
+                  }}
+                  onClick={async () => {
+                    const msgs = getSelectedMessagesOrdered()
+                    const mine = msgs.filter((m: any) => m.senderId === me?.id)
+                    if (!mine.length) {
+                      systemToast.error('Среди выбранных нет ваших сообщений')
+                      return
+                    }
+                    const ok = await systemConfirm({
+                      title: 'Удалить сообщения',
+                      message: `Удалить ${mine.length} ваших сообщений?`,
+                      confirmText: 'Удалить',
+                      cancelText: 'Отмена',
+                      danger: true,
+                    })
+                    if (!ok) return
+                    for (const m of mine) {
+                      try {
+                        await api.post('/messages/delete', { messageId: m.id })
+                      } catch {
+                        /* next */
+                      }
+                    }
+                    if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                    clearMessageMultiSelect()
+                  }}
+                >
+                  Удалить{selectedMessageIds.length > 0 ? ` ${selectedMessageIds.length}` : ''}
+                </button>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ color: 'var(--brand-600)', fontWeight: 700, fontSize: 12, textTransform: 'uppercase' }}
+                onClick={() => clearMessageMultiSelect()}
+              >
+                Отмена
+              </button>
+            </div>
+          )}
+          {attachDragOver && !editState && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 10,
+                borderRadius: 14,
+                border: '2px dashed var(--surface-border-strong)',
+                background: 'rgba(217,119,6,0.06)',
+                zIndex: 30,
+                pointerEvents: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--text-muted)',
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
+              Отпустите файлы, чтобы прикрепить
+            </div>
+          )}
+          {Boolean(
+            activeSecretUiState?.isSecret &&
+              String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
+              (activeSecretUiState.readyState === 'bootstrapping' || !!secretBootDonePulse || creatorAwaitPeerAccept) &&
+              !secretInviteForMe &&
+              !secretWaitingAsCreator
+          ) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 20,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                pointerEvents: 'none',
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, opacity: 0.95 }}>
+                <LoadingSpinner done={!!secretBootDonePulse && activeSecretUiState.readyState !== 'bootstrapping'} />
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600 }}>
+                  {secretBootDonePulse ? 'Готово' : (creatorAwaitPeerAccept ? 'Ждём подтверждение…' : 'Настраиваем защиту…')}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {Boolean(secretWaitingAsCreator) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 23,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(10,12,16,0.5)',
+                backdropFilter: 'blur(8px) saturate(120%)',
+                padding: 16,
+              }}
+            >
+              <div style={{ maxWidth: 360, width: '100%', background: 'var(--surface-100, #1b1f27)', border: '1px solid var(--surface-border-strong, #3b414f)', borderRadius: 16, padding: 20, textAlign: 'center', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}>
+                <div style={{ fontSize: 34, marginBottom: 6 }}>🔒</div>
+                <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>Ждём подтверждения</div>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 18, lineHeight: 1.4 }}>
+                  Попросите {secretWaitingAsCreator?.peerName} принять приглашение — секретный чат откроется, как только его подтвердят на одном из устройств.
+                </div>
+                <button
+                  type="button"
+                  onClick={cancelSecretInviteAsCreator}
+                  disabled={secretInviteBusy}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--surface-border-strong, #3b414f)', background: 'transparent', color: 'var(--text, #e5e7eb)', cursor: 'pointer', fontWeight: 600 }}
+                >
+                  {secretInviteBusy ? '…' : 'Отменить приглашение'}
+                </button>
+              </div>
+            </div>
+          )}
+          {Boolean(secretInviteForMe) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 23,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(10,12,16,0.5)',
+                backdropFilter: 'blur(8px) saturate(120%)',
+                padding: 16,
+              }}
+            >
+              <div
+                style={{
+                  maxWidth: 360,
+                  width: '100%',
+                  background: 'var(--surface-100, #1b1f27)',
+                  border: '1px solid var(--surface-border-strong, #3b414f)',
+                  borderRadius: 16,
+                  padding: 20,
+                  textAlign: 'center',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+                }}
+              >
+                <div style={{ fontSize: 34, marginBottom: 6 }}>🔒</div>
+                <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>Секретный чат</div>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 18, lineHeight: 1.4 }}>
+                  {secretInviteForMe?.fromName} приглашает вас в зашифрованный чат. Примите на этом устройстве, чтобы получить ключи. Остальные устройства подключите через «Добавить устройство».
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={declineSecretInvite}
+                    disabled={secretInviteBusy}
+                    style={{
+                      flex: 1,
+                      padding: '10px 14px',
+                      borderRadius: 12,
+                      border: '1px solid var(--surface-border-strong, #3b414f)',
+                      background: 'transparent',
+                      color: 'var(--text-primary, #f1f3f6)',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Отклонить
+                  </button>
+                  <button
+                    type="button"
+                    onClick={acceptSecretInvite}
+                    disabled={secretInviteBusy}
+                    style={{
+                      flex: 1,
+                      padding: '10px 14px',
+                      borderRadius: 12,
+                      border: 'none',
+                      background: 'var(--brand, #d97706)',
+                      color: '#fff',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {secretInviteBusy ? '…' : 'Принять'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {Boolean(
+            !secretInviteForMe &&
+            activeSecretUiState?.isSecret &&
+              String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
+              // On a brand-new device (no stored secret keys) require linking via code/QR.
+              hasOtherTrustedDevice &&
+              !hasAnySecretThreadKeys
+          ) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 22,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(10,12,16,0.42)',
+                backdropFilter: 'blur(8px) saturate(120%)',
+                padding: 16,
+              }}
+            >
+              <DeviceLinkInline variant="join" />
+            </div>
+          )}
+
+          {Boolean(
+            deviceLinkInviteOpen &&
+              activeSecretUiState?.isSecret &&
+              String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' &&
+              hasAnySecretThreadKeys
+          ) && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 23,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(10,12,16,0.42)',
+                backdropFilter: 'blur(8px) saturate(120%)',
+                padding: 16,
+              }}
+              onClick={() => setDeviceLinkInviteOpen(false)}
+            >
+              <div onClick={(e) => e.stopPropagation()}>
+                <DeviceLinkInline variant="invite" onClose={() => setDeviceLinkInviteOpen(false)} />
+              </div>
+            </div>
+          )}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            height: '24px',
+            background: 'linear-gradient(to bottom, var(--surface-200) 0%, rgba(35, 39, 49, 0) 100%)',
+            pointerEvents: 'none',
+            zIndex: 10
+          }} />
+          <div
+            ref={messagesRef}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: 'auto',
+              padding: 16,
+              display: 'block',
+            }}
+          >
+            {activeId && olderLoading && (
+              <div
+                aria-live="polite"
+                style={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  padding: '6px 0 14px',
+                  color: 'var(--text-muted)',
+                  fontSize: 13,
+                }}
+              >
+                Загружаем…
+              </div>
+            )}
+            {!activeId ? (
+              <div className="messages-empty">Сообщения появятся здесь</div>
+            ) : (
+              <div ref={messagesContentRef}>{(() => {
+                const list = (displayedMessages ? [...displayedMessages] : []).
+                  filter((m: any) => !m.deletedAt).
+                  sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
+                const pending = activePendingMessages
+                const fullList = [...(list || []), ...pending]
+                if (!fullList) return null
+                const replyQuoteVisual = (
+                  quotedMsg: any | undefined | null,
+                  snippetFromApi: string,
+                ) => {
+                  const thumbUrl = quotedMsg ? resolveFirstImageAttachmentUrl(quotedMsg) : null
+                  const apiTrim = typeof snippetFromApi === 'string' ? snippetFromApi.trim() : ''
+                  let line = apiTrim
+                  if (!line && quotedMsg) line = previewTextForReplyDraft(quotedMsg).trim()
+                  if (line.length > 240) line = `${line.slice(0, 237)}…`
+                  const hideLineForThumb = !!(thumbUrl && replySnippetIsGenericRu(line))
+                  const showText = !!line && !hideLineForThumb
+                  const showPlaceholder = !thumbUrl && !showText
+                  return { thumbUrl, line, showText, showPlaceholder }
+                }
+                const __fwdBundles = computeMultiSourceForwardBundles(fullList)
+                const __fwdSkip = new Set<number>()
+                for (const b of __fwdBundles) {
+                  for (let k = b.start + 1; k <= b.end; k++) __fwdSkip.add(k)
+                }
+                const __fwdBundleByStart = new Map<number, (typeof __fwdBundles)[number]>()
+                for (const b of __fwdBundles) __fwdBundleByStart.set(b.start, b)
+                const ebloRowPositionByIndex = new Map<number, number>()
+                const ebloRowKeyByIndex = new Map<number, string>()
+                const ebloRows: EbloRowMeta[] = []
+                for (let i = 0; i < fullList.length; i++) {
+                  const row = fullList[i]
+                  if (!row || row.deletedAt || __fwdSkip.has(i)) continue
+                  const keyPrefix = __fwdBundleByStart.has(i)
+                    ? 'bundle'
+                    : row.type === 'SYSTEM'
+                      ? 'system'
+                      : hasForwardFromMeta(row)
+                        ? 'forward'
+                        : 'msg'
+                  const rowKey = `${keyPrefix}:${row.id ?? row.tempId ?? i}`
+                  ebloRowPositionByIndex.set(i, ebloRows.length)
+                  ebloRowKeyByIndex.set(i, rowKey)
+                  ebloRows.push({ index: i, key: rowKey })
+                }
+                ebloRowsRef.current = ebloRows
+                const effectiveEbloRange =
+                  ebloRows.length > EBLO_MIN_ROWS && ebloRange.end === Number.MAX_SAFE_INTEGER
+                    ? {
+                        start: Math.max(0, ebloRows.length - EBLO_INITIAL_ROWS),
+                        end: ebloRows.length - 1,
+                      }
+                    : ebloRange
+                const repMessagePendingForMulti = (rep: any) =>
+                  !!rep &&
+                  (() => {
+                    try {
+                      if (typeof rep?.__pending === 'boolean') return rep.__pending
+                      if (typeof rep.id === 'string' && rep.id.startsWith('tmp-')) return true
+                      const atts = rep?.attachments
+                      if (Array.isArray(atts) && atts.some((a: any) => !!a?.__pending)) return true
+                      return false
+                    } catch {
+                      return false
+                    }
+                  })()
+                const forwardBundleHostCanMultiSelect = (rep: any) =>
+                  !!rep && !repMessagePendingForMulti(rep) && rep.type !== 'SYSTEM'
+                const renderForwardBundleHostCheckbox = (rep: any) => {
+                  if (!multiSelectMode || !forwardBundleHostCanMultiSelect(rep)) return null
+                  const rid = String(rep.id)
+                  const checked = selectedMessageIds.includes(rid)
+                  return (
+                    <button
+                      type="button"
+                      className={`msg-multi-checkbox${checked ? ' msg-multi-checkbox--checked' : ''}`}
+                      aria-label={checked ? 'Снять выделение' : 'Выбрать сообщение'}
+                      aria-pressed={checked}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        toggleMessageMultiSelect(rid)
+                      }}
+                    >
+                      {checked ? <Check size={16} strokeWidth={2.8} /> : null}
+                    </button>
+                  )
+                }
+                const onForwardBundleHostMultiClick = (e: React.MouseEvent, representativeId: string) => {
+                  if (!multiSelectMode) return
+                  const rep = fullList.find((x: any) => x?.id === representativeId)
+                  if (!forwardBundleHostCanMultiSelect(rep)) return
+                  const t = e.target as HTMLElement
+                  if (
+                    t.closest(
+                      '.msg-bubble, a[href], button, .reaction-emoji, .msg-reaction-rail-host, img, video, .msg-media-tile, .video-message-bubble',
+                    )
+                  )
+                    return
+                  const sel = typeof window.getSelection === 'function' ? window.getSelection() : null
+                  if (sel && sel.toString().length > 0) return
+                  e.preventDefault()
+                  toggleMessageMultiSelect(representativeId)
+                }
+                /** Время и галочки у внешнего серого бабла: «переслано + свой комментарий» или пачка без комментария (у тел пересланого внутри конверта скрыты через suppress). */
+                const renderForwardCaptionOuterBubbleMeta = (
+                  repMsg: any,
+                  isRepMe: boolean,
+                  bubbleSelected: boolean,
+                ) => {
+                  if (!repMsg) return null
+                  const pend = (() => {
+                    try {
+                      if (typeof repMsg.__pending === 'boolean') return repMsg.__pending
+                      if (typeof repMsg.id === 'string' && repMsg.id.startsWith('tmp-')) return true
+                      const atts = repMsg?.attachments
+                      if (Array.isArray(atts) && atts.some((a: any) => !!a?.__pending)) return true
+                      return false
+                    } catch {
+                      return false
+                    }
+                  })()
+                  const createdOuter = repMsg.createdAt ? new Date(repMsg.createdAt) : null
+                  const tlab = formatMessageClockLabel(createdOuter)
+                  const recLineOuter =
+                    createdOuter && Number.isFinite(createdOuter.getTime())
+                      ? formatRuRelativeSendDay(createdOuter)
+                      : null
+                  const labelOuter =
+                    recLineOuter != null && recLineOuter.trim() !== ''
+                      ? `${tlab}, ${recLineOuter}`
+                      : tlab
+                  const editedOuter =
+                    typeof (repMsg as any)?.metadata?.editedAt === 'string' && String((repMsg as any).metadata.editedAt).length > 0
+                  const otherIdsR =
+                    (activeConversation?.participants || [])
+                      .map((p: any) => p.user.id)
+                      .filter((id: string) => (currentUserId ? id !== currentUserId : true)) ?? []
+                  const receiptsR = (repMsg.receipts || []) as Array<any>
+                  const readByAnyR =
+                    isRepMe &&
+                    otherIdsR.some((uid: string) => receiptsR.some((r) => r.userId === uid && (r.status === 'READ' || r.status === 'SEEN')))
+                  const ackedOnServerR = isRepMe && !!repMsg.id && !pend
+                  const tickVariantR: 'none' | 'ack' | 'read' = isRepMe
+                    ? readByAnyR
+                      ? 'read'
+                      : ackedOnServerR
+                        ? 'ack'
+                        : 'none'
+                    : 'none'
+                  const tickColorOuter =
+                    tickVariantR === 'read'
+                      ? bubbleSelected
+                        ? '#451a03'
+                        : '#d97706'
+                      : bubbleSelected
+                        ? '#27272a'
+                        : '#9aa0a8'
+                  const renderTicksOuter = (opts?: { withLeftMargin?: boolean }) => {
+                    if (tickVariantR === 'none') return null
+                    const withLeftMargin = opts?.withLeftMargin ?? false
+                    const common: React.CSSProperties = {
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: tickColorOuter,
+                      marginLeft: withLeftMargin ? 6 : 0,
+                      lineHeight: 0,
+                      transform: 'translateY(1px)',
+                      flexShrink: 0,
+                    }
+                    const strokeWidth = 2.2
+                    return (
+                      <span style={common} aria-label={tickVariantR === 'read' ? 'Read' : 'Sent'}>
+                        {tickVariantR === 'read' ? (
+                          <svg width={18} height={12} viewBox="0 0 18 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 6.5L4.5 10L11.5 1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M7 6.5L10.5 10L17.5 1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        ) : (
+                          <svg width={12} height={12} viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 6.5L4.5 10L11 1.5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </span>
+                    )
+                  }
+                  return (
+                    <div className="msg-meta" style={{ marginTop: 8, color: bubbleSelected ? '#27272a' : '#9aa0a8' }}>
+                      <span>{labelOuter}</span>
+                      {editedOuter ? <span style={{ fontSize: 11, opacity: 0.9 }}>изменено</span> : null}
+                      {renderTicksOuter({ withLeftMargin: false })}
+                    </div>
+                  )
+                }
+                const renderChatMessageAtIndex = (
+                  rowIndex: number,
+                  forwardBundleInner?: boolean,
+                  forwardBundleInnerLast?: boolean,
+                  bundleForwardSenderId?: string | null,
+                  /** id первого сообщения конверта пересылки: выделение только «целым конвертом», не внутренними id */
+                  forwardBundleRepresentativeMessageId?: string | null,
+                  /** когда пересылка свёрнута в бабл с комментарием — не дублируем галочки/время на представителе внутри */
+                  forwardBundleSuppressMetaFooter?: boolean,
+                ) => {
+                  const i = rowIndex
+                  const m = fullList[i]
+                  const prev = fullList[i - 1]
+                  const next = fullList[i + 1]
+                  const isLastOfRun = !next || next.senderId !== m.senderId
+                  const isPrevSame = !!prev && prev.senderId === m.senderId
+                  const isMe =
+                    currentUserId != null &&
+                    m.senderId != null &&
+                    String(m.senderId) === String(currentUserId)
+                  const isPendingMessage = (() => {
+                    try {
+                      if (typeof (m as any)?.__pending === 'boolean') return (m as any).__pending
+                      if (typeof m.id === 'string' && m.id.startsWith('tmp-')) return true
+                      const atts = (m as any)?.attachments
+                      if (Array.isArray(atts) && atts.some((a: any) => !!a?.__pending)) return true
+                      return false
+                    } catch {
+                      return false
+                    }
+                  })()
+                  const canSelectForMulti = !isPendingMessage && m.type !== 'SYSTEM'
+                  const multiSelectAnchorId =
+                    forwardBundleInner && forwardBundleRepresentativeMessageId
+                      ? forwardBundleRepresentativeMessageId
+                      : m.id
+                  const suppressFwdComposeMetaFooter =
+                    !!forwardBundleSuppressMetaFooter && !!forwardBundleInner
+                  const skipInnerBubbleAnchorRef =
+                    suppressFwdComposeMetaFooter &&
+                    forwardBundleRepresentativeMessageId != null &&
+                    String(m.id) === String(forwardBundleRepresentativeMessageId)
+                  const baseRow = leftAlignAll ? 'msg left' : (isMe ? 'msg me' : 'msg them')
+                  const spacingClass = isPrevSame ? 'compact' : 'gap'
+                  const rowClass = `${baseRow} ${spacingClass}${
+                    multiSelectMode && canSelectForMulti && leftAlignAll ? ' msg--multiselect-wide' : ''
+                  }`
+                  const baseBubble = leftAlignAll ? 'msg-bubble left' : (isMe ? 'msg-bubble me' : 'msg-bubble them')
+                  const firstUrl = typeof m.content === 'string' ? extractFirstPreviewableUrl(m.content) : null
+                  const hasAnyLink = !!firstUrl
+                  const previewMedia = (() => {
+                    const p = (m as any)?.metadata?.linkPreview
+                    if (p && typeof p === 'object' && typeof p.imageUrl === 'string' && p.imageUrl.trim()) return true
+                    if (!firstUrl) return false
+                    try {
+                      const host = new URL(firstUrl).hostname.toLowerCase()
+                      return host.includes('youtube.com') || host === 'youtu.be' || host.includes('spotify.com') || host === 'spoti.fi'
+                    } catch {
+                      return false
+                    }
+                  })()
+                  const senderUser = usersById[m.senderId]
+                  const avatarName = senderUser?.displayName ?? senderUser?.username ?? (isMe ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
+                  const avatarId = senderUser?.id ?? (isMe ? (me?.id ?? 'me') : 'user')
+                  const isGroupConv = !!(activeConversation?.isGroup || (activeConversation?.participants?.length ?? 0) > 2)
+                  const normalizedForwardFromEarly = normalizeForwardFromRecord(parseMessageMetadata(m)?.forwardFrom)
+                  const isForwardedBubble = !!(
+                    normalizedForwardFromEarly &&
+                    typeof normalizedForwardFromEarly.authorName === 'string' &&
+                    String(normalizedForwardFromEarly.authorName).trim()
+                  )
+                  /** Исходный автор в пересылке (имя в метаданных): и для входящих, и для исходящих — senderId всегда «кто переслал». */
+                  const forwardHueKey =
+                    isForwardedBubble && normalizedForwardFromEarly
+                      ? `fwd:${String(normalizedForwardFromEarly.authorName).trim()}|${
+                          typeof normalizedForwardFromEarly.sourceChatTitle === 'string'
+                            ? String(normalizedForwardFromEarly.sourceChatTitle).trim()
+                            : ''
+                        }`
+                      : null
+                  const bgBase =
+                    forwardHueKey != null
+                      ? groupIncomingBubbleBg(forwardHueKey)
+                      : isMe
+                        ? '#303845'
+                        : isGroupConv
+                          ? groupIncomingBubbleBg(m.senderId)
+                          : hashToGray(m.senderId)
+                  const bg = bgBase
+                  const fg = isMe ? '#f1f3f6' : '#f1f3f6'
+                  const bundleFw = bundleForwardSenderId != null ? String(bundleForwardSenderId) : null
+                  /** Хвосты как у обычных: конец серии от того же отправителя что и m.
+                   *  Внутри конверта авторы в сообщениях могут быть из исходной группы — «серия чей» для хвоста
+                   *  берём у пересылающего (bundleForwardSenderId): иначе пропадает хвост, если после пачки ты пишешь снова. */
+                  const forwardBundleInnerContinuationTail =
+                    !!forwardBundleInner &&
+                    forwardBundleInnerLast === true &&
+                    !!next &&
+                    bundleFw != null &&
+                    String(next.senderId) === bundleFw
+                  const soloForwardedContinuationTail =
+                    isForwardedBubble &&
+                    !forwardBundleInner &&
+                    isMe &&
+                    !leftAlignAll &&
+                    !!next &&
+                    currentUserId != null &&
+                    String(next.senderId) === String(currentUserId)
+                  /** Внутри общего конверта цитируемый бабл без хвостика (как в макете пачки). */
+                  const wantsBubbleTail = forwardBundleInner
+                    ? false
+                    : isLastOfRun || forwardBundleInnerContinuationTail || soloForwardedContinuationTail
+                  const bubbleClass = wantsBubbleTail
+                    ? `${baseBubble} ${isMe && !leftAlignAll ? 'tail-right' : 'tail-left'}`
+                    : baseBubble
+                  const forwardBubbleMods = !isForwardedBubble ? '' : ' msg-bubble--forward msg-bubble--forward-quote'
+                  /** Выделение рисуем только на строке-хосте конверта; внутри пачки anchor общий с хостом, но класс/bg не дублируем. */
+                  const multiSelectAnchorSelected =
+                    multiSelectMode && canSelectForMulti && selectedMessageIds.includes(multiSelectAnchorId)
+                  const isSelectedInMulti = multiSelectAnchorSelected && !forwardBundleInner
+                  const bubbleFg = isSelectedInMulti ? '#0a0a0a' : fg
+                  const senderAccentColor = nameColorForUser(m.senderId)
+                  const showGroupSenderName = isGroupConv && !isPrevSame
+                  const replyPayload = m.replyTo as { id?: string; content?: string | null; senderId?: string } | undefined
+                  const quotedSenderId = replyPayload?.senderId
+                  const quotedUserForReply = quotedSenderId ? usersById[quotedSenderId] : undefined
+                  const quotedAuthorLabel =
+                    quotedUserForReply?.displayName?.trim() ||
+                    quotedUserForReply?.username?.trim() ||
+                    'Участник'
+                  const quoteBarColor = quotedSenderId ? nameColorForUser(quotedSenderId) : '#8e8e93'
+                  const quotedMessageForSingleReply =
+                    replyPayload?.id ? fullList.find((x: any) => x && String(x.id) === String(replyPayload.id)) : undefined
+                  const singleReplyQV = replyQuoteVisual(
+                    quotedMessageForSingleReply,
+                    typeof replyPayload?.content === 'string' ? replyPayload.content : '',
+                  )
+                  const singleReplyQuotedAt = quotedMessageForSingleReply?.createdAt
+                    ? coerceParsedMessageInstant(quotedMessageForSingleReply.createdAt)
+                    : null
+                  const singleReplyInnerTimeLabel = formatSmallBubbleTimeLabel(singleReplyQuotedAt)
+                  const replyBundleEntries = parseReplyQuoteBundleEntries(m)
+                  const showMultiReplyQuote = !!(replyBundleEntries && replyBundleEntries.length >= 2)
+                  const hasReplyUi = !!(m.replyTo || showMultiReplyQuote)
+                  const replySenderActionPhrase =
+                    !forwardBundleInner && hasReplyUi
+                      ? showMultiReplyQuote && replyBundleEntries
+                        ? formatSenderReplyActionPhrase(replyBundleEntries.length)
+                        : m.replyTo
+                          ? formatSenderReplySingleActionPhrase()
+                          : null
+                      : null
+                  const showSenderContextRow =
+                    !forwardBundleInner && (showGroupSenderName || replySenderActionPhrase)
+                  const forwardFrom = (() => {
+                    const normalized = normalizedForwardFromEarly
+                    if (!normalized) return null
+                    const authorName =
+                      typeof normalized.authorName === 'string' ? String(normalized.authorName).trim() : ''
+                    if (!authorName) return null
+                    const isGroupSource = !!normalized.isGroupSource
+                    const st = normalized.sourceChatTitle
+                    const sourceChatTitle = typeof st === 'string' && st.trim() ? st.trim() : null
+                    const originalPostedAt = extractOriginalForwardedInstantFromMessage(m)
+                    return { authorName, sourceChatTitle, isGroupSource, originalPostedAt }
+                  })()
+                  // In wide mode all rows are left-aligned and the avatar is always on the left.
+                  // In narrow mode for group chats we still want to show who sent the message,
+                  // so we render the avatar on the appropriate side of the row (left for them, right for me).
+                  const showAvatarBlock = leftAlignAll || isGroupConv
+                  /** Аватар пересылающего у пачки — снаружи конверта на хосте, не внутри .msg-forward-bundle-outer */
+                  const showAvatar =
+                    showAvatarBlock && isLastOfRun && !forwardBundleInner
+                  const avatarOnRight = !leftAlignAll && isGroupConv && isMe
+                  const avatarOnLeft = showAvatarBlock && !avatarOnRight
+                  const renderAvatarOrSpacer = () => (
+                    showAvatar ? (
+                      <Avatar name={avatarName} id={avatarId} onClick={usersById[m.senderId] ? () => openUserCard(usersById[m.senderId]) : undefined} avatarUrl={(() => {
+                        const userAvatar = usersById[m.senderId]?.avatarUrl
+                        return userAvatar && userAvatar.trim() ? userAvatar : undefined
+                      })()} />
+                    ) : (
+                      <div className="avatar-spacer" />
+                    )
+                  )
+                  const createdAt = m.createdAt ? new Date(m.createdAt) : null
+                  const extractedOriginalPostedAt = extractOriginalForwardedInstantFromMessage(m)
+                  const timeLabelDate =
+                    isForwardedBubble && extractedOriginalPostedAt ? extractedOriginalPostedAt : createdAt
+                  const timeLabel = formatMessageClockLabel(timeLabelDate)
+                  const participantRecencyEligible =
+                    !!timeLabelDate &&
+                    !!timeLabel &&
+                    Number.isFinite(timeLabelDate.getTime()) &&
+                    (forwardBundleInner || !isMe || isForwardedBubble)
+                  const participantRecencyLine = participantRecencyEligible
+                    ? formatRuRelativeSendDay(timeLabelDate)
+                    : null
+                  const timeAndRecencyLabel =
+                    participantRecencyLine != null && participantRecencyLine.trim() !== ''
+                      ? `${timeLabel}, ${participantRecencyLine}`
+                      : timeLabel
+                  // Пересланный бабл повторяет формат карточки ответа: оригинальное время отправки
+                  // показываем компактной право-выровненной строкой (и убираем его из мета-строки ниже).
+                  const forwardedInnerTimeLabel = isForwardedBubble ? formatSmallBubbleTimeLabel(timeLabelDate) : null
+                  const editedAtRaw = (m as any)?.metadata?.editedAt
+                  const isEdited = typeof editedAtRaw === 'string' && editedAtRaw.length > 0
+                  const otherIds: string[] = (activeConversation?.participants || []).map((p: any) => p.user.id).filter((id: string) => (currentUserId ? id !== currentUserId : true))
+                  const receipts = (m.receipts || []) as Array<any>
+                  const readByAny = isMe && otherIds.some((uid) => receipts.some((r) => r.userId === uid && (r.status === 'READ' || r.status === 'SEEN')))
+                  const ackedOnServer = isMe && !!m.id && !isPendingMessage
+                  const tickVariant: 'none' | 'ack' | 'read' = isMe ? (readByAny ? 'read' : (ackedOnServer ? 'ack' : 'none')) : 'none'
+                  const renderTicks = (opts?: { withLeftMargin?: boolean }) => {
+                    if (isForwardedBubble) return null
+                    if (tickVariant === 'none') return null
+                    const color = tickVariant === 'read' ? (isSelectedInMulti ? '#451a03' : '#d97706') : isSelectedInMulti ? '#27272a' : '#9aa0a8'
+                    const withLeftMargin = opts?.withLeftMargin ?? false
+                    const common: React.CSSProperties = {
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color,
+                      marginLeft: withLeftMargin ? 6 : 0,
+                      lineHeight: 0,
+                      transform: 'translateY(1px)',
+                      flexShrink: 0,
+                    }
+                    // Match the look from the screenshot: rounded caps, slightly thicker stroke.
+                    const strokeWidth = 2.2
+                    return (
+                      <span style={common} aria-label={tickVariant === 'read' ? 'Read' : 'Sent'}>
+                        {tickVariant === 'read' ? (
+                          <svg width="18" height="12" viewBox="0 0 18 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 6.5L4.5 10L11.5 1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M7 6.5L10.5 10L17.5 1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        ) : (
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 6.5L4.5 10L11 1.5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </span>
+                    )
+                  }
+                  const isRecentMessage = i >= fullList.length - 28
+                      const openMenuAt = (clientX: number, clientY: number) => {
+                        setContextMenu({ open: true, x: clientX, y: clientY, messageId: m.id })
+                      }
+                      const onContextMenu = (e: React.MouseEvent) => {
+                    e.preventDefault()
+                        openMenuAt(e.clientX, e.clientY)
+                  }
+                  const scrollToMessageById = (qid: string | undefined) => {
+                    if (!qid) return
+                    const el = nodesByMessageId.current.get(qid)
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                  const scrollToQuoted = () => scrollToMessageById((m as any).replyTo?.id as string | undefined)
+                  // Lightbox should be scoped to this message (not the whole chat).
+                  const imagesInMessage = (m.attachments || [])
+                    .filter((a: any) => a?.type === 'IMAGE')
+                    .map((a: any) => resolveAttachmentUrl(a))
+                    .filter((u: string | null): u is string => !!u)
+                  const openLightbox = (url: string) => {
+                    if (multiSelectMode && canSelectForMulti) {
+                      toggleMessageMultiSelect(multiSelectAnchorId)
+                      return
+                    }
+                    const index = imagesInMessage.findIndex((u: string) => u === url)
+                    setLightbox({ open: true, index: index >= 0 ? index : 0, items: imagesInMessage })
+                  }
+                      const onLongPress = {
+                        onPointerDown: (e: any) => {
+                          const id = window.setTimeout(() => openMenuAt(e.clientX, e.clientY), 450)
+                          const clear = () => { window.clearTimeout(id); window.removeEventListener('pointerup', clear); window.removeEventListener('pointermove', cancel) }
+                          const cancel = () => { window.clearTimeout(id); window.removeEventListener('pointerup', clear); window.removeEventListener('pointermove', cancel) }
+                          window.addEventListener('pointerup', clear, { passive: true } as any)
+                          window.addEventListener('pointermove', cancel, { passive: true } as any)
+                        }
+                      }
+                      const rowHandlers = isMobile ? {} : { onContextMenu, ...onLongPress }
+                      const multiSelectCheckboxEl =
+                        multiSelectMode && canSelectForMulti ? (
+                          <button
+                            type="button"
+                            className={
+                              `msg-multi-checkbox${selectedMessageIds.includes(multiSelectAnchorId) ? ' msg-multi-checkbox--checked' : ''}`
+                            }
+                            aria-label={
+                              selectedMessageIds.includes(multiSelectAnchorId)
+                                ? 'Снять выделение'
+                                : 'Выбрать сообщение'
+                            }
+                            aria-pressed={selectedMessageIds.includes(multiSelectAnchorId)}
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              toggleMessageMultiSelect(multiSelectAnchorId)
+                            }}
+                          >
+                            {selectedMessageIds.includes(multiSelectAnchorId) ? <Check size={16} strokeWidth={2.8} /> : null}
+                          </button>
+                        ) : null
+                      const onRowMultiSelectClick = (e: React.MouseEvent) => {
+                        if (!multiSelectMode || !canSelectForMulti) return
+                        const t = e.target as HTMLElement
+                        if (t.closest('a[href], button, .reaction-emoji, .msg-reaction-rail-host, img, video, .msg-media-tile, .video-message-bubble')) return
+                        const sel = typeof window.getSelection === 'function' ? window.getSelection() : null
+                        if (sel && sel.toString().length > 0) return
+                        e.preventDefault()
+                        toggleMessageMultiSelect(multiSelectAnchorId)
+                      }
+                      return (
+                        <div
+                          key={m.id}
+                          className={rowClass}
+                          {...rowHandlers}
+                          onClick={onRowMultiSelectClick}
+                        >
+                      {!forwardBundleInner && !leftAlignAll && !isMe && multiSelectCheckboxEl}
+                      {avatarOnLeft && !forwardBundleInner && renderAvatarOrSpacer()}
+                      <div
+                        className={
+                          (hasAnyLink ? `${bubbleClass} has-link-preview${previewMedia ? ' has-link-preview-media' : ''}` : bubbleClass) +
+                          forwardBubbleMods +
+                          (isSelectedInMulti ? ' msg-bubble--selected' : '') +
+                          ' msg-bubble--reactions-inline' +
+                          (leftAlignAll ? ' msg-bubble--reactions-wide' : '')
+                        }
+                        data-mid={m.id}
+                        ref={(el) => {
+                          if (skipInnerBubbleAnchorRef) return
+                          if (!el) {
+                            nodesByMessageId.current.delete(m.id)
+                            return
+                          }
+                          nodesByMessageId.current.set(m.id, el)
+                          visibleObserver.current?.observe(el)
+                        }}
+                        style={{ ['--bubble-bg' as any]: bg, ['--bubble-fg' as any]: bubbleFg }}
+                        onClick={(e) => {
+                          if (multiSelectMode && canSelectForMulti) {
+                            return
+                          }
+                          if (!isMobile) return
+                          const target = e.target as HTMLElement
+                          if (target.closest('a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble')) return
+                          const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                          if (selection && selection.toString()) return
+                          openMenuAt(e.clientX, e.clientY)
+                        }}
+                        onContextMenu={(e) => {
+                          const target = e.target as HTMLElement
+                          if (target.closest('.reaction-emoji')) {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            return
+                          }
+                          openMenuAt(e.clientX, e.clientY)
+                        }}
+                      >
+                        <div className="msg-bubble-body">
+                        {forwardBundleInner && forwardFrom && (
+                          <div
+                            style={{
+                              fontSize: 13,
+                              fontWeight: 700,
+                              lineHeight: 1.25,
+                              marginBottom: hasReplyUi ? 6 : 5,
+                              color: isSelectedInMulti ? '#292524' : nameColorForUser(forwardHueKey),
+                            }}
+                          >
+                            {forwardFrom.authorName}
+                          </div>
+                        )}
+                        {showSenderContextRow && (
+                          <div
+                            style={{
+                              display: 'inline-flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              gap: 5,
+                              width: 'max-content',
+                              maxWidth: '100%',
+                              fontSize: 14,
+                              fontWeight: 700,
+                              lineHeight: 1.25,
+                              marginBottom: hasReplyUi ? 6 : 4,
+                              color: isSelectedInMulti ? '#292524' : senderAccentColor,
+                            }}
+                          >
+                            <span style={{ flexShrink: 0 }}>
+                              {replySenderActionPhrase
+                                ? `${String(avatarName).trim()} ${replySenderActionPhrase}`
+                                : avatarName}
+                            </span>
+                            {replySenderActionPhrase ? (
+                              <Quote
+                                size={14}
+                                strokeWidth={2.6}
+                                style={{
+                                  opacity: 0.9,
+                                  flexShrink: 0,
+                                  color: isSelectedInMulti ? '#b45309' : 'var(--brand)',
+                                }}
+                                aria-hidden
+                              />
+                            ) : null}
+                          </div>
+                        )}
+                        {showMultiReplyQuote && replyBundleEntries ? (
+                          <div className="msg-reply-quote-bundle">
+                            {replyBundleEntries.map((entry) => {
+                              const uid = entry.senderId
+                              const label =
+                                uid && usersById[uid]
+                                  ? usersById[uid].displayName?.trim() || usersById[uid].username?.trim() || 'Участник'
+                                  : 'Участник'
+                              const barColor = uid ? nameColorForUser(uid) : '#8e8e93'
+                              const innerBubbleBg = groupIncomingBubbleBg(uid || entry.id)
+                              const quotedEntryMsg = fullList.find((x: any) => x && String(x.id) === String(entry.id))
+                              const innerQuotedAt =
+                                (entry.createdAt ? coerceParsedMessageInstant(entry.createdAt) : null) ??
+                                (quotedEntryMsg?.createdAt ? coerceParsedMessageInstant(quotedEntryMsg.createdAt) : null)
+                              const innerTimeLabel = formatSmallBubbleTimeLabel(innerQuotedAt)
+                              const entryQV = replyQuoteVisual(quotedEntryMsg, entry.preview || '')
+                              return (
+                                <div key={entry.id} className="msg-forward-bundle__item">
+                                  <div
+                                    role="button"
+                                    tabIndex={0}
+                                    className="msg-bubble msg-bubble--forward msg-bubble--forward-quote msg-reply-quote-bundle__bubble"
+                                    style={{
+                                      ['--bubble-bg' as string]: innerBubbleBg,
+                                      ['--bubble-fg' as string]: fg,
+                                      cursor: 'pointer',
+                                      textAlign: 'left',
+                                    }}
+                                    onClick={(e) => {
+                                      if (multiSelectMode && canSelectForMulti) {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        toggleMessageMultiSelect(multiSelectAnchorId)
+                                        return
+                                      }
+                                      e.stopPropagation()
+                                      scrollToMessageById(entry.id)
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key !== 'Enter' && e.key !== ' ') return
+                                      e.preventDefault()
+                                      if (multiSelectMode && canSelectForMulti) {
+                                        e.stopPropagation()
+                                        toggleMessageMultiSelect(multiSelectAnchorId)
+                                        return
+                                      }
+                                      e.stopPropagation()
+                                      scrollToMessageById(entry.id)
+                                    }}
+                                  >
+                                    <div style={{ fontSize: 13, fontWeight: 700, color: barColor, lineHeight: 1.25 }}>
+                                      {label}
+                                    </div>
+                                    {entryQV.thumbUrl ? (
+                                      <div
+                                        style={{
+                                          marginTop: 5,
+                                          lineHeight: 0,
+                                          borderRadius: 8,
+                                          overflow: 'hidden',
+                                          maxWidth: 112,
+                                          maxHeight: 72,
+                                          alignSelf: 'flex-start',
+                                        }}
+                                      >
+                                        <img
+                                          src={entryQV.thumbUrl}
+                                          alt=""
+                                          style={{
+                                            display: 'block',
+                                            width: '100%',
+                                            height: 'auto',
+                                            maxHeight: 72,
+                                            objectFit: 'cover',
+                                          }}
+                                        />
+                                      </div>
+                                    ) : null}
+                                    {entryQV.showText ? (
+                                      <div
+                                        style={{
+                                          marginTop: entryQV.thumbUrl ? 6 : 5,
+                                          fontSize: 13,
+                                          fontWeight: 400,
+                                          color: fg,
+                                          opacity: 0.95,
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'anywhere',
+                                          whiteSpace: 'pre-wrap',
+                                          lineHeight: 1.35,
+                                        }}
+                                      >
+                                        {entryQV.line}
+                                      </div>
+                                    ) : null}
+                                    {entryQV.showPlaceholder ? (
+                                      <div
+                                        style={{
+                                          marginTop: 5,
+                                          fontSize: 13,
+                                          fontWeight: 400,
+                                          color: fg,
+                                          opacity: 0.95,
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'anywhere',
+                                          whiteSpace: 'pre-wrap',
+                                          lineHeight: 1.35,
+                                        }}
+                                      >
+                                        Сообщение
+                                      </div>
+                                    ) : null}
+                                    {innerTimeLabel ? (
+                                      <div
+                                        style={{
+                                          marginTop: 6,
+                                          fontSize: 11,
+                                          fontWeight: 500,
+                                          color: '#9aa0a8',
+                                          textAlign: 'right',
+                                          lineHeight: 1.2,
+                                        }}
+                                      >
+                                        {innerTimeLabel}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        ) : m.replyTo ? (
+                          <div className="msg-reply-quote-bundle">
+                            <div className="msg-forward-bundle__item">
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                className="msg-bubble msg-bubble--forward msg-bubble--forward-quote msg-reply-quote-bundle__bubble"
+                                style={{
+                                  ['--bubble-bg' as string]: groupIncomingBubbleBg(
+                                    quotedSenderId || replyPayload?.id || m.id || 'q',
+                                  ),
+                                  ['--bubble-fg' as string]: fg,
+                                  cursor: 'pointer',
+                                  textAlign: 'left',
+                                }}
+                                onClick={(e) => {
+                                  if (multiSelectMode && canSelectForMulti) {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    toggleMessageMultiSelect(multiSelectAnchorId)
+                                    return
+                                  }
+                                  e.stopPropagation()
+                                  scrollToQuoted()
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key !== 'Enter' && e.key !== ' ') return
+                                  e.preventDefault()
+                                  if (multiSelectMode && canSelectForMulti) {
+                                    e.stopPropagation()
+                                    toggleMessageMultiSelect(multiSelectAnchorId)
+                                    return
+                                  }
+                                  e.stopPropagation()
+                                  scrollToQuoted()
+                                }}
+                              >
+                                <div style={{ fontSize: 13, fontWeight: 700, color: quoteBarColor, lineHeight: 1.25 }}>
+                                  {quotedAuthorLabel}
+                                </div>
+                                {singleReplyQV.thumbUrl ? (
+                                  <div
+                                    style={{
+                                      marginTop: 5,
+                                      lineHeight: 0,
+                                      borderRadius: 8,
+                                      overflow: 'hidden',
+                                      maxWidth: 112,
+                                      maxHeight: 72,
+                                      alignSelf: 'flex-start',
+                                    }}
+                                  >
+                                    <img
+                                      src={singleReplyQV.thumbUrl}
+                                      alt=""
+                                      style={{ display: 'block', width: '100%', height: 'auto', maxHeight: 72, objectFit: 'cover' }}
+                                    />
+                                  </div>
+                                ) : null}
+                                {singleReplyQV.showText ? (
+                                  <div
+                                    style={{
+                                      marginTop: singleReplyQV.thumbUrl ? 6 : 5,
+                                      fontSize: 13,
+                                      fontWeight: 400,
+                                      color: fg,
+                                      opacity: 0.95,
+                                      wordBreak: 'break-word',
+                                      overflowWrap: 'anywhere',
+                                      whiteSpace: 'pre-wrap',
+                                      lineHeight: 1.35,
+                                    }}
+                                  >
+                                    {singleReplyQV.line}
+                                  </div>
+                                ) : null}
+                                {singleReplyQV.showPlaceholder ? (
+                                  <div
+                                    style={{
+                                      marginTop: 5,
+                                      fontSize: 13,
+                                      fontWeight: 400,
+                                      color: fg,
+                                      opacity: 0.95,
+                                      wordBreak: 'break-word',
+                                      overflowWrap: 'anywhere',
+                                      whiteSpace: 'pre-wrap',
+                                      lineHeight: 1.35,
+                                    }}
+                                  >
+                                    Сообщение
+                                  </div>
+                                ) : null}
+                                {singleReplyInnerTimeLabel ? (
+                                  <div
+                                    style={{
+                                      marginTop: 6,
+                                      fontSize: 11,
+                                      fontWeight: 500,
+                                      color: '#9aa0a8',
+                                      textAlign: 'right',
+                                      lineHeight: 1.2,
+                                    }}
+                                  >
+                                    {singleReplyInnerTimeLabel}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                        <>
+                          <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                            {renderMessageText(m.content)}
+                          </div>
+                          {(() => {
+                            const firstUrl = extractFirstPreviewableUrl(m.content)
+                            if (!firstUrl) return null
+                            const preview = (m as any)?.metadata?.linkPreview
+                            const attemptedAt = typeof (m as any)?.metadata?.linkPreviewAttemptedAt === 'string'
+                              ? (m as any).metadata.linkPreviewAttemptedAt
+                              : null
+                            const attemptedUrl = typeof (m as any)?.metadata?.linkPreviewUrl === 'string'
+                              ? (m as any).metadata.linkPreviewUrl
+                              : null
+                            const attempted = !!attemptedAt && attemptedUrl === firstUrl
+                            const attemptAgeMs = (() => {
+                              if (!attemptedAt) return null
+                              const ts = Date.parse(attemptedAt)
+                              if (!Number.isFinite(ts)) return null
+                              return Date.now() - ts
+                            })()
+                            const isProbablyInFlight = attempted && !preview && typeof attemptAgeMs === 'number' && attemptAgeMs >= 0 && attemptAgeMs < 25_000
+                            // In secret chats: show only minimal (derived from URL), never fetch/render rich metadata.
+                            if (activeConversation?.isSecret) {
+                              return <LinkPreviewCard preview={{ url: firstUrl }} />
+                            }
+                            // Non-secret: rich if available, otherwise skeleton while worker fetches, then compact fallback.
+                            const placeholder =
+                              isProbablyInFlight
+                                ? { url: firstUrl, __loading: true }
+                                : attempted
+                                  ? { url: firstUrl }
+                                  : { url: firstUrl, __loading: true }
+                            return <LinkPreviewCard preview={preview ? { ...preview, url: preview.url || firstUrl } : placeholder} />
+                          })()}
+                          {(() => {
+                            const attachments = (m.attachments || []) as any[]
+                            const imageAtts = attachments.filter((a) => a?.type === 'IMAGE')
+                            const ordered: Array<
+                              | { kind: 'imageGroup'; atts: any[] }
+                              | { kind: 'single'; att: any; idx: number }
+                            > = []
+
+                            let addedImages = false
+                            attachments.forEach((att, idx) => {
+                              if (att?.type === 'IMAGE') {
+                                if (!addedImages) {
+                                  ordered.push({ kind: 'imageGroup', atts: imageAtts })
+                                  addedImages = true
+                                }
+                                return
+                              }
+                              ordered.push({ kind: 'single', att, idx })
+                            })
+
+                            const renderImageGroup = (atts: any[]) => {
+                              if (!atts.length) return null
+                              if (atts.length === 1) {
+                                const att = atts[0]
+                                const idx = 0
+                                const metadata = att.metadata ?? {}
+                                const resolvedUrl = resolveAttachmentUrl(att)
+                                const needsDecrypt = Boolean(activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext')
+                                const decryptState = needsDecrypt ? attachmentDecryptMap[att.url] : undefined
+                                const decryptPending = needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
+                                const decryptError = needsDecrypt && decryptState?.status === 'error'
+
+                                const vw = typeof window !== 'undefined' ? window.innerWidth : 1280
+                                const vh = typeof window !== 'undefined' ? window.innerHeight : 800
+                                const isMobile = vw <= 768
+                                const maxScreen = isMobile
+                                  ? Math.max(320, Math.floor(vw / 2))
+                                  : Math.min(520, Math.max(320, Math.floor(vw / 3)))
+                                // Hard ceiling for image height so portrait shots never grow
+                                // unbounded with the bubble width.
+                                const heightBudget = isMobile
+                                  ? Math.min(420, Math.round(vh * 0.55))
+                                  : Math.min(520, Math.round(vh * 0.6))
+
+                                const dimKey = `${att.url || idx}`
+                                const loadedDims = imageDimensions[dimKey]
+                                const baseW = loadedDims?.width || att.width || att.metadata?.width || maxScreen
+                                const baseH =
+                                  loadedDims?.height || att.height || att.metadata?.height || Math.round(baseW * 0.75)
+                                const ratio = baseH / baseW || 0.75
+
+                                const maxWidth = maxScreen
+                                let maxHeight = heightBudget
+                                if (ratio < 0.5) {
+                                  maxHeight = Math.max(Math.round(maxScreen * 0.6), 200)
+                                } else if (ratio < 0.7) {
+                                  maxHeight = Math.max(Math.round(maxScreen * 0.75), 200)
+                                }
+                                if (maxHeight > heightBudget) maxHeight = heightBudget
+
+                                const scaleByWidth = baseW > maxWidth ? maxWidth / baseW : 1
+                                const scaleByHeight = baseH > maxHeight ? maxHeight / baseH : 1
+                                const scale = Math.min(scaleByWidth, scaleByHeight, 1)
+
+                                let targetW = baseW * scale
+                                let targetH = baseH * scale
+                                if (targetW > maxWidth) {
+                                  targetW = maxWidth
+                                  targetH = targetW * ratio
+                                }
+                                if (targetH > maxHeight) {
+                                  targetH = maxHeight
+                                  targetW = targetH / ratio
+                                }
+
+                                targetW = Math.round(targetW)
+                                targetH = Math.round(targetH)
+
+                                const placeholderKey = `${att.url || idx}`
+                                const isLoaded = !!loadedImages[placeholderKey]
+                                const isFailed = !!failedImages[placeholderKey]
+                                const showPending = att.__pending || decryptPending || (!isLoaded && !isFailed)
+
+                                return (
+                                  <div
+                                    key={`images-single-${att.url || idx}`}
+                                    style={{
+                                      maxWidth: '100%',
+                                      maxHeight: targetH,
+                                      width: showPending
+                                        ? Math.min(targetW, typeof window !== 'undefined' ? window.innerWidth - 100 : targetW)
+                                        : 'fit-content',
+                                      height: showPending ? targetH : 'auto',
+                                      minWidth: 0,
+                                      minHeight: showPending ? targetH : 0,
+                                      marginTop: 8,
+                                      position: 'relative',
+                                      borderRadius: 10,
+                                      overflow: 'hidden',
+                                      display: 'inline-block',
+                                      lineHeight: 0,
+                                      boxSizing: 'border-box',
+                                    }}
+                                  >
+                                    {showPending && (
+                                      <div
+                                        style={{
+                                          position: 'absolute',
+                                          inset: 0,
+                                          width: '100%',
+                                          height: '100%',
+                                          borderRadius: 10,
+                                          background: 'var(--surface-100)',
+                                          border: '1px solid var(--surface-border)',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          zIndex: 1,
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            position: 'absolute',
+                                            inset: 0,
+                                            background:
+                                              'linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.1) 37%, transparent 63%)',
+                                            backgroundSize: '400% 100%',
+                                            animation: 'eb-shimmer 1.2s ease-in-out infinite',
+                                          }}
+                                        />
+                                        {decryptPending ? (
+                                          <div
+                                            style={{
+                                              position: 'relative',
+                                              zIndex: 2,
+                                              display: 'flex',
+                                              flexDirection: 'column',
+                                              alignItems: 'center',
+                                              gap: 8,
+                                              color: 'var(--text-muted)',
+                                              fontSize: 12,
+                                            }}
+                                          >
+                                            Расшифровка изображения...
+                                          </div>
+                                        ) : typeof att.progress === 'number' && att.progress < 100 ? (
+                                          <div
+                                            style={{
+                                              position: 'relative',
+                                              zIndex: 2,
+                                              display: 'flex',
+                                              flexDirection: 'column',
+                                              alignItems: 'center',
+                                              gap: 8,
+                                            }}
+                                          >
+                                            <div
+                                              style={{
+                                                width: 40,
+                                                height: 40,
+                                                border: '3px solid var(--surface-border)',
+                                                borderTopColor: 'var(--brand)',
+                                                borderRadius: '50%',
+                                                animation: 'spin 1s linear infinite',
+                                              }}
+                                            />
+                                            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>
+                                              {att.progress}%
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <div
+                                            style={{
+                                              position: 'relative',
+                                              zIndex: 2,
+                                              width: 40,
+                                              height: 40,
+                                              border: '3px solid var(--surface-border)',
+                                              borderTopColor: 'var(--brand)',
+                                              borderRadius: '50%',
+                                              animation: 'spin 1s linear infinite',
+                                            }}
+                                          />
+                                        )}
+                                      </div>
+                                    )}
+                                    {decryptError && (
+                                      <div style={{ marginTop: 8, color: '#f87171', fontSize: 12 }}>
+                                        Не удалось расшифровать изображение
+                                      </div>
+                                    )}
+                                    {isFailed && !decryptError && (
+                                      <div style={{ marginTop: 8, color: '#f87171', fontSize: 12 }}>
+                                        Не удалось загрузить изображение
+                                      </div>
+                                    )}
+                                    {resolvedUrl && !decryptError && (
+                                      <LazyImage
+                                        src={resolvedUrl}
+                                        alt="img"
+                                        rootRef={messagesRef as any}
+                                        rootMargin="900px 0px"
+                                        priority={isRecentMessage ? 'high' : 'low'}
+                                        style={{
+                                          maxWidth: '100%',
+                                          maxHeight: targetH,
+                                          width: 'auto',
+                                          height: 'auto',
+                                          objectFit: 'contain',
+                                          borderRadius: 10,
+                                          cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in',
+                                          // Keep element in layout so IntersectionObserver can trigger loading.
+                                          // We hide visually until onLoad to avoid flashing broken image icon.
+                                          opacity: isLoaded ? (att.__pending ? 0.85 : 1) : 0.001,
+                                          display: 'block',
+                                          position: 'relative',
+                                          zIndex: 0,
+                                          background: 'var(--surface-100)',
+                                          verticalAlign: 'top',
+                                        }}
+                                        onLoad={(e) => {
+                                          const img = e.target as HTMLImageElement
+                                          if ((!att.width && !metadata?.width) && img.naturalWidth && img.naturalHeight) {
+                                            setImageDimensions((prev: any) => ({
+                                              ...prev,
+                                              [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight },
+                                            }))
+                                          }
+                                          setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: false }))
+                                          setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
+                                          if (messagesRef.current && nearBottomRef.current) {
+                                            const el = messagesRef.current
+                                            el.scrollTop = el.scrollHeight
+                                          }
+                                        }}
+                                        onError={() => {
+                                          setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
+                                          setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
+                                        }}
+                                        onClick={() => {
+                                          if (!att.__pending && !decryptPending && resolvedUrl) {
+                                            openLightbox(resolvedUrl)
+                                          }
+                                        }}
+                                      />
+                                    )}
+                                    {isLoaded && !decryptPending && typeof att.progress === 'number' && att.progress < 100 && (
+                                      <div
+                                        style={{
+                                          position: 'absolute',
+                                          left: 0,
+                                          right: 0,
+                                          bottom: 0,
+                                          height: 6,
+                                          background: 'rgba(0,0,0,0.15)',
+                                          borderRadius: '0 0 10px 10px',
+                                          overflow: 'hidden',
+                                          zIndex: 3,
+                                        }}
+                                      >
+                                        <div style={{ width: `${att.progress}%`, height: '100%', background: 'rgba(255,255,255,0.9)' }} />
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              }
+
+                              // Mosaic for 2+ images:
+                              // We compute a layout where each tile keeps the image's own aspect ratio (h/w),
+                              // so nothing is cropped for any formats. For 2/3/4+ we pick a Telegram-like arrangement,
+                              // but column widths are computed from ratios to make heights match.
+                              const visible = atts.slice(0, 4)
+                              const extra = atts.length - visible.length
+                              const getRatio = (a: any, i: number): number => {
+                                const md = a?.metadata ?? {}
+                                const key = `${a?.url || i}`
+                                const dims = imageDimensions[key]
+                                const w = dims?.width || a?.width || md?.width
+                                const h = dims?.height || a?.height || md?.height
+                                const r = typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0 ? h / w : 1
+                                // Clamp extreme cases (panoramas / very tall scans) so bubble stays sane.
+                                return Math.max(0.2, Math.min(5, Number.isFinite(r) ? r : 1))
+                              }
+
+                              // Compute a maxWidth for the whole grid so that with the current
+                              // per-tile aspect-ratio layout the resulting height stays within
+                              // a sensible budget (no infinite portrait stretches).
+                              // Formulas derived from the flex weights used below for 2 / 3 / 4 layouts:
+                              //   2 tiles : H = W * (r0*r1) / (r0+r1)
+                              //   3 tiles : H = W * (r0*(r1+r2)) / (r0+r1+r2)
+                              //   4 tiles : H = W * ((r0+r2)*(r1+r3)) / (r0+r1+r2+r3)
+                              const gridVw = typeof window !== 'undefined' ? window.innerWidth : 1280
+                              const gridVh = typeof window !== 'undefined' ? window.innerHeight : 800
+                              const gridIsMobile = gridVw <= 768
+                              const gridMaxW = gridIsMobile
+                                ? Math.max(280, Math.floor(gridVw * 0.85))
+                                : Math.min(520, Math.max(320, Math.floor(gridVw / 3)))
+                              const gridMaxH = gridIsMobile
+                                ? Math.min(420, Math.round(gridVh * 0.55))
+                                : Math.min(520, Math.round(gridVh * 0.6))
+
+                              let gridHeightCoef = 0
+                              if (visible.length === 2) {
+                                const r0 = getRatio(visible[0], 0)
+                                const r1 = getRatio(visible[1], 1)
+                                const denom = r0 + r1
+                                gridHeightCoef = denom > 0 ? (r0 * r1) / denom : 0
+                              } else if (visible.length === 3) {
+                                const r0 = getRatio(visible[0], 0)
+                                const r1 = getRatio(visible[1], 1)
+                                const r2 = getRatio(visible[2], 2)
+                                const denom = r0 + r1 + r2
+                                gridHeightCoef = denom > 0 ? (r0 * (r1 + r2)) / denom : 0
+                              } else if (visible.length >= 4) {
+                                const r0 = getRatio(visible[0], 0)
+                                const r1 = getRatio(visible[1], 1)
+                                const r2 = getRatio(visible[2], 2)
+                                const r3 = getRatio(visible[3], 3)
+                                const denom = r0 + r1 + r2 + r3
+                                gridHeightCoef = denom > 0 ? ((r0 + r2) * (r1 + r3)) / denom : 0
+                              }
+                              const widthByHeightBudget =
+                                gridHeightCoef > 0 ? Math.floor(gridMaxH / gridHeightCoef) : gridMaxW
+                              const gridMaxWidth = Math.max(220, Math.min(gridMaxW, widthByHeightBudget))
+
+                              const renderTile = (att: any, tileIdx: number, showMore: boolean) => {
+                                const metadata = att.metadata ?? {}
+                                const resolvedUrl = resolveAttachmentUrl(att)
+                                const needsDecrypt = Boolean(activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext')
+                                const decryptState = needsDecrypt ? attachmentDecryptMap[att.url] : undefined
+                                const decryptPending = needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
+                                const decryptError = needsDecrypt && decryptState?.status === 'error'
+                                const placeholderKey = `${att.url || tileIdx}`
+                                const isLoaded = !!loadedImages[placeholderKey]
+                                const isFailed = !!failedImages[placeholderKey]
+                                const showPending = att.__pending || decryptPending || (!isLoaded && !isFailed)
+                                const disabled = att.__pending || decryptPending || decryptError || !resolvedUrl
+                                const ratio = getRatio(att, tileIdx) // h/w
+
+                                return (
+                                  <button
+                                    key={`${att.url || tileIdx}`}
+                                    type="button"
+                                    className="msg-media-tile"
+                                    style={{ aspectRatio: 1 / ratio }}
+                                    disabled={disabled}
+                                    onClick={() => {
+                                      if (!disabled && resolvedUrl) openLightbox(resolvedUrl)
+                                    }}
+                                  >
+                                    {resolvedUrl && (
+                                      <LazyImage
+                                        src={resolvedUrl}
+                                        alt="img"
+                                        rootRef={messagesRef as any}
+                                        rootMargin="900px 0px"
+                                        priority={isRecentMessage ? 'high' : 'low'}
+                                        style={{ opacity: isLoaded && !showPending ? 1 : 0.001 }}
+                                        onLoad={(e) => {
+                                          const img = e.target as HTMLImageElement
+                                          if ((!att.width && !metadata?.width) && img.naturalWidth && img.naturalHeight) {
+                                            setImageDimensions((prev: any) => ({
+                                              ...prev,
+                                              [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight },
+                                            }))
+                                          }
+                                          setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: false }))
+                                          setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
+                                        }}
+                                        onError={() => {
+                                          setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
+                                          setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
+                                        }}
+                                      />
+                                    )}
+                                    {showPending && (
+                                      <div className="msg-media-overlay">
+                                        <div className="msg-media-overlay-shimmer" />
+                                        {decryptPending ? (
+                                          <div style={{ position: 'relative', zIndex: 2, color: 'var(--text-muted)', fontSize: 12 }}>
+                                            Расшифровка...
+                                          </div>
+                                        ) : typeof att.progress === 'number' && att.progress < 100 ? (
+                                          <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                                            <div style={{ width: 34, height: 34, border: '3px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                                            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>{att.progress}%</div>
+                                          </div>
+                                        ) : (
+                                          <div style={{ position: 'relative', zIndex: 2, width: 34, height: 34, border: '3px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                                        )}
+                                      </div>
+                                    )}
+                                    {(decryptError || isFailed) && (
+                                      <div className="msg-media-overlay" style={{ background: 'rgba(15, 23, 42, 0.55)' }}>
+                                        <div style={{ position: 'relative', zIndex: 2, color: '#f87171', fontSize: 12, padding: 10, textAlign: 'center' }}>
+                                          {decryptError ? 'Ошибка расшифровки' : 'Ошибка загрузки'}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {showMore && <div className="msg-media-more">+{extra}</div>}
+                                  </button>
+                                )
+                              }
+
+                              return (
+                                <div
+                                  key="images-mosaic"
+                                  className="msg-media-grid"
+                                  style={{ maxWidth: gridMaxWidth, width: '100%' }}
+                                >
+                                  {visible.length === 2 && (() => {
+                                    const r0 = getRatio(visible[0], 0)
+                                    const r1 = getRatio(visible[1], 1)
+                                    // widths proportional to the opposite ratio to equalize heights
+                                    const w0 = r1
+                                    const w1 = r0
+                                    return (
+                                      <>
+                                        <div style={{ flex: `${w0} 1 0`, minWidth: 0 }}>
+                                          {renderTile(visible[0], 0, false)}
+                                        </div>
+                                        <div style={{ flex: `${w1} 1 0`, minWidth: 0 }}>
+                                          {renderTile(visible[1], 1, extra > 0 && 1 === visible.length - 1)}
+                                        </div>
+                                      </>
+                                    )
+                                  })()}
+
+                                  {visible.length === 3 && (() => {
+                                    const r0 = getRatio(visible[0], 0)
+                                    const r1 = getRatio(visible[1], 1)
+                                    const r2 = getRatio(visible[2], 2)
+                                    // left = big (0), right = stack (1,2)
+                                    const wLeft = r1 + r2
+                                    const wRight = r0
+                                    return (
+                                      <>
+                                        <div style={{ flex: `${wLeft} 1 0`, minWidth: 0 }}>
+                                          {renderTile(visible[0], 0, false)}
+                                        </div>
+                                        <div className="msg-media-col" style={{ flex: `${wRight} 1 0` }}>
+                                          {renderTile(visible[1], 1, false)}
+                                          {renderTile(visible[2], 2, extra > 0 && 2 === visible.length - 1)}
+                                        </div>
+                                      </>
+                                    )
+                                  })()}
+
+                                  {visible.length >= 4 && (() => {
+                                    // 2x2: (0,2) left column; (1,3) right column
+                                    const r0 = getRatio(visible[0], 0)
+                                    const r1 = getRatio(visible[1], 1)
+                                    const r2 = getRatio(visible[2], 2)
+                                    const r3 = getRatio(visible[3], 3)
+                                    const wLeft = r1 + r3
+                                    const wRight = r0 + r2
+                                    return (
+                                      <>
+                                        <div className="msg-media-col" style={{ flex: `${wLeft} 1 0` }}>
+                                          {renderTile(visible[0], 0, false)}
+                                          {renderTile(visible[2], 2, false)}
+                                        </div>
+                                        <div className="msg-media-col" style={{ flex: `${wRight} 1 0` }}>
+                                          {renderTile(visible[1], 1, false)}
+                                          {renderTile(visible[3], 3, extra > 0)}
+                                        </div>
+                                      </>
+                                    )
+                                  })()}
+                                </div>
+                              )
+                            }
+
+                            return (
+                              <>
+                                {ordered.map((item, renderIdx) => {
+                                  if (item.kind === 'imageGroup') {
+                                    return <Fragment key="images-group">{renderImageGroup(item.atts)}</Fragment>
+                                  }
+
+                                  const att = item.att
+                                  const idx = item.idx
+                                  const metadata = att.metadata ?? {}
+                                  const headInfo = attachmentHeadInfoMap[att.url]
+                                  const mergedMeta = {
+                                    ...metadata,
+                                    ...(headInfo?.fileName ? { originalName: headInfo.fileName } : {}),
+                                    ...(headInfo?.mime ? { mime: headInfo.mime } : {}),
+                                    ...(headInfo?.size ? { size: headInfo.size } : {}),
+                                  }
+                                  const effectiveType = inferAttachmentRenderType(att, mergedMeta)
+                                  const resolvedUrl = resolveAttachmentUrl(att)
+                                  const needsDecrypt = Boolean(
+                                    activeConversation?.isSecret && metadata?.e2ee?.kind === 'ciphertext',
+                                  )
+                                  const decryptState = needsDecrypt ? attachmentDecryptMap[att.url] : undefined
+                                  const decryptPending =
+                                    needsDecrypt && !resolvedUrl && (!decryptState || decryptState.status === 'pending')
+                                  const decryptError = needsDecrypt && decryptState?.status === 'error'
+                                  if (effectiveType === 'AUDIO') {
+                                    const duration = m.metadata?.duration || 0
+                                    const audioUrl = resolvedUrl || att.url
+                                    return (
+                                      <div key={`${att.url}-${idx}-${renderIdx}`} style={{ marginTop: 8, minWidth: 200, maxWidth: 300 }}>
+                                        {decryptPending ? (
+                                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)', color: 'var(--text-muted)' }}>
+                                            <div style={{ width: 16, height: 16, border: '2px solid var(--surface-border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                                            <span style={{ fontSize: 13 }}>Расшифровка аудио...</span>
+                                          </div>
+                                        ) : decryptError ? (
+                                          <div style={{ color: '#f87171', fontSize: 12 }}>Не удалось расшифровать аудио</div>
+                                        ) : audioUrl ? (
+                                          <VoiceMessagePlayer url={audioUrl} duration={duration} />
+                                        ) : (
+                                          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Голосовое сообщение</div>
+                                        )}
+                                      </div>
+                                    )
+                                  }
+
+                                  if (effectiveType === 'VIDEO') {
+                                    const videoUrl = att.__pending ? null : (activeConversation?.isSecret ? resolvedUrl : (convertToProxyUrl(att.url) || resolvedUrl || att.url))
+                                    const posterKey = (mergedMeta?.posterKey as string) || null
+                                    const objectKey =
+                                      (mergedMeta?.objectKey as string) ??
+                                      (mergedMeta?.key as string) ??
+                                      (mergedMeta?.storageKey as string) ??
+                                      extractObjectKeyFromUrl(att.url)
+                                    const w = mergedMeta?.width ?? att?.width
+                                    const h = mergedMeta?.height ?? att?.height
+                                    const duration = mergedMeta?.duration ?? att?.metadata?.duration
+                                    const sizeText = formatAttachmentFileSize(att?.size ?? mergedMeta?.size)
+                                    const uploadInProgress = !!att?.__pending
+                                    return (
+                                      <VideoMessageBubble
+                                        key={`${att.url}-${idx}-${renderIdx}`}
+                                        attachmentId={att.id || ''}
+                                        objectKey={objectKey || undefined}
+                                        videoSrc={videoUrl && (videoUrl.startsWith('/') || videoUrl.startsWith('http') || videoUrl.startsWith('blob:')) ? videoUrl : null}
+                                        posterKey={posterKey}
+                                        width={w}
+                                        height={h}
+                                        duration={duration}
+                                        sizeText={sizeText ?? undefined}
+                                        fileName={(mergedMeta?.originalName as string) || att?.metadata?.originalName || att?.url || 'video.mp4'}
+                                        decryptPending={decryptPending}
+                                        decryptError={decryptError}
+                                        uploadInProgress={uploadInProgress}
+                                        onOpenFullscreenViewer={(url, fileName) =>
+                                          setVideoViewer({ open: true, url, fileName })
+                                        }
+                                      />
+                                    )
+                                  }
+
+                                  // Секрет: только blob (E2EE). Обычный чат: всегда прокси /api/files, чтобы сервер расшифровал хранилище
+                                  const fileHref = activeConversation?.isSecret
+                                    ? resolvedUrl
+                                    : (convertToProxyUrl(att.url) || resolvedUrl || att.url)
+                                  const filePresentation = getAttachmentFilePresentation(att, mergedMeta)
+                                  const baseSubtitle = filePresentation.sizeText
+                                    ? `${filePresentation.description} · ${filePresentation.sizeText}`
+                                    : filePresentation.description
+                                  const renderFileCard = (statusText?: string) => {
+                                    const subtitle = statusText
+                                      ? `${baseSubtitle}${baseSubtitle ? ' · ' : ''}${statusText}`
+                                      : baseSubtitle
+                                    return (
+                                      <div
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 10,
+                                          padding: '10px 12px',
+                                          borderRadius: 14,
+                                          border: '1px solid var(--surface-border)',
+                                          background: 'var(--surface-100)',
+                                          minWidth: 220,
+                                          maxWidth: 360,
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            width: 40,
+                                            height: 40,
+                                            borderRadius: 999,
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            flexShrink: 0,
+                                            fontSize: 11,
+                                            fontWeight: 800,
+                                            letterSpacing: 0.3,
+                                            textTransform: 'uppercase',
+                                            background: filePresentation.ui.bg,
+                                            color: filePresentation.ui.fg,
+                                          }}
+                                        >
+                                          {filePresentation.badge}
+                                        </div>
+                                        <div style={{ minWidth: 0 }}>
+                                          <div
+                                            style={{
+                                              fontSize: 14,
+                                              fontWeight: 600,
+                                              color: 'var(--text)',
+                                              whiteSpace: 'nowrap',
+                                              overflow: 'hidden',
+                                              textOverflow: 'ellipsis',
+                                            }}
+                                            title={filePresentation.fileName}
+                                          >
+                                            {filePresentation.fileName}
+                                          </div>
+                                          <div
+                                            style={{
+                                              marginTop: 3,
+                                              fontSize: 12,
+                                              color: 'var(--text-muted)',
+                                              whiteSpace: 'nowrap',
+                                              overflow: 'hidden',
+                                              textOverflow: 'ellipsis',
+                                            }}
+                                            title={subtitle}
+                                          >
+                                            {subtitle}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )
+                                  }
+
+                                  return (
+                                    <div key={`${att.url}-${idx}-${renderIdx}`} style={{ marginTop: 8 }}>
+                                      {att.__pending || decryptPending ? (
+                                        renderFileCard(decryptPending ? 'Расшифровка...' : 'Загрузка...')
+                                      ) : decryptError ? (
+                                        <div style={{ color: '#f87171', fontSize: 12 }}>Не удалось расшифровать файл</div>
+                                      ) : fileHref ? (
+                                        <a
+                                          href={fileHref}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          download={filePresentation.fileName}
+                                          style={{ display: 'inline-block', textDecoration: 'none', color: 'inherit' }}
+                                        >
+                                          {renderFileCard()}
+                                        </a>
+                                      ) : (
+                                        renderFileCard('Расшифровка...')
+                                      )}
+                                      {typeof att.progress === 'number' && att.progress < 100 && (
+                                        <div style={{ height: 6, background: '#e5e7eb', borderRadius: 6, overflow: 'hidden', marginTop: 6 }}>
+                                          <div style={{ width: `${att.progress}%`, height: '100%', background: 'var(--brand)' }} />
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </>
+                            )
+                          })()}
+                        </>
+                        {(() => {
+                          if (suppressFwdComposeMetaFooter) return null
+                          return (
+                            <div className="msg-meta" style={{ color: isSelectedInMulti ? '#27272a' : '#9aa0a8' }}>
+                              <MessageReactionRail
+                                messageId={String(m.id)}
+                                reactions={m.reactions}
+                                currentUserId={currentUserId}
+                                participants={activeConversation?.participants as any}
+                                meDisplay={me}
+                                isMeBubble={!!isMe}
+                                leftAlignAll={leftAlignAll}
+                                isMobile={isMobile}
+                                isSelectedInMulti={isSelectedInMulti}
+                                onInvalidateMessages={() => {
+                                  if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
+                                }}
+                              />
+                              {isForwardedBubble ? null : <span>{timeAndRecencyLabel}</span>}
+                              {isEdited && <span style={{ fontSize: 11, opacity: 0.9 }}>изменено</span>}
+                              {renderTicks({ withLeftMargin: false })}
+                            </div>
+                          )
+                        })()}
+                        {forwardedInnerTimeLabel ? (
+                          <div
+                            style={{
+                              marginTop: 6,
+                              fontSize: 11,
+                              fontWeight: 500,
+                              color: '#9aa0a8',
+                              textAlign: 'right',
+                              lineHeight: 1.2,
+                            }}
+                          >
+                            {forwardedInnerTimeLabel}
+                          </div>
+                        ) : null}
+                        </div>
+                      </div>
+                      {avatarOnRight && !forwardBundleInner && renderAvatarOrSpacer()}
+                      {(leftAlignAll || isMe) && !forwardBundleInner && multiSelectCheckboxEl}
+                    </div>
+                  )
+                }
+                return fullList.map((m: any, mapIndex: number) => {
+                  if (!m || m.deletedAt) return null
+                  if (__fwdSkip.has(mapIndex)) return null
+                  const ebloRowKey = ebloRowKeyByIndex.get(mapIndex)
+                  const ebloRowPosition = ebloRowPositionByIndex.get(mapIndex)
+                  if (ebloRowKey == null || ebloRowPosition == null) return null
+                  const ebloShouldRender =
+                    ebloRows.length <= EBLO_MIN_ROWS ||
+                    (ebloRowPosition >= effectiveEbloRange.start && ebloRowPosition <= effectiveEbloRange.end)
+                  if (!ebloShouldRender) {
+                    return (
+                      <div
+                        key={`eblo-placeholder-${ebloRowKey}`}
+                        className="eblo-placeholder"
+                        style={{ height: estimateEbloRowHeight(ebloRowKey) }}
+                        aria-hidden
+                      />
+                    )
+                  }
+                  const wrapEbloRow = (node: ReactNode) => (
+                    <EbloMeasuredRow
+                      key={`eblo-row-${ebloRowKey}`}
+                      rowKey={ebloRowKey}
+                      onHeightChange={handleEbloRowHeightChange}
+                    >
+                      {node}
+                    </EbloMeasuredRow>
+                  )
+                  if (m.type === 'SYSTEM') {
+                    return wrapEbloRow(
+                      <div key={m.id} className="chat-system-message" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '12px 16px', marginTop: 8 }}>
+                        <div style={{ 
+                          fontSize: 13, 
+                          color: 'var(--text-muted)', 
+                          textAlign: 'center',
+                          fontStyle: 'italic',
+                          opacity: 0.8
+                        }}>
+                          {renderMessageText(renderSystemMessageContent(m, currentUserId))}
+                        </div>
+                      </div>
+                    )
+                  }
+                  const __fwdBundle = __fwdBundleByStart.get(mapIndex)
+                  if (__fwdBundle) {
+                    const m0 = fullList[__fwdBundle.start]
+                    const prev0 = fullList[__fwdBundle.start - 1]
+                    const isPrevSame0 = !!prev0 && prev0.senderId === m0.senderId
+                    const isMe0 =
+                      currentUserId != null &&
+                      m0.senderId != null &&
+                      String(m0.senderId) === String(currentUserId)
+                    const baseRow0 = leftAlignAll ? 'msg left' : (isMe0 ? 'msg me' : 'msg them')
+                    const bundleCanSel0 = forwardBundleHostCanMultiSelect(m0)
+                    const bundleOuterSel0 =
+                      multiSelectMode && bundleCanSel0 && selectedMessageIds.includes(String(m0.id))
+                    const spacingClass0 = isPrevSame0 ? 'compact' : 'gap'
+                    const rowClass0 = `${baseRow0} ${spacingClass0}${
+                      multiSelectMode && bundleCanSel0 && leftAlignAll ? ' msg--multiselect-wide' : ''
+                    }`
+                    const idxs = Array.from(
+                      { length: __fwdBundle.end - __fwdBundle.start + 1 },
+                      (_, k) => __fwdBundle.start + k,
+                    )
+                    const isGroupConv0 = !!(activeConversation?.isGroup || (activeConversation?.participants?.length ?? 0) > 2)
+                    const showAvatarBlock0 = leftAlignAll || isGroupConv0
+                    const nextAfterBundle = fullList[__fwdBundle.end + 1]
+                    const isLastOfRun0 =
+                      !nextAfterBundle ||
+                      nextAfterBundle.senderId == null ||
+                      String(nextAfterBundle.senderId) !== String(m0.senderId)
+                    const showAvatar0 = showAvatarBlock0 && isLastOfRun0
+                    const avatarOnRight0 = !leftAlignAll && isGroupConv0 && isMe0
+                    const avatarOnLeft0 = (leftAlignAll || isGroupConv0) && !avatarOnRight0
+                    const senderUser0 = usersById[m0.senderId]
+                    const avatarName0 =
+                      senderUser0?.displayName ??
+                      senderUser0?.username ??
+                      (isMe0 ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
+                    const avatarId0 = senderUser0?.id ?? (isMe0 ? (me?.id ?? 'me') : 'user')
+                    const avatarUrl0 =
+                      senderUser0?.avatarUrl && String(senderUser0.avatarUrl).trim() ? senderUser0.avatarUrl : undefined
+                    const bundleAvatarSlot = showAvatar0 ? (
+                      <Avatar name={avatarName0} id={avatarId0} avatarUrl={avatarUrl0} onClick={senderUser0 ? () => openUserCard(senderUser0) : undefined} />
+                    ) : (
+                      <div className="avatar-spacer" />
+                    )
+                    const fwdComposerCaption0 = extractForwardComposerCaption(m0)
+                    const baseBubble0Outer = leftAlignAll ? 'msg-bubble left' : isMe0 ? 'msg-bubble me' : 'msg-bubble them'
+                    const soloForwardedContinuationTail0Outer =
+                      hasForwardFromMeta(m0) &&
+                      isMe0 &&
+                      !leftAlignAll &&
+                      !!nextAfterBundle &&
+                      currentUserId != null &&
+                      nextAfterBundle.senderId != null &&
+                      String(nextAfterBundle.senderId) === String(currentUserId)
+                    const wantsBubbleTail0Outer = isLastOfRun0 || soloForwardedContinuationTail0Outer
+                    const bubbleClass0Outer = wantsBubbleTail0Outer
+                      ? `${baseBubble0Outer} ${isMe0 && !leftAlignAll ? 'tail-right' : 'tail-left'}`
+                      : baseBubble0Outer
+                    const outerBg0Bubble =
+                      isMe0 ? '#303845' : isGroupConv0 ? groupIncomingBubbleBg(m0.senderId) : hashToGray(m0.senderId)
+                    const bubbleFg0Bubble = bundleOuterSel0 ? '#0a0a0a' : '#f1f3f6'
+                    const bundleMessagesSlice0 = idxs.map((j) => fullList[j])
+                    const forwardPhraseAfterName0 = formatForwardSourcePhraseAfterName(bundleMessagesSlice0)
+                    const fwdCaptionNameColor0 = bundleOuterSel0 ? '#292524' : nameColorForUser(m0.senderId)
+                    const onOuterFwdBubbleMultiClick0 = (e: React.MouseEvent) => {
+                      if (!multiSelectMode || !bundleCanSel0) return
+                      const t = e.target as HTMLElement
+                      if (
+                        t.closest(
+                          '.msg-forward-bundle__item .msg,.msg-forward-bundle__item a[href],.msg-forward-bundle__item button,.msg-forward-bundle__item .reaction-emoji,.msg-forward-bundle__item .msg-reaction-rail-host,.msg-forward-bundle__item img,.msg-forward-bundle__item video,.msg-forward-bundle__item .msg-media-tile,.msg-forward-bundle__item .video-message-bubble',
+                        )
+                      )
+                        return
+                      const sel = typeof window.getSelection === 'function' ? window.getSelection() : null
+                      if (sel && sel.toString().length > 0) return
+                      e.preventDefault()
+                      toggleMessageMultiSelect(m0.id)
+                    }
+                    if (!fwdComposerCaption0) {
+                      return wrapEbloRow(
+                        <div
+                          key={`multi-fwd-${m0.id}`}
+                          className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClass0}`}
+                          onClick={(e) => onForwardBundleHostMultiClick(e, m0.id)}
+                        >
+                          {!leftAlignAll && !isMe0 ? renderForwardBundleHostCheckbox(m0) : null}
+                          {avatarOnLeft0 ? bundleAvatarSlot : null}
+                          <div
+                            className={`forward-comment-wrap ${bubbleClass0Outer}${bundleOuterSel0 ? ' msg-bubble--selected' : ''}`}
+                            data-mid={m0.id}
+                            ref={(el) => {
+                              if (!el) {
+                                nodesByMessageId.current.delete(m0.id)
+                                return
+                              }
+                              nodesByMessageId.current.set(m0.id, el)
+                              visibleObserver.current?.observe(el)
+                            }}
+                            style={{ ['--bubble-bg' as any]: outerBg0Bubble, ['--bubble-fg' as any]: bubbleFg0Bubble }}
+                            onClick={(e) => {
+                              onOuterFwdBubbleMultiClick0(e)
+                              if (multiSelectMode && bundleCanSel0) return
+                              if (!isMobile) return
+                              const target = e.target as HTMLElement
+                              if (
+                                target.closest(
+                                  'a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                                )
+                              )
+                                return
+                              const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                              if (selection && selection.toString().length > 0) return
+                              setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: m0.id })
+                            }}
+                            onContextMenu={(e) => {
+                              const target = e.target as HTMLElement
+                              if (target.closest('.reaction-emoji')) {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                return
+                              }
+                              if (
+                                target.closest(
+                                  '.msg-forward-bundle__item .msg-bubble, .msg-forward-bundle__item a[href]',
+                                )
+                              )
+                                return
+                              e.preventDefault()
+                              setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: m0.id })
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'inline-flex',
+                                flexWrap: 'wrap',
+                                alignItems: 'center',
+                                gap: 5,
+                                width: 'max-content',
+                                maxWidth: '100%',
+                                fontSize: 14,
+                                fontWeight: 700,
+                                lineHeight: 1.3,
+                                marginBottom: 8,
+                                color: fwdCaptionNameColor0,
+                              }}
+                            >
+                              <span style={{ flexShrink: 0 }}>
+                                {`${String(avatarName0).trim()} ${forwardPhraseAfterName0}`}
+                              </span>
+                              <Forward
+                                size={14}
+                                strokeWidth={2.6}
+                                aria-hidden
+                                style={{
+                                  flexShrink: 0,
+                                  opacity: 0.9,
+                                  color: bundleOuterSel0 ? '#b45309' : 'var(--brand)',
+                                }}
+                              />
+                            </div>
+                            <div className="msg-forward-bundle-outer msg-forward-bundle-outer--nested-in-msg">
+                              {idxs.map((j) => (
+                                <div key={fullList[j].id} className="msg-forward-bundle__item">
+                                  {renderChatMessageAtIndex(j, true, j === __fwdBundle.end, m0.senderId, m0.id, true)}
+                                </div>
+                              ))}
+                            </div>
+                            {renderForwardCaptionOuterBubbleMeta(m0, isMe0, !!bundleOuterSel0)}
+                          </div>
+                          {avatarOnRight0 ? bundleAvatarSlot : null}
+                          {(leftAlignAll || isMe0) ? renderForwardBundleHostCheckbox(m0) : null}
+                        </div>
+                      )
+                    }
+
+                    return wrapEbloRow(
+                      <div
+                        key={`multi-fwd-${m0.id}`}
+                        className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClass0}`}
+                        onClick={(e) => onForwardBundleHostMultiClick(e, m0.id)}
+                      >
+                        {!leftAlignAll && !isMe0 ? renderForwardBundleHostCheckbox(m0) : null}
+                        {avatarOnLeft0 ? bundleAvatarSlot : null}
+                        <div
+                          className={`forward-comment-wrap ${bubbleClass0Outer}${bundleOuterSel0 ? ' msg-bubble--selected' : ''}`}
+                          data-mid={m0.id}
+                          ref={(el) => {
+                            if (!el) {
+                              nodesByMessageId.current.delete(m0.id)
+                              return
+                            }
+                            nodesByMessageId.current.set(m0.id, el)
+                            visibleObserver.current?.observe(el)
+                          }}
+                          style={{ ['--bubble-bg' as any]: outerBg0Bubble, ['--bubble-fg' as any]: bubbleFg0Bubble }}
+                          onClick={(e) => {
+                            onOuterFwdBubbleMultiClick0(e)
+                            if (multiSelectMode && bundleCanSel0) return
+                            if (!isMobile) return
+                            const target = e.target as HTMLElement
+                            if (
+                              target.closest(
+                                'a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                              )
+                            )
+                              return
+                            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                            if (selection && selection.toString()) return
+                            setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: m0.id })
+                          }}
+                          onContextMenu={(e) => {
+                            const target = e.target as HTMLElement
+                            if (target.closest('.reaction-emoji')) {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              return
+                            }
+                            if (
+                              target.closest(
+                                '.msg-forward-bundle__item .msg-bubble, .msg-forward-bundle__item a[href]',
+                              )
+                            )
+                              return
+                            e.preventDefault()
+                            setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: m0.id })
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'inline-flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              gap: 5,
+                              width: 'max-content',
+                              maxWidth: '100%',
+                              fontSize: 14,
+                              fontWeight: 700,
+                              lineHeight: 1.3,
+                              marginBottom: 8,
+                              color: fwdCaptionNameColor0,
+                            }}
+                          >
+                            <span style={{ flexShrink: 0 }}>
+                              {`${String(avatarName0).trim()} ${forwardPhraseAfterName0}`}
+                            </span>
+                            <Forward
+                              size={14}
+                              strokeWidth={2.6}
+                              aria-hidden
+                              style={{
+                                flexShrink: 0,
+                                opacity: 0.9,
+                                color: bundleOuterSel0 ? '#b45309' : 'var(--brand)',
+                              }}
+                            />
+                          </div>
+                          <div className="msg-forward-bundle-outer msg-forward-bundle-outer--nested-in-msg">
+                            {idxs.map((j) => (
+                              <div key={fullList[j].id} className="msg-forward-bundle__item">
+                                {renderChatMessageAtIndex(j, true, j === __fwdBundle.end, m0.senderId, m0.id, true)}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="forward-composer-caption" style={{ marginTop: 10, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                            {renderMessageText(fwdComposerCaption0)}
+                          </div>
+                          {renderForwardCaptionOuterBubbleMeta(m0, isMe0, !!bundleOuterSel0)}
+                        </div>
+                        {avatarOnRight0 ? bundleAvatarSlot : null}
+                        {(leftAlignAll || isMe0) ? renderForwardBundleHostCheckbox(m0) : null}
+                      </div>
+                    )
+                  }
+                  const inAnyForwardBundle = __fwdBundles.some(
+                    (b) => mapIndex >= b.start && mapIndex <= b.end,
+                  )
+                  if (hasForwardFromMeta(m) && !inAnyForwardBundle) {
+                    const mS = m
+                    const prevS = fullList[mapIndex - 1]
+                    const isPrevSameS = !!prevS && prevS.senderId === mS.senderId
+                    const isMeS =
+                      currentUserId != null &&
+                      mS.senderId != null &&
+                      String(mS.senderId) === String(currentUserId)
+                    const baseRowS = leftAlignAll ? 'msg left' : (isMeS ? 'msg me' : 'msg them')
+                    const bundleCanSelS = forwardBundleHostCanMultiSelect(mS)
+                    const bundleOuterSelS =
+                      multiSelectMode && bundleCanSelS && selectedMessageIds.includes(String(mS.id))
+                    const spacingClassS = isPrevSameS ? 'compact' : 'gap'
+                    const rowClassS = `${baseRowS} ${spacingClassS}${
+                      multiSelectMode && bundleCanSelS && leftAlignAll ? ' msg--multiselect-wide' : ''
+                    }`
+                    const isGroupConvS = !!(activeConversation?.isGroup || (activeConversation?.participants?.length ?? 0) > 2)
+                    const showAvatarBlockS = leftAlignAll || isGroupConvS
+                    const nextS = fullList[mapIndex + 1]
+                    const isLastOfRunS =
+                      !nextS ||
+                      nextS.senderId == null ||
+                      String(nextS.senderId) !== String(mS.senderId)
+                    const showAvatarS = showAvatarBlockS && isLastOfRunS
+                    const avatarOnRightS = !leftAlignAll && isGroupConvS && isMeS
+                    const avatarOnLeftS = (leftAlignAll || isGroupConvS) && !avatarOnRightS
+                    const senderUserS = usersById[mS.senderId]
+                    const avatarNameS =
+                      senderUserS?.displayName ??
+                      senderUserS?.username ??
+                      (isMeS ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
+                    const avatarIdS = senderUserS?.id ?? (isMeS ? (me?.id ?? 'me') : 'user')
+                    const avatarUrlS =
+                      senderUserS?.avatarUrl && String(senderUserS.avatarUrl).trim() ? senderUserS.avatarUrl : undefined
+                    const singleFwdAvatarSlot = showAvatarS ? (
+                      <Avatar name={avatarNameS} id={avatarIdS} avatarUrl={avatarUrlS} onClick={senderUserS ? () => openUserCard(senderUserS) : undefined} />
+                    ) : (
+                      <div className="avatar-spacer" />
+                    )
+                    const fwdComposerCaptionS = extractForwardComposerCaption(mS)
+                    const baseBubbleSOuter = leftAlignAll ? 'msg-bubble left' : isMeS ? 'msg-bubble me' : 'msg-bubble them'
+                    const soloForwardedContinuationTailSOuter =
+                      hasForwardFromMeta(mS) &&
+                      isMeS &&
+                      !leftAlignAll &&
+                      !!nextS &&
+                      currentUserId != null &&
+                      nextS.senderId != null &&
+                      String(nextS.senderId) === String(currentUserId)
+                    const wantsBubbleTailSOuter = isLastOfRunS || soloForwardedContinuationTailSOuter
+                    const bubbleClassSOuter = wantsBubbleTailSOuter
+                      ? `${baseBubbleSOuter} ${isMeS && !leftAlignAll ? 'tail-right' : 'tail-left'}`
+                      : baseBubbleSOuter
+                    const outerBgSBubble =
+                      isMeS ? '#303845' : isGroupConvS ? groupIncomingBubbleBg(mS.senderId) : hashToGray(mS.senderId)
+                    const bubbleFgSBubble = bundleOuterSelS ? '#0a0a0a' : '#f1f3f6'
+                    const forwardPhraseAfterNameS = formatForwardSourcePhraseAfterName([mS])
+                    const fwdCaptionNameColorS = bundleOuterSelS ? '#292524' : nameColorForUser(mS.senderId)
+                    const onOuterFwdBubbleMultiClickS = (e: React.MouseEvent) => {
+                      if (!multiSelectMode || !bundleCanSelS) return
+                      const t = e.target as HTMLElement
+                      if (
+                        t.closest(
+                          '.msg-forward-bundle__item .msg,.msg-forward-bundle__item a[href],.msg-forward-bundle__item button,.msg-forward-bundle__item .reaction-emoji,.msg-forward-bundle__item .msg-reaction-rail-host,.msg-forward-bundle__item img,.msg-forward-bundle__item video,.msg-forward-bundle__item .msg-media-tile,.msg-forward-bundle__item .video-message-bubble',
+                        )
+                      )
+                        return
+                      const sel = typeof window.getSelection === 'function' ? window.getSelection() : null
+                      if (sel && sel.toString().length > 0) return
+                      e.preventDefault()
+                      toggleMessageMultiSelect(mS.id)
+                    }
+                    if (!fwdComposerCaptionS) {
+                      return wrapEbloRow(
+                        <div
+                          key={`single-fwd-${mS.id}`}
+                          className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClassS}`}
+                          onClick={(e) => onForwardBundleHostMultiClick(e, mS.id)}
+                        >
+                          {!leftAlignAll && !isMeS ? renderForwardBundleHostCheckbox(mS) : null}
+                          {avatarOnLeftS ? singleFwdAvatarSlot : null}
+                          <div
+                            className={`forward-comment-wrap ${bubbleClassSOuter}${bundleOuterSelS ? ' msg-bubble--selected' : ''}`}
+                            data-mid={mS.id}
+                            ref={(el) => {
+                              if (!el) {
+                                nodesByMessageId.current.delete(mS.id)
+                                return
+                              }
+                              nodesByMessageId.current.set(mS.id, el)
+                              visibleObserver.current?.observe(el)
+                            }}
+                            style={{ ['--bubble-bg' as any]: outerBgSBubble, ['--bubble-fg' as any]: bubbleFgSBubble }}
+                            onClick={(e) => {
+                              onOuterFwdBubbleMultiClickS(e)
+                              if (multiSelectMode && bundleCanSelS) return
+                              if (!isMobile) return
+                              const target = e.target as HTMLElement
+                              if (
+                                target.closest(
+                                  'a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                                )
+                              )
+                                return
+                              const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                              if (selection && selection.toString().length > 0) return
+                              setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: mS.id })
+                            }}
+                            onContextMenu={(e) => {
+                              const target = e.target as HTMLElement
+                              if (target.closest('.reaction-emoji')) {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                return
+                              }
+                              if (
+                                target.closest(
+                                  '.msg-forward-bundle__item .msg-bubble, .msg-forward-bundle__item a[href]',
+                                )
+                              )
+                                return
+                              e.preventDefault()
+                              setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: mS.id })
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'inline-flex',
+                                flexWrap: 'wrap',
+                                alignItems: 'center',
+                                gap: 5,
+                                width: 'max-content',
+                                maxWidth: '100%',
+                                fontSize: 14,
+                                fontWeight: 700,
+                                lineHeight: 1.3,
+                                marginBottom: 8,
+                                color: fwdCaptionNameColorS,
+                              }}
+                            >
+                              <span style={{ flexShrink: 0 }}>
+                                {`${String(avatarNameS).trim()} ${forwardPhraseAfterNameS}`}
+                              </span>
+                              <Forward
+                                size={14}
+                                strokeWidth={2.6}
+                                aria-hidden
+                                style={{
+                                  flexShrink: 0,
+                                  opacity: 0.9,
+                                  color: bundleOuterSelS ? '#b45309' : 'var(--brand)',
+                                }}
+                              />
+                            </div>
+                            <div className="msg-forward-bundle-outer msg-forward-bundle-outer--nested-in-msg">
+                              <div className="msg-forward-bundle__item">
+                                {renderChatMessageAtIndex(mapIndex, true, true, null, mS.id, true)}
+                              </div>
+                            </div>
+                            {renderForwardCaptionOuterBubbleMeta(mS, isMeS, !!bundleOuterSelS)}
+                          </div>
+                          {avatarOnRightS ? singleFwdAvatarSlot : null}
+                          {(leftAlignAll || isMeS) ? renderForwardBundleHostCheckbox(mS) : null}
+                        </div>
+                      )
+                    }
+
+                    return wrapEbloRow(
+                      <div
+                        key={`single-fwd-${mS.id}`}
+                        className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClassS}`}
+                        onClick={(e) => onForwardBundleHostMultiClick(e, mS.id)}
+                      >
+                        {!leftAlignAll && !isMeS ? renderForwardBundleHostCheckbox(mS) : null}
+                        {avatarOnLeftS ? singleFwdAvatarSlot : null}
+                        <div
+                          className={`forward-comment-wrap ${bubbleClassSOuter}${bundleOuterSelS ? ' msg-bubble--selected' : ''}`}
+                          data-mid={mS.id}
+                          ref={(el) => {
+                            if (!el) {
+                              nodesByMessageId.current.delete(mS.id)
+                              return
+                            }
+                            nodesByMessageId.current.set(mS.id, el)
+                            visibleObserver.current?.observe(el)
+                          }}
+                          style={{ ['--bubble-bg' as any]: outerBgSBubble, ['--bubble-fg' as any]: bubbleFgSBubble }}
+                          onClick={(e) => {
+                            onOuterFwdBubbleMultiClickS(e)
+                            if (multiSelectMode && bundleCanSelS) return
+                            if (!isMobile) return
+                            const target = e.target as HTMLElement
+                            if (
+                              target.closest(
+                                'a, button, input, textarea, img, video, .reaction-emoji, .msg-reaction-rail-host, .video-message-bubble, .msg-forward-bundle__item .msg-bubble',
+                              )
+                            )
+                              return
+                            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+                            if (selection && selection.toString()) return
+                            setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: mS.id })
+                          }}
+                          onContextMenu={(e) => {
+                            const target = e.target as HTMLElement
+                            if (target.closest('.reaction-emoji')) {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              return
+                            }
+                            if (
+                              target.closest(
+                                '.msg-forward-bundle__item .msg-bubble, .msg-forward-bundle__item a[href]',
+                              )
+                            )
+                              return
+                            e.preventDefault()
+                            setContextMenu({ open: true, x: e.clientX, y: e.clientY, messageId: mS.id })
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'inline-flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              gap: 5,
+                              width: 'max-content',
+                              maxWidth: '100%',
+                              fontSize: 14,
+                              fontWeight: 700,
+                              lineHeight: 1.3,
+                              marginBottom: 8,
+                              color: fwdCaptionNameColorS,
+                            }}
+                          >
+                            <span style={{ flexShrink: 0 }}>
+                              {`${String(avatarNameS).trim()} ${forwardPhraseAfterNameS}`}
+                            </span>
+                            <Forward
+                              size={14}
+                              strokeWidth={2.6}
+                              aria-hidden
+                              style={{
+                                flexShrink: 0,
+                                opacity: 0.9,
+                                color: bundleOuterSelS ? '#b45309' : 'var(--brand)',
+                              }}
+                            />
+                          </div>
+                          <div className="msg-forward-bundle-outer msg-forward-bundle-outer--nested-in-msg">
+                            <div className="msg-forward-bundle__item">
+                              {renderChatMessageAtIndex(mapIndex, true, true, null, mS.id, true)}
+                            </div>
+                          </div>
+                          <div className="forward-composer-caption" style={{ marginTop: 10, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                            {renderMessageText(fwdComposerCaptionS)}
+                          </div>
+                          {renderForwardCaptionOuterBubbleMeta(mS, isMeS, !!bundleOuterSelS)}
+                        </div>
+                        {avatarOnRightS ? singleFwdAvatarSlot : null}
+                        {(leftAlignAll || isMeS) ? renderForwardBundleHostCheckbox(mS) : null}
+                      </div>
+                    )
+                  }
+                  return wrapEbloRow(renderChatMessageAtIndex(mapIndex, false))
+                })
+              })()}</div>
+            )}
+          </div>
+          {activeId && (
+            <button
+              className={showJump ? 'jump-bottom jump-bottom--visible' : 'jump-bottom'}
+              onMouseDown={(e) => {
+                // Prevent composer blur (toolbar collapse) from swallowing the click.
+                e.preventDefault()
+                if (messagesRef.current) {
+                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
+                }
+                nearBottomRef.current = true
+                userStickyScrollRef.current = false
+                scheduleEbloUpdate()
+                setShowJump(false)
+              }}
+              onClick={(e) => {
+                // Keyboard activation: click has detail===0 (mouse is handled above).
+                if ((e as any)?.detail > 0) return
+                if (messagesRef.current) {
+                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
+                }
+                nearBottomRef.current = true
+                userStickyScrollRef.current = false
+                scheduleEbloUpdate()
+                setShowJump(false)
+              }}
+            >
+              ↓
+            </button>
+          )}
+          <div ref={composerBarRef} className="chat-composer-bar eb-no-drag" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+          {composerSelectionAnchor && composerSelectionToolbarStyle && createPortal(
+            <div
+              ref={composerSelectionToolbarRef}
+              className="composer-sel-toolbar"
+              style={composerSelectionToolbarStyle}
+              role="toolbar"
+              aria-label="Форматирование текста"
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              <button
+                type="button"
+                className={`composer-sel-toolbar__btn composer-sel-toolbar__btn--bold${composerSelectionFmt.bold ? ' is-active' : ''}`}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => applyComposerSelectionFormat('bold')}
+                aria-label="Жирный"
+                title="Жирный"
+              >
+                B
+              </button>
+              <button
+                type="button"
+                className={`composer-sel-toolbar__btn composer-sel-toolbar__btn--italic${composerSelectionFmt.italic ? ' is-active' : ''}`}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => applyComposerSelectionFormat('italic')}
+                aria-label="Курсив"
+                title="Курсив"
+              >
+                I
+              </button>
+              <button
+                type="button"
+                className={`composer-sel-toolbar__btn composer-sel-toolbar__btn--strike${composerSelectionFmt.strike ? ' is-active' : ''}`}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => applyComposerSelectionFormat('strikeThrough')}
+                aria-label="Зачёркнутый"
+                title="Зачёркнутый"
+              >
+                U
+              </button>
+            </div>,
+            document.body,
+          )}
+          {/* Fixed-height typing row: always in DOM to avoid layout shift; visibility toggled via CSS + transition */}
+          <div
+            className={`chat-typing-row${Object.keys(typingByUserId).length > 0 ? ' chat-typing-row--visible' : ''}`}
+            style={{
+              flexShrink: 0,
+              height: 'var(--chat-typing-row-h, 22px)',
+              minHeight: 'var(--chat-typing-row-h, 22px)',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0 16px',
+              background: 'var(--surface-200)',
+              pointerEvents: Object.keys(typingByUserId).length > 0 ? 'auto' : 'none',
+            }}
+            aria-live="polite"
+          >
+            {(() => {
+              const ids = Object.keys(typingByUserId)
+              const names = ids
+                .filter((uid) => uid !== me?.id)
+                .map((uid) => {
+                  const u = usersById[uid]
+                  return (u?.displayName ?? u?.username ?? 'Пользователь') as string
+                })
+                .filter(Boolean)
+              const label =
+                names.length === 0
+                  ? ''
+                  : names.length === 1
+                    ? `${names[0]} печатает`
+                    : 'несколько человек печатают'
+              return (
+                <>
+                  <span>{label}</span>
+                  {label ? (
+                    <span className="chat-typing-bubble" aria-hidden>
+                      <span className="chat-typing-bubble__dot" />
+                      <span className="chat-typing-bubble__dot" />
+                      <span className="chat-typing-bubble__dot" />
+                    </span>
+                  ) : null}
+                </>
+              )
+            })()}
+          </div>
+          <div className="msg-input-bar eb-no-drag"
+            style={{
+              flexShrink: 0,
+              // Keep composer visible even if CSS bundle changes.
+              position: 'sticky',
+              bottom: 0,
+              background: 'var(--surface-200)',
+              zIndex: 5,
+              padding: '12px 16px',
+              paddingBottom: 'max(12px, env(safe-area-inset-bottom, 0px))',
+              borderTop: '1px solid var(--surface-border)',
+            }}
+          >
+            <>
+            {activeConversation?.isSecret && activeSecretUiState.readyState !== 'ready' && (
+              <div
+                style={{
+                  marginBottom: 10,
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  border: '1px solid var(--surface-border)',
+                  background: 'rgba(13,148,136,0.10)',
+                  color: 'var(--text-primary)',
+                  fontSize: 13,
+                  lineHeight: 1.25,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  {(() => {
+                    const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
+                    if (activeSecretUiState.readyState === 'bootstrapping') {
+                      // v2 bootstrapping is typically "waiting for key package from the peer/creator"
+                      if (isSecretV2) {
+                        return activeSecretQueuedCount > 0
+                          ? `🔒 Настраивается… ждём ключи от собеседника. ${activeSecretQueuedCount} сообщ. в очереди — отправим автоматически.`
+                          : '🔒 Настраивается… ждём ключи от собеседника. Можно писать — отправим автоматически.'
+                      }
+                      return activeSecretQueuedCount > 0
+                        ? `🔒 Настраивается… ${activeSecretQueuedCount} сообщ. в очереди, отправим автоматически.`
+                        : '🔒 Настраивается… можно писать, отправим как только защита будет готова.'
+                    }
+                    return '⚠️ Секретный чат недоступен на этом устройстве.'
+                  })()}
+                </div>
+                {activeSecretUiState.readyState === 'bootstrapping' &&
+                  hasOtherTrustedDevice &&
+                  String(activeConversation?.type ?? '').toUpperCase() !== 'SECRET' && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => setLinkDeviceModalOpen(true)}
+                    style={{ flexShrink: 0 }}
+                  >
+                    Привязать устройство
+                  </button>
+                )}
+              </div>
+            )}
+            {secretComposerInlineError && (
+              <div
+                style={{
+                  marginBottom: 10,
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  border: '1px solid rgba(239,68,68,0.25)',
+                  background: 'rgba(239,68,68,0.08)',
+                  color: '#fca5a5',
+                  fontSize: 13,
+                  lineHeight: 1.25,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <div style={{ minWidth: 0 }}>{secretComposerInlineError}</div>
+                  {String(activeConversation?.type ?? '').toUpperCase() === 'SECRET' ? (
+                    <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          try {
+                            const threadId = String(activeConversation?.id ?? '').trim()
+                            const peerUserId =
+                              activeConversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user
+                                ?.id ?? null
+                            const amCreator = !!(me?.id && String(activeConversation?.createdById ?? '') === me.id)
+                            if (threadId && peerUserId) {
+                              if (secretEngineV2Enabled) {
+                                void refreshKeysAndRetry({ threadId, peerUserId, amCreator }).catch(() => {})
+                              } else {
+                                void ensureSecretEngineReady({ threadId, peerUserId, amCreator }).catch(() => {})
+                              }
+                            }
+                          } catch {}
+                        }}
+                      >
+                        Восстановить
+                      </button>
+                      {hasOtherTrustedDevice ? (
+                        <button type="button" className="btn btn-ghost" onClick={() => setLinkDeviceModalOpen(true)}>
+                          Привязать устройство
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            )}
+            {replyTo && !forwardComposerDraft && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10, background: 'var(--surface-100)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
+                <Quote size={16} strokeWidth={2.4} style={{ flexShrink: 0, marginTop: 2, color: 'var(--brand)' }} aria-hidden />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: replyTo.quoted.length > 1 ? 6 : 0 }}>
+                    {formatReplyBundleHeader(replyTo.quoted.length)}
+                  </div>
+                  {replyTo.quoted.length === 1 ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      {(() => {
+                        const q0 = replyTo.quoted[0]
+                        const turl = q0.replyImageStub ? resolveAttachmentUrl(q0.replyImageStub) : null
+                        return turl ? (
+                          <img
+                            src={turl}
+                            alt=""
+                            style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
+                          />
+                        ) : null
+                      })()}
+                      {(() => {
+                        const q0 = replyTo.quoted[0]
+                        const turl = q0.replyImageStub ? resolveAttachmentUrl(q0.replyImageStub) : null
+                        const txt = q0.preview
+                        if (turl && replySnippetIsGenericRu(txt)) return null
+                        return (
+                          <div
+                            style={{
+                              flex: 1,
+                              fontSize: 12,
+                              color: 'var(--text-primary)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {txt}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 96, overflow: 'hidden' }}>
+                      {replyTo.quoted.slice(0, 5).map((q: any) => {
+                        const tu = q.replyImageStub ? resolveAttachmentUrl(q.replyImageStub) : null
+                        const hideTxt = !!(tu && replySnippetIsGenericRu(q.preview))
+                        return (
+                          <div key={q.id} style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: 0 }}>
+                            {tu ? (
+                              <img
+                                src={tu}
+                                alt=""
+                                style={{ width: 28, height: 28, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }}
+                              />
+                            ) : null}
+                            {!hideTxt ? (
+                              <div style={{ flex: 1, fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {q.preview}
+                              </div>
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                      {replyTo.quoted.length > 5 ? (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>…ещё {replyTo.quoted.length - 5}</div>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => setReplyTo(null)} style={{ marginLeft: 'auto', flexShrink: 0 }}>
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+            {forwardComposerDraft && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10, background: 'var(--surface-100)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
+                <Forward size={16} strokeWidth={2.4} style={{ flexShrink: 0, marginTop: 2, color: 'var(--brand)' }} aria-hidden />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: forwardComposerDraft.previews.length > 1 ? 6 : 0 }}>
+                    {forwardComposerDraft.previews.length > 1
+                      ? `Переслать сообщения (${forwardComposerDraft.previews.length})`
+                      : 'Переслать'}
+                  </div>
+                  {forwardComposerDraft.previews.length === 1 ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      {(() => {
+                        const row = forwardComposerDraft.previews[0]
+                        const turl = row.imageStub ? resolveAttachmentUrl(row.imageStub) : null
+                        return turl ? (
+                          <img
+                            src={turl}
+                            alt=""
+                            style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
+                          />
+                        ) : null
+                      })()}
+                      {(() => {
+                        const row = forwardComposerDraft.previews[0]
+                        const turl = row.imageStub ? resolveAttachmentUrl(row.imageStub) : null
+                        const hide = !!(turl && replySnippetIsGenericRu(row.text))
+                        if (hide) return null
+                        return (
+                          <div style={{ flex: 1, fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {row.text}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 96, overflow: 'hidden' }}>
+                      {forwardComposerDraft.previews.slice(0, 5).map((row: any, idx: any) => {
+                        const turl = row.imageStub ? resolveAttachmentUrl(row.imageStub) : null
+                        const hide = !!(turl && replySnippetIsGenericRu(row.text))
+                        return (
+                          <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            {turl ? (
+                              <img src={turl} alt="" style={{ width: 28, height: 28, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }} />
+                            ) : null}
+                            {!hide ? (
+                              <div style={{ flex: 1, fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {row.text}
+                              </div>
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                      {forwardComposerDraft.previews.length > 5 ? (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>…ещё {forwardComposerDraft.previews.length - 5}</div>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+                <button type="button" className="btn btn-icon btn-ghost" onClick={() => setForwardComposerDraft(null)} style={{ marginLeft: 'auto', flexShrink: 0 }} aria-label="Отменить пересылку">
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+            {pendingImages.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Изображения перед отправкой</div>
+                <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
+                  {pendingImages.map((img: any) => (
+                    <div key={img.id} style={{ position: 'relative', flexShrink: 0, width: 132, background: 'var(--surface-100)', borderRadius: 12, border: '1px solid var(--surface-border)', padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <button
+                        className="btn btn-icon btn-ghost"
+                        style={{ position: 'absolute', top: 4, right: 4 }}
+                        onClick={() => {
+                          if (editingImageId === img.id) setEditingImageId(null)
+                          removeComposerImage(img.id)
+                        }}
+                        aria-label="Удалить изображение"
+                      >
+                        <X size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingImageId(img.id)}
+                        style={{ border: 'none', padding: 0, borderRadius: 8, overflow: 'hidden', cursor: 'pointer', background: 'transparent' }}
+                        aria-label="Редактировать изображение"
+                      >
+                        <img src={img.previewUrl} alt={img.fileName} style={{ width: '100%', height: 90, objectFit: 'cover', display: 'block' }} />
+                      </button>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.fileName}</div>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() => setEditingImageId(img.id)}
+                          style={{ fontSize: 12, padding: '4px 6px', justifyContent: 'center' }}
+                        >
+                          Редактировать
+                        </button>
+                        {img.edited && (
+                          <div style={{ fontSize: 10, color: '#34d399', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                            Отредактировано
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {pendingFiles.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Файлы перед отправкой</div>
+                <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
+                  {pendingFiles.map((f: any) => (
+                    <div
+                      key={f.id}
+                      style={{
+                        position: 'relative',
+                        flexShrink: 0,
+                        minWidth: 220,
+                        maxWidth: 320,
+                        background: 'var(--surface-100)',
+                        borderRadius: 12,
+                        border: '1px solid var(--surface-border)',
+                        padding: '10px 12px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                      }}
+                    >
+                      <button
+                        className="btn btn-icon btn-ghost"
+                        style={{ position: 'absolute', top: 4, right: 4 }}
+                        onClick={() => removeComposerFile(f.id)}
+                        aria-label="Удалить файл"
+                        type="button"
+                      >
+                        <X size={14} />
+                      </button>
+                      <div style={{ width: 32, height: 32, borderRadius: 10, background: 'var(--surface-200)', border: '1px solid var(--surface-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <Paperclip size={16} color="var(--text-muted)" />
+                      </div>
+                      <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <div style={{ fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {f.fileName}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          {formatAttachmentFileSize(f.size) || '—'}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <input type="file" multiple style={{ display: 'none' }} ref={attachInputRef} onChange={async (e) => {
+              const files = Array.from(e.target.files || [])
+              if (!activeId || files.length === 0) return
+              if (editState) {
+                e.target.value = ''
+                return
+              }
+              if (forwardComposerDraft) {
+                systemToast.error('Сначала отправьте или отмените пересылку — файлы из композера с ней не смешиваем.')
+                e.target.value = ''
+                return
+              }
+              const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+              const otherFiles = files.filter((file) => !file.type.startsWith('image/'))
+              imageFiles.forEach((file) => addComposerImage(file, 'upload'))
+              otherFiles.forEach((file) => addComposerFile(file, 'upload'))
+              e.target.value = ''
+            }} />
+            {voiceRecording ? (
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', background: 'var(--surface-100)', borderRadius: 8, border: '1px solid var(--surface-border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
+                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#ef4444', animation: 'pulse 1.5s ease-in-out infinite', flexShrink: 0 }} />
+                  {/* Фиксированный контейнер для waveform - звук движется справа налево */}
+                  <div 
+                    ref={waveformContainerRef}
+                    style={{ 
+                      width: '100%', 
+                      ...(isMobile ? { maxWidth: 200 } : {}), 
+                      height: 24, 
+                      overflow: 'hidden', 
+                      position: 'relative',
+                      flex: 1,
+                      minWidth: 0,
+                    }}
+                  >
+                    {(() => {
+                      // Используем фиксированное количество баров (как при воспроизведении)
+                      const barWidth = 2
+                      const barGap = 2
+                      const barTotalWidth = barWidth + barGap
+                      const maxBars = isMobile ? 60 : waveformMaxBars
+                      
+                      // Если данных еще нет, показываем плейсхолдер
+                      if (voiceWaveform.length === 0) {
+                        return (
+                          <div style={{ 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: barGap, 
+                            height: 24,
+                          }}>
+                            {Array(maxBars).fill(0).map((_, i) => (
+                              <div
+                                key={i}
+                                style={{
+                                  width: barWidth,
+                                  height: 12,
+                                  background: 'var(--surface-border)',
+                                  borderRadius: 1,
+                                  animation: 'pulse 1.5s ease-in-out infinite',
+                                  animationDelay: `${i * 0.1}s`,
+                                  flexShrink: 0,
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )
+                      }
+                      
+                      // Показываем waveform данные с прокруткой справа налево (как на ПК)
+                      return (
+                        <div style={{ 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: barGap, 
+                          height: 24,
+                          position: 'absolute',
+                          right: 0,
+                          // Сдвигаем влево: когда данных больше maxBars, каждый новый бар сдвигает весь waveform влево
+                          transform: voiceWaveform.length > maxBars 
+                            ? `translateX(-${(voiceWaveform.length - maxBars) * barTotalWidth}px)` 
+                            : 'translateX(0)',
+                          transition: 'none', // Убираем transition для мгновенного обновления
+                        }}>
+                          {/* Показываем последние maxBars баров, новые появляются справа */}
+                          {voiceWaveform.slice(-maxBars).map((amplitude: any, index: any) => {
+                            // Вычисляем высоту бара: минимум 4px, максимум 20px (как при воспроизведении)
+                            const height = Math.max(4, (amplitude / 100) * 20)
+                            return (
+                              <div
+                                key={`${voiceWaveform.length - maxBars + index}-${index}`}
+                                style={{
+                                  width: barWidth,
+                                  height: `${height}px`,
+                                  background: 'var(--brand)',
+                                  borderRadius: 1,
+                                  alignSelf: 'flex-end',
+                                  flexShrink: 0,
+                                }}
+                              />
+                            )
+                          })}
+                        </div>
+                      )
+                    })()}
+                  </div>
+                  <div style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                    {Math.floor(voiceDuration / 60)}:{(voiceDuration % 60).toString().padStart(2, '0')}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={cancelVoiceRecording}
+                  style={{ flexShrink: 0 }}
+                  aria-label="Отменить запись"
+                >
+                  <X size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={stopVoiceRecording}
+                  style={{ flexShrink: 0 }}
+                  aria-label="Отправить голосовое сообщение"
+                >
+                  <Send size={16} />
+                </button>
+              </div>
+            ) : (
+              <>
+            {editState && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  padding: '10px 12px',
+                  background: 'var(--surface-100)',
+                  border: '1px solid var(--surface-border)',
+                  borderRadius: 10,
+                  marginBottom: 10,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: 13, lineHeight: '18px' }}>
+                    Редактирование сообщения
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    Esc — отмена · Enter — сохранить · Shift+Enter — перенос строки
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                  <button type="button" className="btn btn-ghost" onClick={cancelEdit} disabled={editBusy}>
+                    Отмена
+                  </button>
+                  <button type="button" className="btn btn-primary" disabled={editBusy} onClick={() => { (composerEditorRef.current?.closest('form') as HTMLFormElement)?.requestSubmit?.() }}>
+                    {editBusy ? 'Сохраняем...' : 'Сохранить'}
+                  </button>
+                </div>
+              </div>
+            )}
+            <form autoComplete="off" onSubmit={async (e) => {
+                    e.preventDefault()
+              if (!activeId) return
+              stopTyping(activeId)
+              if (editBusy) return
+              const value = getComposerValue().trim()
+
+              if (editState) {
+                const mid = editState.messageId
+                if (!value) return
+                setEditBusy(true)
+                try {
+                  await api.post('/messages/update', { messageId: mid, content: value })
+                  setEditState(null)
+                  setComposerValue('')
+                  setReplyTo(null)
+                } catch (err: any) {
+                  console.error('Failed to update message:', err)
+                  const status = err?.response?.status
+                  const serverMsg = err?.response?.data?.message
+                  const msg =
+                    typeof serverMsg === 'string' && serverMsg.trim()
+                      ? serverMsg
+                      : status === 404
+                        ? 'Сервер не поддерживает редактирование сообщений (обновите/перезапустите backend после сборки).'
+                        : err?.message || 'Не удалось сохранить изменения'
+                  systemToast.error(msg)
+                  setEditState(null)
+                } finally {
+                  setEditBusy(false)
+                }
+                return
+              }
+
+              const draftFw = forwardComposerDraft
+              if (
+                draftFw &&
+                activeConversation &&
+                String(activeConversation.id) === draftFw.destinationConversationId
+              ) {
+                if (pendingImages.length > 0 || pendingFiles.length > 0) {
+                  systemToast.error(
+                    'При пересылке нельзя прикреплять файлы из композера. Отправьте без вложений или отмените пересылку крестиком.',
+                  )
+                  return
+                }
+                const comment = value
+                const { lastOutcome } = await executeForwardPayloadDelivery(
+                  activeConversation,
+                  draftFw.payloads,
+                  draftFw.mergeAsImageBulk,
+                  comment,
+                )
+                if (lastOutcome?.outcome === 'blocked') return
+                setForwardComposerDraft(null)
+                setComposerValue('')
+                setReplyTo(null)
+                if (activeId) {
+                  client.invalidateQueries({ queryKey: ['messages', activeId] })
+                }
+                setTimeout(() => {
+                  if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight
+                }, 0)
+                return
+              }
+
+              if (pendingImages.length > 0 || pendingFiles.length > 0) {
+                const imagesSnapshot = pendingImages.map((img: any) => ({ file: img.file, previewUrl: img.previewUrl }))
+                const filesSnapshot = pendingFiles.map((f: any) => f.file)
+                setPendingImages([])
+                setPendingFiles([])
+                setEditingImageId(null)
+                imagesSnapshot.forEach((entry: any) => releasePreviewUrl(entry.previewUrl))
+                await uploadAndSendAttachments([...imagesSnapshot.map((entry: any) => entry.file), ...filesSnapshot], value || '', replyTo)
+                setComposerValue('')
+                setReplyTo(null)
+              } else if (value) {
+                    const replyMeta = buildReplyQuoteMetadataForSend(replyTo)
+                    const r = await sendMessageToConversation(activeConversation, {
+                      type: 'TEXT',
+                      content: value,
+                      replyToId: replyTo?.replyToId,
+                      ...(replyMeta ? { metadata: replyMeta } : {}),
+                    })
+                    if (r?.outcome === 'blocked') return
+                    setComposerValue('')
+                    setReplyTo(null)
+              }
+                    if (activeId) {
+                      client.invalidateQueries({ queryKey: ['messages', activeId] })
+                    }
+                    setTimeout(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight }, 0)
+            }} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => attachInputRef.current?.click()}
+              disabled={!!editState || !!forwardComposerDraft}
+              style={{
+                flexShrink: 0,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: isMobile ? 0 : 6,
+                whiteSpace: 'nowrap',
+                height: 'var(--control-h)',
+                minHeight: 'var(--control-h)',
+                padding: '0 12px',
+              }}
+              aria-label="Прикрепить файлы"
+            >
+                <Paperclip size={16} />
+                {!isMobile && <span>Загрузить</span>}
+              </button>
+              <div style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}>
+                {composerEmpty && (
+                  <div
+                    aria-hidden
+                    style={{
+                      position: 'absolute',
+                      left: 16,
+                      top: 12,
+                      right: 16,
+                      pointerEvents: 'none',
+                      color: 'var(--text-muted)',
+                      fontSize: 16,
+                      lineHeight: '20px',
+                    }}
+                  >
+                    {(pendingImages.length > 0 || pendingFiles.length > 0)
+                      ? 'Добавьте подпись к вложениям...'
+                      : forwardComposerDraft
+                        ? 'Комментарий к пересылке (необязательно)…'
+                        : 'Напишите сообщение...'}
+                  </div>
+                )}
+                <div
+                  ref={composerEditorRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  role="textbox"
+                  aria-multiline="true"
+                  aria-placeholder={(pendingImages.length > 0 || pendingFiles.length > 0)
+                      ? 'Добавьте подпись к вложениям...'
+                      : forwardComposerDraft
+                        ? 'Комментарий к пересылке (необязательно)…'
+                        : 'Напишите сообщение...'}
+                  onContextMenu={(e) => {
+                    e.stopPropagation()
+                  }}
+                  onFocus={() => setComposerFocused(true)}
+                  onBlur={() => {
+                    setComposerFocused(false)
+                    closeComposerSelectionToolbar()
+                    if (activeId) stopTyping(activeId)
+                  }}
+                  onInput={() => {
+                    const el = composerEditorRef.current
+                    const empty = !el || !el.innerText?.trim()
+                    setComposerEmpty(empty)
+                    notifyTyping()
+                    resizeComposer()
+                    requestAnimationFrame(() => updateComposerSelectionToolbar())
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      if (editState) {
+                        e.preventDefault()
+                        closeComposerSelectionToolbar()
+                        cancelEdit()
+                        return
+                      }
+                      if (composerSelectionAnchor) {
+                        e.preventDefault()
+                        closeComposerSelectionToolbar({ collapseSelection: true })
+                        return
+                      }
+                      if (forwardComposerDraft) {
+                        e.preventDefault()
+                        setForwardComposerDraft(null)
+                        return
+                      }
+                    }
+                    if (e.key === 'ArrowUp' && !editState) {
+                      const noAttachments = pendingImages.length === 0 && pendingFiles.length === 0
+                      if (composerEmpty && noAttachments && !forwardComposerDraft) {
+                        const list = (displayedMessages ? [...displayedMessages] : [])
+                          .filter((m: any) => !m?.deletedAt)
+                          .sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+                        const last = list[list.length - 1]
+                        if (last && last.senderId === me?.id && (last.type || 'TEXT') === 'TEXT' && (!last.attachments || last.attachments.length === 0)) {
+                          e.preventDefault()
+                          startEdit(last)
+                          return
+                        }
+                      }
+                    }
+                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault()
+                      if (activeId) stopTyping(activeId)
+                      const form = (e.currentTarget as HTMLElement).closest('form') as HTMLFormElement | null
+                      if (!form) return
+                      if (typeof (form as any).requestSubmit === 'function') {
+                        (form as any).requestSubmit()
+                      } else {
+                        form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }))
+                      }
+                      return
+                    }
+                    if (e.ctrlKey || e.metaKey) {
+                      const key = (e.key || '').toLowerCase()
+                      if (key === 'b') {
+                        e.preventDefault()
+                        applyWysiwygFormat('bold')
+                        requestAnimationFrame(() => updateComposerSelectionToolbar())
+                        return
+                      }
+                      if (key === 'i') {
+                        e.preventDefault()
+                        applyWysiwygFormat('italic')
+                        requestAnimationFrame(() => updateComposerSelectionToolbar())
+                        return
+                      }
+                      if (e.shiftKey && key === 'x') {
+                        e.preventDefault()
+                        applyWysiwygFormat('strikeThrough')
+                        requestAnimationFrame(() => updateComposerSelectionToolbar())
+                        return
+                      }
+                    }
+                  }}
+                  onPaste={(e) => {
+                    if (!activeId) return
+                    if (forwardComposerDraft) {
+                      const clipItems = e.clipboardData?.items
+                      const hasClipboardImage =
+                        !!clipItems &&
+                        Array.from(clipItems).some((it) => typeof it.type === 'string' && it.type.indexOf('image') !== -1)
+                      if (hasClipboardImage) {
+                        e.preventDefault()
+                        systemToast.error('При пересылке нельзя вставлять изображения из буфера. Вставьте только текст или отмените пересылку.')
+                        return
+                      }
+                    }
+                    const items = e.clipboardData?.items
+                    if (!items) return
+                    let hasText = false
+                    let text = ''
+                    try {
+                      text = e.clipboardData?.getData('text/plain') ?? ''
+                      hasText = !!text.length
+                    } catch {
+                      hasText = false
+                    }
+                    let pastedImage = false
+                    for (let i = 0; i < items.length; i++) {
+                      const item = items[i]
+                      if (item.type.indexOf('image') !== -1) {
+                        const file = item.getAsFile()
+                        if (file) addComposerImage(file, 'paste')
+                        pastedImage = true
+                        break
+                      }
+                    }
+                    if (pastedImage && !hasText) {
+                      e.preventDefault()
+                      return
+                    }
+                    if (hasText) {
+                      if (insertPlainTextIntoComposer(text)) {
+                        e.preventDefault()
+                        setComposerEmpty(false)
+                        notifyTyping()
+                        resizeComposer()
+                      }
+                    }
+                  }}
+                  className="chat-md eb-no-drag"
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: '12px 16px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: `1px solid ${composerFocused ? 'var(--brand-600)' : 'var(--surface-border)'}`,
+                    boxShadow: composerFocused ? '0 0 0 3px rgba(217,119,6,0.15)' : 'none',
+                    background: 'var(--surface-100)',
+                    color: 'var(--text-primary)',
+                    fontSize: 16,
+                    minHeight: 'var(--control-h)',
+                    maxHeight: 'var(--composer-max-h)',
+                    height: 'var(--control-h)',
+                    lineHeight: '20px',
+                    overflowY: 'hidden',
+                    outline: 'none',
+                    transition: 'border-color .2s ease, box-shadow .2s ease',
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                  onClick={startVoiceRecording}
+                  disabled={!!editState || !!forwardComposerDraft}
+                style={{
+                  flexShrink: 0,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: isMobile ? 0 : 6,
+                  whiteSpace: 'nowrap',
+                  height: 'var(--control-h)',
+                  minHeight: 'var(--control-h)',
+                  padding: '0 12px',
+                }}
+                aria-label="Записать голосовое сообщение"
+              >
+                <Mic size={16} />
+                {!isMobile && <span>Голос</span>}
+              </button>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={editBusy}
+                aria-label={editState ? (editBusy ? 'Сохраняем…' : 'Сохранить') : 'Отправить'}
+                style={{
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: isMobile ? 0 : 6,
+                  height: 'var(--control-h)',
+                  minHeight: 'var(--control-h)',
+                  padding: '0 12px',
+                }}
+              >
+                <Send size={16} />
+                {!isMobile && <span>{editState ? (editBusy ? 'Сохраняем...' : 'Сохранить') : 'Отправить'}</span>}
+              </button>
+            </form>
+              </>
+            )}
+            {attachUploading && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: '10px 12px',
+                  borderRadius: 14,
+                  border: '1px solid var(--surface-border)',
+                  background: 'color-mix(in srgb, var(--surface-100) 88%, transparent)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0, fontSize: 13, color: 'var(--text-primary)', fontWeight: 600 }}>
+                    {attachUploadState === 'processing' ? (
+                      <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0, color: 'var(--brand)' }} />
+                    ) : (
+                      <UploadCloud size={14} style={{ flexShrink: 0, color: 'var(--brand)' }} />
+                    )}
+                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {attachUploadState === 'processing'
+                        ? (ATTACH_PROCESSING_MESSAGES[attachProcessingMessageIndex]?.title ?? '🔐 Шифруем файл (AES-256-GCM)')
+                        : 'Загрузка файла...'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    <span>{attachUploadState === 'processing' ? '100%' : `${attachProgress}%`}</span>
+                    <button
+                      type="button"
+                      onClick={() => { void cancelActiveAttachUpload() }}
+                      disabled={attachCanceling}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        borderRadius: 999,
+                        border: '1px solid var(--surface-border)',
+                        background: 'color-mix(in srgb, var(--surface-200) 92%, transparent)',
+                        color: 'var(--text-primary)',
+                        padding: '7px 14px',
+                        minHeight: 34,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: attachCanceling ? 'default' : 'pointer',
+                        opacity: attachCanceling ? 0.7 : 1,
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.16)',
+                      }}
+                    >
+                      {attachCanceling ? (
+                        <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                      ) : (
+                        <X size={14} />
+                      )}
+                      <span>{attachCanceling ? 'Отменяем...' : 'Отменить'}</span>
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8, fontSize: 12, color: 'var(--text-muted)', minHeight: 16 }}>
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {attachCanceling
+                      ? 'Прерываем загрузку и удаляем временный файл...'
+                      : attachUploadState === 'processing'
+                      ? (ATTACH_PROCESSING_MESSAGES[attachProcessingMessageIndex]?.detail ?? 'Каждый блок защищён отдельной подписью')
+                      : attachUploadSpeed}
+                  </span>
+                  <span style={{ flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                    {attachUploadState === 'processing' ? '100%' : `${attachProgress}%`}
+                  </span>
+                </div>
+                <div style={{ height: 6, background: 'var(--surface-100)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${attachUploadState === 'processing' ? 100 : attachProgress}%`,
+                      height: '100%',
+                      background: attachUploadState === 'processing'
+                        ? 'linear-gradient(90deg, var(--brand), rgba(255,255,255,0.65), var(--brand))'
+                        : 'var(--brand)',
+                      backgroundSize: attachUploadState === 'processing' ? '200% 100%' : undefined,
+                      animation: attachUploadState === 'processing' ? 'eb-shimmer 1.6s linear infinite, pulse 1.8s ease-in-out infinite' : undefined,
+                      transition: 'width 0.2s ease',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+            </>
+          </div>
+          </div>
+        </div>
+        <ImageEditorModal
+          open={!!editingImage}
+          image={editingImage}
+          onClose={() => setEditingImageId(null)}
+          onApply={({ file, previewUrl }) => {
+            if (!editingImage) return
+            applyComposerImageEdit(editingImage.id, file, previewUrl)
+            setEditingImageId(null)
+          }}
+        />
+        {outgoingCall && (() => {
+          const conv = conversationsQuery.data?.find((r: any) => r.conversation.id === outgoingCall.conversationId)?.conversation
+          const isGroup = conv?.isGroup || (conv?.participants?.length ?? 0) > 2
+          // Не показываем экран дозвона для групповых бесед
+          if (isGroup) {
+            return null
+          }
+          let displayName = 'Неизвестный'
+          let avatarUrl: string | undefined = undefined
+          let avatarId: string = outgoingCall.conversationId
+          if (isGroup) {
+            displayName = conv?.title ?? 'Группа'
+            avatarUrl = conv?.avatarUrl
+            avatarId = outgoingCall.conversationId
+          } else {
+            const otherParticipant = conv?.participants?.find((p: any) => p.user.id !== me?.id)?.user
+            if (otherParticipant) {
+              displayName = otherParticipant.displayName ?? otherParticipant.username ?? otherParticipant.id ?? 'Неизвестный'
+              avatarUrl = otherParticipant.avatarUrl
+              avatarId = otherParticipant.id
+            } else {
+              // Fallback: попробуем получить из contacts
+              const contact = contactsQuery.data?.find((c: any) => {
+                const convIds = c.conversationIds || []
+                return convIds.includes(outgoingCall.conversationId)
+              })
+              if (contact?.friend) {
+                displayName = contact.friend.displayName ?? contact.friend.username ?? contact.friend.id ?? 'Неизвестный'
+                avatarUrl = contact.friend.avatarUrl
+                avatarId = contact.friend.id
+              }
+            }
+          }
+          const elapsed = Math.floor((Date.now() - outgoingCall.startedAt) / 1000)
+          const minutes = Math.floor(elapsed / 60)
+          const seconds = elapsed % 60
+          const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`
+          return createPortal(
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }}>
+              <div style={{ background: 'var(--surface-200)', borderRadius: 16, border: '1px solid var(--surface-border)', padding: 24, width: 'min(92vw, 440px)', boxShadow: 'var(--shadow-sharp)', transform: 'translateY(-4vh)', color: 'var(--text-primary)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                  <div style={{ fontWeight: 700 }}>{outgoingCall.video ? 'Видеозвонок' : 'Звонок'}</div>
+                  {!outgoingCall.minimized && (
+                    <button
+                      className="btn btn-icon btn-ghost"
+                      onClick={() => {
+                        setOutgoingCall((prev: any) => prev ? { ...prev, minimized: true } : null)
+                      }}
+                      style={{ padding: 8 }}
+                    >
+                      <Minus size={18} />
+                    </button>
+                  )}
+                </div>
+                <div className="caller-tile" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: 'var(--surface-100)', border: '1px solid var(--surface-border)', borderRadius: 12, marginBottom: 16 }}>
+                  <Avatar
+                    name={displayName}
+                    id={avatarId}
+                    size={64}
+                    avatarUrl={avatarUrl}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 16 }}>{displayName}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>дозвон…</div>
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                    {timeStr}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn"
+                    style={{ background: 'var(--danger)', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }}
+                    onClick={() => {
+                      if (outgoingCallTimerRef.current) {
+                        window.clearTimeout(outgoingCallTimerRef.current)
+                        outgoingCallTimerRef.current = null
+                      }
+                      stopDialingSound()
+                      playEndCallSound()
+                      endCall(outgoingCall.conversationId)
+                      setOutgoingCall(null)
+                      setActiveCalls((prev: any) => {
+                        const current = prev[outgoingCall.conversationId]
+                        if (current?.active) {
+                          return { ...prev, [outgoingCall.conversationId]: { ...current, active: false, endedAt: Date.now() } }
+                        }
+                        const { [outgoingCall.conversationId]: _omit, ...rest } = prev
+                        return rest
+                      })
+                      callStore.endCall()
+                    }}
+                  >
+                    <PhoneOff size={18} />
+                    <span>Сбросить</span>
+                  </button>
+                  {outgoingCall.minimized && (
+                    <button
+                      className="btn btn-primary"
+                      style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }}
+                      onClick={() => {
+                        setOutgoingCall((prev: any) => prev ? { ...prev, minimized: false } : null)
+                      }}
+                    >
+                      <Maximize2 size={18} />
+                      <span>Развернуть</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>, document.body)
+        })()}
+        {callStore.incoming && callStore.incoming.source !== 'android_native' && createPortal(
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,16,0.55)', backdropFilter: 'blur(4px) saturate(110%)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }}>
+            <div style={{ background: 'var(--surface-200)', borderRadius: 16, border: '1px solid var(--surface-border)', padding: 24, width: 'min(92vw, 440px)', boxShadow: 'var(--shadow-sharp)', transform: 'translateY(-4vh)', color: 'var(--text-primary)' }}>
+              <div style={{ fontWeight: 700, marginBottom: 12 }}>{callStore.incoming.video ? 'Входящий видеозвонок' : 'Входящий аудиозвонок'}</div>
+              <div className="caller-tile" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: 'var(--surface-100)', border: '1px solid var(--surface-border)', borderRadius: 12, marginBottom: 12 }}>
+                <Avatar
+                  name={(callStore.incoming.from.name ?? callStore.incoming.from.id)}
+                  id={callStore.incoming.from.id}
+                  size={64}
+                  avatarUrl={
+                    callStore.incoming.from.avatarUrl ??
+                    (conversationsQuery.data?.find((r: any) => r.conversation.id === callStore.incoming!.conversationId)?.conversation?.participants?.find((p: any) => p.user.id === callStore.incoming!.from.id)?.user?.avatarUrl) ??
+                    (contactsQuery.data?.find((c: any) => c.friend?.id === callStore.incoming!.from.id)?.friend?.avatarUrl) ??
+                    undefined
+                  }
+                />
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 16 }}>{callStore.incoming.from.name ?? callStore.incoming.from.id}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>звонит…</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-primary" style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId, isVideo: false }, 'web_ui') }}>
+                    <Phone size={18} />
+                    <span>Ответить</span>
+                  </button>
+                  <button className="btn" style={{ background: 'transparent', color: 'var(--brand-600)', border: '1px solid var(--brand-600)', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId, isVideo: true }, 'web_ui') }}>
+                    <Video size={18} />
+                    <span>Ответить с видео</span>
+                  </button>
+                </div>
+                <div style={{ display: 'flex' }}>
+                  <button className="btn" style={{ background: 'var(--danger)', color: '#fff', width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void declineIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId }, 'web_ui') }}>
+                    <PhoneOff size={18} />
+                    <span>Отклонить</span>
+                  </button>
+                </div>
+                {callPermissionError && (
+                  <div style={{ marginTop: 12, fontSize: 13, color: '#fca5a5', textAlign: 'center', lineHeight: 1.4 }}>
+                    {callPermissionError}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>, document.body)
+        }
+      </section>
+    )
+}
