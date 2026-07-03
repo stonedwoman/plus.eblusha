@@ -681,6 +681,7 @@ a {
   color: var(--bubble-fg, var(--text-primary));
   border: 1px solid rgba(255, 255, 255, 0.04);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  line-height: 1.4;
 }
 
 /* Реакции в том же бабле: полоса добавляется сбоку, ширина текста не сжимается */

@@ -43,7 +43,7 @@ export function renderLinkifiedText(value: unknown) {
         href={l.href}
         target="_blank"
         rel="noopener noreferrer nofollow"
-        style={{ color: 'inherit', textDecoration: 'underline', overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+        style={{ textDecoration: 'underline', overflowWrap: 'anywhere', wordBreak: 'break-word' }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         {displayText}

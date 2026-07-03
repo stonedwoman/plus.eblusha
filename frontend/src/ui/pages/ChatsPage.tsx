@@ -902,7 +902,7 @@ function extractOriginalForwardedInstantFromMessage(m: any): Date | null {
 
 function formatMessageClockLabel(d: Date | null): string {
   if (!d || !Number.isFinite(d.getTime())) return ''
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
 /** «сегодня» / «вчера» / «N дней назад», иначе краткая дата (локальный календарь) */
@@ -948,7 +948,7 @@ function formatSmallBubbleTimeLabel(d: Date | null): string {
   if (!clock) return ''
   const rel = formatRuRelativeSendDay(d)
   if (!rel || rel === 'сегодня') return clock
-  return `${rel}, ${clock}`
+  return `${clock}, ${rel}`
 }
 
 type ForwardAttachment = { url: string; type: string; size?: number; metadata?: Record<string, unknown> }
@@ -6983,9 +6983,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (diffMin < 60) return `был(а) онлайн ${diffMin} мин назад`
     const diffH = Math.floor(diffMin / 60)
     if (diffH < 24) return `был(а) онлайн ${diffH} ч назад`
-    const opts: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
-    const dateStr = last.toLocaleDateString()
-    const timeStr = last.toLocaleTimeString([], opts)
+    const opts: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', hour12: false }
+    const dateStr = last.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' })
+    const timeStr = last.toLocaleTimeString('ru-RU', opts)
     return `был(а) онлайн ${dateStr} в ${timeStr}`
   }
 
@@ -7328,7 +7328,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             if (diffH < 24) return <span>Завершен {diffH} ч назад</span>
                             const endedDate = new Date(endedAt)
                             const dateStr = endedDate.toLocaleDateString()
-                            const timeStr = endedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                            const timeStr = endedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })
                             return <span>Завершен {dateStr} в {timeStr}</span>
                             }
                           // Для групповых бесед показываем null, для личных - статус
@@ -7658,7 +7658,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                               else {
                                 const endedDate = new Date(endedAt)
                                 const dateStr = endedDate.toLocaleDateString()
-                                const timeStr = endedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                const timeStr = endedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })
                                 timeText = `Завершен ${dateStr} в ${timeStr}`
                               }
                             }
@@ -7801,7 +7801,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 if (diffH < 24) return <span>Завершен {diffH} ч назад</span>
                                 const endedDate = new Date(endedAt)
                                 const dateStr = endedDate.toLocaleDateString()
-                                const timeStr = endedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                const timeStr = endedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })
                                 return <span>Завершен {dateStr} в {timeStr}</span>
                               }
 
@@ -8623,7 +8623,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     color: '#fff',
                     fontWeight: 700,
                     fontSize: 12,
-                    letterSpacing: 0.04,
+                    letterSpacing: 0.4,
                     textTransform: 'uppercase',
                     borderRadius: 10,
                     padding: '8px 14px',
@@ -8650,7 +8650,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     color: '#fff',
                     fontWeight: 700,
                     fontSize: 12,
-                    letterSpacing: 0.04,
+                    letterSpacing: 0.4,
                     textTransform: 'uppercase',
                     borderRadius: 10,
                     padding: '8px 14px',
@@ -8674,7 +8674,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     color: '#fff',
                     fontWeight: 700,
                     fontSize: 12,
-                    letterSpacing: 0.04,
+                    letterSpacing: 0.4,
                     textTransform: 'uppercase',
                     borderRadius: 10,
                     padding: '8px 14px',
