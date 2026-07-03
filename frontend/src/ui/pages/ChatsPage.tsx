@@ -12076,6 +12076,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 type="submit"
                 className="btn btn-primary"
                 disabled={editBusy}
+                aria-label={editState ? (editBusy ? 'Сохраняем…' : 'Сохранить') : 'Отправить'}
                 style={{
                   flexShrink: 0,
                   whiteSpace: 'nowrap',

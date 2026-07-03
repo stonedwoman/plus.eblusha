@@ -180,12 +180,23 @@ function AvatarViewer(props: {
 }) {
   const { items, startIndex, canManage, onDelete, onClose } = props
   const [idx, setIdx] = useState(Math.min(Math.max(0, startIndex), items.length - 1))
+  const go = (d: number) => setIdx((i) => (i + d + items.length) % items.length)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      else if (items.length > 1 && e.key === 'ArrowLeft') go(-1)
+      else if (items.length > 1 && e.key === 'ArrowRight') go(1)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [items.length])
   if (items.length === 0) return null
   const cur = items[Math.min(idx, items.length - 1)]
-  const go = (d: number) => setIdx((i) => (i + d + items.length) % items.length)
   return (
     <div
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
       style={{
         position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(6,7,10,0.92)',
         backdropFilter: 'blur(6px)', display: 'flex', flexDirection: 'column',
@@ -281,6 +292,16 @@ export function UserProfileHero(props: {
     setCopied(key)
     window.setTimeout(() => setCopied((c) => (c === key ? null : c)), 1400)
   }
+  // Esc закрывает карточку — но только когда не открыт полноэкранный просмотр
+  // аватара (у него свой Esc-обработчик).
+  useEffect(() => {
+    if (!onClose) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && viewerAt === null) onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, viewerAt])
   const joined = user.createdAt ? new Date(user.createdAt) : null
   const joinedText = joined && !Number.isNaN(joined.getTime())
     ? joined.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
@@ -425,6 +446,8 @@ export function UserProfileCard(props: {
   const { user, statusText, presence, inCall, eblid, avatars, actions, onClose, isMobile, children } = props
   return (
     <div
+      role="dialog"
+      aria-modal="true"
       style={{
         width: isMobile ? '100%' : 400,
         maxWidth: '92vw',
@@ -435,7 +458,7 @@ export function UserProfileCard(props: {
         overflow: 'hidden',
         display: 'flex',
         flexDirection: 'column',
-        maxHeight: isMobile ? 'calc(100vh - 32px)' : '88vh',
+        maxHeight: isMobile ? 'calc(var(--vh, 1vh) * 100 - 32px)' : '88vh',
       }}
     >
       <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
