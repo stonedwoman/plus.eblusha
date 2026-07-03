@@ -306,7 +306,7 @@ export function CallHost() {
                   <button
                     className="btn"
                     style={{
-                      background: '#ef4444',
+                      background: 'var(--danger)',
                       color: '#fff',
                       flex: 1,
                       display: 'inline-flex',
@@ -444,8 +444,9 @@ export function CallHost() {
                   <button
                     className="btn"
                     style={{
-                      background: 'var(--brand)',
-                      color: '#fff',
+                      background: 'transparent',
+                      color: 'var(--brand-600)',
+                      border: '1px solid var(--brand-600)',
                       flex: 1,
                       display: 'inline-flex',
                       alignItems: 'center',
@@ -474,7 +475,7 @@ export function CallHost() {
                   <button
                     className="btn"
                     style={{
-                      background: '#ef4444',
+                      background: 'var(--danger)',
                       color: '#fff',
                       width: '100%',
                       display: 'inline-flex',
@@ -496,7 +497,7 @@ export function CallHost() {
                     }}
                   >
                     <PhoneOff size={18} />
-                    <span>Отмена</span>
+                    <span>Отклонить</span>
                   </button>
                 </div>
                 {callPermissionError ? (

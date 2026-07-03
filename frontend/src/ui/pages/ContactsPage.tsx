@@ -197,7 +197,7 @@ export default function ContactsPage() {
         </div>
         <div className="contacts-page__invite-footer">
           {inviteCodeQuery.isError ? (
-            <span>Не удалось получить код. Попробуй открыть вкладку еще раз.</span>
+            <span>Не удалось получить код. Попробуй открыть вкладку ещё раз.</span>
           ) : (
             <span>Код обновится через {inviteRemainingLabel}</span>
           )}

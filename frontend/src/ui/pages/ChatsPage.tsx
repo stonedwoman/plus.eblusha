@@ -2115,7 +2115,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return () => window.clearInterval(id)
   }, [])
 
-  // Fix "Завершен N мин назад" right after hangup:
+  // Fix "Завершён N мин назад" right after hangup:
   // when a call transitions active -> inactive, endedAt must be "now".
   // If endedAt is far from now at that exact transition (e.g. equals call start),
   // force-correct it once so the post-call timer counts from the hangup moment.
@@ -2214,7 +2214,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         const prevEndedAt = (typeof current?.endedAt === 'number' && Number.isFinite(current.endedAt)) ? current.endedAt : null
         const startedAt = (typeof current?.startedAt === 'number' && Number.isFinite(current.startedAt)) ? current.startedAt : null
         // If we receive an "inactive" update but endedAt is missing/invalid (or equals startedAt),
-        // treat it as ended "now" to avoid incorrect "Завершен N мин назад" right after hangup.
+        // treat it as ended "now" to avoid incorrect "Завершён N мин назад" right after hangup.
         const endedAtRaw = current?.active ? Date.now() : prevEndedAt
         const endedAt =
           (typeof endedAtRaw === 'number' && typeof startedAt === 'number' && endedAtRaw <= startedAt)
@@ -7322,14 +7322,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             const now = Date.now()
                             const diffMs = now - endedAt
                             const diffMin = Math.floor(diffMs / 60000)
-                            if (diffMin < 1) return <span>Завершен только что</span>
-                            if (diffMin < 60) return <span>Завершен {diffMin} мин назад</span>
+                            if (diffMin < 1) return <span>Завершён только что</span>
+                            if (diffMin < 60) return <span>Завершён {diffMin} мин назад</span>
                             const diffH = Math.floor(diffMin / 60)
-                            if (diffH < 24) return <span>Завершен {diffH} ч назад</span>
+                            if (diffH < 24) return <span>Завершён {diffH} ч назад</span>
                             const endedDate = new Date(endedAt)
                             const dateStr = endedDate.toLocaleDateString()
                             const timeStr = endedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })
-                            return <span>Завершен {dateStr} в {timeStr}</span>
+                            return <span>Завершён {dateStr} в {timeStr}</span>
                             }
                           // Для групповых бесед показываем null, для личных - статус
                           return isGroup ? null : formatPresence(othersArr[0] ?? {})
@@ -7415,7 +7415,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             </div>
             <div>
                   <div style={{ fontWeight: 600 }}>Беседа</div>
-                  <div style={{ fontSize: 12, color: '#6b7280' }}>Групповой чат</div>
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>Беседа</div>
             </div>
           </div>
               <div onClick={openContactsOverlay} className="tile" style={{ marginTop: 0, flex: 1 }}>
@@ -7650,16 +7650,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                             const diffMs = now - endedAt
                             const diffMin = Math.floor(diffMs / 60000)
                             let timeText = ''
-                            if (diffMin < 1) timeText = 'Завершен только что'
-                            else if (diffMin < 60) timeText = `Завершен ${diffMin} мин назад`
+                            if (diffMin < 1) timeText = 'Завершён только что'
+                            else if (diffMin < 60) timeText = `Завершён ${diffMin} мин назад`
                             else {
                               const diffH = Math.floor(diffMin / 60)
-                              if (diffH < 24) timeText = `Завершен ${diffH} ч назад`
+                              if (diffH < 24) timeText = `Завершён ${diffH} ч назад`
                               else {
                                 const endedDate = new Date(endedAt)
                                 const dateStr = endedDate.toLocaleDateString()
                                 const timeStr = endedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })
-                                timeText = `Завершен ${dateStr} в ${timeStr}`
+                                timeText = `Завершён ${dateStr} в ${timeStr}`
                               }
                             }
                             const allParticipants = activeConversation.participants || []
@@ -7795,14 +7795,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                                 const now = Date.now()
                                 const diffMs = now - endedAt
                                 const diffMin = Math.floor(diffMs / 60000)
-                                if (diffMin < 1) return <span>Завершен только что</span>
-                                if (diffMin < 60) return <span>Завершен {diffMin} мин назад</span>
+                                if (diffMin < 1) return <span>Завершён только что</span>
+                                if (diffMin < 60) return <span>Завершён {diffMin} мин назад</span>
                                 const diffH = Math.floor(diffMin / 60)
-                                if (diffH < 24) return <span>Завершен {diffH} ч назад</span>
+                                if (diffH < 24) return <span>Завершён {diffH} ч назад</span>
                                 const endedDate = new Date(endedAt)
                                 const dateStr = endedDate.toLocaleDateString()
                                 const timeStr = endedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', hour12: false })
-                                return <span>Завершен {dateStr} в {timeStr}</span>
+                                return <span>Завершён {dateStr} в {timeStr}</span>
                               }
 
                               // Если звонок минимизирован или активен — показываем статус звонка (с длительностью только участникам)
@@ -12263,7 +12263,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button
                     className="btn"
-                    style={{ background: '#ef4444', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }}
+                    style={{ background: 'var(--danger)', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }}
                     onClick={() => {
                       if (outgoingCallTimerRef.current) {
                         window.clearTimeout(outgoingCallTimerRef.current)
@@ -12330,15 +12330,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                     <Phone size={18} />
                     <span>Ответить</span>
                   </button>
-                  <button className="btn" style={{ background: 'var(--brand)', color: '#fff', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId, isVideo: true }, 'web_ui') }}>
+                  <button className="btn" style={{ background: 'transparent', color: 'var(--brand-600)', border: '1px solid var(--brand-600)', flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void acceptIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId, isVideo: true }, 'web_ui') }}>
                     <Video size={18} />
                     <span>Ответить с видео</span>
                   </button>
                 </div>
                 <div style={{ display: 'flex' }}>
-                  <button className="btn" style={{ background: '#ef4444', color: '#fff', width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void declineIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId }, 'web_ui') }}>
+                  <button className="btn" style={{ background: 'var(--danger)', color: '#fff', width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px 16px', minHeight: 48, borderRadius: 12 }} onClick={() => { void declineIncomingCallAction({ callId: callStore.incoming?.callId ?? callStore.incoming?.conversationId, conversationId: callStore.incoming?.conversationId }, 'web_ui') }}>
                     <PhoneOff size={18} />
-                    <span>Отмена</span>
+                    <span>Отклонить</span>
                   </button>
                 </div>
                 {callPermissionError && (
@@ -14155,7 +14155,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
               </div>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
-                  Создать групповой чат
+                  Создать беседу
                 </div>
                 <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>
                   Добавьте участников и название
@@ -14746,7 +14746,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   </div>
                   <div style={{ ...identityHelperTextStyle, color: '#fdba74' }}>
                     {registrationInviteCodeQuery.isError
-                      ? 'Не удалось получить код. Попробуйте открыть окно еще раз.'
+                      ? 'Не удалось получить код. Попробуйте открыть окно ещё раз.'
                       : `Обновится через ${contactsInviteRemainingLabel}.`}
                   </div>
                 </div>
@@ -15746,7 +15746,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 displayName: groupTitleEditValue || activeConversation.title || 'Группа',
                 avatarUrl: groupAvatarPreviewUrl ?? activeConversation.avatarUrl ?? undefined,
               }}
-              statusText="Групповой чат"
+              statusText="Беседа"
             />
             <div style={{ padding: '4px 20px 0' }}>
               <div style={{ marginBottom: 6, color: 'var(--text-muted)', fontSize: 12, fontWeight: 500 }}>Название группы</div>

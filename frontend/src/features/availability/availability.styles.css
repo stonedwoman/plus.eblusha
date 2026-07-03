@@ -347,7 +347,7 @@
 }
 
 .availability-cell.selected {
-  outline: 2px solid rgba(245, 158, 11, 0.9);
+  outline: 2px solid var(--brand-600);
   outline-offset: -2px;
 }
 

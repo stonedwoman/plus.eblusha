@@ -741,7 +741,7 @@ export const AvailabilityOverlay = ({
                       onClick={() => setSelectedProposalId(proposal.id)}
                     >
                       <div className="availability-proposal-title">
-                        Предложение · {DateTime.fromMillis(proposal.createdAt).toLocaleString(DateTime.DATE_SHORT)}
+                        Предложение · {DateTime.fromMillis(proposal.createdAt).setLocale('ru').toLocaleString(DateTime.DATE_SHORT)}
                       </div>
                       <div className="availability-proposal-body">
                         {proposal.ranges.map((range) => {

@@ -53,7 +53,7 @@ export default function SettingsPage() {
           Статус
           <select name="status" defaultValue={normalizedStatus}>
             <option value="ONLINE">Онлайн</option>
-            <option value="AWAY">Отошел</option>
+            <option value="AWAY">Отошёл</option>
             <option value="DND">Не беспокоить</option>
             <option value="OFFLINE">Оффлайн</option>
           </select>
