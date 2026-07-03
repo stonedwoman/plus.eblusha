@@ -1583,7 +1583,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!file || !file.type.startsWith('image/')) return
     setPendingImages((prev) => {
       if (prev.length >= MAX_PENDING_IMAGES) {
-        alert('Можно редактировать не более 10 изображений за раз.')
+        systemToast.error('Можно редактировать не более 10 изображений за раз.')
         return prev
       }
       const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -1606,7 +1606,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (file.type && file.type.startsWith('image/')) return
     setPendingFiles((prev) => {
       if (prev.length >= MAX_PENDING_FILES) {
-        alert('Можно прикрепить не более 10 файлов за раз.')
+        systemToast.error('Можно прикрепить не более 10 файлов за раз.')
         return prev
       }
       const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -2390,7 +2390,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     try {
       const device = await ensureLocalDevice()
       if (!device) {
-        alert('Не удалось инициализировать устройство для секретного чата')
+        systemToast.error('Не удалось инициализировать устройство для секретного чата')
         return
       }
 
@@ -2440,7 +2440,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     } catch (err: any) {
       console.error('Failed to start secret conversation:', err)
       const errorMessage = err?.message || err?.response?.data?.message || 'Не удалось отправить запрос на секретный чат'
-      alert(errorMessage)
+      systemToast.error(errorMessage)
     } finally {
       setSecretRequestLoading(false)
     }
@@ -2461,7 +2461,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const peerUserId =
         conversation?.participants?.find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user?.id ?? null
       if (!threadId || !peerUserId) {
-        alert('Не удалось определить участника секретного чата')
+        systemToast.error('Не удалось определить участника секретного чата')
         return { outcome: 'blocked' }
       }
       const text = String(normalizedPayload.content ?? '').trim()
@@ -2693,7 +2693,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       closeAddParticipantsModal()
     } catch (err: any) {
       console.error('Error adding participants:', err)
-      alert(err.response?.data?.message || 'Не удалось добавить участников')
+      systemToast.error(err.response?.data?.message || 'Не удалось добавить участников')
     } finally {
       setAddParticipantsLoading(false)
     }
@@ -2709,7 +2709,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       closeAddParticipantsModal()
     } catch (err: any) {
       console.error('Error adding participant by EBLID:', err)
-      alert(err.response?.data?.message || 'Не удалось добавить участника')
+      systemToast.error(err.response?.data?.message || 'Не удалось добавить участника')
     } finally {
       setAddParticipantsLoading(false)
     }
@@ -3344,7 +3344,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const device = await ensureLocalDevice()
       const deviceId = device?.deviceId ?? getStoredDeviceInfo()?.deviceId
       if (!deviceId) {
-        alert('Не удалось определить устройство')
+        systemToast.error('Не удалось определить устройство')
         return
       }
       // Accept on THIS device — the creator will now key exactly this one; the pump imports it.
@@ -3352,7 +3352,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       client.invalidateQueries({ queryKey: ['conversations'] })
       conversationsQuery.refetch()
     } catch (err: any) {
-      alert(err?.response?.data?.message || 'Не удалось принять приглашение')
+      systemToast.error(err?.response?.data?.message || 'Не удалось принять приглашение')
     } finally {
       setSecretInviteBusy(false)
     }
@@ -3365,7 +3365,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       await api.post(`/threads/secret/${convId}/decline`, {})
       client.invalidateQueries({ queryKey: ['conversations'] })
     } catch (err: any) {
-      alert(err?.response?.data?.message || 'Не удалось отклонить приглашение')
+      systemToast.error(err?.response?.data?.message || 'Не удалось отклонить приглашение')
     } finally {
       setSecretInviteBusy(false)
     }
@@ -3395,7 +3395,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       setActiveId(null)
       if (isMobile) setMobileView('list')
     } catch (err: any) {
-      alert(err?.response?.data?.message || 'Не удалось отменить приглашение')
+      systemToast.error(err?.response?.data?.message || 'Не удалось отменить приглашение')
     } finally {
       setSecretInviteBusy(false)
     }
@@ -5562,7 +5562,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     } catch (err: any) {
       setSendingInvite(false)
       const msg = err.response?.data?.message ?? err.message ?? 'Не удалось отправить запрос'
-      alert(msg)
+      systemToast.error(msg)
     }
   }
 
@@ -6232,17 +6232,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
     const isLegacySecretConversation = !!activeConversation?.isSecret && !isSecretV2
     if (isSecretV2) {
-      alert('Вложения в секретных чатах пока не поддерживаются на этом устройстве. Обновление уже в пути.')
+      systemToast.error('Вложения в секретных чатах пока не поддерживаются на этом устройстве. Обновление уже в пути.')
       return
     }
     const isSecretConversation = isLegacySecretConversation
     if (isLegacySecretConversation) {
       if (conversationSecretInactive) {
-        alert('Секретный чат больше не активен, отправка вложений отключена.')
+        systemToast.error('Секретный чат больше не активен, отправка вложений отключена.')
         return
       }
       if (!conversationSecretSessionReady) {
-        alert('Секретный чат ещё не готов к вложениям, подождите установления защищённой сессии.')
+        systemToast.error('Секретный чат ещё не готов к вложениям, подождите установления защищённой сессии.')
         return
       }
     }
@@ -6631,7 +6631,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     try {
       const permissionResult = await ensureMediaPermissions({ audio: true })
       if (!permissionResult.ok) {
-        alert('Необходимо разрешение на использование микрофона для записи голосовых сообщений')
+        systemToast.error('Необходимо разрешение на использование микрофона для записи голосовых сообщений')
         return
       }
 
@@ -6670,7 +6670,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         },
         onError: (error) => {
           console.error('Voice recording error:', error)
-          alert('Ошибка записи голосового сообщения')
+          systemToast.error('Ошибка записи голосового сообщения')
           stopVoiceRecording()
         },
       })
@@ -6679,7 +6679,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       await recorder.start()
     } catch (error) {
       console.error('Failed to start voice recording:', error)
-      alert('Не удалось начать запись голосового сообщения')
+      systemToast.error('Не удалось начать запись голосового сообщения')
     }
   }
 
@@ -6722,17 +6722,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const isSecretConversation = isLegacySecretConversation
 
     if (isSecretV2) {
-      alert('Голосовые в секретных чатах пока не поддерживаются на этом устройстве.')
+      systemToast.error('Голосовые в секретных чатах пока не поддерживаются на этом устройстве.')
       return
     }
 
     if (isLegacySecretConversation) {
       if (conversationSecretInactive) {
-        alert('Секретный чат больше не активен, отправка голосовых сообщений отключена.')
+        systemToast.error('Секретный чат больше не активен, отправка голосовых сообщений отключена.')
         return
       }
       if (!conversationSecretSessionReady) {
-        alert('Секретный чат ещё не готов к голосовым сообщениям, подождите установления защищённой сессии.')
+        systemToast.error('Секретный чат ещё не готов к голосовым сообщениям, подождите установления защищённой сессии.')
         return
       }
     }
@@ -6867,7 +6867,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     } catch (error) {
       if (!(attachCancelRequestedRef.current || isUploadAbortError(error))) {
         console.error('Failed to send voice message', error)
-        alert('Не удалось отправить голосовое сообщение')
+        systemToast.error('Не удалось отправить голосовое сообщение')
       }
     } finally {
       setAttachUploadState('done')
@@ -11779,7 +11779,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                       : status === 404
                         ? 'Сервер не поддерживает редактирование сообщений (обновите/перезапустите backend после сборки).'
                         : err?.message || 'Не удалось сохранить изменения'
-                  alert(msg)
+                  systemToast.error(msg)
                   setEditState(null)
                 } finally {
                   setEditBusy(false)
@@ -14459,7 +14459,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                   closeNewGroupModal()
                 } catch (err: any) {
                   console.error('Error creating group:', err)
-                  alert(err?.response?.data?.message || 'Не удалось создать беседу')
+                  systemToast.error(err?.response?.data?.message || 'Не удалось создать беседу')
                 } finally {
                   setCreatingGroup(false)
                 }

@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { type FormEvent, useState } from 'react'
 import { api } from '../../utils/api'
 import { LinkDeviceModal } from '../components/LinkDeviceModal'
+import { systemConfirm } from '../../domain/store/systemUiStore'
 
 export default function SettingsPage() {
   const meQuery = useQuery({
@@ -107,14 +108,21 @@ export default function SettingsPage() {
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>{d.name ?? d.id}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  {d.platform ? String(d.platform) : '—'} · {d.lastSeenAt ? `last seen ${new Date(d.lastSeenAt).toLocaleString()}` : 'never'}
+                  {d.platform ? String(d.platform) : '—'} · {d.lastSeenAt ? `был(а) в сети ${new Date(d.lastSeenAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}` : 'не в сети'}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
                 <button
                   className="btn btn-secondary"
                   onClick={async () => {
-                    if (!confirm('Отключить устройство?')) return
+                    const ok = await systemConfirm({
+                      title: 'Отключить устройство?',
+                      message: 'Устройство потеряет доступ к секретной истории.',
+                      confirmText: 'Отключить',
+                      cancelText: 'Отмена',
+                      danger: true,
+                    })
+                    if (!ok) return
                     await api.delete(`/devices/${d.id}`)
                     devicesQuery.refetch()
                   }}
