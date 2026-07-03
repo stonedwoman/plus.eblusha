@@ -161,6 +161,40 @@ import {
 
 
 
+/**
+ * ChatsPage — корневой экран мессенджера: список бесед (сайдбар), открытая беседа
+ * (сообщения + композер) и слой звонков. Это самый большой компонент приложения;
+ * чистая (не зависящая от состояния) логика вынесена в соседние модули `./chats/*`
+ * (см. chats/README.md), а здесь остаётся компонент со своим состоянием и рендером.
+ *
+ * ВЫНЕСЕННЫЕ МОДУЛИ (детали — в chats/README.md):
+ *   • chatsConstants / chatsColors            — константы и цветовые палитры
+ *   • chatsAttachments                        — типы и хелперы вложений/файлов
+ *   • chatsTime                               — форматирование времени/дат (ru-RU)
+ *   • chatsMessages                           — «модель сообщения»: метаданные,
+ *                                               reply-черновики, forward-логика
+ *   • chatsEblo                               — виртуализация списка (EbloMeasuredRow)
+ *   • chatsTextRender / chatsEmbeds           — рендер текста и встраиваемых ссылок
+ *   • components/*                            — VoiceMessagePlayer, LinkPreviewCard,
+ *                                               MessageReactionRail, DeviceLinkInline…
+ *   • hooks/*                                 — useChatAudio, useChatTyping,
+ *                                               useChatSocketSubscriptions, useChatsResponsive
+ *
+ * КАРТА ВНУТРЕННЕЙ СТРУКТУРЫ (крупные регионы по порядку в файле):
+ *   1. Состояние, рефы, запросы данных, производные значения
+ *   2. Секретные чаты (старт/отправка/очередь ключей)         — регион «SECRET CHAT»
+ *   3. Подгрузка истории вверх (loadOlderMessages)            — регион «OLDER MESSAGES»
+ *   4. Виртуализация списка + прилипание к низу (Eblo)         — регион «MESSAGE LIST VIEWPORT»
+ *   5. Отправка/реакции/выделение/звонки и прочая логика
+ *   6. renderConversationList(mobile)  — рендер сайдбара со списком бесед
+ *   7. renderMessagesPane(mobile)      — рендер открытой беседы (шапка/сообщения/композер)
+ *   8. renderActiveCallOverlay()       — рендер оверлея активного звонка
+ *   9. return (...)                    — сборка экрана из вышеперечисленного
+ *
+ * Дальнейшая декомпозиция (вынос вьюпорт-хука и под-компонентов рендера) возможна,
+ * но требует аккуратной пошаговой работы — логика прокрутки/виртуализации тесно
+ * переплетена с подгрузкой истории и композером.
+ */
 export default function ChatsPage() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -1268,6 +1302,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return info
   }
 
+  // ==========================================================================
+  // РЕГИОН: SECRET CHAT — старт секретного чата, отправка через E2EE-движок
+  // (v2) или legacy-путь, очередь сообщений до готовности ключей и их сброс.
+  // ==========================================================================
   async function initiateSecretChat(targetUserId: string) {
     if (secretRequestLoading) return
     setSecretRequestLoading(true)
@@ -1773,6 +1811,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     setOlderMeta(saved)
   }, [activeId])
 
+  // ==========================================================================
+  // РЕГИОН: OLDER MESSAGES — подгрузка истории вверх (инфинити-скролл).
+  // Держит позицию прокрутки стабильной при добавлении старых сообщений сверху
+  // (см. якорь scrollTop по дельте scrollHeight внутри).
+  // ==========================================================================
   const loadOlderMessages = useCallback(async () => {
     const conversationId = activeId
     if (!conversationId) return
@@ -2540,6 +2583,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     ebloRangeRef.current = ebloRange
   }, [ebloRange])
 
+  // ==========================================================================
+  // РЕГИОН: MESSAGE LIST VIEWPORT — виртуализация «Eblo» + прилипание к низу.
+  //   estimateEbloRowHeight / updateEblo / scheduleEbloUpdate — выбор видимого окна
+  //   строк (см. chats/chatsEblo). handleEbloRowHeightChange — реакция на измеренную
+  //   высоту строки. pinToBottomBurst + ResizeObserver контента — надёжное
+  //   прилипание к низу при догрузке картинок/мозаик/видео (см. эффекты ниже).
+  //   nearBottomRef — мы у низа; userStickyScrollRef=true — пользователь ушёл вверх.
+  // ==========================================================================
   const estimateEbloRowHeight = useCallback((rowKey: string) => {
     const cached = ebloRowHeightsRef.current.get(rowKey)
     if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) return cached
@@ -5944,6 +5995,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return `${minutes}:${String(seconds).padStart(2, '0')}`
   }
 
+  // ==========================================================================
+  // РЕНДЕР 1/3: сайдбар со списком бесед (+ плитки «Беседа»/«Контакты», код-инвайт).
+  // ==========================================================================
   function renderConversationList(mobile: boolean) {
     const className = mobile ? 'conversations-list slider-panel' : 'conversations-list'
     return (
@@ -6429,6 +6483,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     )
   }
 
+  // ==========================================================================
+  // РЕНДЕР 2/3: открытая беседа — шапка (собеседник/звонки/меню), контейнер
+  // сообщений (виртуализованные строки Eblo, пузыри, реакции, ответы/пересылки,
+  // кнопка «вниз»), строка «печатает» и композер. Самый большой блок рендера.
+  // ==========================================================================
   function renderMessagesPane(mobile: boolean) {
     const sectionClass = mobile ? 'messages-pane slider-panel' : 'messages-pane'
     return (
@@ -11277,6 +11336,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     )
   }
 
+  // ==========================================================================
+  // РЕНДЕР 3/3: оверлей активного звонка (ленивый CallOverlay) + входящий/исходящий
+  // диалоги звонка.
+  // ==========================================================================
   function renderActiveCallOverlay() {
     if (!callConvId) return null
 
@@ -11532,6 +11595,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     boxShadow: 'var(--shadow-medium)',
   }
 
+  // ==========================================================================
+  // СБОРКА ЭКРАНА: оверлей звонка + контакт-бар + раскладка «сайдбар | беседа»
+  // (мобильная и десктопная ветки вызывают renderConversationList/renderMessagesPane).
+  // ==========================================================================
   return (
     <>
     {renderActiveCallOverlay()}
