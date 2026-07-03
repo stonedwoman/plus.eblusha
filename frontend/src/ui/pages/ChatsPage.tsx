@@ -132,6 +132,14 @@ export default function ChatsPage() {
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const messagesContentRef = useRef<HTMLDivElement | null>(null)
   const pinBurstRafRef = useRef<number>(0)
+  // Память позиции прокрутки по беседам: при возврате в чат восстанавливаем, где
+  // человек остановился (как во взрослых мессенджерах). atBottom=true → был у низа,
+  // тогда открываем на низу (а не на старом scrollTop, который мог «протухнуть»).
+  const convScrollMemoryRef = useRef<Map<string, { top: number; atBottom: boolean }>>(new Map())
+  // Для какой беседы уже выполнено НАЧАЛЬНОЕ позиционирование (restore/низ). Пока
+  // не выполнено — авто-прилипание к низу при новых сообщениях не вмешивается,
+  // иначе оно перебивало бы восстановленную позицию при переключении чатов.
+  const initialPositionedConvRef = useRef<string | null>(null)
   type OlderMessagesMeta = { hasMore: boolean; nextCursor: string | null }
   const olderMetaByConvRef = useRef(new Map<string, OlderMessagesMeta>())
 
@@ -4124,10 +4132,18 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       lastTailMessageIdRef.current = null
       return
     }
-    if (lastScrollConvRef.current !== activeId) {
+    // Начальным позиционированием при открытии беседы владеет ТОЛЬКО эффект ниже
+    // (restore/низ). Пока он не отработал для активной беседы — фиксируем текущий
+    // «хвост» как базу и не автоскроллим (иначе переключение чата прыгало бы вниз
+    // поверх восстановленной позиции). Авто-прилипание включается только для
+    // действительно новых сообщений уже после начального позиционирования.
+    if (initialPositionedConvRef.current !== activeId) {
       lastScrollConvRef.current = activeId
-      lastRenderedMessagesRef.current = 0
-      lastTailMessageIdRef.current = null
+      lastRenderedMessagesRef.current = (displayedMessages?.length ?? 0) + activePendingMessages.length
+      const fl0 = [...(displayedMessages || []), ...activePendingMessages]
+      const lm0 = fl0[fl0.length - 1] as any
+      lastTailMessageIdRef.current = lm0?.id ?? lm0?.tempId ?? null
+      return
     }
     const renderedCount = (displayedMessages?.length ?? 0) + activePendingMessages.length
     const prevCount = lastRenderedMessagesRef.current
@@ -4165,29 +4181,54 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   // notifications disabled
 
-  // autoscroll to bottom when chat opens (агрессивно только на мобильных)
-  useEffect(() => {
+  // Начальное позиционирование при ОТКРЫТИИ беседы. Делаем это в useLayoutEffect —
+  // синхронно ДО отрисовки, поэтому не видно «сначала попали выше, потом
+  // перемотались» (артефакт был из-за useEffect, который срабатывал после paint).
+  //   • если для этой беседы есть сохранённая позиция и человек был НЕ у низа —
+  //     восстанавливаем её (как во взрослых мессенджерах);
+  //   • иначе (первый вход или был у низа) — прижимаем к низу.
+  useLayoutEffect(() => {
     if (!activeId) return
-    // When we enter a conversation, we always start in "stick to bottom" mode.
-    // Otherwise the first async render (messages/preview/toolbars) can leave us above the bottom
-    // until the second interaction.
-    nearBottomRef.current = true
-    userStickyScrollRef.current = false
-    setShowJump(false)
+    if (initialPositionedConvRef.current === activeId) return // уже спозиционировали
+    const el = messagesRef.current
+    if (!el) return
+    // Позиционируем только когда отрисованный контент ПРИНАДЛЕЖИТ активной беседе —
+    // иначе при переключении можно спозиционироваться по «чужим» сообщениям,
+    // которые ещё не сменились на данные новой беседы.
+    const list = displayedMessages || []
+    const belongs =
+      list.length === 0 ||
+      String((list[list.length - 1] as any)?.conversationId ?? activeId) === String(activeId)
+    if (!belongs) return
 
-    // Первичная фиксация к низу «пачкой» кадров. Поздние изменения высоты (декод
-    // картинок, мозаик, превью, видео — в любой момент, а не только в первые мс)
-    // держат ResizeObserver контента и handleEbloRowHeightChange, поэтому прежнее
-    // «распыление» скроллов на 0/50/200/600мс больше не нужно.
+    setShowJump(false)
     scheduleEbloUpdate()
-    pinToBottomBurst()
-    return () => {
-      if (pinBurstRafRef.current) {
-        cancelAnimationFrame(pinBurstRafRef.current)
-        pinBurstRafRef.current = 0
-      }
+
+    const saved = convScrollMemoryRef.current.get(activeId)
+    if (saved && !saved.atBottom) {
+      // Восстанавливаем прошлую позицию (синхронно, до paint → без «перемотки»).
+      nearBottomRef.current = false
+      userStickyScrollRef.current = true
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      el.scrollTop = Math.min(saved.top, maxTop)
+      setShowJump(el.scrollHeight - el.scrollTop - el.clientHeight > 8)
+    } else {
+      // Первый вход или были у низа → к низу. Первый scrollTop синхронный (до paint),
+      // а pinToBottomBurst дотягивает при догрузке картинок/превью — без видимой
+      // «перемотки сверху».
+      nearBottomRef.current = true
+      userStickyScrollRef.current = false
+      pinToBottomBurst()
     }
-  }, [activeId, scheduleEbloUpdate, pinToBottomBurst])
+
+    // База для авто-прилипания + отметка «беседа спозиционирована».
+    const fl = [...list, ...activePendingMessages]
+    const lm = fl[fl.length - 1] as any
+    lastScrollConvRef.current = activeId
+    lastRenderedMessagesRef.current = fl.length
+    lastTailMessageIdRef.current = lm?.id ?? lm?.tempId ?? null
+    initialPositionedConvRef.current = activeId
+  }, [activeId, displayedMessages, activePendingMessages, scheduleEbloUpdate, pinToBottomBurst])
 
   // Пуленепробиваемое «прилипание» к низу: единый ResizeObserver на контейнере
   // сообщений. КАКОЕ БЫ содержимое ни изменило высоту (догрузка картинок/мозаик/
@@ -4262,6 +4303,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8
         nearBottomRef.current = nearBottom
         setShowJump(!nearBottom)
+        // Запоминаем позицию текущей беседы для восстановления при возврате в неё.
+        if (activeId) convScrollMemoryRef.current.set(activeId, { top: el.scrollTop, atBottom: nearBottom })
         scheduleEbloUpdate()
         // Infinite scroll: when user reaches near-top, load older messages.
         // We keep scroll position stable in `loadOlderMessages`.
