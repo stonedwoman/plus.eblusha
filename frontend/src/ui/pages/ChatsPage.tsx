@@ -69,6 +69,20 @@ const MAX_PENDING_FILES = 10
 const MESSAGES_PAGE_SIZE = 80
 const EMPTY_EBLID_DIGITS = ['', '', '', '']
 
+// Пастельные цвета имён участников в беседе. Цвет назначается по позиции
+// участника внутри беседы (см. nameColorForUser), поэтому в одной группе двое
+// не получат одинаковый цвет, пока участников не больше размера палитры.
+const NAME_COLOR_PALETTE_13 = [
+  '#b39ddb', '#a5d6a7', '#90caf9', '#ffcc80', '#f48fb1', '#80cbc4', '#ce93d8',
+  '#ffab91', '#9fa8da', '#aed581', '#ffecb3', '#ef9a9a', '#81d4fa',
+]
+// Резерв на случай беседы с >13 участниками (маловероятно) — ещё 13 различимых тонов.
+const NAME_COLOR_PALETTE_26 = [
+  ...NAME_COLOR_PALETTE_13,
+  '#9575cd', '#4db6ac', '#64b5f6', '#ff8a65', '#f06292', '#ba68c8', '#4fc3f7',
+  '#81c784', '#dce775', '#ffd54f', '#a1887f', '#90a4ae', '#7986cb',
+]
+
 type AttachmentFileKind =
   | 'document'
   | 'spreadsheet'
@@ -3133,6 +3147,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
   }, [conversationsQuery.data, activeId])
 
+  // Назначение цвета имени по участникам активной беседы: цвет = позиция в
+  // отсортированном списке участников → в пределах одной группы двое не совпадут,
+  // пока участников не больше размера палитры (13, при переполнении — 26).
+  const nameColorByUserId = useMemo(() => {
+    const ids = ((activeConversation?.participants ?? []) as any[])
+      .map((p) => p?.user?.id)
+      .filter((x): x is string => typeof x === 'string' && x.length > 0)
+    const ordered = Array.from(new Set(ids)).sort()
+    const palette = ordered.length > NAME_COLOR_PALETTE_13.length ? NAME_COLOR_PALETTE_26 : NAME_COLOR_PALETTE_13
+    const map = new Map<string, string>()
+    ordered.forEach((id, i) => map.set(id, palette[i % palette.length]))
+    return map
+  }, [activeConversation])
+
   // Sync group title input with the active conversation when the group editor opens.
   useEffect(() => {
     if (groupAvatarEditor) {
@@ -4397,24 +4425,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return h
   }
 
-  /** Стабильный пастельный цвет имени, как в Telegram-группах */
+  /**
+   * Цвет имени участника. В пределах беседы цвет берётся по позиции участника
+   * (nameColorByUserId) — двое в одной группе не получат один цвет. Для id вне
+   * беседы (пересланное от постороннего и т.п.) — стабильный фолбэк по хешу.
+   */
   function nameColorForUser(userId: string | null | undefined): string {
-    const palette = [
-      '#b39ddb',
-      '#a5d6a7',
-      '#90caf9',
-      '#ffcc80',
-      '#f48fb1',
-      '#80cbc4',
-      '#ce93d8',
-      '#ffab91',
-      '#9fa8da',
-      '#aed581',
-      '#ffecb3',
-      '#ef9a9a',
-      '#81d4fa',
-    ]
-    return palette[hashStringToUint(userId) % palette.length]
+    if (userId) {
+      const assigned = nameColorByUserId.get(userId)
+      if (assigned) return assigned
+    }
+    return NAME_COLOR_PALETTE_13[hashStringToUint(userId) % NAME_COLOR_PALETTE_13.length]
   }
 
   /**
