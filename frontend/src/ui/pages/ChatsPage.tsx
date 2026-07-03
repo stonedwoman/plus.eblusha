@@ -7415,7 +7415,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             </div>
             <div>
                   <div style={{ fontWeight: 600 }}>Беседа</div>
-                  <div style={{ fontSize: 12, color: '#6b7280' }}>Беседа</div>
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>Групповой разговор</div>
             </div>
           </div>
               <div onClick={openContactsOverlay} className="tile" style={{ marginTop: 0, flex: 1 }}>

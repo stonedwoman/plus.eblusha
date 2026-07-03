@@ -256,7 +256,9 @@ export default function ContactsPage() {
         {contactsQuery.data?.map((contact: any) => (
           <li key={contact.id} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
             <strong style={{ minWidth: 220 }}>{contact.friend.displayName ?? contact.friend.username}</strong>
-            <span style={{ textTransform: 'lowercase' }}>{contact.status.toLowerCase()}</span>
+            <span style={{ color: 'var(--text-muted)' }}>
+              {(({ ACCEPTED: 'в друзьях', PENDING: 'ожидание', REJECTED: 'отклонён' } as Record<string, string>)[contact.status]) ?? contact.status.toLowerCase()}
+            </span>
             {contact.status === 'PENDING' && contact.direction === 'incoming' && (
               <>
                 <button className="btn btn-primary" onClick={() => respondMutation.mutate({ contactId: contact.id, action: 'accept' })}>
