@@ -333,7 +333,7 @@ a {
 }
 
 .auth-nav a.active {
-  background: var(--tab-accent);
+  background: var(--tab-accent-600);
   color: #fff;
   transition: background 0.2s ease, color 0.2s ease;
 }
@@ -445,6 +445,13 @@ a {
   opacity: 1;
 }
 
+/* На тач-устройствах нет hover — показываем подсказку загрузки аватара постоянно */
+@media (hover: none) {
+  .register-avatar-hover {
+    opacity: 1;
+  }
+}
+
 .auth-form button.btn-secondary:hover {
   background: var(--surface-300);
   transform: none;
@@ -472,6 +479,18 @@ a {
   transition: border-color .2s ease, box-shadow .2s ease, background .2s ease, color .2s ease;
 }
 
+/* Chrome/WebKit autofill: держим тёмную тему поля вместо белого бокса браузера */
+.auth-content .auth-form input:-webkit-autofill,
+.auth-content .auth-form input:-webkit-autofill:hover,
+.auth-content .auth-form input:-webkit-autofill:focus,
+.auth-content .auth-form input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--tab-text);
+  caret-color: var(--tab-text);
+  -webkit-box-shadow: 0 0 0 1000px var(--tab-surface) inset;
+  box-shadow: 0 0 0 1000px var(--tab-surface) inset;
+  transition: background-color 9999s ease-out;
+}
+
 .auth-content .auth-form input::placeholder,
 .auth-content .auth-form textarea::placeholder {
   color: var(--tab-text-muted);
@@ -488,6 +507,16 @@ a {
 }
 .auth-content .auth-form button:not(.btn-secondary):active {
   transform: translateY(0);
+}
+/* Отключённые кнопки форм входа/регистрации выглядят неактивными */
+.auth-content .auth-form button:disabled,
+.auth-content .auth-form button:disabled:hover,
+.auth-form button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+  filter: saturate(.7);
 }
 .auth-form button {
   background: linear-gradient(135deg, var(--brand), var(--brand-600));
