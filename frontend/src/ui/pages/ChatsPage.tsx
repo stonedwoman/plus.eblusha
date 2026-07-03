@@ -83,6 +83,24 @@ const NAME_COLOR_PALETTE_26 = [
   '#81c784', '#dce775', '#ffd54f', '#a1887f', '#90a4ae', '#7986cb',
 ]
 
+// Тёмные фоны пузырей участников группы. Назначаются по позиции участника
+// (тем же индексом, что и цвет имени), поэтому у двух авторов в одной беседе
+// фон не совпадёт и слот «имя+фон» согласован. Тона намеренно разного hue.
+const BUBBLE_BG_BASES = [
+  '#2a1f16', // тёплый умбра (рядом с бренд-янтарём)
+  '#1a2836', // глубокий сине-сланцевый
+  '#152820', // тёмный хвойный
+  '#281a2c', // сливовый
+  '#162a2e', // бирюза / петроль
+  '#2d2418', // бронза / кофе с тёплым подтоном
+  '#1f2440', // индиго
+  '#223016', // оливковый мох
+  '#301c22', // винный дымчатый
+  '#14222c', // ледяной графит
+  '#2f2218', // сепия / «золотая тень» (фирменное тепло)
+  '#241c30', // лилово-серый
+]
+
 type AttachmentFileKind =
   | 'document'
   | 'spreadsheet'
@@ -3147,17 +3165,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
   }, [conversationsQuery.data, activeId])
 
-  // Назначение цвета имени по участникам активной беседы: цвет = позиция в
-  // отсортированном списке участников → в пределах одной группы двое не совпадут,
-  // пока участников не больше размера палитры (13, при переполнении — 26).
-  const nameColorByUserId = useMemo(() => {
+  // Позиция каждого участника активной беседы в отсортированном списке. Этот же
+  // индекс используют и цвет имени, и фон пузыря — поэтому в пределах одной
+  // группы двое не получат ни одинаковый цвет имени, ни одинаковый фон, а «имя+
+  // фон» одного человека берутся из согласованного слота.
+  const participantColorIndex = useMemo(() => {
     const ids = ((activeConversation?.participants ?? []) as any[])
       .map((p) => p?.user?.id)
       .filter((x): x is string => typeof x === 'string' && x.length > 0)
     const ordered = Array.from(new Set(ids)).sort()
-    const palette = ordered.length > NAME_COLOR_PALETTE_13.length ? NAME_COLOR_PALETTE_26 : NAME_COLOR_PALETTE_13
-    const map = new Map<string, string>()
-    ordered.forEach((id, i) => map.set(id, palette[i % palette.length]))
+    const map = new Map<string, number>()
+    ordered.forEach((id, i) => map.set(id, i))
     return map
   }, [activeConversation])
 
@@ -4427,37 +4445,31 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   /**
    * Цвет имени участника. В пределах беседы цвет берётся по позиции участника
-   * (nameColorByUserId) — двое в одной группе не получат один цвет. Для id вне
+   * (participantColorIndex) — двое в одной группе не получат один цвет. Для id вне
    * беседы (пересланное от постороннего и т.п.) — стабильный фолбэк по хешу.
    */
   function nameColorForUser(userId: string | null | undefined): string {
     if (userId) {
-      const assigned = nameColorByUserId.get(userId)
-      if (assigned) return assigned
+      const idx = participantColorIndex.get(userId)
+      if (idx !== undefined) {
+        const palette = participantColorIndex.size > NAME_COLOR_PALETTE_13.length ? NAME_COLOR_PALETTE_26 : NAME_COLOR_PALETTE_13
+        return palette[idx % palette.length]
+      }
     }
     return NAME_COLOR_PALETTE_13[hashStringToUint(userId) % NAME_COLOR_PALETTE_13.length]
   }
 
   /**
-   * Фон входящих/пересланных по участнику: намеренно разные hue при тёмной яркости,
-   * чтобы отличать авторов; часть тонов тёплая (умбра / медь) в духе бренда Eblusha.
+   * Фон входящих пузырей по участнику: тот же индекс участника, что и у цвета
+   * имени, разложенный по разным hue (умбра/сине-сланцевый/хвойный/…). В пределах
+   * группы фоны не совпадают. Для id вне беседы (пересланное) — фолбэк по хешу.
    */
   function groupIncomingBubbleBg(userId: string | null | undefined): string {
-    const bases = [
-      '#2a1f16', // тёплый умбра (рядом с бренд-янтарём)
-      '#1a2836', // глубокий сине-сланцевый
-      '#152820', // тёмный хвойный
-      '#281a2c', // сливовый
-      '#162a2e', // бирюза / петроль
-      '#2d2418', // бронза / кофе с тёплым подтоном
-      '#1f2440', // индиго
-      '#223016', // оливковый мох
-      '#301c22', // винный дымчатый
-      '#14222c', // ледяной графит
-      '#2f2218', // сепия / «золотая тень» (фирменное тепло)
-      '#241c30', // лилово-серый
-    ]
-    return bases[hashStringToUint(userId) % bases.length]
+    if (userId) {
+      const idx = participantColorIndex.get(userId)
+      if (idx !== undefined) return BUBBLE_BG_BASES[idx % BUBBLE_BG_BASES.length]
+    }
+    return BUBBLE_BG_BASES[hashStringToUint(userId) % BUBBLE_BG_BASES.length]
   }
 
   // Глобальный обработчик paste для вставки изображений из буфера обмена (когда фокус не в поле ввода)
