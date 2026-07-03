@@ -3,14 +3,12 @@
  * контакты, контекст-меню сообщения, лайтбокс, просмотр видео, пересылка и т.п.).
  * Вынесено из ChatsPage; обычная функция рендера, значения — через ctx.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense, Fragment, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { lazy } from 'react'
+
 import { api, getUploadUrl } from '../../../../utils/api'
 import type { AxiosError } from 'axios'
-import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, onSecretChatAccepted, inviteCall, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, onCallGlare, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, joinCallRoom, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../../../core/realtime'
-import { Phone, Video, X, PlusCircle, Users, UserPlus, BellRing, Copy, UploadCloud, CheckCircle, ArrowLeft, Paperclip, PhoneOff, Trash2, Maximize2, Minus, LogOut, Lock, Unlock, MoreVertical, Mic, Send, Bold, Italic, Strikethrough, Code, Quote, Link2, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, ChevronUp, RefreshCw, Check, Forward, Pencil } from 'lucide-react'
+
+import { X, Users, UserPlus, Copy, UploadCloud, CheckCircle, Trash2, LogOut, Lock, Unlock, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, RefreshCw, Pencil } from 'lucide-react'
 import { AvailabilityButton } from '../../../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../../../features/availability/availability.time'
@@ -27,148 +25,24 @@ import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
-import { useCallStore } from '../../../../domain/store/callStore'
-import { ensureDeviceBootstrap, getStoredDeviceInfo, rebootstrapDevice, isElectron } from '../../../../domain/device/deviceManager'
+
+import { getStoredDeviceInfo } from '../../../../domain/device/deviceManager'
 import { wipeLocalDeviceData } from '../../../../domain/device/deviceWipe'
 import { e2eeManager } from '../../../../domain/e2ee/e2eeManager'
-import { hasSecretThreadKey, ensureSecretThreadKey } from '../../../../domain/secret/secretThreadKeyStore'
-import { shareSecretThreadKeyToDevice } from '../../../../domain/secret/secretThreadSetup'
-import { fetchSecretHistory, sendSecretThreadText, transformSecretHistoryItemToMessage } from '../../../../domain/secret/secretThreadMessaging'
-import { getLastPendingShareAt, getPendingDeviceIds, getReceiptDeviceIds } from '../../../../domain/secret/secretKeyShareState'
-import { isSecretEngineV2Enabled } from '../../../../domain/secretV2/featureFlag'
-import { ensureReady as ensureSecretEngineReady, getThreadView as getSecretEngineThreadView, refreshKeysAndRetry, subscribeSecretThreadState, type SecretReasonCode } from '../../../../domain/secretV2'
-import { ensureMediaPermissions, convertToProxyUrl, extractObjectKeyFromUrl } from '../../../../utils/media'
-import { VoiceRecorder } from '../../../../utils/voiceRecorder'
-import { extractFirstPreviewableUrl } from '../../../../js/link-detect'
-import { renderChatMarkdownToHtml, htmlToMarkdown } from '../../../lib/chatMarkdown'
-import { renderMessageText } from '../chatsTextRender'
-import { openUrlSystemBrowser } from '../chatsEmbeds'
+
 import { LinkPreviewCard } from '../components/LinkPreviewCard'
 import { MessageReactionRail } from '../components/MessageReactionRail'
-import { isChatsRoute, withAppRoutePrefix } from '../../../../core/navigation/routes'
-import { signalApkIncomingAccepted, signalApkOutgoingStarted } from '../../../../utils/apkCallSignal'
-import { shouldShowAudioUnlockPrompt } from '../../../../utils/audioUnlock'
+
 import { copyImageFromUrl, copyPlainText } from '../../../../utils/clipboard'
-import { formatRegistrationInviteCodeForDisplay } from '../../../../utils/formatRegistrationInviteCode'
+
 import { VoiceMessagePlayer } from '../components/VoiceMessagePlayer'
 import { DeviceLinkInline } from '../components/DeviceLinkInline'
 import { useChatAudio } from '../hooks/useChatAudio'
 import { useChatSocketSubscriptions } from '../hooks/useChatSocketSubscriptions'
 import { useChatTyping } from '../hooks/useChatTyping'
 import { useChatsResponsive } from '../hooks/useChatsResponsive'
-import { useChatUiStore } from '../../../../core/chat-sync/chatUiStore'
-import { renderActiveCallOverlay } from '../render/CallOverlayHost'
-import { renderConversationList } from '../render/ConversationListPane'
-import { renderMessagesPane } from '../render/MessagesPane'
-import {
-  EBLO_MIN_ROWS,
-  EBLO_INITIAL_ROWS,
-  EBLO_OVERSCAN_PX,
-  EBLO_INDEX_OVERSCAN,
-  EBLO_DEFAULT_ROW_HEIGHT,
-  EBLO_FORWARD_ROW_HEIGHT,
-  EBLO_SYSTEM_ROW_HEIGHT,
-  EbloMeasuredRow,
-  type EbloRange,
-  type EbloRowMeta,
-} from '../chatsEblo'
-import {
-  acceptIncomingCallAction,
-  declineIncomingCallAction,
-  endActiveCallAction,
-  registerActiveCallRuntime,
-  registerIncomingCallRuntime,
-  type ResolvedActiveCall,
-  type ResolvedIncomingCall,
-} from '../../../../core/call-state/incomingCallActions'
-import {
-  NAME_COLOR_PALETTE_13,
-  NAME_COLOR_PALETTE_26,
-  BUBBLE_BG_BASES,
-} from '../chatsColors'
-import {
-  LAST_ACTIVE_CONVERSATION_KEY,
-  MIN_OUTGOING_CALL_DURATION_MS,
-  MAX_PENDING_IMAGES,
-  MAX_PENDING_FILES,
-  MESSAGES_PAGE_SIZE,
-  EMPTY_EBLID_DIGITS,
-} from '../chatsConstants'
-import {
-  FILE_KIND_UI,
-  FILE_EXTENSION_INFO,
-  formatAttachmentFileSize,
-  VIDEO_EXTS,
-  AUDIO_EXTS,
-  ATTACH_PROCESSING_MESSAGES,
-  formatUploadSpeed,
-  isUploadAbortError,
-  getMediaKind,
-  inferAttachmentRenderType,
-  extractFilenameFromUrl,
-  resolveAttachmentFileName,
-  getAttachmentFilePresentation,
-  parseContentDispositionFilename,
-  describeCopyableAttachment,
-  type AttachmentFileKind,
-  type AttachmentFileInfo,
-  type PendingAttachment,
-  type AttachmentDecryptionEntry,
-  type AttachmentHeadInfo,
-  type PendingComposerImage,
-  type PendingComposerFile,
-  type PendingMessage,
-} from '../chatsAttachments'
-import {
-  formatMessageClockLabel,
-  formatRuRelativeSendDay,
-  ruPluralDaysAgo,
-  formatSmallBubbleTimeLabel,
-} from '../chatsTime'
-import {
-  ruPluralSoobsheniya,
-  formatReplyBundleHeader,
-  formatSenderReplyActionPhrase,
-  formatSenderReplySingleActionPhrase,
-  formatForwardSourcePhraseAfterName,
-  buildMessageCopyText,
-  renderSystemMessageContent,
-  previewTextForReplyDraft,
-  firstImageAttachmentStubForQuote,
-  replySnippetIsGenericRu,
-  buildReplyDraftFromMessages,
-  buildReplyQuoteMetadataForSend,
-  MULTI_FWD_MAX_SPAN_MS,
-  MULTI_FWD_GAP_MS,
-  forwardFromAuthorKeyForBundle,
-  hasForwardFromMeta,
-  forwardSourceFingerprintForBundle,
-  computeMultiSourceForwardBundles,
-  formatMultiSourceForwardBundleSourceHeader,
-  parseMessageMetadata,
-  parseReplyQuoteBundleEntries,
-  FORWARD_COMPOSER_CAPTION_META_KEY,
-  extractForwardComposerCaption,
-  directChatPeerDisplayForForwardHeader,
-  coerceParsedMessageInstant,
-  normalizeForwardFromRecord,
-  extractOriginalForwardedInstantFromMessage,
-  buildForwardSourceContextForSend,
-  cloneAttachmentForForward,
-  recencyTimestampForConversationRow,
-  buildForwardSendPayload,
-  type ReplyDraftQuotedEntry,
-  type ReplyDraftState,
-  type ForwardComposerDraftState,
-  type ForwardAttachment,
-  type ForwardFromMeta,
-  type ForwardSourceContext,
-} from '../chatsMessages'
 
-
-
-
-
+import { buildMessageCopyText, previewTextForReplyDraft, firstImageAttachmentStubForQuote, buildReplyDraftFromMessages, buildForwardSourceContextForSend, recencyTimestampForConversationRow, buildForwardSendPayload } from '../chatsMessages'
 
 export interface ChatModalsCtx {
   activeConversation: any
