@@ -51,6 +51,7 @@ import { useChatSocketSubscriptions } from './chats/hooks/useChatSocketSubscript
 import { useChatTyping } from './chats/hooks/useChatTyping'
 import { useChatsResponsive } from './chats/hooks/useChatsResponsive'
 import { useChatUiStore } from '../../core/chat-sync/chatUiStore'
+import type { VirtualizerHandle, CacheSnapshot } from 'virtua'
 import { renderActiveCallOverlay } from './chats/render/CallOverlayHost'
 import { renderConversationList } from './chats/render/ConversationListPane'
 import { renderMessagesPane } from './chats/render/MessagesPane'
@@ -132,6 +133,10 @@ export default function ChatsPage() {
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const messagesContentRef = useRef<HTMLDivElement | null>(null)
   const pinBurstRafRef = useRef<number>(0)
+  // virtua Virtualizer (виртуализация списка сообщений): ручка для scrollToIndex/
+  // scrollOffset/scrollSize + снапшот кэша высот/позиции на беседу (restore).
+  const virtualizerRef = useRef<VirtualizerHandle | null>(null)
+  const convCacheRef = useRef<Map<string, CacheSnapshot>>(new Map())
   // Память позиции прокрутки по беседам: при возврате в чат восстанавливаем, где
   // человек остановился (как во взрослых мессенджерах). atBottom=true → был у низа,
   // тогда открываем на низу (а не на старом scrollTop, который мог «протухнуть»).
@@ -1775,16 +1780,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       })
       persistOlderMeta(conversationId, { hasMore, nextCursor })
 
-      if (before && messagesRef.current) {
-        requestAnimationFrame(() => {
-          const el2 = messagesRef.current
-          if (!el2) return
-          const delta = el2.scrollHeight - before.scrollHeight
-          if (delta > 0) {
-            el2.scrollTop = before.scrollTop + delta
-          }
-        })
-      }
+      // Позицию при добавлении старых сообщений СВЕРХУ держит virtua (prop shift) —
+      // ручной scrollHeight-дельта-якорь больше не нужен (он и давал прыжки B1).
+      void before
     } catch (err) {
       console.warn('[ChatsPage] Failed to load older messages', err)
     } finally {
@@ -2570,29 +2568,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     })
   }, [updateEblo])
 
-  // Прижать к низу «пачкой» кадров. Одного присвоения scrollTop мало: виртуализация
-  // (Eblo) после этого ре-рендерится в rAF и может сдвинуть scrollHeight, сбив нас с
-  // низа. Поэтому переякориваемся ещё несколько кадров подряд, пока раскладка не
-  // устаканится. Используется при открытии беседы и при росте высоты контента.
+  // Прижать список к низу через virtua: скроллим к последнему ряду с align:'end'.
+  // Индекс последнего ряда берём из ebloRowsRef (его наполняет MessagesPane).
+  // virtua сам домеряет высоты и корректно доводит до самого низа.
   const pinToBottomBurst = useCallback(() => {
-    const el = messagesRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
-    if (pinBurstRafRef.current) cancelAnimationFrame(pinBurstRafRef.current)
-    let frames = 0
-    const step = () => {
-      const el2 = messagesRef.current
-      if (!el2) return
-      el2.scrollTop = el2.scrollHeight
+    const v = virtualizerRef.current
+    const n = ebloRowsRef.current?.length ?? 0
+    if (v && n > 0) {
+      v.scrollToIndex(n - 1, { align: 'end' })
       nearBottomRef.current = true
-      frames += 1
-      if (frames < 5) {
-        pinBurstRafRef.current = requestAnimationFrame(step)
-      } else {
-        pinBurstRafRef.current = 0
-      }
     }
-    pinBurstRafRef.current = requestAnimationFrame(step)
   }, [])
 
   const handleEbloRowHeightChange = useCallback((rowKey: string, height: number) => {
@@ -4167,17 +4152,11 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const isMine = lastMessage?.senderId && me?.id ? lastMessage.senderId === me.id : false
     const shouldStick = isMine || !userStickyScrollRef.current || nearBottomRef.current
     if (!shouldStick) return
-    requestAnimationFrame(() => {
-      const el = messagesRef.current
-      if (!el) return
-      el.scrollTop = el.scrollHeight
-      nearBottomRef.current = true
-      if (isMine) {
-        userStickyScrollRef.current = false
-      }
-      scheduleEbloUpdate()
-    })
-  }, [activeId, activePendingMessages, displayedMessages, me?.id, scheduleEbloUpdate])
+    if (isMine) userStickyScrollRef.current = false
+    nearBottomRef.current = true
+    // Прилипаем к низу через virtua (scrollToIndex к последнему ряду).
+    pinToBottomBurst()
+  }, [activeId, activePendingMessages, displayedMessages, me?.id, pinToBottomBurst])
 
   // notifications disabled
 
@@ -4192,32 +4171,28 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (initialPositionedConvRef.current === activeId) return // уже спозиционировали
     const el = messagesRef.current
     if (!el) return
-    // Позиционируем только когда отрисованный контент ПРИНАДЛЕЖИТ активной беседе —
-    // иначе при переключении можно спозиционироваться по «чужим» сообщениям,
-    // которые ещё не сменились на данные новой беседы.
+    // Позиционируем только когда сообщения активной беседы РЕАЛЬНО отрисованы
+    // (не пустой список на холодном старте, и это именно её сообщения). Иначе на
+    // холодной загрузке позиционировались по пустоте и «сжигали» попытку (баг D1).
     const list = displayedMessages || []
+    const hasContent = list.length > 0 || activePendingMessages.length > 0
     const belongs =
       list.length === 0 ||
       String((list[list.length - 1] as any)?.conversationId ?? activeId) === String(activeId)
-    if (!belongs) return
+    if (!hasContent || !belongs) return
 
-    setShowJump(false)
-    scheduleEbloUpdate()
-
-    const saved = convScrollMemoryRef.current.get(activeId)
-    if (saved && !saved.atBottom) {
-      // Восстанавливаем прошлую позицию (синхронно, до paint → без «перемотки»).
-      nearBottomRef.current = false
-      userStickyScrollRef.current = true
-      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight)
-      el.scrollTop = Math.min(saved.top, maxTop)
-      setShowJump(el.scrollHeight - el.scrollTop - el.clientHeight > 8)
+    if (convCacheRef.current.has(activeId)) {
+      // virtua восстановил сохранённую позицию беседы из cache при remount (key=activeId).
+      // Просто отражаем состояние (у низа или нет).
+      const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      nearBottomRef.current = fromBottom < 8
+      userStickyScrollRef.current = fromBottom >= 8
+      setShowJump(fromBottom > 8)
     } else {
-      // Первый вход или были у низа → к низу. Первый scrollTop синхронный (до paint),
-      // а pinToBottomBurst дотягивает при догрузке картинок/превью — без видимой
-      // «перемотки сверху».
+      // Первый вход в беседу → к низу (virtua доведёт точно, домеряя высоты).
       nearBottomRef.current = true
       userStickyScrollRef.current = false
+      setShowJump(false)
       pinToBottomBurst()
     }
 
@@ -4228,12 +4203,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     lastRenderedMessagesRef.current = fl.length
     lastTailMessageIdRef.current = lm?.id ?? lm?.tempId ?? null
     initialPositionedConvRef.current = activeId
-  }, [activeId, displayedMessages, activePendingMessages, scheduleEbloUpdate, pinToBottomBurst])
+  }, [activeId, displayedMessages, activePendingMessages, pinToBottomBurst])
 
-  // Пуленепробиваемое «прилипание» к низу: единый ResizeObserver на контейнере
-  // сообщений. КАКОЕ БЫ содержимое ни изменило высоту (догрузка картинок/мозаик/
-  // видео/превью, разворачивание строки виртуализации из плейсхолдера в реальную
-  // строку) — пока мы у низа, возвращаемся точно на низ. Это и есть «раз и навсегда».
+  // Держим низ, когда контент внизу дорастает (напр. последняя картинка декодится),
+  // ТОЛЬКО если мы у низа. Рост контента выше вьюпорта якорит сама virtua (shift).
   useEffect(() => {
     if (!activeId) return
     const content = messagesContentRef.current
@@ -4304,7 +4277,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         nearBottomRef.current = nearBottom
         setShowJump(!nearBottom)
         // Запоминаем позицию текущей беседы для восстановления при возврате в неё.
-        if (activeId) convScrollMemoryRef.current.set(activeId, { top: el.scrollTop, atBottom: nearBottom })
+        // Сохраняем снапшот virtua (высоты + позиция) на беседу — восстановится
+        // при возврате (Virtualizer key=activeId + cache).
+        if (activeId && virtualizerRef.current) convCacheRef.current.set(activeId, virtualizerRef.current.cache)
         scheduleEbloUpdate()
         // Infinite scroll: when user reaches near-top, load older messages.
         // We keep scroll position stable in `loadOlderMessages`.
@@ -6090,7 +6065,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   // Контекст для вынесенных рендер-функций: пробрасываем нужные значения компонента.
   const convListCtx = { activeCalls, activeId, avatarPresenceForUser, callConvId, callStore, contactsQuery, convHasBottomFade, convHasTopFade, convScrollRef, conversationsQuery, currentUserId, effectiveUserStatus, formatDuration, formatPresence, incomingContactsQuery, isSocketOnline, me, meInfoQuery, minimizedCallConvId, myPresence, openContactsOverlay, openUserCard, outgoingCall, presenceGameByUserId, selectConversation, setConvMenu, setMePopupOpen, setNewGroupOpen, typingByConversationId }
   const chatModalsCtx = { activeConversation, activeId, activePendingMessages, addParticipantsEblDigits, addParticipantsEblRefs, addParticipantsFoundUser, addParticipantsFoundUserStatus, addParticipantsLoading, addParticipantsModal, addParticipantsMode, addParticipantsSearchError, addParticipantsSearching, addParticipantsSelectedIds, applyEblidPaste, availabilityContext, avatarPresenceForUser, avatarPresenceForUserIdAndStatus, avatarPreviewUrl, clearEblidSearch, clearMessageMultiSelect, client, closeAddParticipantsModal, closeNewGroupModal, composerEditorRef, contactsInviteCode, contactsInviteCopied, contactsInviteRefreshing, contactsInviteRemainingLabel, contactsOpen, contactsQuery, contextMenu, convMenu, convMenuRef, conversationsQuery, copyContactsInviteCode, copyMyEblid, creatingGroup, crop, cropCanvasRef, currentUserId, devicesQuery, displayOutgoingWithRejected, displayedMessages, eblDigits, eblRefs, editorRef, effectiveUserStatus, eligibleContactsForAdd, fileInputRef, formatPresence, formattedContactsInviteCode, forwardModal, foundUser, getSelectedMessagesOrdered, groupAvatarEditor, groupAvatarPreviewUrl, groupCrop, groupCropCanvasRef, groupEditorRef, groupFileInputRef, groupImageRef, groupSelectedAvatarFile, groupTitle, groupTitleEditValue, handleAddParticipantByEbl, handleAddParticipants, headerMenu, headerMenuRef, identityBottomRowStyle, identityBubbleStyle, identityDividerStyle, identityHelperTextStyle, identityIconButtonStyle, identityInputsRowStyle, identitySectionHeaderStyle, identitySectionTitleStyle, imageRef, incomingContactsQuery, initiateSecretChat, isMobile, lightbox, linkDeviceModalOpen, localDeviceIdForLinking, me, meInfoQuery, mePopupOpen, menuRef, multiSelectMode, myEblid, myEblidCopied, myEblidMiniCardStyle, myPresence, newGroupAvatarBlob, newGroupAvatarEditorOpen, newGroupAvatarFile, newGroupAvatarHover, newGroupAvatarPreviewUrl, newGroupAvatarSourceUrl, newGroupCrop, newGroupCropCanvasRef, newGroupDragOver, newGroupEditorRef, newGroupFileInputRef, newGroupImageRef, newGroupOpen, onChangeAddParticipantsDigit, onChangeDigit, onKeyDownAddParticipantsDigit, onKeyDownDigit, openUserCard, outgoingContactsQuery, presenceGameByUserId, refreshContactsInviteCode, registrationInviteCodeQuery, registrationMiniCardStyle, resolveFirstImageAttachmentUrl, savingGroupTitle, secretHistoryGate, secretRequestLoading, selectConversation, selectedAvatarFile, selectedIds, selectedMessageIds, sendInvite, sendMessageToConversation, sendingInvite, setActiveId, setAddParticipantsEblDigits, setAddParticipantsFoundUser, setAddParticipantsModal, setAddParticipantsMode, setAddParticipantsSearchError, setAddParticipantsSearching, setAddParticipantsSelectedIds, setAvailabilityContext, setAvatarPreviewUrl, setContactsOpen, setContextMenu, setConvMenu, setCreatingGroup, setCrop, setEndSecretModalOpen, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setGroupAvatarPreviewUrl, setGroupCrop, setGroupSelectedAvatarFile, setGroupTitle, setGroupTitleEditValue, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setMePopupOpen, setMobileView, setMultiSelectMode, setNewGroupAvatarBlob, setNewGroupAvatarEditorOpen, setNewGroupAvatarFile, setNewGroupAvatarHover, setNewGroupAvatarPreviewUrl, setNewGroupAvatarSourceUrl, setNewGroupCrop, setNewGroupDragOver, setRejectedOutgoing, setReplyTo, setSavingGroupTitle, setSecretHistoryGate, setSelectedAvatarFile, setSelectedIds, setSelectedMessageIds, setUploadMessage, setUploadProgress, setUploadingAvatar, setUserCardUser, setVideoViewer, sortedAcceptedContacts, startEdit, uploadMessage, uploadProgress, uploadingAvatar, userCardUser, usersById, videoViewer }
-  const messagesPaneCtx = { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, ebloRange, ebloRowsRef, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, estimateEbloRowHeight, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, handleEbloRowHeightChange, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, imageDimensions, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, me, messagesContentRef, messagesRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, scheduleEbloUpdate, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setImageDimensions, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars }
+  const messagesPaneCtx = { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, ebloRange, ebloRowsRef, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, estimateEbloRowHeight, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, handleEbloRowHeightChange, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, imageDimensions, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, me, messagesContentRef, messagesRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, scheduleEbloUpdate, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setImageDimensions, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars, virtualizerRef, convCacheRef }
   return (
     <>
     {renderActiveCallOverlay({ callConvId, minimizedCallConvId, conversationsQuery, activeConversation, currentUserId, me, meInfoQuery, setMinimizedCallConvId, getConversationFromCache, callStore, setCallConvId, callConvIdRef, setActiveCalls, stopRingtone, scheduleAfterMinCallDuration, clearMinCallDurationGuard, isOneToOneConversation })}
