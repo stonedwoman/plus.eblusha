@@ -40,8 +40,8 @@
     "cookie-parser": "^1.4.7",
     "dompurify": "^3.4.5",
     "framer-motion": "^12.40.0",
-    "helmet": "^8.2.0",
     "jsqr": "^1.4.0",
+    "helmet": "^8.2.0",
     "livekit-client": "^2.19.0",
     "lucide-react": "^1.16.0",
     "luxon": "^3.7.2",
@@ -58,7 +58,6 @@
     "socket.io-client": "^4.8.3",
     "turndown": "^7.2.4",
     "tweetnacl": "^1.0.3",
-    "virtua": "^0.49.2",
     "zustand": "^5.0.13"
   }
 }

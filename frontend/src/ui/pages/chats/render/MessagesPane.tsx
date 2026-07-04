@@ -5,7 +5,6 @@
 
 import { lazy, Fragment, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Virtualizer } from 'virtua'
 
 import { api } from '../../../../utils/api'
 import type { AxiosError } from 'axios'
@@ -220,12 +219,10 @@ export interface MessagesPaneCtx {
   voiceWaveform: any
   waveformContainerRef: any
   waveformMaxBars: any
-  virtualizerRef: any
-  convCacheRef: any
 }
 
 export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
-  const { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, ebloRange, ebloRowsRef, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, estimateEbloRowHeight, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, handleEbloRowHeightChange, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, imageDimensions, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, me, messagesContentRef, messagesRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, scheduleEbloUpdate, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setImageDimensions, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars, virtualizerRef, convCacheRef } = ctx
+  const { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, ebloRange, ebloRowsRef, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, estimateEbloRowHeight, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, handleEbloRowHeightChange, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, imageDimensions, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, me, messagesContentRef, messagesRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, scheduleEbloUpdate, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setImageDimensions, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars } = ctx
     const sectionClass = mobile ? 'messages-pane slider-panel' : 'messages-pane'
     return (
       <section className={sectionClass}>
@@ -1679,7 +1676,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
             {!activeId ? (
               <div className="messages-empty">Сообщения появятся здесь</div>
             ) : (
-              <div ref={messagesContentRef} style={{ marginTop: 'auto' }}><Virtualizer key={activeId} ref={virtualizerRef} scrollRef={messagesRef} shift cache={convCacheRef.current.get(activeId)} startMargin={0}>{(() => {
+              <div ref={messagesContentRef} style={{ marginTop: 'auto' }}>{(() => {
                 const list = (displayedMessages ? [...displayedMessages] : []).
                   filter((m: any) => !m.deletedAt).
                   sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
@@ -1893,14 +1890,27 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                   const ebloRowKey = ebloRowKeyByIndex.get(mapIndex)
                   const ebloRowPosition = ebloRowPositionByIndex.get(mapIndex)
                   if (ebloRowKey == null || ebloRowPosition == null) return null
-                  // virtua-виртуализация: рендерим КАЖДЫЙ ряд (без плейсхолдеров и без
-                  // ручного измерения EbloMeasuredRow) — Virtualizer сам держит в DOM
-                  // только видимые ряды и меряет их высоту.
-                  void ebloRowPosition
+                  const ebloShouldRender =
+                    ebloRows.length <= EBLO_MIN_ROWS ||
+                    (ebloRowPosition >= effectiveEbloRange.start && ebloRowPosition <= effectiveEbloRange.end)
+                  if (!ebloShouldRender) {
+                    return (
+                      <div
+                        key={`eblo-placeholder-${ebloRowKey}`}
+                        className="eblo-placeholder"
+                        style={{ height: estimateEbloRowHeight(ebloRowKey) }}
+                        aria-hidden
+                      />
+                    )
+                  }
                   const wrapEbloRow = (node: ReactNode) => (
-                    <div key={`eblo-row-${ebloRowKey}`} className="eblo-row" data-eblo-row={ebloRowKey}>
+                    <EbloMeasuredRow
+                      key={`eblo-row-${ebloRowKey}`}
+                      rowKey={ebloRowKey}
+                      onHeightChange={handleEbloRowHeightChange}
+                    >
                       {node}
-                    </div>
+                    </EbloMeasuredRow>
                   )
                   if (m.type === 'SYSTEM') {
                     return wrapEbloRow(
@@ -2457,8 +2467,8 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     )
                   }
                   return wrapEbloRow(renderChatMessageAtIndex(mapIndex, false))
-                }).filter(Boolean)
-              })()}</Virtualizer></div>
+                })
+              })()}</div>
             )}
           </div>
           {activeId && (
