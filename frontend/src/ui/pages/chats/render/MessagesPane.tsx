@@ -5,6 +5,15 @@
 
 import { lazy, Fragment, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { MessageListFlat } from './MessageListFlat'
+
+// Стабильные (модульные) пропы Virtuoso. КРИТИЧНО: объектные пропы нельзя создавать
+// заново на каждый рендер — Virtuoso сравнивает по ссылке, считает их изменившимися,
+// пересчитывает вьюпорт и может уйти в бесконечный ре-рендер (фриз). Поэтому
+// components/style/overscan — константы модуля.
+const VIRTUOSO_COMPONENTS = { Footer: () => <div style={{ height: 12 }} /> }
+const VIRTUOSO_STYLE = { flex: 1, minHeight: 0 } as const
+const VIRTUOSO_OVERSCAN = 1200
 
 import { api } from '../../../../utils/api'
 import type { AxiosError } from 'axios'
@@ -45,7 +54,6 @@ import { useChatSocketSubscriptions } from '../hooks/useChatSocketSubscriptions'
 import { useChatTyping } from '../hooks/useChatTyping'
 import { useChatsResponsive } from '../hooks/useChatsResponsive'
 
-import { EBLO_MIN_ROWS, EBLO_INITIAL_ROWS, EbloMeasuredRow, type EbloRowMeta } from '../chatsEblo'
 import { acceptIncomingCallAction, declineIncomingCallAction, endActiveCallAction } from '../../../../core/call-state/incomingCallActions'
 
 import { formatAttachmentFileSize, ATTACH_PROCESSING_MESSAGES } from '../chatsAttachments'
@@ -106,15 +114,12 @@ export interface MessagesPaneCtx {
   declineSecretInvite: any
   deviceLinkInviteOpen: any
   displayedMessages: any
-  ebloRange: any
-  ebloRowsRef: any
   editBusy: any
   editState: any
   editingImage: any
   editingImageId: any
   effectiveUserStatus: any
   endSecretModalOpen: any
-  estimateEbloRowHeight: any
   eventHasFiles: any
   executeForwardPayloadDelivery: any
   failedImages: any
@@ -125,11 +130,9 @@ export interface MessagesPaneCtx {
   getSelectedMessagesOrdered: any
   groupIncomingBubbleBg: any
   handleChatDropFiles: any
-  handleEbloRowHeightChange: any
   hasAnySecretThreadKeys: any
   hasOtherTrustedDevice: any
   hashToGray: any
-  imageDimensions: any
   insertPlainTextIntoComposer: any
   isMobile: any
   isNarrowHeaderButtons: any
@@ -138,6 +141,10 @@ export interface MessagesPaneCtx {
   me: any
   messagesContentRef: any
   messagesRef: any
+  virtuosoRef: any
+  virtuosoBaseRef: any
+  virtuosoRowsRef: any
+  loadOlderMessages: any
   minimizedCallConvId: any
   multiSelectMode: any
   nameColorForUser: any
@@ -160,7 +167,6 @@ export interface MessagesPaneCtx {
   resizeComposer: any
   resolveAttachmentUrl: any
   resolveFirstImageAttachmentUrl: any
-  scheduleEbloUpdate: any
   secretBootDonePulse: any
   secretComposerInlineError: any
   secretEngineV2Enabled: any
@@ -189,7 +195,6 @@ export interface MessagesPaneCtx {
   setForwardModal: any
   setGroupAvatarEditor: any
   setHeaderMenu: any
-  setImageDimensions: any
   setLightbox: any
   setLinkDeviceModalOpen: any
   setLoadedImages: any
@@ -222,7 +227,7 @@ export interface MessagesPaneCtx {
 }
 
 export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
-  const { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, ebloRange, ebloRowsRef, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, estimateEbloRowHeight, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, handleEbloRowHeightChange, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, imageDimensions, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, me, messagesContentRef, messagesRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, scheduleEbloUpdate, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setImageDimensions, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars } = ctx
+  const { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, loadOlderMessages, me, messagesContentRef, messagesRef, virtuosoRef, virtuosoBaseRef, virtuosoRowsRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars } = ctx
     const sectionClass = mobile ? 'messages-pane slider-panel' : 'messages-pane'
     return (
       <section className={sectionClass}>
@@ -1644,39 +1649,43 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
             pointerEvents: 'none',
             zIndex: 10
           }} />
-          <div
-            ref={messagesRef}
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflow: 'auto',
-              padding: 16,
-              // Короткая беседа прижимается к низу и растёт вверх (как в Telegram):
-              // контейнер — flex-column, а контент ниже получает margin-top:auto.
-              // Когда контент длиннее экрана — auto-отступ становится 0 и работает
-              // обычная прокрутка (без обрезки верха).
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-            {activeId && olderLoading && (
-              <div
-                aria-live="polite"
+          {/* Спиннер подгрузки старых — плавающий overlay, а НЕ элемент в потоке скролла:
+              его появление/исчезновение не меняет scrollHeight, значит не может сбить
+              позицию (важно на iOS, где родной якорь ленивее). */}
+          {activeId && olderLoading && (
+            <div
+              aria-live="polite"
+              style={{
+                position: 'absolute',
+                top: 8,
+                left: 0,
+                right: 0,
+                display: 'flex',
+                justifyContent: 'center',
+                pointerEvents: 'none',
+                zIndex: 11,
+              }}
+            >
+              <span
                 style={{
-                  display: 'flex',
-                  justifyContent: 'center',
-                  padding: '6px 0 14px',
+                  background: 'var(--surface-100)',
+                  border: '1px solid var(--surface-border)',
+                  borderRadius: 999,
+                  padding: '4px 12px',
                   color: 'var(--text-muted)',
                   fontSize: 13,
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
                 }}
               >
                 Загружаем…
-              </div>
-            )}
+              </span>
+            </div>
+          )}
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             {!activeId ? (
               <div className="messages-empty">Сообщения появятся здесь</div>
             ) : (
-              <div ref={messagesContentRef} style={{ marginTop: 'auto' }}>{(() => {
+              (() => {
                 const list = (displayedMessages ? [...displayedMessages] : []).
                   filter((m: any) => !m.deletedAt).
                   sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
@@ -1704,9 +1713,10 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                 }
                 const __fwdBundleByStart = new Map<number, (typeof __fwdBundles)[number]>()
                 for (const b of __fwdBundles) __fwdBundleByStart.set(b.start, b)
-                const ebloRowPositionByIndex = new Map<number, number>()
-                const ebloRowKeyByIndex = new Map<number, string>()
-                const ebloRows: EbloRowMeta[] = []
+                // Виртуализация удалена: рисуем все загруженные строки реальным DOM.
+                // Здесь — только стабильный ключ строки по индексу (React key + data-msg-row,
+                // который служит якорем при подгрузке старых сообщений).
+                const rowKeyByIndex = new Map<number, string>()
                 for (let i = 0; i < fullList.length; i++) {
                   const row = fullList[i]
                   if (!row || row.deletedAt || __fwdSkip.has(i)) continue
@@ -1717,19 +1727,8 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       : hasForwardFromMeta(row)
                         ? 'forward'
                         : 'msg'
-                  const rowKey = `${keyPrefix}:${row.id ?? row.tempId ?? i}`
-                  ebloRowPositionByIndex.set(i, ebloRows.length)
-                  ebloRowKeyByIndex.set(i, rowKey)
-                  ebloRows.push({ index: i, key: rowKey })
+                  rowKeyByIndex.set(i, `${keyPrefix}:${row.id ?? row.tempId ?? i}`)
                 }
-                ebloRowsRef.current = ebloRows
-                const effectiveEbloRange =
-                  ebloRows.length > EBLO_MIN_ROWS && ebloRange.end === Number.MAX_SAFE_INTEGER
-                    ? {
-                        start: Math.max(0, ebloRows.length - EBLO_INITIAL_ROWS),
-                        end: ebloRows.length - 1,
-                      }
-                    : ebloRange
                 const repMessagePendingForMulti = (rep: any) =>
                   !!rep &&
                   (() => {
@@ -1872,7 +1871,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     </div>
                   )
                 }
-                const chatMessageRowCtx = { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, imageDimensions, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setImageDimensions, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, visibleObserver }
+                const chatMessageRowCtx = { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, visibleObserver }
                 const renderChatMessageAtIndex = (
                   rowIndex: number,
                   forwardBundleInner?: boolean,
@@ -1884,36 +1883,16 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                   forwardBundleSuppressMetaFooter?: boolean,
                 ) =>
                   extractedRenderChatMessageAtIndex(rowIndex, forwardBundleInner, forwardBundleInnerLast, bundleForwardSenderId, forwardBundleRepresentativeMessageId, forwardBundleSuppressMetaFooter, chatMessageRowCtx)
-                return fullList.map((m: any, mapIndex: number) => {
+                const renderRowContent = (mapIndex: number): ReactNode => {
+                  const m = fullList[mapIndex]
                   if (!m || m.deletedAt) return null
                   if (__fwdSkip.has(mapIndex)) return null
-                  const ebloRowKey = ebloRowKeyByIndex.get(mapIndex)
-                  const ebloRowPosition = ebloRowPositionByIndex.get(mapIndex)
-                  if (ebloRowKey == null || ebloRowPosition == null) return null
-                  const ebloShouldRender =
-                    ebloRows.length <= EBLO_MIN_ROWS ||
-                    (ebloRowPosition >= effectiveEbloRange.start && ebloRowPosition <= effectiveEbloRange.end)
-                  if (!ebloShouldRender) {
-                    return (
-                      <div
-                        key={`eblo-placeholder-${ebloRowKey}`}
-                        className="eblo-placeholder"
-                        style={{ height: estimateEbloRowHeight(ebloRowKey) }}
-                        aria-hidden
-                      />
-                    )
-                  }
-                  const wrapEbloRow = (node: ReactNode) => (
-                    <EbloMeasuredRow
-                      key={`eblo-row-${ebloRowKey}`}
-                      rowKey={ebloRowKey}
-                      onHeightChange={handleEbloRowHeightChange}
-                    >
-                      {node}
-                    </EbloMeasuredRow>
-                  )
+                  const rowKey = rowKeyByIndex.get(mapIndex)
+                  if (rowKey == null) return null
+                  const wrapRow = (node: ReactNode) => <div className="msg-row">{node}</div>
+                  void rowKey
                   if (m.type === 'SYSTEM') {
-                    return wrapEbloRow(
+                    return wrapRow(
                       <div key={m.id} className="chat-system-message" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '12px 16px', marginTop: 8 }}>
                         <div style={{ 
                           fontSize: 13, 
@@ -2006,7 +1985,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       toggleMessageMultiSelect(m0.id)
                     }
                     if (!fwdComposerCaption0) {
-                      return wrapEbloRow(
+                      return wrapRow(
                         <div
                           key={`multi-fwd-${m0.id}`}
                           className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClass0}`}
@@ -2102,7 +2081,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       )
                     }
 
-                    return wrapEbloRow(
+                    return wrapRow(
                       <div
                         key={`multi-fwd-${m0.id}`}
                         className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClass0}`}
@@ -2276,7 +2255,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       toggleMessageMultiSelect(mS.id)
                     }
                     if (!fwdComposerCaptionS) {
-                      return wrapEbloRow(
+                      return wrapRow(
                         <div
                           key={`single-fwd-${mS.id}`}
                           className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClassS}`}
@@ -2370,7 +2349,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       )
                     }
 
-                    return wrapEbloRow(
+                    return wrapRow(
                       <div
                         key={`single-fwd-${mS.id}`}
                         className={`msg-forward-bundle-host forward-comment-wrap-host msg-forward-caption-nested ${rowClassS}`}
@@ -2466,9 +2445,33 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       </div>
                     )
                   }
-                  return wrapEbloRow(renderChatMessageAtIndex(mapIndex, false))
-                })
-              })()}</div>
+                  return wrapRow(renderChatMessageAtIndex(mapIndex, false))
+                }
+                // Плоский список строк (в порядке rowKeyByIndex = хронология).
+                const nextRows: Array<{ mapIndex: number; key: string }> = []
+                for (const [mi, key] of rowKeyByIndex) nextRows.push({ mapIndex: mi, key })
+                // Стабильная ссылка: переиспользуем прошлый массив, если ключи строк не
+                // изменились (MessagesPane — render-функция без useMemo).
+                const prevRows = virtuosoRowsRef.current as Array<{ mapIndex: number; key: string }>
+                const rowsSame =
+                  prevRows.length === nextRows.length &&
+                  prevRows.every((r, i) => r.key === nextRows[i].key && r.mapIndex === nextRows[i].mapIndex)
+                const rows = rowsSame ? prevRows : nextRows
+                virtuosoRowsRef.current = rows
+                if (rows.length === 0) return null
+                return (
+                  <MessageListFlat
+                    rows={rows}
+                    renderRow={renderRowContent}
+                    activeId={activeId}
+                    scrollElRef={messagesRef}
+                    nearBottomRef={nearBottomRef}
+                    onReachTop={() => { void loadOlderMessages() }}
+                    setShowJump={setShowJump}
+                    apiRef={virtuosoRef}
+                  />
+                )
+              })()
             )}
           </div>
           {activeId && (
@@ -2477,23 +2480,17 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
               onMouseDown={(e) => {
                 // Prevent composer blur (toolbar collapse) from swallowing the click.
                 e.preventDefault()
-                if (messagesRef.current) {
-                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
-                }
+                virtuosoRef.current?.scrollToBottom?.(true)
                 nearBottomRef.current = true
                 userStickyScrollRef.current = false
-                scheduleEbloUpdate()
                 setShowJump(false)
               }}
               onClick={(e) => {
                 // Keyboard activation: click has detail===0 (mouse is handled above).
                 if ((e as any)?.detail > 0) return
-                if (messagesRef.current) {
-                  messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
-                }
+                virtuosoRef.current?.scrollToBottom?.(true)
                 nearBottomRef.current = true
                 userStickyScrollRef.current = false
-                scheduleEbloUpdate()
                 setShowJump(false)
               }}
             >
@@ -3151,7 +3148,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                   client.invalidateQueries({ queryKey: ['messages', activeId] })
                 }
                 setTimeout(() => {
-                  if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight
+                  if (messagesRef.current) messagesRef.current.scrollTop = 0 /* column-reverse: 0 == визуальный низ */
                 }, 0)
                 return
               }
@@ -3181,7 +3178,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     if (activeId) {
                       client.invalidateQueries({ queryKey: ['messages', activeId] })
                     }
-                    setTimeout(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight }, 0)
+                    setTimeout(() => { if (messagesRef.current) messagesRef.current.scrollTop = 0 /* column-reverse: 0 == визуальный низ */ }, 0)
             }} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <button
               type="button"

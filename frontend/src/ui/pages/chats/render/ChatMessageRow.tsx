@@ -62,7 +62,6 @@ export interface ChatMessageRowCtx {
   fullList: any
   groupIncomingBubbleBg: any
   hashToGray: any
-  imageDimensions: any
   isMobile: any
   leftAlignAll: any
   loadedImages: any
@@ -78,7 +77,6 @@ export interface ChatMessageRowCtx {
   selectedMessageIds: any
   setContextMenu: any
   setFailedImages: any
-  setImageDimensions: any
   setLightbox: any
   setLoadedImages: any
   setVideoViewer: any
@@ -99,7 +97,7 @@ export function renderChatMessageAtIndex(
                   forwardBundleSuppressMetaFooter?: boolean,
   ctx: ChatMessageRowCtx = {} as any,
 ) {
-  const { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, imageDimensions, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setImageDimensions, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, visibleObserver } = ctx
+  const { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, visibleObserver } = ctx
                   const i = rowIndex
                   const m = fullList[i]
                   const prev = fullList[i - 1]
@@ -821,11 +819,9 @@ export function renderChatMessageAtIndex(
                                   ? Math.min(420, Math.round(vh * 0.55))
                                   : Math.min(520, Math.round(vh * 0.6))
 
-                                const dimKey = `${att.url || idx}`
-                                const loadedDims = imageDimensions[dimKey]
-                                const baseW = loadedDims?.width || att.width || att.metadata?.width || maxScreen
+                                const baseW = att.width || att.metadata?.width || maxScreen
                                 const baseH =
-                                  loadedDims?.height || att.height || att.metadata?.height || Math.round(baseW * 0.75)
+                                  att.height || att.metadata?.height || Math.round(baseW * 0.75)
                                 const ratio = baseH / baseW || 0.75
 
                                 const maxWidth = maxScreen
@@ -865,13 +861,13 @@ export function renderChatMessageAtIndex(
                                     key={`images-single-${att.url || idx}`}
                                     style={{
                                       maxWidth: '100%',
-                                      maxHeight: targetH,
-                                      width: showPending
-                                        ? Math.min(targetW, typeof window !== 'undefined' ? window.innerWidth - 100 : targetW)
-                                        : 'fit-content',
-                                      height: showPending ? targetH : 'auto',
+                                      width: Math.min(targetW, typeof window !== 'undefined' ? window.innerWidth - 100 : targetW),
+                                      // Постоянный aspect-box: место под картинку зарезервировано ДО её загрузки
+                                      // (из метаданных размеров или запасного 4/3). Загрузка не меняет высоту →
+                                      // раскладка не «прыгает». img внутри — objectFit:contain (letterbox для
+                                      // безразмерных медиа).
+                                      aspectRatio: `${targetW} / ${targetH}`,
                                       minWidth: 0,
-                                      minHeight: showPending ? targetH : 0,
                                       marginTop: 8,
                                       position: 'relative',
                                       borderRadius: 10,
@@ -981,10 +977,8 @@ export function renderChatMessageAtIndex(
                                         rootMargin="900px 0px"
                                         priority={isRecentMessage ? 'high' : 'low'}
                                         style={{
-                                          maxWidth: '100%',
-                                          maxHeight: targetH,
-                                          width: 'auto',
-                                          height: 'auto',
+                                          width: '100%',
+                                          height: '100%',
                                           objectFit: 'contain',
                                           borderRadius: 10,
                                           cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in',
@@ -997,20 +991,9 @@ export function renderChatMessageAtIndex(
                                           background: 'var(--surface-100)',
                                           verticalAlign: 'top',
                                         }}
-                                        onLoad={(e) => {
-                                          const img = e.target as HTMLImageElement
-                                          if ((!att.width && !metadata?.width) && img.naturalWidth && img.naturalHeight) {
-                                            setImageDimensions((prev: any) => ({
-                                              ...prev,
-                                              [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight },
-                                            }))
-                                          }
+                                        onLoad={() => {
                                           setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: false }))
                                           setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
-                                          if (messagesRef.current && nearBottomRef.current) {
-                                            const el = messagesRef.current
-                                            el.scrollTop = el.scrollHeight
-                                          }
                                         }}
                                         onError={() => {
                                           setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
@@ -1050,12 +1033,10 @@ export function renderChatMessageAtIndex(
                               // but column widths are computed from ratios to make heights match.
                               const visible = atts.slice(0, 4)
                               const extra = atts.length - visible.length
-                              const getRatio = (a: any, i: number): number => {
+                              const getRatio = (a: any, _i: number): number => {
                                 const md = a?.metadata ?? {}
-                                const key = `${a?.url || i}`
-                                const dims = imageDimensions[key]
-                                const w = dims?.width || a?.width || md?.width
-                                const h = dims?.height || a?.height || md?.height
+                                const w = a?.width || md?.width
+                                const h = a?.height || md?.height
                                 const r = typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0 ? h / w : 1
                                 // Clamp extreme cases (panoramas / very tall scans) so bubble stays sane.
                                 return Math.max(0.2, Math.min(5, Number.isFinite(r) ? r : 1))
@@ -1135,14 +1116,7 @@ export function renderChatMessageAtIndex(
                                         rootMargin="900px 0px"
                                         priority={isRecentMessage ? 'high' : 'low'}
                                         style={{ opacity: isLoaded && !showPending ? 1 : 0.001 }}
-                                        onLoad={(e) => {
-                                          const img = e.target as HTMLImageElement
-                                          if ((!att.width && !metadata?.width) && img.naturalWidth && img.naturalHeight) {
-                                            setImageDimensions((prev: any) => ({
-                                              ...prev,
-                                              [placeholderKey]: { width: img.naturalWidth, height: img.naturalHeight },
-                                            }))
-                                          }
+                                        onLoad={() => {
                                           setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: false }))
                                           setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
                                         }}

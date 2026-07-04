@@ -678,28 +678,19 @@ a {
 .msg.them { justify-content: flex-start; width: 100%; }
 .msg.me { justify-content: flex-end; width: 100%; }
 
-.eblo-row {
+/* Обёртка одной строки списка сообщений (внутри Virtuoso-элемента). flow-root создаёт
+   BFC, чтобы верхние margin строк не «схлопывались» наружу и Virtuoso мерил высоту
+   предсказуемо. Горизонтальный отступ списка — здесь (у скроллера Virtuoso его нет). */
+.msg-row {
   display: flow-root;
   width: 100%;
+  padding: 0 16px;
+  box-sizing: border-box;
 }
 
-.eblo-placeholder {
-  width: 100%;
-  min-height: 1px;
-  pointer-events: none;
-}
-
-@supports (content-visibility: auto) {
-  .messages-pane .msg,
-  .messages-pane .chat-system-message {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 88px;
-  }
-
-  .messages-pane .msg-forward-bundle-host {
-    contain-intrinsic-size: auto 180px;
-  }
-}
+/* content-visibility НЕ используем: список виртуализирует react-virtuoso, а
+   content-visibility:auto отдаёт intrinsic-size вместо реальной высоты и ломает
+   измерение Virtuoso. */
 
 .avatar-spacer { width: 40px; flex: 0 0 40px; height: 0; }
 

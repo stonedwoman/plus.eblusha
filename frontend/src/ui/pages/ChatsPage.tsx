@@ -55,7 +55,6 @@ import { renderActiveCallOverlay } from './chats/render/CallOverlayHost'
 import { renderConversationList } from './chats/render/ConversationListPane'
 import { renderMessagesPane } from './chats/render/MessagesPane'
 import { renderChatModals } from './chats/render/ChatModals'
-import { EBLO_MIN_ROWS, EBLO_INITIAL_ROWS, EBLO_OVERSCAN_PX, EBLO_INDEX_OVERSCAN, EBLO_DEFAULT_ROW_HEIGHT, EBLO_FORWARD_ROW_HEIGHT, EBLO_SYSTEM_ROW_HEIGHT, EbloMeasuredRow, type EbloRange, type EbloRowMeta } from './chats/chatsEblo'
 import { registerActiveCallRuntime, registerIncomingCallRuntime, type ResolvedActiveCall, type ResolvedIncomingCall } from '../../core/call-state/incomingCallActions'
 import { NAME_COLOR_PALETTE_13, NAME_COLOR_PALETTE_26, BUBBLE_BG_BASES } from './chats/chatsColors'
 import { LAST_ACTIVE_CONVERSATION_KEY, MIN_OUTGOING_CALL_DURATION_MS, MAX_PENDING_IMAGES, MAX_PENDING_FILES, MESSAGES_PAGE_SIZE, EMPTY_EBLID_DIGITS } from './chats/chatsConstants'
@@ -75,7 +74,6 @@ import { buildReplyQuoteMetadataForSend, computeMultiSourceForwardBundles, FORWA
  *   • chatsTime                               — форматирование времени/дат (ru-RU)
  *   • chatsMessages                           — «модель сообщения»: метаданные,
  *                                               reply-черновики, forward-логика
- *   • chatsEblo                               — виртуализация списка (EbloMeasuredRow)
  *   • chatsTextRender / chatsEmbeds           — рендер текста и встраиваемых ссылок
  *   • components/*                            — VoiceMessagePlayer, LinkPreviewCard,
  *                                               MessageReactionRail, DeviceLinkInline…
@@ -86,7 +84,7 @@ import { buildReplyQuoteMetadataForSend, computeMultiSourceForwardBundles, FORWA
  *   1. Состояние, рефы, запросы данных, производные значения
  *   2. Секретные чаты (старт/отправка/очередь ключей)         — регион «SECRET CHAT»
  *   3. Подгрузка истории вверх (loadOlderMessages)            — регион «OLDER MESSAGES»
- *   4. Виртуализация списка + прилипание к низу (Eblo)         — регион «MESSAGE LIST VIEWPORT»
+ *   4. Список сообщений на react-virtuoso                     — регион «MESSAGE LIST VIEWPORT»
  *   5. Отправка/реакции/выделение/звонки и прочая логика
  *   6. renderConversationList(mobile)  — рендер сайдбара со списком бесед
  *   7. renderMessagesPane(mobile)      — рендер открытой беседы (шапка/сообщения/композер)
@@ -131,7 +129,17 @@ export default function ChatsPage() {
   const attachInputRef = useRef<HTMLInputElement | null>(null)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const messagesContentRef = useRef<HTMLDivElement | null>(null)
-  const pinBurstRafRef = useRef<number>(0)
+  // react-virtuoso: хэндл списка + якорь виртуального индекса первого ряда
+  // (firstItemIndex), чтобы вставка старых сверху не двигала позицию. Плюс снимки
+  // состояния по беседам для восстановления позиции при возврате.
+  const virtuosoRef = useRef<any>(null)
+  const virtuosoBaseRef = useRef<{ key: string; virtualIndex: number } | null>(null)
+  const virtuosoStateByConvRef = useRef<Map<string, any>>(new Map())
+  // Стабильная ссылка на массив строк для data={} Virtuoso: MessagesPane — render-функция
+  // (без useMemo), поэтому массив строится заново каждый рендер. Virtuoso при новой ссылке
+  // data перезапускает начальное измерение и «застывает» пустым. Держим прошлый массив и
+  // переиспользуем его, если набор ключей строк не изменился (shallow-compare по ключам).
+  const virtuosoRowsRef = useRef<Array<{ mapIndex: number; key: string }>>([])
   // Память позиции прокрутки по беседам: при возврате в чат восстанавливаем, где
   // человек остановился (как во взрослых мессенджерах). atBottom=true → был у низа,
   // тогда открываем на низу (а не на старом scrollTop, который мог «протухнуть»).
@@ -235,11 +243,6 @@ export default function ChatsPage() {
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
   const nodesByMessageId = useRef<Map<string, HTMLElement>>(new Map())
   const nearBottomRef = useRef<boolean>(true)
-  const [ebloRange, setEbloRange] = useState<EbloRange>(() => ({ start: 0, end: EBLO_INITIAL_ROWS }))
-  const ebloRangeRef = useRef<EbloRange>({ start: 0, end: EBLO_INITIAL_ROWS })
-  const ebloRowsRef = useRef<EbloRowMeta[]>([])
-  const ebloRowHeightsRef = useRef<Map<string, number>>(new Map())
-  const ebloRafRef = useRef<number | null>(null)
   const userStickyScrollRef = useRef<boolean>(false)
   const lastRenderedMessagesRef = useRef(0)
   const lastScrollConvRef = useRef<string | null>(null)
@@ -522,7 +525,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const presenceGameExpiryTimersRef = useRef<Map<string, number>>(new Map())
   const [loadedImages, setLoadedImages] = useState<Record<string, boolean>>({})
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({})
-  const [imageDimensions, setImageDimensions] = useState<Record<string, { width: number; height: number }>>({})
   const [endSecretModalOpen, setEndSecretModalOpen] = useState(false)
   const [secretRequestLoading, setSecretRequestLoading] = useState(false)
   const [secretHistoryGate, setSecretHistoryGate] = useState<{ open: boolean; threadId: string | null }>({ open: false, threadId: null })
@@ -1733,8 +1735,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     const meta = olderMetaRef.current
     if (!meta.hasMore || !meta.nextCursor) return
 
-    const el = messagesRef.current
-    const before = el ? { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight } : null
     olderLoadingRef.current = true
     setOlderLoading(true)
     try {
@@ -1765,6 +1765,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const nextCursor = (fetchedResult.nextCursor ?? null) as string | null
       const hasMore = !!fetchedResult.hasMore
 
+      // Просто дописываем старые в начало кэша. Позицию при вставке держит Virtuoso
+      // через firstItemIndex (считается в MessagesPane по virtuosoBaseRef) — никакого
+      // ручного scrollTop здесь быть НЕ должно, иначе подерёмся с Virtuoso.
       client.setQueryData(['messages', conversationId], (old: any) => {
         const existing = Array.isArray(old) ? old : []
         const byId = new Map<string, any>()
@@ -1774,17 +1777,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
       })
       persistOlderMeta(conversationId, { hasMore, nextCursor })
-
-      if (before && messagesRef.current) {
-        requestAnimationFrame(() => {
-          const el2 = messagesRef.current
-          if (!el2) return
-          const delta = el2.scrollHeight - before.scrollHeight
-          if (delta > 0) {
-            el2.scrollTop = before.scrollTop + delta
-          }
-        })
-      }
     } catch (err) {
       console.warn('[ChatsPage] Failed to load older messages', err)
     } finally {
@@ -1821,7 +1813,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         .then((r) => {
           const updated = r.data?.message
           if (updated && updated.id) {
-            updateMessageInCache(activeId, updated, { preserveScroll: true })
+            updateMessageInCache(activeId, updated)
           } else {
             // fallback
             messagesQuery.refetch().catch(() => {})
@@ -2489,147 +2481,18 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       .map((msg: any) => e2eeManager.transformMessage(activeConversation.id, msg))
   }, [messagesQuery.data, activeConversation?.id, activeConversation?.isSecret, e2eeVersion])
 
-  useEffect(() => {
-    ebloRangeRef.current = ebloRange
-  }, [ebloRange])
-
   // ==========================================================================
-  // РЕГИОН: MESSAGE LIST VIEWPORT — виртуализация «Eblo» + прилипание к низу.
-  //   estimateEbloRowHeight / updateEblo / scheduleEbloUpdate — выбор видимого окна
-  //   строк (см. chats/chatsEblo). handleEbloRowHeightChange — реакция на измеренную
-  //   высоту строки. pinToBottomBurst + ResizeObserver контента — надёжное
-  //   прилипание к низу при догрузке картинок/мозаик/видео (см. эффекты ниже).
-  //   nearBottomRef — мы у низа; userStickyScrollRef=true — пользователь ушёл вверх.
+  // РЕГИОН: MESSAGE LIST VIEWPORT — список сообщений на react-virtuoso.
+  //   Виртуализацию, прилипание к низу, подгрузку старых и удержание позиции при
+  //   вставке (в т.ч. на iOS) ведёт сам <Virtuoso> в MessagesPane через firstItemIndex/
+  //   followOutput/startReached/initialTopMostItemIndex. Здесь ручного скролла нет.
+  //   nearBottomRef обновляется из atBottomStateChange Virtuoso.
   // ==========================================================================
-  const estimateEbloRowHeight = useCallback((rowKey: string) => {
-    const cached = ebloRowHeightsRef.current.get(rowKey)
-    if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) return cached
-    if (rowKey.startsWith('bundle:') || rowKey.startsWith('forward:')) return EBLO_FORWARD_ROW_HEIGHT
-    if (rowKey.startsWith('system:')) return EBLO_SYSTEM_ROW_HEIGHT
-    return EBLO_DEFAULT_ROW_HEIGHT
-  }, [])
 
-  const setEbloRangeIfChanged = useCallback((next: EbloRange) => {
-    const prev = ebloRangeRef.current
-    if (prev.start === next.start && prev.end === next.end) return
-    ebloRangeRef.current = next
-    setEbloRange(next)
-  }, [])
-
-  const updateEblo = useCallback(() => {
-    const rows = ebloRowsRef.current
-    const el = messagesRef.current
-    if (!el || rows.length <= EBLO_MIN_ROWS) {
-      setEbloRangeIfChanged({ start: 0, end: Number.MAX_SAFE_INTEGER })
-      return
-    }
-
-    const viewportTop = Math.max(0, el.scrollTop - Math.max(EBLO_OVERSCAN_PX, el.clientHeight * 2))
-    const viewportBottom = el.scrollTop + el.clientHeight + Math.max(EBLO_OVERSCAN_PX, el.clientHeight * 2)
-    let y = 0
-    let start = 0
-    let end = Math.min(rows.length - 1, EBLO_INITIAL_ROWS)
-    let foundStart = false
-
-    for (let i = 0; i < rows.length; i++) {
-      const height = estimateEbloRowHeight(rows[i].key)
-      const rowBottom = y + height
-      if (!foundStart && rowBottom >= viewportTop) {
-        start = Math.max(0, i - EBLO_INDEX_OVERSCAN)
-        foundStart = true
-      }
-      if (y <= viewportBottom) {
-        end = Math.min(rows.length - 1, i + EBLO_INDEX_OVERSCAN)
-      } else if (foundStart) {
-        break
-      }
-      y = rowBottom
-    }
-
-    if (!foundStart) {
-      start = Math.max(0, rows.length - EBLO_INITIAL_ROWS)
-      end = rows.length - 1
-    }
-
-    const actualNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < Math.max(80, el.clientHeight * 0.5)
-    if (nearBottomRef.current && actualNearBottom) {
-      start = Math.min(start, Math.max(0, rows.length - EBLO_INITIAL_ROWS))
-      end = rows.length - 1
-    }
-
-    if (end < start) end = start
-    setEbloRangeIfChanged({ start, end })
-  }, [estimateEbloRowHeight, setEbloRangeIfChanged])
-
-  const scheduleEbloUpdate = useCallback(() => {
-    if (typeof window === 'undefined') return
-    if (ebloRafRef.current !== null) return
-    ebloRafRef.current = window.requestAnimationFrame(() => {
-      ebloRafRef.current = null
-      updateEblo()
-    })
-  }, [updateEblo])
-
-  // Прижать к низу «пачкой» кадров. Одного присвоения scrollTop мало: виртуализация
-  // (Eblo) после этого ре-рендерится в rAF и может сдвинуть scrollHeight, сбив нас с
-  // низа. Поэтому переякориваемся ещё несколько кадров подряд, пока раскладка не
-  // устаканится. Используется при открытии беседы и при росте высоты контента.
-  const pinToBottomBurst = useCallback(() => {
-    const el = messagesRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
-    if (pinBurstRafRef.current) cancelAnimationFrame(pinBurstRafRef.current)
-    let frames = 0
-    const step = () => {
-      const el2 = messagesRef.current
-      if (!el2) return
-      el2.scrollTop = el2.scrollHeight
-      nearBottomRef.current = true
-      frames += 1
-      if (frames < 5) {
-        pinBurstRafRef.current = requestAnimationFrame(step)
-      } else {
-        pinBurstRafRef.current = 0
-      }
-    }
-    pinBurstRafRef.current = requestAnimationFrame(step)
-  }, [])
-
-  const handleEbloRowHeightChange = useCallback((rowKey: string, height: number) => {
-    if (!Number.isFinite(height) || height <= 0) return
-    const next = Math.max(1, Math.ceil(height))
-    const prev = ebloRowHeightsRef.current.get(rowKey)
-    if (typeof prev === 'number' && Math.abs(prev - next) < 2) return
-    const grew = typeof prev === 'number' ? next > prev : true
-    ebloRowHeightsRef.current.set(rowKey, next)
-    scheduleEbloUpdate()
-    // Пока мы «прилипли» к низу, любой рост высоты строки (догрузилась картинка,
-    // превью ссылки, видео, реакции) должен возвращать нас на самый низ — иначе
-    // последнее сообщение уезжает вниз за край. Работает для контента, который
-    // приходит в ЛЮБОЙ момент, а не только в первые сотни мс после открытия.
-    if (grew && nearBottomRef.current) {
-      pinToBottomBurst()
-    }
-  }, [scheduleEbloUpdate, pinToBottomBurst])
-
+  // При смене беседы сбрасываем якорь firstItemIndex — новая беседа якорится заново.
   useEffect(() => {
-    return () => {
-      if (ebloRafRef.current !== null) {
-        window.cancelAnimationFrame(ebloRafRef.current)
-        ebloRafRef.current = null
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    ebloRowHeightsRef.current.clear()
-    setEbloRangeIfChanged({ start: 0, end: EBLO_INITIAL_ROWS })
-    scheduleEbloUpdate()
-  }, [activeId, leftAlignAll, setEbloRangeIfChanged, scheduleEbloUpdate])
-
-  useLayoutEffect(() => {
-    scheduleEbloUpdate()
-  }, [activeId, displayedMessages.length, activePendingMessages.length, olderLoading, scheduleEbloUpdate])
+    virtuosoBaseRef.current = null
+  }, [activeId])
 
   const clearMessageMultiSelect = useCallback(() => {
     setMultiSelectMode(false)
@@ -4124,126 +3987,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     playNotifySoundIfAllowed,
   })
 
-  // Auto-stick to bottom when new messages render (but respect manual scroll)
-  useLayoutEffect(() => {
-    if (!activeId) {
-      lastScrollConvRef.current = null
-      lastRenderedMessagesRef.current = 0
-      lastTailMessageIdRef.current = null
-      return
-    }
-    // Начальным позиционированием при открытии беседы владеет ТОЛЬКО эффект ниже
-    // (restore/низ). Пока он не отработал для активной беседы — фиксируем текущий
-    // «хвост» как базу и не автоскроллим (иначе переключение чата прыгало бы вниз
-    // поверх восстановленной позиции). Авто-прилипание включается только для
-    // действительно новых сообщений уже после начального позиционирования.
-    if (initialPositionedConvRef.current !== activeId) {
-      lastScrollConvRef.current = activeId
-      lastRenderedMessagesRef.current = (displayedMessages?.length ?? 0) + activePendingMessages.length
-      const fl0 = [...(displayedMessages || []), ...activePendingMessages]
-      const lm0 = fl0[fl0.length - 1] as any
-      lastTailMessageIdRef.current = lm0?.id ?? lm0?.tempId ?? null
-      return
-    }
-    const renderedCount = (displayedMessages?.length ?? 0) + activePendingMessages.length
-    const prevCount = lastRenderedMessagesRef.current
-    const prevTailId = lastTailMessageIdRef.current
-    lastRenderedMessagesRef.current = renderedCount
-    if (!messagesRef.current) return
-    if (renderedCount === 0) return
-    const fullList = [
-      ...(displayedMessages || []),
-      ...activePendingMessages,
-    ]
-    const lastMessage = fullList[fullList.length - 1]
-    const tailId = (lastMessage as any)?.id ?? (lastMessage as any)?.tempId ?? null
-    lastTailMessageIdRef.current = tailId
-    // Если хвост (самое последнее сообщение) не изменился, значит это либо ничего не
-    // поменялось, либо подгрузилась страница СТАРЫХ сверху. В обоих случаях
-    // автоскролл вниз делать нельзя — иначе при загрузке истории нас выбрасывает
-    // в самый низ беседы.
-    if (renderedCount <= prevCount && tailId === prevTailId) return
-    if (tailId === prevTailId) return
-    const isMine = lastMessage?.senderId && me?.id ? lastMessage.senderId === me.id : false
-    const shouldStick = isMine || !userStickyScrollRef.current || nearBottomRef.current
-    if (!shouldStick) return
-    requestAnimationFrame(() => {
-      const el = messagesRef.current
-      if (!el) return
-      el.scrollTop = el.scrollHeight
-      nearBottomRef.current = true
-      if (isMine) {
-        userStickyScrollRef.current = false
-      }
-      scheduleEbloUpdate()
-    })
-  }, [activeId, activePendingMessages, displayedMessages, me?.id, scheduleEbloUpdate])
-
-  // notifications disabled
-
-  // Начальное позиционирование при ОТКРЫТИИ беседы. Делаем это в useLayoutEffect —
-  // синхронно ДО отрисовки, поэтому не видно «сначала попали выше, потом
-  // перемотались» (артефакт был из-за useEffect, который срабатывал после paint).
-  //   • если для этой беседы есть сохранённая позиция и человек был НЕ у низа —
-  //     восстанавливаем её (как во взрослых мессенджерах);
-  //   • иначе (первый вход или был у низа) — прижимаем к низу.
-  useLayoutEffect(() => {
-    if (!activeId) return
-    if (initialPositionedConvRef.current === activeId) return // уже спозиционировали
-    const el = messagesRef.current
-    if (!el) return
-    // Позиционируем только когда отрисованный контент ПРИНАДЛЕЖИТ активной беседе —
-    // иначе при переключении можно спозиционироваться по «чужим» сообщениям,
-    // которые ещё не сменились на данные новой беседы.
-    const list = displayedMessages || []
-    const belongs =
-      list.length === 0 ||
-      String((list[list.length - 1] as any)?.conversationId ?? activeId) === String(activeId)
-    if (!belongs) return
-
-    setShowJump(false)
-    scheduleEbloUpdate()
-
-    const saved = convScrollMemoryRef.current.get(activeId)
-    if (saved && !saved.atBottom) {
-      // Восстанавливаем прошлую позицию (синхронно, до paint → без «перемотки»).
-      nearBottomRef.current = false
-      userStickyScrollRef.current = true
-      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight)
-      el.scrollTop = Math.min(saved.top, maxTop)
-      setShowJump(el.scrollHeight - el.scrollTop - el.clientHeight > 8)
-    } else {
-      // Первый вход или были у низа → к низу. Первый scrollTop синхронный (до paint),
-      // а pinToBottomBurst дотягивает при догрузке картинок/превью — без видимой
-      // «перемотки сверху».
-      nearBottomRef.current = true
-      userStickyScrollRef.current = false
-      pinToBottomBurst()
-    }
-
-    // База для авто-прилипания + отметка «беседа спозиционирована».
-    const fl = [...list, ...activePendingMessages]
-    const lm = fl[fl.length - 1] as any
-    lastScrollConvRef.current = activeId
-    lastRenderedMessagesRef.current = fl.length
-    lastTailMessageIdRef.current = lm?.id ?? lm?.tempId ?? null
-    initialPositionedConvRef.current = activeId
-  }, [activeId, displayedMessages, activePendingMessages, scheduleEbloUpdate, pinToBottomBurst])
-
-  // Пуленепробиваемое «прилипание» к низу: единый ResizeObserver на контейнере
-  // сообщений. КАКОЕ БЫ содержимое ни изменило высоту (догрузка картинок/мозаик/
-  // видео/превью, разворачивание строки виртуализации из плейсхолдера в реальную
-  // строку) — пока мы у низа, возвращаемся точно на низ. Это и есть «раз и навсегда».
-  useEffect(() => {
-    if (!activeId) return
-    const content = messagesContentRef.current
-    if (!content || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => {
-      if (nearBottomRef.current) pinToBottomBurst()
-    })
-    ro.observe(content)
-    return () => ro.disconnect()
-  }, [activeId, pinToBottomBurst])
+  // Прилипание к низу, начальное позиционирование, догрузка при коротком контенте и
+  // возврат на низ при росте хвоста — теперь всё делает Virtuoso (followOutput +
+  // initialTopMostItemIndex=последний + startReached). Старые ручные эффекты удалены.
 
   // keep pinned to bottom while keyboard is opening/moving on mobile (iOS visualViewport)
   useEffect(() => {
@@ -4252,11 +3998,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!el) return
     const handleVV = () => {
       const active = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
-      if (active && active === composerEditorRef.current) {
-        el.scrollTop = el.scrollHeight
-        nearBottomRef.current = true
-        userStickyScrollRef.current = false
-        scheduleEbloUpdate()
+      if (active && active === composerEditorRef.current && nearBottomRef.current) {
+        // Клавиатура iOS ужимает вьюпорт — если были у низа, держим низ через Virtuoso.
+        virtuosoRef.current?.scrollToBottom?.()
       }
     }
     if (window.visualViewport) {
@@ -4269,7 +4013,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         window.visualViewport.removeEventListener('scroll', handleVV as any)
       }
     }
-  }, [activeId, scheduleEbloUpdate])
+  }, [activeId])
 
   // Dev-only: warn if credential-like inputs are present on chat page
   useEffect(() => {
@@ -4284,62 +4028,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   }, [])
 
   // автопрокрутка по новым сообщениям отключена, чтобы не мешать ручному скроллу
-
-  // Show jump-to-bottom button when user scrolls up
-  useEffect(() => {
-    const el = messagesRef.current
-    if (!el) return
-    let raf = 0
-    let lastScrollTop = el.scrollTop
-    const onScroll = () => {
-      if (raf) cancelAnimationFrame(raf)
-      const currentScrollTop = el.scrollTop
-      const scrollDelta = Math.abs(currentScrollTop - lastScrollTop)
-      // Only mark as user scroll if there's actual movement (not just programmatic scroll)
-      if (scrollDelta > 1) {
-        userStickyScrollRef.current = true
-      }
-      raf = requestAnimationFrame(() => {
-        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8
-        nearBottomRef.current = nearBottom
-        setShowJump(!nearBottom)
-        // Запоминаем позицию текущей беседы для восстановления при возврате в неё.
-        if (activeId) convScrollMemoryRef.current.set(activeId, { top: el.scrollTop, atBottom: nearBottom })
-        scheduleEbloUpdate()
-        // Infinite scroll: when user reaches near-top, load older messages.
-        // We keep scroll position stable in `loadOlderMessages`.
-        if (el.scrollTop < 420) {
-          void loadOlderMessages()
-        }
-        if (nearBottom) {
-          // Only reset user sticky scroll if we're actually near bottom
-          // Give a small delay to allow programmatic scrolls
-          window.setTimeout(() => {
-            if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
-              userStickyScrollRef.current = false
-            }
-          }, 100)
-        }
-        lastScrollTop = el.scrollTop
-      })
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    onScroll()
-    return () => {
-      el.removeEventListener('scroll', onScroll)
-      if (raf) cancelAnimationFrame(raf)
-    }
-  }, [activeId, loadOlderMessages, scheduleEbloUpdate])
-
-  useEffect(() => {
-    if (!activeId) return
-    if (!olderMeta.hasMore || olderLoading) return
-    const el = messagesRef.current
-    if (!el) return
-    if (el.scrollHeight <= el.clientHeight + 420) {
-      void loadOlderMessages()
-    }
-  }, [activeId, displayedMessages.length, activePendingMessages.length, olderMeta.hasMore, olderLoading, loadOlderMessages])
+  // Кнопку «вниз» (showJump/nearBottomRef) и подгрузку старых теперь ведёт Virtuoso:
+  // atBottomStateChange + startReached. Старый onScroll-эффект удалён.
 
   // detect wide area to left-align all messages
   useEffect(() => {
@@ -5021,12 +4711,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!bar || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
       syncComposerBarHeightVar()
-      // If the user was at the bottom, keep the view pinned when composer grows/shrinks
-      // (e.g. toolbar appears, attachments preview, reply/edit bars).
-      const el = messagesRef.current
-      if (el && nearBottomRef.current) {
-        try { el.scrollTop = el.scrollHeight } catch {}
-      }
+      // Если были у низа — держим низ при росте/сжатии composer-бара (тулбар, превью
+      // вложений, reply/edit-бары, полоска «печатает») через Virtuoso.
+      if (nearBottomRef.current) virtuosoRef.current?.scrollToBottom?.()
     })
     ro.observe(bar)
     return () => ro.disconnect()
@@ -5194,10 +4881,25 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           const isVideo = f.type.startsWith('video/') || VIDEO_EXTS.includes(ext)
           const isAudio = f.type.startsWith('audio/') || AUDIO_EXTS.includes(ext)
           const pendingType = isVideo ? 'VIDEO' : isAudio ? 'AUDIO' : 'FILE'
+          // Для видео заранее читаем размеры (E2EE — меряем на клиенте), чтобы отдать их
+          // в metadata и зарезервировать aspect видео сразу, без позднего «прыжка».
+          let vidW = 0
+          let vidH = 0
+          if (isVideo) {
+            const blobUrl = URL.createObjectURL(f)
+            try {
+              const s = await getVideoSize(blobUrl)
+              vidW = s.width
+              vidH = s.height
+            } finally {
+              URL.revokeObjectURL(blobUrl)
+            }
+          }
           pendingAttachments.push({
             url: f.name,
             type: pendingType,
             size: f.size,
+            ...(vidW > 0 && vidH > 0 ? { width: vidW, height: vidH } : {}),
             __pending: true,
             progress: 0,
             metadata: { originalName: f.name || undefined, mime: f.type || undefined },
@@ -5475,7 +5177,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         if (f.type) metadataPayload.mime = f.type
         if (Number.isFinite(f.size) && f.size > 0) metadataPayload.size = f.size
         if (objectKey) metadataPayload.objectKey = objectKey
-        if (pendingAtt && pendingAtt.type === 'IMAGE' && pendingAtt.width && pendingAtt.height) {
+        if (pendingAtt && (pendingAtt.type === 'IMAGE' || pendingAtt.type === 'VIDEO') && pendingAtt.width && pendingAtt.height) {
           metadataPayload.width = pendingAtt.width
           metadataPayload.height = pendingAtt.height
         }
@@ -5534,6 +5236,27 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
       img.onerror = () => resolve({ width: 320, height: 200 })
       img.src = url
+    })
+  }
+
+  // Размеры видео читаем через detached <video preload="metadata"> (тянет только
+  // заголовки). Кладём в metadata при отправке → пузырь видео сразу резервирует
+  // aspect-ratio, без позднего probe и «прыжка». 0×0 → не задаём (пузырь возьмёт дефолт).
+  async function getVideoSize(url: string): Promise<{ width: number; height: number }> {
+    return new Promise((resolve) => {
+      const v = document.createElement('video')
+      v.preload = 'metadata'
+      let done = false
+      const finish = (w: number, h: number) => {
+        if (done) return
+        done = true
+        try { v.removeAttribute('src'); v.load() } catch {}
+        resolve({ width: w || 0, height: h || 0 })
+      }
+      v.addEventListener('loadedmetadata', () => finish(v.videoWidth, v.videoHeight), { once: true })
+      v.addEventListener('error', () => finish(0, 0), { once: true })
+      window.setTimeout(() => finish(v.videoWidth, v.videoHeight), 3000)
+      v.src = url
     })
   }
 
@@ -5945,7 +5668,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   // ==========================================================================
   // РЕНДЕР 2/3: открытая беседа — шапка (собеседник/звонки/меню), контейнер
-  // сообщений (виртуализованные строки Eblo, пузыри, реакции, ответы/пересылки,
+  // сообщений (строки реальным DOM, пузыри, реакции, ответы/пересылки,
   // кнопка «вниз»), строка «печатает» и композер. Самый большой блок рендера.
   // ==========================================================================
 
@@ -5965,11 +5688,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     })
   }
 
-  function updateMessageInCache(conversationId: string, msg: any, opts?: { preserveScroll?: boolean }) {
+  function updateMessageInCache(conversationId: string, msg: any) {
     if (!msg) return
-    const el = messagesRef.current
-    const preserve = !!opts?.preserveScroll && !!el && !nearBottomRef.current
-    const before = preserve && el ? { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight } : null
+    // Позицию при изменении высоты сообщения (правка/реакции) держит родной
+    // overflow-anchor — ручная компенсация scrollTop больше не нужна.
     client.setQueryData(['messages', conversationId], (old: any) => {
       if (!Array.isArray(old)) return old
       const idx = old.findIndex((m: any) => m.id === msg.id)
@@ -5978,16 +5700,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       next[idx] = { ...next[idx], ...msg }
       return next
     })
-    if (preserve && before) {
-      requestAnimationFrame(() => {
-        const el2 = messagesRef.current
-        if (!el2) return
-        const delta = el2.scrollHeight - before.scrollHeight
-        if (delta > 0) {
-          el2.scrollTop = before.scrollTop + delta
-        }
-      })
-    }
   }
 
   function receiptStatusRank(status: string | null | undefined) {
@@ -6090,7 +5802,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   // Контекст для вынесенных рендер-функций: пробрасываем нужные значения компонента.
   const convListCtx = { activeCalls, activeId, avatarPresenceForUser, callConvId, callStore, contactsQuery, convHasBottomFade, convHasTopFade, convScrollRef, conversationsQuery, currentUserId, effectiveUserStatus, formatDuration, formatPresence, incomingContactsQuery, isSocketOnline, me, meInfoQuery, minimizedCallConvId, myPresence, openContactsOverlay, openUserCard, outgoingCall, presenceGameByUserId, selectConversation, setConvMenu, setMePopupOpen, setNewGroupOpen, typingByConversationId }
   const chatModalsCtx = { activeConversation, activeId, activePendingMessages, addParticipantsEblDigits, addParticipantsEblRefs, addParticipantsFoundUser, addParticipantsFoundUserStatus, addParticipantsLoading, addParticipantsModal, addParticipantsMode, addParticipantsSearchError, addParticipantsSearching, addParticipantsSelectedIds, applyEblidPaste, availabilityContext, avatarPresenceForUser, avatarPresenceForUserIdAndStatus, avatarPreviewUrl, clearEblidSearch, clearMessageMultiSelect, client, closeAddParticipantsModal, closeNewGroupModal, composerEditorRef, contactsInviteCode, contactsInviteCopied, contactsInviteRefreshing, contactsInviteRemainingLabel, contactsOpen, contactsQuery, contextMenu, convMenu, convMenuRef, conversationsQuery, copyContactsInviteCode, copyMyEblid, creatingGroup, crop, cropCanvasRef, currentUserId, devicesQuery, displayOutgoingWithRejected, displayedMessages, eblDigits, eblRefs, editorRef, effectiveUserStatus, eligibleContactsForAdd, fileInputRef, formatPresence, formattedContactsInviteCode, forwardModal, foundUser, getSelectedMessagesOrdered, groupAvatarEditor, groupAvatarPreviewUrl, groupCrop, groupCropCanvasRef, groupEditorRef, groupFileInputRef, groupImageRef, groupSelectedAvatarFile, groupTitle, groupTitleEditValue, handleAddParticipantByEbl, handleAddParticipants, headerMenu, headerMenuRef, identityBottomRowStyle, identityBubbleStyle, identityDividerStyle, identityHelperTextStyle, identityIconButtonStyle, identityInputsRowStyle, identitySectionHeaderStyle, identitySectionTitleStyle, imageRef, incomingContactsQuery, initiateSecretChat, isMobile, lightbox, linkDeviceModalOpen, localDeviceIdForLinking, me, meInfoQuery, mePopupOpen, menuRef, multiSelectMode, myEblid, myEblidCopied, myEblidMiniCardStyle, myPresence, newGroupAvatarBlob, newGroupAvatarEditorOpen, newGroupAvatarFile, newGroupAvatarHover, newGroupAvatarPreviewUrl, newGroupAvatarSourceUrl, newGroupCrop, newGroupCropCanvasRef, newGroupDragOver, newGroupEditorRef, newGroupFileInputRef, newGroupImageRef, newGroupOpen, onChangeAddParticipantsDigit, onChangeDigit, onKeyDownAddParticipantsDigit, onKeyDownDigit, openUserCard, outgoingContactsQuery, presenceGameByUserId, refreshContactsInviteCode, registrationInviteCodeQuery, registrationMiniCardStyle, resolveFirstImageAttachmentUrl, savingGroupTitle, secretHistoryGate, secretRequestLoading, selectConversation, selectedAvatarFile, selectedIds, selectedMessageIds, sendInvite, sendMessageToConversation, sendingInvite, setActiveId, setAddParticipantsEblDigits, setAddParticipantsFoundUser, setAddParticipantsModal, setAddParticipantsMode, setAddParticipantsSearchError, setAddParticipantsSearching, setAddParticipantsSelectedIds, setAvailabilityContext, setAvatarPreviewUrl, setContactsOpen, setContextMenu, setConvMenu, setCreatingGroup, setCrop, setEndSecretModalOpen, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setGroupAvatarPreviewUrl, setGroupCrop, setGroupSelectedAvatarFile, setGroupTitle, setGroupTitleEditValue, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setMePopupOpen, setMobileView, setMultiSelectMode, setNewGroupAvatarBlob, setNewGroupAvatarEditorOpen, setNewGroupAvatarFile, setNewGroupAvatarHover, setNewGroupAvatarPreviewUrl, setNewGroupAvatarSourceUrl, setNewGroupCrop, setNewGroupDragOver, setRejectedOutgoing, setReplyTo, setSavingGroupTitle, setSecretHistoryGate, setSelectedAvatarFile, setSelectedIds, setSelectedMessageIds, setUploadMessage, setUploadProgress, setUploadingAvatar, setUserCardUser, setVideoViewer, sortedAcceptedContacts, startEdit, uploadMessage, uploadProgress, uploadingAvatar, userCardUser, usersById, videoViewer }
-  const messagesPaneCtx = { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, ebloRange, ebloRowsRef, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, estimateEbloRowHeight, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, handleEbloRowHeightChange, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, imageDimensions, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, me, messagesContentRef, messagesRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, scheduleEbloUpdate, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setImageDimensions, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars }
+  const messagesPaneCtx = { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, loadOlderMessages, me, messagesContentRef, messagesRef, virtuosoRef, virtuosoBaseRef, virtuosoRowsRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars }
   return (
     <>
     {renderActiveCallOverlay({ callConvId, minimizedCallConvId, conversationsQuery, activeConversation, currentUserId, me, meInfoQuery, setMinimizedCallConvId, getConversationFromCache, callStore, setCallConvId, callConvIdRef, setActiveCalls, stopRingtone, scheduleAfterMinCallDuration, clearMinCallDurationGuard, isOneToOneConversation })}

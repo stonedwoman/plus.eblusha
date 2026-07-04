@@ -100,7 +100,9 @@ export function useChatSocketSubscriptions(opts: {
       const conversationId = payload.conversationId
       if (!activeId || conversationId !== activeId) return
       if (payload.message && payload.message.id) {
-        updateMessageInCache(activeId, payload.message, { preserveScroll: payload.reason === 'link_preview' })
+        // Позицию при изменении высоты (напр. подгрузка превью ссылки) держит общий
+        // scroll-anchor в ChatsPage (ResizeObserver контейнера) — доп. флаг не нужен.
+        updateMessageInCache(activeId, payload.message)
       } else if (payload.messageId) {
         messagesQuery.refetch().catch(() => {})
       }
