@@ -688,9 +688,11 @@ a {
   box-sizing: border-box;
 }
 
-/* content-visibility НЕ используем: список виртуализирует react-virtuoso, а
-   content-visibility:auto отдаёт intrinsic-size вместо реальной высоты и ломает
-   измерение Virtuoso. */
+/* content-visibility:auto навешивается ИНЛАЙНОМ на обёртку строки в MessageListFlat
+   (+ contain-intrinsic-size по типу строки): браузер пропускает layout/paint строк
+   вне экрана → огромные чаты остаются лёгкими, при этом ноды остаются в DOM (переход
+   к цитате/поиск/отметки о прочтении не ломаются). В column-reverse ошибки оценки
+   высоты живут выше вьюпорта и на закреплённый низ не влияют — тряски нет. */
 
 .avatar-spacer { width: 40px; flex: 0 0 40px; height: 0; }
 

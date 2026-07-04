@@ -2,25 +2,38 @@ import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 
 
 export type MsgRow = { mapIndex: number; key: string }
 
+// Оценка высоты по типу строки — для contain-intrinsic-size (content-visibility).
+// С ключевым словом auto реальная высота ЗАПОМИНАЕТСЯ после первого рендера, так что
+// оценка важна только для ещё ни разу не показанных строк (минимизирует поправку при
+// первом заезде в них).
+function estRowHeight(key: string): number {
+  if (key.startsWith('system:')) return 48
+  if (key.startsWith('bundle:') || key.startsWith('forward:')) return 200
+  return 96
+}
+
 /**
- * Плоский (невиртуализированный) список сообщений с нативным якорением у низа
- * через `flex-direction: column-reverse`.
+ * Список сообщений: плоский рендер + column-reverse + content-visibility.
  *
- * ПОЧЕМУ ТАК (после долгой борьбы с item-виртуализацией):
- *  - Реальные DOM-ноды с реальными высотами → нативно ГЛАДКИЙ скролл. Ноль
- *    transform/measureElement → ноль поштучной тряски (болезнь @tanstack/Eblo).
- *  - `column-reverse`: точка отсчёта скролла = НИЗ. Вставка старых сообщений
- *    сверху (loadOlderMessages дописывает в начало кэша) НЕ двигает вьюпорт —
- *    ни на десктопе, ни на iOS (где нет overflow-anchor и momentum перебивает
- *    ручной scrollTop). Новые сообщения у низа автоматически «прилипают».
- *    Короткие беседы естественно жмутся к низу (как Telegram).
- *  - Детект «у низа» / «у верха» — через IntersectionObserver по сентинелам,
- *    БЕЗ арифметики scrollTop (у column-reverse знак scrollTop разнится между
- *    браузерами — сентинелы к этому иммунны).
+ * Гладкость (ноль тряски):
+ *  - Строки — реальные ноды с реальными высотами → нативно гладкий скролл, ноль
+ *    transform/measureElement (болезнь item-виртуализации Eblo/@tanstack).
+ *  - `column-reverse`: точка отсчёта скролла = НИЗ. Вставка старых сверху не двигает
+ *    вьюпорт ни на десктопе, ни на iOS (нет overflow-anchor + momentum перебивает
+ *    ручной scrollTop). Новые у низа прилипают, короткие беседы жмутся к низу.
  *
- * DOM пока не ограничен (все загруженные строки в DOM). Ограничение размера
- * DOM для очень длинных чатов — отдельная фаза (сброс самой старой страницы
- * из кэша у низа), строится ПОВЕРХ этой гладкой базы.
+ * Лёгкость огромных чатов (виртуализация РЕНДЕРА, не удаление нод):
+ *  - `content-visibility: auto` на каждой строке: браузер ПРОПУСКАЕТ layout/paint для
+ *    строк вне экрана, используя оценку `contain-intrinsic-size` как заглушку размера.
+ *    Т.е. тысяча сообщений в DOM, а стоит (по рендеру) как ~видимые. Ноды при этом
+ *    ОСТАЮТСЯ в DOM → переход к цитируемому сообщению, поиск, отметки о прочтении и
+ *    прочая навигация по нодам продолжают работать (в отличие от «выкидывания» строк).
+ *  - Почему это не возвращает тряску: в column-reverse якорь — НИЗ, а ошибки оценки
+ *    высоты живут ВЫШЕ вьюпорта (у ещё не показанных старых строк) и на закреплённый
+ *    низ не влияют; недавно показанные строки помнят реальную высоту (auto).
+ *
+ * Детект краёв — через IntersectionObserver-сентинелы (без арифметики scrollTop, у
+ * column-reverse его знак разнится между браузерами).
  */
 export function MessageListFlat(props: {
   rows: MsgRow[]
@@ -41,8 +54,7 @@ export function MessageListFlat(props: {
   const topObsRef = useRef<IntersectionObserver | null>(null)
 
   // Свежие колбэки в рефах: IntersectionObserver подписываем ОДИН раз, а
-  // onReachTop/setShowJump пересоздаются каждый рендер (MessagesPane —
-  // render-функция без useCallback-стабилизации снаружи).
+  // onReachTop/setShowJump пересоздаются каждый рендер (MessagesPane — render-функция).
   const onReachTopRef = useRef(onReachTop)
   onReachTopRef.current = onReachTop
   const setShowJumpRef = useRef(setShowJump)
@@ -56,10 +68,8 @@ export function MessageListFlat(props: {
     nearBottomRef.current = true
   }, [nearBottomRef])
 
-  // Отдаём наружу scroll-элемент и API. Чистим при размонтировании, иначе
-  // messagesRef остался бы указывать на отсоединённую ноду (напр. беседа без
-  // кэша → rows пусты → MessagesPane вернёт null → мы размонтируемся), и внешние
-  // эффекты мерили бы 0/clientWidth у мёртвого элемента.
+  // Отдаём наружу scroll-элемент и API; чистим при размонтировании, чтобы messagesRef
+  // не указывал на отсоединённую ноду.
   useEffect(() => {
     scrollElRef.current = parentRef.current
     apiRef.current = { scrollToBottom }
@@ -69,10 +79,7 @@ export function MessageListFlat(props: {
     }
   }, [scrollToBottom, scrollElRef, apiRef])
 
-  // Смена беседы: инстанс скролл-контейнера переиспользуется, поэтому scrollTop
-  // мог «протухнуть» от прошлой беседы. Пиним к низу (scrollTop 0 в column-reverse)
-  // и сразу гасим кнопку «вниз» — иначе стейл-true из прошлой (промотанной) беседы
-  // мигал бы кадр-другой, пока не сработает async-колбэк IntersectionObserver.
+  // Смена беседы: пиним к низу (scrollTop 0) и гасим кнопку «вниз».
   useLayoutEffect(() => {
     const el = parentRef.current
     if (el) el.scrollTop = 0
@@ -80,15 +87,13 @@ export function MessageListFlat(props: {
     setShowJumpRef.current(false)
   }, [activeId, nearBottomRef])
 
-  // Детект у-низа (кнопка «вниз» + авто-пин новых) и у-верха (подгрузка старых)
-  // через сентинелы. Подписываемся один раз при монтировании.
+  // Сентинелы: низ (у-низа/кнопка «вниз») и верх (подгрузка старых).
   useEffect(() => {
     const root = parentRef.current
     const bottom = bottomSentinelRef.current
     const top = topSentinelRef.current
     if (!root || !bottom || !top) return
 
-    // Нижний сентинел: «у низа», если он в пределах 40px от края → nearBottom.
     const bottomObs = new IntersectionObserver(
       (entries) => {
         const near = entries[entries.length - 1]?.isIntersecting ?? false
@@ -99,9 +104,6 @@ export function MessageListFlat(props: {
     )
     bottomObs.observe(bottom)
 
-    // Верхний сентинел: подгружаем старые за ~600px до верха (страница ≫ экрана,
-    // так что сентинел выходит из зоны после вставки и триггерит снова при
-    // дальнейшем скролле вверх).
     const topObs = new IntersectionObserver(
       (entries) => {
         if (entries[entries.length - 1]?.isIntersecting) onReachTopRef.current()
@@ -118,12 +120,10 @@ export function MessageListFlat(props: {
     }
   }, [nearBottomRef])
 
-  // Пере-вооружаем верхний сентинел после смены rows. IntersectionObserver шлёт
-  // колбэк только на СМЕНУ пересечения; после prepend старых сверху сентинел может
-  // остаться в зоне (страница короче зоны / частичная последняя страница) и не дать
-  // нового события → пагинация «залипнет». unobserve+observe форсит свежую доставку:
-  // если всё ещё у верха и есть ещё старые — подгрузит следующую (loadOlderMessages
-  // сам гейтит по hasMore/olderLoadingRef, так что цикл конечен).
+  // Пере-вооружаем верхний сентинел после смены rows. IntersectionObserver шлёт колбэк
+  // только на СМЕНУ пересечения; после prepend старых сверху сентинел может остаться в
+  // зоне и не дать события → пагинация «залипнет». unobserve+observe форсит свежую
+  // доставку (loadOlderMessages сам гейтит по hasMore/olderLoadingRef, цикл конечен).
   useEffect(() => {
     const obs = topObsRef.current
     const top = topSentinelRef.current
@@ -142,22 +142,27 @@ export function MessageListFlat(props: {
         overflowY: 'auto',
         display: 'flex',
         flexDirection: 'column-reverse',
-        // «Overflow anchor» нам не нужен — column-reverse якорит нативно; но и не
-        // мешает. WebKit его игнорирует.
         overflowAnchor: 'none',
       }}
     >
       {/* Порядок DOM в column-reverse: первый ребёнок = визуальный НИЗ.
-          [нижний сентинел, новейшие → старейшие, верхний сентинел]
-          Визуально сверху вниз: верхний сентинел, старое … новое, нижний сентинел. */}
-      {/* Нижний сентинел = визуальный низ (между новейшим сообщением и композером).
-          Высота 12px даёт «воздух», чтобы последний бабл не липнул к полю ввода
-          (старый список резервировал ~24px через paddingEnd+Footer). */}
+          [нижний сентинел, новейшие → старейшие, верхний сентинел]. */}
+      {/* Нижний сентинел = визуальный низ; 12px «воздуха» под новейшим баблом. */}
       <div ref={bottomSentinelRef} style={{ height: 12, width: '100%', flex: '0 0 auto' }} aria-hidden />
       {rows.map((_row, i) => {
         const row = rows[rows.length - 1 - i] // рендерим в обратном порядке
         return (
-          <div className="msg-row" key={row.key} style={{ flex: '0 0 auto' }}>
+          <div
+            className="msg-row"
+            key={row.key}
+            style={{
+              flex: '0 0 auto',
+              // Вне экрана браузер пропускает layout/paint → огромный чат остаётся
+              // лёгким. Реальная высота запоминается (auto) → без «прыжка» при возврате.
+              contentVisibility: 'auto',
+              containIntrinsicSize: `auto ${estRowHeight(row.key)}px`,
+            }}
+          >
             {renderRow(row.mapIndex)}
           </div>
         )
