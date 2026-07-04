@@ -1651,7 +1651,12 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
               minHeight: 0,
               overflow: 'auto',
               padding: 16,
-              display: 'block',
+              // Короткая беседа прижимается к низу и растёт вверх (как в Telegram):
+              // контейнер — flex-column, а контент ниже получает margin-top:auto.
+              // Когда контент длиннее экрана — auto-отступ становится 0 и работает
+              // обычная прокрутка (без обрезки верха).
+              display: 'flex',
+              flexDirection: 'column',
             }}
           >
             {activeId && olderLoading && (
@@ -1671,7 +1676,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
             {!activeId ? (
               <div className="messages-empty">Сообщения появятся здесь</div>
             ) : (
-              <div ref={messagesContentRef}>{(() => {
+              <div ref={messagesContentRef} style={{ marginTop: 'auto' }}>{(() => {
                 const list = (displayedMessages ? [...displayedMessages] : []).
                   filter((m: any) => !m.deletedAt).
                   sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
