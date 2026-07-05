@@ -1789,11 +1789,14 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       // ручного scrollTop здесь быть НЕ должно, иначе подерёмся с Virtuoso.
       client.setQueryData(['messages', conversationId], (old: any) => {
         const existing = Array.isArray(old) ? old : []
-        const byId = new Map<string, any>()
-        for (const m of [...sortedFetched, ...existing]) {
-          if (m && m.id) byId.set(m.id, m)
-        }
-        return [...byId.values()].sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+        // fetched — все СТАРШЕ существующих (курсор = самое старое загруженное), и обе
+        // части уже отсортированы → общая пересортировка с парсингом дат не нужна: мёржим
+        // за O(M). Дубли по границе убираем, оставляя версию из existing (может нести
+        // более свежие receipts). Это снимает один из синхронных костов подгрузки страницы.
+        const existingIds = new Set<string>()
+        for (const m of existing) if (m?.id) existingIds.add(m.id)
+        const freshOlder = sortedFetched.filter((m: any) => m?.id && !existingIds.has(m.id))
+        return freshOlder.length ? [...freshOlder, ...existing] : existing
       })
       persistOlderMeta(conversationId, { hasMore, nextCursor })
     } catch (err) {

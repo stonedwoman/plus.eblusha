@@ -226,6 +226,29 @@ export interface MessagesPaneCtx {
   waveformMaxBars: any
 }
 
+// Кэш отсортированного списка сообщений по ССЫЛКЕ displayedMessages. react-query держит
+// ссылку стабильной, пока данные не изменились, поэтому дорогая фильтрация+сортировка (с
+// парсингом дат по всему списку) не повторяется на каждый ре-рендер (скролл/тайпинг/etc),
+// а только при реальном изменении данных. Снимает заметный кост на больших чатах.
+let _sortedMsgsSrc: unknown = null
+let _sortedMsgsRes: any[] = []
+const _ts = (m: any): number => new Date(m?.createdAt || 0).getTime()
+function sortedActiveMessages(displayedMessages: any): any[] {
+  if (displayedMessages === _sortedMsgsSrc) return _sortedMsgsRes
+  const filtered = (Array.isArray(displayedMessages) ? displayedMessages : []).filter((m: any) => !m?.deletedAt)
+  // Кэш почти всегда УЖЕ отсортирован (merge старых / append новых держат порядок).
+  // Дешёвая O(M)-проверка «уже ли отсортирован» вместо безусловной O(M·log M) сортировки:
+  // при вставке страницы это снимает главную фикс-цену. Сортируем ТОЛЬКО если реально надо.
+  let ordered = true
+  for (let i = 1; i < filtered.length; i++) {
+    if (_ts(filtered[i - 1]) > _ts(filtered[i])) { ordered = false; break }
+  }
+  const res = ordered ? filtered : [...filtered].sort((a: any, b: any) => _ts(a) - _ts(b))
+  _sortedMsgsSrc = displayedMessages
+  _sortedMsgsRes = res
+  return res
+}
+
 export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
   const { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, loadOlderMessages, me, messagesContentRef, messagesRef, virtuosoRef, virtuosoBaseRef, virtuosoRowsRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars } = ctx
     const sectionClass = mobile ? 'messages-pane slider-panel' : 'messages-pane'
@@ -1686,9 +1709,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
               <div className="messages-empty">Сообщения появятся здесь</div>
             ) : (
               (() => {
-                const list = (displayedMessages ? [...displayedMessages] : []).
-                  filter((m: any) => !m.deletedAt).
-                  sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()) as Array<any> | undefined
+                const list = sortedActiveMessages(displayedMessages)
                 const pending = activePendingMessages
                 const fullList = [...(list || []), ...pending]
                 if (!fullList) return null
@@ -1871,7 +1892,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     </div>
                   )
                 }
-                const chatMessageRowCtx = { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, visibleObserver }
+                const chatMessageRowCtx = { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, virtuosoRef, visibleObserver }
                 const renderChatMessageAtIndex = (
                   rowIndex: number,
                   forwardBundleInner?: boolean,
@@ -2486,55 +2507,47 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                   }
                   return s
                 }
-                const nextRows: Array<{ mapIndex: number; key: string; deps: unknown[] | null }> = []
-                for (const [mi, key] of rowKeyByIndex) {
+                // deps ОДНОЙ строки — ЛЕНИВО: MessageListFlat зовёт только для строк видимого
+                // ОКНА, поэтому тяжёлый проход становится O(окно), а не O(весь чат). Это и есть
+                // цена, которая раньше вешала подгрузку страницы на больших чатах.
+                // «Сложные» строки → null (всегда перерисовываем): пересылки/бандлы (зависят от
+                // неадъяцентных сообщений), мульти-цитаты (превью НЕСКОЛЬКИХ сообщений), «в
+                // полёте» превью ссылки (скелетон на wall-clock 25с).
+                const buildRowDeps = (mi: number): unknown[] | null => {
                   const m = fullList[mi]
-                  let deps: unknown[] | null
-                  // «Сложные» строки — всегда перерисовываем (deps=null), безопаснее их
-                  // не мемоизировать, чем городить точный захват широких зависимостей:
-                  //  • bundle:/forward: — пересылки, зависят от неадъяцентных сообщений;
-                  //  • мульти-цитата (replyQuoteBundle ≥2) — рендерит превью НЕСКОЛЬКИХ
-                  //    (неадъяцентных) сообщений, их правки/дешифр иначе застынут;
-                  //  • «в полёте» превью ссылки — скелетон завязан на wall-clock (25с),
-                  //    без перерисовки не схлопнется.
+                  const key = rowKeyByIndex.get(mi)
+                  if (!m || !key) return null
                   const md = m?.metadata
                   const linkPreviewInFlight = !!(md?.linkPreviewAttemptedAt && !md?.linkPreview)
                   const multiReplyBundle = (parseReplyQuoteBundleEntries(m)?.length ?? 0) >= 2
-                  if (
-                    key.startsWith('bundle:') || key.startsWith('forward:') ||
-                    multiReplyBundle || linkPreviewInFlight
-                  ) {
-                    deps = null
-                  } else {
-                    const replyId = m?.replyTo?.id
-                    const replyTarget = replyId != null ? __idMap.get(String(replyId)) : undefined
-                    deps = [
-                      m, // identity → контент/реакции/галочки/правки/replyTo/attachments/pending
-                      fullList[mi - 1]?.senderId, // группировка: аватар/хвост/имя (сосед сверху)
-                      fullList[mi + 1]?.senderId, // группировка (сосед снизу)
-                      replyTarget, // цитируемое сообщение (правка/удаление меняет превью)
-                      __mediaSig(m), // медиа-состояние ВНЕ объекта (загрузка/ошибка/дешифр)
-                      replyTarget ? __mediaSig(replyTarget) : '', // медиа цитаты (миниатюра)
-                      selectedMessageIds.includes(String(m?.id)), // выделение этой строки
-                      // общие для всего списка (меняются редко → все строки перерисуются):
-                      multiSelectMode,
-                      leftAlignAll,
-                      isMobile,
-                      activeConversation,
-                      currentUserId,
-                      me,
-                      usersById,
-                    ]
+                  if (key.startsWith('bundle:') || key.startsWith('forward:') || multiReplyBundle || linkPreviewInFlight) {
+                    return null
                   }
-                  nextRows.push({ mapIndex: mi, key, deps })
+                  const replyId = m?.replyTo?.id
+                  const replyTarget = replyId != null ? __idMap.get(String(replyId)) : undefined
+                  return [
+                    m, // identity → контент/реакции/галочки/правки/replyTo/attachments/pending
+                    fullList[mi - 1]?.senderId, // группировка: аватар/хвост/имя (сосед сверху)
+                    fullList[mi + 1]?.senderId, // группировка (сосед снизу)
+                    replyTarget, // цитируемое сообщение (правка/удаление меняет превью)
+                    __mediaSig(m), // медиа-состояние ВНЕ объекта (загрузка/ошибка/дешифр)
+                    replyTarget ? __mediaSig(replyTarget) : '', // медиа цитаты (миниатюра)
+                    selectedMessageIds.includes(String(m?.id)), // выделение этой строки
+                    // общие для всего списка (меняются редко → все строки перерисуются):
+                    multiSelectMode, leftAlignAll, isMobile, activeConversation, currentUserId, me, usersById,
+                  ]
                 }
-                const rows = nextRows
+                // Дешёвый список строк (только ключи, O(M) без аллокаций deps). Окно и ленивые
+                // deps строит MessageListFlat.
+                const rows: Array<{ mapIndex: number; key: string }> = []
+                for (const [mi, key] of rowKeyByIndex) rows.push({ mapIndex: mi, key })
                 virtuosoRowsRef.current = rows
                 if (rows.length === 0) return null
                 return (
                   <MessageListFlat
                     rows={rows}
                     renderRow={renderRowContent}
+                    buildDeps={buildRowDeps}
                     activeId={activeId}
                     scrollElRef={messagesRef}
                     nearBottomRef={nearBottomRef}

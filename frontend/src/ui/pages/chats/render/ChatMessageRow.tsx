@@ -71,6 +71,7 @@ export interface ChatMessageRowCtx {
   nameColorForUser: any
   nearBottomRef: any
   nodesByMessageId: any
+  virtuosoRef: any
   openUserCard: any
   replyQuoteVisual: any
   resolveAttachmentUrl: any
@@ -97,7 +98,7 @@ export function renderChatMessageAtIndex(
                   forwardBundleSuppressMetaFooter?: boolean,
   ctx: ChatMessageRowCtx = {} as any,
 ) {
-  const { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, visibleObserver } = ctx
+  const { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, virtuosoRef, visibleObserver } = ctx
                   const i = rowIndex
                   const m = fullList[i]
                   const prev = fullList[i - 1]
@@ -343,7 +344,10 @@ export function renderChatMessageAtIndex(
                   const scrollToMessageById = (qid: string | undefined) => {
                     if (!qid) return
                     const el = nodesByMessageId.current.get(qid)
-                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); return }
+                    // Строки нет в DOM (вне окна виртуализации) — просим список раскрыть
+                    // окно до этого сообщения и прокрутить (иначе переход по цитате молчал бы).
+                    virtuosoRef?.current?.scrollToMessage?.(String(qid))
                   }
                   const scrollToQuoted = () => scrollToMessageById((m as any).replyTo?.id as string | undefined)
                   // Lightbox should be scoped to this message (not the whole chat).
@@ -1163,7 +1167,22 @@ export function renderChatMessageAtIndex(
                                 <div
                                   key="images-mosaic"
                                   className="msg-media-grid"
-                                  style={{ maxWidth: gridMaxWidth, width: '100%' }}
+                                  // Резервируем высоту сетки ДО загрузки: она детерминирована
+                                  // из соотношений сторон картинок (gridHeightCoef = H/W) и ширины.
+                                  // Без этого плитки (height:100% в флексе) схлопывались до высоты
+                                  // ещё-не-загруженной картинки и «распухали» при загрузке → reflow,
+                                  // двигавший ленту. aspect-ratio масштабируется по ширине (в отличие
+                                  // от абсолютной запомненной высоты — та врала бы при ресайзе/зуме).
+                                  style={{
+                                    // ОПРЕДЕЛЁННАЯ ширина (не 100%!) — иначе в бабле-по-содержимому
+                                    // ширина ≈ 0 до загрузки плиток, и aspect-ratio даёт нулевую высоту
+                                    // («мелкое → разворачивается»). gridMaxWidth уже посчитан под вьюпорт;
+                                    // maxWidth:100% не даёт вылезти за узкий бабл. Теперь и ширина, и высота
+                                    // зарезервированы сразу, картинки просто проявляются внутри.
+                                    width: gridMaxWidth,
+                                    maxWidth: '100%',
+                                    ...(gridHeightCoef > 0 ? { aspectRatio: 1 / gridHeightCoef } : {}),
+                                  }}
                                 >
                                   {visible.length === 2 && (() => {
                                     const r0 = getRatio(visible[0], 0)
