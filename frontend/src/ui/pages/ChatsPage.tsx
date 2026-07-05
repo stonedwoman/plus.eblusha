@@ -940,8 +940,27 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!callStore.incoming) stopRingtone()
   }, [callStore.incoming, stopRingtone])
 
+  // timerTick — чистый «пульс перерисовки» для Date.now()-зависимых мест (длительность
+  // звонка, «Завершён N мин назад»). Значение нигде не читается. Раньше он тикал 1/сек
+  // ВСЕГДА и перерисовывал весь список сообщений вхолостую даже без звонка — на больших
+  // чатах это заметный фон. Теперь тикаем только когда есть что обновлять по времени:
+  // активный/исходящий/входящий/свёрнутый звонок или звонок, завершённый недавно.
+  // Считаем флаг в рендере (свежий Date.now()); тик → перерисовка → пересчёт → сам
+  // затухает через ~5 мин после завершения звонка. Прочие потребители тика (скелетон
+  // link-preview) самовосстанавливаются на любой перерисовке (сокет/скролл).
+  const callTickNeededRef = useRef(false)
+  callTickNeededRef.current = (() => {
+    if (callConvId || minimizedCallConvId || outgoingCall || callStore.incoming) return true
+    const now = Date.now()
+    for (const c of Object.values(activeCalls)) {
+      if (c && (c.active || (typeof c.endedAt === 'number' && now - c.endedAt < 5 * 60_000))) return true
+    }
+    return false
+  })()
   useEffect(() => {
-    const id = window.setInterval(() => setTimerTick((t) => (t + 1) % 1000000), 1000)
+    const id = window.setInterval(() => {
+      if (callTickNeededRef.current) setTimerTick((t) => (t + 1) % 1000000)
+    }, 1000)
     return () => window.clearInterval(id)
   }, [])
 
