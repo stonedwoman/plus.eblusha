@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { gridThumbUrl } from '../../utils/media'
 
 type Props = {
   open: boolean
@@ -19,9 +20,18 @@ function clamp(n: number, min: number, max: number) {
 export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const imgRef = useRef<HTMLImageElement | null>(null)
+  const activeThumbRef = useRef<HTMLButtonElement | null>(null)
 
   const [dimsByUrl, setDimsByUrl] = useState<Record<string, ImgDims>>({})
-  const [viewport, setViewport] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
+  // Пер-URL статусы загрузки: показываем главную картинку (opacity) только когда она РЕАЛЬНО
+  // загружена+декодирована → нет кадра со «старыми пикселями» и скачка размера (главный источник морганий).
+  const [loadedUrls, setLoadedUrls] = useState<Set<string>>(() => new Set())
+  const [failedUrls, setFailedUrls] = useState<Set<string>>(() => new Set())
+  // Инициализируем реальным размером окна (не {0,0}) → blur-подложка есть уже на первом кадре.
+  const [viewport, setViewport] = useState<{ w: number; h: number }>(() => ({
+    w: typeof window !== 'undefined' ? window.innerWidth : 0,
+    h: typeof window !== 'undefined' ? window.innerHeight : 0,
+  }))
 
   // zoom is relative to "fit"
   const [zoom, setZoom] = useState(1)
@@ -41,12 +51,20 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
   const wheelNavAccumRef = useRef(0)
   const wheelNavLastTsRef = useRef(0)
   const lastTapRef = useRef<{ ts: number; x: number; y: number } | null>(null)
+  const pinchEndTsRef = useRef(-Infinity) // когда сняли второй палец с пинча — короткий кулдаун против ложного свайпа (−∞ = «давно», чтобы не блочить первый жест)
+  const prevFocusRef = useRef<HTMLElement | null>(null) // куда вернуть фокус при закрытии
 
   const total = items.length
   const canNav = total > 1
 
-  const url = items[index] || ''
+  const safeIndex = total > 0 ? Math.min(Math.max(index, 0), total - 1) : 0
+  const url = items[safeIndex] || ''
   const dims = url ? dimsByUrl[url] : undefined
+  const isLoaded = !!url && loadedUrls.has(url)
+  const isFailed = !!url && failedUrls.has(url)
+  // Мгновенная размытая подложка (серверная миниатюра ~720px, обычно уже в кеше из ленты чата) —
+  // видна пока грузится полноразмер; полное фото проявляется поверх (кроссфейд). blob/секрет → как есть.
+  const placeholderSrc = url ? (gridThumbUrl(url) || url) : ''
 
   const thumbsHpx = useMemo(() => {
     if (total <= 1) return 24
@@ -73,6 +91,18 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
     return { scale: actualScale, maxX, maxY }
   }, [dims, viewport.w, viewport.h, zoom, thumbsHpx])
 
+  // Область под картинку (без хрома) — не зависит от dims. В неё вписываем и blur-подложку
+  // (background-size:contain), так что она занимает ТОТ ЖЕ прямоугольник, что и полное фото → без скачка.
+  const usable = useMemo(() => {
+    const TOP = 56
+    const BOTTOM = thumbsHpx
+    const PAD = 28
+    return {
+      w: Math.max(0, viewport.w - PAD * 2),
+      h: Math.max(0, viewport.h - TOP - BOTTOM - PAD * 2),
+    }
+  }, [viewport.w, viewport.h, thumbsHpx])
+
   const goPrev = () => {
     if (!canNav) return
     onIndexChange((index - 1 + total) % total)
@@ -83,6 +113,7 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
   }
 
   const resetView = () => {
+    draggingRef.current = null // сбрасываем незавершённый pan/swipe, иначе он считал бы от старой базы/картинки
     setZoom(1)
     setTx(0)
     setTy(0)
@@ -95,6 +126,18 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
     document.body.style.overflow = 'hidden'
     return () => {
       document.body.style.overflow = prev
+    }
+  }, [open])
+
+  // Модальный фокус: запоминаем активный элемент, переносим фокус в диалог, возвращаем при закрытии.
+  useEffect(() => {
+    if (!open) return
+    prevFocusRef.current = (document.activeElement as HTMLElement) ?? null
+    containerRef.current?.focus()
+    return () => {
+      // Возвращаем фокус, только если прежний элемент ещё в DOM (иначе focus() молча потерял бы его).
+      const prev = prevFocusRef.current
+      if (prev && prev.isConnected) prev.focus?.()
     }
   }, [open])
 
@@ -111,31 +154,80 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
     return () => window.removeEventListener('resize', update)
   }, [open])
 
-  // reset when changing image
+  // reset when changing image + подхватываем УЖЕ закешированную картинку: её onLoad мог не
+  // сработать (элемент был complete до навешивания обработчика) → иначе opacity зависла бы на 0.
   useEffect(() => {
     if (!open) return
     resetView()
+    const el = imgRef.current
+    if (el && el.complete && el.naturalWidth > 0) {
+      const w = el.naturalWidth
+      const h = el.naturalHeight
+      setDimsByUrl((p) => (p[url] ? p : { ...p, [url]: { w, h } }))
+      setLoadedUrls((p) => (p.has(url) ? p : new Set(p).add(url)))
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, url])
+
+  // Предзагрузка соседних кадров (±1) — перелистывание становится мгновенным, окно возможного мигания сужается.
+  useEffect(() => {
+    if (!open || total <= 1) return
+    for (const i of [(index + 1) % total, (index - 1 + total) % total]) {
+      const u = items[i]
+      if (u) { const im = new Image(); im.src = u }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, index, total, items])
+
+  // Чистим кеши размеров/статусов при закрытии — не растут за сессию.
+  useEffect(() => {
+    if (open) return
+    setDimsByUrl((p) => (Object.keys(p).length ? {} : p))
+    setLoadedUrls((p) => (p.size ? new Set() : p))
+    setFailedUrls((p) => (p.size ? new Set() : p))
+  }, [open])
+
+  // Активную миниатюру держим в зоне видимости ленты (при >13 фото она уезжает за край).
+  useEffect(() => {
+    if (!open) return
+    activeThumbRef.current?.scrollIntoView({ block: 'nearest', inline: 'center' })
+  }, [open, index])
 
   // keyboard
   useEffect(() => {
     if (!open) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
-      if (e.key === 'ArrowLeft') goPrev()
-      if (e.key === 'ArrowRight') goNext()
+      if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev() }
+      if (e.key === 'ArrowRight') { e.preventDefault(); goNext() }
       if (e.key === '+' || e.key === '=') setZoom((z) => clamp(z * 1.15, 1, 6))
       if (e.key === '-') setZoom((z) => clamp(z / 1.15, 1, 6))
       if (e.key === '0') resetView()
+      // Фокус-трап: Tab не выпускает фокус за пределы диалога.
+      if (e.key === 'Tab') {
+        const root = containerRef.current
+        if (!root) return
+        const f = Array.from(
+          root.querySelectorAll<HTMLElement>('button, [href], [tabindex]:not([tabindex="-1"])'),
+        ).filter((el) => el.offsetParent !== null || el === root)
+        if (f.length === 0) { e.preventDefault(); root.focus(); return }
+        const first = f[0]
+        const last = f[f.length - 1]
+        const active = document.activeElement as HTMLElement | null
+        if (e.shiftKey && (active === first || active === root || !root.contains(active))) {
+          e.preventDefault(); last.focus()
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault(); first.focus()
+        }
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, index, total, url, onClose])
 
-  // clamp translation whenever zoom/viewport changes
-  useEffect(() => {
+  // clamp translation whenever zoom/viewport changes (layout-effect → до кадра, без промежуточного «дёрга»)
+  useLayoutEffect(() => {
     if (!open) return
     setTx((x) => clamp(x, -fit.maxX, fit.maxX))
     setTy((y) => clamp(y, -fit.maxY, fit.maxY))
@@ -227,6 +319,9 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
     const d = draggingRef.current
     draggingRef.current = null
     if (!d?.active) return
+    // Хвост пинча: только что сняли палец с двупальцевого зума — не считаем это свайпом/тапом
+    // (иначе снятие пинча случайно листало бы/закрывало). Короткий кулдаун.
+    if (performance.now() - pinchEndTsRef.current < 350) return
     const dx = e.clientX - d.startX
     const dy = e.clientY - d.startY
 
@@ -284,7 +379,10 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
 
   // pinch to zoom (touch)
   const onTouchMove: React.TouchEventHandler = (e) => {
+    if (!open) return
     if (e.touches.length !== 2) {
+      // Переход 2→<2 пальца = конец пинча → ставим кулдаун (onPointerUp его учтёт).
+      if (lastTouchDistanceRef.current !== null) pinchEndTsRef.current = performance.now()
       lastTouchDistanceRef.current = null
       return
     }
@@ -299,12 +397,6 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
     if (!prev) return
     const factor = dist > prev ? 1.03 : 1 / 1.03
     setZoom((z) => clamp(z * factor, 1, 6))
-  }
-
-  const onDoubleClick: React.MouseEventHandler = () => {
-    // Telegram-like: toggle fit <-> 2x
-    if (zoom <= 1.01) setZoom(2)
-    else resetView()
   }
 
   if (!open) return null
@@ -335,6 +427,10 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
       className="imglb-root"
       ref={containerRef}
       onWheel={onWheel}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Просмотр изображения"
+      tabIndex={-1}
       style={{ ['--imglb-thumbs-h' as any]: `${thumbsHpx}px` }}
     >
       <div className="imglb-backdrop" onClick={onClose} />
@@ -342,7 +438,8 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
       <div className="imglb-topbar">
         <div className="imglb-spacer" aria-hidden="true" />
         <div className="imglb-title">
-          {index + 1} / {total}
+          {safeIndex + 1} / {total}
+          {zoom > 1.01 && <span className="imglb-zoom">{Math.round(zoom * 100)}%</span>}
         </div>
         <button className="imglb-btn" onClick={onClose} aria-label="Закрыть">
           <X size={18} />
@@ -358,7 +455,6 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
           draggingRef.current = null
         }}
         onTouchMove={onTouchMove}
-        onDoubleClick={onDoubleClick}
       >
         {canNav && (
           <button className="imglb-nav imglb-nav-left" onClick={goPrev} aria-label="Назад">
@@ -367,23 +463,51 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
         )}
 
         <div className="imglb-media" onClick={(e) => e.stopPropagation()}>
+          {/* Blur-up подложка: тот же прямоугольник, что и полное фото (usable + contain) → без скачка.
+              Держим смонтированной и гасим по opacity при загрузке → кроссфейд в резкое фото (без «дырки»). */}
+          {!isFailed && placeholderSrc && usable.w > 0 && (
+            <div
+              className="imglb-blurup"
+              aria-hidden="true"
+              style={{
+                width: `${usable.w}px`,
+                height: `${usable.h}px`,
+                backgroundImage: `url("${placeholderSrc}")`,
+                opacity: isLoaded ? 0 : 1,
+              }}
+            />
+          )}
+          {!isLoaded && !isFailed && <div className="imglb-spinner" aria-hidden="true" />}
+          {isFailed && <div className="imglb-error" role="alert">Не удалось загрузить изображение</div>}
           <div className="imglb-pan" style={{ transform: `translate3d(${tx}px, ${ty}px, 0)` }}>
             <img
+              key={url}
               ref={imgRef}
               className="imglb-img"
               src={url}
-              alt="preview"
+              alt={`Изображение ${safeIndex + 1} из ${total}`}
               draggable={false}
               style={{
                 width: dims?.w ? `${dims.w}px` : undefined,
                 height: dims?.h ? `${dims.h}px` : undefined,
                 transform: `scale(${fit.scale})`,
+                // Показываем только когда реально загружена+декодирована → без кадра «старых
+                // пикселей»/скачка размера. Битую картинку держим скрытой (оверлей-ошибка вместо неё).
+                opacity: isLoaded && !isFailed ? 1 : 0,
               }}
               onLoad={(e) => {
                 const el = e.currentTarget
-                const w = el.naturalWidth || 1
-                const h = el.naturalHeight || 1
-                setDimsByUrl((prev) => ({ ...prev, [url]: { w, h } }))
+                const u = url
+                setDimsByUrl((prev) => ({ ...prev, [u]: { w: el.naturalWidth || 1, h: el.naturalHeight || 1 } }))
+                const mark = () => setLoadedUrls((p) => (p.has(u) ? p : new Set(p).add(u)))
+                // decode перед показом → не показываем полу-декодированный кадр (статтер на больших фото)
+                if (el.decode) el.decode().then(mark).catch(mark)
+                else mark()
+              }}
+              onError={() => {
+                const u = url
+                setFailedUrls((p) => (p.has(u) ? p : new Set(p).add(u)))
+                setLoadedUrls((p) => (p.has(u) ? p : new Set(p).add(u)))
               }}
             />
           </div>
@@ -402,12 +526,21 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
             {thumbs.map(({ u, i }) => (
               <button
                 key={`${u}-${i}`}
+                ref={i === index ? activeThumbRef : undefined}
                 type="button"
                 className={i === index ? 'imglb-thumb is-active' : 'imglb-thumb'}
                 onClick={() => onIndexChange(i)}
                 aria-label={`Открыть ${i + 1}`}
               >
-                <img src={u} alt="" draggable={false} />
+                {/* Лёгкая серверная миниатюра (~720px), а не полноразмер — иначе лента грузила бы
+                    до 13 полных фото разом и всё «моргало». blob/секрет → gridThumbUrl вернёт как есть. */}
+                <img
+                  src={gridThumbUrl(u) || u}
+                  alt=""
+                  draggable={false}
+                  loading="lazy"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = 'hidden' }}
+                />
               </button>
             ))}
           </div>

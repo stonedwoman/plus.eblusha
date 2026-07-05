@@ -1976,6 +1976,7 @@ a {
   touch-action: none; /* allow custom pan/zoom */
 }
 .imglb-media {
+  position: relative;
   width: min(98vw, 1600px);
   height: min(86vh, 980px);
   display: flex;
@@ -1986,12 +1987,66 @@ a {
 }
 .imglb-pan { will-change: transform; }
 .imglb-img {
-  will-change: transform;
+  will-change: transform, opacity;
   transform-origin: center center;
   user-select: none;
   -webkit-user-drag: none;
   border-radius: 12px;
   box-shadow: 0 10px 50px rgba(0,0,0,0.45);
+  transition: opacity .18s ease; /* мягкое проявление вместо резкого «щелчка» */
+}
+/* Спиннер, пока главное фото грузится (центр окна кадра через inset+margin:auto — без конфликта с rotate) */
+.imglb-spinner {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 44px; height: 44px;
+  border-radius: 999px;
+  border: 3px solid rgba(255,255,255,0.22);
+  border-top-color: rgba(255,255,255,0.9);
+  animation: imglb-spin .8s linear infinite;
+  pointer-events: none;
+}
+@keyframes imglb-spin { to { transform: rotate(360deg); } }
+.imglb-error {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: max-content; height: max-content;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.5);
+  border: 1px solid rgba(255,255,255,0.14);
+  font-size: 13px; font-weight: 600;
+  pointer-events: none;
+}
+/* Blur-up: мгновенная размытая миниатюра в том же прямоугольнике, что и полное фото */
+.imglb-blurup {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  border-radius: 12px;
+  filter: blur(16px) saturate(1.1);
+  transform: scale(1.03); /* прячем прозрачную кромку от размытия */
+  transition: opacity .25s ease;
+  pointer-events: none;
+  z-index: 0;
+}
+.imglb-root:focus { outline: none; }
+.imglb-root:focus-visible { outline: none; }
+/* Индикатор масштаба при зуме */
+.imglb-zoom {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.16);
+  font-size: 12px; font-weight: 700;
+  opacity: 0.9;
+  vertical-align: middle;
 }
 .imglb-nav {
   position: absolute;
