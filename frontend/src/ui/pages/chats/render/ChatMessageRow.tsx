@@ -31,7 +31,7 @@ import LoadingSpinner from '../../../components/LoadingSpinner'
 
 import { e2eeManager } from '../../../../domain/e2ee/e2eeManager'
 
-import { convertToProxyUrl, extractObjectKeyFromUrl } from '../../../../utils/media'
+import { convertToProxyUrl, extractObjectKeyFromUrl, gridThumbUrl } from '../../../../utils/media'
 
 import { extractFirstPreviewableUrl } from '../../../../js/link-detect'
 
@@ -854,7 +854,9 @@ export function renderChatMessageAtIndex(
                                 const placeholderKey = `${att.url || idx}`
                                 const isLoaded = !!loadedImages[placeholderKey]
                                 const isFailed = !!failedImages[placeholderKey]
-                                const showPending = att.__pending || decryptPending || (!isLoaded && !isFailed)
+                                // Только загрузка/дешифр — обычная догрузка картинки идёт локально в LazyImage
+                                // (fade), без ре-рендера строки; заглушку на время даёт фон бокса (--surface-100).
+                                const showPending = att.__pending || decryptPending
 
                                 return (
                                   <div
@@ -867,6 +869,7 @@ export function renderChatMessageAtIndex(
                                       // раскладка не «прыгает». img внутри — objectFit:contain (letterbox для
                                       // безразмерных медиа).
                                       aspectRatio: `${targetW} / ${targetH}`,
+                                      background: 'var(--surface-100)', // плейсхолдер-цвет, пока картинка не проявилась
                                       minWidth: 0,
                                       marginTop: 8,
                                       position: 'relative',
@@ -971,8 +974,9 @@ export function renderChatMessageAtIndex(
                                     )}
                                     {resolvedUrl && !decryptError && (
                                       <LazyImage
-                                        src={resolvedUrl}
+                                        src={gridThumbUrl(resolvedUrl)}
                                         alt="img"
+                                        fade
                                         rootRef={messagesRef as any}
                                         rootMargin="900px 0px"
                                         priority={isRecentMessage ? 'high' : 'low'}
@@ -982,22 +986,21 @@ export function renderChatMessageAtIndex(
                                           objectFit: 'contain',
                                           borderRadius: 10,
                                           cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in',
-                                          // Keep element in layout so IntersectionObserver can trigger loading.
-                                          // We hide visually until onLoad to avoid flashing broken image icon.
-                                          opacity: isLoaded ? (att.__pending ? 0.85 : 1) : 0.001,
+                                          // Целевая opacity; проявление (0→) делает LazyImage локально по onLoad,
+                                          // без ре-рендера строки. att.__pending → чуть приглушаем во время отправки.
+                                          opacity: att.__pending ? 0.85 : 1,
                                           display: 'block',
                                           position: 'relative',
                                           zIndex: 0,
                                           background: 'var(--surface-100)',
                                           verticalAlign: 'top',
                                         }}
-                                        onLoad={() => {
-                                          setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: false }))
-                                          setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
-                                        }}
                                         onError={() => {
+                                          // Только ошибка → оверлей ошибки (редко). Успешная загрузка НЕ трогает
+                                          // состояние родителя: проявление делает LazyImage локально (fade), а
+                                          // setLoadedImages дёргал бы перерисовку ChatsPage на КАЖДУЮ картинку
+                                          // (проход по всем строкам) → подвисание при загрузке альбома.
                                           setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
-                                          setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
                                         }}
                                         onClick={() => {
                                           if (!att.__pending && !decryptPending && resolvedUrl) {
@@ -1006,7 +1009,7 @@ export function renderChatMessageAtIndex(
                                         }}
                                       />
                                     )}
-                                    {isLoaded && !decryptPending && typeof att.progress === 'number' && att.progress < 100 && (
+                                    {att.__pending && !decryptPending && typeof att.progress === 'number' && att.progress < 100 && (
                                       <div
                                         style={{
                                           position: 'absolute',
@@ -1093,7 +1096,9 @@ export function renderChatMessageAtIndex(
                                 const placeholderKey = `${att.url || tileIdx}`
                                 const isLoaded = !!loadedImages[placeholderKey]
                                 const isFailed = !!failedImages[placeholderKey]
-                                const showPending = att.__pending || decryptPending || (!isLoaded && !isFailed)
+                                // Только загрузка/дешифр — обычная догрузка картинки идёт локально в LazyImage
+                                // (fade), без ре-рендера строки; заглушку на время даёт фон бокса (--surface-100).
+                                const showPending = att.__pending || decryptPending
                                 const disabled = att.__pending || decryptPending || decryptError || !resolvedUrl
                                 const ratio = getRatio(att, tileIdx) // h/w
 
@@ -1102,7 +1107,7 @@ export function renderChatMessageAtIndex(
                                     key={`${att.url || tileIdx}`}
                                     type="button"
                                     className="msg-media-tile"
-                                    style={{ aspectRatio: 1 / ratio }}
+                                    style={{ aspectRatio: 1 / ratio, background: 'var(--surface-100)' }}
                                     disabled={disabled}
                                     onClick={() => {
                                       if (!disabled && resolvedUrl) openLightbox(resolvedUrl)
@@ -1110,19 +1115,18 @@ export function renderChatMessageAtIndex(
                                   >
                                     {resolvedUrl && (
                                       <LazyImage
-                                        src={resolvedUrl}
+                                        src={gridThumbUrl(resolvedUrl)}
                                         alt="img"
+                                        fade
                                         rootRef={messagesRef as any}
                                         rootMargin="900px 0px"
                                         priority={isRecentMessage ? 'high' : 'low'}
-                                        style={{ opacity: isLoaded && !showPending ? 1 : 0.001 }}
-                                        onLoad={() => {
-                                          setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: false }))
-                                          setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
-                                        }}
                                         onError={() => {
+                                          // Только ошибка → оверлей ошибки (редко). Успешная загрузка НЕ трогает
+                                          // состояние родителя: проявление делает LazyImage локально (fade), а
+                                          // setLoadedImages дёргал бы перерисовку ChatsPage на КАЖДУЮ картинку
+                                          // (проход по всем строкам) → подвисание при загрузке альбома.
                                           setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
-                                          setLoadedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
                                         }}
                                       />
                                     )}

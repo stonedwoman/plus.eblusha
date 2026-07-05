@@ -1,16 +1,38 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 
-export type MsgRow = { mapIndex: number; key: string }
+export type MsgRow = { mapIndex: number; key: string; deps?: unknown[] | null }
 
-// Оценка высоты по типу строки — для contain-intrinsic-size (content-visibility).
-// С ключевым словом auto реальная высота ЗАПОМИНАЕТСЯ после первого рендера, так что
-// оценка важна только для ещё ни разу не показанных строк (минимизирует поправку при
-// первом заезде в них).
-function estRowHeight(key: string): number {
-  if (key.startsWith('system:')) return 48
-  if (key.startsWith('bundle:') || key.startsWith('forward:')) return 200
-  return 96
-}
+/**
+ * Одна строка списка, обёрнутая в React.memo. Пропускает перерисовку, если её `deps`
+ * (массив всего, что влияет на визуал строки, собран в MessagesPane) поэлементно не
+ * изменились — тогда renderRow(mapIndex) НЕ вызывается и тяжёлое поддерево не
+ * пересобирается. deps===null → «сложная» строка (пересылка/бандл): всегда рисуем.
+ *
+ * mapIndex/renderRow/rowKey намеренно НЕ сравниваем: при сдвиге индексов (подгрузка
+ * старых сверху) вывод той же строки идентичен; при реальном изменении сработают deps,
+ * и на ре-рендере компонент получит свежие mapIndex/renderRow (последние пропсы).
+ */
+type MemoRowProps = { mapIndex: number; deps: unknown[] | null; renderRow: (i: number) => ReactNode }
+const MemoRow = memo(
+  function MemoRow({ mapIndex, renderRow }: MemoRowProps) {
+    // Реальная высота (медиа зарезервировано через aspect-ratio) стабильна с первого
+    // кадра → ничего не «распухает» поздно, скролл не дёргается. content-visibility НЕ
+    // используем: он держит оценку высоты и пересчитывает реальную у края экрана = рывок.
+    return (
+      <div className="msg-row" style={{ flex: '0 0 auto' }}>
+        {renderRow(mapIndex)}
+      </div>
+    )
+  },
+  (a: MemoRowProps, b: MemoRowProps) => {
+    if (a.deps === null || b.deps === null) return false // всегда перерисовываем
+    const da = a.deps
+    const db = b.deps
+    if (da.length !== db.length) return false
+    for (let i = 0; i < da.length; i++) if (!Object.is(da[i], db[i])) return false
+    return true
+  },
+)
 
 /**
  * Список сообщений: плоский рендер + column-reverse + content-visibility.
@@ -22,15 +44,16 @@ function estRowHeight(key: string): number {
  *    вьюпорт ни на десктопе, ни на iOS (нет overflow-anchor + momentum перебивает
  *    ручной scrollTop). Новые у низа прилипают, короткие беседы жмутся к низу.
  *
- * Лёгкость огромных чатов (виртуализация РЕНДЕРА, не удаление нод):
- *  - `content-visibility: auto` на каждой строке: браузер ПРОПУСКАЕТ layout/paint для
- *    строк вне экрана, используя оценку `contain-intrinsic-size` как заглушку размера.
- *    Т.е. тысяча сообщений в DOM, а стоит (по рендеру) как ~видимые. Ноды при этом
- *    ОСТАЮТСЯ в DOM → переход к цитируемому сообщению, поиск, отметки о прочтении и
- *    прочая навигация по нодам продолжают работать (в отличие от «выкидывания» строк).
- *  - Почему это не возвращает тряску: в column-reverse якорь — НИЗ, а ошибки оценки
- *    высоты живут ВЫШЕ вьюпорта (у ещё не показанных старых строк) и на закреплённый
- *    низ не влияют; недавно показанные строки помнят реальную высоту (auto).
+ * Стабильные высоты (ноль позднего «распухания»):
+ *  - content-visibility НЕ используем: он держит грубую оценку высоты для строк вне
+ *    экрана и пересчитывает реальную у КРАЯ вьюпорта → бабл с фото резко растёт и
+ *    толкает ленту (та самая тряска). Вместо этого рисуем реальные высоты сразу; место
+ *    под медиа зарезервировано через aspect-ratio (ChatMessageRow), так что и загрузка
+ *    картинок раскладку не двигает.
+ *  - `overflow-anchor: auto` — при любом изменении высоты выше вьюпорта браузер держит
+ *    видимое на месте, рост уходит вверх.
+ *  - Стоимость перерисовки больших чатов снимает построчная React.memo (см. MemoRow),
+ *    а не пропуск рендера; ограничение числа нод (если понадобится) — отдельная фаза.
  *
  * Детект краёв — через IntersectionObserver-сентинелы (без арифметики scrollTop, у
  * column-reverse его знак разнится между браузерами).
@@ -130,7 +153,10 @@ export function MessageListFlat(props: {
     if (!obs || !top) return
     obs.unobserve(top)
     obs.observe(top)
-  }, [rows])
+    // Зависим от ГРАНИЦ списка (длина + ключи краёв), а не от ссылки rows (она теперь
+    // новая каждый рендер) — иначе пере-вооружали бы наблюдатель на каждый рендер.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.length, rows[0]?.key, rows[rows.length - 1]?.key])
 
   return (
     <div
@@ -142,6 +168,10 @@ export function MessageListFlat(props: {
         overflowY: 'auto',
         display: 'flex',
         flexDirection: 'column-reverse',
+        // overflow-anchor: none. Высоты медиа зарезервированы (aspect-ratio) → ничего не
+        // «растёт» при загрузке, компенсировать нечего. А браузерный якорь `auto` в
+        // column-reverse ПЕРЕ-корректирует при массовой одновременной догрузке превью
+        // (много мелких settle разом) и сам даёт рывок — поэтому none (как в Phase 1).
         overflowAnchor: 'none',
       }}
     >
@@ -152,19 +182,12 @@ export function MessageListFlat(props: {
       {rows.map((_row, i) => {
         const row = rows[rows.length - 1 - i] // рендерим в обратном порядке
         return (
-          <div
-            className="msg-row"
+          <MemoRow
             key={row.key}
-            style={{
-              flex: '0 0 auto',
-              // Вне экрана браузер пропускает layout/paint → огромный чат остаётся
-              // лёгким. Реальная высота запоминается (auto) → без «прыжка» при возврате.
-              contentVisibility: 'auto',
-              containIntrinsicSize: `auto ${estRowHeight(row.key)}px`,
-            }}
-          >
-            {renderRow(row.mapIndex)}
-          </div>
+            mapIndex={row.mapIndex}
+            deps={row.deps ?? null}
+            renderRow={renderRow}
+          />
         )
       })}
       <div ref={topSentinelRef} style={{ height: 1, width: '100%', flex: '0 0 auto' }} aria-hidden />

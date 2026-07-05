@@ -58,7 +58,7 @@ import { acceptIncomingCallAction, declineIncomingCallAction, endActiveCallActio
 
 import { formatAttachmentFileSize, ATTACH_PROCESSING_MESSAGES } from '../chatsAttachments'
 import { formatMessageClockLabel, formatRuRelativeSendDay } from '../chatsTime'
-import { formatReplyBundleHeader, formatForwardSourcePhraseAfterName, renderSystemMessageContent, previewTextForReplyDraft, replySnippetIsGenericRu, buildReplyDraftFromMessages, buildReplyQuoteMetadataForSend, hasForwardFromMeta, computeMultiSourceForwardBundles, extractForwardComposerCaption } from '../chatsMessages'
+import { formatReplyBundleHeader, formatForwardSourcePhraseAfterName, renderSystemMessageContent, previewTextForReplyDraft, replySnippetIsGenericRu, buildReplyDraftFromMessages, buildReplyQuoteMetadataForSend, hasForwardFromMeta, computeMultiSourceForwardBundles, extractForwardComposerCaption, parseReplyQuoteBundleEntries } from '../chatsMessages'
 
 import { renderChatMessageAtIndex as extractedRenderChatMessageAtIndex } from './ChatMessageRow'
 
@@ -2447,16 +2447,88 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                   }
                   return wrapRow(renderChatMessageAtIndex(mapIndex, false))
                 }
-                // Плоский список строк (в порядке rowKeyByIndex = хронология).
-                const nextRows: Array<{ mapIndex: number; key: string }> = []
-                for (const [mi, key] of rowKeyByIndex) nextRows.push({ mapIndex: mi, key })
-                // Стабильная ссылка: переиспользуем прошлый массив, если ключи строк не
-                // изменились (MessagesPane — render-функция без useMemo).
-                const prevRows = virtuosoRowsRef.current as Array<{ mapIndex: number; key: string }>
-                const rowsSame =
-                  prevRows.length === nextRows.length &&
-                  prevRows.every((r, i) => r.key === nextRows[i].key && r.mapIndex === nextRows[i].mapIndex)
-                const rows = rowsSame ? prevRows : nextRows
+                // Плоский список строк (в порядке rowKeyByIndex = хронология) + deps
+                // для построчной мемоизации (React.memo в MessageListFlat). deps —
+                // МАССИВ всего, что влияет на ВИЗУАЛ строки; если ничего не изменилось,
+                // строка не перерисовывается (важно для больших чатов). Смещение lean в
+                // сторону КОРРЕКТНОСТИ: лучше лишний ре-рендер, чем застывшая строка.
+                //
+                // id → сообщение: O(1) резолв цитат (иначе fullList.find = O(n) на строку).
+                const __idMap = new Map<string, any>()
+                for (const mm of fullList) {
+                  const id = mm?.id ?? mm?.tempId
+                  if (id != null) __idMap.set(String(id), mm)
+                }
+                // Сигнатура медиа-состояния строки: то, что живёт ВНЕ объекта сообщения
+                // (loadedImages/failedImages/attachmentDecryptMap/attachmentHeadInfoMap,
+                // ключ = att.url||idx). Без неё секретные картинки застыли бы на «Расшифровка…».
+                const __mediaSig = (mm: any): string => {
+                  const atts = mm?.attachments
+                  if (!Array.isArray(atts) || atts.length === 0) return ''
+                  let s = ''
+                  for (let i = 0; i < atts.length; i++) {
+                    const a = atts[i]
+                    const url = a?.url
+                    const k = url || String(i)
+                    // loadedImages НЕ включаем: проявление картинки теперь локально в
+                    // LazyImage (fade), строке перерисовываться не нужно. failedImages —
+                    // включаем (ошибка редкая, а оверлей ошибки рисует родитель).
+                    if (failedImages[k]) s += 'F'
+                    if (url) {
+                      const d = attachmentDecryptMap[url]
+                      if (d) s += 'd' + (d.status || '')
+                      const hi = attachmentHeadInfoMap[url]
+                      // Значения (не только наличие): вторая HEAD-догрузка дополняет
+                      // fileName→+mime/size, а карточка файла показывает размер/тип.
+                      if (hi) s += 'h' + (hi.fileName || '') + '|' + (hi.mime || '') + '|' + (hi.size || '')
+                    }
+                    s += ';'
+                  }
+                  return s
+                }
+                const nextRows: Array<{ mapIndex: number; key: string; deps: unknown[] | null }> = []
+                for (const [mi, key] of rowKeyByIndex) {
+                  const m = fullList[mi]
+                  let deps: unknown[] | null
+                  // «Сложные» строки — всегда перерисовываем (deps=null), безопаснее их
+                  // не мемоизировать, чем городить точный захват широких зависимостей:
+                  //  • bundle:/forward: — пересылки, зависят от неадъяцентных сообщений;
+                  //  • мульти-цитата (replyQuoteBundle ≥2) — рендерит превью НЕСКОЛЬКИХ
+                  //    (неадъяцентных) сообщений, их правки/дешифр иначе застынут;
+                  //  • «в полёте» превью ссылки — скелетон завязан на wall-clock (25с),
+                  //    без перерисовки не схлопнется.
+                  const md = m?.metadata
+                  const linkPreviewInFlight = !!(md?.linkPreviewAttemptedAt && !md?.linkPreview)
+                  const multiReplyBundle = (parseReplyQuoteBundleEntries(m)?.length ?? 0) >= 2
+                  if (
+                    key.startsWith('bundle:') || key.startsWith('forward:') ||
+                    multiReplyBundle || linkPreviewInFlight
+                  ) {
+                    deps = null
+                  } else {
+                    const replyId = m?.replyTo?.id
+                    const replyTarget = replyId != null ? __idMap.get(String(replyId)) : undefined
+                    deps = [
+                      m, // identity → контент/реакции/галочки/правки/replyTo/attachments/pending
+                      fullList[mi - 1]?.senderId, // группировка: аватар/хвост/имя (сосед сверху)
+                      fullList[mi + 1]?.senderId, // группировка (сосед снизу)
+                      replyTarget, // цитируемое сообщение (правка/удаление меняет превью)
+                      __mediaSig(m), // медиа-состояние ВНЕ объекта (загрузка/ошибка/дешифр)
+                      replyTarget ? __mediaSig(replyTarget) : '', // медиа цитаты (миниатюра)
+                      selectedMessageIds.includes(String(m?.id)), // выделение этой строки
+                      // общие для всего списка (меняются редко → все строки перерисуются):
+                      multiSelectMode,
+                      leftAlignAll,
+                      isMobile,
+                      activeConversation,
+                      currentUserId,
+                      me,
+                      usersById,
+                    ]
+                  }
+                  nextRows.push({ mapIndex: mi, key, deps })
+                }
+                const rows = nextRows
                 virtuosoRowsRef.current = rows
                 if (rows.length === 0) return null
                 return (

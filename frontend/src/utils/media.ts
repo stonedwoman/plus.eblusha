@@ -117,6 +117,18 @@ export function attachApiOriginToFilesProxy(relativeProxyPath: string): string {
   }
 }
 
+/**
+ * URL для превью-плитки в сетке сообщений: добавляет ?thumb=1 к прокси-URL картинки —
+ * сервер отдаёт уменьшенную копию (~720px), а если её нет (старое фото / секретный чат /
+ * генерация не удалась) — полный размер (безопасный фолбэк). Для blob:/data:/не-прокси
+ * (секретные чаты расшифровывают в blob) — как есть. Лайтбокс всегда открывает оригинал.
+ */
+export function gridThumbUrl(url: string | null | undefined): string | null {
+  if (!url) return url ?? null
+  if (!url.includes('/api/files/')) return url
+  return url + (url.includes('?') ? '&' : '?') + 'thumb=1'
+}
+
 export function convertToProxyUrl(url: string | null | undefined): string | null {
   if (!url) return null
 
