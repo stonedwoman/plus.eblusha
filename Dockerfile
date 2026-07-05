@@ -22,6 +22,9 @@ RUN npm prune --omit=dev
 # Production image
 FROM node:22-alpine
 
+# ffmpeg: серверные превью картинок (аплоад) + постеры видео. Без него оба тихо падают.
+RUN apk add --no-cache ffmpeg
+
 WORKDIR /app
 
 COPY --from=base /app/node_modules ./node_modules

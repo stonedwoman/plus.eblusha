@@ -93,6 +93,10 @@ const decodeKeyFromUrl = (urlPath: string) =>
     .map((segment) => decodeURIComponent(segment))
     .join("/");
 
+// Деривативный ключ превью картинки. ДОЛЖЕН совпадать с deriveThumbKey в upload.ts.
+const deriveThumbKey = (key: string): string =>
+  key.endsWith(".eblusha") ? key.replace(/\.eblusha$/, ".thumb.eblusha") : `${key}.thumb`;
+
 /** S3/metadata иногда даёт смешанный регистр; без нормализации remap и отдача файла могут «не узнать» EBP1. */
 const metaEncTag = (m: Record<string, string>) => String(m?.enc ?? "").trim().toLowerCase();
 const metaIsEbp2 = (m: Record<string, string>) => metaEncTag(m) === "ebp2";
@@ -287,6 +291,27 @@ router.use(async (req: Request, res: Response, next) => {
   let decodedPath = decodeKeyFromUrl(urlPath);
   // Remove leading slash if present
   decodedPath = decodedPath.replace(/^\//, "");
+
+  // ?thumb=1: если есть заранее сгенерированное превью картинки (деривативный ключ) —
+  // отдаём его; если нет (старые фото / секретные / генерация не удалась) — оставляем
+  // оригинал и отдаём полный размер (безопасный фолбэк). Дешёвая head-проверка.
+  if ((req.query as Record<string, unknown>)?.thumb && encKey) {
+    try {
+      const thumbBase = deriveThumbKey(decodedPath);
+      const thumbCandidates = Array.from(
+        new Set([
+          ...buildCandidateKeys(thumbBase, bucketForKeys, objectPrefix),
+          ...buildCandidateKeys(thumbBase, bucketForKeys, objectPrefix).map(toEblushaKey),
+        ])
+      );
+      for (const ck of thumbCandidates) {
+        try {
+          const h = await storage.headObject(ck);
+          if (h) { decodedPath = thumbBase; break; }
+        } catch { /* try next candidate */ }
+      }
+    } catch { /* fall back to full-size */ }
+  }
 
   const candidates = buildCandidateKeys(
     decodedPath,

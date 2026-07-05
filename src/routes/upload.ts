@@ -3,6 +3,8 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import { exec } from "child_process";
+import { promisify } from "util";
 import { Readable } from "stream";
 import { authenticate } from "../middlewares/auth";
 import env from "../config/env";
@@ -44,12 +46,17 @@ const uploadSingle = upload.single("file");
 
 const objectPrefix = env.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
 const encKey = env.STORAGE_ENC_KEY ? parseStorageEncKey(env.STORAGE_ENC_KEY) : null;
+const execAsync = promisify(exec);
 
 const encodeKeyForUrl = (key: string) =>
   key
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
+
+// Деривативный ключ превью картинки. ДОЛЖЕН совпадать с тем же хелпером в files.ts.
+export const deriveThumbKey = (key: string): string =>
+  key.endsWith(".eblusha") ? key.replace(/\.eblusha$/, ".thumb.eblusha") : `${key}.thumb`;
 
 function logUploadTiming(req: Request, startedAtMs: number, step: string, extra?: Record<string, unknown>) {
   const reqId = String((req as any).requestId ?? req.headers["x-request-id"] ?? "unknown");
@@ -350,6 +357,42 @@ async function storeUploadedObject(
     }
   );
   if (startedAtMs != null) logUploadTiming(req, startedAtMs, "putObject_done", { putKey, encFormat, totalSize });
+
+  // Превью картинки из ПЛЕЙНТЕКСТА (filePath) прямо на аплоаде — без расшифровки и без
+  // нагрузки на отдачу файлов. Для секретных чатов клиент грузит уже шифротекст → ffmpeg
+  // не декодирует → try/catch тихо пропустит. Хранится как EBP1(encKey) по деривативному
+  // ключу; отдаётся через ?thumb с фолбэком на полный размер (см. files.ts). Нефатально.
+  try {
+    if (encKey && filePath && fs.existsSync(filePath) && /^image\//i.test(contentType || "")) {
+      const thumbKey = deriveThumbKey(putKey);
+      const outPath = path.join(path.dirname(filePath), `ithumb-${crypto.randomBytes(8).toString("hex")}.jpg`);
+      try {
+        // async exec (не execSync!) — иначе ffmpeg заблокировал бы event loop на каждый
+        // аплоад картинки. filePath/outPath — серверные temp-пути (без польз. ввода).
+        await execAsync(
+          `ffmpeg -y -i "${filePath}" -vf "scale='min(720,iw)':-2" -frames:v 1 -q:v 5 "${outPath}"`,
+          { timeout: 15000 }
+        );
+        const thumbPlain = fs.readFileSync(outPath);
+        const enc = encryptBuffer(thumbPlain, encKey, { aad: thumbKey, contentType: "image/jpeg" });
+        await storage.putObject(thumbKey, enc.payload, {
+          contentType: "application/octet-stream",
+          metadata: {
+            enc: "ebp1",
+            encv: enc.meta.v,
+            encalg: enc.meta.alg,
+            enciv: enc.meta.iv,
+            enctag: enc.meta.tag,
+            ct: "image/jpeg",
+          },
+        });
+      } finally {
+        try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
+      }
+    }
+  } catch (e) {
+    logger.warn({ err: e, putKey }, "[upload] image thumbnail generation failed (non-fatal)");
+  }
 
   const encodedKey = encodeKeyForUrl(putKey);
   const proxyUrl = `/api/files/${encodedKey}`;
