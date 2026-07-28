@@ -143,13 +143,25 @@ export function CallHost() {
 
   const closeOverlay = () => {
     if (!overlayConvId) return
+    const convId = overlayConvId
+    // Fallback: если общий end-action не смог зарезолвить runtime/цель, он вернёт false
+    // и оверлей остался бы открытым с «живым» звонком. Сносим локально (обнуление
+    // overlayConvId размонтирует оверлей) и сообщаем серверу напрямую.
     void endActiveCallAction(
-      {
-        callId: overlayConvId,
-        conversationId: overlayConvId,
-      },
+      { callId: convId, conversationId: convId },
       'web_ui',
     )
+      .then((ended) => {
+        if (!ended) {
+          console.warn('[call] ручное завершение (CallHost): fallback на локальную очистку')
+          endCall(convId)
+          endStoredCall()
+        }
+      })
+      .catch(() => {
+        endCall(convId)
+        endStoredCall()
+      })
   }
 
   if (onChatsRoute) {

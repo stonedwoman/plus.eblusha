@@ -101,19 +101,6 @@ export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
           onClose={(options) => {
             const convId = callConvId ?? callConvIdRef.current
             if (!convId) return
-            if (minimizedCallConvId === convId) {
-              return
-            }
-            if (options?.manual) {
-              void endActiveCallAction(
-                {
-                  callId: convId,
-                  conversationId: convId,
-                },
-                'web_ui',
-              )
-              return
-            }
             const finalize = () => {
               const conv = getConversationFromCache(convId)
               const participantsCount = conv?.participants?.length ?? 0
@@ -140,6 +127,32 @@ export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
               setMinimizedCallConvId((prev: any) => (prev === convId ? null : prev))
               callStore.endCall()
               stopRingtone()
+            }
+            if (options?.manual) {
+              // Ручное завершение обязано доводить звонок до конца — даже если он был
+              // свёрнут и даже если общий end-action не смог зарезолвить runtime/цель
+              // (раньше это молча ничего не делало, и звонок «зависал» на экране).
+              // Если endActiveCallAction сообщил, что ничего не сделал — падаем в
+              // локальную очистку.
+              void endActiveCallAction(
+                { callId: convId, conversationId: convId },
+                'web_ui',
+              )
+                .then((ended) => {
+                  if (!ended) {
+                    console.warn('[call] ручное завершение: fallback на локальную очистку')
+                    finalize()
+                  }
+                })
+                .catch(() => {
+                  finalize()
+                })
+              return
+            }
+            // Не-ручное закрытие = кратковременный обрыв LiveKit. Сохраняем гард, чтобы
+            // свёрнутый (фоновый) звонок не сносился спонтанным onClose.
+            if (minimizedCallConvId === convId) {
+              return
             }
             if (isOneToOneConversation(convId)) {
               scheduleAfterMinCallDuration(convId, finalize)

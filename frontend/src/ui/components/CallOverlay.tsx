@@ -3060,21 +3060,30 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       }
     }
     // Без дебаунса наблюдатель может зациклиться на собственных изменениях, что ведет к подвисанию страницы.
+    // translate() пишет в DOM безусловно (innerHTML/insertBefore/setAttribute). Раньше эти СВОИ мутации
+    // будили наблюдатель снова → в фореграунде получалась вечная rAF-«беговая дорожка» ~60 раз/сек весь
+    // звонок. translate() синхронный, поэтому все записи в очереди наблюдателя сразу после него — наши;
+    // сбрасываем их через takeRecords(), и наблюдатель реагирует только на ЧУЖИЕ (реальные) изменения.
     let pending = false
+    let mo: MutationObserver | null = null
+    const runTranslate = () => {
+      translate()
+      if (mo) mo.takeRecords()
+    }
     const scheduleTranslate = () => {
       if (pending) return
       pending = true
       requestAnimationFrame(() => {
         pending = false
-        translate()
+        runTranslate()
       })
     }
 
-    const mo = new MutationObserver(() => scheduleTranslate())
+    mo = new MutationObserver(() => scheduleTranslate())
     mo.observe(root, { childList: true, subtree: true, attributes: true })
-    translate()
+    runTranslate()
     return () => {
-      mo.disconnect()
+      mo?.disconnect()
       // Cleanup: удаляем обработчики с кнопки "Выйти" при размонтировании
       const leaveBtn =
         (root.querySelector('.call-container .lk-control-bar button.lk-disconnect-button') as HTMLElement | null) ||

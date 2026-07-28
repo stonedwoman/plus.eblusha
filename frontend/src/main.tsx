@@ -16,6 +16,7 @@ import NativeSocket from './capacitor/plugins/native-socket-plugin'
 import LoadingSpinner from './ui/components/LoadingSpinner'
 import { appLifecycle } from './core/lifecycle/appLifecycle'
 import { nativeBridge } from './platform/native-bridge/bridge'
+import { startHangWatchdog } from './core/diagnostics/hangWatchdog'
 
 // Quiet console by default (prod + web): keep warn/error, suppress log/info/debug unless explicitly enabled.
 // Enable with: localStorage.setItem('eb-debug', '1') or ?debug=1
@@ -61,9 +62,22 @@ if (typeof window !== 'undefined' && !(window as any).__ebConsolePatched) {
   }
 }
 
-const queryClient = new QueryClient()
+// Пробуждение вкладки раньше запускало ~10 одновременных рефетчей (голый клиент =
+// staleTime 0 + refetchOnWindowFocus), и КАЖДЫЙ ответ дёргал каскад рендеров тяжёлой
+// страницы чатов. Свежесть на возврате обеспечивает syncAfterResume (адресные
+// invalidate + socket-события), поэтому автo-рефетч по фокусу выключен, а короткий
+// staleTime гасит дубли запросов, летящие подряд.
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    },
+  },
+})
 appLifecycle.bindBrowserLifecycle()
 nativeBridge.installGlobals()
+startHangWatchdog()
 let initialSessionPrepared = false
 
 async function prepareInitialSessionState() {

@@ -2513,6 +2513,18 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                 // «Сложные» строки → null (всегда перерисовываем): пересылки/бандлы (зависят от
                 // неадъяцентных сообщений), мульти-цитаты (превью НЕСКОЛЬКИХ сообщений), «в
                 // полёте» превью ссылки (скелетон на wall-clock 25с).
+                // Подпись участников: меняется только при реальной смене состава/аватара/имени,
+                // в отличие от идентичности объекта conversation (см. комментарий в deps ниже).
+                const __participantsSig = (() => {
+                  const parts = (activeConversation?.participants || []) as any[]
+                  let s = ''
+                  for (const p of parts) {
+                    const u = p?.user
+                    if (!u) continue
+                    s += u.id + '|' + (u.avatarUrl || '') + '|' + (u.displayName || '') + ';'
+                  }
+                  return s
+                })()
                 const buildRowDeps = (mi: number): unknown[] | null => {
                   const m = fullList[mi]
                   const key = rowKeyByIndex.get(mi)
@@ -2533,8 +2545,15 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     __mediaSig(m), // медиа-состояние ВНЕ объекта (загрузка/ошибка/дешифр)
                     replyTarget ? __mediaSig(replyTarget) : '', // медиа цитаты (миниатюра)
                     selectedMessageIds.includes(String(m?.id)), // выделение этой строки
-                    // общие для всего списка (меняются редко → все строки перерисуются):
-                    multiSelectMode, leftAlignAll, isMobile, activeConversation, currentUserId, me, usersById,
+                    // Общие для всего списка. ВАЖНО: только СКАЛЯРЫ/стабильные ссылки.
+                    // Раньше здесь лежали объекты activeConversation/me/usersById, чья идентичность
+                    // менялась при ЛЮБОЙ перезаписи кэша ['conversations'] (presence, refetch на
+                    // фокусе, 20s-poll) → Object.is-компаратор MemoRow падал для ВСЕХ 150 строк и
+                    // весь невиртуализированный список перерисовывался (300-700 мс за проход).
+                    // На пробуждении вкладки таких проходов десятки — это и давало многосекундный столл.
+                    multiSelectMode, leftAlignAll, isMobile,
+                    activeConversation?.id, activeConversation?.isGroup,
+                    __participantsSig, currentUserId, me?.id, me?.avatarUrl, me?.displayName,
                   ]
                 }
                 // Дешёвый список строк (только ключи, O(M) без аллокаций deps). Окно и ленивые

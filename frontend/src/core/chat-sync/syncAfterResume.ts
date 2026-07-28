@@ -56,12 +56,12 @@ export async function syncAfterResume(queryClient: QueryClient): Promise<Pending
     requestCallStatuses(snapshot.conversationIds)
   }
 
+  // Только то, что реально живёт на маршруте чатов. Раньше инвалидировались ещё
+  // ['me'] / ['my-devices'] / ['my-devices-settings'] (страница настроек) и широкий
+  // префикс ['contacts'], который матчил сразу несколько запросов, — на пробуждении это
+  // добавляло лишние круги «запрос → ответ → полный ре-рендер».
   const queryKeys = [
     ['conversations'],
-    ['me'],
-    ['my-devices'],
-    ['my-devices-settings'],
-    ['contacts'],
     ['incoming-contacts'],
   ]
 

@@ -1029,7 +1029,11 @@ export async function initSocket(
     const remainingParticipantIds = listParticipants(info);
     await clearConversationCallPresence(io, conversationId);
     activeDirectCalls.delete(conversationId);
-    callState.delete(conversationId);
+    // Тот же атомарный «клейм», что и в call:end: снимок stForMsg берём синхронно перед
+    // delete; запись о звонке пишем только если это завершение реально сняло callState
+    // (а не проиграло гонку ручному call:end, который уже снял его и создал сообщение).
+    const stForMsg = callState.get(conversationId);
+    const graceClaimed = callState.delete(conversationId);
     clearCallRingTimer(conversationId);
     try {
       const conv = await prisma.conversation.findUnique({
@@ -1041,6 +1045,39 @@ export async function initSocket(
       }
     } catch (error) {
       logger.warn({ error, conversationId }, "Failed to emit direct call ended after grace");
+    }
+    // Раньше grace-завершение не создавало системного сообщения — если пир закрыл вкладку
+    // и никто не нажал «завершить», запись о звонке пропадала. Пишем её здесь (один раз,
+    // под клеймом), зеркально ручному call:end; длительность — из info.startedAt.
+    if (graceClaimed && stForMsg && stForMsg.accepted) {
+      try {
+        const elapsedMs = Math.max(0, Date.now() - (info.startedAt ?? Date.now()));
+        const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
+        const hours = Math.floor(totalSec / 3600);
+        const minutes = Math.floor((totalSec % 3600) / 60);
+        const seconds = totalSec % 60;
+        const durationText =
+          hours > 0
+            ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+            : `${minutes}:${String(seconds).padStart(2, "0")}`;
+        const msg = await prisma.message.create({
+          data: {
+            conversationId,
+            senderId: endedByUserId,
+            type: "SYSTEM",
+            content: `Звонок продлился ${durationText} и был завершён`,
+            metadata: { ended: true, video: !!stForMsg.video, duration: elapsedMs } as any,
+          },
+        });
+        io.to(conversationId).emit("message:new", {
+          conversationId,
+          messageId: msg.id,
+          senderId: endedByUserId,
+          message: msg,
+        });
+      } catch (error) {
+        logger.warn({ error, conversationId }, "Failed to create call ended message after grace");
+      }
     }
     for (const pid of remainingParticipantIds) {
       void emitEffectivePresence(io, pid);
@@ -2115,6 +2152,11 @@ export async function initSocket(
       activeDirectCalls.delete(conversationId);
       clearCallRingTimer(conversationId);
       clearDirectCallGraceTimer(conversationId);
+      // Атомарно «застолбить» завершение: Map.delete возвращает true только ПЕРВОМУ
+      // вызвавшему. Если оба участника нажали «завершить» почти одновременно (два
+      // параллельных call:end), запись о звонке создаёт лишь тот, у кого endClaimed===true;
+      // второй молчит — дубля «Звонок продлился» не будет. (st — снимок для текста.)
+      const endClaimed = st ? callState.delete(conversationId) : false;
       // E2EE key intentionally NOT deleted here: it persists via its TTL, so a quick
       // re-call or a mid-call socket reconnect reuses the SAME shared key.
       if (st?.inviterId) void emitEffectivePresence(io, st.inviterId);
@@ -2123,9 +2165,8 @@ export async function initSocket(
       const caller = await prisma.user.findUnique({ where: { id: userId }, select: { displayName: true, username: true } });
       const name = caller?.displayName ?? caller?.username ?? "пользователь";
 
-      if (st && !st.accepted) {
+      if (endClaimed && st && !st.accepted) {
         // Пропущенный звонок (не был принят)
-        callState.delete(conversationId);
         try {
           const now = new Date();
           const msg = await prisma.message.create({
@@ -2145,9 +2186,8 @@ export async function initSocket(
             message: msg,
           });
         } catch {}
-      } else if (st && st.accepted) {
+      } else if (endClaimed && st && st.accepted) {
         // Завершенный активный звонок - создаем сообщение о завершении
-        callState.delete(conversationId);
         try {
           const { elapsedMs, durationText } = computeDuration();
 
@@ -2177,9 +2217,9 @@ export async function initSocket(
         } catch (error) {
           logger.warn({ error }, "Failed to create call ended message");
         }
-      } else {
-        callState.delete(conversationId);
       }
+      // Проигравший гонку (endClaimed=false): callState уже снят другим завершением,
+      // и запись о звонке уже создана им — здесь ничего не пишем, чтобы не задваивать.
 
       broadcastCallStatus(conversationId);
     });

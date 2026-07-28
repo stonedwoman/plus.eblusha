@@ -107,6 +107,25 @@ router.post(
 );
 
 router.post(
+  "/register/check",
+  rateLimit({ name: "auth_register_check", windowMs: 60_000, max: 60 }),
+  async (req, res) => {
+    const parsed = z.object({ username: z.string().min(3).max(30) }).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid data" });
+      return;
+    }
+    // Case-insensitive so the form warns about "Мяу" when "мяу" exists — mirrors the
+    // uniqueness check below. Invite-only registration + rate limit keep enumeration cheap-proof.
+    const existing = await prisma.user.findFirst({
+      where: { username: { equals: parsed.data.username, mode: "insensitive" } },
+      select: { id: true },
+    });
+    res.json({ available: !existing });
+  }
+);
+
+router.post(
   "/register",
   rateLimit({ name: "auth_register", windowMs: 60_000, max: 10 }),
   async (req, res) => {
@@ -140,7 +159,9 @@ router.post(
       return;
     }
 
-    const uniqueChecks = [{ username }] as Array<Record<string, string>>;
+    const uniqueChecks = [
+      { username: { equals: username, mode: "insensitive" } },
+    ] as any[];
     if (email) uniqueChecks.push({ email });
     if (phone) uniqueChecks.push({ phone });
 

@@ -338,6 +338,11 @@ export default function ChatsPage() {
   const attachmentDecryptUrlsRef = useRef<Set<string>>(new Set())
   const attachmentDecryptInProgressRef = useRef<Set<string>>(new Set())
   const attachmentHeadInfoInFlightRef = useRef<Set<string>>(new Set())
+  // URL'ы, для которых HEAD-проба уже отправлялась (навсегда — повторно не пробуем). Без этого
+  // эффект-обогащение ниже зацикливался: setAttachmentHeadInfoMap создаёт новую идентичность map,
+  // эффект (зависящий от этой map) перезапускается, а т.к. сервер не отдаёт Content-Disposition,
+  // fileName не приходит → guard «готово» не срабатывает → шторм HEAD-запросов → зависание UI.
+  const attachmentHeadAttemptedRef = useRef<Set<string>>(new Set())
   const [pendingImages, setPendingImages] = useState<PendingComposerImage[]>([])
   const [pendingFiles, setPendingFiles] = useState<PendingComposerFile[]>([])
   const [editingImageId, setEditingImageId] = useState<string | null>(null)
@@ -1045,6 +1050,19 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         const participants = p.participants || []
         if (p.active) {
           const serverStartedAt = typeof p.startedAt === 'number' && p.startedAt > 0 ? p.startedAt : (current?.startedAt ?? Date.now())
+          // Перф: сервер шлёт статусы пачками (в т.ч. на каждый rejoin при пробуждении вкладки).
+          // Без этой проверки каждый такой ответ создавал новый объект activeCalls → пустой
+          // полный ре-рендер ChatsPage. Возвращаем prev, если ничего не изменилось.
+          if (
+            current && current.active && current.startedAt === serverStartedAt && current.endedAt == null &&
+            current.elapsedMs === (typeof p.elapsedMs === 'number' ? p.elapsedMs : undefined) &&
+            current.aloneSince === (typeof p.aloneSince === 'number' ? p.aloneSince : undefined) &&
+            current.autoEndAt === (typeof p.autoEndAt === 'number' ? p.autoEndAt : undefined) &&
+            (current.participants || []).length === participants.length &&
+            (current.participants || []).every((x: string, i: number) => x === participants[i])
+          ) {
+            return prev
+          }
           return {
             ...prev,
             [p.conversationId]: {
@@ -1060,6 +1078,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         }
 
         if (!current) return prev
+        if (!current.active && (current.participants || []).length === 0) return prev // уже неактивен — не плодим новый объект
         const prevEndedAt = (typeof current?.endedAt === 'number' && Number.isFinite(current.endedAt)) ? current.endedAt : null
         const startedAt = (typeof current?.startedAt === 'number' && Number.isFinite(current.startedAt)) ? current.startedAt : null
         // If we receive an "inactive" update but endedAt is missing/invalid (or equals startedAt),
@@ -1087,6 +1106,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       if (debugCallStatus) console.log('[CallStatus] Bulk:', payload)
       setActiveCalls((prev) => {
         const merged = { ...prev }
+        // Перф: bulk прилетает на каждый rejoin (а он — на каждое касание кэша conversations).
+        // Обычный случай «звонков нет» раньше всё равно возвращал НОВЫЙ объект → лишний полный
+        // ре-рендер. Считаем реальные изменения и возвращаем prev, если их нет.
+        let changed = false
         
         for (const [cid, st] of Object.entries(payload.statuses || {})) {
           const current = prev[cid]
@@ -1094,6 +1117,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           const participants = st.participants || []
           if (st.active) {
             const serverStartedAt = typeof st.startedAt === 'number' && st.startedAt > 0 ? st.startedAt : (current?.startedAt ?? Date.now())
+            if (
+              current && current.active && current.startedAt === serverStartedAt && current.endedAt == null &&
+              current.elapsedMs === (typeof st.elapsedMs === 'number' ? st.elapsedMs : undefined) &&
+              current.aloneSince === (typeof st.aloneSince === 'number' ? st.aloneSince : undefined) &&
+              current.autoEndAt === (typeof st.autoEndAt === 'number' ? st.autoEndAt : undefined) &&
+              (current.participants || []).length === participants.length &&
+              (current.participants || []).every((x: string, i: number) => x === participants[i])
+            ) {
+              continue
+            }
+            changed = true
             merged[cid] = {
               active: true,
               startedAt: serverStartedAt,
@@ -1107,6 +1141,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           }
 
           if (!current) continue
+          if (!current.active && (current.participants || []).length === 0) continue // уже неактивен
+          changed = true
           const prevEndedAt = (typeof current?.endedAt === 'number' && Number.isFinite(current.endedAt)) ? current.endedAt : null
           const startedAt = (typeof current?.startedAt === 'number' && Number.isFinite(current.startedAt)) ? current.startedAt : null
           const endedAtRaw = current?.active ? Date.now() : prevEndedAt
@@ -1124,7 +1160,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             autoEndAt: undefined,
           }
         }
-        return merged
+        return changed ? merged : prev
       })
     }
     onCallStatus(handleSingle)
@@ -1959,6 +1995,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [conversationsQuery.data?.length])
 
+  // Стабильный ключ состава бесед: меняется только при реальном добавлении/удалении беседы,
+  // а не при каждой перезаписи кэша ['conversations'] (presence/refetch/poll).
+  const conversationIdsKey = useMemo(
+    () => (conversationsQuery.data || []).map((r: any) => r.conversation.id).join(','),
+    [conversationsQuery.data],
+  )
+
   useEffect(() => {
     try {
       const list = (conversationsQuery.data || []).map((r: any) => r.conversation.id)
@@ -1978,7 +2021,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         } catch {}
       }
     } catch {}
-  }, [conversationsQuery.data, markConversationJoined])
+    // Ключ — СПИСОК id, а не идентичность data: иначе любое касание кэша ['conversations']
+    // (presence, refetch на фокусе, 20s-poll) заново рассылало joinConversation×N +
+    // requestCallStatuses, а ответ bulk дёргал ещё один полный ре-рендер. На пробуждении
+    // вкладки это давало несколько лишних кругов.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationIdsKey, markConversationJoined])
 
   const activeConversation = useMemo(() => {
     return conversationsQuery.data?.find((r: any) => r.conversation.id === activeId)?.conversation
@@ -2693,8 +2741,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const hasSize = typeof att?.size === 'number' && att.size > 0
       if (hasName && (hasMime || hasSize)) continue
       if (existing?.fileName && existing?.mime) continue
+      if (attachmentHeadAttemptedRef.current.has(att.url)) continue // раз за сессию — без повторного шторма
       if (attachmentHeadInfoInFlightRef.current.has(att.url)) continue
 
+      attachmentHeadAttemptedRef.current.add(att.url)
       attachmentHeadInfoInFlightRef.current.add(att.url)
       const href = convertToProxyUrl(att.url) || att.url
       fetch(href, { method: 'HEAD', credentials: 'omit' })
@@ -2727,7 +2777,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     return () => {
       cancelled = true
     }
-  }, [displayedMessages, attachmentHeadInfoMap])
+    // deps НАМЕРЕННО без attachmentHeadInfoMap: эффект не должен перезапускаться от собственного
+    // setAttachmentHeadInfoMap (это и была бесконечная петля HEAD). attachmentHeadAttemptedRef
+    // гарантирует ≤1 пробу на URL, так что триггер нужен только один — displayedMessages.
+  }, [displayedMessages])
 
   const usersById = useMemo(() => {
     const map: Record<string, any> = {}
@@ -3021,33 +3074,31 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         if (prevStatus === nextStatus) return prev
         return { ...prev, [p.userId]: nextStatus }
       })
-      // Update status in conversations cache
+      // Update status in conversations cache.
+      // ВАЖНО (перф): раньше здесь безусловно пересоздавались row/conversation/participants И
+      // штамповался lastSeenAt=now. Из-за свежего таймстампа structural sharing react-query не
+      // мог сохранить ссылки → идентичность activeConversation менялась на КАЖДОМ presence-
+      // событии → полный ре-рендер 150-строчного списка. Теперь: трогаем только реально
+      // затронутые записи, а lastSeenAt обновляем лишь при уходе в OFFLINE (для «был(а) онлайн»).
       client.setQueryData(['conversations'], (old: any) => {
         if (!old) return old
-        return old.map((row: any) => {
-          const updated = {
-            ...row,
-            conversation: {
-              ...row.conversation,
-              participants: row.conversation.participants.map((cp: any) =>
-                cp.user.id === p.userId
-                  ? {
-                      ...cp,
-                      user: {
-                        ...cp.user,
-                        status: p.status,
-                        lastSeenAt:
-                          p.status === 'ONLINE' || p.status === 'BACKGROUND' || p.status === 'IN_CALL' || p.status === 'OFFLINE'
-                            ? new Date().toISOString()
-                            : cp.user.lastSeenAt,
-                      },
-                    }
-                  : cp
-              ),
-            },
-          }
-          return updated
+        let listChanged = false
+        const next = old.map((row: any) => {
+          const parts = row?.conversation?.participants || []
+          let rowChanged = false
+          const nextParts = parts.map((cp: any) => {
+            if (cp?.user?.id !== p.userId) return cp
+            const sameStatus = cp.user.status === p.status
+            const stamp = p.status === 'OFFLINE' ? new Date().toISOString() : cp.user.lastSeenAt
+            if (sameStatus && stamp === cp.user.lastSeenAt) return cp
+            rowChanged = true
+            return { ...cp, user: { ...cp.user, status: p.status, lastSeenAt: stamp } }
+          })
+          if (!rowChanged) return row
+          listChanged = true
+          return { ...row, conversation: { ...row.conversation, participants: nextParts } }
         })
+        return listChanged ? next : old
       })
     }
     onPresenceUpdate(handler)
@@ -3530,6 +3581,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       console.log('[ChatsPage] 1:1 call glare reported by server (peer also dialed us)', { conversationId, peer: peerInfo?.id })
     })
     onCallEnded(({ conversationId, by }) => {
+      try { (window as any).__ebLastCallEndedAt = Date.now() } catch {}
       const endedByOther = !!by?.id && by.id !== me?.id
       // Игнорируем для групповых звонков — статус придет отдельным событием call:status
       try {

@@ -11,7 +11,19 @@ import { validateStoredSession } from './core/auth'
 import { appLifecycle } from './core/lifecycle/appLifecycle'
 import { nativeBridge } from './platform/native-bridge/bridge'
 
-const queryClient = new QueryClient()
+// Пробуждение вкладки раньше запускало ~10 одновременных рефетчей (голый клиент =
+// staleTime 0 + refetchOnWindowFocus), и КАЖДЫЙ ответ дёргал каскад рендеров тяжёлой
+// страницы чатов. Свежесть на возврате обеспечивает syncAfterResume (адресные
+// invalidate + socket-события), поэтому автo-рефетч по фокусу выключен, а короткий
+// staleTime гасит дубли запросов, летящие подряд.
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    },
+  },
+})
 appLifecycle.bindBrowserLifecycle()
 nativeBridge.installGlobals()
 

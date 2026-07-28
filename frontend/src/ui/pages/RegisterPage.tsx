@@ -114,7 +114,10 @@ export default function RegisterPage() {
     onError: (e: any) => {
       const msg = e.response?.data?.message
       if (msg === 'User already exists') {
-        setStep2Error('Пользователь с таким логином уже существует')
+        // Занят именно ЛОГИН с шага 1 — возвращаем туда, иначе кажется, что занято имя
+        setStep2Error(null)
+        setStep1Error('Этот логин уже занят — придумайте другой')
+        setStep(1)
         return
       }
       if (msg === 'Invalid data') {
@@ -193,7 +196,7 @@ export default function RegisterPage() {
     submitInviteCode(normalized)
   }
 
-  const handleStep1Submit = (e: FormEvent<HTMLFormElement>) => {
+  const handleStep1Submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     setStep1Error(null)
     const form = new FormData(e.currentTarget)
@@ -202,6 +205,18 @@ export default function RegisterPage() {
     if (u.length < MIN_USERNAME || p.length < MIN_PASSWORD) {
       setStep1Error(`Логин не менее ${MIN_USERNAME} символов, пароль не менее ${MIN_PASSWORD}`)
       return
+    }
+    // Сразу проверяем доступность логина — иначе «занято» всплывало на шаге имени
+    // и люди меняли имя вместо логина. Ошибка сети не блокирует шаг —
+    // финальная регистрация всё равно проверит.
+    try {
+      const { data } = await api.post('/auth/register/check', { username: u })
+      if (data?.available === false) {
+        setStep1Error('Этот логин уже занят — придумайте другой')
+        return
+      }
+    } catch {
+      // ignore — проверка необязательна
     }
     setUsername(u)
     setPassword(p)
@@ -511,7 +526,7 @@ export default function RegisterPage() {
             <form className="auth-form" onSubmit={handleStep1Submit}>
               {inviteVerifiedCard}
               <label style={labelBlockStyle}>
-                Имя для входа
+                Логин (имя для входа)
                 <input
                   name="username"
                   type="text"
