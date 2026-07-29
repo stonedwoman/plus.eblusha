@@ -212,11 +212,14 @@ export function startHangWatchdog() {
     if (visible && gap > 3000) {
       const inGap = recentLongtasks.filter((l) => l.t > prev && l.t <= now)
       const ltMs = inGap.reduce((s, l) => s + l.dur, 0)
+      // Сообщаем ТОЛЬКО если в разрыве были длинные задачи. Разрыв без них — это
+      // троттлинг фоновой вкладки (интервал 1с усыпляется до ~1/мин), а не подвисание:
+      // без этого условия каждая фоновая вкладка слала бы «ошибку» раз в минуту.
+      if (inGap.length === 0) return
       report('main-stall', {
         gapMs: Math.round(gap),
         longtasksInGap: inGap.length,
         longtaskMsInGap: Math.round(ltMs),
-        likelyArtifact: inGap.length === 0, // big gap with NO long tasks ⇒ probably background throttling, not a real freeze
       })
     }
   }, 1000)
