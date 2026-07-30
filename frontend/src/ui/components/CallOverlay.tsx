@@ -1987,6 +1987,34 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       background-color: var(--lk-danger3) !important;
     }
 
+    /* --- Компоновка панели управления ---
+       Раньше панель была одной нерушимой строкой: при нехватке ширины (узкое окно ПК-клиента)
+       кнопки уезжали за край, и первой пропадала КРАСНАЯ КНОПКА ВЫХОДА — завершить звонок с
+       панели было нельзя. Теперь: строка переносится, кнопки не сжимаются в кашу, выход всегда
+       последний и всегда на виду, а на узких окнах панель уплотняется. */
+    .call-container .lk-control-bar{
+      flex-wrap: wrap !important;
+      row-gap: 8px !important;
+      justify-content: center !important;
+    }
+    .call-container .lk-control-bar > *{ flex-shrink: 0 !important; }
+    .call-container .lk-control-bar .lk-disconnect-button{ order: 99 !important; }
+
+    /* Узковато: уплотняем отступы */
+    @media (max-width: 1180px){
+      .call-container .lk-control-bar{ gap: 6px !important; padding-left: 10px !important; padding-right: 10px !important; }
+      .call-container .lk-control-bar button,
+      .call-container .lk-control-bar .lk-button{ padding-left: 10px !important; padding-right: 10px !important; }
+    }
+
+    /* Совсем узко: наши кнопки — только иконки (подпись живёт в title/aria-label) */
+    @media (max-width: 980px){
+      .call-container .lk-control-bar .eb-minimize-btn > span > span,
+      .call-container .lk-control-bar .eb-expand-btn > span > span{ display: none !important; }
+      .call-container .lk-control-bar .eb-minimize-btn,
+      .call-container .lk-control-bar .eb-expand-btn{ padding-left: 10px !important; padding-right: 10px !important; }
+    }
+
     /* Mobile: make the LiveKit UI feel native fullscreen and fix control button height mismatch */
     @media (max-width: 768px){
       /* iOS safe area: keep controls above home indicator */
@@ -2862,7 +2890,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             else if (normalized === 'connecting') translated = 'Подключение'
             else if (normalized === 'reconnecting') translated = 'Переподключение'
             else if (normalized === 'disconnected') translated = 'Отключено'
-            else if (normalized.includes('stop') && normalized.includes('screen')) translated = 'Остановить показ'
+            else if (normalized.includes('stop') && normalized.includes('screen')) translated = 'Остановить'
             else if (normalized === 'screen share' || normalized === 'share screen' || normalized === 'share-screen' || normalized === 'share-screen ') translated = 'Показ экрана'
             // fallback: contains both words
             else if (normalized.includes('share') && normalized.includes('screen')) translated = 'Показ экрана'
