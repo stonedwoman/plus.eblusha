@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -13,7 +13,7 @@ import {
   type ResolvedActiveCall,
   type ResolvedIncomingCall,
 } from '../../core/call-state/incomingCallActions'
-import { acceptCall, declineCall, endCall } from '../../core/realtime'
+import { acceptCall, declineCall, endCall, inviteCall } from '../../core/realtime'
 import { useCallStore } from '../../domain/store/callStore'
 import { Avatar } from '../components/Avatar'
 import { ensureMediaPermissions } from '../../utils/media'
@@ -140,6 +140,31 @@ export function CallHost() {
       endActiveCall: performEndActiveCall,
     })
   }, [onChatsRoute, performEndActiveCall])
+
+  // Второй звонок во время активного: даём выбор вместо молчаливого переключения.
+  const ongoingConvId = overlayConvId ?? useCallStore.getState().activeConvId ?? null
+  const hasOtherOngoingCall = !!(incoming && ongoingConvId && ongoingConvId !== incoming.conversationId)
+  const [switchBusy, setSwitchBusy] = useState<null | 'switch' | 'invite'>(null)
+
+  // «Позвать в текущий разговор»: добавляем звонящего участником текущей беседы и зовём его
+  // в идущий звонок, а входящий вызов отклоняем — так разговор становится общим.
+  const inviteCallerIntoOngoing = async () => {
+    if (!incoming || !ongoingConvId) return
+    setSwitchBusy('invite')
+    try {
+      await api.post(`/conversations/${ongoingConvId}/participants`, { userId: incoming.from.id })
+    } catch {
+      // возможно, участник уже в беседе — приглашение всё равно имеет смысл
+    }
+    try {
+      inviteCall(ongoingConvId, false)
+    } catch {}
+    try {
+      declineCall(incoming.conversationId)
+    } catch {}
+    setIncoming(null)
+    setSwitchBusy(null)
+  }
 
   const closeOverlay = () => {
     if (!overlayConvId) return
@@ -422,9 +447,71 @@ export function CallHost() {
                 />
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 16 }}>{incoming.from.name ?? incoming.from.id}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>звонит…</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    {hasOtherOngoingCall ? 'звонит, а вы сейчас в другом разговоре' : 'звонит…'}
+                  </div>
                 </div>
               </div>
+              {hasOtherOngoingCall ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 4, lineHeight: 1.4 }}>
+                    Вы уже участвуете в разговоре. Что сделать?
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    disabled={!!switchBusy}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      padding: '14px 16px', minHeight: 48, borderRadius: 12,
+                    }}
+                    onClick={() => {
+                      setSwitchBusy('switch')
+                      void acceptIncomingCallAction(
+                        {
+                          callId: incoming.callId ?? incoming.conversationId,
+                          conversationId: incoming.conversationId,
+                          isVideo: !!incoming.video,
+                        },
+                        'web_ui',
+                      ).finally(() => setSwitchBusy(null))
+                    }}
+                  >
+                    <Phone size={18} />
+                    <span>{switchBusy === 'switch' ? 'Переключаемся…' : 'Выйти отсюда и ответить'}</span>
+                  </button>
+                  <button
+                    className="btn"
+                    disabled={!!switchBusy}
+                    style={{
+                      background: 'transparent', color: 'var(--brand-600)', border: '1px solid var(--brand-600)',
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      padding: '14px 16px', minHeight: 48, borderRadius: 12,
+                    }}
+                    onClick={() => { void inviteCallerIntoOngoing() }}
+                  >
+                    <Video size={18} />
+                    <span>{switchBusy === 'invite' ? 'Приглашаем…' : 'Позвать в текущий разговор'}</span>
+                  </button>
+                  <button
+                    className="btn"
+                    disabled={!!switchBusy}
+                    style={{
+                      background: 'var(--danger)', color: '#fff',
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      padding: '14px 16px', minHeight: 48, borderRadius: 12,
+                    }}
+                    onClick={() => {
+                      void declineIncomingCallAction(
+                        { callId: incoming.callId ?? incoming.conversationId, conversationId: incoming.conversationId },
+                        'web_ui',
+                      )
+                    }}
+                  >
+                    <PhoneOff size={18} />
+                    <span>Отклонить звонок</span>
+                  </button>
+                </div>
+              ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button
@@ -518,6 +605,7 @@ export function CallHost() {
                   </div>
                 ) : null}
               </div>
+              )}
             </div>
           </div>,
           document.body,

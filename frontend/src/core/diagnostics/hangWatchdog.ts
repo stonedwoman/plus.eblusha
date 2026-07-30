@@ -31,6 +31,10 @@ function killed(): boolean {
   }
 }
 
+function overlayCount(): number | null {
+  try { return document.querySelectorAll('.call-container').length } catch { return null }
+}
+
 function context() {
   let sinceCallEndedMs: number | null = null
   try {
@@ -46,6 +50,7 @@ function context() {
     route: (() => { try { return window.location.pathname } catch { return '' } })(),
     sinceCallEndedMs,
     heapMb,
+    callOverlays: overlayCount(),
     ua: (() => { try { return navigator.userAgent.slice(0, 80) } catch { return '' } })(),
   }
 }
@@ -133,7 +138,13 @@ export function startHangWatchdog() {
           let visible = true
           try { visible = document.visibilityState === 'visible' } catch {}
           if (!visible) continue
-          const scripts = (e.scripts || [])
+          const allScripts = (e.scripts || []) as any[]
+          // ВАЖНО: раньше в отчёт шли только 6 САМЫХ ДОЛГИХ скриптов, и по ним ошибочно
+          // считали «сумму» — из-за чего казалось, что время ушло мимо JS. Теперь пишем
+          // и полное количество, и суммарную длительность, и границы фаз кадра, чтобы
+          // однозначно делить время на «скрипты» и «стили+раскладка».
+          const sumScriptMs = Math.round(allScripts.reduce((s, x) => s + (x.duration || 0), 0))
+          const scripts = allScripts
             .map((s: any) => ({
               fn: String(s.sourceFunctionName || s.invoker || '').slice(0, 90),
               url: (String(s.sourceURL || '').split('/').pop() || '').slice(0, 70),
@@ -144,9 +155,27 @@ export function startHangWatchdog() {
             }))
             .sort((a: any, b: any) => b.durMs - a.durMs)
             .slice(0, 6)
+          // Фазы кадра (LoAF): styleAndLayoutStart - renderStart = чистое время стилей/раскладки.
+          const renderStart = Math.round((e as any).renderStart || 0)
+          const styleAndLayoutStart = Math.round((e as any).styleAndLayoutStart || 0)
+          const startTime = Math.round(e.startTime || 0)
+          const styleAndLayoutMs =
+            renderStart && styleAndLayoutStart ? Math.round(e.startTime + e.duration - (e as any).styleAndLayoutStart) : null
+          // Сколько оверлеев звонка живо одновременно: >1 означает утечку (не завершённый звонок).
+          let callContainers: number | null = null
+          let domNodes: number | null = null
+          try { callContainers = document.querySelectorAll('.call-container').length } catch {}
+          try { domNodes = document.getElementsByTagName('*').length } catch {}
           report('loaf', {
             durationMs: Math.round(e.duration),
             blockingMs: Math.round(e.blockingDuration || 0),
+            scriptCount: allScripts.length,
+            sumScriptMs,
+            renderDelayMs: renderStart ? Math.round((e as any).renderStart - e.startTime) : null,
+            styleAndLayoutMs,
+            startTime,
+            callContainers,
+            domNodes,
             scripts,
           })
         }

@@ -813,6 +813,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       return false
     }
   }, [describeMediaPermissionError])
+  // Заполняется ниже, после объявления performEndActiveCall (см. комментарий внутри accept).
+  const performEndActiveCallRef = useRef<((call: ResolvedActiveCall) => boolean) | null>(null)
+
   const performAcceptIncomingCall = useCallback(async (call: ResolvedIncomingCall) => {
     // Silence the ringtone the instant the user accepts — BEFORE awaiting camera/mic permission.
     // A slow or failing media request (common for video, which also grabs the camera) otherwise
@@ -821,6 +824,21 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     stopRingtone()
     if (!(await requireMediaAccess(call.isVideo))) return false
     const convId = call.conversationId
+    // Приняли звонок, будучи в другом? Раньше просто переключали оверлей — старый звонок
+    // оставался живым: сервер держал нас в прежней комнате, а прошлый оверлей продолжал
+    // работать в фоне. Сначала корректно выходим из текущего разговора.
+    // Через ref, т.к. performEndActiveCall объявлен НИЖЕ (прямая ссылка = TDZ при вычислении deps).
+    try {
+      const prevConvId =
+        useCallStore.getState().overlayConvId ??
+        useCallStore.getState().activeConvId ??
+        null
+      if (prevConvId && prevConvId !== convId) {
+        performEndActiveCallRef.current?.({ callId: prevConvId, conversationId: prevConvId } as ResolvedActiveCall)
+      }
+    } catch {
+      // выход из старого звонка не должен мешать принять новый
+    }
     beginOutgoingCallGuard(convId)
     acceptCall(convId, call.isVideo)
     signalApkIncomingAccepted(convId, call.isVideo)
@@ -908,6 +926,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     setOutgoingCall,
     stopRingtone,
   ])
+  performEndActiveCallRef.current = performEndActiveCall
 
   useEffect(() => {
     return registerIncomingCallRuntime({
