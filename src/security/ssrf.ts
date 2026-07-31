@@ -127,10 +127,12 @@ async function readBodyUpTo(res: Response, maxBytes: number, truncate = false): 
 
 function contentTypeOk(raw: string | null, allowed: ReadonlyArray<string>): boolean {
   const ct = (raw || "").toLowerCase();
-  if (!ct) return false;
+  // Пустой content-type у части сайтов — не повод отказываться от превью.
+  if (!ct) return true;
   const base = ct.split(";")[0]?.trim() || "";
-  if (!base) return false;
-  return allowed.includes(base);
+  if (!base) return true;
+  // Элемент списка, оканчивающийся на "/", работает как префикс: "image/" разрешает image/png и пр.
+  return allowed.some((a) => (a.endsWith("/") ? base.startsWith(a) : base === a));
 }
 
 export async function ssrfFetch(
@@ -151,6 +153,34 @@ export async function ssrfFetch(
     throw new Error("invalid_url");
   }
 
+  // Копим cookies по пути: без них часть сайтов бесконечно редиректит на страницу-установщик.
+  const cookieJar = new Map<string, string>();
+  const cookieHeader = () =>
+    Array.from(cookieJar.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; ");
+  const rememberCookies = (res: Response) => {
+    try {
+      const raw = (res.headers as any).getSetCookie?.() ?? [];
+      for (const line of raw as string[]) {
+        const pair = String(line).split(";")[0] ?? "";
+        const eq = pair.indexOf("=");
+        if (eq <= 0) continue;
+        cookieJar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+      }
+    } catch {
+      // куки — вспомогательная штука, без них просто меньше сайтов откроется
+    }
+  };
+  const withCookies = (): RequestInit => {
+    if (cookieJar.size === 0) return init;
+    const headers = new Headers((init.headers as any) ?? {});
+    headers.set("cookie", cookieHeader());
+    return { ...init, headers };
+  };
+
+  const visitedCount = new Map<string, number>();
+
   // Follow up to maxRedirects redirects, then make one final request that must be non-redirect.
   for (let i = 0; i < maxRedirects; i++) {
     await assertSafeUrl(current);
@@ -160,7 +190,7 @@ export async function ssrfFetch(
     let res: Response;
     try {
       res = await fetch(current.toString(), {
-        ...init,
+        ...withCookies(),
         redirect: "manual",
         signal: ac.signal,
       });
@@ -168,10 +198,19 @@ export async function ssrfFetch(
       clearTimeout(t);
     }
 
+    rememberCookies(res);
+
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("location");
       if (!loc) throw new Error("redirect_missing_location");
-      current = new URL(loc, current);
+      const next = new URL(loc, current);
+      // Сайты часто ставят cookie и редиректят на тот же адрес — это нормально.
+      // Настоящей петлёй считаем третье попадание в один и тот же URL.
+      const key = next.toString();
+      const seen = (visitedCount.get(key) ?? 0) + 1;
+      visitedCount.set(key, seen);
+      if (seen >= 3) throw new Error("redirect_loop");
+      current = next;
       continue;
     }
 
@@ -190,7 +229,7 @@ export async function ssrfFetch(
   let res: Response;
   try {
     res = await fetch(current.toString(), {
-      ...init,
+      ...withCookies(),
       redirect: "manual",
       signal: ac.signal,
     });
