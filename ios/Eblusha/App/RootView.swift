@@ -126,7 +126,7 @@ private struct HomeNavView: View {
                 onOpenSettings: { showLogoutConfirm = true }
             )
             .navigationDestination(item: $openConversation) { conversation in
-                ChatPlaceholderView(conversation: conversation)
+                ChatView(conversation: conversation) { openConversation = nil }
             }
             .toolbar(.hidden, for: .navigationBar)
         }
@@ -137,24 +137,6 @@ private struct HomeNavView: View {
     }
 }
 
-/// Заглушка экрана беседы до порта ChatScreen (следующий шаг фазы 3).
-private struct ChatPlaceholderView: View {
-    let conversation: Conversation
-
-    var body: some View {
-        VStack(spacing: Spacing.lg) {
-            AvatarView(name: conversation.title, avatarUrl: conversation.avatarUrl, size: 72)
-            Text(conversation.title)
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(Eb.textPrimary)
-            Text("Экран переписки в работе")
-                .font(.footnote)
-                .foregroundStyle(Eb.textMuted)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Eb.paper)
-    }
-}
 
 #Preview {
     RootView()

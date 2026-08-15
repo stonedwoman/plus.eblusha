@@ -278,6 +278,14 @@ final class ChatRepository {
         toDomain(dto, meId: session.currentUserId())
     }
 
+    /// Просит сервер разрешить Open Graph-превью для сообщения; возвращает обновлённое.
+    func fetchLinkPreview(messageId: String) async -> ApiResult<Message> {
+        await safeApiCall {
+            let response: SendMessageResponse = try await api.get("messages/\(messageId)/preview")
+            return toDomain(response.message, meId: session.currentUserId())
+        }
+    }
+
     // MARK: - Маппинг DTO → домен (порт toDomain из Kotlin)
 
     private func toDomain(_ dto: MessageDto, meId: String?) -> Message {
