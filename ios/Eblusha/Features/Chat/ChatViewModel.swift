@@ -24,10 +24,17 @@ final class ChatViewModel: ObservableObject {
         var error: String?
         /// Ответ: 1 (одиночный) или ≥2 (мультиответ) цитируемых сообщений.
         var replyingTo: [Message] = []
+        /// Режим мультивыбора (порт selectionMode/selectedIds из Kotlin UiState).
+        var selectionMode = false
+        var selectedIds: Set<String> = []
         /// 1:1-собеседник (открытие карточки по шапке; nil для групп).
         var peerUserId: String?
         /// Текст, который надо вернуть в композер после сбоя отправки.
         var restoredDraft: String?
+        /// Прогресс аплоада вложений 0..1; nil — аплоад не идёт (полоса в композере).
+        var uploadProgress: Float?
+        /// Очередь вложений (веб-паритет: выбранное НЕ отправляется сразу, а встаёт чипами).
+        var staged: [OutgoingFile] = []
         /// Секретная беседа V2 — экран показывает заглушку до фазы секретных чатов.
         var isSecretStub = false
     }
@@ -39,6 +46,8 @@ final class ChatViewModel: ObservableObject {
     private let conversationId: String
 
     private var typingSent = false
+    /// true → аборт текущего аплоада между частями (кнопка «отмена» у прогресса).
+    private var uploadCancelled = false
     private var typingHeartbeat: Task<Void, Never>?
     private var typingExpiry: Task<Void, Never>?
     private var lastInputMs: TimeInterval = 0
@@ -56,6 +65,8 @@ final class ChatViewModel: ObservableObject {
     private var peerUserId: String?
 
     private static let pageSize = 80 // веб MESSAGES_PAGE_SIZE
+    // >10 МБ уходит чанками (веб-паритет); страховочный потолок — 100 МБ (файл в памяти).
+    private static let maxUploadBytes = 100 * 1024 * 1024
     private static let olderRetryCooldown: TimeInterval = 4
 
     init(repo: ChatRepository, realtime: RealtimeClient, conversationId: String) {
@@ -292,6 +303,136 @@ final class ChatViewModel: ObservableObject {
         ui.restoredDraft = nil
     }
 
+    // MARK: - Вложения и голосовые
+
+    func sendAttachment(bytes: Data, fileName: String, mime: String) {
+        sendAttachments([OutgoingFile(bytes: bytes, name: fileName, mime: mime)])
+    }
+
+    /// Проблема UI-уровня (например, сбой чтения пикера) — через тот же баннер ошибок.
+    func setError(_ message: String) {
+        ui.error = message
+    }
+
+    /// Шлёт все [files] ОДНИМ сообщением (фотоальбом). Веб-капы: 10 фото + 10 файлов.
+    func sendAttachments(_ files: [OutgoingFile], caption: String? = nil, onSuccess: (() -> Void)? = nil) {
+        guard !files.isEmpty, !ui.isSecretStub else { return }
+        if ui.sending {
+            ui.error = "Подождите — идёт отправка предыдущего сообщения"
+            return
+        }
+        // Сначала картинки (веб-порядок вложений — он задаёт сетку альбома), каждый вид ≤10.
+        // Капы ДО проверки размера, чтобы 11-й негабарит не ветировал валидный альбом.
+        let imgs = files.filter { $0.mime.hasPrefix("image/") }
+        let rest = files.filter { !$0.mime.hasPrefix("image/") }
+        let limited = Array(imgs.prefix(10)) + Array(rest.prefix(10))
+        if let tooBig = limited.first(where: { $0.bytes.count > Self.maxUploadBytes }) {
+            ui.error = "Файл слишком большой (макс. 100 МБ): \(tooBig.name)"
+            return
+        }
+        uploadCancelled = false
+        Task {
+            ui.sending = true
+            ui.error = nil
+            ui.uploadProgress = 0
+            let r = await repo.sendAttachments(
+                conversationId,
+                files: limited,
+                caption: caption,
+                onProgress: { [weak self] done, total in
+                    guard total > 0 else { return }
+                    let pct = min(max(Float(done) / Float(total), 0), 1)
+                    // Колбэк приходит с фонового потока; стейт дросселируем до целых
+                    // процентов — иначе рекомпозиции на каждый чанк.
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if Int(pct * 100) != Int((self.ui.uploadProgress ?? 0) * 100) {
+                            self.ui.uploadProgress = pct
+                        }
+                    }
+                },
+                isCancelled: { [weak self] in self?.uploadCancelled ?? true }
+            )
+            switch r {
+            case .success(let message):
+                onSuccess?()
+                ui.sending = false
+                ui.uploadProgress = nil
+                if !ui.messages.contains(where: { $0.id == message.id }) {
+                    ui.messages.append(message)
+                }
+            case .failure(let message, _):
+                ui.sending = false
+                ui.uploadProgress = nil
+                if uploadCancelled {
+                    // Отмена — не ошибка, но подпись возвращаем: она была частью сообщения.
+                    ui.restoredDraft = caption
+                } else {
+                    ui.error = message
+                    ui.restoredDraft = caption
+                }
+            }
+        }
+    }
+
+    /// Кнопка «отмена» у прогресса: аборт между частями, серверная сессия прибирается.
+    func cancelUpload() {
+        uploadCancelled = true
+    }
+
+    // MARK: - Стейджинг вложений (веб-паритет: выбранное НЕ отправляется сразу)
+
+    /// Пикер вернул файлы: кладём в очередь чипов; лимиты как у альбома (10 фото + 10 файлов).
+    func stageFiles(_ files: [OutgoingFile]) {
+        guard !files.isEmpty else { return }
+        let merged = ui.staged + files
+        let imgs = merged.filter { $0.mime.hasPrefix("image/") }
+        let rest = merged.filter { !$0.mime.hasPrefix("image/") }
+        let limited = Array(imgs.prefix(10)) + Array(rest.prefix(10))
+        if limited.count < merged.count {
+            ui.error = "Максимум 10 фото и 10 файлов за раз"
+        }
+        ui.staged = limited
+    }
+
+    func removeStaged(_ index: Int) {
+        ui.staged = ui.staged.enumerated().filter { $0.offset != index }.map(\.element)
+    }
+
+    func clearStaged() {
+        ui.staged = []
+    }
+
+    /// Отправка очереди с подписью. Очередь чистится ТОЛЬКО при успехе — сбой/отмена
+    /// оставляют чипы на месте (плюс restoredDraft вернёт подпись).
+    func sendStaged(_ caption: String?) {
+        let files = ui.staged
+        guard !files.isEmpty, !ui.sending else { return }
+        sendAttachments(files, caption: caption, onSuccess: { [weak self] in self?.ui.staged = [] })
+    }
+
+    /// Отправляет записанный голосовой клип (data — AAC/MP4 из VoiceRecorder) как
+    /// AUDIO-сообщение с длительностью и волной.
+    func sendVoice(_ data: Data, durationSec: Int, waveform: [Int]) {
+        guard !ui.sending, !ui.isSecretStub else { return }
+        Task {
+            ui.sending = true
+            ui.error = nil
+            switch await repo.sendVoiceMessage(
+                conversationId, bytes: data, durationSec: durationSec, waveform: waveform
+            ) {
+            case .success(let message):
+                ui.sending = false
+                if !ui.messages.contains(where: { $0.id == message.id }) {
+                    ui.messages.append(message)
+                }
+            case .failure(let message, _):
+                ui.sending = false
+                ui.error = message
+            }
+        }
+    }
+
     // MARK: - Действия
 
     func markAllRead() {
@@ -352,6 +493,78 @@ final class ChatViewModel: ObservableObject {
 
     func setReply(_ message: Message) { ui.replyingTo = [message] }
     func clearReply() { ui.replyingTo = [] }
+
+    // MARK: - Мультивыбор (порт startSelection/toggleSelect/... из Kotlin)
+
+    func startSelection(_ messageId: String) {
+        ui.selectionMode = true
+        ui.selectedIds = [messageId]
+    }
+
+    func toggleSelect(_ messageId: String) {
+        var next = ui.selectedIds
+        if !next.insert(messageId).inserted { next.remove(messageId) }
+        if next.isEmpty {
+            ui.selectionMode = false
+            ui.selectedIds = []
+        } else {
+            ui.selectedIds = next
+        }
+    }
+
+    func clearSelection() {
+        ui.selectionMode = false
+        ui.selectedIds = []
+    }
+
+    func selectedMessages() -> [Message] {
+        ui.messages.filter { ui.selectedIds.contains($0.id) }
+    }
+
+    /// Пакетное удаление выбранных НАШИХ сообщений (серверное удаление — для всех).
+    func deleteSelected() {
+        if ui.isSecretStub { clearSelection(); return }
+        let ids = ui.messages
+            .filter { ui.selectedIds.contains($0.id) && $0.isMine && !$0.deleted }
+            .map(\.id)
+        clearSelection()
+        Task {
+            var deleted: Set<String> = []
+            for id in ids {
+                if case .success = await repo.deleteMessage(messageId: id) { deleted.insert(id) }
+            }
+            // Помечаем локально: refetch страницы 1 не достаёт долистанные назад.
+            ui.messages = ui.messages.map {
+                var m = $0
+                if deleted.contains(m.id) { m.deleted = true }
+                return m
+            }
+            reloadSilently()
+        }
+    }
+
+    /// Ответ на ВСЕ выбранные (мультиответ), затем выход из режима выбора.
+    func replyToSelected() {
+        let msgs = selectedMessages().filter { !$0.isSystem }
+        guard !msgs.isEmpty else { return }
+        clearSelection()
+        ui.replyingTo = msgs
+    }
+
+    // MARK: - Пересылка
+
+    /// Пересылает messages в беседу targetConversationId (и снимает выбор, если активен).
+    func forward(targetConversationId: String, messages: [Message]) {
+        // Пересылка ИЗ секретки запрещена: forwardMessage ушёл бы в облачный /send открытым
+        // текстом + связал бы имя/mime/размер с .enc-блобом на сервере.
+        if ui.isSecretStub { clearSelection(); return }
+        clearSelection()
+        Task {
+            for m in messages where !m.isSystem && !m.deleted {
+                _ = await repo.forwardMessage(targetConversationId: targetConversationId, message: m)
+            }
+        }
+    }
 
     // MARK: - Превью ссылок
 

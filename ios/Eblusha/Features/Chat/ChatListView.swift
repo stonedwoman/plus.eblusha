@@ -17,6 +17,8 @@ struct ChatListView: View {
     var onNewGroup: () -> Void = {}
 
     @State private var confirmDelete: Conversation?
+    // Универсальная карточка пользователя (тап по аватару 1:1 в списке).
+    @State private var userCard: UserCardSeed?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -49,6 +51,18 @@ struct ChatListView: View {
         .alert(item: $confirmDelete) { target in
             deleteAlert(target)
         }
+        .sheet(item: $userCard) { seed in
+            UserCardSheet(
+                seed: seed,
+                onOpenConversation: { ref in
+                    userCard = nil
+                    Task { @MainActor in
+                        onOpenChat(await AppContainer.shared.chatRepository.resolveRef(ref))
+                    }
+                },
+                onDismiss: { userCard = nil }
+            )
+        }
     }
 
     private var conversationList: some View {
@@ -70,6 +84,16 @@ struct ChatListView: View {
                         onMarkRead: (!conversation.isSecretV2 && conversation.unreadCount > 0)
                             ? { vm.markConversationRead(conversation) } : nil,
                         onDelete: { confirmDelete = conversation },
+                        onOpenUser: (!conversation.isGroup && !conversation.isSecretV2
+                            && conversation.otherUserId != nil)
+                            ? {
+                                userCard = UserCardSeed(
+                                    userId: conversation.otherUserId!,
+                                    name: conversation.title,
+                                    avatarUrl: conversation.avatarUrl
+                                )
+                            }
+                            : nil,
                         onTap: { onOpenChat(conversation) }
                     )
                 }
@@ -260,6 +284,8 @@ private struct ConversationTile: View {
     var hasCloudSibling = false
     var onMarkRead: (() -> Void)?
     var onDelete: (() -> Void)?
+    /// Тап по аватару 1:1 открывает карточку пользователя (веб-паритет), не сам чат.
+    var onOpenUser: (() -> Void)?
     let onTap: () -> Void
 
     private var borderColor: Color {
@@ -291,6 +317,7 @@ private struct ConversationTile: View {
                         )
                     }
                 }
+                .onTapGesture { (onOpenUser ?? onTap)() }
             }
 
             VStack(alignment: .leading, spacing: 2) {

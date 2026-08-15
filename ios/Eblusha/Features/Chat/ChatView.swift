@@ -57,6 +57,10 @@ struct ChatView: View {
     @State private var editTarget: Message?
     @State private var editText = ""
     @State private var confirmDelete = false
+    @State private var forwardSheet: ForwardRequest?
+    @State private var viewer: ImageViewerState?
+    @State private var userCard: UserCardSeed?
+    @StateObject private var voiceRecorder = VoiceRecorder()
     @FocusState private var composerFocused: Bool
 
     init(conversation: Conversation, onBack: @escaping () -> Void) {
@@ -71,7 +75,11 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            if vm.ui.selectionMode {
+                SelectionTopBar(count: vm.ui.selectedIds.count, onClose: { vm.clearSelection() })
+            } else {
+                header
+            }
             Divider().overlay(Eb.border)
 
             if vm.ui.isSecretStub {
@@ -93,13 +101,31 @@ struct ChatView: View {
                     .background(Eb.error.opacity(0.12))
             }
 
-            if !vm.ui.isSecretStub {
+            if vm.ui.selectionMode {
+                SelectionActionBar(
+                    count: vm.ui.selectedIds.count,
+                    canDelete: vm.selectedMessages().contains { $0.isMine && !$0.deleted },
+                    canForward: !vm.ui.isSecretStub,
+                    onReply: { vm.replyToSelected() },
+                    onForward: { forwardSheet = ForwardRequest(messages: vm.selectedMessages()) },
+                    onCopy: {
+                        let msgs = vm.selectedMessages().filter { !$0.isSystem }
+                        UIPasteboard.general.string = msgs.map { $0.content ?? "" }.joined(separator: "\n")
+                        vm.clearSelection()
+                    },
+                    onDelete: { vm.deleteSelected() },
+                    onCancel: { vm.clearSelection() }
+                )
+            } else if !vm.ui.isSecretStub {
                 composer
             }
         }
         .background(Eb.paper)
         .toolbar(.hidden, for: .navigationBar)
-        .onDisappear { vm.onDisappear() }
+        .onDisappear {
+            vm.onDisappear()
+            voiceRecorder.cancel()
+        }
         .onChange(of: vm.ui.restoredDraft) { _, restored in
             if let restored {
                 draft = restored
@@ -108,6 +134,27 @@ struct ChatView: View {
         }
         .sheet(item: $editTarget) { target in
             editSheet(target)
+        }
+        .sheet(item: $forwardSheet) { request in
+            ForwardPickerSheet(
+                repo: AppContainer.shared.chatRepository,
+                currentConversationId: conversation.id,
+                onPick: { targetId in
+                    vm.forward(targetConversationId: targetId, messages: request.messages)
+                    forwardSheet = nil
+                }
+            )
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $userCard) { seed in
+            UserCardSheet(
+                seed: seed,
+                onOpenConversation: { _ in userCard = nil },
+                onDismiss: { userCard = nil }
+            )
+        }
+        .fullScreenCover(item: $viewer) { state in
+            ImageViewer(images: state.images, startIndex: state.startIndex, onClose: { viewer = nil })
         }
         .confirmationDialog(
             vm.ui.isGroup ? "Выйти из беседы?" : "Удалить чат?",
@@ -136,6 +183,14 @@ struct ChatView: View {
                 avatarUrl: vm.ui.headerAvatarUrl ?? conversation.avatarUrl,
                 size: 38
             )
+            // Тап по шапке 1:1 открывает карточку собеседника (веб-паритет).
+            .onTapGesture {
+                if !vm.ui.isGroup, !vm.ui.isSecretStub, let peerId = vm.ui.peerUserId {
+                    userCard = UserCardSeed(
+                        userId: peerId, name: conversation.title, avatarUrl: conversation.avatarUrl
+                    )
+                }
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(conversation.title)
                     .font(.body.weight(.semibold))
@@ -155,6 +210,24 @@ struct ChatView: View {
                 }
             }
             Spacer()
+            // Порт кнопок звонка из шапки ChatScreen.kt: сначала видео, потом аудио.
+            // Разрешения CallManager добирает сам перед публикацией треков.
+            Button {
+                AppContainer.shared.callManager.startOutgoing(
+                    conversationId: conversation.id, title: conversation.title, video: true)
+            } label: {
+                Image(systemName: "video")
+                    .foregroundStyle(Eb.textPrimary)
+                    .frame(width: 40, height: 40)
+            }
+            Button {
+                AppContainer.shared.callManager.startOutgoing(
+                    conversationId: conversation.id, title: conversation.title, video: false)
+            } label: {
+                Image(systemName: "phone")
+                    .foregroundStyle(Eb.textPrimary)
+                    .frame(width: 40, height: 40)
+            }
             Menu {
                 if !vm.ui.isSecretStub {
                     Button {
@@ -207,6 +280,22 @@ struct ChatView: View {
                             senderAvatarUrl: vm.ui.senderAvatars[message.senderId] ?? nil,
                             isFirstInRun: !continuesRun(earlier, message),
                             isLastInRun: !continuesRun(message, later),
+                            selectionMode: vm.ui.selectionMode,
+                            selected: vm.ui.selectedIds.contains(message.id),
+                            onTap: { if vm.ui.selectionMode { vm.toggleSelect(message.id) } },
+                            onStartSelect: { vm.startSelection(message.id) },
+                            onForward: { forwardSheet = ForwardRequest(messages: [message]) },
+                            onOpenImage: { imgs, idx in
+                                viewer = ImageViewerState(images: imgs, startIndex: idx)
+                            },
+                            onOpenSender: {
+                                // Тап по аватару отправителя в группе — карточка пользователя.
+                                userCard = UserCardSeed(
+                                    userId: message.senderId,
+                                    name: message.senderName,
+                                    avatarUrl: message.senderAvatarUrl
+                                )
+                            },
                             onReply: { vm.setReply(message) },
                             onReact: { vm.react(message, emoji: $0) },
                             onEdit: {
@@ -254,61 +343,73 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
-            if let reply = vm.ui.replyingTo.first {
-                HStack(spacing: 8) {
-                    Rectangle().fill(Eb.brand).frame(width: 3)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(reply.isMine ? "Вы" : reply.senderName)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(Eb.brand)
-                        Text(reply.content ?? "Вложение")
-                            .font(.caption)
-                            .foregroundStyle(Eb.textMuted)
-                            .lineLimit(1)
+            // Порядок как в bottomBar-колонке ChatScreen.kt: прогресс → чипы → ответ → поле.
+            ComposerAttachmentsBar(
+                staged: vm.ui.staged,
+                uploadProgress: vm.ui.uploadProgress,
+                onRemoveStaged: { vm.removeStaged($0) },
+                onCancelUpload: { vm.cancelUpload() }
+            )
+
+            if !vm.ui.replyingTo.isEmpty {
+                ReplyDraftPreview(messages: vm.ui.replyingTo, onClear: { vm.clearReply() })
+            }
+
+            if voiceRecorder.isRecording {
+                // Порт recording-ветки композера ChatScreen.kt: строка записи вместо ввода.
+                VoiceRecordBar(recorder: voiceRecorder, sending: vm.ui.sending) { data, duration, waveform in
+                    vm.sendVoice(data, durationSec: duration, waveform: waveform)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+            } else {
+                HStack(alignment: .bottom, spacing: 8) {
+                    AttachmentPickerButton(
+                        disabled: vm.ui.sending || vm.ui.isSecretStub,
+                        onPicked: { vm.stageFiles($0) },
+                        onError: { vm.setError($0) }
+                    )
+
+                    TextField("Сообщение", text: $draft, axis: .vertical)
+                        .lineLimit(1...5)
+                        .focused($composerFocused)
+                        .foregroundStyle(Eb.textPrimary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 20))
+                        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Eb.border))
+                        .onChange(of: draft) { _, text in vm.onInputChanged(text) }
+
+                    if draft.trimmed().isEmpty && vm.ui.staged.isEmpty {
+                        // Микрофон при пустом композере (порт кнопки записи).
+                        VoiceRecordButton(recorder: voiceRecorder, sending: vm.ui.sending)
                     }
-                    Spacer()
+
                     Button {
-                        vm.clearReply()
+                        let text = draft
+                        draft = ""
+                        // С очередью вложений текст уходит их подписью; иначе — обычное сообщение.
+                        if !vm.ui.staged.isEmpty {
+                            vm.sendStaged(text.trimmed().isEmpty ? nil : text)
+                        } else {
+                            vm.send(text)
+                        }
                     } label: {
-                        Image(systemName: "xmark")
-                            .font(.caption)
-                            .foregroundStyle(Eb.textMuted)
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 38, height: 38)
+                            .background(
+                                (draft.trimmed().isEmpty && vm.ui.staged.isEmpty) || vm.ui.sending
+                                    ? Eb.surface300 : Eb.brand,
+                                in: Circle()
+                            )
                     }
+                    .disabled((draft.trimmed().isEmpty && vm.ui.staged.isEmpty) || vm.ui.sending)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Eb.surface100)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
             }
-
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField("Сообщение", text: $draft, axis: .vertical)
-                    .lineLimit(1...5)
-                    .focused($composerFocused)
-                    .foregroundStyle(Eb.textPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 20))
-                    .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Eb.border))
-                    .onChange(of: draft) { _, text in vm.onInputChanged(text) }
-
-                Button {
-                    let text = draft
-                    draft = ""
-                    vm.send(text)
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 38, height: 38)
-                        .background(
-                            draft.trimmed().isEmpty || vm.ui.sending ? Eb.surface300 : Eb.brand,
-                            in: Circle()
-                        )
-                }
-                .disabled(draft.trimmed().isEmpty || vm.ui.sending)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
         }
         .background(Eb.surface200)
     }
@@ -352,6 +453,13 @@ private struct MessageRow: View {
     let senderAvatarUrl: String?
     let isFirstInRun: Bool
     let isLastInRun: Bool
+    let selectionMode: Bool
+    let selected: Bool
+    let onTap: () -> Void
+    let onStartSelect: () -> Void
+    let onForward: () -> Void
+    let onOpenImage: ([MessageAttachment], Int) -> Void
+    var onOpenSender: (() -> Void)?
     let onReply: () -> Void
     let onReact: (String) -> Void
     let onEdit: () -> Void
@@ -365,22 +473,44 @@ private struct MessageRow: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
+                .background(selected ? Eb.brand.opacity(0.14) : Color.clear)
+                .contentShape(Rectangle())
+                .onTapGesture { if selectionMode { onTap() } }
         } else {
-            HStack(alignment: .bottom, spacing: 6) {
-                if m.isMine { Spacer(minLength: 40) }
-                if isGroup && !m.isMine {
-                    // Слот аватара: виден только у последнего в ране, но место держат все.
-                    Group {
-                        if isLastInRun {
-                            AvatarView(name: m.senderName, avatarUrl: senderAvatarUrl, size: 28)
-                        } else {
-                            Color.clear.frame(width: 28, height: 28)
+            // Галки выбора по краям (у входящих слева, у своих справа), фон выбранной
+            // строки, тап всей строкой в режиме выбора; свайп-ответ на самом пузыре.
+            HStack(alignment: .center, spacing: 0) {
+                if selectionMode && !m.isMine {
+                    SelectionCheck(selected: selected)
+                        .padding(.leading, 2)
+                        .padding(.trailing, 6)
+                }
+                HStack(alignment: .bottom, spacing: 6) {
+                    if m.isMine { Spacer(minLength: 40) }
+                    if isGroup && !m.isMine {
+                        // Слот аватара: виден только у последнего в ране, но место держат все.
+                        Group {
+                            if isLastInRun {
+                                AvatarView(name: m.senderName, avatarUrl: senderAvatarUrl, size: 28)
+                                    .onTapGesture { onOpenSender?() }
+                            } else {
+                                Color.clear.frame(width: 28, height: 28)
+                            }
                         }
                     }
+                    bubble
+                    if !m.isMine { Spacer(minLength: 40) }
                 }
-                bubble
-                if !m.isMine { Spacer(minLength: 40) }
+                .swipeToReply(isMine: m.isMine, enabled: !selectionMode, onReply: onReply)
+                if selectionMode && m.isMine {
+                    SelectionCheck(selected: selected)
+                        .padding(.leading, 6)
+                        .padding(.trailing, 2)
+                }
             }
+            .background(selected ? Eb.brand.opacity(0.14) : Color.clear)
+            .contentShape(Rectangle())
+            .onTapGesture { if selectionMode { onTap() } }
             .padding(.top, isFirstInRun ? 8 : 2)
             .padding(.bottom, 1)
         }
@@ -488,13 +618,21 @@ private struct MessageRow: View {
                 ? [GridItem(.flexible())]
                 : [GridItem(.flexible(), spacing: 3), GridItem(.flexible(), spacing: 3)]
             LazyVGrid(columns: columns, spacing: 3) {
-                ForEach(Array(images.enumerated()), id: \.offset) { _, att in
+                ForEach(Array(images.enumerated()), id: \.offset) { idx, att in
                     attachmentImage(att)
+                        .onTapGesture {
+                            if selectionMode { onTap() } else { onOpenImage(images, idx) }
+                        }
                 }
             }
         }
         ForEach(Array(files.enumerated()), id: \.offset) { _, att in
-            fileRow(att)
+            if att.type == "AUDIO" {
+                // «AUDIO» → waveform-плеер вместо файловой строки (порт AttachmentView).
+                VoiceMessagePlayer(url: att.url, durationSec: m.audioDurationSec, waveform: m.waveform)
+            } else {
+                fileRow(att)
+            }
         }
     }
 
@@ -597,6 +735,9 @@ private struct MessageRow: View {
         } label: {
             Label("Копировать", systemImage: "doc.on.doc")
         }
+        Button(action: onForward) {
+            Label("Переслать", systemImage: "arrowshape.turn.up.right")
+        }
         if m.isMine && !m.deleted && m.type == "TEXT" {
             Button(action: onEdit) {
                 Label("Изменить", systemImage: "pencil")
@@ -606,6 +747,10 @@ private struct MessageRow: View {
             Button(role: .destructive, action: onDelete) {
                 Label("Удалить", systemImage: "trash")
             }
+        }
+        Divider()
+        Button(action: onStartSelect) {
+            Label("Выбрать", systemImage: "checkmark.circle")
         }
     }
 

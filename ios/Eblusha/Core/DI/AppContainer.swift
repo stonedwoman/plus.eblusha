@@ -12,6 +12,10 @@ final class AppContainer {
     let authRepository: AuthRepository
     let realtimeClient: RealtimeClient
     let chatRepository: ChatRepository
+    let contactsRepository: ContactsRepository
+    let profileRepository: ProfileRepository
+    let liveKitRepository: LiveKitRepository
+    let callManager: CallManager
 
     private init() {
         let session = SessionStore()
@@ -22,6 +26,17 @@ final class AppContainer {
         self.authRepository = AuthRepository(api: api, session: session, deviceIdProvider: deviceId)
         self.realtimeClient = RealtimeClient(session: session, deviceIdProvider: deviceId, api: api)
         self.chatRepository = ChatRepository(api: api, session: session)
+        self.contactsRepository = ContactsRepository(api: api, session: session)
+        self.profileRepository = ProfileRepository(api: api, deviceIdProvider: deviceId, session: session)
+        self.liveKitRepository = LiveKitRepository(api: api, session: session)
+        // CallManager сам подписывается на realtime.events и AppLifecycle в init —
+        // создаём его жадно, чтобы входящие звонки ловились без открытого UI звонка.
+        self.callManager = CallManager(
+            realtime: realtimeClient,
+            liveKit: liveKitRepository,
+            session: session,
+            chatRepository: chatRepository
+        )
     }
 
     /// Порт container.clearLocalData(): при выходе стираем всё локальное.

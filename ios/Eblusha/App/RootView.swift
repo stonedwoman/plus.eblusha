@@ -37,6 +37,11 @@ struct RootView: View {
                     }
                 }
             }
+
+            // Оверлей звонков ПОВЕРХ всего приложения (порт CallScreen поверх RootNavHost).
+            if case .loggedIn = session.state {
+                CallOverlay(manager: container.callManager)
+            }
         }
         .task {
             guard !bootstrapped else { return }
@@ -108,7 +113,9 @@ private struct HomeNavView: View {
 
     @StateObject private var listVM: ChatListViewModel
     @State private var openConversation: Conversation?
-    @State private var showLogoutConfirm = false
+    @State private var showContacts = false
+    @State private var showSettings = false
+    @State private var showNewGroup = false
 
     init(container: AppContainer, onLogout: @escaping () -> Void) {
         self.onLogout = onLogout
@@ -123,16 +130,42 @@ private struct HomeNavView: View {
             ChatListView(
                 vm: listVM,
                 onOpenChat: { openConversation = $0 },
-                onOpenSettings: { showLogoutConfirm = true }
+                onOpenContacts: { showContacts = true },
+                onOpenSettings: { showSettings = true },
+                onNewGroup: { showNewGroup = true }
             )
             .navigationDestination(item: $openConversation) { conversation in
                 ChatView(conversation: conversation) { openConversation = nil }
             }
+            .navigationDestination(isPresented: $showContacts) {
+                ContactsView(
+                    onBack: { showContacts = false },
+                    onOpenConversation: { ref in
+                        showContacts = false
+                        Task { @MainActor in
+                            openConversation = await AppContainer.shared.chatRepository.resolveRef(ref)
+                        }
+                    }
+                )
+                .toolbar(.hidden, for: .navigationBar) // у ContactsView своя шапка с «назад»
+            }
+            .navigationDestination(isPresented: $showSettings) {
+                SettingsView(onBack: { showSettings = false }, onLogout: onLogout)
+            }
+            .navigationDestination(isPresented: $showNewGroup) {
+                CreateGroupView(
+                    onBack: { showNewGroup = false },
+                    onCreated: { ref in
+                        showNewGroup = false
+                        // Порт onCreated из HomeNavHost: открыть свежесозданную группу.
+                        Task { @MainActor in
+                            listVM.refresh()
+                            openConversation = await AppContainer.shared.chatRepository.resolveRef(ref)
+                        }
+                    }
+                )
+            }
             .toolbar(.hidden, for: .navigationBar)
-        }
-        .confirmationDialog("Профиль", isPresented: $showLogoutConfirm) {
-            Button("Выйти из аккаунта", role: .destructive, action: onLogout)
-            Button("Отмена", role: .cancel) {}
         }
     }
 }
