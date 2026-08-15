@@ -25,11 +25,18 @@ final class AppLifecycle: ObservableObject {
 
     private init() {
         let center = NotificationCenter.default
+        // Аналог ON_START/ON_STOP из ProcessLifecycleOwner, а НЕ willResignActive:
+        // шторка уведомлений, Пункт управления и системный алерт снимают «активность»,
+        // но приложение остаётся на экране — по willResignActive мы гасили бы камеру
+        // посреди видеозвонка и врали бы собеседникам «ушёл в фон».
+        observers.append(center.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.isForeground = true })
         observers.append(center.addObserver(
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.isForeground = true })
         observers.append(center.addObserver(
-            forName: UIApplication.willResignActiveNotification, object: nil, queue: .main
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.isForeground = false })
     }
 

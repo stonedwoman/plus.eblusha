@@ -55,9 +55,13 @@ enum SecretCrypto {
 
     // MARK: - nacl.secretbox (XSalsa20-Poly1305)
 
-    /// nacl.secretbox: возвращает [16-байтовый тег || шифртекст].
-    static func secretBox(message: Data, nonce: Data, key: Data) -> Data {
-        precondition(nonce.count == nonceBytes && key.count == keyBytes, "secretbox: bad nonce/key")
+    /// nacl.secretbox: возвращает [16-байтовый тег || шифртекст]; nil при негодных длинах.
+    ///
+    /// Раньше здесь стоял precondition — то есть ловушка процесса. Длины сюда приходят из
+    /// сети (ключ треда приезжает в key_package), поэтому падать процессом нельзя ни при
+    /// каких данных: возвращаем nil, как это уже делает secretBoxOpen.
+    static func secretBox(message: Data, nonce: Data, key: Data) -> Data? {
+        guard nonce.count == nonceBytes, key.count == keyBytes else { return nil }
         let m = [UInt8](message)
         let n = [UInt8](nonce)
         let subkey = hsalsa20(key: [UInt8](key), input16: Array(n[0..<16]))
@@ -194,7 +198,8 @@ enum SecretCrypto {
         let rk = randomKey()
         let rn = randomNonce()
         let rm = Data("Еблуша secret ✓".utf8)
-        return secretBoxOpen(cipher: secretBox(message: rm, nonce: rn, key: rk), nonce: rn, key: rk) == rm
+        guard let roundTrip = secretBox(message: rm, nonce: rn, key: rk) else { return false }
+        return secretBoxOpen(cipher: roundTrip, nonce: rn, key: rk) == rm
     }
 
     private static func fromHex(_ s: String) -> Data? {

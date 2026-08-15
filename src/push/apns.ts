@@ -200,6 +200,45 @@ function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPaylo
   };
 }
 
+/**
+ * Живое соединение с APNs, общее на процесс. Apple прямо просит держать коннект и слать
+ * в него поток пушей: новое TLS+HTTP/2-рукопожатие на каждое уведомление она трактует как
+ * DoS-паттерн и начинает резать. Пересоздаём только когда соединение действительно умерло.
+ */
+let sharedSession: http2.ClientHttp2Session | null = null;
+let sharedSessionHost: string | null = null;
+
+async function getSession(host: string): Promise<http2.ClientHttp2Session | null> {
+  if (sharedSession && !sharedSession.closed && !sharedSession.destroyed && sharedSessionHost === host) {
+    return sharedSession;
+  }
+  // Хост сменился (sandbox↔prod через конфиг) — старое соединение больше не нужно.
+  if (sharedSession && sharedSessionHost !== host) {
+    sharedSession.close();
+  }
+  const session = await connect(host);
+  if (!session) {
+    sharedSession = null;
+    sharedSessionHost = null;
+    return null;
+  }
+  // GOAWAY прилетает штатно: Apple периодически просит переехать на новое соединение.
+  const forget = () => {
+    if (sharedSession === session) {
+      sharedSession = null;
+      sharedSessionHost = null;
+    }
+  };
+  session.once("close", forget);
+  session.once("goaway", forget);
+  session.once("error", forget);
+  // Простаивающее соединение не должно держать процесс живым при остановке воркера.
+  session.unref();
+  sharedSession = session;
+  sharedSessionHost = host;
+  return session;
+}
+
 function connect(host: string): Promise<http2.ClientHttp2Session | null> {
   return new Promise((resolve) => {
     let settled = false;
@@ -292,14 +331,14 @@ export async function sendApns(targets: PushTarget[], payload: PushPayload): Pro
   const jwt = getJwt(config);
   if (!jwt) return { sent: 0, dead: [] };
 
-  const session = await connect(config.host);
+  const session = await getSession(config.host);
   if (!session) return { sent: 0, dead: [] };
 
   const dead: string[] = [];
   let sent = 0;
-  try {
-    // Один HTTP/2-коннект, запросы по очереди: устройств у пользователя единицы,
-    // мультиплексирование и пулы соединений тут ничего не выиграют (ср. цикл в fcm.ts).
+  {
+    // Запросы по очереди: устройств у пользователя единицы, мультиплексирование тут
+    // ничего не выиграет (ср. цикл в fcm.ts). Само соединение переиспользуется — см. getSession.
     for (const target of targets) {
       const prepared = buildRequest(config, target, payload);
       if (!prepared) continue; // например, message на voip-токен — туда нельзя
@@ -331,8 +370,6 @@ export async function sendApns(targets: PushTarget[], payload: PushPayload): Pro
         "APNs: send failed",
       );
     }
-  } finally {
-    session.close();
   }
   return { sent, dead };
 }

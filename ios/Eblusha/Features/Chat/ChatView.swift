@@ -63,6 +63,12 @@ struct ChatView: View {
     @State private var highlightedId: String?
     /// Идёт переход: авто-подгрузка у верха молчит — вклейка страницы сдвинула бы прицел.
     @State private var jumping = false
+    /// Лента у низа — только тогда новое сообщение утягивает экран за собой.
+    @State private var atBottom = true
+    /// Открытое вложение (видео в плеере, документ в системном просмотре).
+    @State private var preview: AttachmentPreview?
+    /// Идёт скачивание/расшифровка перед открытием.
+    @State private var preparingAttachment = false
     @StateObject private var voiceRecorder = VoiceRecorder()
     @FocusState private var composerFocused: Bool
 
@@ -175,6 +181,21 @@ struct ChatView: View {
         }
         .fullScreenCover(item: $viewer) { state in
             ImageViewer(images: state.images, startIndex: state.startIndex, onClose: { viewer = nil })
+        }
+        .fullScreenCover(item: $preview) { item in
+            if item.isVideo {
+                VideoPlayerSheet(url: item.url, onClose: { preview = nil })
+            } else {
+                DocumentPreviewSheet(url: item.url)
+            }
+        }
+        .overlay {
+            if preparingAttachment {
+                ZStack {
+                    Color.black.opacity(0.35).ignoresSafeArea()
+                    ProgressView().tint(.white)
+                }
+            }
         }
         // Приглашение доверенного устройства: QR + код + остаток TTL, затем «подключён».
         .sheet(isPresented: Binding(
@@ -349,6 +370,9 @@ struct ChatView: View {
                                     avatarUrl: message.senderAvatarUrl
                                 )
                             },
+                            decryptSecretAttachment: vm.ui.isSecret
+                                ? { await vm.decryptSecretAttachment($0) } : nil,
+                            onOpenAttachment: { att in openAttachment(att) },
                             onReply: { vm.setReply(message) },
                             onReact: { vm.react(message, emoji: $0) },
                             onEdit: {
@@ -359,6 +383,14 @@ struct ChatView: View {
                         )
                         .id(message.id)
                     }
+                    // Кто у низа — тот едет за новым сообщением; кто читает историю —
+                    // остаётся на месте. Безусловный скролл выдёргивал человека из старой
+                    // переписки на каждое чужое сообщение. Видимость этого маркера и есть
+                    // «мы у низа» (onScrollGeometryChange появился только в iOS 18).
+                    Color.clear
+                        .frame(height: 1)
+                        .onAppear { atBottom = true }
+                        .onDisappear { atBottom = false }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -366,10 +398,9 @@ struct ChatView: View {
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
             .onChange(of: vm.ui.messages.last?.id) { _, lastId in
-                if let lastId {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(lastId, anchor: .bottom)
-                    }
+                guard let lastId, atBottom, !jumping else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(lastId, anchor: .bottom)
                 }
             }
         }
@@ -451,6 +482,23 @@ struct ChatView: View {
         .background(Eb.surface200)
     }
 
+    /// Тап по видео/файлу: секретное расшифровываем, обычное скачиваем и показываем
+    /// системным просмотром (сетевой URL прокси требует токен, QuickLook его не пошлёт).
+    private func openAttachment(_ att: MessageAttachment) {
+        guard !preparingAttachment else { return }
+        preparingAttachment = true
+        Task { @MainActor in
+            defer { preparingAttachment = false }
+            let decrypt: ((MessageAttachment) async -> URL?)? = vm.ui.isSecret
+                ? { await vm.decryptSecretAttachment($0) } : nil
+            if let ready = await AttachmentOpener.prepare(att, decryptSecret: decrypt) {
+                preview = ready
+            } else {
+                vm.setError("Не удалось открыть вложение")
+            }
+        }
+    }
+
     /// Сервер умеет только «страницу назад по курсору» — оригинал старше загруженного
     /// тянется страницами (vm.loadUntil), затем scrollTo к центру + подсветка 1.6 с.
     private func jumpToQuote(_ targetId: String, proxy: ScrollViewProxy) {
@@ -520,6 +568,9 @@ private struct MessageRow: View {
     let onForward: () -> Void
     let onOpenImage: ([MessageAttachment], Int) -> Void
     var onOpenSender: (() -> Void)?
+    /// Расшифровка секретного вложения в локальный файл (в обычном чате не зовётся).
+    var decryptSecretAttachment: ((MessageAttachment) async -> URL?)?
+    let onOpenAttachment: (MessageAttachment) -> Void
     let onReply: () -> Void
     let onReact: (String) -> Void
     let onEdit: () -> Void
@@ -701,6 +752,19 @@ private struct MessageRow: View {
     }
 
     private func attachmentImage(_ att: MessageAttachment) -> some View {
+        // Секретное вложение по своему url отдаёт ШИФРТЕКСТ — его нельзя показывать
+        // напрямую: сначала расшифровываем ключом треда в кэш-файл (порт rememberSecretDecrypted).
+        if att.secretNonce != nil {
+            return AnyView(
+                SecretImageView(att: att, decrypt: decryptSecretAttachment)
+                    .frame(minHeight: 90, maxHeight: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            )
+        }
+        return AnyView(plainAttachmentImage(att))
+    }
+
+    private func plainAttachmentImage(_ att: MessageAttachment) -> some View {
         Group {
             if let thumb = thumbMediaUrl(att.url), let url = URL(string: thumb) {
                 AsyncImage(url: url) { phase in
@@ -720,6 +784,15 @@ private struct MessageRow: View {
     }
 
     private func fileRow(_ att: MessageAttachment) -> some View {
+        Button {
+            if selectionMode { onTap() } else { onOpenAttachment(att) }
+        } label: {
+            fileRowLabel(att)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func fileRowLabel(_ att: MessageAttachment) -> some View {
         HStack(spacing: 8) {
             Image(systemName: att.type == "AUDIO" ? "mic.fill"
                 : att.type == "VIDEO" ? "film" : "doc.fill")
@@ -739,6 +812,9 @@ private struct MessageRow: View {
                         .foregroundStyle(Eb.textMuted)
                 }
             }
+            Spacer(minLength: 4)
+            Image(systemName: att.type == "VIDEO" ? "play.circle" : "arrow.down.circle")
+                .foregroundStyle(Eb.textMuted)
         }
         .padding(6)
         .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))

@@ -428,7 +428,9 @@ final class SecretRepository {
                 throw SecretContractError(message: "Ключ шифрования ещё не получен")
             }
             let nonce = SecretCrypto.randomNonce()
-            let cipher = SecretCrypto.secretBox(message: Data(text.utf8), nonce: nonce, key: key)
+            guard let cipher = SecretCrypto.secretBox(message: Data(text.utf8), nonce: nonce, key: key) else {
+                throw SecretContractError(message: "Ключ шифрования повреждён")
+            }
             let createdAt = Self.isoNow()
             try await self.api.postIgnoringResponse(
                 "secret/messages/push",
@@ -482,7 +484,9 @@ final class SecretRepository {
             var items: [SecretAttachmentItemDto] = []
             for f in files {
                 let fileNonce = SecretCrypto.randomNonce()
-                let cipher = SecretCrypto.secretBox(message: f.bytes, nonce: fileNonce, key: key)
+                guard let cipher = SecretCrypto.secretBox(message: f.bytes, nonce: fileNonce, key: key) else {
+                    throw SecretContractError(message: "Ключ шифрования повреждён")
+                }
                 let uploaded = try await self.uploadEncryptedBlob(cipher) { sent in
                     // Прогресс в БАЙТАХ ИСХОДНИКА: шифртекст длиннее на 16 Б — прижимаем,
                     // чтобы полоса не «перепрыгивала» размер файла.
@@ -526,7 +530,9 @@ final class SecretRepository {
                 attachments: items
             ))
             let msgNonce = SecretCrypto.randomNonce()
-            let cipherMsg = SecretCrypto.secretBox(message: descriptor, nonce: msgNonce, key: key)
+            guard let cipherMsg = SecretCrypto.secretBox(message: descriptor, nonce: msgNonce, key: key) else {
+                throw SecretContractError(message: "Ключ шифрования повреждён")
+            }
             let createdAt = Self.isoNow()
             try await self.api.postIgnoringResponse(
                 "secret/messages/push",
@@ -733,7 +739,9 @@ final class SecretRepository {
         ]
         let payloadData = try JSONSerialization.data(withJSONObject: payload)
         let nonce = SecretCrypto.randomNonce()
-        let cipher = SecretCrypto.secretBox(message: payloadData, nonce: nonce, key: sessionKey)
+        guard let cipher = SecretCrypto.secretBox(message: payloadData, nonce: nonce, key: sessionKey) else {
+            throw SecretContractError(message: "Не удалось зашифровать пакет")
+        }
         try await sendEnvelope(SecretDirectEnvelope(
             toDeviceId: toDeviceId,
             msgId: Self.uuid(),
@@ -790,7 +798,11 @@ final class SecretRepository {
         }
         guard let threadId = (payload["threadId"] as? String) ?? item.headerJson.threadId,
               let keyB64 = payload["key"] as? String,
-              let key = SecretCrypto.b64UrlDecode(keyB64) else { return false }
+              let key = SecretCrypto.b64UrlDecode(keyB64),
+              // Длину проверяем ЗДЕСЬ, до записи в Keychain: пакет приходит из сети, и
+              // ключ негодного размера иначе оседал бы в хранилище навсегда, отравляя
+              // тред (веб делает ту же проверку в secretThreadKeyStore).
+              key.count == SecretCrypto.keyBytes else { return false }
         keyStore.setThreadKey(threadId, key: key)
         NSLog("SecretE2EE: imported secret thread key for %@", threadId)
         return true
@@ -1132,7 +1144,9 @@ final class SecretRepository {
         ]
         let payloadData = try JSONSerialization.data(withJSONObject: payload)
         let nonce = SecretCrypto.randomNonce()
-        let cipher = SecretCrypto.secretBox(message: payloadData, nonce: nonce, key: sessionKey)
+        guard let cipher = SecretCrypto.secretBox(message: payloadData, nonce: nonce, key: sessionKey) else {
+            throw SecretContractError(message: "Не удалось зашифровать пакет")
+        }
         try await sendEnvelope(SecretDirectEnvelope(
             toDeviceId: toDeviceId,
             msgId: Self.uuid(),

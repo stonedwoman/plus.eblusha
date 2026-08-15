@@ -93,6 +93,12 @@ final class SecretKeyStore {
     }
 
     func setThreadKey(_ threadId: String, key: Data) {
+        // Второй рубеж после importKeyPackage: в хранилище не должно попасть ничего,
+        // чем нельзя шифровать — иначе тред «отравлен» и переживает перезапуск.
+        guard key.count == SecretCrypto.keyBytes else {
+            NSLog("SecretKeyStore: отклонён ключ треда %@ негодной длины %d", threadId, key.count)
+            return
+        }
         lock.lock()
         defer { lock.unlock() }
         var current = readMap(Keys.threadKeys)

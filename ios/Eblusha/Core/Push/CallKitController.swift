@@ -74,17 +74,26 @@ final class CallKitController: NSObject {
                 completion()
                 return
             }
+            // Уже есть системный звонок ДРУГОЙ беседы: его состояние трогать нельзя —
+            // затерев callUUID, мы потеряли бы управление живым звонком и он навсегда
+            // остался бы «активным» в системе. Новому честно отвечаем «занято».
+            if self.callUUID != nil {
+                self.reportPhantomAndEnd(completion: completion)
+                return
+            }
             let uuid = UUID()
-            self.callUUID = uuid
-            self.callConversationId = conversationId
-            self.incomingVideo = video
-            self.endingViaAction = false
             self.provider.reportNewIncomingCall(with: uuid, update: Self.makeUpdate(callerName: callerName, video: video)) { error in
                 if let error {
                     // Например, «Не беспокоить» с запретом звонков — звонок не показан,
-                    // чистим, сокет доставит call:incoming в приложение обычным путём.
+                    // сокет доставит call:incoming в приложение обычным путём.
                     NSLog("CallKitController: reportNewIncomingCall failed: %@", String(describing: error))
-                    self.clear()
+                } else {
+                    // Поля выставляем ТОЛЬКО после успеха: иначе неудачный репорт оставил
+                    // бы контроллер думать, что системный звонок существует.
+                    self.callUUID = uuid
+                    self.callConversationId = conversationId
+                    self.incomingVideo = video
+                    self.endingViaAction = false
                 }
                 completion()
             }
@@ -109,9 +118,20 @@ final class CallKitController: NSObject {
         DispatchQueue.main.async {
             guard let uuid = self.callUUID,
                   conversationId == nil || conversationId == self.callConversationId else { return }
+            // «Отбой» относится к НЕПРИНЯТОМУ звонку: сервер шлёт call-cancel, когда
+            // звонящий передумал. Если разговор уже идёт, этот же пуш (доставленный с
+            // опозданием или продублированный) не должен класть трубку живому звонку.
+            guard !Self.isCallAnswered(conversationId: self.callConversationId) else { return }
             self.provider.reportCall(with: uuid, endedAt: nil, reason: .remoteEnded)
             self.clear()
         }
+    }
+
+    /// Идёт ли уже разговор по этой беседе (звонок принят) — см. reportRemoteEnded.
+    private static func isCallAnswered(conversationId: String?) -> Bool {
+        let manager = AppContainer.shared.callManager
+        guard manager.phase == .connecting || manager.phase == .inCall else { return false }
+        return conversationId == nil || manager.conversationId == conversationId
     }
 
     /// call-cancel ПРИШЁЛ VoIP-ПУШЕМ: правило «каждый VoIP-пуш обязан породить репорт»
@@ -121,7 +141,9 @@ final class CallKitController: NSObject {
     func handleCancelPush(conversationId: String?, completion: @escaping () -> Void) {
         DispatchQueue.main.async {
             if let uuid = self.callUUID,
-               conversationId == nil || conversationId == self.callConversationId {
+               conversationId == nil || conversationId == self.callConversationId,
+               // Разговор уже идёт — отбой опоздал и относится к прошлой фазе (см. reportRemoteEnded).
+               !Self.isCallAnswered(conversationId: self.callConversationId) {
                 self.provider.reportCall(with: uuid, endedAt: nil, reason: .remoteEnded)
                 self.clear()
                 completion()
@@ -236,10 +258,13 @@ extension CallKitController: CXProviderDelegate {
             // Пока ждали, отбой мог уже прийти (call:ended) — тогда фаза не .incoming,
             // acceptIncoming молча выйдет, а системный звонок закроет наблюдатель фазы.
             //
-            // withVideo: системная кнопка ответа на звонок, репортованный как видео, —
-            // явное согласие на видео (в своём UI это отдельная кнопка «принять с видео»;
-            // аудиозвонок камеру не включит: video здесь false).
-            container.callManager.acceptIncoming(withVideo: video)
+            // Камеру НЕ включаем даже у видеозвонка: у системной кнопки ответа один
+            // смысл на всё, а в эталоне «принять с видео» — отдельная кнопка. Человек,
+            // ответивший с локскрина, не давал согласия показывать себя; камера
+            // включается своей кнопкой уже внутри экрана звонка. hasVideo в CXCallUpdate
+            // при этом остаётся — система честно рисует входящий видеозвонок.
+            _ = video
+            container.callManager.acceptIncoming(withVideo: false)
             action.fulfill()
         }
     }

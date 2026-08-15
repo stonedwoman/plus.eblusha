@@ -65,6 +65,19 @@ final class VoIPPushHandler: NSObject, PKPushRegistryDelegate {
                 .flatMap { $0.isEmpty ? nil : $0 } ?? "Входящий звонок"
             let video = Self.boolValue(dict["video"])
 
+            // Сессия могла не подняться: процесс мог стартовать этим самым пушем.
+            AppContainer.shared.warmup()
+
+            // Звонок уже идёт или уже показан приложением по сокету — второй экран не
+            // нужен: два UI одновременно, и системная «отклонить» положила бы трубку
+            // живому разговору. Перед PushKit всё равно обязаны отчитаться — гасим фантом.
+            let manager = AppContainer.shared.callManager
+            if manager.phase != .idle {
+                CallKitController.shared.reportPhantomAndEnd(completion: completion)
+                DispatchQueue.main.async { AppContainer.shared.realtimeClient.connect() }
+                return
+            }
+
             // 1) ОБЯЗАТЕЛЬНЫЙ немедленный CallKit-репорт (см. шапку файла).
             CallKitController.shared.reportIncomingCall(
                 conversationId: conversationId,
@@ -90,6 +103,7 @@ final class VoIPPushHandler: NSObject, PKPushRegistryDelegate {
         }
 
         if kind == "call-cancel" {
+            AppContainer.shared.warmup()
             // Закрыть системный звонок (или отчитаться фантомом — правило пуш=репорт).
             CallKitController.shared.handleCancelPush(conversationId: conversationId, completion: completion)
             DispatchQueue.main.async {

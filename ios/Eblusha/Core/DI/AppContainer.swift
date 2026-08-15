@@ -68,6 +68,12 @@ final class AppContainer {
 
     /// Прогрев на старте: поднять сессию из Keychain (порт container.warmup()).
     func warmup() {
+        // Идемпотентно: зовут и PushAppDelegate (старт по VoIP-пушу, когда сцены ещё нет),
+        // и RootView.task. Повторное чтение Keychain безвредно, но лишнее — гейт по флагу.
+        guard !warmedUp else { return }
+        warmedUp = true
         sessionStore.load()
     }
+
+    private var warmedUp = false
 }
