@@ -1,11 +1,11 @@
 import Foundation
 import Combine
 
-/// Порт `feature/chat/ChatViewModel.kt` — обычные (несекретные) беседы.
+/// Порт `feature/chat/ChatViewModel.kt`.
 ///
-/// Секретный V2-режим здесь не портирован: он целиком зависит от SecretRepository
-/// (фаза секретных чатов) — открытие секретки показывает заглушку. Вложения и
-/// голосовые добавятся вместе с композером вложений.
+/// Секретный V2-режим (E2EE-транспорт вместо /conversations/*) живёт в расширении
+/// ChatViewModelSecret.swift — здесь только его хранимые поля и развилки `secretMode`,
+/// потому что extension в Swift не умеет добавлять хранимые свойства.
 @MainActor
 final class ChatViewModel: ObservableObject {
 
@@ -35,44 +35,88 @@ final class ChatViewModel: ObservableObject {
         var uploadProgress: Float?
         /// Очередь вложений (веб-паритет: выбранное НЕ отправляется сразу, а встаёт чипами).
         var staged: [OutgoingFile] = []
-        /// Секретная беседа V2 — экран показывает заглушку до фазы секретных чатов.
-        var isSecretStub = false
+        // --- Секретный тред V2 (имена 1:1 с Kotlin ChatUiState) ---
+        /// E2EE-транспорт: без квитанций, реакций и правки (веб-паритет).
+        var isSecret = false
+        /// Ключ треда на руках — композер реально может шифровать.
+        var secretReady = false
+        /// Сообщения, ждущие прихода ключа создателя.
+        var secretQueued = 0
+        /// PENDING-приглашение, которое это устройство должно принять или отклонить.
+        var secretInvite = false
+        var secretInviteBusy = false
+        /// Приглашение отклонено/отменено → экран уходит назад.
+        var secretDeclined = false
+        /// МЫ создали приглашение — блокировка до принятия собеседником.
+        var secretWaiting = false
+        // --- Привязка устройства (внутри секретного чата, как в вебе) ---
+        /// У аккаунта есть ДРУГИЕ устройства — значит ключ можно попросить у них.
+        var hasOtherDevices = false
+        /// У этого устройства есть хоть один ключ секретки → оно НЕ новое.
+        var hasAnySecretKeys = false
+        var linkScanning = false
+        var linkCode = ""
+        var linkBusy = false
+        /// Запрос ушёл на N устройств — ждём подтверждения там.
+        var linkRequestedOn: Int?
+        var linkError: String?
+        /// Мы — доверенное устройство: показываем приглашение (QR + код + остаток TTL).
+        var linkInvite: DeviceLinkInvite?
+        var linkInviteLeftMs: Int64 = 0
+        /// Сколько ключей приехало при удачной привязке (для тоста «готово»).
+        var linkedKeys: Int?
+        /// Кому мы отдали ключи: имя устройства + число тредов.
+        var linkedOut: LinkedDevice?
     }
 
-    @Published private(set) var ui = UiState()
+    @Published var ui = UiState()
 
-    private let repo: ChatRepository
-    private let realtime: RealtimeClient
-    private let conversationId: String
+    let repo: ChatRepository
+    let realtime: RealtimeClient
+    let conversationId: String
 
     private var typingSent = false
     /// true → аборт текущего аплоада между частями (кнопка «отмена» у прогресса).
-    private var uploadCancelled = false
+    var uploadCancelled = false
     private var typingHeartbeat: Task<Void, Never>?
     private var typingExpiry: Task<Void, Never>?
     private var lastInputMs: TimeInterval = 0
     private var lastReload: TimeInterval = 0
     private var requestedPreviews: Set<String> = []
-    private var cancellables: Set<AnyCancellable> = []
+    var cancellables: Set<AnyCancellable> = []
 
     // Стражи пагинации (веб-паритет): флаг ставится синхронно ДО запуска (триггер у
     // верха срабатывает каждый кадр), pagedBack замораживает курсор после листания назад.
-    private var loadingOlderFlag = false
-    private var pagedBack = false
+    var loadingOlderFlag = false // internal: ChatViewModelJump.loadUntil ждёт параллельную подгрузку
+    var pagedBack = false
     // Карантин после НЕУДАЧНОЙ подгрузки назад — иначе мгновенный бесконечный ретрай.
-    private var lastOlderFailMs: TimeInterval = 0
+    var lastOlderFailMs: TimeInterval = 0
 
     private var peerUserId: String?
 
-    private static let pageSize = 80 // веб MESSAGES_PAGE_SIZE
+    // --- Секретный режим (логика — в ChatViewModelSecret.swift) ---
+    let secretRepo: SecretRepository
+    /// В Kotlin поле @Volatile; здесь класс @MainActor, гонок нет по построению.
+    var secretMode = false
+    var secretPeers: [String] = []
+    /// Отправки, поставленные в очередь до прихода ключа треда.
+    var secretQueue: [String] = []
+
+    static let pageSize = 80 // веб MESSAGES_PAGE_SIZE
     // >10 МБ уходит чанками (веб-паритет); страховочный потолок — 100 МБ (файл в памяти).
     private static let maxUploadBytes = 100 * 1024 * 1024
     private static let olderRetryCooldown: TimeInterval = 4
 
-    init(repo: ChatRepository, realtime: RealtimeClient, conversationId: String) {
+    init(
+        repo: ChatRepository,
+        realtime: RealtimeClient,
+        conversationId: String,
+        secretRepo: SecretRepository
+    ) {
         self.repo = repo
         self.realtime = realtime
         self.conversationId = conversationId
+        self.secretRepo = secretRepo
 
         realtime.joinConversation(conversationId)
 
@@ -107,9 +151,7 @@ final class ChatViewModel: ObservableObject {
     private func bootstrap() async {
         let meta = await repo.conversationMeta(conversationId)
         if meta?.isSecretV2 == true {
-            ui.loading = false
-            ui.isSecretStub = true
-            ui.headerSubtitle = "🔒 секретный чат"
+            await initSecret()
             return
         }
         let group = meta?.isGroup ?? false
@@ -128,6 +170,8 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func handle(_ event: RealtimeEvent) {
+        // Секретный режим забирает свои события целиком (порт ранних return'ов Kotlin).
+        if handleSecretEvent(event) { return }
         switch event {
         case .typing(let cid, let userId, let isTyping, let displayName):
             guard cid == conversationId, userId != repo.currentUserId() else { return }
@@ -142,12 +186,12 @@ final class ChatViewModel: ObservableObject {
             }
 
         case .messageNew(let cid, _, _, let message), .messageNotify(let cid, _, _, let message):
-            guard cid == conversationId, !ui.isSecretStub else { return }
+            guard cid == conversationId, !secretMode else { return }
             appendRealtime(message)
 
         case .messageUpdate(let cid, _), .messageReaction(let cid, _),
              .receipts(let cid, _, _, _):
-            guard cid == conversationId, !ui.isSecretStub else { return }
+            guard cid == conversationId, !secretMode else { return }
             scheduleReload()
 
         case .presence(let userId, let status, _):
@@ -164,7 +208,10 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Загрузка и пагинация
 
     func load() {
-        guard !ui.isSecretStub else { return }
+        if secretMode {
+            Task { await loadSecret() }
+            return
+        }
         Task {
             ui.loading = ui.messages.isEmpty
             ui.error = nil
@@ -203,7 +250,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// Синхронный захват права «грузим назад» — до запуска задачи, иначе двойная загрузка.
-    private func claimOlder() -> Bool {
+    func claimOlder() -> Bool { // internal: ChatViewModelJump.loadUntil
         if loadingOlderFlag || !ui.hasMore || ui.nextCursor == nil { return false }
         if Date().timeIntervalSince1970 - lastOlderFailMs < Self.olderRetryCooldown { return false }
         loadingOlderFlag = true
@@ -211,7 +258,8 @@ final class ChatViewModel: ObservableObject {
     }
 
     @discardableResult
-    private func fetchOlderPage() async -> Bool {
+    func fetchOlderPage() async -> Bool { // internal: ChatViewModelJump.loadUntil
+        if secretMode { return await fetchOlderPageSecret() }
         ui.loadingOlder = true
         defer {
             ui.loadingOlder = false
@@ -252,7 +300,13 @@ final class ChatViewModel: ObservableObject {
     /// Ресинк после реконнекта/возврата: тихий refetch БЕЗ markRead — экран может лежать
     /// в бэкстеке, авто-квитирование оттуда рисовало бы ложные «прочитано».
     private func resyncAfterResume() {
-        guard !ui.isSecretStub else { return }
+        if secretMode {
+            Task {
+                await secretRepo.syncInbox()
+                await loadSecret()
+            }
+            return
+        }
         reloadSilently()
     }
 
@@ -273,15 +327,25 @@ final class ChatViewModel: ObservableObject {
 
     func send(_ text: String) {
         let trimmed = text.trimmed()
-        guard !trimmed.isEmpty, !ui.sending, !ui.isSecretStub else { return }
+        guard !trimmed.isEmpty, !ui.sending else { return }
         setTyping(false)
+        if secretMode {
+            sendSecret(trimmed)
+            return
+        }
         let reply = ui.replyingTo
         let replyId = reply.last?.id
+        // Мультиответ: все цитаты уходят в metadata.replyQuoteBundle (≥2, как Kotlin/веб).
+        let bundle: [ReplyInfo]? = reply.count >= 2
+            ? reply.map { ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt) }
+            : nil
         Task {
             ui.sending = true
             ui.error = nil
             ui.replyingTo = []
-            switch await repo.sendText(conversationId, text: trimmed, replyToId: replyId) {
+            switch await repo.sendText(
+                conversationId, text: trimmed, replyToId: replyId, replyBundle: bundle
+            ) {
             case .success(let message):
                 ui.sending = false
                 if !ui.messages.contains(where: { $0.id == message.id }) {
@@ -316,7 +380,7 @@ final class ChatViewModel: ObservableObject {
 
     /// Шлёт все [files] ОДНИМ сообщением (фотоальбом). Веб-капы: 10 фото + 10 файлов.
     func sendAttachments(_ files: [OutgoingFile], caption: String? = nil, onSuccess: (() -> Void)? = nil) {
-        guard !files.isEmpty, !ui.isSecretStub else { return }
+        guard !files.isEmpty else { return }
         if ui.sending {
             ui.error = "Подождите — идёт отправка предыдущего сообщения"
             return
@@ -331,6 +395,11 @@ final class ChatViewModel: ObservableObject {
             return
         }
         uploadCancelled = false
+        if secretMode {
+            // E2EE-вложения шифруются ключом треда и уходят непрозрачными блобами.
+            sendSecretAttachments(limited, caption: caption, onSuccess: onSuccess)
+            return
+        }
         Task {
             ui.sending = true
             ui.error = nil
@@ -414,7 +483,11 @@ final class ChatViewModel: ObservableObject {
     /// Отправляет записанный голосовой клип (data — AAC/MP4 из VoiceRecorder) как
     /// AUDIO-сообщение с длительностью и волной.
     func sendVoice(_ data: Data, durationSec: Int, waveform: [Int]) {
-        guard !ui.sending, !ui.isSecretStub else { return }
+        guard !ui.sending else { return }
+        if secretMode {
+            sendSecretVoice(data, durationSec: durationSec, waveform: waveform)
+            return
+        }
         Task {
             ui.sending = true
             ui.error = nil
@@ -436,16 +509,23 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Действия
 
     func markAllRead() {
-        guard !ui.isSecretStub else { return }
+        guard !secretMode else { return }
         Task { _ = await repo.markConversationRead(conversationId) }
     }
 
-    /// Меню шапки: удалить (1:1) / выйти (группа) — затем уйти с экрана.
+    /// Меню шапки: удалить (1:1) / выйти (группа) / закрыть (секретный) — затем уйти с экрана.
     func deleteOrLeave(onDone: @escaping () -> Void) {
         Task {
-            let result: ApiResult<Void> = ui.isGroup
-                ? await repo.leaveConversation(conversationId)
-                : await repo.deleteConversation(conversationId)
+            // Жёсткое удаление секретки осиротило бы её E2EE-транспортные строки —
+            // штатный демонтаж это decline → CANCELLED (скрыт на всех устройствах).
+            let result: ApiResult<Void>
+            if secretMode {
+                result = await secretRepo.declineInvite(threadId: conversationId)
+            } else if ui.isGroup {
+                result = await repo.leaveConversation(conversationId)
+            } else {
+                result = await repo.deleteConversation(conversationId)
+            }
             switch result {
             case .success: onDone()
             case .failure(let message, _): ui.error = message
@@ -454,7 +534,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func react(_ message: Message, emoji: String) {
-        guard !ui.isSecretStub else { return }
+        guard !secretMode else { return }
         let mine = message.reactions.first { $0.emoji == emoji }?.mine ?? false
         Task {
             if case .success = await repo.toggleReaction(
@@ -466,7 +546,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func edit(messageId: String, content: String) {
-        guard !ui.isSecretStub, !content.trimmed().isEmpty else { return }
+        guard !secretMode, !content.trimmed().isEmpty else { return }
         Task {
             if case .success = await repo.editMessage(messageId: messageId, content: content) {
                 reloadSilently()
@@ -475,7 +555,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func delete(messageId: String) {
-        guard !ui.isSecretStub else { return }
+        guard !secretMode else { return }
         Task {
             if case .success = await repo.deleteMessage(messageId: messageId) {
                 // Помечаем локально: refetch страницы 1 не достаёт долистанные назад.
@@ -523,7 +603,7 @@ final class ChatViewModel: ObservableObject {
 
     /// Пакетное удаление выбранных НАШИХ сообщений (серверное удаление — для всех).
     func deleteSelected() {
-        if ui.isSecretStub { clearSelection(); return }
+        if secretMode { clearSelection(); return }
         let ids = ui.messages
             .filter { ui.selectedIds.contains($0.id) && $0.isMine && !$0.deleted }
             .map(\.id)
@@ -557,7 +637,7 @@ final class ChatViewModel: ObservableObject {
     func forward(targetConversationId: String, messages: [Message]) {
         // Пересылка ИЗ секретки запрещена: forwardMessage ушёл бы в облачный /send открытым
         // текстом + связал бы имя/mime/размер с .enc-блобом на сервере.
-        if ui.isSecretStub { clearSelection(); return }
+        if secretMode { clearSelection(); return }
         clearSelection()
         Task {
             for m in messages where !m.isSystem && !m.deleted {
@@ -570,7 +650,7 @@ final class ChatViewModel: ObservableObject {
 
     /// Зеркало веба: для TEXT со ссылкой без превью просим сервер (по одному разу).
     private func fetchMissingPreviews() {
-        guard !ui.isSecretStub else { return }
+        guard !secretMode else { return }
         let candidates = ui.messages.filter {
             $0.type == "TEXT" && !$0.deleted && $0.linkPreview == nil &&
                 !requestedPreviews.contains($0.id) && extractFirstUrl($0.content) != nil
@@ -590,7 +670,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func markRead() {
-        guard !ui.isSecretStub else { return }
+        guard !secretMode else { return }
         Task { _ = await repo.markConversationRead(conversationId) }
     }
 

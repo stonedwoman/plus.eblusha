@@ -209,6 +209,79 @@ router.get("/:deviceId", async (req, res) => {
   res.json({ device });
 });
 
+/**
+ * Регистрация push-токена устройства. Отдельно от /register, потому что тот вызывается
+ * один раз за установку (когда заводятся ключи), а токен уведомлений живёт своей жизнью:
+ * система выдаёт новый после переустановки, очистки данных или обновления прошивки.
+ */
+router.post("/:deviceId/push", async (req, res) => {
+  const userId = (req as AuthedRequest).user!.id;
+  const { deviceId } = req.params;
+  const parsed = z
+    .object({
+      token: z.string().min(10).max(4096),
+      provider: z.enum(["fcm", "apns", "apns-voip"]).default("fcm"),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid push token" });
+    return;
+  }
+  const device = await prisma.userDevice.findUnique({ where: { id: deviceId } });
+  if (!device || device.userId !== userId || device.revokedAt) {
+    res.status(404).json({ message: "Device not found" });
+    return;
+  }
+  // VoIP-токен iOS живёт в своём слоте: PushKit выдаёт его отдельно от токена обычных
+  // уведомлений, и нужны ОБА — иначе вторая регистрация затирала бы первую и мы теряли
+  // либо уведомления о сообщениях, либо пробуждение под звонок.
+  const isVoip = parsed.data.provider === "apns-voip";
+  // Один и тот же токен может «переехать» на другой аккаунт того же телефона — снимаем его
+  // с прежних владельцев, иначе человек получал бы чужие уведомления.
+  await prisma.userDevice.updateMany({
+    where: isVoip
+      ? { pushVoipToken: parsed.data.token, NOT: { id: deviceId } }
+      : { pushToken: parsed.data.token, NOT: { id: deviceId } },
+    data: isVoip
+      ? { pushVoipToken: null, pushVoipUpdatedAt: null }
+      : { pushToken: null, pushProvider: null },
+  });
+  await prisma.userDevice.update({
+    where: { id: deviceId },
+    data: isVoip
+      ? { pushVoipToken: parsed.data.token, pushVoipUpdatedAt: new Date() }
+      : {
+          pushToken: parsed.data.token,
+          pushProvider: parsed.data.provider,
+          pushUpdatedAt: new Date(),
+        },
+  });
+  res.json({ ok: true });
+});
+
+router.delete("/:deviceId/push", async (req, res) => {
+  const userId = (req as AuthedRequest).user!.id;
+  const { deviceId } = req.params;
+  const device = await prisma.userDevice.findUnique({ where: { id: deviceId } });
+  if (!device || device.userId !== userId) {
+    res.status(404).json({ message: "Device not found" });
+    return;
+  }
+  // Выход из аккаунта снимает ОБА токена: оставшийся VoIP-токен продолжал бы будить
+  // телефон под звонки уже чужого владельца устройства.
+  await prisma.userDevice.update({
+    where: { id: deviceId },
+    data: {
+      pushToken: null,
+      pushProvider: null,
+      pushUpdatedAt: new Date(),
+      pushVoipToken: null,
+      pushVoipUpdatedAt: new Date(),
+    },
+  });
+  res.json({ ok: true });
+});
+
 router.post(
   "/register",
   rateLimit({ name: "device_register", windowMs: 60_000, max: 30 }),

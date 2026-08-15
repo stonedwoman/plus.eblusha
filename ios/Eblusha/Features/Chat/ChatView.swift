@@ -1,9 +1,8 @@
 import SwiftUI
 
-// Порт ядра `ui/chat/ChatScreen.kt`: шапка, лента с ранами и пузырями, композер.
-// Пока не портированы (следующие итерации фазы 3 и фазы 6): свайп-ответ, мультивыбор,
-// пересылка, полноэкранный просмотр фото, голосовые, вложения из пикера, фоторедактор,
-// участники группы, переход к цитате, секретный режим.
+// Порт `ui/chat/ChatScreen.kt`: шапка, лента с ранами и пузырями, композер, выбор,
+// пересылка, вьюер, голосовые, секретные карточки.
+// Ещё не портированы: фоторедактор перед отправкой и экран участников группы.
 
 private let runGapMs: Int64 = 5 * 60 * 1000
 
@@ -60,6 +59,10 @@ struct ChatView: View {
     @State private var forwardSheet: ForwardRequest?
     @State private var viewer: ImageViewerState?
     @State private var userCard: UserCardSeed?
+    /// Подсветка строки после перехода к цитате (эталон highlightedId/jumpHighlight).
+    @State private var highlightedId: String?
+    /// Идёт переход: авто-подгрузка у верха молчит — вклейка страницы сдвинула бы прицел.
+    @State private var jumping = false
     @StateObject private var voiceRecorder = VoiceRecorder()
     @FocusState private var composerFocused: Bool
 
@@ -69,7 +72,8 @@ struct ChatView: View {
         _vm = StateObject(wrappedValue: ChatViewModel(
             repo: AppContainer.shared.chatRepository,
             realtime: AppContainer.shared.realtimeClient,
-            conversationId: conversation.id
+            conversationId: conversation.id,
+            secretRepo: AppContainer.shared.secretRepository
         ))
     }
 
@@ -82,14 +86,27 @@ struct ChatView: View {
             }
             Divider().overlay(Eb.border)
 
-            if vm.ui.isSecretStub {
-                secretStub
-            } else if vm.ui.loading {
+            if vm.ui.loading {
                 Spacer()
                 ProgressView()
                 Spacer()
             } else {
                 messageList
+                    // Карточки секретного треда (приглашение / ожидание / привязка
+                    // устройства) ложатся поверх ленты, как в вебе и Android.
+                    .overlay {
+                        SecretChatOverlay(
+                            ui: vm.ui,
+                            title: conversation.title,
+                            onAccept: { vm.acceptSecretInvite() },
+                            onDecline: { vm.declineSecretInvite() },
+                            onOpenScanner: { vm.openLinkScanner() },
+                            onCloseScanner: { vm.closeLinkScanner() },
+                            onScanned: { vm.onLinkScanned($0) },
+                            onCodeChange: { vm.onLinkCodeChange($0) },
+                            onSubmitCode: { vm.submitLinkCode() }
+                        )
+                    }
             }
 
             if let error = vm.ui.error {
@@ -105,7 +122,7 @@ struct ChatView: View {
                 SelectionActionBar(
                     count: vm.ui.selectedIds.count,
                     canDelete: vm.selectedMessages().contains { $0.isMine && !$0.deleted },
-                    canForward: !vm.ui.isSecretStub,
+                    canForward: !vm.ui.isSecret,
                     onReply: { vm.replyToSelected() },
                     onForward: { forwardSheet = ForwardRequest(messages: vm.selectedMessages()) },
                     onCopy: {
@@ -116,7 +133,10 @@ struct ChatView: View {
                     onDelete: { vm.deleteSelected() },
                     onCancel: { vm.clearSelection() }
                 )
-            } else if !vm.ui.isSecretStub {
+            } else if vm.ui.secretInvite || vm.ui.secretWaiting {
+                // Композер скрыт, пока приглашение не принято обеими сторонами.
+                EmptyView()
+            } else {
                 composer
             }
         }
@@ -156,12 +176,32 @@ struct ChatView: View {
         .fullScreenCover(item: $viewer) { state in
             ImageViewer(images: state.images, startIndex: state.startIndex, onClose: { viewer = nil })
         }
+        // Приглашение доверенного устройства: QR + код + остаток TTL, затем «подключён».
+        .sheet(isPresented: Binding(
+            get: { vm.ui.linkInvite != nil || vm.ui.linkedOut != nil },
+            set: { if !$0 { vm.dismissLinkInvite() } }
+        )) {
+            SecretDeviceLinkInviteSheet(
+                invite: vm.ui.linkInvite,
+                leftMs: vm.ui.linkInviteLeftMs,
+                linkedOut: vm.ui.linkedOut,
+                onRefresh: { vm.refreshLinkInvite() },
+                onDismiss: { vm.dismissLinkInvite() }
+            )
+        }
+        // Приглашение отклонено или отменено на другом устройстве — уходим с мёртвого экрана.
+        .onChange(of: vm.ui.secretDeclined) { _, declined in
+            if declined { onBack() }
+        }
         .confirmationDialog(
-            vm.ui.isGroup ? "Выйти из беседы?" : "Удалить чат?",
+            vm.ui.isSecret ? "Закрыть секретный чат?" : vm.ui.isGroup ? "Выйти из беседы?" : "Удалить чат?",
             isPresented: $confirmDelete,
             titleVisibility: .visible
         ) {
-            Button(vm.ui.isGroup ? "Выйти" : "Удалить", role: .destructive) {
+            Button(
+                vm.ui.isSecret ? "Закрыть" : vm.ui.isGroup ? "Выйти" : "Удалить",
+                role: .destructive
+            ) {
                 vm.deleteOrLeave(onDone: onBack)
             }
             Button("Отмена", role: .cancel) {}
@@ -185,7 +225,7 @@ struct ChatView: View {
             )
             // Тап по шапке 1:1 открывает карточку собеседника (веб-паритет).
             .onTapGesture {
-                if !vm.ui.isGroup, !vm.ui.isSecretStub, let peerId = vm.ui.peerUserId {
+                if !vm.ui.isGroup, let peerId = vm.ui.peerUserId {
                     userCard = UserCardSeed(
                         userId: peerId, name: conversation.title, avatarUrl: conversation.avatarUrl
                     )
@@ -210,6 +250,16 @@ struct ChatView: View {
                 }
             }
             Spacer()
+            // «Добавить устройство» в секретном чате (веб-паритет): раздать ключи по QR.
+            if vm.ui.isSecret && vm.ui.secretReady {
+                Button {
+                    vm.createLinkInvite()
+                } label: {
+                    Image(systemName: "qrcode")
+                        .foregroundStyle(Color(hex: 0x86EFAC))
+                        .frame(width: 40, height: 40)
+                }
+            }
             // Порт кнопок звонка из шапки ChatScreen.kt: сначала видео, потом аудио.
             // Разрешения CallManager добирает сам перед публикацией треков.
             Button {
@@ -229,7 +279,7 @@ struct ChatView: View {
                     .frame(width: 40, height: 40)
             }
             Menu {
-                if !vm.ui.isSecretStub {
+                if !vm.ui.isSecret {
                     Button {
                         vm.markAllRead()
                     } label: {
@@ -240,7 +290,8 @@ struct ChatView: View {
                     confirmDelete = true
                 } label: {
                     Label(
-                        vm.ui.isGroup ? "Выйти из беседы" : "Удалить чат",
+                        vm.ui.isSecret ? "Закрыть секретный чат"
+                            : vm.ui.isGroup ? "Выйти из беседы" : "Удалить чат",
                         systemImage: "trash"
                     )
                 }
@@ -268,7 +319,7 @@ struct ChatView: View {
                         // Триггер подгрузки назад: появление этой строки у верха экрана.
                         Color.clear
                             .frame(height: 1)
-                            .onAppear { vm.loadOlder() }
+                            .onAppear { if !jumping { vm.loadOlder() } }
                     }
                     let messages = vm.ui.messages
                     ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
@@ -282,6 +333,8 @@ struct ChatView: View {
                             isLastInRun: !continuesRun(message, later),
                             selectionMode: vm.ui.selectionMode,
                             selected: vm.ui.selectedIds.contains(message.id),
+                            highlighted: message.id == highlightedId,
+                            onQuoteTap: { targetId in jumpToQuote(targetId, proxy: proxy) },
                             onTap: { if vm.ui.selectionMode { vm.toggleSelect(message.id) } },
                             onStartSelect: { vm.startSelection(message.id) },
                             onForward: { forwardSheet = ForwardRequest(messages: [message]) },
@@ -322,22 +375,6 @@ struct ChatView: View {
         }
     }
 
-    private var secretStub: some View {
-        VStack(spacing: Spacing.lg) {
-            Spacer()
-            Image(systemName: "lock.fill")
-                .font(.system(size: 44))
-                .foregroundStyle(Color(hex: 0x22C55E))
-            Text("Секретные чаты на iOS ещё в работе")
-                .foregroundStyle(Eb.textPrimary)
-            Text("Сквозное шифрование появится в одной из ближайших сборок.")
-                .font(.footnote)
-                .foregroundStyle(Eb.textMuted)
-                .multilineTextAlignment(.center)
-            Spacer()
-        }
-        .padding(.horizontal, Spacing.xl)
-    }
 
     // MARK: - Композер
 
@@ -365,7 +402,7 @@ struct ChatView: View {
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
                     AttachmentPickerButton(
-                        disabled: vm.ui.sending || vm.ui.isSecretStub,
+                        disabled: vm.ui.sending,
                         onPicked: { vm.stageFiles($0) },
                         onError: { vm.setError($0) }
                     )
@@ -414,6 +451,26 @@ struct ChatView: View {
         .background(Eb.surface200)
     }
 
+    /// Сервер умеет только «страницу назад по курсору» — оригинал старше загруженного
+    /// тянется страницами (vm.loadUntil), затем scrollTo к центру + подсветка 1.6 с.
+    private func jumpToQuote(_ targetId: String, proxy: ScrollViewProxy) {
+        guard !jumping else { return }
+        jumping = true
+        highlightedId = nil
+        Task { @MainActor in
+            defer { jumping = false }
+            var found = vm.ui.messages.contains { $0.id == targetId }
+            if !found { found = await vm.loadUntil(messageId: targetId) }
+            guard found else { return } // история кончилась/сеть — молча, как веб
+            // Кадр на вклейку страницы в LazyVStack, иначе scrollTo промахнётся.
+            try? await Task.sleep(for: .milliseconds(80))
+            withAnimation(.easeOut(duration: 0.35)) { proxy.scrollTo(targetId, anchor: .center) }
+            highlightedId = targetId
+            try? await Task.sleep(for: .seconds(1.6))
+            if highlightedId == targetId { highlightedId = nil }
+        }
+    }
+
     private func editSheet(_ target: Message) -> some View {
         NavigationStack {
             VStack(spacing: Spacing.lg) {
@@ -455,6 +512,9 @@ private struct MessageRow: View {
     let isLastInRun: Bool
     let selectionMode: Bool
     let selected: Bool
+    /// Строка вспыхивает после перехода по цитате — чтобы глаз её нашёл.
+    let highlighted: Bool
+    var onQuoteTap: ((String) -> Void)?
     let onTap: () -> Void
     let onStartSelect: () -> Void
     let onForward: () -> Void
@@ -473,7 +533,11 @@ private struct MessageRow: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
-                .background(selected ? Eb.brand.opacity(0.14) : Color.clear)
+                .background(
+                selected ? Eb.brand.opacity(0.14)
+                    : (highlighted ? Eb.brand.opacity(0.18) : Color.clear)
+            )
+            .animation(.easeOut(duration: 0.7), value: highlighted)
                 .contentShape(Rectangle())
                 .onTapGesture { if selectionMode { onTap() } }
         } else {
@@ -550,14 +614,14 @@ private struct MessageRow: View {
                 .padding(.vertical, 2)
                 .padding(.horizontal, 6)
                 .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+                .onTapGesture { onQuoteTap?(reply.id) }
             }
 
             attachmentsView
 
             if let content = m.content, !content.isEmpty {
-                Text(content)
-                    .font(m.deleted ? .subheadline.italic() : .subheadline)
-                    .foregroundStyle(m.deleted ? Eb.textMuted : Eb.textPrimary)
+                MessageTextView(content: content, deleted: m.deleted)
             }
 
             if let preview = m.linkPreview {

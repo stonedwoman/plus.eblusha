@@ -7,7 +7,9 @@ import UniformTypeIdentifiers
 // прогресс аплоада). Веб-паритет: выбранное НЕ отправляется сразу — встаёт чипами над
 // композером, подпись набирается после, отправка — кнопкой (мимо-тап не шлёт мгновенно).
 // Вместо системного GetMultipleContents Android'а — два источника: PhotosPicker (до 10
-// фото из галереи, без разрешения на всю библиотеку) и fileImporter (до 10 документов).
+// фото И видео из галереи, без разрешения на всю библиотеку) и fileImporter (до 10
+// документов). Видео идёт в «прочие» (как в Kotlin, где GetMultipleContents не различает):
+// капы вью-модели — 10 картинок + 10 остальных, лимит размера — 100 МБ.
 
 // MARK: - Кнопка-скрепка с пикерами
 
@@ -33,7 +35,7 @@ struct AttachmentPickerButton: View {
             Button {
                 showPhotosPicker = true
             } label: {
-                Label("Фото", systemImage: "photo.on.rectangle")
+                Label("Фото или видео", systemImage: "photo.on.rectangle")
             }
             Button {
                 showFileImporter = true
@@ -54,11 +56,12 @@ struct AttachmentPickerButton: View {
         .disabled(disabled || reading)
         // Мультивыбор: несколько фото станут ОДНИМ сообщением-альбомом (веб-паритет;
         // картинки первыми; текст композера станет подписью альбома, как на вебе).
+        // Видео берётся тем же пикером (Kotlin GetMultipleContents тоже не различал).
         .photosPicker(
             isPresented: $showPhotosPicker,
             selection: $photoItems,
             maxSelectionCount: 10,
-            matching: .images
+            matching: .any(of: [.images, .videos])
         )
         .onChange(of: photoItems) { _, items in
             guard !items.isEmpty else { return }
@@ -79,8 +82,8 @@ struct AttachmentPickerButton: View {
         }
     }
 
-    /// Читает выбор галереи в байты. Галерея не отдаёт исходное имя файла —
-    /// генерим человекочитаемое по времени и порядку выбора.
+    /// Читает выбор галереи (фото И видео) в байты. Галерея не отдаёт исходное имя
+    /// файла — генерим человекочитаемое по времени и порядку выбора.
     private func readPhotoItems(_ items: [PhotosPickerItem]) {
         reading = true
         // @MainActor: стейт и колбэки вью-модели трогаем только с главного;
@@ -88,6 +91,44 @@ struct AttachmentPickerButton: View {
         Task { @MainActor in
             var files: [OutgoingFile] = []
             for (i, item) in items.enumerated() {
+                let stamp = photoNameStamp.string(from: Date())
+                // Видео определяем по UTType ДО чтения: у ролика свой mime/имя и нет
+                // ветки перекодировки HEIC.
+                if let movieType = item.supportedContentTypes.first(where: {
+                    $0.conforms(to: .movie) || $0.conforms(to: .audiovisualContent)
+                }) {
+                    guard let data = try? await item.loadTransferable(type: Data.self) else {
+                        onError("Не удалось прочитать выбранные файлы")
+                        reading = false
+                        return
+                    }
+                    // PhotosPickerItem не отдаёт размер до чтения (в отличие от
+                    // fileImporter, где отсечка стоит ДО чтения) — проверяем сразу после,
+                    // до стейджинга: лимит тот же, что у отправки (100 МБ).
+                    if data.count > 100 * 1024 * 1024 {
+                        onError("Файл слишком большой (макс. 100 МБ)")
+                        reading = false
+                        return
+                    }
+                    // mime по UTType: галерея iPhone отдаёт QuickTime (.mov) или MP4;
+                    // прочее падает в video/mp4 — веб и Android оба типа проигрывают.
+                    let mime: String
+                    let ext: String
+                    if movieType.conforms(to: .quickTimeMovie) {
+                        mime = "video/quicktime"
+                        ext = "mov"
+                    } else if movieType.conforms(to: .mpeg4Movie) {
+                        mime = "video/mp4"
+                        ext = "mp4"
+                    } else {
+                        mime = movieType.preferredMIMEType ?? "video/mp4"
+                        ext = movieType.preferredFilenameExtension ?? "mp4"
+                    }
+                    files.append(OutgoingFile(
+                        bytes: data, name: "video-\(stamp)-\(i + 1).\(ext)", mime: mime
+                    ))
+                    continue
+                }
                 guard var data = try? await item.loadTransferable(type: Data.self) else {
                     onError("Не удалось прочитать выбранные файлы")
                     reading = false
@@ -108,7 +149,6 @@ struct AttachmentPickerButton: View {
                         ext = "jpg"
                     }
                 }
-                let stamp = photoNameStamp.string(from: Date())
                 files.append(OutgoingFile(
                     bytes: data, name: "photo-\(stamp)-\(i + 1).\(ext)", mime: mime
                 ))
@@ -157,7 +197,7 @@ private func readPickedFile(_ url: URL) -> OutgoingFile? {
     return OutgoingFile(bytes: data, name: url.lastPathComponent, mime: mime)
 }
 
-/// Штамп для имён фото из галереи (у PhotosPicker нет исходного имени файла).
+/// Штамп для имён фото/видео из галереи (у PhotosPicker нет исходного имени файла).
 private let photoNameStamp: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyyMMdd-HHmmss"

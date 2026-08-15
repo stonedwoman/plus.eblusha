@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- development: dev-сборки из Xcode получают sandbox-токены (серверу тогда нужен
+	     APNS_ENV=sandbox — см. docs/apns-setup.md). Для TestFlight/App Store Xcode при
+	     подписи дистрибутива сам заменяет значение на production. -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

@@ -394,7 +394,12 @@ router.use(async (req: Request, res: Response, next) => {
         if (isEbp2 && meta?.totalSize && meta?.chunksize) {
           const totalSize = parseInt(meta.totalSize, 10);
           const chunkSize = parseInt(meta.chunksize, 10);
-          const originalCt = (meta.ct && meta.ct.trim()) || "application/octet-stream";
+          // meta.ct есть только у S3-провайдера: локальный сторадж при чтении
+          // ПЕРЕКЛАДЫВАЕТ ct в верхний contentType и удаляет его из metadata.
+          // Без фолбэка видео числилось «просто файлом» (octet-stream): плеер получал
+          // лимит диапазона 16МБ вместо видео-64МБ и неверный Content-Type — ролик
+          // крупнее 16МБ вообще не начинал играть.
+          const originalCt = (meta.ct && meta.ct.trim()) || (contentType && contentType.trim()) || "application/octet-stream";
 
           if (req.method === "HEAD") {
             res.setHeader("Content-Type", originalCt);
@@ -420,11 +425,11 @@ router.use(async (req: Request, res: Response, next) => {
             const rangeLen = byteRange.end - byteRange.start + 1;
             const rangeMax = getRangeMaxSize(originalCt);
             if (rangeLen > rangeMax) {
-              send416RangeNotSatisfiable(res, totalSize, {
-                contentType: originalCt,
-                message: `Range too large (max ${rangeMax / 1024 / 1024}MB). Requested: ${Math.ceil(rangeLen / 1024 / 1024)}MB`,
-              });
-              return;
+              // Не 416, а УСЕЧЁННЫЙ 206. Плеер всегда начинает с «bytes=0-» (до конца
+              // файла), так что 416 здесь означал «файл больше лимита не играет вовсе»
+              // — вечная буферизация. Отдаём первый кусок в пределах лимита; получив
+              // меньше запрошенного, плеер штатно дозапрашивает следующий диапазон.
+              byteRange = { start: byteRange.start, end: byteRange.start + rangeMax - 1 };
             }
           } else {
             byteRange = { start: 0, end: totalSize > 0 ? totalSize - 1 : 0 };
@@ -478,13 +483,12 @@ router.use(async (req: Request, res: Response, next) => {
             const rangeLen = parsed.end - parsed.start + 1;
             const rangeMax = getRangeMaxSize(unencCt);
             if (rangeLen > rangeMax) {
-              send416RangeNotSatisfiable(res, objSize, {
-                contentType: unencCt,
-                message: `Range too large (max ${rangeMax / 1024 / 1024}MB)`,
-              });
-              return;
+              // Как и в ebp2-ветке: усечённый 206 вместо 416, иначе «bytes=0-» на
+              // большом файле не играет вовсе.
+              rangeOpt = { start: parsed.start, end: parsed.start + rangeMax - 1 };
+            } else {
+              rangeOpt = parsed;
             }
-            rangeOpt = parsed;
           }
         }
         const getResult = await storage.getObject(key, rangeOpt);

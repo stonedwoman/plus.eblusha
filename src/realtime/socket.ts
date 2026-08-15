@@ -10,6 +10,7 @@ import { MESSAGE_UPDATE_CHANNEL } from "./events";
 import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
 import { decGauge, incGauge } from "../obs/metrics";
+import { enqueuePush } from "../jobs/queue";
 
 type PresenceGame = {
   discordAppId: string;
@@ -22,7 +23,8 @@ type PresenceGame = {
 type PresenceGameClearReason = "no_game" | "privacy_off";
 
 type ServerToClientEvents = {
-  "presence:update": (payload: { userId: string; status: string }) => void;
+  "presence:update": (payload: { userId: string; status: string; device?: PresenceDevice | null }) => void;
+  "presence:device:snapshot:batch": (payload: { items: { userId: string; device: PresenceDevice }[] }) => void;
   "presence:game": (payload: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }) => void;
   "presence:game:snapshot": (payload: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }) => void;
   "presence:game:snapshot:batch": (payload: { items: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }[] }) => void;
@@ -146,6 +148,10 @@ const PRESENCE_RECONCILE_INTERVAL_MS = 60_000;
 
 type PresenceVisibility = "visible" | "hidden";
 type PresenceSource = "web" | "electron" | "mobile";
+// То же самое, но словами интерфейса: клиенты рисуют иконку устройства вместо точки.
+type PresenceDevice = "mobile" | "desktop" | "web";
+const deviceFromSource = (source: PresenceSource | undefined): PresenceDevice | null =>
+  source === "mobile" ? "mobile" : source === "electron" ? "desktop" : source === "web" ? "web" : null;
 
 type RedisPresenceRecord = { online: true; lastPingAt: number };
 type RedisActivityRecord = { active: boolean; visibility: PresenceVisibility; updatedAt: number };
@@ -209,6 +215,25 @@ async function addSocketPresenceRedis(userId: string, socketId: string) {
     .exec();
 }
 
+/**
+ * Тип устройства живёт в presence_sock, а не только в activity_sock. Разница
+ * принципиальная: activity_sock протухает через ACTIVITY_TTL_SECONDS и продлевается
+ * лишь при смене видимости вкладки, тогда как presence_sock продлевает хартбит,
+ * пока сокет жив. Иначе иконка устройства пропадала бы через пару минут у человека,
+ * который спокойно сидит в сети.
+ */
+async function setSocketPresenceDeviceRedis(userId: string, socketId: string, device: PresenceDevice | null) {
+  if (!device) return;
+  try {
+    const redis = await getRedisClient();
+    await redis.set(redisPresenceSockKey(userId, socketId), JSON.stringify({ device }), {
+      EX: PRESENCE_TTL_SECONDS,
+    });
+  } catch {
+    // presence-данные эфемерны: не смогли записать — просто останемся без иконки
+  }
+}
+
 async function refreshSocketPresenceRedis(userId: string, socketId: string) {
   const redis = await getRedisClient();
   await redis
@@ -253,6 +278,61 @@ async function removeSocketPresenceAndActivityRedis(userId: string, socketId: st
   const onlineCount = Number((replies as any)?.[4] ?? 0);
   const activeCount = Number((replies as any)?.[5] ?? 0);
   return { onlineCount, activeCount };
+}
+
+/**
+ * С какого устройства человек сейчас в сети. Каждый сокет уже приносит свой
+ * `source` в presence:state (см. upsertSocketActivityRedis) — здесь мы наконец
+ * читаем его обратно. У человека может быть несколько живых сокетов (телефон в
+ * кармане + ПК на работе), поэтому побеждает АКТИВНЫЙ и самый свежий: иконка
+ * должна показывать, где человек сидит сейчас, а не где забыл вкладку.
+ */
+async function readPresenceDeviceRedis(userId: string): Promise<PresenceDevice | null> {
+  try {
+    const redis = await getRedisClient();
+    const socketIds = await redis.sMembers(redisPresenceSocksKey(userId));
+    if (!socketIds.length) return null;
+    const [presenceRaws, activityRaws] = await Promise.all([
+      redis.mGet(socketIds.map((sid) => redisPresenceSockKey(userId, sid))),
+      redis.mGet(socketIds.map((sid) => redisActivitySockKey(userId, sid))),
+    ]);
+    let best: { active: boolean; updatedAt: number; device: PresenceDevice } | null = null;
+    socketIds.forEach((_sid, i) => {
+      const parse = (raw: string | null | undefined): any => {
+        if (!raw || raw === "1") return null;
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return null;
+        }
+      };
+      const activity = parse(activityRaws?.[i] as any);
+      const presence = parse(presenceRaws?.[i] as any);
+      // Устройство берём из долгоживущей записи, а если её ещё нет (старый сокет,
+      // подключившийся до этой версии) — из activity, пока та не протухла.
+      const device =
+        (presence?.device as PresenceDevice | undefined) ?? deviceFromSource(activity?.source);
+      if (!device) return;
+      const candidate = {
+        active: !!activity?.active,
+        updatedAt: Number(activity?.updatedAt) || 0,
+        device,
+      };
+      if (!best) {
+        best = candidate;
+        return;
+      }
+      const current: { active: boolean; updatedAt: number; device: PresenceDevice } = best;
+      if (candidate.active !== current.active) {
+        if (candidate.active) best = candidate;
+        return;
+      }
+      if (candidate.updatedAt > current.updatedAt) best = candidate;
+    });
+    return (best as { device: PresenceDevice } | null)?.device ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function readPresenceAggregateCountsRedis(userId: string): Promise<{ onlineCount: number; activeCount: number } | null> {
@@ -411,6 +491,10 @@ type PresenceStatus = "ONLINE" | "OFFLINE" | "BACKGROUND";
 type BroadcastPresenceStatus = PresenceStatus | "IN_CALL";
 
 const broadcastedPresenceByUser: Map<string, BroadcastPresenceStatus> = new Map();
+// Что мы последним разослали про устройство — чтобы отдать снапшот сокету,
+// который подключился позже (иначе иконка появится только после следующей
+// смены статуса собеседника, то есть, возможно, никогда за сессию).
+const broadcastedDeviceByUser: Map<string, PresenceDevice> = new Map();
 const presenceUpdateQueue: Map<string, Promise<void>> = new Map();
 const lastPresenceDbWriteAtByUser: Map<string, number> = new Map();
 const lastObservedPresenceByUser: Map<string, PresenceStatus> = new Map();
@@ -623,11 +707,21 @@ async function emitEffectivePresence(io: Server, userId: string, baseOverride?: 
     })());
   if (!base) return;
   const effective = await computeBroadcastPresence(io, userId, base);
+  const device = effective === "OFFLINE" ? null : await readPresenceDeviceRedis(userId);
   const prev = broadcastedPresenceByUser.get(userId);
-  if (prev === effective) return;
-  if (effective === "OFFLINE") broadcastedPresenceByUser.delete(userId);
-  else broadcastedPresenceByUser.set(userId, effective);
-  io.emit("presence:update", { userId, status: effective });
+  const prevDevice = broadcastedDeviceByUser.get(userId) ?? null;
+  // Дедуп учитывает и устройство: пересел с телефона на ПК — статус тот же,
+  // но иконка обязана поменяться.
+  if (prev === effective && prevDevice === device) return;
+  if (effective === "OFFLINE") {
+    broadcastedPresenceByUser.delete(userId);
+    broadcastedDeviceByUser.delete(userId);
+  } else {
+    broadcastedPresenceByUser.set(userId, effective);
+    if (device) broadcastedDeviceByUser.set(userId, device);
+    else broadcastedDeviceByUser.delete(userId);
+  }
+  io.emit("presence:update", { userId, status: effective, device });
 }
 
 function normalizePresenceVisibility(v: unknown): PresenceVisibility | null {
@@ -778,11 +872,12 @@ async function reconcileStalePresence(io: Server): Promise<void> {
     lastObservedPresenceByUser.set(userId, "OFFLINE");
     lastPresenceDbWriteAtByUser.set(userId, Date.now());
     broadcastedPresenceByUser.delete(userId);
+    broadcastedDeviceByUser.delete(userId);
     // Best-effort cleanup of convenience aggregate keys.
     void deleteAggregatedPresenceRedis(userId);
     void deleteAggregatedActivityRedis(userId);
     try {
-      io.emit("presence:update", { userId, status: "OFFLINE" });
+      io.emit("presence:update", { userId, status: "OFFLINE", device: null });
     } catch (error) {
       logger.warn({ error, userId }, "Presence reconcile: failed to emit presence:update");
     }
@@ -942,6 +1037,34 @@ export async function initSocket(
     io.to(conversationId).emit("call:status", buildCallStatus(conversationId, opts));
   };
 
+  /**
+   * Кто РЕАЛЬНО сидит в комнате звонка прямо сейчас.
+   *
+   * Записи в participantsByUser ведутся по socket.id и переживают своего владельца:
+   * после accept там оседает socket.id инициатора, который мог смениться ещё до
+   * принятия звонка, а обработчик disconnecting мог не доработать. Такой призрак
+   * делал бы звонок «вечно идущим» — охрана ниже перестала бы пускать новые вызовы,
+   * и оба участника оказались бы заперты в беседе без возможности позвонить. Поэтому
+   * участником считаем только того, у кого есть хотя бы один подключённый сокет.
+   *
+   * ВНИМАНИЕ: io.sockets.sockets — карта сокетов ЭТОГО процесса. Сегодня бэкенд один
+   * контейнер, а callState/activeDirectCalls и так процесс-локальны, так что ответ
+   * верный. При запуске второй реплики этот хелпер (как и сами карты) надо
+   * переводить на кластерный источник правды.
+   */
+  const liveCallParticipants = (info: ActiveCallInfo): string[] => {
+    const alive: string[] = [];
+    for (const [participantId, socketIds] of info.participantsByUser) {
+      for (const socketId of socketIds) {
+        if (io.sockets.sockets.has(socketId)) {
+          alive.push(participantId);
+          break;
+        }
+      }
+    }
+    return alive;
+  };
+
   const finishGroupCall = async (conversationId: string, endedByUserId: string, reason: "manual" | "decline" | "empty" | "alone_timeout") => {
     const callInfo = activeGroupCalls.get(conversationId);
     const st = callState.get(conversationId);
@@ -1012,11 +1135,22 @@ export async function initSocket(
     }
   };
 
+  // Кому ушёл пуш о входящем — чтобы точно тем же адресатам отправить отмену.
+  const callRingRecipients = new Map<string, string[]>();
+
   const clearCallRingTimer = (conversationId: string) => {
     const t = callRingTimers.get(conversationId);
     if (t) {
       clearTimeout(t);
       callRingTimers.delete(conversationId);
+      // Дозвон закончился (ответили, отказались, отбились, вышло время) — гасим уведомление
+      // о звонке на выгруженных устройствах, иначе телефон звонил бы уже после смерти звонка.
+      // Точка одна намеренно: отменяющих веток много и разбросаны они по всему файлу.
+      const ringing = callRingRecipients.get(conversationId);
+      if (ringing && ringing.length > 0) {
+        enqueuePush(ringing, { kind: "call-cancel", conversationId });
+      }
+      callRingRecipients.delete(conversationId);
     }
   };
 
@@ -1027,12 +1161,25 @@ export async function initSocket(
     if (!info) return;
     if (info.participantsByUser.size >= 2) return; // peer rejoined during grace — keep the call alive
     const remainingParticipantIds = listParticipants(info);
-    await clearConversationCallPresence(io, conversationId);
-    activeDirectCalls.delete(conversationId);
-    // Тот же атомарный «клейм», что и в call:end: снимок stForMsg берём синхронно перед
-    // delete; запись о звонке пишем только если это завершение реально сняло callState
-    // (а не проиграло гонку ручному call:end, который уже снял его и создал сообщение).
+    // Тот же атомарный «клейм», что и в call:end: снимок stForMsg берём синхронно, ДО
+    // ожидания; запись о звонке пишем только если это завершение реально сняло
+    // callState (а не проиграло гонку ручному call:end, который уже снял его и создал
+    // сообщение).
     const stForMsg = callState.get(conversationId);
+    await clearConversationCallPresence(io, conversationId);
+    // Ожидание выше — сетевой запрос через Redis-адаптер, он может занять секунды. За
+    // это время собеседник мог вернуться в комнату, а в беседе — начаться НОВЫЙ звонок
+    // (человек нажал «Позвонить» сразу после обрыва). Поколения у звонка нет, поэтому
+    // сверяем тождество объектов, снятых до ожидания: другой объект = это уже другой
+    // звонок, и трогать его нельзя, иначе свежий вызов умирает через миг после набора.
+    if (activeDirectCalls.get(conversationId) !== info || info.participantsByUser.size >= 2) return;
+    activeDirectCalls.delete(conversationId);
+    if (callState.get(conversationId) !== stForMsg) {
+      // Прошлую комнату мы прибрали, но состояние в беседе уже от нового звонка —
+      // ни удалять его, ни рассылать по нему «звонок завершён» нельзя.
+      broadcastCallStatus(conversationId);
+      return;
+    }
     const graceClaimed = callState.delete(conversationId);
     clearCallRingTimer(conversationId);
     try {
@@ -1110,6 +1257,10 @@ export async function initSocket(
         // and leave it alone instead of tearing down a healthy call.
         const liveInfo = activeDirectCalls.get(conversationId);
         if (liveInfo && liveInfo.participantsByUser.size >= 2) {
+          // Наблюдение: сюда попадают звонки, у которых accepted сброшен посреди живого
+          // разговора. Один известный источник (повторный call:invite) закрыт; если
+          // строка продолжает появляться — есть ещё один путь сброса состояния.
+          logger.warn({ conversationId, inviterId }, "ring timeout fired on a LIVE call — accepted flag was reset, self-healing");
           callState.set(conversationId, { ...st, accepted: true });
           return;
         }
@@ -1169,6 +1320,14 @@ export async function initSocket(
         const st = callState.get(conversationId);
         // Skip if reconnected/re-invited (inviterSocketId changed), accepted, or replaced.
         if (!st || st.accepted || st.inviterSocketId !== deadSocketId) return;
+        // Комната звонка жива — значит это не «повисшее приглашение». Штатный случай:
+        // приглашающий вернулся другим сокетом и вошёл обратно через call:room:join,
+        // а состояние осталось «не принято» (в группе принятым его делает только
+        // ЧУЖОЙ вход). Снос здесь рассылал «звонок завершён» посреди живого группового
+        // разговора и оставлял комнату без состояния, после чего длительность
+        // считалась заново. Непринятый звонок приберут и без нас: 1:1 — 60-секундный
+        // no-answer backstop, группу — таймер одиночества.
+        if (getActiveCallInfo(conversationId)) return;
         callState.delete(conversationId);
         clearCallRingTimer(conversationId);
         try {
@@ -1408,7 +1567,7 @@ export async function initSocket(
         for (const uid of inCallUsers) {
           const effective = await computeBroadcastPresence(io, uid, "ONLINE");
           if (effective === "IN_CALL") {
-            socket.emit("presence:update", { userId: uid, status: "IN_CALL" });
+            socket.emit("presence:update", { userId: uid, status: "IN_CALL", device: broadcastedDeviceByUser.get(uid) ?? null });
           }
         }
       } catch {
@@ -1421,6 +1580,15 @@ export async function initSocket(
       for (const [uid, entry] of presenceGameByUser.entries()) {
         socket.emit("presence:game", { userId: uid, ts: entry.ts, game: entry.game });
       }
+    } catch {
+      // ignore snapshot failures
+    }
+
+    // Snapshot: с каких устройств сейчас сидят остальные — иначе иконка у уже
+    // подключённых собеседников не появилась бы до их следующей смены статуса.
+    try {
+      const items = Array.from(broadcastedDeviceByUser.entries()).map(([uid, device]) => ({ userId: uid, device }));
+      if (items.length) socket.emit("presence:device:snapshot:batch", { items });
     } catch {
       // ignore snapshot failures
     }
@@ -1482,6 +1650,7 @@ export async function initSocket(
           const now = Date.now();
           try {
             await upsertSocketActivityRedis(userId, socket.id, { ...normalized, updatedAt: now });
+            await setSocketPresenceDeviceRedis(userId, socket.id, deviceFromSource(normalized.source));
           } catch (error) {
             logger.warn({ error, userId }, "Failed to update socket activity in Redis");
           }
@@ -1499,6 +1668,7 @@ export async function initSocket(
         const now = Date.now();
         try {
           await upsertSocketActivityRedis(userId, socket.id, { ...normalized, updatedAt: now });
+          await setSocketPresenceDeviceRedis(userId, socket.id, "web");
         } catch (error) {
           logger.warn({ error, userId }, "Failed to update socket activity in Redis (presence:focus)");
         }
@@ -1830,11 +2000,75 @@ export async function initSocket(
       // generate two different E2EE keys, breaking the call.
       if (!isGroup) {
         const existingState = callState.get(conversationId);
+        // ===== РАЗГОВОР УЖЕ ИДЁТ =====
+        // Блок glare ниже ловит только НЕПРИНЯТОЕ приглашение. Приглашение по уже
+        // принятому и живому звонку проваливалось мимо него в общий путь, где
+        // состояние перезаписывалось как «звонит», а «входящий» улетал в userRoom
+        // обоих — то есть на ВСЕ устройства, включая те, на которых разговор идёт
+        // прямо сейчас. Отсюда и всплывающее окно поверх собственного разговора.
+        // «Живой» = два разных участника с ЖИВЫМИ сокетами.
+        const liveRoom = activeDirectCalls.get(conversationId);
+        const liveUsers = liveRoom ? liveCallParticipants(liveRoom) : [];
+        if (existingState?.accepted && liveUsers.length >= 2) {
+          // Состояние живого разговора не трогаем. Но тех, кого в нём НЕТ,
+          // приглашение обязано достичь — иначе «позвать ещё человека в текущий
+          // разговор» превращается в тишину.
+          const outsiders = recipients.filter((rid) => !liveUsers.includes(rid));
+          if (outsiders.length > 0) {
+            const incomingPayload = { conversationId, from: { id: userId, name }, video: existingState.video };
+            for (const rid of outsiders) {
+              io.to(userRoom(rid)).emit("call:incoming", incomingPayload);
+            }
+          }
+          if (liveUsers.includes(userId)) {
+            // Звонящий сам в этом разговоре: нажал «Позвонить» на втором устройстве
+            // или в другом окне. Промолчать нельзя — его клиент уже показал экран
+            // дозвона и через полминуты сам пошлёт «завершить», снося ЖИВОЙ звонок.
+            // Отвечаем «уже принято»: дозвон гаснет, клиент подключается к разговору.
+            io.to(userRoom(userId)).emit("call:accepted", {
+              conversationId,
+              by: { id: existingState.inviterId },
+              video: existingState.video,
+            });
+          } else {
+            // Приглашение прислал тот, кого в разговоре нет (в беседе с флагом 1:1
+            // бывает больше двух участников). Отдаём ему «входящий» от текущего
+            // инициатора — как в ветке glare, — чтобы он мог войти в разговор.
+            try {
+              const liveInviter = await prisma.user.findUnique({
+                where: { id: existingState.inviterId },
+                select: { displayName: true, username: true },
+              });
+              const liveInviterName = liveInviter?.displayName ?? liveInviter?.username ?? "пользователь";
+              io.to(userRoom(userId)).emit("call:incoming", {
+                conversationId,
+                from: { id: existingState.inviterId, name: liveInviterName },
+                video: existingState.video,
+              });
+            } catch (error) {
+              logger.warn({ error, conversationId, userId }, "Failed to deliver live-call snapshot to outside inviter");
+            }
+          }
+          broadcastCallStatus(conversationId);
+          logger.info(
+            { conversationId, userId, liveUsers: liveUsers.length, invited: outsiders.length },
+            "1:1 call:invite on a live call — state kept, only outsiders invited",
+          );
+          return;
+        }
         if (existingState && !existingState.accepted) {
           if (existingState.inviterId === userId) {
             // Same user re-emitted invite (e.g., reconnect / duplicate emit
             // after socket bounce). Idempotently re-deliver call:incoming
             // to peer(s) so they can re-show the modal if they missed it.
+            //
+            // Сокет у звонящего после реконнекта ДРУГОЙ: обновляем его в состоянии и
+            // гасим отложенный снос, взведённый смертью прежнего сокета. Без этого
+            // сервер через 15 секунд убивал дозвон, который клиент только что ожил.
+            clearDirectCallGraceTimer(conversationId);
+            if (existingState.inviterSocketId !== socket.id) {
+              callState.set(conversationId, { ...existingState, inviterSocketId: socket.id });
+            }
             const incomingPayload = { conversationId, from: { id: userId, name }, video: existingState.video };
             for (const rid of recipients) {
               io.to(userRoom(rid)).emit("call:incoming", incomingPayload);
@@ -1874,8 +2108,39 @@ export async function initSocket(
       }
 
       // track call state
-      const startedAt = Date.now();
-      callState.set(conversationId, { inviterId: userId, inviterSocketId: socket.id, accepted: false, video, startedAt });
+      //
+      // Звонок в этой беседе может быть ещё ЖИВ — в комнате остался кто-то с живым
+      // сокетом. Для группы это «зайти и позвать ещё людей», для 1:1 — возвращение
+      // после обрыва, то есть продолжение того же разговора. Раньше оба случая
+      // перезаписывали состояние как «звонит», и это ломало не только всплывашки:
+      // отсчёт длительности начинался заново, состоявшийся разговор мог уйти в
+      // историю как «Пропущенный звонок», а сброс accepted открывал окно, в котором
+      // обрыв сокета приглашающего через 15 секунд рассылал «звонок завершён»
+      // остальным участникам. Сохраняем отсчёт и признак принятия.
+      //
+      // Отложенный снос прошлого звонка здесь НЕ гасим: если вернувшийся так и не
+      // войдёт в комнату, именно он всё приберёт и напишет запись в историю. Новый
+      // звонок от него защищён сверкой тождества в endActiveDirectCall.
+      const previousState = callState.get(conversationId);
+      const liveRoomInfo = getActiveCallInfo(conversationId);
+      const callStillAlive = !!liveRoomInfo && liveCallParticipants(liveRoomInfo.info).length > 0;
+      const startedAt =
+        (callStillAlive ? previousState?.startedAt ?? liveRoomInfo!.info.startedAt : undefined) ?? Date.now();
+      callState.set(conversationId, {
+        inviterId: userId,
+        inviterSocketId: socket.id,
+        // Только УНАСЛЕДОВАННОЕ «принят». Отсутствие прежнего состояния при живой
+        // комнате принятым звонком не считаем: так выглядит одинокий фантом —
+        // клиент прислал call:room:join по звонку, которого на сервере уже нет
+        // (веб делает это при каждом реконнекте с открытым оверлеем, Android — при
+        // подключении к комнате). Родившийся «уже принятым» звонок обезоружил бы
+        // 60-секундный no-answer backstop и записал бы неотвеченный вызов в историю
+        // как состоявшийся разговор. Настоящий живой звонок из двоих лечится сам:
+        // тот же backstop увидит двоих в комнате и вернёт accepted.
+        accepted: callStillAlive && previousState?.accepted === true,
+        video,
+        startedAt,
+      });
 
       // 1:1 calls: generate a fresh shared E2EE key per call start (stored in Redis with TTL).
       // Do NOT log the key value.
@@ -1957,6 +2222,14 @@ export async function initSocket(
         for (const rid of recipients) {
           io.to(userRoom(rid)).emit("call:incoming", incomingPayload);
         }
+        // Разбудить телефон, если приложение выгружено: без пуша сокета там просто нет,
+        // и звонок не дойдёт вовсе. Отзывается ниже, в clearCallRingTimer.
+        callRingRecipients.set(conversationId, [...recipients]);
+        enqueuePush(
+          recipients,
+          { kind: "call", conversationId, callerId: userId, callerName: name, video },
+          `call:${conversationId}:${Date.now()}`,
+        );
         // Server-side no-answer backstop so an un-accepted call can't ring/live forever.
         scheduleCallRingTimeout(conversationId, userId);
       }
@@ -2339,7 +2612,12 @@ export async function initSocket(
       if (!callInfo) {
         // Если звонок еще не успел инициировать комнату (например, создатель сразу отменил)
         const st = callState.get(conversationId);
-        if (st) {
+        // ЧУЖОЕ ещё не принятое приглашение не снимаем. Клиент шлёт «выхожу» и как
+        // реакцию на «звонок завершён» (так делает Android), а в беседе за эти
+        // миллисекунды уже мог начаться НОВЫЙ звонок — его состояние стирать нельзя,
+        // иначе входящий звонит, но принять его невозможно («stale accept»).
+        // Отказаться от чужого звонка — это call:decline, а не выход из комнаты.
+        if (st && (st.accepted || st.inviterId === userId)) {
           clearGroupAloneTimer(conversationId);
           callState.delete(conversationId);
           broadcastCallStatus(conversationId);

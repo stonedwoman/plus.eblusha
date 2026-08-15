@@ -374,10 +374,23 @@ model UserDevice {
   lastIp              String?
   lastCountry         String?
   lastCity            String?
+  // Токен push-уведомлений (FCM для Android, APNs-alert для iOS). Живёт отдельно от ключей
+  // шифрования: система выдаёт новый после переустановки или очистки данных приложения.
+  pushToken           String?
+  pushProvider        String?
+  pushUpdatedAt       DateTime?
+  // Отдельный слот под VoIP-токен iOS: PushKit выдаёт СВОЙ токен, не тот, что для обычных
+  // уведомлений, и оба нужны одновременно — alert будит уведомление о сообщении, а VoIP
+  // поднимает убитое приложение под звонок (без него CallKit не показать вовремя).
+  // У Android слот пустует: там один FCM-токен на всё.
+  pushVoipToken       String?
+  pushVoipUpdatedAt   DateTime?
   user                User          @relation(fields: [userId], references: [id])
   prekeys             DevicePrekey[]
 
   @@index([userId])
+  @@index([pushToken])
+  @@index([pushVoipToken])
 }
 
 model DevicePrekey {

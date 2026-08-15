@@ -56,6 +56,11 @@ app.use(
 app.use(
   express.json({
     limit: "10mb",
+    // LiveKit шлёт вебхуки с Content-Type: application/webhook+json — дефолтный
+    // фильтр express.json его НЕ парсит, rawBody оставался пустым, и КАЖДЫЙ вебхук
+    // отбивался 400 «Missing webhook body». Бэкенд был слеп: не видел, кто реально
+    // дошёл до комнаты звонка.
+    type: ["application/json", "application/*+json"],
     verify: (req, _res, buf) => {
       // Keep raw body for webhook signature verification (LiveKit).
       (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);

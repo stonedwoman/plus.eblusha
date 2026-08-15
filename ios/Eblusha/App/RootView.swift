@@ -32,6 +32,10 @@ struct RootView: View {
             case .loggedIn:
                 HomeNavView(container: container) {
                     Task {
+                        // Токен снимаем ДО выхода: после очистки сессии запрос ушёл бы
+                        // без авторизации, и следующий владелец телефона получал бы
+                        // чужие уведомления.
+                        await PushRepository.shared.unregister()
                         await container.authRepository.logout()
                         container.clearLocalData()
                     }
@@ -56,12 +60,34 @@ struct RootView: View {
         .onChange(of: loggedIn) { _, isIn in
             if isIn {
                 container.realtimeClient.connect()
+                startAfterLogin()
             } else {
                 container.realtimeClient.disconnect()
             }
         }
         .onAppear {
-            if loggedIn { container.realtimeClient.connect() }
+            if loggedIn {
+                container.realtimeClient.connect()
+                startAfterLogin()
+            }
+        }
+        // Глобальные секретные обработчики (порт LaunchedEffect из RootNavHost): работают
+        // и когда чат закрыт — иначе ключ принявшему устройству не уедет до открытия чата.
+        .onReceive(container.realtimeClient.events.receive(on: DispatchQueue.main)) { event in
+            switch event {
+            case .secretNotify:
+                // Будильник per-device инбокса: шифртекста не несёт, содержимое тянем сами.
+                Task { await container.secretRepository.syncInbox() }
+            case .secretChatAccepted(let conversationId, let peerDeviceId):
+                // Собеседник принял на ОДНОМ устройстве — создатель ключует ровно его.
+                Task {
+                    await container.secretRepository.onPeerAccepted(
+                        threadId: conversationId, peerDeviceId: peerDeviceId
+                    )
+                }
+            default:
+                break
+            }
         }
         // Порт наблюдателя AppLifecycle.foreground: возврат из фона с истёкшим access —
         // проактивный refresh (первый запрос ресинка не ловит 401), и честный
@@ -74,6 +100,18 @@ struct RootView: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+
+    /// Порядок важен: устройство сначала регистрируется (и, возможно, ротирует id при
+    /// 409), и только потом ему можно привязывать push-токены — иначе
+    /// POST /devices/{id}/push отвечает 404 несуществующему устройству.
+    private func startAfterLogin() {
+        Task {
+            await container.secretRepository.ensureDeviceBootstrap()
+            await container.secretRepository.syncInbox()
+            await PushRepository.shared.syncTokens()
+            MessageNotifications.shared.requestPermissionAfterLogin()
+        }
     }
 }
 
@@ -121,7 +159,9 @@ private struct HomeNavView: View {
         self.onLogout = onLogout
         _listVM = StateObject(wrappedValue: ChatListViewModel(
             repo: container.chatRepository,
-            realtime: container.realtimeClient
+            realtime: container.realtimeClient,
+            contacts: container.contactsRepository,
+            secret: container.secretRepository
         ))
     }
 
@@ -166,6 +206,16 @@ private struct HomeNavView: View {
                 )
             }
             .toolbar(.hidden, for: .navigationBar)
+        }
+        // Тап по уведомлению о сообщении — открыть ту самую беседу.
+        .onReceive(AppLifecycle.shared.$pendingOpen) { target in
+            guard let target else { return }
+            AppLifecycle.shared.consumePendingOpen()
+            Task { @MainActor in
+                openConversation = await AppContainer.shared.chatRepository.resolveRef(
+                    ConversationRef(id: target.conversationId, title: target.title)
+                )
+            }
         }
     }
 }

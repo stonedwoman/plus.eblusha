@@ -2,6 +2,7 @@ import logger from "../../config/logger";
 import type { LinkPreview } from "../../lib/linkPreview";
 import { extractYouTubeVideoId, isYouTubeUrl } from "../../lib/youtube";
 import { ssrfFetch, type SsrfFetchOptions } from "../../security/ssrf";
+import { fetchLinkPreviewViaBrowser } from "./linkPreview.browser";
 
 type SsrfFetchLike = typeof ssrfFetch;
 
@@ -583,7 +584,7 @@ async function buildFallbackPreview(
   };
 }
 
-export async function fetchLinkPreview(
+async function fetchLinkPreviewFast(
   urlString: string,
   deps?: { ssrfFetch?: SsrfFetchLike }
 ): Promise<LinkPreview | null> {
@@ -730,4 +731,91 @@ export async function fetchLinkPreview(
     siteName,
     fetchedAtISO: new Date().toISOString(),
   };
+}
+
+
+/**
+ * Признак «пустышки»: сайт ответил, но полезного превью нет —
+ * защитная заглушка Cloudflare, страница-капча или карточка, где заголовок совпал
+ * с доменом и больше ничего нет. Такое лучше переспросить настоящим браузером.
+ */
+function isUselessPreview(p: LinkPreview | null, urlString: string): boolean {
+  if (!p) return true;
+  const title = (p.title ?? "").trim().toLowerCase();
+  if (!title && !p.description && !p.imageUrl) return true;
+
+  const challenge = [
+    "just a moment",
+    "один момент",
+    "attention required",
+    "checking your browser",
+    "доступ ограничен",
+    "please wait for verification",
+    "enable javascript",
+    "включите javascript",
+  ];
+  if (challenge.some((c) => title.includes(c))) return true;
+
+  // Заголовок вида «avito.ru» или «...» — это не превью, а заглушка.
+  if (/^[.…\s]+$/.test(title)) return true;
+  try {
+    const host = new URL(urlString).hostname.replace(/^www\./, "").toLowerCase();
+    // Заголовок-домен без описания — карточка ни о чём: пробуем браузером.
+    if (title === host && !p.description) return true;
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+/** Ограничивает ожидание: один медленный сайт не должен держать очередь превью. */
+function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      resolve(fallback);
+    }, ms);
+    p.then(
+      (v) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(v);
+      },
+      () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(fallback);
+      }
+    );
+  });
+}
+
+const FAST_BUDGET_MS = 8_000;
+const BROWSER_BUDGET_MS = 18_000;
+
+export async function fetchLinkPreview(
+  urlString: string,
+  deps?: { ssrfFetch?: SsrfFetchLike }
+): Promise<LinkPreview | null> {
+  const fast = await withDeadline(fetchLinkPreviewFast(urlString, deps), FAST_BUDGET_MS, null);
+  if (!isUselessPreview(fast, urlString)) return fast;
+
+  // Второй эшелон: настоящий браузер. Дороже, поэтому только когда быстрый путь не справился.
+  const viaBrowser = await withDeadline(fetchLinkPreviewViaBrowser(urlString), BROWSER_BUDGET_MS, null);
+  if (viaBrowser && !isUselessPreview(viaBrowser, urlString)) return viaBrowser;
+
+  // Браузер не смог — лучше показать пусть неидеальную карточку, чем ничего.
+  // Отбрасываем только совсем пустое и защитные заглушки.
+  if (viaBrowser) return viaBrowser;
+  if (fast && (fast.title || fast.description || fast.imageUrl)) {
+    const title = (fast.title ?? "").toLowerCase();
+    const isChallenge = ["just a moment", "один момент", "attention required", "checking your browser"]
+      .some((c) => title.includes(c));
+    if (!isChallenge) return fast;
+  }
+  return null;
 }

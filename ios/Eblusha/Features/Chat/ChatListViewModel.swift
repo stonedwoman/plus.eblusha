@@ -23,6 +23,8 @@ final class ChatListViewModel: ObservableObject {
 
     private let repo: ChatRepository
     private let realtime: RealtimeClient
+    private let contacts: ContactsRepository
+    private let secret: SecretRepository
 
     private var lastRefresh: TimeInterval = 0
     private var pendingRefresh: Task<Void, Never>?
@@ -38,9 +40,16 @@ final class ChatListViewModel: ObservableObject {
     private var typingRows: [String: TimeInterval] = [:]
     private var typingSweep: Task<Void, Never>?
 
-    init(repo: ChatRepository, realtime: RealtimeClient) {
+    init(
+        repo: ChatRepository,
+        realtime: RealtimeClient,
+        contacts: ContactsRepository,
+        secret: SecretRepository
+    ) {
         self.repo = repo
         self.realtime = realtime
+        self.contacts = contacts
+        self.secret = secret
 
         let cached = repo.cachedConversations()
         if !cached.isEmpty {
@@ -167,6 +176,17 @@ final class ChatListViewModel: ObservableObject {
 
     // MARK: - Действия меню плитки
 
+    /// Меню плитки: начать (или переиспользовать) V2-секретный тред с собеседником 1:1.
+    func startSecretChat(_ c: Conversation, onOpened: @escaping (ConversationRef) -> Void) {
+        guard let peerId = c.otherUserId else { return }
+        Task {
+            switch await contacts.startSecretConversation(userId: peerId) {
+            case .success(let result): onOpened(result.ref)
+            case .failure(let message, _): ui.error = message
+            }
+        }
+    }
+
     /// Отметить беседу прочитанной (у секреток нет квитанций — пропускаем).
     func markConversationRead(_ c: Conversation) {
         guard !c.isSecretV2 else { return }
@@ -176,12 +196,19 @@ final class ChatListViewModel: ObservableObject {
         }
     }
 
-    /// Удалить (1:1) / выйти (группа). Секретки — фазой секретных чатов.
+    /// Удалить (1:1) / выйти (группа) / закрыть (секретный тред).
     func deleteConversation(_ c: Conversation) {
         Task {
-            let result: ApiResult<Void> = c.isGroup
-                ? await repo.leaveConversation(c.id)
-                : await repo.deleteConversation(c.id)
+            // Жёсткое удаление секретки осиротило бы её E2EE-транспортные строки —
+            // штатный демонтаж это decline → CANCELLED (скрыт на всех устройствах).
+            let result: ApiResult<Void>
+            if c.isSecretV2 {
+                result = await secret.declineInvite(threadId: c.id)
+            } else if c.isGroup {
+                result = await repo.leaveConversation(c.id)
+            } else {
+                result = await repo.deleteConversation(c.id)
+            }
             switch result {
             case .success:
                 realtime.forgetConversation(c.id) // беседы больше нет — комната не нужна

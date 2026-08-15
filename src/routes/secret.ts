@@ -63,18 +63,31 @@ const sendSchema = z.object({
 
 async function resolveCurrentDeviceId(req: Request): Promise<string | null> {
   const r = req as AuthedRequest;
-  const candidate =
-    (r.deviceId?.trim() ||
-      (typeof (req.headers["x-device-id"] as any) === "string" ? String(req.headers["x-device-id"]).trim() : "") ||
-      (typeof (req.query as any)?.deviceId === "string" ? String((req.query as any).deviceId).trim() : "") ||
-      (typeof (req.body as any)?.deviceId === "string" ? String((req.body as any).deviceId).trim() : "")) || "";
-  if (!candidate) return null;
-  const device = await prisma.userDevice.findUnique({
-    where: { id: candidate },
-    select: { id: true, userId: true, revokedAt: true },
-  });
-  if (!device || device.userId !== r.user?.id || device.revokedAt) return null;
-  return device.id;
+  // Кандидаты по убыванию доверия. Раньше брался ТОЛЬКО первый непустой (обычно did-claim
+  // токена), и это намертво ломало устройство, зарегистрированное позже логина или сменившее
+  // id: did указывал на чужую/отозванную запись → 400 на каждый inbox pull, то есть realtime
+  // секреток не работал вовсе (сообщения доезжали лишь реконсиляцией истории). Теперь
+  // перебираем кандидатов, пока один не окажется НАШИМ живым устройством — did остаётся
+  // приоритетным, но перестал быть тупиком. Проверка владения (userId + revokedAt) не ослаблена.
+  const candidates = [
+    r.deviceId,
+    typeof req.headers["x-device-id"] === "string" ? String(req.headers["x-device-id"]) : "",
+    typeof (req.query as any)?.deviceId === "string" ? String((req.query as any).deviceId) : "",
+    typeof (req.body as any)?.deviceId === "string" ? String((req.body as any).deviceId) : "",
+  ]
+    .map((c) => (typeof c === "string" ? c.trim() : ""))
+    .filter(Boolean);
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const device = await prisma.userDevice.findUnique({
+      where: { id: candidate },
+      select: { id: true, userId: true, revokedAt: true },
+    });
+    if (device && device.userId === r.user?.id && !device.revokedAt) return device.id;
+  }
+  return null;
 }
 
 router.post("/send", rateLimit({ name: "secret_send", windowMs: 60_000, max: 300 }), async (req, res) => {

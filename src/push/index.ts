@@ -18,32 +18,64 @@ export async function pushEnabled(): Promise<boolean> {
   return isFcmConfigured() || isApnsConfigured();
 }
 
-async function loadTargets(userIds: string[]): Promise<PushTarget[]> {
+/**
+ * Цели одного устройства. У iOS их две: обычный alert-токен и VoIP-токен PushKit —
+ * система выдаёт их независимо, и живут они одновременно. У Android VoIP-слот пуст.
+ */
+type DeviceTargets = {
+  alert?: PushTarget;
+  voip?: PushTarget;
+};
+
+async function loadTargets(userIds: string[]): Promise<DeviceTargets[]> {
   if (userIds.length === 0) return [];
   const devices = await prisma.userDevice.findMany({
     where: {
       userId: { in: userIds },
       revokedAt: null,
-      pushToken: { not: null },
+      OR: [{ pushToken: { not: null } }, { pushVoipToken: { not: null } }],
     },
-    select: { id: true, userId: true, pushToken: true, pushProvider: true },
+    select: {
+      id: true,
+      userId: true,
+      pushToken: true,
+      pushProvider: true,
+      pushVoipToken: true,
+    },
   });
-  return devices
-    .filter((d: { pushToken: string | null }) => !!d.pushToken)
-    .map((d: { id: string; userId: string; pushToken: string | null; pushProvider: string | null }) => ({
-      userId: d.userId,
-      deviceId: d.id,
-      token: d.pushToken as string,
-      provider: (d.pushProvider ?? "fcm") as PushProvider,
-    }));
+  return devices.map((d) => {
+    const entry: DeviceTargets = {};
+    if (d.pushToken) {
+      entry.alert = {
+        userId: d.userId,
+        deviceId: d.id,
+        token: d.pushToken,
+        provider: (d.pushProvider ?? "fcm") as PushProvider,
+      };
+    }
+    if (d.pushVoipToken) {
+      entry.voip = {
+        userId: d.userId,
+        deviceId: d.id,
+        token: d.pushVoipToken,
+        provider: "apns-voip",
+      };
+    }
+    return entry;
+  });
 }
 
 async function dropDeadTokens(tokens: string[]): Promise<void> {
   if (tokens.length === 0) return;
   try {
+    // Токен мог протухнуть в любом из двух слотов — чистим оба, попадёт в тот, где лежал.
     await prisma.userDevice.updateMany({
       where: { pushToken: { in: tokens } },
       data: { pushToken: null, pushProvider: null },
+    });
+    await prisma.userDevice.updateMany({
+      where: { pushVoipToken: { in: tokens } },
+      data: { pushVoipToken: null },
     });
   } catch (error) {
     logger.warn({ error }, "push: failed to drop dead tokens");
@@ -52,26 +84,24 @@ async function dropDeadTokens(tokens: string[]): Promise<void> {
 
 export async function sendPushToUsers(userIds: string[], payload: PushPayload): Promise<number> {
   const unique = Array.from(new Set(userIds.filter(Boolean)));
-  const targets = await loadTargets(unique);
-  if (targets.length === 0) return 0;
+  const devices = await loadTargets(unique);
+  if (devices.length === 0) return 0;
 
-  // Группируем по провайдеру: FCM и APNs — разные транспорты с разными «мёртвыми» статусами.
-  const byProvider = new Map<PushProvider, PushTarget[]>();
-  for (const target of targets) {
-    const bucket = byProvider.get(target.provider);
-    if (bucket) bucket.push(target);
-    else byProvider.set(target.provider, [target]);
+  // Выбор канала — ПОУСТРОЙСТВЕННО, не по провайдеру в куче: звонок должен прийти на
+  // телефон ОДИН раз. Есть VoIP-токен — будим им (только он поднимает убитое приложение
+  // через PushKit и рисует CallKit); нет — уходит обычный alert как запасной путь.
+  // Сообщения на VoIP-токены не шлём вовсе: iOS 13+ требует от VoIP-пуша немедленно
+  // показать экран звонка, иначе Apple перестаёт доставлять их устройству.
+  const urgent = isUrgent(payload);
+  const chosen: PushTarget[] = [];
+  for (const device of devices) {
+    if (urgent && device.voip) chosen.push(device.voip);
+    else if (device.alert) chosen.push(device.alert);
   }
 
-  const fcmTargets = byProvider.get("fcm") ?? [];
-  const apnsAlertTargets = byProvider.get("apns") ?? [];
-  const apnsVoipTargets = byProvider.get("apns-voip") ?? [];
-
-  // Звонки на iOS будим VoIP-пушем (только он гарантированно поднимает убитое приложение
-  // через PushKit); устройства без voip-токена получают обычный alert как fallback.
-  // Сообщения на voip-токены не шлём вовсе: iOS 13+ требует от VoIP-пуша немедленно
-  // показать CallKit-экран, иначе Apple перестаёт доставлять их устройству.
-  const apnsTargets = isUrgent(payload) ? [...apnsVoipTargets, ...apnsAlertTargets] : apnsAlertTargets;
+  // Транспорты разные (у FCM и APNs свои «мёртвые» статусы) — разводим по провайдеру.
+  const fcmTargets = chosen.filter((t) => t.provider === "fcm");
+  const apnsTargets = chosen.filter((t) => t.provider !== "fcm");
 
   const [fcmResult, apnsResult] = await Promise.all([
     sendFcm(fcmTargets, payload),

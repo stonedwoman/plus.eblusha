@@ -2,6 +2,13 @@ import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import env from "../config/env";
 
+import type { PushPayload } from "../push/types";
+
+export type PushJob = {
+  userIds: string[];
+  payload: PushPayload;
+};
+
 export type LinkPreviewJob = {
   messageId: string;
   conversationId: string;
@@ -18,6 +25,7 @@ const PREVIEW_ENQUEUE_MAX_PER_USER_CHAT = 12;
 
 let connection: IORedis | null = null;
 let linkPreviewQueue: Queue<LinkPreviewJob> | null = null;
+let pushQueue: Queue<PushJob> | null = null;
 
 function getConnection(): IORedis {
   if (connection) return connection;
@@ -38,6 +46,41 @@ export function getLinkPreviewQueue(): Queue<LinkPreviewJob> {
     },
   });
   return linkPreviewQueue;
+}
+
+export function getPushQueue(): Queue<PushJob> {
+  if (pushQueue) return pushQueue;
+  pushQueue = new Queue<PushJob>("push", {
+    connection: getConnection(),
+    defaultJobOptions: {
+      removeOnComplete: true,
+      removeOnFail: 500,
+      attempts: 3,
+      backoff: { type: "exponential", delay: 1000 },
+    },
+  });
+  return pushQueue;
+}
+
+/**
+ * Поставить пуш в очередь. НИКОГДА не бросает: отправка сообщения не должна падать
+ * из-за недоступного Redis или кривого ключа Firebase.
+ *
+ * dedupeKey защищает от повторов — клиент имеет право переслать тот же запрос (см. ретраи
+ * секретных сообщений), и без него человек получил бы два одинаковых уведомления.
+ */
+export function enqueuePush(userIds: string[], payload: PushJob["payload"], dedupeKey?: string): void {
+  const recipients = Array.from(new Set(userIds.filter(Boolean)));
+  if (recipients.length === 0) return;
+  try {
+    void getPushQueue()
+      .add("push", { userIds: recipients, payload }, dedupeKey ? { jobId: dedupeKey } : undefined)
+      .catch(() => {
+        // Молча: пуш — это ускоритель поверх живого сокета, а не критический путь.
+      });
+  } catch {
+    // см. выше
+  }
 }
 
 function sanitizeRateKeyPart(v: string): string {

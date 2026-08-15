@@ -37,18 +37,29 @@ function toEblushaKeyLocal(k: string): string {
 async function main() {
   const used = new Set<string>();
 
+  // Превью-дериваты (<key>.thumb.eblusha) генерятся на аплоаде и в БД НЕ записываются —
+  // ключ выводится на лету (files.ts ?thumb=1). Без этой строки ночной GC считал их
+  // сиротами и ежедневно сносил все превью (ревью).
+  const deriveThumbKeyLocal = (key: string): string =>
+    key.endsWith(".eblusha") ? key.replace(/\.eblusha$/, ".thumb.eblusha") : `${key}.thumb`;
+
+  const markUsed = (k: string) => {
+    used.add(k);
+    used.add(deriveThumbKeyLocal(k));
+  };
+
   const addFromUrl = (url: string | null) => {
     if (!url || typeof url !== "string") return;
     const keys = extractStorageKeyCandidatesFromUrl(url.trim());
-    keys.forEach((k) => used.add(k));
+    keys.forEach((k) => markUsed(k));
   };
 
   const addFromKey = (key: string | null) => {
     if (!key || typeof key !== "string") return;
     const k = key.trim().replace(/^\//, "");
     if (!k || k.includes("..")) return;
-    used.add(k);
-    used.add(toEblushaKeyLocal(k));
+    markUsed(k);
+    markUsed(toEblushaKeyLocal(k));
   };
 
   console.log("Collecting used keys from DB...");

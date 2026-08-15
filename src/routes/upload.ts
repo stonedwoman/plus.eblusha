@@ -6,6 +6,7 @@ import crypto from "crypto";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { Readable } from "stream";
+import { pipeline } from "stream/promises";
 import { authenticate } from "../middlewares/auth";
 import env from "../config/env";
 import logger from "../config/logger";
@@ -546,12 +547,23 @@ router.post(
     });
 
     try {
+      // Склеиваем части в ОДИН файл внутри каталога сессии и отдаём storeUploadedObject
+      // именно filePath: ветка превью картинок (ffmpeg) работает только от файла, поэтому
+      // чанк-аплоады раньше оставались без .thumb и каждый просмотр тянул полный размер.
+      // Каталог сессии подчищается removeUploadSession'ом (успех) или GC (сбой) — склейка
+      // не живёт дольше самой сессии. Для секретных чатов сюда приходит уже шифротекст
+      // (application/octet-stream) — image/*-гейт превью не срабатывает, E2EE не затронут.
+      const assembledPath = path.join(getUploadSessionDir(uploadId), "assembled");
+      // pipeline (а не pipe): гарантированно закрывает ОБА потока при сбое любой стороны —
+      // ручной pipe копил открытые fd на повторных ошибках (ревью).
+      await pipeline(createPartsReadStream(partPaths), fs.createWriteStream(assembledPath));
+
       const result = await storeUploadedObject(req, res, {
         startedAtMs,
         filename: manifest.filename,
         contentType: manifest.contentType,
         totalSize: manifest.totalSize,
-        inputStream: createPartsReadStream(partPaths),
+        filePath: assembledPath,
       });
       if (!result) return;
       removeUploadSession(uploadId);
@@ -587,12 +599,32 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
   });
 
   logUploadTiming(req, startedAtMs, "before_multer");
-  await new Promise<void>((resolve, reject) => {
-    uploadSingle(req, res, (err) => {
-      if (err) return reject(err);
-      resolve();
-    });
+  const multerErr = await new Promise<any>((resolve) => {
+    uploadSingle(req, res, (err) => resolve(err ?? null));
   });
+  if (multerErr) {
+    // Раньше эта ошибка становилась необработанным исключением → 500 без причины,
+    // а клиент навсегда застревал на 0%. Теперь причина видна и в логе, и в ответе.
+    const code = String(multerErr?.code || "");
+    logger.warn(
+      {
+        reqId: String((req as any).requestId ?? "unknown"),
+        code,
+        message: String(multerErr?.message || multerErr).slice(0, 300),
+        field: String(multerErr?.field || ""),
+        contentType: String(req.headers["content-type"] || "").slice(0, 120),
+        contentLength: String(req.headers["content-length"] || ""),
+        ua: String(req.headers["user-agent"] || "").slice(0, 120),
+      },
+      "[upload] не удалось разобрать загружаемый файл"
+    );
+    const tooBig = code === "LIMIT_FILE_SIZE";
+    res.status(tooBig ? 413 : 400).json({
+      message: tooBig ? "Файл слишком большой" : "Не удалось принять файл",
+      code: code || "upload_parse_failed",
+    });
+    return;
+  }
   logUploadTiming(req, startedAtMs, "multer_done");
 
   const file = (req as any).file as Express.Multer.File | undefined;

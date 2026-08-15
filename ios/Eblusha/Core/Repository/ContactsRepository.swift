@@ -3,8 +3,9 @@ import Foundation
 // Порт `data/repository/ContactsRepository.kt` (+ ContactsApi.kt и UsersApi.kt: Retrofit
 // заменяет общий APIClient, пути и query-параметры совпадают байт-в-байт).
 //
-// В Kotlin конструктор также принимает deviceIdProvider и secretRepository — оба нужны
-// только секретной ветке (startSecretConversation), которая приедет фазой 6.
+// В Kotlin конструктор также принимает deviceIdProvider и secretRepository; здесь
+// secretRepository прошивается var-свойством из AppContainer (нужен только
+// startSecretConversation), чтобы не менять сигнатуру init, уже занятую в DI.
 
 /// Старт секретного чата: ссылка на тред + принял ли уже собеседник (ACTIVE).
 struct SecretStartResult {
@@ -15,6 +16,11 @@ struct SecretStartResult {
 final class ContactsRepository {
     private let api: APIClient
     private let session: SessionStore
+
+    /// Ставится из AppContainer после создания SecretRepository (в Kotlin — параметр
+    /// конструктора; здесь var, чтобы не менять сигнатуру init, уже прошитую в DI).
+    /// Нужен только startSecretConversation.
+    var secretRepository: SecretRepository?
 
     init(api: APIClient, session: SessionStore) {
         self.api = api
@@ -176,11 +182,30 @@ final class ContactsRepository {
      * ли чат уже (открываем) или это всё ещё PENDING-приглашение (подтверждаем и остаёмся).
      */
     func startSecretConversation(userId: String) async -> ApiResult<SecretStartResult> {
-        // TODO(фаза 6): порт SecretRepository.createSecretThread (генерация ключа треда,
-        // accept-on-one-device, восстановление ключа) + косметический подбор заголовка из
-        // списка друзей, который НЕ превращает успешный create в ошибку — как в оригинале.
-        _ = userId
-        return .failure(message: "Секретные чаты появятся в следующем обновлении")
+        guard let secretRepository else {
+            // DI ещё не прошил SecretRepository (см. integration_notes к AppContainer).
+            return .failure(message: "Секретные чаты ещё не инициализированы")
+        }
+        let created = await secretRepository.createSecretThread(peerUserId: userId)
+        guard case .success(let start) = created else {
+            if case .failure(let message, let code) = created {
+                return .failure(message: message, code: code)
+            }
+            return .failure(message: "Не удалось создать секретный чат")
+        }
+        // Тред на этом шаге уже СУЩЕСТВУЕТ — подбор заголовка косметический и не должен
+        // превращать успешный create в ошибку (пользователь ретраил бы уже висящий
+        // pending-чат), поэтому сбой списка друзей глотается фолбэком.
+        var title = "Секретный чат"
+        let friends = (try? await list(filter: "accepted"))?.contacts ?? []
+        if let friend = friends.first(where: { $0.friend?.id == userId })?.friend {
+            let display = friend.displayName?.trimmed() ?? ""
+            title = display.isEmpty ? friend.username : display
+        }
+        return .success(SecretStartResult(
+            ref: ConversationRef(id: start.threadId, title: title),
+            active: start.active
+        ))
     }
 
     // MARK: - Профиль (временный хост методов ProfileRepository — до фазы 6)

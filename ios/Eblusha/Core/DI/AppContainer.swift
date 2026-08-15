@@ -16,6 +16,9 @@ final class AppContainer {
     let profileRepository: ProfileRepository
     let liveKitRepository: LiveKitRepository
     let callManager: CallManager
+    let devicesRepository: DevicesRepository
+    let secretKeyStore: SecretKeyStore
+    let secretRepository: SecretRepository
 
     private init() {
         let session = SessionStore()
@@ -37,11 +40,29 @@ final class AppContainer {
             session: session,
             chatRepository: chatRepository
         )
+        self.devicesRepository = DevicesRepository(api: api, deviceIdProvider: deviceId)
+        self.secretKeyStore = SecretKeyStore()
+        self.secretRepository = SecretRepository(
+            api: api,
+            devices: devicesRepository,
+            keyStore: secretKeyStore,
+            deviceIdProvider: deviceId,
+            session: session
+        )
+        // Рукопожатие сокета несёт deviceId: после ротации (409 на /devices/register)
+        // сервер держал бы нас в комнате старого устройства и secret:notify не доходил бы.
+        secretRepository.onDeviceIdRotated = { [weak realtimeClient] in
+            realtimeClient?.reconnectForDeviceChange()
+        }
+        // Секретный чат из карточки контакта заводится через ContactsRepository.
+        contactsRepository.secretRepository = secretRepository
     }
 
     /// Порт container.clearLocalData(): при выходе стираем всё локальное.
     func clearLocalData() {
         chatRepository.clearLocalData()
+        // Ключи тредов, prekeys, идентичность устройства и расшифрованные вложения.
+        secretRepository.clearLocalData()
         PresenceDevices.shared.clear()
     }
 

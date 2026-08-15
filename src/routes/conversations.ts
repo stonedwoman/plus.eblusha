@@ -8,7 +8,7 @@ import { getIO } from "../realtime/socket";
 import env from "../config/env";
 import logger from "../config/logger";
 import { extractFirstUrl } from "../lib/linkPreview";
-import { enqueueLinkPreview } from "../jobs/queue";
+import { enqueueLinkPreview, enqueuePush } from "../jobs/queue";
 import { rateLimit } from "../middlewares/rateLimit";
 import {
   forwardedHostedBlobUrlLikely,
@@ -1273,13 +1273,11 @@ router.post(
   });
 
   // Immediate notify event for tiles/unread without waiting for queries
-  const recipients =
-    (
-      await prisma.conversation.findUnique({
-        where: { id: conversationId },
-        include: { participants: true },
-      })
-    )?.participants.map((p) => p.userId) ?? [];
+  const convForNotify = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    include: { participants: true },
+  });
+  const recipients = convForNotify?.participants.map((p) => p.userId) ?? [];
 
   for (const rid of recipients) {
     if (rid !== userId) {
@@ -1290,6 +1288,40 @@ router.post(
         message,
       });
     }
+  }
+
+  // Push-уведомление тем же получателям. Текст сообщения НЕ отправляем: он ушёл бы через
+  // Google/Apple, а для секретных бесед сервер его и не должен показывать. Клиент покажет
+  // имя и пометку типа, остальное подтянет сам. Ошибки здесь безопасны — enqueuePush не бросает.
+  try {
+    const senderName =
+      (message as any)?.sender?.displayName || (message as any)?.sender?.username || "Сообщение";
+    const attachmentKind = Array.isArray((message as any)?.attachments) && (message as any).attachments.length > 0
+      ? String((message as any).attachments[0]?.type || "")
+      : "";
+    const preview =
+      attachmentKind === "IMAGE" ? "Фото"
+        : attachmentKind === "VIDEO" ? "Видео"
+        : attachmentKind === "AUDIO" ? "Голосовое сообщение"
+        : attachmentKind ? "Файл"
+        : "";
+    enqueuePush(
+      recipients.filter((rid) => rid !== userId),
+      {
+        kind: "message",
+        conversationId,
+        messageId: message.id,
+        senderId: userId,
+        senderName,
+        preview,
+        secret: Boolean(convForNotify?.isSecret),
+      },
+      `msg:${message.id}`,
+    );
+  } catch (error) {
+    // Пуш — ускоритель поверх сокета, его сбой не должен влиять на отправку сообщения.
+    // Но молчать нельзя: ровно так первая версия этого блока падала незаметно.
+    logger.warn({ error, conversationId }, "Failed to enqueue message push");
   }
 
   // Link preview (Telegram-like unfurl): enqueue job and return immediately.
