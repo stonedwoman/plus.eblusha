@@ -102,6 +102,19 @@ const envSchema = z.object({
   // Optional KEK (base64 or hex, 32 bytes) for server-side encryption of NON-secret chat DEKs
   // If unset, non-secret chat encryption helpers will throw when used.
   CHAT_ENC_KEK: z.string().optional(),
+  // Ключ сервис-аккаунта Firebase для push-уведомлений: путь к файлу, сырой JSON или base64.
+  // Необязателен — без него пуши просто выключены, сервер работает как раньше.
+  FCM_SERVICE_ACCOUNT: z.string().optional(),
+  // APNs (iOS): token-based авторизация ключом .p8 из Apple Developer (Keys → APNs).
+  // KEY_FILE/KEY_ID/TEAM_ID нужны все три — без любого из них APNs просто выключен,
+  // сервер работает как раньше (см. src/push/apns.ts).
+  APNS_KEY_FILE: z.string().optional(), // путь к .p8-файлу (пробрасывается в контейнер томом)
+  APNS_KEY_ID: z.string().optional(), // 10-символьный Key ID ключа
+  APNS_TEAM_ID: z.string().optional(), // Team ID аккаунта разработчика
+  APNS_BUNDLE_ID: z.string().default("org.eblusha.plus"),
+  // sandbox — для dev-сборок из Xcode: они получают токены sandbox-кластера,
+  // и прод-сервер APNs такие токены отвергает как BadDeviceToken.
+  APNS_ENV: z.enum(["production", "sandbox"]).default("production"),
 });
 
 const env = envSchema.parse(process.env);
