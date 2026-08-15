@@ -14,7 +14,7 @@ const router = Router();
 
 const bootstrapSchema = z.object({
   refreshToken: z.string().min(1),
-  client: z.literal("android-apk"),
+  client: z.enum(["android-apk", "ios-app"]),
   deviceId: z.string().min(1).optional(),
 });
 

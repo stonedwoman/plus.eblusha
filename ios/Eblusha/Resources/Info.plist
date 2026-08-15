@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ru</string>
+	<key>CFBundleDisplayName</key>
+	<string>Еблуша</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+
+	<!-- Адреса бэкенда приезжают из конфигурации сборки, чтобы debug смотрел на
+	     ru.eblusha.org, а release — на eblusha.org (как buildConfigField в Android). -->
+	<key>EblushaApiBaseURL</key>
+	<string>$(EBLUSHA_API_BASE_URL)</string>
+	<key>EblushaWsBaseURL</key>
+	<string>$(EBLUSHA_WS_BASE_URL)</string>
+
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<!-- Android-клиент зовёт EblushaPlusTheme без аргументов, а там darkTheme = true —
+	     то есть тёмная тема всегда. Держим паритет; светлая палитра описана в Palette.swift
+	     и включается снятием этого ключа. -->
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
+
+	<!-- Права: те же, что в AndroidManifest (CAMERA, RECORD_AUDIO). Формулировки
+	     видит пользователь в системном запросе, поэтому по-русски и по делу. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Камера нужна для видеозвонков.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Микрофон нужен для звонков и голосовых сообщений.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Доступ к фото нужен, чтобы отправлять их в переписке.</string>
+
+	<!-- audio — звонок продолжается со свёрнутым приложением; voip — входящие звонки
+	     через PushKit; remote-notification — уведомления о сообщениях. Заменяет
+	     андроидовский foreground-сервис, аналога которому в iOS нет. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>voip</string>
+		<string>remote-notification</string>
+	</array>
+
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>
