@@ -10,6 +10,7 @@ final class AppContainer {
     let deviceIdProvider: DeviceIdProvider
     let api: APIClient
     let authRepository: AuthRepository
+    let realtimeClient: RealtimeClient
 
     private init() {
         let session = SessionStore()
@@ -18,6 +19,7 @@ final class AppContainer {
         self.deviceIdProvider = deviceId
         self.api = APIClient(session: session, deviceIdProvider: deviceId)
         self.authRepository = AuthRepository(api: api, session: session, deviceIdProvider: deviceId)
+        self.realtimeClient = RealtimeClient(session: session, deviceIdProvider: deviceId, api: api)
     }
 
     /// Прогрев на старте: поднять сессию из Keychain (порт container.warmup()).
