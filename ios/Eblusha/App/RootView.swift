@@ -29,9 +29,12 @@ struct RootView: View {
                 SplashView()
             case .loggedOut:
                 AuthFlowView(container: container)
-            case .loggedIn(let user):
-                HomePlaceholderView(user: user) {
-                    Task { await container.authRepository.logout() }
+            case .loggedIn:
+                HomeNavView(container: container) {
+                    Task {
+                        await container.authRepository.logout()
+                        container.clearLocalData()
+                    }
                 }
             }
         }
@@ -98,45 +101,58 @@ private struct AuthFlowView: View {
     }
 }
 
-/// Временная «домашняя» до фазы 3: доказывает, что сессия и сокет живы.
-private struct HomePlaceholderView: View {
-    let user: SessionStore.StoredUser
+/// Порт HomeNavHost: список чатов + навигация в беседу. Экран беседы, контакты,
+/// группы и настройки подключаются своими фазами; выход пока живёт на «Настройках».
+private struct HomeNavView: View {
     let onLogout: () -> Void
 
-    @ObservedObject private var realtime = AppContainer.shared.realtimeClient
-    @State private var lastEvent = "—"
+    @StateObject private var listVM: ChatListViewModel
+    @State private var openConversation: Conversation?
+    @State private var showLogoutConfirm = false
+
+    init(container: AppContainer, onLogout: @escaping () -> Void) {
+        self.onLogout = onLogout
+        _listVM = StateObject(wrappedValue: ChatListViewModel(
+            repo: container.chatRepository,
+            realtime: container.realtimeClient
+        ))
+    }
+
+    var body: some View {
+        NavigationStack {
+            ChatListView(
+                vm: listVM,
+                onOpenChat: { openConversation = $0 },
+                onOpenSettings: { showLogoutConfirm = true }
+            )
+            .navigationDestination(item: $openConversation) { conversation in
+                ChatPlaceholderView(conversation: conversation)
+            }
+            .toolbar(.hidden, for: .navigationBar)
+        }
+        .confirmationDialog("Профиль", isPresented: $showLogoutConfirm) {
+            Button("Выйти из аккаунта", role: .destructive, action: onLogout)
+            Button("Отмена", role: .cancel) {}
+        }
+    }
+}
+
+/// Заглушка экрана беседы до порта ChatScreen (следующий шаг фазы 3).
+private struct ChatPlaceholderView: View {
+    let conversation: Conversation
 
     var body: some View {
         VStack(spacing: Spacing.lg) {
-            EblushaWordmark()
-            Text("Вы вошли как @\(user.username)")
+            AvatarView(name: conversation.title, avatarUrl: conversation.avatarUrl, size: 72)
+            Text(conversation.title)
+                .font(.title2.weight(.semibold))
                 .foregroundStyle(Eb.textPrimary)
-            if let displayName = user.displayName {
-                Text(displayName)
-                    .foregroundStyle(Eb.textMuted)
-            }
-
-            HStack(spacing: Spacing.sm) {
-                Circle()
-                    .fill(realtime.connected ? Eb.online : Eb.offline)
-                    .frame(width: 10, height: 10)
-                Text(realtime.connected ? "Сокет подключён" : "Сокет не подключён")
-                    .font(.footnote)
-                    .foregroundStyle(Eb.textMuted)
-            }
-            Text("Последнее событие: \(lastEvent)")
-                .font(.caption.monospaced())
+            Text("Экран переписки в работе")
+                .font(.footnote)
                 .foregroundStyle(Eb.textMuted)
-                .lineLimit(2)
-                .onReceive(realtime.events) { event in
-                    lastEvent = String(describing: event).prefix(80).description
-                }
-
-            Button("Выйти", action: onLogout)
-                .foregroundStyle(Eb.error)
-                .padding(.top, Spacing.xl)
         }
-        .padding(.horizontal, Spacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Eb.paper)
     }
 }
 

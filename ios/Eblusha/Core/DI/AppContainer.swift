@@ -11,6 +11,7 @@ final class AppContainer {
     let api: APIClient
     let authRepository: AuthRepository
     let realtimeClient: RealtimeClient
+    let chatRepository: ChatRepository
 
     private init() {
         let session = SessionStore()
@@ -20,6 +21,13 @@ final class AppContainer {
         self.api = APIClient(session: session, deviceIdProvider: deviceId)
         self.authRepository = AuthRepository(api: api, session: session, deviceIdProvider: deviceId)
         self.realtimeClient = RealtimeClient(session: session, deviceIdProvider: deviceId, api: api)
+        self.chatRepository = ChatRepository(api: api, session: session)
+    }
+
+    /// Порт container.clearLocalData(): при выходе стираем всё локальное.
+    func clearLocalData() {
+        chatRepository.clearLocalData()
+        PresenceDevices.shared.clear()
     }
 
     /// Прогрев на старте: поднять сессию из Keychain (порт container.warmup()).
