@@ -40,6 +40,16 @@ location ^~ /api/ios-request/ {
   alias /var/www/vpn-logs/ios-requests/;
 }
 
+# Игра «Атолл» — статика Vite-сборки из /DATA/eblusha-game/dist (bind mount, см.
+# docker-compose.full.yml). base=/game/ зашит в сборку; хешированные ассеты, поэтому
+# no-cache безопасен и обновления видны по обычному рефрешу.
+location ^~ /game/ {
+  alias /var/www/atoll/;
+  add_header Cache-Control "no-cache, must-revalidate" always;
+  add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet" always;
+  try_files $uri /game/index.html;
+}
+
 # Каталог обновлений: файлы + браузерный листинг (autoindex) любых подпапок на любой
 # глубине. Раздаётся напрямую из bind mount public/updates — новое видно сразу, без
 # reload. Без try_files: для папки без слеша nginx сам отдаёт 301 на $uri/, иначе

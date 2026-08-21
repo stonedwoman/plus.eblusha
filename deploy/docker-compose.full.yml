@@ -162,6 +162,8 @@ services:
     volumes:
       - ../frontend/dist:/var/www/eblusha.org:ro
       - ../frontend/public:/var/www/eblusha.org-public:ro
+      # Игра «Атолл» (отдельный репозиторий) — статика на eblusha.org/game
+      - /DATA/eblusha-game/dist:/var/www/atoll:ro
       # updates/ подсовывается сквозь bindfs (см. /etc/fstab на хосте): FUSE-вид с
       # принудительными правами a+rD. Что бы ни положили (600/000, mv, rsync -p,
       # tar -p) — nginx (uid 101) всегда прочитает. Вложенный маунт перекрывает
