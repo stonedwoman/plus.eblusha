@@ -24,6 +24,22 @@ location ^~ /updates/vpn/logs/ {
   alias /var/www/vpn-logs/;
 }
 
+# Заявки на iOS-доступ (кнопка «Запросить доступ» на /get). Нужен и здесь: РФ-вход
+# (Caddy на VPS) проксирует ru.eblusha.org с header_up Host eblusha.org → запросы
+# прилетают в ЭТОТ vhost, а не в default_server. Тот же паттерн, что и логи выше;
+# host-side watcher (huila-ios-invites) шлёт заявки в Telegram.
+location ^~ /api/ios-request/ {
+  if ($http_x_eblusha_invite != "c8cbcd45985b6bc6ae59a0d8af4cc507") { return 403; }
+  limit_except PUT { deny all; }
+  limit_req zone=iosreq burst=5 nodelay;
+  limit_req_status 429;  # иначе дефолт 503, и фронт не распознаёт rate-limit
+  client_max_body_size 8k;
+  client_body_temp_path /var/www/vpn-logs/.tmp;
+  dav_methods PUT;
+  create_full_put_path off;  # плоский <uuid>.json; вложенный путь → 409, не плодит подкаталоги
+  alias /var/www/vpn-logs/ios-requests/;
+}
+
 # Каталог обновлений: файлы + браузерный листинг (autoindex) любых подпапок на любой
 # глубине. Раздаётся напрямую из bind mount public/updates — новое видно сразу, без
 # reload. Без try_files: для папки без слеша nginx сам отдаёт 301 на $uri/, иначе
@@ -121,6 +137,8 @@ location /api/voice/ {
   rewrite ^/api/voice(/.*)$ $1 break;
   proxy_pass http://$livekit_host;
   proxy_http_version 1.1;
+  proxy_read_timeout 3600s;
+  proxy_send_timeout 3600s;
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection "upgrade";
   proxy_set_header Host $host;
