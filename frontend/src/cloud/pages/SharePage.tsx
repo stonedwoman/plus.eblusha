@@ -189,7 +189,12 @@ export default function SharePage() {
     <div className="cl-root">
       <header className="cl-topbar">
         <span className="cl-brand">
-          <b>☁</b> Eblusha <b>Cloud</b>
+          <span className="logo">
+            <span>Е</span>
+            <span className="b">Б</span>
+            <span>луша</span>
+          </span>
+          <span className="cl-brand-suffix">Cloud</span>
         </span>
         <div className="cl-spacer" />
         {signedIn ? (

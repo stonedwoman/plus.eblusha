@@ -64,7 +64,11 @@ export default function CloudAuthorizePage() {
     <div className="cl-root">
       <div className="cl-page narrow">
         <div className="cl-empty">
-          <div style={{ fontSize: 40 }}>☁</div>
+          <div className="logo" style={{ fontSize: 30, justifyContent: 'center' }}>
+            <span>Е</span>
+            <span className="b">Б</span>
+            <span>луша</span>
+          </div>
           <h3>{error ? 'Не получилось' : 'Открываем Eblusha Cloud…'}</h3>
           <p className="cl-muted">{error ?? 'Передаём доступ на защищённый поддомен'}</p>
           {error ? (

@@ -36,7 +36,11 @@ export default function CloudCallbackPage() {
     <div className="cl-root">
       <div className="cl-page narrow">
         <div className="cl-empty">
-          <div style={{ fontSize: 40 }}>☁</div>
+          <div className="logo" style={{ fontSize: 30, justifyContent: 'center' }}>
+            <span>Е</span>
+            <span className="b">Б</span>
+            <span>луша</span>
+          </div>
           <h3>{error ? 'Вход не завершён' : 'Входим…'}</h3>
           <p className="cl-muted">{error ?? 'Обмениваем код на сессию'}</p>
           {error ? (

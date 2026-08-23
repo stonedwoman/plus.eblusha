@@ -7,7 +7,19 @@
   --cl-gap: 16px;
   --cl-radius: 14px;
   --cl-header-h: 60px;
-  min-height: 100dvh;
+  /*
+   * Страница мессенджера намеренно залочена: html/body имеют overflow:hidden,
+   * #app — height:100svh, потому что в чате скроллится внутренняя лента, а не
+   * документ. Из-за этого Cloud, унаследовав ту же оболочку, не прокручивался
+   * вообще: контент просто обрезался по высоте экрана.
+   * Поэтому скроллируемым контейнером делаем сам .cl-root. Заодно sticky-шапка
+   * и заголовки дней продолжают работать — они липнут к нему.
+   */
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   background:
     radial-gradient(1200px 600px at 12% -10%, rgba(217, 119, 6, 0.10), transparent 60%),
     radial-gradient(900px 500px at 95% 0%, rgba(14, 165, 233, 0.07), transparent 55%),
@@ -46,6 +58,22 @@
   white-space: nowrap;
 }
 .cl-brand b { color: var(--brand); font-weight: 700; }
+
+/* Логотип — тот же, что в чате (класс .logo из style.css вместе с анимацией
+   flipY у буквы Б). Здесь только уменьшаем кегль под высоту шапки: дублировать
+   анимацию нельзя, иначе она разъедется с оригиналом при первой же правке. */
+.cl-brand .logo {
+  font-size: 21px;
+  line-height: 1;
+}
+.cl-brand-suffix {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--text-muted);
+  align-self: center;
+  padding-bottom: 1px;
+}
 
 .cl-topnav { display: flex; gap: 2px; margin-left: 8px; overflow-x: auto; scrollbar-width: none; }
 .cl-topnav::-webkit-scrollbar { display: none; }
@@ -509,4 +537,97 @@
   .cl-row > .cl-row-hide { display: none; }
   .cl-page { padding: 16px 12px 120px; }
   .cl-dock { right: 8px; left: 8px; bottom: 8px; width: auto; }
+}
+
+/* ── Плитка загрузки в галерее ──────────────────────────────────────────────
+   Файл виден там, где в итоге окажется, а не в отдельном окне сбоку. */
+
+.cl-uptile {
+  cursor: default;
+  background: var(--surface-200);
+  border: 1px solid var(--surface-border);
+}
+.cl-uptile-bg {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  filter: saturate(.55) brightness(.5);
+}
+.cl-uptile-veil {
+  position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(10,12,16,.25), rgba(10,12,16,.78));
+}
+.cl-uptile-center {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+}
+.cl-uptile-caption {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 7px 8px;
+  display: flex; flex-direction: column; gap: 1px;
+  font-size: 11px; line-height: 1.25;
+}
+.cl-uptile-name {
+  color: #f1f3f6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cl-uptile-sub { color: #9aa0a8; font-variant-numeric: tabular-nums; }
+.cl-uptile-cancel {
+  position: absolute; top: 5px; right: 5px;
+  width: 22px; height: 22px; border-radius: 50%;
+  border: none; cursor: pointer;
+  background: rgba(8,10,14,.6); color: #d7dae0;
+  display: grid; place-items: center; font-size: 12px;
+  opacity: 0; transition: opacity .15s ease;
+}
+.cl-uptile:hover .cl-uptile-cancel { opacity: 1; }
+.cl-uptile-retry {
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 1px solid var(--surface-border-strong);
+  background: rgba(8,10,14,.65); color: var(--brand);
+  font-size: 19px; cursor: pointer;
+}
+
+/* Кольцо прогресса */
+.cl-ring { transform: rotate(-90deg); }
+.cl-ring-track { fill: none; stroke: rgba(255,255,255,.16); stroke-width: 4; }
+.cl-ring-value {
+  fill: none; stroke: var(--brand); stroke-width: 4; stroke-linecap: round;
+  transition: stroke-dashoffset .35s ease;
+}
+.cl-ring-value.paused { stroke: var(--text-muted); }
+.cl-ring-text {
+  transform: rotate(90deg);
+  transform-origin: 24px 24px;
+  fill: #f1f3f6;
+  font-size: 13px;
+  font-weight: 650;
+  text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Подготовка превью: кольцо уступает место «дыханию» — прогресса тут нет,
+   врать про 100% нельзя. */
+.cl-uptile-spinner {
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.15);
+  border-top-color: var(--brand);
+  animation: clSpin .9s linear infinite;
+}
+@keyframes clSpin { to { transform: rotate(360deg); } }
+.cl-uptile.preparing { animation: clBreathe 1.8s ease-in-out infinite; }
+@keyframes clBreathe {
+  0%, 100% { border-color: var(--surface-border); }
+  50% { border-color: var(--brand); }
+}
+
+.cl-uptile-more {
+  display: grid; place-items: center;
+  aspect-ratio: 1;
+  border-radius: 11px;
+  border: 1px dashed var(--surface-border-strong);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  text-align: center;
+  padding: 8px;
 }

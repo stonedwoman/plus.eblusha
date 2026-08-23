@@ -76,7 +76,7 @@ export default function JoinPage() {
           title={`Вы уже в «${peek.space.name}»`}
           action={
             <button className="cl-btn primary" onClick={() => navigate(cloudPath(`/space/${peek.space.id}`))}>
-              Открыть Space
+              Открыть хуяпку
             </button>
           }
         />

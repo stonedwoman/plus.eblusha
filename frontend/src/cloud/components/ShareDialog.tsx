@@ -24,13 +24,13 @@ export function ShareDialog({
 }) {
   const [tab, setTab] = useState<'public' | 'invite'>('public')
   return (
-    <Modal title="Доступ к Space" onClose={onClose} wide>
+    <Modal title="Доступ к хуяпке" onClose={onClose} wide>
       <div className="cl-chips" style={{ marginBottom: 16 }}>
         <button className={`cl-chip${tab === 'public' ? ' is-active' : ''}`} onClick={() => setTab('public')}>
           Публичная ссылка
         </button>
         <button className={`cl-chip${tab === 'invite' ? ' is-active' : ''}`} onClick={() => setTab('invite')}>
-          Пригласить в Space
+          Пригласить в хуяпку
         </button>
       </div>
       {tab === 'public' ? (
@@ -145,7 +145,7 @@ function PublicShareTab({ spaceId, preselectedFileIds }: { spaceId: string; pres
     <div>
       {preselectedFileIds?.length ? (
         <div className="cl-muted" style={{ fontSize: 13, marginBottom: 12 }}>
-          Ссылка будет открывать выбранные файлы ({preselectedFileIds.length}), а не весь Space.
+          Ссылка будет открывать выбранные файлы ({preselectedFileIds.length}), а не всю хуяпку.
         </div>
       ) : null}
 
@@ -196,7 +196,7 @@ function PublicShareTab({ spaceId, preselectedFileIds }: { spaceId: string; pres
             <div key={share.id} className="cl-meta-row" style={{ alignItems: 'center' }}>
               <div>
                 <div style={{ fontSize: 13.5 }}>
-                  {share.targetType === 'SPACE' ? 'Весь Space' : share.targetType === 'SELECTION' ? `${share.fileCount} файлов` : share.targetType}
+                  {share.targetType === 'SPACE' ? 'Вся хуяпка' : share.targetType === 'SELECTION' ? `${share.fileCount} файлов` : share.targetType}
                   {share.hasPassword ? ' · с паролем' : ''}
                 </div>
                 <div className="cl-muted" style={{ fontSize: 11.5 }}>
@@ -327,7 +327,7 @@ function InviteTab({ spaceId }: { spaceId: string }) {
       <div className="cl-section-title">Ссылка-приглашение</div>
       <p className="cl-muted" style={{ fontSize: 13, lineHeight: 1.55, marginTop: 0 }}>
         По такой ссылке нельзя ничего скачать без входа: она всегда требует авторизации через Еблушу и только затем
-        добавляет человека в Space.
+        добавляет человека в хуяпку.
       </p>
 
       {created ? (

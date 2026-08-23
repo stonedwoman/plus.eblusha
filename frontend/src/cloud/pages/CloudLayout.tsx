@@ -104,11 +104,17 @@ export default function CloudLayout() {
     <div className="cl-root">
       <header className="cl-topbar">
         <Link className="cl-brand" to={cloudPath()}>
-          <b>☁</b> Eblusha <b>Cloud</b>
+          {/* Тот же логотип, что и в чате: .logo + вращающаяся Б (style.css). */}
+          <span className="logo">
+            <span>Е</span>
+            <span className="b">Б</span>
+            <span>луша</span>
+          </span>
+          <span className="cl-brand-suffix">Cloud</span>
         </Link>
         <nav className="cl-topnav">
           <NavLink to={cloudPath()} end className={({ isActive }) => (isActive ? 'is-active' : '')}>
-            Spaces
+            Хуяпки
           </NavLink>
           <NavLink to={cloudPath('/recent')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
             Недавние

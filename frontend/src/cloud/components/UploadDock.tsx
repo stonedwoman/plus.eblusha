@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { memo, useRef, useState } from 'react'
 import { formatBytes, formatEta } from '../api'
 import {
   attachFileToUpload,
@@ -8,81 +8,95 @@ import {
   pauseUpload,
   resumeAll,
   resumeUpload,
+  useUploadIds,
+  useUploadItem,
   useUploadStore,
+  useUploadSummary,
   type UploadItem,
 } from '../uploads/manager'
 import { toast } from './ui'
 
 /**
- * Док загрузок. Показывает подтверждённые сервером байты, сглаженную скорость и
- * ETA, а после окончания передачи — конвейер обработки: прогресс-бар не имеет
- * права висеть на 100%, пока файл ещё считается и превью не построены.
+ * Док загрузок — теперь сводка, а не список.
+ *
+ * Раньше он рендерил КАЖДЫЙ элемент очереди и был подписан на весь массив: при
+ * заливке четырёхсот фотографий любой тик прогресса перерисовывал четыреста
+ * строк, и интерфейс закономерно вставал. Сами файлы теперь видно плитками в
+ * галерее (UploadTile), а здесь остаётся общий прогресс и управление пачкой.
+ *
+ * Развёрнутый список показывает только то, что требует внимания: активные
+ * передачи, ошибки и загрузки, ждущие повторного выбора файла.
  */
 export function UploadDock() {
-  const items = useUploadStore((s) => s.items)
+  const summary = useUploadSummary()
   const globallyPaused = useUploadStore((s) => s.paused)
-  const [collapsed, setCollapsed] = useState(false)
+  const [expanded, setExpanded] = useState(false)
 
-  const stats = useMemo(() => {
-    let active = 0
-    let done = 0
-    let failed = 0
-    let bytes = 0
-    let total = 0
-    let speed = 0
-    for (const i of items) {
-      if (i.phase === 'done') done++
-      else if (i.phase === 'error') failed++
-      else active++
-      bytes += i.uploaded
-      total += i.size
-      speed += i.phase === 'uploading' ? i.speed : 0
-    }
-    return { active, done, failed, bytes, total, speed }
-  }, [items])
+  if (summary.total === 0) return null
 
-  if (items.length === 0) return null
+  const overall = summary.totalBytes > 0 ? (summary.bytes / summary.totalBytes) * 100 : 0
+  const busy = summary.active > 0
+  const etaSeconds =
+    summary.speed > 1024 ? Math.max(0, summary.totalBytes - summary.bytes) / summary.speed : 0
 
   return (
     <div className="cl-dock">
-      <div className="cl-dock-head" onClick={() => setCollapsed((c) => !c)}>
+      <div className="cl-dock-head" onClick={() => setExpanded((v) => !v)}>
         <span>
-          {stats.active > 0 ? `Загрузка — ${stats.active}` : stats.failed > 0 ? `Ошибок: ${stats.failed}` : 'Загрузки завершены'}
+          {busy
+            ? `Загрузка — ${summary.done} из ${summary.total}`
+            : summary.failed > 0
+              ? `Ошибок: ${summary.failed}`
+              : 'Загрузки завершены'}
         </span>
-        {stats.speed > 0 ? <span className="cl-muted cl-mono" style={{ fontWeight: 400, fontSize: 12 }}>↑ {formatBytes(stats.speed)}/с</span> : null}
         <div className="cl-spacer" />
-        {stats.active > 0 ? (
-          <button
-            className="cl-btn ghost sm"
-            onClick={(e) => {
-              e.stopPropagation()
-              globallyPaused ? resumeAll() : pauseAll()
-            }}
-          >
-            {globallyPaused ? 'Продолжить все' : 'Пауза всех'}
-          </button>
-        ) : (
-          <button
-            className="cl-btn ghost sm"
-            onClick={(e) => {
-              e.stopPropagation()
-              clearFinished()
-            }}
-          >
-            Очистить
-          </button>
-        )}
-        <button className="cl-btn ghost icon sm" onClick={(e) => { e.stopPropagation(); setCollapsed((c) => !c) }}>
-          {collapsed ? '▲' : '▼'}
+        {summary.speed > 0 ? (
+          <span className="cl-muted cl-mono" style={{ fontWeight: 400, fontSize: 12 }}>
+            ↑ {formatBytes(summary.speed)}/с
+          </span>
+        ) : null}
+        <button className="cl-btn ghost icon sm" onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v) }}>
+          {expanded ? '▼' : '▲'}
         </button>
       </div>
-      {!collapsed ? (
-        <div className="cl-dock-body">
-          {items.map((item) => (
-            <UploadRow key={item.id} item={item} />
-          ))}
+
+      <div style={{ padding: '10px 13px' }}>
+        <div className="cl-progress">
+          <i style={{ width: `${overall}%` }} />
         </div>
-      ) : null}
+        <div className="cl-up-meta" style={{ marginTop: 7 }}>
+          <span>
+            {formatBytes(summary.bytes)} / {formatBytes(summary.totalBytes)}
+          </span>
+          {etaSeconds > 0 ? <span>осталось ~{formatEta(etaSeconds)}</span> : null}
+          {summary.needsFile > 0 ? <span style={{ color: 'var(--brand)' }}>нужен файл: {summary.needsFile}</span> : null}
+          <div className="cl-up-actions">
+            {busy ? (
+              <button className="cl-btn ghost sm" onClick={() => (globallyPaused ? resumeAll() : pauseAll())}>
+                {globallyPaused ? 'Продолжить все' : 'Пауза всех'}
+              </button>
+            ) : (
+              <button className="cl-btn ghost sm" onClick={clearFinished}>
+                Очистить
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {expanded ? <DockList /> : null}
+    </div>
+  )
+}
+
+/** Разворот: только проблемные и активные элементы, а не вся очередь. */
+function DockList() {
+  const ids = useUploadIds()
+  return (
+    <div className="cl-dock-body">
+      {ids.map((id) => (
+        <DockRow key={id} id={id} />
+      ))}
     </div>
   )
 }
@@ -99,43 +113,39 @@ const PHASE_LABEL: Record<UploadItem['phase'], string> = {
   'needs-file': 'Нужен исходный файл',
 }
 
-function UploadRow({ item }: { item: UploadItem }) {
+const DockRow = memo(function DockRow({ id }: { id: string }) {
+  const item = useUploadItem(id)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  if (!item) return null
+
+  // Ждущие своей очереди и уже готовые в списке не показываем: их сотни, и
+  // ничего полезного они не сообщают. Сводка выше уже всё сказала.
+  const interesting =
+    item.phase === 'uploading' || item.phase === 'error' || item.phase === 'needs-file' || item.phase === 'paused'
+  if (!interesting) return null
+
   const percent = item.size > 0 ? Math.min(100, (item.uploaded / item.size) * 100) : 0
-  const inFlight = item.phase === 'uploading'
-  const postTransfer = item.phase === 'verifying' || item.phase === 'processing'
 
   return (
     <div className="cl-up-item">
       <div className="cl-up-name" title={item.name}>
         {item.name}
       </div>
-      <div className={`cl-progress${postTransfer ? ' indeterminate' : ''}`}>
-        <i style={{ width: `${item.phase === 'done' ? 100 : percent}%` }} />
+      <div className="cl-progress">
+        <i style={{ width: `${percent}%` }} />
       </div>
       <div className="cl-up-meta">
-        {inFlight ? (
+        {item.phase === 'uploading' ? (
           <>
             <span>{Math.round(percent)}%</span>
             {item.speed > 0 ? <span>↑ {formatBytes(item.speed)}/с</span> : null}
-            <span>
-              {formatBytes(item.uploaded)} / {formatBytes(item.size)}
-            </span>
-            {item.etaSeconds > 0 ? <span>осталось ~{formatEta(item.etaSeconds)}</span> : null}
+            {item.etaSeconds > 0 ? <span>~{formatEta(item.etaSeconds)}</span> : null}
           </>
         ) : (
-          <>
-            <span>{PHASE_LABEL[item.phase]}</span>
-            {item.phase !== 'done' && item.phase !== 'needs-file' ? (
-              <span>
-                {formatBytes(item.uploaded)} / {formatBytes(item.size)}
-              </span>
-            ) : null}
-          </>
+          <span>{PHASE_LABEL[item.phase]}</span>
         )}
-
         <div className="cl-up-actions">
-          {inFlight ? (
+          {item.phase === 'uploading' ? (
             <button className="cl-btn ghost sm" onClick={() => pauseUpload(item.id)}>
               Пауза
             </button>
@@ -150,37 +160,19 @@ function UploadRow({ item }: { item: UploadItem }) {
               Выбрать файл
             </button>
           ) : null}
-          {item.phase !== 'done' ? (
-            <button className="cl-btn ghost sm" onClick={() => void cancelUpload(item.id)}>
-              ✕
-            </button>
-          ) : null}
+          <button className="cl-btn ghost sm" onClick={() => void cancelUpload(item.id)}>
+            ✕
+          </button>
         </div>
       </div>
 
       {item.phase === 'needs-file' ? (
         <div className="cl-muted" style={{ fontSize: 11.5, marginTop: 6, lineHeight: 1.4 }}>
-          Загружено {formatBytes(item.uploaded)} из {formatBytes(item.size)}. Браузер больше не имеет доступа к
-          исходному файлу — выберите его заново, и передача продолжится с этого места.
+          Принято {formatBytes(item.uploaded)} из {formatBytes(item.size)}. Браузер потерял доступ к исходному файлу —
+          выберите его заново, передача продолжится с этого места.
         </div>
       ) : null}
-
-      {postTransfer || item.phase === 'done' ? (
-        <div className="cl-pipeline">
-          <div className="done">✓ Загружено</div>
-          <div className={item.phase === 'verifying' ? 'active' : 'done'}>
-            {item.phase === 'verifying' ? '→' : '✓'} Проверяем файл
-          </div>
-          <div className={item.phase === 'processing' ? 'active' : item.phase === 'done' ? 'done' : ''}>
-            {item.phase === 'processing' ? '→' : item.phase === 'done' ? '✓' : '·'} Создаём превью
-          </div>
-          <div className={item.phase === 'done' ? 'done' : ''}>{item.phase === 'done' ? '✓ Готово' : '· Готово'}</div>
-        </div>
-      ) : null}
-
-      {item.error ? (
-        <div style={{ color: '#fca5a5', fontSize: 11.5, marginTop: 5 }}>{item.error}</div>
-      ) : null}
+      {item.error ? <div style={{ color: '#fca5a5', fontSize: 11.5, marginTop: 5 }}>{item.error}</div> : null}
 
       <input
         ref={inputRef}
@@ -197,4 +189,4 @@ function UploadRow({ item }: { item: UploadItem }) {
       />
     </div>
   )
-}
+})

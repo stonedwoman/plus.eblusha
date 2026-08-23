@@ -30,10 +30,10 @@ export default function CloudHome() {
   return (
     <div className="cl-page">
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 22 }}>
-        <h1 className="cl-h1">Spaces</h1>
+        <h1 className="cl-h1">Хуяпки</h1>
         <div className="cl-spacer" />
         <button className="cl-btn primary" onClick={() => setCreating(true)}>
-          + Новый Space
+          + Новая хуяпка
         </button>
       </div>
 
@@ -47,10 +47,10 @@ export default function CloudHome() {
         <Empty
           icon="☁"
           title="Здесь пока пусто"
-          text="Space — это общий альбом: поездка, событие, проект. Создайте первый, позовите друзей и загрузите фотографии."
+          text="Хуяпка — это общий альбом: поездка, событие, проект. Хуяк — и всё лежит вместе. Создайте первую, позовите друзей и загрузите фотографии."
           action={
             <button className="cl-btn primary" onClick={() => setCreating(true)}>
-              Создать Space
+              Создать хуяпку
             </button>
           }
         />
@@ -58,13 +58,13 @@ export default function CloudHome() {
         <>
           {mine.length > 0 ? (
             <>
-              <div className="cl-section-title">Мои</div>
+              <div className="cl-section-title">Мои хуяпки</div>
               <SpaceGrid spaces={mine} />
             </>
           ) : null}
           {shared.length > 0 ? (
             <>
-              <div className="cl-section-title">Доступны мне</div>
+              <div className="cl-section-title">Общие хуяпки</div>
               <SpaceGrid spaces={shared} />
             </>
           ) : null}
@@ -131,7 +131,7 @@ function CreateSpaceModal({ onClose, onCreated }: { onClose: () => void; onCreat
     setBusy(true)
     try {
       await cloudApi.post('/spaces', { name: name.trim(), description: description.trim() || undefined })
-      toast.success('Space создан')
+      toast.success('Хуяпка создана')
       onCreated()
     } catch (err) {
       toast.error(toCloudError(err).message)
@@ -142,7 +142,7 @@ function CreateSpaceModal({ onClose, onCreated }: { onClose: () => void; onCreat
 
   return (
     <Modal
-      title="Новый Space"
+      title="Новая хуяпка"
       onClose={onClose}
       footer={
         <>

@@ -90,7 +90,7 @@ export default function AdminStoragePage() {
 
       <div className="cl-section-title">Объекты</div>
       <dl style={{ margin: 0 }}>
-        <Row label="Space" value={String(report.counts.spaces)} />
+        <Row label="Хуяпки" value={String(report.counts.spaces)} />
         <Row label="Файлов" value={String(report.counts.files)} />
         <Row label="В корзине" value={`${report.counts.trashed} (хранятся ${report.config.trashRetentionDays} дн.)`} />
         <Row label="Физических объектов" value={String(report.counts.objects)} />

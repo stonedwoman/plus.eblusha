@@ -1,13 +1,41 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { create } from 'zustand'
 import type { CloudUserLite } from '../types'
+import { convertToProxyUrl } from '../../utils/media'
 
 /** Мелкие переиспользуемые куски интерфейса Cloud. */
 
 export function Avatar({ user, size = 'sm', online }: { user: CloudUserLite | null; size?: 'sm' | 'lg'; online?: boolean }) {
   const label = (user?.displayName || user?.username || '?').trim()
   const cls = `cl-ava${size === 'lg' ? ' lg' : ''}${online ? ' online' : ''}`
-  if (user?.avatarUrl) return <img className={cls} src={user.avatarUrl} alt={label} title={label} loading="lazy" />
+  const [broken, setBroken] = useState(false)
+  const raw = user?.avatarUrl ?? null
+
+  // Аватар может быть эмодзи (`emoji:🐙`) — так их хранит мессенджер.
+  if (raw?.startsWith('emoji:')) {
+    return (
+      <div className={cls} title={label} style={{ fontSize: size === 'lg' ? 19 : 15 }}>
+        {raw.slice('emoji:'.length)}
+      </div>
+    )
+  }
+
+  // Через прокси, а не напрямую: в БД лежат абсолютные ссылки на прежний S3,
+  // который больше не отдаёт файлы. convertToProxyUrl переводит их на
+  // /api/files/uploads/... — тот же путь, которым аватары живут в чате.
+  const src = broken ? null : convertToProxyUrl(raw)
+  if (src) {
+    return (
+      <img
+        className={cls}
+        src={src}
+        alt={label}
+        title={label}
+        loading="lazy"
+        onError={() => setBroken(true)}
+      />
+    )
+  }
   return (
     <div className={cls} title={label}>
       {label.slice(0, 1).toUpperCase()}

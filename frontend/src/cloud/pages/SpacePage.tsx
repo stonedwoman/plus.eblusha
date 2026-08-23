@@ -3,7 +3,8 @@ import { useOutletContext, useParams, useSearchParams } from 'react-router-dom'
 import { cloudApi, formatBytes, toCloudError } from '../api'
 import type { CloudActivity, CloudFile, CloudFolder, CloudSpace, PresenceEntry } from '../types'
 import { joinSpaceRoom, onCloudEvent } from '../realtime'
-import { enqueueFiles } from '../uploads/manager'
+import { enqueueFiles, useSpaceUploadIds } from '../uploads/manager'
+import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
 import { Viewer } from '../components/Viewer'
 import { MapView } from '../components/MapView'
@@ -35,6 +36,10 @@ export default function SpacePage() {
   const [onlyFavorites, setOnlyFavorites] = useState(false)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const dirInput = useRef<HTMLInputElement | null>(null)
+
+  // Только идентификаторы: список стабилен, пока не изменился состав очереди,
+  // поэтому тик прогресса не перерисовывает страницу целиком.
+  const uploadIds = useSpaceUploadIds(spaceId)
 
   const canEdit = space?.role === 'OWNER' || space?.role === 'EDITOR'
   const isOwner = space?.role === 'OWNER'
@@ -86,6 +91,17 @@ export default function SpacePage() {
     return () => clearTimeout(t)
   }, [loadFiles, view, query])
 
+  // Счётчики «842 фото · 37 видео» пересчитываются пачкой, а не на каждый файл.
+  const statsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scheduleStatsRefresh = useCallback(() => {
+    if (statsTimer.current) return
+    statsTimer.current = setTimeout(() => {
+      statsTimer.current = null
+      void loadSpace()
+    }, 4000)
+  }, [loadSpace])
+  useEffect(() => () => { if (statsTimer.current) clearTimeout(statsTimer.current) }, [])
+
   const sentinel = useInfiniteSentinel(() => {
     if (cursor && !loading) void loadFiles(cursor)
   }, Boolean(cursor))
@@ -97,8 +113,15 @@ export default function SpacePage() {
       onCloudEvent('cloud.file.created', (p) => {
         const payload = p as { spaceId: string; file: CloudFile }
         if (payload.spaceId !== spaceId) return
-        setFiles((prev) => (prev.some((f) => f.id === payload.file.id) ? prev : [payload.file, ...prev]))
-        void loadSpace()
+        // Вставляем НА СВОЁ МЕСТО по времени съёмки, а не в начало списка:
+        // таймлайн группирует по дням в порядке массива, и файл 2023 года,
+        // приклеенный сверху, создавал вторую группу той же даты и выглядел
+        // как «ничего не появилось».
+        setFiles((prev) => (prev.some((f) => f.id === payload.file.id) ? prev : insertByTakenAt(prev, payload.file)))
+        // НЕ дёргаем loadSpace() на каждый файл: при заливке пачки в 400+ штук
+        // это 400 запросов с агрегацией по БД — именно они и подвешивали и
+        // браузер, и сервер. Счётчики в шапке обновляем пачкой, с задержкой.
+        scheduleStatsRefresh()
       }),
       onCloudEvent('cloud.file.ready', (p) => {
         const payload = p as { spaceId: string; file: CloudFile }
@@ -292,6 +315,24 @@ export default function SpacePage() {
         ) : null}
       </div>
 
+      {/* Активные загрузки — плитками прямо в галерее, а не в окне сбоку. */}
+      {uploadIds.length > 0 && view !== 'activity' && view !== 'map' ? (
+        <section style={{ marginBottom: 18 }}>
+          <div className="cl-day-head">
+            Загружается
+            <span className="cl-muted">{uploadIds.length}</span>
+          </div>
+          <div className="cl-tiles">
+            {uploadIds.slice(0, 60).map((id) => (
+              <UploadTile key={id} id={id} />
+            ))}
+            {uploadIds.length > 60 ? (
+              <div className="cl-uptile-more">и ещё {uploadIds.length - 60} в очереди</div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
       {/* ── Содержимое ──────────────────────────────────────────────────── */}
       {view === 'activity' ? (
         <ActivityView spaceId={spaceId} />
@@ -311,7 +352,7 @@ export default function SpacePage() {
       ) : files.length === 0 ? (
         <Empty
           icon="📷"
-          title={query || kindFilter || onlyFavorites ? 'Ничего не найдено' : 'В Space пока нет файлов'}
+          title={query || kindFilter || onlyFavorites ? 'Ничего не найдено' : 'В хуяпке пока нет файлов'}
           text={
             query || kindFilter || onlyFavorites
               ? 'Попробуйте изменить фильтры.'
@@ -385,7 +426,7 @@ export default function SpacePage() {
 
       {dragging ? (
         <div className="cl-drop-overlay">
-          <div>Отпустите — загрузим в «{space.name}»</div>
+          <div>Хуяк — и в «{space.name}»</div>
         </div>
       ) : null}
 
@@ -435,6 +476,17 @@ export default function SpacePage() {
       />
     </div>
   )
+}
+
+/** Вставка с сохранением сортировки таймлайна (takenAt desc, затем id desc). */
+function insertByTakenAt(list: CloudFile[], file: CloudFile): CloudFile[] {
+  const at = new Date(file.takenAt).getTime()
+  const idx = list.findIndex((f) => {
+    const t = new Date(f.takenAt).getTime()
+    return t < at || (t === at && f.id < file.id)
+  })
+  if (idx === -1) return [...list, file]
+  return [...list.slice(0, idx), file, ...list.slice(idx)]
 }
 
 function toggleSelect(id: string, setSelection: React.Dispatch<React.SetStateAction<Set<string>>>) {
@@ -632,10 +684,10 @@ function FilesBrowser({
 // ── Лента активности ─────────────────────────────────────────────────────────
 
 const ACTIVITY_TEXT: Record<string, (payload: Record<string, unknown>) => string> = {
-  SPACE_CREATED: () => 'создал Space',
-  SPACE_UPDATED: () => 'изменил настройки Space',
+  SPACE_CREATED: () => 'создал хуяпку',
+  SPACE_UPDATED: () => 'изменил настройки хуяпки',
   MEMBER_ADDED: (p) => `добавил участника${p.name ? ` ${p.name}` : ''}`,
-  MEMBER_REMOVED: (p) => (p.self ? 'вышел из Space' : 'исключил участника'),
+  MEMBER_REMOVED: (p) => (p.self ? 'вышел из хуяпки' : 'исключил участника'),
   MEMBER_ROLE_CHANGED: (p) => `изменил роль на ${p.role}`,
   FILES_UPLOADED: (p) => `загрузил ${p.count ?? 1} файл(ов)`,
   FILES_DELETED: (p) => `удалил ${p.count ?? 1} файл(ов)`,
