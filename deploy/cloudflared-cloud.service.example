@@ -1,0 +1,60 @@
+# Отдельный Cloudflare Tunnel под cloud.eblusha.org.
+#
+# ЗАЧЕМ ОТДЕЛЬНЫЙ, а не тот же, что у мессенджера:
+#
+# cloudflared — один процесс с общим пулом QUIC-соединений к edge (по умолчанию
+# четыре). Через них мультиплексируется ВЕСЬ трафик тоннеля. Многогигабайтная
+# заливка видео в Cloud и WebSocket чата со звонковым сигналингом будут делить
+# одни и те же соединения и один congestion window. Просядет при этом первым не
+# файл (ему всё равно, он докачается), а latency-sensitive сигналинг звонка.
+#
+# Отдельный connector = свои четыре соединения, свой congestion control, свои
+# метрики, и обновление/рестарт файлового тоннеля не рвёт сокеты мессенджера.
+# Тот же приём уже применён для HUILA (cloudflared-huila.service).
+#
+# Медиа звонков (LiveKit) через тоннель не идёт вообще — оно ходит напрямую
+# UDP 58000-58100, — так что речь именно про сигналинг и чат.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# УСТАНОВКА
+#
+# 1. В Cloudflare Zero Trust создать НОВЫЙ тоннель (например «EBLUSHA-CLOUD»),
+#    скопировать его токен.
+# 2. Положить токен в файл (НЕ в командную строку — иначе он виден в `ps` любому
+#    пользователю машины; так сейчас запущен cloudflared-huila):
+#      install -m 600 /dev/null /etc/cloudflared/cloud.token
+#      printf '%s' '<TOKEN>' > /etc/cloudflared/cloud.token
+# 3. Public Hostname в этом тоннеле:
+#      hostname:       cloud.eblusha.org
+#      origin service: http://127.0.0.1:80
+#    (тот же локальный nginx; он уже слушает server_name cloud.eblusha.org)
+# 4. DNS создастся автоматически при добавлении Public Hostname.
+# 5. Установить и запустить:
+#      sudo cp deploy/cloudflared-cloud.service.example \
+#              /etc/systemd/system/cloudflared-cloud.service
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable --now cloudflared-cloud
+#      curl -s http://127.0.0.1:20343/metrics | grep server_locations
+# ─────────────────────────────────────────────────────────────────────────────
+
+[Unit]
+Description=EBLUSHA CLOUD (cloud.eblusha.org)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+TimeoutStartSec=15
+Type=notify
+# --protocol quic: меньше страдает от потерь на длинных маршрутах (США, РФ),
+#   чем http2 поверх TCP — для больших файлов это главный фактор.
+# --metrics на своём порту: 20342 занят тоннелем мессенджера.
+# --token-file, а не --token: аргументы командной строки видны в /proc всем.
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate \
+  --protocol quic \
+  --metrics 127.0.0.1:20343 \
+  tunnel run --token-file /etc/cloudflared/cloud.token
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
