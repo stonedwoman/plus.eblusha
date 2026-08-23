@@ -6,6 +6,8 @@ import app from "./app";
 import env from "./config/env";
 import logger from "./config/logger";
 import { initSocket } from "./realtime/socket";
+import cloudConfig from "./cloud/config";
+import { startCloudMaintenance } from "./cloud/jobs/maintenance";
 
 const port = env.PORT;
 
@@ -77,6 +79,16 @@ async function main() {
   httpServer.listen(port, () => {
     logger.info(`Server listening on port ${port}`);
   });
+
+  // Уборка Cloud (корзина, протухшие загрузки, кэш превью) — здесь, а не в
+  // медиа-воркере: только этот процесс имеет права на запись в objects/.
+  if (cloudConfig.CLOUD_ENABLED) {
+    try {
+      startCloudMaintenance();
+    } catch (error) {
+      logger.error({ error }, "Eblusha Cloud maintenance failed to start");
+    }
+  }
 
   process.on("SIGTERM", () => {
     httpServer.close(() => {

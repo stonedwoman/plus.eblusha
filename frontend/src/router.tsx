@@ -14,6 +14,17 @@ const MobileChatsRoute = lazy(() => import('./ui/web-mobile/MobileChatsRoute').t
 const ContactsPage = lazy(() => import('./ui/pages/ContactsPage'))
 const SettingsPage = lazy(() => import('./ui/pages/SettingsPage'))
 
+// Eblusha Cloud — отдельная ветка маршрутов с собственной аутентификацией
+// (SSO поверх сессии Еблуши). Грузится лениво: тем, кто в Cloud не заходит,
+// её код в бандл чатов не попадает.
+const CloudLayout = lazy(() => import('./cloud/pages/CloudLayout'))
+const CloudHome = lazy(() => import('./cloud/pages/CloudHome'))
+const CloudSpace = lazy(() => import('./cloud/pages/SpacePage'))
+const CloudFeed = lazy(() => import('./cloud/pages/FeedPage'))
+const CloudJoin = lazy(() => import('./cloud/pages/JoinPage'))
+const CloudShare = lazy(() => import('./cloud/pages/SharePage'))
+const CloudAdminStorage = lazy(() => import('./cloud/pages/AdminStoragePage'))
+
 const withSuspense = (node: ReactNode) => (
   <Suspense fallback={null}>{node}</Suspense>
 )
@@ -29,6 +40,30 @@ export const router = createBrowserRouter([
           { index: true, element: withSuspense(<LoginPage />) },
           { path: 'register', element: withSuspense(<RegisterPage />) },
           { path: '*', element: <Static404Redirect /> },
+        ],
+      },
+    ],
+  },
+  // Публичная share-ссылка: БЕЗ ProtectedRoute — её открывают люди без Еблуши.
+  {
+    path: '/cloud/s/:publicId',
+    element: withSuspense(<CloudShare />),
+  },
+  {
+    path: '/cloud',
+    element: <ProtectedRoute />,
+    children: [
+      {
+        element: withSuspense(<CloudLayout />),
+        children: [
+          { index: true, element: withSuspense(<CloudHome />) },
+          { path: 'space/:spaceId', element: withSuspense(<CloudSpace />) },
+          { path: 'recent', element: withSuspense(<CloudFeed />) },
+          { path: 'favorites', element: withSuspense(<CloudFeed />) },
+          { path: 'uploads', element: withSuspense(<CloudFeed />) },
+          { path: 'trash', element: withSuspense(<CloudFeed />) },
+          { path: 'join/:publicId', element: withSuspense(<CloudJoin />) },
+          { path: 'admin/storage', element: withSuspense(<CloudAdminStorage />) },
         ],
       },
     ],

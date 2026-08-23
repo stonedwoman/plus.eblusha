@@ -17,6 +17,7 @@ import e2eeRouter from "./e2ee";
 import debugRouter from "./debug";
 import adminRouter from "./admin";
 import usersRouter from "./users";
+import { createCloudRouter } from "../cloud";
 
 const router = Router();
 
@@ -38,6 +39,11 @@ router.use("/threads", threadsRouter);
 router.use("/e2ee", e2eeRouter);
 router.use("/debug", debugRouter);
 router.use("/admin", adminRouter);
+
+// Eblusha Cloud — самостоятельный модуль (src/cloud). Выключается CLOUD_ENABLED=0
+// без каких-либо последствий для мессенджера.
+const cloudRouter = createCloudRouter();
+if (cloudRouter) router.use("/cloud", cloudRouter);
 
 router.get("/", (_req, res) => {
   res.json({ message: "Eblusha API" });

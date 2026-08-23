@@ -11,6 +11,7 @@ import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
 import { decGauge, incGauge } from "../obs/metrics";
 import { enqueuePush } from "../jobs/queue";
+import { initCloudRealtime } from "../cloud/realtime";
 
 type PresenceGame = {
   discordAppId: string;
@@ -948,6 +949,14 @@ export async function initSocket(
   await subClient.connect();
   io.adapter(createAdapter(pubClient, subClient));
   logger.info({ redisUrl: env.REDIS_URL }, "Socket.IO Redis adapter enabled");
+
+  // Namespace /cloud живёт рядом с событиями мессенджера и не пересекается с ними.
+  // Падение инициализации Cloud не должно ронять сокеты чата/звонков.
+  try {
+    await initCloudRealtime(io);
+  } catch (err) {
+    logger.error({ err }, "Eblusha Cloud realtime failed to init");
+  }
 
   // Recover from any stale ONLINE/BACKGROUND rows that survived the previous
   // process (crash, OOM, forced restart, deploy). Runs in the background so it

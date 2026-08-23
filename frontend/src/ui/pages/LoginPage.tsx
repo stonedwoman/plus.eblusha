@@ -22,7 +22,11 @@ export default function LoginPage() {
         accessToken: data.accessToken,
         refreshToken: data.refreshToken ?? undefined,
       })
-      const redirectTo = (location.state as { from?: Location })?.from?.pathname ?? '/'
+      // Сохраняем search и hash, а не только путь: ссылка-приглашение Cloud
+      // несёт секрет во фрагменте (/cloud/join/<id>#t=...), и потеря хвоста
+      // после логина превращала бы приглашение в неработающую ссылку.
+      const from = (location.state as { from?: { pathname?: string; search?: string; hash?: string } })?.from
+      const redirectTo = from?.pathname ? `${from.pathname}${from.search ?? ''}${from.hash ?? ''}` : '/'
       setTimeout(() => {
         navigate(redirectTo, { replace: true })
       }, 0)

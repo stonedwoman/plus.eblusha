@@ -14,51 +14,63 @@ datasource db {
 }
 
 model User {
-  id                String                      @id @default(cuid())
-  createdAt         DateTime                    @default(now())
-  updatedAt         DateTime                    @updatedAt
-  username          String                      @unique
-  eblid             String?                     @unique
-  email             String?                     @unique
-  phone             String?                     @unique
-  displayName       String?
-  bio               String?
-  avatarUrl         String?
-  avatarHistory     String[]                    @default([])
-  passwordHash      String
-  status            UserStatus                  @default(OFFLINE)
-  lastSeenAt        DateTime?
+  id                            String                                     @id @default(cuid())
+  createdAt                     DateTime                                   @default(now())
+  updatedAt                     DateTime                                   @updatedAt
+  username                      String                                     @unique
+  eblid                         String?                                    @unique
+  email                         String?                                    @unique
+  phone                         String?                                    @unique
+  displayName                   String?
+  bio                           String?
+  avatarUrl                     String?
+  avatarHistory                 String[]                                   @default([])
+  passwordHash                  String
+  status                        UserStatus                                 @default(OFFLINE)
+  lastSeenAt                    DateTime?
   /// Set by admin to prevent login + socket connections. Reversible.
-  bannedAt          DateTime?
-  bannedReason      String?
+  bannedAt                      DateTime?
+  bannedReason                  String?
   /// Set by admin "delete account" — anonymized + permanently disabled. Not reversible.
-  deletedAt         DateTime?
-  contactsRequested Contact[]                   @relation("ContactRequester")
-  contactsReceived  Contact[]                   @relation("ContactAddressee")
-  conversations     ConversationParticipant[]
-  conversationsCreated Conversation[]          @relation("ConversationCreator")
-  messages          Message[]
-  messageReactions  MessageReaction[]
-  messageReceipts   MessageReceipt[]
-  tokens            RefreshToken[]
-  callSessions      CallSession[]               @relation("CallSessionInitiator")
-  callParticipations CallParticipant[]
-  devices           UserDevice[]
-  registrationInviteCode RegistrationInviteCode?
-  availabilityIntervals ConversationAvailabilityInterval[]
-  availabilityProposalsCreated ConversationAvailabilityProposal[] @relation("AvailabilityProposalCreator")
+  deletedAt                     DateTime?
+  contactsRequested             Contact[]                                  @relation("ContactRequester")
+  contactsReceived              Contact[]                                  @relation("ContactAddressee")
+  conversations                 ConversationParticipant[]
+  conversationsCreated          Conversation[]                             @relation("ConversationCreator")
+  messages                      Message[]
+  messageReactions              MessageReaction[]
+  messageReceipts               MessageReceipt[]
+  tokens                        RefreshToken[]
+  callSessions                  CallSession[]                              @relation("CallSessionInitiator")
+  callParticipations            CallParticipant[]
+  devices                       UserDevice[]
+  registrationInviteCode        RegistrationInviteCode?
+  availabilityIntervals         ConversationAvailabilityInterval[]
+  availabilityProposalsCreated  ConversationAvailabilityProposal[]         @relation("AvailabilityProposalCreator")
   availabilityProposalReactions ConversationAvailabilityProposalReaction[]
+  // Eblusha Cloud (см. блок моделей Cloud* в конце файла). Обратные связи нужны
+  // Prisma для FK; таблицу users они не меняют.
+  cloudSpacesOwned              CloudSpace[]                               @relation("CloudSpaceOwner")
+  cloudMemberships              CloudSpaceMember[]
+  cloudFiles                    CloudFile[]                                @relation("CloudFileUploader")
+  cloudUploads                  CloudUploadSession[]
+  cloudComments                 CloudComment[]                             @relation("CloudCommentAuthor")
+  cloudReactions                CloudReaction[]
+  cloudFavorites                CloudFavorite[]
+  cloudActivity                 CloudActivityEvent[]                       @relation("CloudActivityActor")
+  cloudShares                   CloudShareLink[]                           @relation("CloudShareCreator")
+  cloudInvites                  CloudInvite[]                              @relation("CloudInviteCreator")
 }
 
 model Contact {
-  id            String           @id @default(cuid())
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  requesterId   String
-  addresseeId   String
-  status        ContactStatus    @default(PENDING)
-  requester     User             @relation("ContactRequester", fields: [requesterId], references: [id])
-  addressee     User             @relation("ContactAddressee", fields: [addresseeId], references: [id])
+  id          String        @id @default(cuid())
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  requesterId String
+  addresseeId String
+  status      ContactStatus @default(PENDING)
+  requester   User          @relation("ContactRequester", fields: [requesterId], references: [id])
+  addressee   User          @relation("ContactAddressee", fields: [addresseeId], references: [id])
 
   @@unique([requesterId, addresseeId])
   @@index([addresseeId, status])
@@ -76,31 +88,31 @@ model RegistrationInviteCode {
 }
 
 model Conversation {
-  id             String                    @id @default(cuid())
-  createdAt      DateTime                  @default(now())
-  updatedAt      DateTime                  @updatedAt
+  id                      String                             @id @default(cuid())
+  createdAt               DateTime                           @default(now())
+  updatedAt               DateTime                           @updatedAt
   /// Conversation storage/encryption mode
-  type           ConversationType          @default(CLOUD)
-  title          String?
-  avatarUrl      String?
-  isGroup        Boolean                   @default(false)
+  type                    ConversationType                   @default(CLOUD)
+  title                   String?
+  avatarUrl               String?
+  isGroup                 Boolean                            @default(false)
   /// Marks a conversation as secret (ephemeral 1:1 chats, end-to-end friendly)
-  isSecret       Boolean                   @default(false)
+  isSecret                Boolean                            @default(false)
   /// Wrapped per-conversation DEK (base64) for server-side encryption in NON-secret chats
-  nonSecretDekWrapped String?              @db.Text
+  nonSecretDekWrapped     String?                            @db.Text
   /// Optional message TTL in seconds for secret conversations; null means use default
-  secretTtlSeconds Int?
-  secretStatus   SecretConversationStatus  @default(ACTIVE)
+  secretTtlSeconds        Int?
+  secretStatus            SecretConversationStatus           @default(ACTIVE)
   secretInitiatorDeviceId String?
-  secretPeerDeviceId String?
-  lastMessageAt  DateTime?
-  createdById    String?
-  createdBy      User?                     @relation("ConversationCreator", fields: [createdById], references: [id])
-  participants   ConversationParticipant[]
-  messages       Message[]
-  callSessions   CallSession[]
-  availabilityIntervals ConversationAvailabilityInterval[]
-  availabilityProposals ConversationAvailabilityProposal[]
+  secretPeerDeviceId      String?
+  lastMessageAt           DateTime?
+  createdById             String?
+  createdBy               User?                              @relation("ConversationCreator", fields: [createdById], references: [id])
+  participants            ConversationParticipant[]
+  messages                Message[]
+  callSessions            CallSession[]
+  availabilityIntervals   ConversationAvailabilityInterval[]
+  availabilityProposals   ConversationAvailabilityProposal[]
 }
 
 enum ConversationType {
@@ -109,14 +121,14 @@ enum ConversationType {
 }
 
 model ConversationParticipant {
-  id             String                 @id @default(cuid())
+  id             String           @id @default(cuid())
   conversationId String
   userId         String
-  role           ConversationRole       @default(MEMBER)
-  joinedAt       DateTime               @default(now())
+  role           ConversationRole @default(MEMBER)
+  joinedAt       DateTime         @default(now())
   mutedUntil     DateTime?
-  conversation   Conversation           @relation(fields: [conversationId], references: [id])
-  user           User                   @relation(fields: [userId], references: [id])
+  conversation   Conversation     @relation(fields: [conversationId], references: [id])
+  user           User             @relation(fields: [userId], references: [id])
 
   @@unique([conversationId, userId])
   @@index([userId])
@@ -133,9 +145,9 @@ model ConversationAvailabilityInterval {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([conversationId, userId, startUtc, endUtc])
   @@index([conversationId, userId])
   @@index([conversationId, startUtc])
-  @@unique([conversationId, userId, startUtc, endUtc])
 }
 
 enum AvailabilityProposalReactionValue {
@@ -145,9 +157,9 @@ enum AvailabilityProposalReactionValue {
 }
 
 model ConversationAvailabilityProposal {
-  id             String       @id @default(cuid())
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id             String    @id @default(cuid())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
   conversationId String
   createdById    String
   note           String?
@@ -155,10 +167,10 @@ model ConversationAvailabilityProposal {
   maxEndUtc      DateTime
   deletedAt      DateTime?
 
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  createdBy      User         @relation("AvailabilityProposalCreator", fields: [createdById], references: [id], onDelete: Cascade)
-  intervals      ConversationAvailabilityProposalInterval[]
-  reactions      ConversationAvailabilityProposalReaction[]
+  conversation Conversation                               @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdBy    User                                       @relation("AvailabilityProposalCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  intervals    ConversationAvailabilityProposalInterval[]
+  reactions    ConversationAvailabilityProposalReaction[]
 
   @@index([conversationId, maxEndUtc])
   @@index([conversationId, createdAt])
@@ -166,50 +178,50 @@ model ConversationAvailabilityProposal {
 }
 
 model ConversationAvailabilityProposalInterval {
-  id         String       @id @default(cuid())
+  id         String                           @id @default(cuid())
   proposalId String
   startUtc   DateTime
   endUtc     DateTime
   proposal   ConversationAvailabilityProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
 
-  @@index([proposalId, startUtc])
   @@unique([proposalId, startUtc, endUtc])
+  @@index([proposalId, startUtc])
 }
 
 model ConversationAvailabilityProposalReaction {
-  id         String       @id @default(cuid())
+  id         String                            @id @default(cuid())
   proposalId String
   userId     String
   value      AvailabilityProposalReactionValue
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
+  createdAt  DateTime                          @default(now())
+  updatedAt  DateTime                          @updatedAt
 
-  proposal   ConversationAvailabilityProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
-  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  proposal ConversationAvailabilityProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  user     User                             @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([proposalId, userId])
   @@index([userId, createdAt])
 }
 
 model Message {
-  id             String          @id @default(cuid())
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  id             String              @id @default(cuid())
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
   conversationId String
   senderId       String
-  type           MessageType     @default(TEXT)
+  type           MessageType         @default(TEXT)
   content        String?
   /// 0 = plaintext, 1 = encrypted (non-secret chats server-side encryption)
-  contentEncV    Int             @default(0)
+  contentEncV    Int                 @default(0)
   metadata       Json?
   replyToId      String?
-  replyTo        Message?        @relation("MessageReplies", fields: [replyToId], references: [id])
-  replies        Message[]        @relation("MessageReplies")
+  replyTo        Message?            @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies        Message[]           @relation("MessageReplies")
   deletedAt      DateTime?
   /// Optional expiration time (for secret/ephemeral messages)
   expiresAt      DateTime?
-  conversation   Conversation    @relation(fields: [conversationId], references: [id])
-  sender         User            @relation(fields: [senderId], references: [id])
+  conversation   Conversation        @relation(fields: [conversationId], references: [id])
+  sender         User                @relation(fields: [senderId], references: [id])
   attachments    MessageAttachment[]
   reactions      MessageReaction[]
   receipts       MessageReceipt[]
@@ -220,14 +232,14 @@ model Message {
 }
 
 model MessageAttachment {
-  id        String          @id @default(cuid())
-  createdAt DateTime        @default(now())
+  id        String         @id @default(cuid())
+  createdAt DateTime       @default(now())
   messageId String
   url       String
   type      AttachmentType
   size      Int?
   metadata  Json?
-  message   Message         @relation(fields: [messageId], references: [id])
+  message   Message        @relation(fields: [messageId], references: [id])
 
   @@index([messageId])
 }
@@ -258,18 +270,18 @@ model MessageReceipt {
 }
 
 model RefreshToken {
-  id        String    @id @default(cuid())
-  token     String    @unique
-  userId    String
-  sessionId String?
-  client    String?
-  deviceId  String?
-  expiresAt DateTime
-  createdAt DateTime  @default(now())
-  revokedAt DateTime?
-  replacedByToken String? @unique
+  id               String    @id @default(cuid())
+  token            String    @unique
+  userId           String
+  sessionId        String?
+  client           String?
+  deviceId         String?
+  expiresAt        DateTime
+  createdAt        DateTime  @default(now())
+  revokedAt        DateTime?
+  replacedByToken  String?   @unique
   revocationReason String?
-  user      User      @relation(fields: [userId], references: [id])
+  user             User      @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([sessionId])
@@ -278,16 +290,16 @@ model RefreshToken {
 }
 
 model CallSession {
-  id              String        @id @default(cuid())
-  startedAt       DateTime      @default(now())
-  endedAt         DateTime?
-  conversationId  String
-  initiatorId     String
-  roomName        String
-  type            CallType      @default(VOICE)
-  conversation    Conversation  @relation(fields: [conversationId], references: [id])
-  initiator       User          @relation("CallSessionInitiator", fields: [initiatorId], references: [id])
-  participants    CallParticipant[]
+  id             String            @id @default(cuid())
+  startedAt      DateTime          @default(now())
+  endedAt        DateTime?
+  conversationId String
+  initiatorId    String
+  roomName       String
+  type           CallType          @default(VOICE)
+  conversation   Conversation      @relation(fields: [conversationId], references: [id])
+  initiator      User              @relation("CallSessionInitiator", fields: [initiatorId], references: [id])
+  participants   CallParticipant[]
 
   @@index([conversationId])
 }
@@ -355,38 +367,38 @@ enum CallType {
 }
 
 model UserDevice {
-  id                  String        @id
-  userId              String
-  name                String
-  platform            String?
-  publicKey           String
-  identityPublicKey   String?
-  signedPreKeyId      String?
-  signedPreKeyPublic  String?
+  id                    String         @id
+  userId                String
+  name                  String
+  platform              String?
+  publicKey             String
+  identityPublicKey     String?
+  signedPreKeyId        String?
+  signedPreKeyPublic    String?
   signedPreKeySignature String?
   signedPreKeyExpiresAt DateTime?
-  keyVersion          Int           @default(1)
-  keyAlg              String        @default("x25519+ed25519")
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
-  lastSeenAt          DateTime?
-  revokedAt           DateTime?
-  lastIp              String?
-  lastCountry         String?
-  lastCity            String?
+  keyVersion            Int            @default(1)
+  keyAlg                String         @default("x25519+ed25519")
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  lastSeenAt            DateTime?
+  revokedAt             DateTime?
+  lastIp                String?
+  lastCountry           String?
+  lastCity              String?
   // Токен push-уведомлений (FCM для Android, APNs-alert для iOS). Живёт отдельно от ключей
   // шифрования: система выдаёт новый после переустановки или очистки данных приложения.
-  pushToken           String?
-  pushProvider        String?
-  pushUpdatedAt       DateTime?
+  pushToken             String?
+  pushProvider          String?
+  pushUpdatedAt         DateTime?
   // Отдельный слот под VoIP-токен iOS: PushKit выдаёт СВОЙ токен, не тот, что для обычных
   // уведомлений, и оба нужны одновременно — alert будит уведомление о сообщении, а VoIP
   // поднимает убитое приложение под звонок (без него CallKit не показать вовремя).
   // У Android слот пустует: там один FCM-токен на всё.
-  pushVoipToken       String?
-  pushVoipUpdatedAt   DateTime?
-  user                User          @relation(fields: [userId], references: [id])
-  prekeys             DevicePrekey[]
+  pushVoipToken         String?
+  pushVoipUpdatedAt     DateTime?
+  user                  User           @relation(fields: [userId], references: [id])
+  prekeys               DevicePrekey[]
 
   @@index([userId])
   @@index([pushToken])
@@ -394,17 +406,17 @@ model UserDevice {
 }
 
 model DevicePrekey {
-  id                String      @id @default(cuid())
-  deviceId          String
-  keyId             String
-  publicKey         String
-  oneTimePreKeyId   String?
+  id                  String     @id @default(cuid())
+  deviceId            String
+  keyId               String
+  publicKey           String
+  oneTimePreKeyId     String?
   oneTimePreKeyPublic String?
-  version           Int         @default(1)
-  alg               String      @default("x25519")
-  createdAt         DateTime    @default(now())
-  consumedAt        DateTime?
-  device            UserDevice  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  version             Int        @default(1)
+  alg                 String     @default("x25519")
+  createdAt           DateTime   @default(now())
+  consumedAt          DateTime?
+  device              UserDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@unique([deviceId, keyId])
   @@index([deviceId, consumedAt])
@@ -429,7 +441,7 @@ model SecretMessage {
   contentType    String   @map("contentType")
   schemaVersion  Int      @default(1) @map("schemaVersion")
 
-  deliveries     SecretDelivery[]
+  deliveries SecretDelivery[]
 
   @@index([threadId, createdAt])
   @@index([senderUserId, createdAt])
@@ -443,13 +455,13 @@ enum SecretDeliveryStatus {
 }
 
 model SecretDelivery {
-  msgId            String              @map("msgId")
-  receiverDeviceId String              @map("receiverDeviceId")
+  msgId            String               @map("msgId")
+  receiverDeviceId String               @map("receiverDeviceId")
   status           SecretDeliveryStatus @default(PENDING) @map("status")
-  deliveredAt      DateTime?           @map("deliveredAt")
-  readAt           DateTime?           @map("readAt")
+  deliveredAt      DateTime?            @map("deliveredAt")
+  readAt           DateTime?            @map("readAt")
 
-  message          SecretMessage        @relation(fields: [msgId], references: [msgId], onDelete: Cascade)
+  message SecretMessage @relation(fields: [msgId], references: [msgId], onDelete: Cascade)
 
   @@id([msgId, receiverDeviceId])
   @@index([receiverDeviceId, status])
@@ -459,11 +471,11 @@ model SecretDelivery {
 /// Metadata-only refs for ciphertext attachments in SECRET threads.
 /// No plaintext keys/content are stored server-side.
 model SecretAttachmentRef {
-  id          String   @id @default(cuid())
-  threadId    String   @map("threadId")
-  objectKey   String   @map("objectKey")
-  ownerUserId String   @map("ownerUserId")
-  createdAt   DateTime @default(now()) @map("createdAt")
+  id          String    @id @default(cuid())
+  threadId    String    @map("threadId")
+  objectKey   String    @map("objectKey")
+  ownerUserId String    @map("ownerUserId")
+  createdAt   DateTime  @default(now()) @map("createdAt")
   expiresAt   DateTime? @map("expiresAt")
   deletedAt   DateTime? @map("deletedAt")
 
@@ -476,16 +488,433 @@ model SecretAttachmentRef {
 
 /// One-time pairing token for linking a new device to an existing trusted device.
 model DevicePairing {
-  token            String    @id
-  userId           String
-  newDeviceId      String
-  code             String
-  createdAt        DateTime  @default(now())
-  expiresAt        DateTime
-  consumedAt       DateTime?
+  token              String    @id
+  userId             String
+  newDeviceId        String
+  code               String
+  createdAt          DateTime  @default(now())
+  expiresAt          DateTime
+  consumedAt         DateTime?
   consumedByDeviceId String?
 
   @@index([userId, expiresAt])
   @@index([newDeviceId, expiresAt])
   @@map("device_pairings")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Eblusha Cloud — приватное файловое хранилище поверх той же БД/Redis/Socket.IO.
+// Identity здесь НЕ дублируется: везде ссылка на User.id Еблуши.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum CloudSpaceRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+/// STANDARD = сервер читает объекты (нужно для превью/EXIF/транскода).
+/// E2EE зарезервирован на будущее — модели уже не мешают его добавить.
+enum CloudEncryptionMode {
+  STANDARD
+  E2EE
+}
+
+enum CloudUploadStatus {
+  CREATED
+  UPLOADING
+  PAUSED
+  UPLOADED
+  VERIFYING
+  PROCESSING
+  READY
+  FAILED
+  CANCELLED
+}
+
+enum CloudFileStatus {
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum CloudFileKind {
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  OTHER
+}
+
+/// thumb/preview — картинки, poster — кадр видео, playback — web-совместимый MP4.
+enum CloudVariantKind {
+  THUMB
+  PREVIEW
+  POSTER
+  PLAYBACK
+}
+
+enum CloudVariantStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+enum CloudShareTargetType {
+  SPACE
+  FOLDER
+  FILE
+  SELECTION
+}
+
+enum CloudReactionTargetType {
+  FILE
+  COMMENT
+}
+
+enum CloudActivityType {
+  SPACE_CREATED
+  SPACE_UPDATED
+  MEMBER_ADDED
+  MEMBER_REMOVED
+  MEMBER_ROLE_CHANGED
+  FILES_UPLOADED
+  FILES_DELETED
+  FILES_RESTORED
+  FILES_SAVED
+  FOLDER_CREATED
+  FOLDER_RENAMED
+  FOLDER_DELETED
+  COMMENT_CREATED
+  SHARE_CREATED
+  SHARE_REVOKED
+}
+
+model CloudSpace {
+  id               String              @id @default(cuid())
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  name             String
+  description      String?
+  ownerId          String
+  encryptionMode   CloudEncryptionMode @default(STANDARD)
+  /// CloudFile.id обложки (не FK — чтобы удаление файла не роняло Space)
+  coverFileId      String?
+  dateFrom         DateTime?
+  dateTo           DateTime?
+  /// Разрешены ли комментарии участникам с ролью VIEWER
+  viewerCanComment Boolean             @default(true)
+  deletedAt        DateTime?
+
+  owner    User                 @relation("CloudSpaceOwner", fields: [ownerId], references: [id])
+  members  CloudSpaceMember[]
+  folders  CloudFolder[]
+  files    CloudFile[]
+  comments CloudComment[]
+  invites  CloudInvite[]
+  activity CloudActivityEvent[]
+  shares   CloudShareLink[]
+
+  @@index([ownerId, deletedAt])
+  @@index([deletedAt, createdAt])
+}
+
+model CloudSpaceMember {
+  id          String         @id @default(cuid())
+  spaceId     String
+  userId      String
+  role        CloudSpaceRole @default(VIEWER)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  invitedById String?
+  lastSeenAt  DateTime?
+
+  space CloudSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([spaceId, userId])
+  @@index([userId])
+  @@index([spaceId, role])
+}
+
+model CloudFolder {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  spaceId     String
+  parentId    String?
+  name        String
+  createdById String
+  deletedAt   DateTime?
+
+  space    CloudSpace    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  parent   CloudFolder?  @relation("CloudFolderTree", fields: [parentId], references: [id])
+  children CloudFolder[] @relation("CloudFolderTree")
+  files    CloudFile[]
+
+  @@index([spaceId, parentId, deletedAt])
+  @@index([spaceId, deletedAt])
+  @@index([parentId])
+}
+
+/// Физический blob. Один на N логических CloudFile (дедуп/copy-on-write).
+model CloudStorageObject {
+  id           String      @id @default(cuid())
+  createdAt    DateTime    @default(now())
+  /// hex sha256 оригинала, считается ТОЛЬКО сервером после полной загрузки
+  sha256       String      @unique
+  size         BigInt
+  /// путь относительно CLOUD_STORAGE_ROOT/objects, напр. "ab/cd/<id>"
+  storagePath  String
+  /// определённый сервером mime (file/ffprobe/magic), не то что прислал клиент
+  detectedMime String?
+  refCount     Int         @default(0)
+  files        CloudFile[]
+
+  @@index([refCount])
+  @@index([createdAt])
+}
+
+model CloudFile {
+  id              String          @id @default(cuid())
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  spaceId         String
+  folderId        String?
+  storageObjectId String
+  originalName    String
+  mimeType        String
+  size            BigInt
+  kind            CloudFileKind   @default(OTHER)
+  uploaderId      String
+  status          CloudFileStatus @default(PROCESSING)
+  processingError String?
+
+  width          Int?
+  height         Int?
+  /// EXIF Orientation (1..8)
+  orientation    Int?
+  durationMs     Int?
+  /// Дата съёмки: EXIF DateTimeOriginal → mtime клиента → время загрузки
+  takenAt        DateTime
+  /// Откуда взялась takenAt: exif | client | upload
+  takenAtSource  String    @default("upload")
+  latitude       Float?
+  longitude      Float?
+  cameraMake     String?
+  cameraModel    String?
+  videoCodec     String?
+  audioCodec     String?
+  bitrate        Int?
+  /// Оригинал можно отдавать браузеру напрямую (h264+aac, moov в начале)
+  directPlayable Boolean   @default(false)
+  metadata       Json?
+  deletedAt      DateTime?
+  deletedById    String?
+
+  space         CloudSpace         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  folder        CloudFolder?       @relation(fields: [folderId], references: [id])
+  storageObject CloudStorageObject @relation(fields: [storageObjectId], references: [id])
+  uploader      User               @relation("CloudFileUploader", fields: [uploaderId], references: [id])
+  variants      CloudFileVariant[]
+  comments      CloudComment[]
+  favorites     CloudFavorite[]
+
+  @@index([spaceId, deletedAt, takenAt])
+  @@index([spaceId, folderId, deletedAt, originalName])
+  @@index([spaceId, deletedAt, createdAt])
+  @@index([spaceId, kind, deletedAt])
+  @@index([uploaderId, createdAt])
+  @@index([storageObjectId])
+  @@index([deletedAt])
+}
+
+model CloudFileVariant {
+  id          String             @id @default(cuid())
+  createdAt   DateTime           @default(now())
+  fileId      String
+  kind        CloudVariantKind
+  status      CloudVariantStatus @default(PENDING)
+  /// путь относительно CLOUD_STORAGE_ROOT/derived
+  storagePath String?
+  mimeType    String?
+  size        BigInt?
+  width       Int?
+  height      Int?
+  error       String?
+
+  file CloudFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, kind])
+  @@index([kind, status])
+}
+
+model CloudUploadSession {
+  id               String            @id @default(cuid())
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  userId           String
+  spaceId          String
+  folderId         String?
+  originalName     String
+  expectedSize     BigInt
+  mimeType         String?
+  /// Клиентский отпечаток (size|lastModified|hash头/хвоста) — для докачки на другом устройстве
+  fingerprint      String
+  /// id аплоада в tus-хранилище
+  uploadProtocolId String            @unique
+  bytesReceived    BigInt            @default(0)
+  status           CloudUploadStatus @default(CREATED)
+  clientMtime      DateTime?
+  error            String?
+  fileId           String?
+  expiresAt        DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([spaceId, status])
+  @@index([expiresAt])
+  @@index([userId, fingerprint])
+}
+
+model CloudShareLink {
+  id            String               @id @default(cuid())
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  spaceId       String
+  targetType    CloudShareTargetType
+  /// id файла/папки/space; для SELECTION — null (список в fileIds)
+  targetId      String?
+  fileIds       String[]             @default([])
+  /// sha256(secret) в hex. Сам секрет живёт только во фрагменте URL у владельца.
+  tokenHash     String               @unique
+  /// Публичный id, который виден в URL (/cloud/s/<publicId>#t=<secret>)
+  publicId      String               @unique
+  allowPreview  Boolean              @default(true)
+  allowDownload Boolean              @default(true)
+  passwordHash  String?
+  expiresAt     DateTime?
+  revokedAt     DateTime?
+  createdById   String
+  viewCount     Int                  @default(0)
+  downloadCount Int                  @default(0)
+  label         String?
+
+  space     CloudSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  createdBy User       @relation("CloudShareCreator", fields: [createdById], references: [id])
+
+  @@index([spaceId, revokedAt])
+  @@index([createdById])
+}
+
+model CloudInvite {
+  id          String         @id @default(cuid())
+  createdAt   DateTime       @default(now())
+  spaceId     String
+  tokenHash   String         @unique
+  publicId    String         @unique
+  role        CloudSpaceRole @default(EDITOR)
+  maxUses     Int            @default(1)
+  useCount    Int            @default(0)
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdById String
+  note        String?
+
+  space     CloudSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  createdBy User       @relation("CloudInviteCreator", fields: [createdById], references: [id])
+
+  @@index([spaceId, revokedAt])
+}
+
+model CloudComment {
+  id               String    @id @default(cuid())
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  spaceId          String
+  fileId           String?
+  authorId         String
+  parentCommentId  String?
+  /// Только plain text. Рендер на клиенте без raw HTML.
+  body             String    @db.Text
+  videoTimestampMs Int?
+  editedAt         DateTime?
+  deletedAt        DateTime?
+
+  space   CloudSpace     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  file    CloudFile?     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  author  User           @relation("CloudCommentAuthor", fields: [authorId], references: [id])
+  parent  CloudComment?  @relation("CloudCommentThread", fields: [parentCommentId], references: [id])
+  replies CloudComment[] @relation("CloudCommentThread")
+
+  @@index([spaceId, createdAt])
+  @@index([fileId, createdAt])
+  @@index([parentCommentId])
+  @@index([authorId])
+}
+
+model CloudReaction {
+  id         String                  @id @default(cuid())
+  createdAt  DateTime                @default(now())
+  targetType CloudReactionTargetType
+  targetId   String
+  userId     String
+  emoji      String
+  /// денормализация для ACL/выборок без join
+  spaceId    String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([targetType, targetId, userId, emoji])
+  @@index([targetType, targetId])
+  @@index([spaceId])
+}
+
+model CloudFavorite {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  userId    String
+  fileId    String
+  spaceId   String
+
+  user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file CloudFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fileId])
+  @@index([userId, createdAt])
+  @@index([fileId])
+}
+
+model CloudActivityEvent {
+  id        String            @id @default(cuid())
+  createdAt DateTime          @default(now())
+  spaceId   String
+  actorId   String
+  type      CloudActivityType
+  /// Агрегированные данные: {count, names[], fileId, folderName, ...}
+  payload   Json?
+
+  space CloudSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  actor User       @relation("CloudActivityActor", fields: [actorId], references: [id])
+
+  @@index([spaceId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+/// Значимые действия отдельно от debug-логов. Без токенов и секретов.
+model CloudAuditEvent {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  actorId   String?
+  action    String
+  spaceId   String?
+  targetId  String?
+  ip        String?
+  detail    Json?
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@index([spaceId, createdAt])
+  @@index([action, createdAt])
 }

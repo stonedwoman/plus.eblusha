@@ -1,0 +1,32 @@
+# Конфигурация резервного копирования Eblusha Cloud.
+# Копировать в /etc/eblusha-cloud-backup.env и выставить права 600 (внутри пароль!).
+#
+# ВНИМАНИЕ: пока RESTIC_REPOSITORY пуст, скрипт сознательно ничего не делает.
+# Внешний HDD ещё не подключён, и выдумывать за вас путь монтирования он не станет.
+
+# Путь к репозиторию restic на внешнем диске. Примеры:
+#   RESTIC_REPOSITORY=/mnt/<ваша-точка-монтирования>/eblusha-cloud-restic
+#   RESTIC_REPOSITORY=sftp:user@backup-host:/srv/eblusha-cloud
+RESTIC_REPOSITORY=
+
+# Пароль репозитория. Лучше файлом, чтобы не светить в окружении процессов:
+#   openssl rand -base64 32 > /etc/eblusha-restic-password && chmod 600 /etc/eblusha-restic-password
+# ПОТЕРЯ ЭТОГО ПАРОЛЯ = ПОТЕРЯ БЭКАПА. Храните копию отдельно от сервера.
+RESTIC_PASSWORD_FILE=/etc/eblusha-restic-password
+# RESTIC_PASSWORD=
+
+# Где лежит хранилище Cloud (должно совпадать с CLOUD_STORAGE_ROOT из .env)
+CLOUD_STORAGE_ROOT=/var/lib/eblusha/cloud
+
+# Куда класть временный дамп БД перед отправкой в restic (удаляется сразу после)
+DUMP_DIR=/var/lib/eblusha/backup-staging
+
+# Глубина истории
+KEEP_DAILY=7
+KEEP_WEEKLY=5
+KEEP_MONTHLY=12
+
+# Контейнер и параметры PostgreSQL
+PG_CONTAINER=eblusha-postgres
+PG_USER=eblusha
+PG_DB=eblusha
