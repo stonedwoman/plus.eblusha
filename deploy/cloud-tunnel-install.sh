@@ -23,19 +23,40 @@ die() { echo "ОШИБКА: $*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "нужен root (sudo)"
 [[ -x /usr/local/bin/cloudflared ]] || die "cloudflared не найден в /usr/local/bin"
+# Ставить cloudflared из apt по инструкции дашборда НЕ надо: бинарь уже есть в
+# /usr/local/bin, а пакет положит второй в /usr/bin — потом не разберёшь, какой
+# из них обслуживает какой тоннель.
+if [[ -x /usr/bin/cloudflared ]]; then
+  echo "ВНИМАНИЕ: найден второй cloudflared в /usr/bin — юнит использует /usr/local/bin" >&2
+fi
 [[ -f "$SRC/cloudflared-cloud.service.example" ]] || die "рядом нет cloudflared-cloud.service.example"
 
 if ss -lnt "sport = :$METRICS_PORT" 2>/dev/null | grep -q LISTEN; then
   die "порт метрик $METRICS_PORT уже занят — поправьте --metrics в юните"
 fi
 
-echo "Вставьте токен тоннеля (Ctrl+D в конце):" >&2
-TOKEN="$(cat)"
-TOKEN="${TOKEN//[$'\t\r\n ']/}"
+cat >&2 <<'PROMPT'
+Вставьте токен тоннеля и нажмите Ctrl+D.
+Можно вставить целиком строку из дашборда — например
+  sudo cloudflared service install eyJhIjoi...
+или
+  cloudflared tunnel run --token eyJhIjoi...
+токен будет извлечён сам.
+PROMPT
+RAW="$(cat)"
+
+# Из дашборда копируется вся команда, а не голый токен. Вырезаем его сами:
+# один шанс на опечатку меньше, чем при ручном выделении длинной строки мышью.
+TOKEN="$(printf '%s' "$RAW" | tr -s '[:space:]' '\n' | grep -E '^ey[A-Za-z0-9_-]{40,}$' | tail -n1 || true)"
+if [[ -z "$TOKEN" ]]; then
+  # Не команда, а просто вставленный токен — чистим пробелы и переводы строк.
+  TOKEN="$(printf '%s' "$RAW" | tr -d '[:space:]')"
+fi
 [[ -n "$TOKEN" ]] || die "пустой токен"
+[[ "$TOKEN" == ey* ]] || die "это не похоже на токен тоннеля (ожидается строка, начинающаяся с 'ey')"
 # Токен тоннеля — base64url JSON с полями a/t/s. Проверяем грубо, чтобы не
 # записать в файл случайно вставленный мусор и не гадать потом при отладке.
-[[ ${#TOKEN} -ge 100 ]] || die "токен подозрительно короткий (${#TOKEN} символов)"
+[[ ${#TOKEN} -ge 100 ]] || die "токен подозрительно короткий (${#TOKEN} символов) — скопировалась не вся строка?"
 
 mkdir -p /etc/cloudflared
 install -m 600 /dev/null "$TOKEN_FILE"
