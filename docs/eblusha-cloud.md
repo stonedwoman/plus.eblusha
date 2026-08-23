@@ -378,8 +378,20 @@ CLOUD_ALLOWED_REDIRECT_ORIGINS=https://cloud.eblusha.org,https://eblusha.org
 **B. Отдельный тоннель — рекомендуется.** cloudflared мультиплексирует весь
 трафик через общий пул QUIC-соединений: многогигабайтная заливка в Cloud будет
 делить их с сигналингом звонков и сокетами чата, и просядет при этом сигналинг,
-а не файл. Готовый юнит с инструкцией — `deploy/cloudflared-cloud.service.example`.
-Тот же приём уже применён для HUILA.
+а не файл. Тот же приём уже применён для HUILA.
+
+```bash
+# 1. Zero Trust → Networks → Tunnels → Create tunnel («EBLUSHA-CLOUD»), скопировать токен
+# 2. На сервере (токен идёт через stdin, а не аргументом — иначе виден в `ps`):
+sudo ./deploy/cloud-tunnel-install.sh
+# 3. У НОВОГО тоннеля добавить Public Hostname:
+#      hostname:       cloud.eblusha.org
+#      origin service: http://127.0.0.1:80
+```
+
+Юнит (`deploy/cloudflared-cloud.service.example`) уже установлен в
+`/etc/systemd/system/cloudflared-cloud.service`, метрики на `127.0.0.1:20343`,
+транспорт QUIC. Скрипт сам проверит, что тоннель поднялся, и покажет edge-локации.
 
 В любом случае nginx уже слушает `server_name cloud.eblusha.org` и на 80, и на
 443, поэтому вариант origin service роли не играет.
