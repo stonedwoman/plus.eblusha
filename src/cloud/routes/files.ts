@@ -69,7 +69,7 @@ router.get(
   "/map",
   ah(async (req: Request, res) => {
     const spaceId = String(req.query.spaceId ?? "");
-    if (!spaceId) throw invalid("Нужен spaceId");
+    if (!spaceId) throw invalid("Не указана хуяпка");
     await requireSpaceAccess(req, spaceId, "space:view");
     const points = await prisma.cloudFile.findMany({
       where: { spaceId, deletedAt: null, latitude: { not: null }, longitude: { not: null } },
@@ -257,7 +257,9 @@ function sanitizeDisplayName(raw: string): string {
 
 // ── Корзина ──────────────────────────────────────────────────────────────────
 
-const idsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(500) });
+// 1000 за раз: клиент всё равно шлёт пачками, но при выделении «все» в крупной
+// хуяпке лишний round-trip на каждые 500 штук ощутим.
+const idsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(1000) });
 
 router.post(
   "/delete",

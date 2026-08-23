@@ -72,23 +72,31 @@ export async function listFiles(params: FileListParams) {
     where.originalName = { contains: q, mode: "insensitive" };
   }
 
-  // timeline/map/recent — по времени съёмки (не загрузки!), files — по имени.
+  // Порядок зависит от смысла экрана:
+  //   timeline/map — ХРОНОЛОГИЯ поездки, от раннего к позднему. Листаешь сверху
+  //                  вниз и идёшь по дням вперёд, как в фотоальбоме;
+  //   trash/recent — недавнее сверху, там интересен последний по времени;
+  //   files        — по имени.
   const byName = view === "files";
+  const chronological = view === "timeline" || view === "map" || view === "favorites";
   const cursor = decodeCursor(params.cursor);
   if (cursor) {
     if (byName) {
       where.OR = [{ originalName: { gt: cursor.k } }, { originalName: cursor.k, id: { gt: cursor.id } }];
+    } else if (chronological) {
+      const at = new Date(cursor.k);
+      where.OR = [{ takenAt: { gt: at } }, { takenAt: at, id: { gt: cursor.id } }];
     } else {
       const at = new Date(cursor.k);
-      where.OR = [{ takenAt: { lt: at } }, { takenAt: at, id: { lt: cursor.id } }];
+      where.OR = [{ createdAt: { lt: at } }, { createdAt: at, id: { lt: cursor.id } }];
     }
   }
 
   const orderBy: Prisma.CloudFileOrderByWithRelationInput[] = byName
     ? [{ originalName: "asc" }, { id: "asc" }]
-    : view === "trash" || view === "recent"
-      ? [{ createdAt: "desc" }, { id: "desc" }]
-      : [{ takenAt: "desc" }, { id: "desc" }];
+    : chronological
+      ? [{ takenAt: "asc" }, { id: "asc" }]
+      : [{ createdAt: "desc" }, { id: "desc" }];
 
   const rows = await prisma.cloudFile.findMany({
     where,
@@ -103,7 +111,7 @@ export async function listFiles(params: FileListParams) {
   const nextCursor =
     hasMore && last
       ? encodeCursor({
-          k: byName ? last.originalName : (view === "trash" || view === "recent" ? last.createdAt : last.takenAt).toISOString(),
+          k: byName ? last.originalName : (chronological ? last.takenAt : last.createdAt).toISOString(),
           id: last.id,
         })
       : null;

@@ -116,7 +116,7 @@ router.post(
 
     const meta = decodeMetadata(req.headers["upload-metadata"] as string | undefined);
     const spaceId = meta.spaceId ?? "";
-    if (!spaceId) throw invalid("Не указан Space");
+    if (!spaceId) throw invalid("Не указана хуяпка");
     const access = await requireSpaceAccess(req, spaceId, "file:upload");
 
     const folderId: string | null = meta.folderId && meta.folderId !== "root" ? meta.folderId : null;

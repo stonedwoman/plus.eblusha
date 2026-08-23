@@ -52,6 +52,24 @@ export async function finalizeUpload(sessionId: string): Promise<void> {
     const sniffed = await sniffFile(staging);
     const adopted = await adoptStagingFile(staging, { detectedMime: sniffed.mime });
 
+    // Тот же снимок уже лежит в этой хуяпке? Тогда второй логической копии не
+    // создаём: пользователь перезалил папку целиком, а не попросил дубликат.
+    // Дедуп именно в пределах хуяпки — в чужой Space тот же файл попасть может,
+    // и там это отдельная запись со своими правами.
+    const duplicate = await prisma.cloudFile.findFirst({
+      where: { spaceId: session.spaceId, storageObjectId: adopted.objectId, deletedAt: null },
+      select: { id: true, originalName: true },
+    });
+    if (duplicate) {
+      await prisma.cloudUploadSession.update({
+        where: { id: sessionId },
+        data: { status: "READY", fileId: duplicate.id, bytesReceived: BigInt(adopted.size) },
+      });
+      await emitSession("READY", { fileId: duplicate.id, duplicate: true });
+      logger.info({ sessionId, fileId: duplicate.id }, "cloud: upload deduplicated within space");
+      return;
+    }
+
     const takenAt = session.clientMtime ?? new Date();
     const file = await prisma.$transaction(async (tx) => {
       const created = await tx.cloudFile.create({

@@ -175,7 +175,9 @@ export function TimelineView({
       // декодировать столько же полноразмерных JPEG браузер не обязан.
       ...uploads.map((u, i) => ({ kind: 'upload' as const, at: u.at, id: u.id, withPreview: i < 40 })),
     ]
-    entries.sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1))
+    // Хронология вперёд: 26 марта, потом 27-е. Так листают фотоальбом поездки,
+    // а не ленту новостей. Порядок совпадает с серверным (takenAt asc).
+    entries.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1))
 
     const out: { key: string; label: string; entries: TimelineEntry[] }[] = []
     for (const entry of entries) {

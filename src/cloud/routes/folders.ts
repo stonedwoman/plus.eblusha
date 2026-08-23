@@ -55,7 +55,7 @@ router.get(
   "/",
   ah(async (req: Request, res) => {
     const spaceId = String(req.query.spaceId ?? "");
-    if (!spaceId) throw invalid("Нужен spaceId");
+    if (!spaceId) throw invalid("Не указана хуяпка");
     await requireSpaceAccess(req, spaceId, "space:view");
     const parentRaw = req.query.parentId;
     const parentId = parentRaw === undefined || parentRaw === "" || parentRaw === "root" ? null : String(parentRaw);

@@ -27,7 +27,7 @@ router.get(
   ah(async (req: Request, res) => {
     const spaceId = String(req.query.spaceId ?? "");
     const fileId = req.query.fileId ? String(req.query.fileId) : null;
-    if (!spaceId) throw invalid("Нужен spaceId");
+    if (!spaceId) throw invalid("Не указана хуяпка");
     await requireSpaceAccess(req, spaceId, "space:view");
 
     const comments = await prisma.cloudComment.findMany({
@@ -268,7 +268,7 @@ router.get(
   "/activity",
   ah(async (req: Request, res) => {
     const spaceId = String(req.query.spaceId ?? "");
-    if (!spaceId) throw invalid("Нужен spaceId");
+    if (!spaceId) throw invalid("Не указана хуяпка");
     await requireSpaceAccess(req, spaceId, "space:view");
     const limit = Math.min(Number(req.query.limit ?? 50) || 50, 200);
     const before = req.query.before ? new Date(String(req.query.before)) : null;

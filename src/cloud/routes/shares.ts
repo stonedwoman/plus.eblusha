@@ -92,7 +92,7 @@ router.get(
   "/invites",
   ah(async (req: Request, res) => {
     const spaceId = String(req.query.spaceId ?? "");
-    if (!spaceId) throw invalid("Нужен spaceId");
+    if (!spaceId) throw invalid("Не указана хуяпка");
     const access = await requireSpaceAccess(req, spaceId, "invites:manage");
     const invites = await prisma.cloudInvite.findMany({
       where: { spaceId: access.space.id, revokedAt: null },
@@ -191,7 +191,7 @@ async function loadInvite(pid: string, secret: string) {
     throw notFound("Приглашение недействительно");
   }
   const space = await prisma.cloudSpace.findFirst({ where: { id: invite.spaceId, deletedAt: null } });
-  if (!space) throw notFound("Space не найден");
+  if (!space) throw notFound("Хуяпка не найдена");
   return { invite, space };
 }
 
@@ -276,7 +276,7 @@ router.get(
   "/shares",
   ah(async (req: Request, res) => {
     const spaceId = String(req.query.spaceId ?? "");
-    if (!spaceId) throw invalid("Нужен spaceId");
+    if (!spaceId) throw invalid("Не указана хуяпка");
     const access = await requireSpaceAccess(req, spaceId, "shares:manage");
     const shares = await prisma.cloudShareLink.findMany({
       where: { spaceId: access.space.id, revokedAt: null },

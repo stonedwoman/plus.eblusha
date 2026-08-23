@@ -1,4 +1,4 @@
-import { memo, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { formatBytes, formatEta } from '../api'
 import {
   attachFileToUpload,
@@ -12,6 +12,7 @@ import {
   useUploadItem,
   useUploadStore,
   useUploadSummary,
+  takeDuplicateCount,
   type UploadItem,
 } from '../uploads/manager'
 import { toast } from './ui'
@@ -31,6 +32,15 @@ export function UploadDock() {
   const summary = useUploadSummary()
   const globallyPaused = useUploadStore((s) => s.paused)
   const [expanded, setExpanded] = useState(false)
+
+  // Когда пачка догрузилась — один итог про уже существовавшие снимки, а не
+  // отдельный тост на каждый файл.
+  const busyNow = summary.active > 0
+  useEffect(() => {
+    if (busyNow) return
+    const dupes = takeDuplicateCount()
+    if (dupes > 0) toast.info(`Уже были в хуяпке: ${dupes} — повторно не добавляли`)
+  }, [busyNow])
 
   if (summary.total === 0) return null
 

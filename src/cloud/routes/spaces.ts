@@ -103,9 +103,9 @@ router.post(
   ah(async (req: Request, res) => {
     const user = req.cloudUser!;
     const parsed = createSchema.safeParse(req.body ?? {});
-    if (!parsed.success) throw invalid("Проверьте название Space");
+    if (!parsed.success) throw invalid("Проверьте название хуяпки");
     const count = await prisma.cloudSpace.count({ where: { ownerId: user.id, deletedAt: null } });
-    if (count >= 200) throw forbidden("Слишком много Space у одного пользователя");
+    if (count >= 200) throw forbidden("Слишком много хуяпок у одного пользователя");
 
     const space = await prisma.cloudSpace.create({
       data: {
@@ -166,7 +166,7 @@ router.patch(
         where: { id: data.coverFileId, spaceId: access.space.id, deletedAt: null },
         select: { id: true },
       });
-      if (!file) throw notFound("Файл обложки не найден в этом Space");
+      if (!file) throw notFound("Файл обложки не найден в этой хуяпке");
     }
 
     const space = await prisma.cloudSpace.update({
@@ -212,7 +212,7 @@ router.post(
   ah(async (req: Request, res) => {
     const user = req.cloudUser!;
     const space = await prisma.cloudSpace.findFirst({ where: { id: String(req.params.id), ownerId: user.id } });
-    if (!space || !space.deletedAt) throw notFound("Space не найден");
+    if (!space || !space.deletedAt) throw notFound("Хуяпка не найдена");
     const deletedAt = space.deletedAt;
     await prisma.$transaction([
       prisma.cloudSpace.update({ where: { id: space.id }, data: { deletedAt: null } }),
@@ -252,7 +252,7 @@ router.post(
       select: { id: true, username: true, displayName: true, avatarUrl: true },
     });
     if (!target) throw notFound("Пользователь не найден");
-    if (target.id === access.space.ownerId) throw invalid("Владелец уже в Space");
+    if (target.id === access.space.ownerId) throw invalid("Владелец уже в хуяпке");
 
     await prisma.cloudSpaceMember.upsert({
       where: { spaceId_userId: { spaceId: access.space.id, userId: target.id } },
@@ -300,7 +300,7 @@ router.delete(
     const access = selfLeave
       ? await getSpaceAccess(user.id, spaceId)
       : await requireSpaceAccess(req, spaceId, "members:manage");
-    if (!access) throw notFound("Space не найден");
+    if (!access) throw notFound("Хуяпка не найдена");
     if (userId === access.space.ownerId) throw invalid("Владельца исключить нельзя");
 
     await prisma.cloudSpaceMember.deleteMany({ where: { spaceId, userId } });

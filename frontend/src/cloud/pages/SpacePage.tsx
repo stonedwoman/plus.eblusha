@@ -14,6 +14,9 @@ import type { CloudContext } from './CloudLayout'
 
 type View = 'timeline' | 'files' | 'map' | 'activity'
 
+/** Столько id уходит в один запрос: совпадает с лимитом валидации на сервере. */
+const BATCH = 1000
+
 /** Главный экран Space: галерея, файлы, карта, активность — и всё это realtime. */
 export default function SpacePage() {
   const { spaceId = '' } = useParams()
@@ -70,7 +73,14 @@ export default function SpacePage() {
             ...(nextCursor ? { cursor: nextCursor } : {}),
           },
         })
-        setFiles((prev) => (nextCursor ? [...prev, ...data.files] : data.files))
+        // Дедуп по id обязателен: файл мог уже прилететь realtime-событием, и
+        // тогда страница пагинации привозит его второй раз. Именно из-за этого
+        // «Выбрать все» насчитывало больше файлов, чем есть в хуяпке.
+        setFiles((prev) => {
+          if (!nextCursor) return data.files
+          const seen = new Set(prev.map((f) => f.id))
+          return [...prev, ...data.files.filter((f) => !seen.has(f.id))]
+        })
         setCursor(data.nextCursor)
       } catch (err) {
         toast.error(toCloudError(err).message)
@@ -203,11 +213,16 @@ export default function SpacePage() {
   const onlineIds = useMemo(() => new Set(presence.map((p) => p.userId)), [presence])
 
   const deleteSelected = async () => {
+    const ids = Array.from(selection)
     try {
-      await cloudApi.post('/files/delete', { ids: Array.from(selection) })
+      // Пачками: запрос на тысячи id упирался в лимит валидации, и удаление
+      // молча не срабатывало («Нужен список ids»).
+      for (let i = 0; i < ids.length; i += BATCH) {
+        await cloudApi.post('/files/delete', { ids: ids.slice(i, i + BATCH) })
+      }
       setFiles((prev) => prev.filter((f) => !selection.has(f.id)))
       setSelection(new Set())
-      toast.success('Перенесено в корзину')
+      toast.success(ids.length > 1 ? `В корзину: ${ids.length}` : 'Перенесено в корзину')
       void loadSpace()
     } catch (err) {
       toast.error(toCloudError(err).message)
@@ -216,6 +231,13 @@ export default function SpacePage() {
 
   const downloadSelected = () => {
     const ids = Array.from(selection)
+    // URL с тысячами id упрётся в лимит длины строки запроса у nginx. Если
+    // выбрано слишком много — честнее отдать архив всей хуяпки целиком.
+    if (ids.length > 300) {
+      toast.info('Выбрано слишком много — скачиваем архив хуяпки целиком')
+      window.location.href = `/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`
+      return
+    }
     window.location.href = `/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&ids=${ids.join(',')}`
   }
 
@@ -463,12 +485,12 @@ export default function SpacePage() {
   )
 }
 
-/** Вставка с сохранением сортировки таймлайна (takenAt desc, затем id desc). */
+/** Вставка с сохранением хронологии таймлайна (takenAt asc, затем id asc). */
 function insertByTakenAt(list: CloudFile[], file: CloudFile): CloudFile[] {
   const at = new Date(file.takenAt).getTime()
   const idx = list.findIndex((f) => {
     const t = new Date(f.takenAt).getTime()
-    return t < at || (t === at && f.id < file.id)
+    return t > at || (t === at && f.id > file.id)
   })
   if (idx === -1) return [...list, file]
   return [...list.slice(0, idx), file, ...list.slice(idx)]

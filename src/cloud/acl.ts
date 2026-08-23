@@ -90,7 +90,7 @@ export async function requireSpaceAccess(
   const user = req.cloudUser;
   if (!user) throw forbidden();
   const access = await getSpaceAccess(user.id, spaceId);
-  if (!access) throw notFound("Space не найден");
+  if (!access) throw notFound("Хуяпка не найдена");
   if (!can(access.role, action, access.space)) {
     void writeAudit(req, "PERMISSION_DENIED", {
       spaceId,
