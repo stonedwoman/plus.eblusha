@@ -40,6 +40,10 @@
     "resolveJsonModule": true,
   },
   "typeRoots": ["./node_modules/@types", "./src/types"],
+  // ts-node по умолчанию компилирует только граф импортов от точки входа и не
+  // подхватывает d.ts из include. Из-за этого скрипты обслуживания падали на
+  // расширениях express.Request, хотя обычная сборка проходила.
+  "ts-node": { "files": true },
   "include": ["src/**/*.ts", "src/**/*.d.ts"],
   "exclude": ["node_modules", "frontend", "dist"]
 }

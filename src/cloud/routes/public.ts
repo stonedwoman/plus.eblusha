@@ -60,12 +60,6 @@ async function readShareSession(id: string): Promise<ShareSession | null> {
   }
 }
 
-declare module "express-serve-static-core" {
-  interface Request {
-    shareLink?: Awaited<ReturnType<typeof loadActiveShare>>;
-  }
-}
-
 async function loadActiveShare(publicId: string) {
   const share = await prisma.cloudShareLink.findUnique({ where: { publicId } });
   if (!share || share.revokedAt) return null;

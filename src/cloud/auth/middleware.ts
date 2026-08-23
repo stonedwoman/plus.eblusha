@@ -18,14 +18,6 @@ export type CloudUser = {
   avatarUrl: string | null;
 };
 
-declare module "express-serve-static-core" {
-  interface Request {
-    cloudUser?: CloudUser;
-    cloudSessionId?: string;
-    cloudCsrf?: string;
-  }
-}
-
 /** Требует валидную Cloud-сессию. Ничего не знает про пароли Еблуши. */
 export async function requireCloudUser(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
