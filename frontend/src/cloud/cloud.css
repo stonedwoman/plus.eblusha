@@ -631,3 +631,16 @@
   text-align: center;
   padding: 8px;
 }
+
+/* Полоска загрузки в шапке хуяпки — вместо плавающего окна в углу. */
+.cl-upbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--surface-100);
+  border: 1px solid var(--surface-border);
+  max-width: 560px;
+}

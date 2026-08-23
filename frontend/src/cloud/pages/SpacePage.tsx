@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useOutletContext, useParams, useSearchParams } from 'react-router-dom'
-import { cloudApi, formatBytes, toCloudError } from '../api'
+import { cloudApi, formatBytes, formatEta, toCloudError } from '../api'
 import type { CloudActivity, CloudFile, CloudFolder, CloudSpace, PresenceEntry } from '../types'
 import { joinSpaceRoom, onCloudEvent } from '../realtime'
-import { enqueueFiles, parseUploadRefs, useSpaceUploads } from '../uploads/manager'
+import { enqueueFiles, parseUploadRefs, pauseAll, resumeAll, useSpaceUploads, useUploadStore, useUploadSummary } from '../uploads/manager'
 import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
 import { Viewer } from '../components/Viewer'
@@ -112,6 +112,34 @@ export default function SpacePage() {
     }, 4000)
   }, [loadSpace])
   useEffect(() => () => { if (statsTimer.current) clearTimeout(statsTimer.current) }, [])
+
+  /*
+   * Пока идёт заливка — периодически перечитываем список, и ещё раз сразу после
+   * того, как очередь опустела.
+   *
+   * Realtime остаётся быстрым путём, но единственным быть не должен: одно
+   * пропущенное событие оставляло пользователя с пустой галереей при том, что
+   * файлы уже лежали на сервере — 464 файла в базе против «в хуяпке пока нет
+   * файлов» на экране.
+   */
+  const uploadingNow = uploads.length > 0
+  useEffect(() => {
+    if (!uploadingNow || view === 'activity' || view === 'map') return
+    const t = setInterval(() => {
+      void loadFiles(null)
+      void loadSpace()
+    }, 10_000)
+    return () => clearInterval(t)
+  }, [uploadingNow, view, loadFiles, loadSpace])
+
+  const wasUploading = useRef(false)
+  useEffect(() => {
+    if (wasUploading.current && !uploadingNow) {
+      void loadFiles(null)
+      void loadSpace()
+    }
+    wasUploading.current = uploadingNow
+  }, [uploadingNow, loadFiles, loadSpace])
 
   const sentinel = useInfiniteSentinel(() => {
     if (cursor && !loading) void loadFiles(cursor)
@@ -271,6 +299,7 @@ export default function SpacePage() {
               {space.members.map((m) => m.displayName || m.username).join(' · ')}
             </span>
           </div>
+          {uploads.length > 0 ? <SpaceUploadBar /> : null}
           {space.stats ? (
             <div className="cl-muted cl-mono" style={{ fontSize: 13, marginTop: 8 }}>
               {space.stats.photos} фото · {space.stats.videos} видео
@@ -354,7 +383,7 @@ export default function SpacePage() {
         />
       ) : loading ? (
         <SkeletonTiles />
-      ) : files.length === 0 ? (
+      ) : files.length === 0 && uploads.length === 0 ? (
         <Empty
           icon="📷"
           title={query || kindFilter || onlyFavorites ? 'Ничего не найдено' : 'В хуяпке пока нет файлов'}
@@ -494,6 +523,36 @@ function insertByTakenAt(list: CloudFile[], file: CloudFile): CloudFile[] {
   })
   if (idx === -1) return [...list, file]
   return [...list.slice(0, idx), file, ...list.slice(idx)]
+}
+
+/**
+ * Полоска загрузки в шапке хуяпки. Заменила плавающее окно в углу: сами файлы
+ * видно плитками в галерее, здесь остаётся общий итог и пауза.
+ */
+function SpaceUploadBar() {
+  const summary = useUploadSummary()
+  const paused = useUploadStore((s) => s.paused)
+  if (summary.active === 0 && summary.failed === 0) return null
+
+  const percent = summary.totalBytes > 0 ? (summary.bytes / summary.totalBytes) * 100 : 0
+  const eta = summary.speed > 1024 ? Math.max(0, summary.totalBytes - summary.bytes) / summary.speed : 0
+
+  return (
+    <div className="cl-upbar">
+      <div className="cl-progress" style={{ flex: 1 }}>
+        <i style={{ width: `${percent}%` }} />
+      </div>
+      <span className="cl-mono cl-muted" style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>
+        {summary.done} из {summary.total}
+        {summary.speed > 0 ? ` · ${formatBytes(summary.speed)}/с` : ''}
+        {eta > 0 ? ` · ~${formatEta(eta)}` : ''}
+        {summary.failed > 0 ? ` · ошибок ${summary.failed}` : ''}
+      </span>
+      <button className="cl-btn ghost sm" onClick={() => (paused ? resumeAll() : pauseAll())}>
+        {paused ? 'Продолжить' : 'Пауза'}
+      </button>
+    </div>
+  )
 }
 
 function toggleSelect(id: string, setSelection: React.Dispatch<React.SetStateAction<Set<string>>>) {
