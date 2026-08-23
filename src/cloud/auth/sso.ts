@@ -54,7 +54,7 @@ type AuthCodeRecord = {
  */
 function isSafeRedirect(uri: string): boolean {
   if (uri.startsWith("/")) {
-    return /^\/cloud(\/[A-Za-z0-9._~\-/]*)?$/.test(uri) && !uri.includes("//");
+    return isAllowedPath(uri) && !uri.includes("//");
   }
   let parsed: URL;
   try {
@@ -65,7 +65,18 @@ function isSafeRedirect(uri: string): boolean {
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
   if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
   if (!cloudConfig.CLOUD_ALLOWED_REDIRECT_ORIGINS.includes(parsed.origin)) return false;
-  return /^\/cloud(\/[A-Za-z0-9._~\-/]*)?$/.test(parsed.pathname);
+  return isAllowedPath(parsed.pathname);
+}
+
+/**
+ * Допустимые пути возврата. Их всего два вида, потому что Cloud монтируется либо
+ * под /cloud (рядом с мессенджером), либо в корень выделенного домена — и во
+ * втором случае точка возврата это просто /callback.
+ * Список закрытый: любой другой путь того же origin кодом не наградим.
+ */
+function isAllowedPath(pathname: string): boolean {
+  if (/^\/cloud(\/[A-Za-z0-9._~\-/]*)?$/.test(pathname)) return true;
+  return pathname === "/callback" || pathname === "/";
 }
 
 function sha256b64url(input: string): string {

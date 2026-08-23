@@ -11,12 +11,17 @@ add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet" always;
 
 open_file_cache off;
 
-# Корень поддомена — сразу в приложение.
-# absolute_redirect off: за тоннелем nginx видит схему http и без этого построил
-# бы Location: http://cloud.eblusha.org/cloud, роняя схему на один лишний хоп.
-# Относительный Location браузер достраивает сам, оставаясь на https.
+# absolute_redirect off: за тоннелем nginx видит схему http и без этого строил бы
+# Location: http://…, роняя схему на лишний хоп. Относительный Location браузер
+# достраивает сам, оставаясь на https.
 absolute_redirect off;
-location = / { return 302 /cloud; }
+
+# На выделенном домене Cloud смонтирован в КОРЕНЬ: eblusha.cloud/space/<id>.
+# Ссылки вида /cloud/... остались у тех, кому их успели раздать со старого
+# адреса, — уводим их на новый путь. Фрагмент (#t=<секрет> у приглашений и
+# share-ссылок) браузер при редиректе переносит сам, на сервер он не попадает.
+location ^~ /cloud/ { rewrite ^/cloud(/.*)$ $1 permanent; }
+location = /cloud   { return 301 /; }
 
 # Отдача файлов Cloud: backend проверяет права и отвечает X-Accel-Redirect,
 # дальше nginx сам делает sendfile/Range. Снаружи путь недоступен (internal).

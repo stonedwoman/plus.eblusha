@@ -1,6 +1,7 @@
 import { api } from '../core/api'
 import { useAppStore } from '../domain/store/appStore'
 import { cloudApi, setCloudCsrf, toCloudError } from './api'
+import { cloudPath, cloudUrl, isCloudPath } from './basePath'
 
 /**
  * Вход в Cloud — только через существующую сессию Еблуши. Своей регистрации и
@@ -88,7 +89,7 @@ async function loginSameOrigin(): Promise<CloudMe> {
   // Этот запрос идёт клиентом мессенджера — он приложит Bearer.
   const { data: authorized } = await api.post<{ code: string }>('/cloud/auth/authorize', {
     clientId: CLIENT_ID,
-    redirectUri: '/cloud',
+    redirectUri: cloudPath(),
     codeChallenge,
     codeChallengeMethod: 'S256',
   })
@@ -137,7 +138,7 @@ async function redirectForCode(config: AuthConfig): Promise<never> {
   stashPkce({ verifier, state, returnTo })
 
   const sameOrigin = config.messengerOrigin === window.location.origin
-  const redirectUri = sameOrigin ? '/cloud/callback' : `${window.location.origin}/cloud/callback`
+  const redirectUri = sameOrigin ? cloudPath('/callback') : cloudUrl('/callback')
 
   const url = new URL('/cloud-auth', config.messengerOrigin)
   url.searchParams.set('client_id', config.clientId || CLIENT_ID)
@@ -179,8 +180,9 @@ export async function completeCloudCallback(search: string): Promise<{ me: Cloud
 
   const me = await fetchCloudMe()
   if (!me) throw new Error('Сессия Cloud не установилась')
-  const returnTo = stashed.returnTo && stashed.returnTo.startsWith('/cloud') ? stashed.returnTo : '/cloud'
-  return { me, returnTo: returnTo.startsWith('/cloud/callback') ? '/cloud' : returnTo }
+  const safe = stashed.returnTo && isCloudPath(stashed.returnTo) ? stashed.returnTo : cloudPath()
+  // Возврат на сам callback зациклил бы вход.
+  return { me, returnTo: safe === cloudPath('/callback') ? cloudPath() : safe }
 }
 
 export async function logoutFromCloud(): Promise<void> {

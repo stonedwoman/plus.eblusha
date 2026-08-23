@@ -9,6 +9,7 @@ import {
   useUploadStore,
 } from '../uploads/manager'
 import { Empty, toast } from '../components/ui'
+import { cloudPath } from '../basePath'
 
 /**
  * Экран незавершённых загрузок.
@@ -66,7 +67,7 @@ function UploadResumeRow({ id }: { id: string }) {
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, marginBottom: 7 }}>
         <strong style={{ fontSize: 14.5 }}>{item.name}</strong>
         {item.spaceName ? (
-          <Link className="cl-muted" style={{ fontSize: 12.5 }} to={`/cloud/space/${item.spaceId}`}>
+          <Link className="cl-muted" style={{ fontSize: 12.5 }} to={cloudPath(`/space/${item.spaceId}`)}>
             {item.spaceName}
           </Link>
         ) : null}

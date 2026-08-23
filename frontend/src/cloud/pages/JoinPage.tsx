@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { cloudApi, toCloudError } from '../api'
 import type { CloudSpace, CloudUserLite } from '../types'
 import { Avatar, Empty, toast } from '../components/ui'
+import { cloudPath } from '../basePath'
 
 type Peek = {
   space: CloudSpace
@@ -45,7 +46,7 @@ export default function JoinPage() {
     try {
       const { data } = await cloudApi.post<{ spaceId: string }>(`/invites/${publicId}/accept`, { secret })
       toast.success('Вы присоединились к Space')
-      navigate(`/cloud/space/${data.spaceId}`, { replace: true })
+      navigate(cloudPath(`/space/${data.spaceId}`), { replace: true })
     } catch (err) {
       toast.error(toCloudError(err).message)
       setBusy(false)
@@ -74,7 +75,7 @@ export default function JoinPage() {
         <Empty
           title={`Вы уже в «${peek.space.name}»`}
           action={
-            <button className="cl-btn primary" onClick={() => navigate(`/cloud/space/${peek.space.id}`)}>
+            <button className="cl-btn primary" onClick={() => navigate(cloudPath(`/space/${peek.space.id}`))}>
               Открыть Space
             </button>
           }

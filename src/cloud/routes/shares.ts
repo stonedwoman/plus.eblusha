@@ -4,6 +4,7 @@ import type { Request } from "express";
 import { z } from "zod";
 import bcrypt from "bcrypt";
 import prisma from "../../lib/prisma";
+import cloudConfig from "../config";
 import { ah, conflict, invalid, notFound } from "../errors";
 import { requireSpaceAccess } from "../acl";
 import { recordActivity } from "../activity";
@@ -34,6 +35,11 @@ export function hashSecret(secret: string): string {
 
 function publicId(): string {
   return crypto.randomBytes(9).toString("base64url");
+}
+
+/** Префикс UI-путей: "" на выделенном домене, "/cloud" рядом с мессенджером. */
+function uiPrefix(): string {
+  return cloudConfig.CLOUD_PUBLIC_PATH_PREFIX;
 }
 
 function baseUrl(req: Request): string {
@@ -77,7 +83,7 @@ router.post(
     res.status(201).json({
       invite: inviteDto(invite),
       // Секрет отдаётся ОДИН раз — восстановить его потом нельзя даже нам.
-      url: `${baseUrl(req)}/cloud/join/${invite.publicId}#t=${secret}`,
+      url: `${baseUrl(req)}${uiPrefix()}/join/${invite.publicId}#t=${secret}`,
     });
   })
 );
@@ -261,7 +267,7 @@ router.post(
       share: shareDto(share),
       // Секрет во фрагменте: он не уходит в HTTP-запросе, не пишется в логи
       // nginx и не утекает через Referer.
-      url: `${baseUrl(req)}/cloud/s/${share.publicId}#t=${secret}`,
+      url: `${baseUrl(req)}${uiPrefix()}/s/${share.publicId}#t=${secret}`,
     });
   })
 );
@@ -357,7 +363,7 @@ function shareDto(share: {
     label: share.label,
     // Ссылку целиком отдать невозможно: секрета у нас нет. Клиент показывает
     // только «создано» и предлагает выпустить новую, если старая потерялась.
-    path: `/cloud/s/${share.publicId}`,
+    path: `${uiPrefix()}/s/${share.publicId}`,
   };
 }
 

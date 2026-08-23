@@ -70,6 +70,13 @@ const schema = z.object({
   CLOUD_MAP_ATTRIBUTION: z.string().default("© OpenStreetMap"),
   /// Публичный origin для построения ссылок (QR, share). По умолчанию — из запроса.
   CLOUD_PUBLIC_BASE_URL: z.string().optional(),
+  /// Префикс путей UI. Пусто — домен отдан Cloud целиком (eblusha.cloud/space/…),
+  /// "/cloud" — Cloud живёт рядом с мессенджером (eblusha.org/cloud/space/…).
+  /// Влияет на генерацию share- и join-ссылок.
+  CLOUD_PUBLIC_PATH_PREFIX: z
+    .string()
+    .default("/cloud")
+    .transform((v) => v.replace(/\/+$/, "")),
   /// Origin мессенджера — туда Cloud отправляет браузер за одноразовым кодом,
   /// когда живёт на отдельном поддомене (там лежит сессия Еблуши).
   CLOUD_MESSENGER_ORIGIN: z.string().default("https://eblusha.org"),

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { cloudApi, formatBytes, toCloudError } from '../api'
 import type { CloudSpace } from '../types'
 import { Avatar, Empty, Modal, toast } from '../components/ui'
+import { cloudPath } from '../basePath'
 
 /** Домашний экран: мои Space и те, куда позвали. */
 export default function CloudHome() {
@@ -87,7 +88,7 @@ function SpaceGrid({ spaces }: { spaces: CloudSpace[] }) {
   return (
     <div className="cl-space-grid">
       {spaces.map((space) => (
-        <Link className="cl-space-card" key={space.id} to={`/cloud/space/${space.id}`}>
+        <Link className="cl-space-card" key={space.id} to={cloudPath(`/space/${space.id}`)}>
           <div className={`cl-space-cover${space.coverUrl ? '' : ' empty'}`}>
             {space.coverUrl ? <img src={space.coverUrl} alt="" loading="lazy" /> : <span style={{ fontSize: 34 }}>🗂</span>}
           </div>

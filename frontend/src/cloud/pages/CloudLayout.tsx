@@ -7,6 +7,7 @@ import { connectCloudSocket, disconnectCloudSocket, onCloudEvent } from '../real
 import { hydrateServerUploads } from '../uploads/manager'
 import { UploadDock } from '../components/UploadDock'
 import { Toasts, toast } from '../components/ui'
+import { cloudPath } from '../basePath'
 
 /**
  * Каркас Cloud: устанавливает собственную сессию (через SSO Еблуши), поднимает
@@ -102,27 +103,27 @@ export default function CloudLayout() {
   return (
     <div className="cl-root">
       <header className="cl-topbar">
-        <Link className="cl-brand" to="/cloud">
+        <Link className="cl-brand" to={cloudPath()}>
           <b>☁</b> Eblusha <b>Cloud</b>
         </Link>
         <nav className="cl-topnav">
-          <NavLink to="/cloud" end className={({ isActive }) => (isActive ? 'is-active' : '')}>
+          <NavLink to={cloudPath()} end className={({ isActive }) => (isActive ? 'is-active' : '')}>
             Spaces
           </NavLink>
-          <NavLink to="/cloud/recent" className={({ isActive }) => (isActive ? 'is-active' : '')}>
+          <NavLink to={cloudPath('/recent')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
             Недавние
           </NavLink>
-          <NavLink to="/cloud/favorites" className={({ isActive }) => (isActive ? 'is-active' : '')}>
+          <NavLink to={cloudPath('/favorites')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
             Избранное
           </NavLink>
-          <NavLink to="/cloud/uploads" className={({ isActive }) => (isActive ? 'is-active' : '')}>
+          <NavLink to={cloudPath('/uploads')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
             Загрузки
           </NavLink>
-          <NavLink to="/cloud/trash" className={({ isActive }) => (isActive ? 'is-active' : '')}>
+          <NavLink to={cloudPath('/trash')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
             Корзина
           </NavLink>
           {me.isAdmin ? (
-            <NavLink to="/cloud/admin/storage" className={({ isActive }) => (isActive ? 'is-active' : '')}>
+            <NavLink to={cloudPath('/admin/storage')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
               Хранилище
             </NavLink>
           ) : null}

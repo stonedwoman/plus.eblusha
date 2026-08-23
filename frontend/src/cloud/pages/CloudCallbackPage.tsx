@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import '../cloud.css'
 import { completeCloudCallback } from '../auth'
+import { cloudPath } from '../basePath'
 
 /**
  * Возврат с кодом на origin Cloud. Здесь код меняется на HttpOnly-сессию, а из
@@ -40,7 +41,7 @@ export default function CloudCallbackPage() {
           <p className="cl-muted">{error ?? 'Обмениваем код на сессию'}</p>
           {error ? (
             <div style={{ marginTop: 18 }}>
-              <a className="cl-btn primary" href="/cloud">
+              <a className="cl-btn primary" href={cloudPath()}>
                 Попробовать снова
               </a>
             </div>
