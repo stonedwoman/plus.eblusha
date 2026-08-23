@@ -13,7 +13,7 @@ import { cancelUpload, resumeUpload, useUploadItem } from '../uploads/manager'
  * Подписка идёт на КОНКРЕТНЫЙ элемент по id: при 400+ файлах в очереди тик
  * прогресса одной передачи не должен перерисовывать соседей.
  */
-export const UploadTile = memo(function UploadTile({ id }: { id: string }) {
+export const UploadTile = memo(function UploadTile({ id, withPreview = true }: { id: string; withPreview?: boolean }) {
   const item = useUploadItem(id)
   const [thumb, setThumb] = useState<string | null>(null)
 
@@ -21,12 +21,12 @@ export const UploadTile = memo(function UploadTile({ id }: { id: string }) {
   // построит настоящую миниатюру. Для крупных файлов пропускаем — createObjectURL
   // дешёвый, но декодирование сотни полноразмерных JPEG в сетке уже нет.
   useEffect(() => {
-    const file = item?.localPreviewFile
+    const file = withPreview ? item?.localPreviewFile : null
     if (!file || !file.type.startsWith('image/') || file.size > 12 * 1024 * 1024) return
     const url = URL.createObjectURL(file)
     setThumb(url)
     return () => URL.revokeObjectURL(url)
-  }, [item?.localPreviewFile])
+  }, [item?.localPreviewFile, withPreview])
 
   if (!item) return null
 

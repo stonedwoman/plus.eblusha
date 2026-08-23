@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { formatBytes, formatDuration } from '../api'
+import { UploadTile } from './UploadTile'
 import type { CloudFile } from '../types'
 
 /**
@@ -141,35 +142,76 @@ export function useDayGroups(files: CloudFile[]) {
   return useMemo(() => groupByDay(files), [files])
 }
 
+/** Элемент таймлайна: готовый файл либо ещё загружающийся. */
+export type TimelineEntry =
+  | { kind: 'file'; at: number; id: string; file: CloudFile }
+  | { kind: 'upload'; at: number; id: string; withPreview: boolean }
+
+/**
+ * Загрузки вклиниваются в общий список, а не живут отдельным блоком: плитка
+ * стоит в группе того дня, куда файл и попадёт после обработки (сервер до
+ * чтения EXIF использует тот же mtime). Поэтому при завершении она просто
+ * заменяется настоящим превью, а список не перестраивается.
+ */
 export function TimelineView({
   files,
+  uploads = [],
   selection,
   onOpen,
   onToggleSelect,
   selectMode,
 }: {
   files: CloudFile[]
+  uploads?: { id: string; at: number }[]
   selection: Set<string>
   onOpen: (file: CloudFile) => void
   onToggleSelect: (id: string, shift: boolean) => void
   selectMode: boolean
 }) {
-  const groups = useDayGroups(files)
+  const groups = useMemo(() => {
+    const entries: TimelineEntry[] = [
+      ...files.map((f) => ({ kind: 'file' as const, at: new Date(f.takenAt).getTime(), id: f.id, file: f })),
+      // Локальные превью — только у первых плиток: держать сотни objectURL и
+      // декодировать столько же полноразмерных JPEG браузер не обязан.
+      ...uploads.map((u, i) => ({ kind: 'upload' as const, at: u.at, id: u.id, withPreview: i < 40 })),
+    ]
+    entries.sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1))
+
+    const out: { key: string; label: string; entries: TimelineEntry[] }[] = []
+    for (const entry of entries) {
+      const d = new Date(entry.at)
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      const last = out[out.length - 1]
+      if (last && last.key === key) last.entries.push(entry)
+      else out.push({ key, label: formatDayLabel(d), entries: [entry] })
+    }
+    return out
+  }, [files, uploads])
+
   return (
     <>
       {groups.map((group) => (
         <section key={group.key}>
           <div className="cl-day-head">
             {group.label}
-            <span className="cl-muted">{group.files.length}</span>
+            <span className="cl-muted">{group.entries.length}</span>
           </div>
-          <Tiles
-            files={group.files}
-            selection={selection}
-            onOpen={onOpen}
-            onToggleSelect={onToggleSelect}
-            selectMode={selectMode}
-          />
+          <div className="cl-tiles">
+            {group.entries.map((entry) =>
+              entry.kind === 'upload' ? (
+                <UploadTile key={entry.id} id={entry.id} withPreview={entry.withPreview} />
+              ) : (
+                <Tile
+                  key={entry.id}
+                  file={entry.file}
+                  selected={selection.has(entry.id)}
+                  selectMode={selectMode}
+                  onOpen={() => onOpen(entry.file)}
+                  onToggle={(shift) => onToggleSelect(entry.id, shift)}
+                />
+              )
+            )}
+          </div>
         </section>
       ))}
     </>

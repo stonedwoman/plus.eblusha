@@ -4,7 +4,7 @@ import '../cloud.css'
 import { ensureCloudSession, type CloudMe } from '../auth'
 import { toCloudError } from '../api'
 import { connectCloudSocket, disconnectCloudSocket, onCloudEvent } from '../realtime'
-import { hydrateServerUploads } from '../uploads/manager'
+import { hydrateServerUploads, startUploadReconciler } from '../uploads/manager'
 import { UploadDock } from '../components/UploadDock'
 import { Toasts, toast } from '../components/ui'
 import { cloudPath } from '../basePath'
@@ -66,6 +66,9 @@ export default function CloudLayout() {
   }, [])
 
   useEffect(() => () => disconnectCloudSocket(), [])
+
+  // Страховка на случай потерянных realtime-событий: см. startUploadReconciler.
+  useEffect(() => startUploadReconciler(), [])
 
   if (error) {
     return (

@@ -3,7 +3,7 @@ import { useOutletContext, useParams, useSearchParams } from 'react-router-dom'
 import { cloudApi, formatBytes, toCloudError } from '../api'
 import type { CloudActivity, CloudFile, CloudFolder, CloudSpace, PresenceEntry } from '../types'
 import { joinSpaceRoom, onCloudEvent } from '../realtime'
-import { enqueueFiles, useSpaceUploadIds } from '../uploads/manager'
+import { enqueueFiles, parseUploadRefs, useSpaceUploads } from '../uploads/manager'
 import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
 import { Viewer } from '../components/Viewer'
@@ -37,9 +37,10 @@ export default function SpacePage() {
   const fileInput = useRef<HTMLInputElement | null>(null)
   const dirInput = useRef<HTMLInputElement | null>(null)
 
-  // Только идентификаторы: список стабилен, пока не изменился состав очереди,
-  // поэтому тик прогресса не перерисовывает страницу целиком.
-  const uploadIds = useSpaceUploadIds(spaceId)
+  // Только id и дата: список стабилен, пока не изменился состав очереди, поэтому
+  // тик прогресса не перерисовывает страницу целиком.
+  const uploadRefs = useSpaceUploads(spaceId)
+  const uploads = useMemo(() => parseUploadRefs(uploadRefs), [uploadRefs])
 
   const canEdit = space?.role === 'OWNER' || space?.role === 'EDITOR'
   const isOwner = space?.role === 'OWNER'
@@ -315,24 +316,6 @@ export default function SpacePage() {
         ) : null}
       </div>
 
-      {/* Активные загрузки — плитками прямо в галерее, а не в окне сбоку. */}
-      {uploadIds.length > 0 && view !== 'activity' && view !== 'map' ? (
-        <section style={{ marginBottom: 18 }}>
-          <div className="cl-day-head">
-            Загружается
-            <span className="cl-muted">{uploadIds.length}</span>
-          </div>
-          <div className="cl-tiles">
-            {uploadIds.slice(0, 60).map((id) => (
-              <UploadTile key={id} id={id} />
-            ))}
-            {uploadIds.length > 60 ? (
-              <div className="cl-uptile-more">и ещё {uploadIds.length - 60} в очереди</div>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
-
       {/* ── Содержимое ──────────────────────────────────────────────────── */}
       {view === 'activity' ? (
         <ActivityView spaceId={spaceId} />
@@ -373,6 +356,7 @@ export default function SpacePage() {
           spaceId={spaceId}
           folderId={folderId}
           files={files}
+          uploads={uploads}
           selection={selection}
           canEdit={canEdit}
           onNavigate={(id) => {
@@ -389,6 +373,7 @@ export default function SpacePage() {
         <>
           <TimelineView
             files={files}
+            uploads={uploads}
             selection={selection}
             selectMode={selection.size > 0}
             onOpen={(file) => setViewerIndex(files.findIndex((f) => f.id === file.id))}
@@ -553,6 +538,7 @@ function FilesBrowser({
   spaceId,
   folderId,
   files,
+  uploads,
   selection,
   canEdit,
   onNavigate,
@@ -562,6 +548,7 @@ function FilesBrowser({
   spaceId: string
   folderId: string | null
   files: CloudFile[]
+  uploads: { id: string; at: number }[]
   selection: Set<string>
   canEdit: boolean
   onNavigate: (folderId: string | null) => void
@@ -643,6 +630,11 @@ function FilesBrowser({
         </div>
       ) : null}
 
+      <div className="cl-tiles dense">
+        {uploads.slice(0, 60).map((u) => (
+          <UploadTile key={u.id} id={u.id} withPreview={false} />
+        ))}
+      </div>
       <Tiles
         files={files}
         selection={selection}
