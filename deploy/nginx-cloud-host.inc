@@ -12,6 +12,10 @@ add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet" always;
 open_file_cache off;
 
 # Корень поддомена — сразу в приложение.
+# absolute_redirect off: за тоннелем nginx видит схему http и без этого построил
+# бы Location: http://cloud.eblusha.org/cloud, роняя схему на один лишний хоп.
+# Относительный Location браузер достраивает сам, оставаясь на https.
+absolute_redirect off;
 location = / { return 302 /cloud; }
 
 # Отдача файлов Cloud: backend проверяет права и отвечает X-Accel-Redirect,
