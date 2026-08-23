@@ -348,7 +348,7 @@
 /* ── Просмотрщик ───────────────────────────────────────────────────────── */
 
 .cl-viewer {
-  position: fixed; inset: 0; z-index: 200;
+  position: fixed; inset: 0; z-index: 1000;
   background: rgba(6, 7, 10, .96);
   display: grid;
   grid-template-columns: minmax(0, 1fr) 0;
@@ -432,7 +432,7 @@
 /* ── Модалки ───────────────────────────────────────────────────────────── */
 
 .cl-modal-back {
-  position: fixed; inset: 0; z-index: 300;
+  position: fixed; inset: 0; z-index: 1100;
   background: rgba(5, 6, 9, .72);
   backdrop-filter: blur(3px);
   display: grid; place-items: center;
@@ -465,7 +465,7 @@
 .cl-empty p { margin: 0 auto; max-width: 420px; font-size: 14px; line-height: 1.55; }
 
 .cl-drop-overlay {
-  position: fixed; inset: 0; z-index: 150;
+  position: fixed; inset: 0; z-index: 900;
   background: rgba(217, 119, 6, .10);
   border: 3px dashed var(--brand);
   border-radius: 18px;
@@ -475,7 +475,7 @@
 }
 .cl-drop-overlay div { background: var(--surface-100); padding: 20px 30px; border-radius: 14px; font-size: 17px; font-weight: 620; box-shadow: var(--shadow-medium); }
 
-.cl-toasts { position: fixed; bottom: 18px; left: 18px; z-index: 400; display: flex; flex-direction: column; gap: 8px; max-width: min(400px, calc(100vw - 36px)); }
+.cl-toasts { position: fixed; bottom: 18px; left: 18px; z-index: 1200; display: flex; flex-direction: column; gap: 8px; max-width: min(400px, calc(100vw - 36px)); }
 .cl-toast {
   padding: 11px 14px; border-radius: 11px;
   background: var(--surface-200); border: 1px solid var(--surface-border-strong);
@@ -523,9 +523,44 @@
 .cl-breadcrumbs button { background: none; border: none; color: var(--text-muted); font: inherit; cursor: pointer; padding: 3px 5px; border-radius: 6px; }
 .cl-breadcrumbs button:hover { background: var(--surface-200); color: var(--text-primary); }
 
-.cl-map { height: min(72dvh, 720px); border-radius: var(--cl-radius); overflow: hidden; border: 1px solid var(--surface-border); }
+/*
+ * isolation: isolate обязателен. Leaflet раздаёт своим слоям z-index 400, а
+ * контролам 800 — и без собственного stacking context они считаются наравне с
+ * элементами страницы, перекрывая просмотрщик, модалки и тосты. Изоляция
+ * запирает эту нумерацию внутри карты.
+ */
+.cl-map {
+  height: min(72dvh, 720px);
+  border-radius: var(--cl-radius);
+  overflow: hidden;
+  border: 1px solid var(--surface-border);
+  position: relative;
+  isolation: isolate;
+  z-index: 0;
+}
 .cl-map .leaflet-container { background: var(--surface-200); font: inherit; }
-.cl-map-pin img { width: 46px; height: 46px; border-radius: 9px; object-fit: cover; border: 2px solid #fff; box-shadow: 0 3px 10px rgba(0,0,0,.5); }
+.cl-map-pin { position: relative; cursor: pointer; }
+.cl-map-pin img {
+  width: 46px; height: 46px;
+  border-radius: 9px; object-fit: cover;
+  border: 2px solid #fff;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .5);
+  display: block;
+}
+/* Счётчик группы: сколько снимков скрыто под этой миниатюрой. */
+.cl-map-pin b {
+  position: absolute;
+  top: -6px; right: -6px;
+  min-width: 20px; height: 20px;
+  padding: 0 5px;
+  border-radius: 99px;
+  background: var(--brand);
+  color: #14100a;
+  font-size: 11.5px; font-weight: 700;
+  display: grid; place-items: center;
+  border: 2px solid #fff;
+  font-variant-numeric: tabular-nums;
+}
 
 .cl-activity-item { display: flex; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--surface-border); font-size: 13.5px; }
 .cl-activity-item:last-child { border-bottom: none; }

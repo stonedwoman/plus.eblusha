@@ -18,6 +18,33 @@ export type MapPoint = {
   thumb: string
 }
 
+/**
+ * Группировка точек по сетке текущего масштаба.
+ *
+ * Без неё пятьсот снимков одной поездки превращаются в кучу налезающих друг на
+ * друга миниатюр: разобрать что-либо невозможно, а браузер тянет пятьсот
+ * превью разом. Отдельная библиотека кластеризации ради этого не нужна —
+ * достаточно округлить координаты до шага, зависящего от зума.
+ */
+function clusterize(points: MapPoint[], zoom: number): { lat: number; lon: number; items: MapPoint[] }[] {
+  // На каждом уровне приближения ячейка вдвое мельче; на максимуме кластеров нет.
+  const step = 360 / Math.pow(2, Math.min(zoom, 18)) * 2
+  const buckets = new Map<string, { lat: number; lon: number; items: MapPoint[] }>()
+  for (const p of points) {
+    const key = `${Math.round(p.lat / step)}|${Math.round(p.lon / step)}`
+    const bucket = buckets.get(key)
+    if (bucket) {
+      bucket.items.push(p)
+      // Держим центр группы, а не координаты первой попавшейся фотографии.
+      bucket.lat += (p.lat - bucket.lat) / bucket.items.length
+      bucket.lon += (p.lon - bucket.lon) / bucket.items.length
+    } else {
+      buckets.set(key, { lat: p.lat, lon: p.lon, items: [p] })
+    }
+  }
+  return [...buckets.values()]
+}
+
 export function MapView({
   spaceId,
   tileUrl,
@@ -52,24 +79,45 @@ export function MapView({
       L.tileLayer(tileUrl, { attribution, maxZoom: 19 }).addTo(map)
 
       if (points.length === 0) {
-        map.setView([40.1772, 44.5035], 3)
-      } else {
-        const markers = points.map((p) =>
-          L.marker([p.lat, p.lon], {
+        map.setView([41.7, 44.8], 6)
+        cleanup = () => map.remove()
+        return
+      }
+
+      const layer = L.layerGroup().addTo(map)
+      const redraw = () => {
+        layer.clearLayers()
+        for (const group of clusterize(points, map.getZoom())) {
+          const first = group.items[0] as MapPoint
+          const count = group.items.length
+          const marker = L.marker([group.lat, group.lon], {
             icon: L.divIcon({
               className: 'cl-map-pin',
-              html: `<img src="${p.thumb}" alt="" loading="lazy" />`,
+              html:
+                `<img src="${first.thumb}" alt="" loading="lazy" />` +
+                (count > 1 ? `<b>${count}</b>` : ''),
               iconSize: [46, 46],
               iconAnchor: [23, 23],
             }),
           })
-            .on('click', () => openRef.current(p.id))
-            .addTo(map)
-        )
-        map.fitBounds(L.featureGroup(markers).getBounds().pad(0.2))
+          marker.on('click', () => {
+            // Группа — приближаем к ней, одиночный снимок — открываем.
+            if (count > 1) map.flyTo([group.lat, group.lon], Math.min(map.getZoom() + 3, 18))
+            else openRef.current(first.id)
+          })
+          layer.addLayer(marker)
+        }
       }
 
-      cleanup = () => map.remove()
+      const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon] as [number, number]))
+      map.fitBounds(bounds.pad(0.2))
+      redraw()
+      map.on('zoomend', redraw)
+
+      cleanup = () => {
+        map.off('zoomend', redraw)
+        map.remove()
+      }
     })()
 
     return () => {
