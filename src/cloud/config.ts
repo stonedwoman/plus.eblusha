@@ -70,6 +70,21 @@ const schema = z.object({
   CLOUD_MAP_ATTRIBUTION: z.string().default("© OpenStreetMap"),
   /// Публичный origin для построения ссылок (QR, share). По умолчанию — из запроса.
   CLOUD_PUBLIC_BASE_URL: z.string().optional(),
+  /// Origin мессенджера — туда Cloud отправляет браузер за одноразовым кодом,
+  /// когда живёт на отдельном поддомене (там лежит сессия Еблуши).
+  CLOUD_MESSENGER_ORIGIN: z.string().default("https://eblusha.org"),
+  /// Origin'ы, на которые разрешено возвращать код авторизации. Пусто = только
+  /// относительные пути внутри текущего домена (режим одного origin).
+  /// Это защита от open redirect: неизвестный origin не получит код никогда.
+  CLOUD_ALLOWED_REDIRECT_ORIGINS: z
+    .string()
+    .optional()
+    .transform((v) =>
+      (v ?? "")
+        .split(",")
+        .map((s) => s.trim().replace(/\/+$/, ""))
+        .filter(Boolean)
+    ),
 });
 
 const parsed = schema.parse(process.env);

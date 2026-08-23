@@ -41,10 +41,31 @@ type AuthCodeRecord = {
   createdAt: number;
 };
 
+/**
+ * Куда разрешено возвращать одноразовый код.
+ *
+ * Два режима:
+ *  - один origin (Cloud на eblusha.org/cloud) — только относительный путь /cloud/...;
+ *  - отдельный поддомен (cloud.eblusha.org) — абсолютный URL, но ТОЛЬКО с origin
+ *    из CLOUD_ALLOWED_REDIRECT_ORIGINS и путём внутри /cloud.
+ *
+ * Открытый редирект здесь означал бы подарок кода постороннему сайту, поэтому
+ * никакого «начинается с https://cloud.» и прочей эвристики: строгий allowlist.
+ */
 function isSafeRedirect(uri: string): boolean {
-  // Разрешаем только относительные пути внутри Cloud — открытый редирект
-  // превратил бы одноразовый код в подарок постороннему сайту.
-  return /^\/cloud(\/[A-Za-z0-9._~\-/]*)?$/.test(uri) && !uri.includes("//");
+  if (uri.startsWith("/")) {
+    return /^\/cloud(\/[A-Za-z0-9._~\-/]*)?$/.test(uri) && !uri.includes("//");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
+  if (!cloudConfig.CLOUD_ALLOWED_REDIRECT_ORIGINS.includes(parsed.origin)) return false;
+  return /^\/cloud(\/[A-Za-z0-9._~\-/]*)?$/.test(parsed.pathname);
 }
 
 function sha256b64url(input: string): string {
@@ -52,6 +73,20 @@ function sha256b64url(input: string): string {
 }
 
 const router = Router();
+
+/**
+ * Публичные параметры входа. Нужны Cloud-фронту ДО аутентификации: когда Cloud
+ * живёт на отдельном поддомене, он не знает сам, на каком origin искать сессию
+ * Еблуши. Секретов здесь нет — только то, что и так видно в адресной строке.
+ */
+router.get("/config", (_req, res) => {
+  res.json({
+    clientId: [...ALLOWED_CLIENTS][0],
+    messengerOrigin: cloudConfig.CLOUD_MESSENGER_ORIGIN.replace(/\/+$/, ""),
+    /// Пусто = Cloud и мессенджер на одном origin, редирект не нужен.
+    crossOrigin: cloudConfig.CLOUD_ALLOWED_REDIRECT_ORIGINS.length > 0,
+  });
+});
 
 router.post(
   "/authorize",

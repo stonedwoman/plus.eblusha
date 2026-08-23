@@ -24,6 +24,8 @@ const CloudFeed = lazy(() => import('./cloud/pages/FeedPage'))
 const CloudJoin = lazy(() => import('./cloud/pages/JoinPage'))
 const CloudShare = lazy(() => import('./cloud/pages/SharePage'))
 const CloudAdminStorage = lazy(() => import('./cloud/pages/AdminStoragePage'))
+const CloudAuthorize = lazy(() => import('./cloud/pages/CloudAuthorizePage'))
+const CloudCallback = lazy(() => import('./cloud/pages/CloudCallbackPage'))
 
 const withSuspense = (node: ReactNode) => (
   <Suspense fallback={null}>{node}</Suspense>
@@ -44,28 +46,38 @@ export const router = createBrowserRouter([
       },
     ],
   },
-  // Публичная share-ссылка: БЕЗ ProtectedRoute — её открывают люди без Еблуши.
+  // Публичная share-ссылка: без входа вообще — её открывают люди без Еблуши.
   {
     path: '/cloud/s/:publicId',
     element: withSuspense(<CloudShare />),
   },
+  // Возврат с кодом: сессии Cloud тут ещё нет, она здесь и создаётся.
+  {
+    path: '/cloud/callback',
+    element: withSuspense(<CloudCallback />),
+  },
+  // Выдача кода живёт на origin МЕССЕНДЖЕРА, поэтому только здесь нужен
+  // ProtectedRoute: без сессии Еблуши код взять неоткуда.
+  {
+    path: '/cloud-auth',
+    element: <ProtectedRoute />,
+    children: [{ index: true, element: withSuspense(<CloudAuthorize />) }],
+  },
+  // Сам Cloud под ProtectedRoute НЕ ставим: на отдельном поддомене токена
+  // мессенджера в localStorage нет и быть не может. Гейт — CloudLayout, он
+  // умеет и быстрый путь (один origin), и редирект за кодом (поддомен).
   {
     path: '/cloud',
-    element: <ProtectedRoute />,
+    element: withSuspense(<CloudLayout />),
     children: [
-      {
-        element: withSuspense(<CloudLayout />),
-        children: [
-          { index: true, element: withSuspense(<CloudHome />) },
-          { path: 'space/:spaceId', element: withSuspense(<CloudSpace />) },
-          { path: 'recent', element: withSuspense(<CloudFeed />) },
-          { path: 'favorites', element: withSuspense(<CloudFeed />) },
-          { path: 'uploads', element: withSuspense(<CloudFeed />) },
-          { path: 'trash', element: withSuspense(<CloudFeed />) },
-          { path: 'join/:publicId', element: withSuspense(<CloudJoin />) },
-          { path: 'admin/storage', element: withSuspense(<CloudAdminStorage />) },
-        ],
-      },
+      { index: true, element: withSuspense(<CloudHome />) },
+      { path: 'space/:spaceId', element: withSuspense(<CloudSpace />) },
+      { path: 'recent', element: withSuspense(<CloudFeed />) },
+      { path: 'favorites', element: withSuspense(<CloudFeed />) },
+      { path: 'uploads', element: withSuspense(<CloudFeed />) },
+      { path: 'trash', element: withSuspense(<CloudFeed />) },
+      { path: 'join/:publicId', element: withSuspense(<CloudJoin />) },
+      { path: 'admin/storage', element: withSuspense(<CloudAdminStorage />) },
     ],
   },
   {
