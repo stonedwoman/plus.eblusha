@@ -45,7 +45,8 @@
     "dev:cloud-worker": "cross-env NODE_ENV=development prisma generate && nodemon --watch src --exec \"ts-node\" src/cloudWorker.ts",
     "cloud:maintenance": "node dist/scripts/cloudMaintenance.js",
     "test:cloud": "ts-node test/cloud.smoke.test.ts",
-    "cloud:dedupe": "ts-node src/scripts/cloudDedupeSpaceFiles.ts"
+    "cloud:dedupe": "ts-node src/scripts/cloudDedupeSpaceFiles.ts",
+    "cloud:wipe": "ts-node src/scripts/cloudWipe.ts"
   },
   "keywords": [],
   "author": "",
