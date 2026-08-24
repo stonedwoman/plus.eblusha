@@ -192,6 +192,52 @@ export function useInfiniteSentinel(onHit: () => void, enabled: boolean) {
   return useCallback((el: HTMLDivElement | null) => setNode(el), [])
 }
 
+/**
+ * Прятать шапку при прокрутке ВНИЗ и возвращать при движении ВВЕРХ.
+ *
+ * Скроллер здесь — .cl-root, а не окно: у документа прокрутка залочена
+ * мессенджером, и слушать window.scroll бесполезно.
+ *
+ * Порог в несколько пикселей обязателен, иначе инерционная прокрутка на
+ * тачпаде и «резинка» на телефоне дёргают шапку туда-сюда. У самого верха
+ * держим её видимой всегда — там прятать нечего.
+ */
+export function useHideOnScrollDown(threshold = 12): boolean {
+  const [hidden, setHidden] = useState(false)
+
+  useEffect(() => {
+    const root = document.querySelector<HTMLElement>('.cl-root')
+    if (!root) return
+    let last = root.scrollTop
+    let ticking = false
+
+    const update = () => {
+      ticking = false
+      const cur = root.scrollTop
+      const delta = cur - last
+      if (Math.abs(delta) < threshold) return
+      last = cur
+      // Верхняя зона и «отрицательный» скролл от резинки — всегда показываем.
+      if (cur < 140) {
+        setHidden(false)
+        return
+      }
+      setHidden(delta > 0)
+    }
+
+    const onScroll = () => {
+      if (ticking) return
+      ticking = true
+      requestAnimationFrame(update)
+    }
+
+    root.addEventListener('scroll', onScroll, { passive: true })
+    return () => root.removeEventListener('scroll', onScroll)
+  }, [threshold])
+
+  return hidden
+}
+
 /** QR генерируется в браузере: отдельный серверный генератор картинок не нужен. */
 export function QrCode({ text, size = 200 }: { text: string; size?: number }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null)

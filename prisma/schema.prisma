@@ -711,6 +711,11 @@ model CloudFile {
   metadata       Json?
   deletedAt      DateTime?
   deletedById    String?
+  /// Помечен на безвозвратное удаление. Отличается от deletedAt (корзина):
+  /// такой файл не показывается нигде, не восстанавливается и ждёт только
+  /// физической уборки. Без него «удалить навсегда» ставило deletedAt в 1970,
+  /// и файл спокойно возвращался кнопкой «Восстановить» из корзины.
+  purgedAt       DateTime?
 
   space         CloudSpace         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   folder        CloudFolder?       @relation(fields: [folderId], references: [id])
@@ -720,6 +725,7 @@ model CloudFile {
   comments      CloudComment[]
   favorites     CloudFavorite[]
 
+  @@index([purgedAt])
   @@index([spaceId, deletedAt, takenAt])
   @@index([spaceId, folderId, deletedAt, originalName])
   @@index([spaceId, deletedAt, createdAt])
@@ -793,6 +799,10 @@ model CloudShareLink {
   publicId      String               @unique
   allowPreview  Boolean              @default(true)
   allowDownload Boolean              @default(true)
+  /// Отдавать ли получателю ссылки EXIF: координаты съёмки, модель камеры,
+  /// параметры кадра. По умолчанию НЕТ — публичная ссылка на пару фотографий
+  /// не должна попутно выдавать домашний адрес по геометке.
+  allowMetadata Boolean              @default(false)
   passwordHash  String?
   expiresAt     DateTime?
   revokedAt     DateTime?

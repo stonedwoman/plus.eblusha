@@ -145,6 +145,7 @@ function publicShareInfo(active: NonNullable<Awaited<ReturnType<typeof loadActiv
       targetType: active.share.targetType,
       allowPreview: active.share.allowPreview,
       allowDownload: active.share.allowDownload,
+      allowMetadata: active.share.allowMetadata,
       expiresAt: active.share.expiresAt,
       label: active.share.label,
     },
@@ -225,10 +226,34 @@ router.get(
           commentCount: 0,
           reactions: {},
           myReactions: [],
+          /*
+           * EXIF отдаём только по явному разрешению. Координаты съёмки — это
+           * адрес дома, школы и работы; отправлять их «за компанию» с картинкой
+           * нельзя, а получатель ссылки не обязан быть доверенным лицом.
+           */
+          ...(active.share.allowMetadata
+            ? {}
+            : {
+                latitude: null,
+                longitude: null,
+                cameraMake: null,
+                cameraModel: null,
+                metadata: null,
+                takenAtSource: "upload",
+              }),
           urls: {
             ...dto.urls,
+            // Без права на просмотр не отдаём и ссылки на превью: иначе запрет
+            // сводился бы к тому, что картинки просто не показывает наш фронт.
+            thumb: active.share.allowPreview ? dto.urls.thumb : null,
+            preview: active.share.allowPreview ? dto.urls.preview : null,
+            poster: active.share.allowPreview ? dto.urls.poster : null,
+            playback: active.share.allowPreview ? dto.urls.playback : null,
             download: active.share.allowDownload ? `${base}/${f.id}/content?download=1` : null,
-            content: active.share.allowDownload || f.kind === "VIDEO" ? dto.urls.content : null,
+            content:
+              active.share.allowDownload || (active.share.allowPreview && f.kind === "VIDEO")
+                ? dto.urls.content
+                : null,
           },
         };
       }),

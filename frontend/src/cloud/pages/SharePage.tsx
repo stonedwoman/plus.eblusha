@@ -14,6 +14,7 @@ type ShareInfo = {
     targetType: string
     allowPreview: boolean
     allowDownload: boolean
+    allowMetadata: boolean
     expiresAt: string | null
     label: string | null
   }

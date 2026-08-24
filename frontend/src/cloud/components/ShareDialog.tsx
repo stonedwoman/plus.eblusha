@@ -53,6 +53,7 @@ function PublicShareTab({ spaceId, preselectedFileIds }: { spaceId: string; pres
   const [shares, setShares] = useState<CloudShare[]>([])
   const [allowPreview, setAllowPreview] = useState(true)
   const [allowDownload, setAllowDownload] = useState(true)
+  const [allowMetadata, setAllowMetadata] = useState(false)
   const [expiry, setExpiry] = useState<number | null>(24 * 30)
   const [password, setPassword] = useState('')
   const [created, setCreated] = useState<string | null>(null)
@@ -80,6 +81,7 @@ function PublicShareTab({ spaceId, preselectedFileIds }: { spaceId: string; pres
         ...(preselectedFileIds?.length ? { fileIds: preselectedFileIds } : {}),
         allowPreview,
         allowDownload,
+        allowMetadata,
         expiresInHours: expiry,
         password: password.trim() || null,
       })
@@ -157,6 +159,14 @@ function PublicShareTab({ spaceId, preselectedFileIds }: { spaceId: string; pres
         <input type="checkbox" checked={allowDownload} onChange={(e) => setAllowDownload(e.target.checked)} />
         Скачивание оригиналов и ZIP
       </label>
+      <label className="cl-check-row">
+        <input type="checkbox" checked={allowMetadata} onChange={(e) => setAllowMetadata(e.target.checked)} />
+        Показывать съёмочные данные
+      </label>
+      <div className="cl-muted" style={{ fontSize: 12, marginTop: -2, marginLeft: 26, lineHeight: 1.45 }}>
+        Координаты съёмки, камера и параметры кадра. По умолчанию скрыты: геометка —
+        это адрес места, где вы были.
+      </div>
 
       <div className="cl-field" style={{ marginTop: 14 }}>
         <label className="cl-label">Срок действия</label>

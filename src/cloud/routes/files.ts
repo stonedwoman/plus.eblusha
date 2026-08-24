@@ -19,7 +19,7 @@ import { serveFile } from "../serve";
 import { recordActivity } from "../activity";
 import { writeAudit } from "../audit";
 import { emitCloud, spaceRoom } from "../realtime";
-import { enqueueImageJob, enqueueVideoJob } from "../jobs/queues";
+import { enqueueImageJob, enqueueMaintenance, enqueueVideoJob } from "../jobs/queues";
 import { assertCanAccept } from "../storage/quota";
 import { fileDto } from "../serialize";
 
@@ -72,7 +72,7 @@ router.get(
     if (!spaceId) throw invalid("Не указана хуяпка");
     await requireSpaceAccess(req, spaceId, "space:view");
     const points = await prisma.cloudFile.findMany({
-      where: { spaceId, deletedAt: null, latitude: { not: null }, longitude: { not: null } },
+      where: { spaceId, deletedAt: null, purgedAt: null, latitude: { not: null }, longitude: { not: null } },
       select: {
         id: true,
         latitude: true,
@@ -136,6 +136,7 @@ router.get(
       where: {
         spaceId: { in: spaceIds },
         deletedAt: view === "trash" ? { not: null } : null,
+        purgedAt: null,
         ...(view === "favorites" ? { favorites: { some: { userId: user.id } } } : {}),
         ...cursorFilter,
       },
@@ -302,7 +303,9 @@ router.post(
   ah(async (req: Request, res) => {
     const parsed = idsSchema.safeParse(req.body ?? {});
     if (!parsed.success) throw invalid("Нужен список ids");
-    const files = await prisma.cloudFile.findMany({ where: { id: { in: parsed.data.ids }, deletedAt: { not: null } } });
+    const files = await prisma.cloudFile.findMany({
+      where: { id: { in: parsed.data.ids }, deletedAt: { not: null }, purgedAt: null },
+    });
     const spaces = new Set(files.map((f) => f.spaceId));
     for (const spaceId of spaces) await requireSpaceAccess(req, spaceId, "file:restore");
 
@@ -334,9 +337,12 @@ router.post(
     let files;
     if (parsed.data.all && parsed.data.spaceId) {
       await requireSpaceAccess(req, parsed.data.spaceId, "file:delete");
-      files = await prisma.cloudFile.findMany({ where: { spaceId: parsed.data.spaceId, deletedAt: { not: null } }, take: 2000 });
+      files = await prisma.cloudFile.findMany({
+        where: { spaceId: parsed.data.spaceId, deletedAt: { not: null }, purgedAt: null },
+        take: 2000,
+      });
     } else if (parsed.data.ids?.length) {
-      files = await prisma.cloudFile.findMany({ where: { id: { in: parsed.data.ids }, deletedAt: { not: null } } });
+      files = await prisma.cloudFile.findMany({ where: { id: { in: parsed.data.ids }, deletedAt: { not: null }, purgedAt: null } });
       for (const spaceId of new Set(files.map((f) => f.spaceId))) {
         await requireSpaceAccess(req, spaceId, "file:delete");
       }
@@ -344,12 +350,16 @@ router.post(
       throw invalid("Нужны ids или spaceId+all");
     }
 
-    // Ставим deletedAt в далёкое прошлое: следующий проход maintenance заберёт
-    // их вместе с проверкой ссылок и физической уборкой.
+    // purgedAt, а не «deletedAt в 1970»: помеченный так файл исчезает и из
+    // корзины, и из выборок, и восстановить его уже нельзя — именно этого
+    // человек ждёт от кнопки «Удалить навсегда».
+    const now = new Date();
     await prisma.cloudFile.updateMany({
       where: { id: { in: files.map((f) => f.id) } },
-      data: { deletedAt: new Date(0) },
+      data: { purgedAt: now, deletedAt: now },
     });
+    // Уборку просим сразу, а не ждём шестичасового цикла.
+    await enqueueMaintenance("trash-purge");
     await writeAudit(req, "FILE_PURGED", { detail: { count: files.length } });
     res.json({ ok: true, count: files.length });
   })

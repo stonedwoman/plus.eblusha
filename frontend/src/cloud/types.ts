@@ -110,6 +110,7 @@ export type CloudShare = {
   fileCount: number
   allowPreview: boolean
   allowDownload: boolean
+  allowMetadata: boolean
   hasPassword: boolean
   expiresAt: string | null
   revokedAt: string | null

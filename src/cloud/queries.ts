@@ -54,6 +54,8 @@ export async function listFiles(params: FileListParams) {
 
   const where: Prisma.CloudFileWhereInput = { spaceId };
   where.deletedAt = view === "trash" ? { not: null } : null;
+  // Безвозвратно удалённые не показываются нигде, включая корзину.
+  where.purgedAt = null;
 
   if (view === "files" && params.folderId !== undefined) where.folderId = params.folderId;
   if (view === "map") where.AND = [{ latitude: { not: null } }, { longitude: { not: null } }];

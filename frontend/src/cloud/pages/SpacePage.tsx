@@ -18,7 +18,7 @@ import { TimelineView, Tiles } from '../components/Gallery'
 import { Viewer } from '../components/Viewer'
 import { MapView } from '../components/MapView'
 import { ShareDialog } from '../components/ShareDialog'
-import { Avatar, Empty, Modal, SkeletonTiles, useInfiniteSentinel, toast } from '../components/ui'
+import { Avatar, Empty, Modal, SkeletonTiles, useInfiniteSentinel, useHideOnScrollDown, toast } from '../components/ui'
 import type { CloudContext } from './CloudLayout'
 
 type View = 'timeline' | 'files' | 'map' | 'activity'
@@ -54,6 +54,21 @@ export default function SpacePage() {
   const [query, setQuery] = useState('')
   const [kindFilter, setKindFilter] = useState<'' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'>('')
   const [onlyFavorites, setOnlyFavorites] = useState(false)
+  // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
+  const headHidden = useHideOnScrollDown()
+  // Высоту шапки меряем, а не задаём константой: она зависит от длины названия,
+  // числа участников и переносов кнопок на узком экране. От неё считается
+  // прилипание заголовков дней.
+  const headRef = useRef<HTMLDivElement | null>(null)
+  const [headH, setHeadH] = useState(0)
+  useEffect(() => {
+    const el = headRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setHeadH(el.offsetHeight))
+    ro.observe(el)
+    setHeadH(el.offsetHeight)
+    return () => ro.disconnect()
+  }, [space?.id])
   const anchorRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const dirInput = useRef<HTMLInputElement | null>(null)
@@ -341,8 +356,17 @@ export default function SpacePage() {
   }
 
   return (
-    <div className="cl-page">
-      {/* ── Шапка Space ─────────────────────────────────────────────────── */}
+    <div
+      className="cl-page"
+      style={{ ['--cl-space-head-h' as string]: `${headHidden ? 0 : headH}px` }}
+    >
+      {/*
+        Шапка и фильтры — единый липкий блок, который прячется при прокрутке
+        вниз и возвращается при малейшем движении вверх. Так и контент не
+        зажат, и «Выбрать всё», поиск и фильтры всегда в одном движении, а не
+        через прокрутку в самый верх.
+      */}
+      <div ref={headRef} className={`cl-space-head${headHidden ? ' is-hidden' : ''}`}>
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
         <div style={{ minWidth: 0, flex: '1 1 320px' }}>
           <h1 className="cl-h1">{space.name}</h1>
@@ -427,6 +451,8 @@ export default function SpacePage() {
             </div>
           </>
         ) : null}
+      </div>
+
       </div>
 
       {/* ── Содержимое ──────────────────────────────────────────────────── */}

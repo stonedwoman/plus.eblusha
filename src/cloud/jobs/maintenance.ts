@@ -18,8 +18,10 @@ import { cleanupTmp } from "./mediaWorker";
 
 export async function purgeTrash(): Promise<{ files: number; objects: number }> {
   const cutoff = new Date(Date.now() - cloudConfig.CLOUD_TRASH_RETENTION_DAYS * 86400_000);
+  // Забираем и то, что отлежало retention в корзине, и то, что помечено
+  // безвозвратным удалением — последнее ждать не нужно.
   const doomed = await prisma.cloudFile.findMany({
-    where: { deletedAt: { not: null, lt: cutoff } },
+    where: { OR: [{ purgedAt: { not: null } }, { deletedAt: { not: null, lt: cutoff } }] },
     select: { id: true, storageObjectId: true },
     take: 500,
   });
