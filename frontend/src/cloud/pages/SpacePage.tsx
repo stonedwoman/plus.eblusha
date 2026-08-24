@@ -367,12 +367,19 @@ export default function SpacePage() {
         fraction = Math.max(0, Math.min(1, (probeY - top) / Math.max(1, bottom - top)))
       }
       /*
-       * На дне списка последний отрезок считается пройденным целиком. Линия
-       * отсчёта стоит у верха окна, поэтому у длинного отрезка (весь Тбилиси)
-       * доля упиралась в 0.77, и полоска гео не доходила до края, хотя дальше
-       * прокручивать уже некуда.
+       * На самом дне списка текущий отрезок — ПОСЛЕДНИЙ, а не тот, что попал
+       * под линию отсчёта. Линия стоит у верха окна, и когда хвост альбома
+       * короче экрана, наверху оставались старые снимки: рельса показывала
+       * Телави, пока на экране был уже Дилижан.
        */
-      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) fraction = 1
+      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) {
+        const tiles = main.querySelectorAll<HTMLElement>('[data-run]')
+        const lastRun = Number(tiles[tiles.length - 1]?.dataset.run)
+        setGeoPos((prev) =>
+          prev.run === lastRun && prev.fraction === 1 ? prev : { run: Number.isFinite(lastRun) ? lastRun : run, fraction: 1 }
+        )
+        return
+      }
       setGeoPos((prev) =>
         prev.run === run && Math.abs(prev.fraction - fraction) < 0.004 ? prev : { run, fraction }
       )
@@ -426,9 +433,16 @@ export default function SpacePage() {
         current = el.dataset.day ?? null
         fraction = Math.max(0, Math.min(1, (RAIL_ANCHOR - r.top) / Math.max(1, r.height)))
       }
-      // На дне списка последняя группа считается пройденной целиком — иначе
-      // заливка не доходила бы до края.
-      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) fraction = 1
+      /*
+       * На самом дне списка текущий день — ПОСЛЕДНИЙ, а не тот, что попал под
+       * линию отсчёта. Когда хвост альбома короче экрана, наверху оставались
+       * мартовские снимки, и рельса замирала на них, пока внизу был уже август.
+       */
+      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) {
+        const last = sections[sections.length - 1]?.dataset.day ?? null
+        setRailPos((prev) => (prev.day === last && prev.fraction === 1 ? prev : { day: last, fraction: 1 }))
+        return
+      }
       const day = current ?? sections[0]?.dataset.day ?? null
       setRailPos((prev) =>
         prev.day === day && Math.abs(prev.fraction - fraction) < 0.002 ? prev : { day, fraction }

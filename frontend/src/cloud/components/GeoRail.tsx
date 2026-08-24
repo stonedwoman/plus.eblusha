@@ -106,7 +106,7 @@ export function GeoRail({
    * сохраняется, подписи не сталкиваются, а мелочь читается как
    * промежуточные станции на схеме.
    */
-  const MINOR_W = 0.34
+  const MINOR_W = 0.52
   const weights = stations.map((st) => (st.major ? 1 : MINOR_W))
   const totalW = Math.max(1, weights.reduce((a, b) => a + b, 0))
   const step = (h - PAD * 2 - NODE) / totalW
@@ -118,7 +118,9 @@ export function GeoRail({
     startW.set(st.run, acc)
     acc += weights[i]!
   })
-  const yOf = (run: number) => PAD + (startW.get(run) ?? 0) * step
+  /* Мелкий узел ниже крупного, поэтому его центр смещаем: иначе иконка
+     садилась бы выше своей отметки на оси. */
+  const yOf = (run: number, major: boolean) => PAD + (startW.get(run) ?? 0) * step + (major ? 0 : (NODE - 24) / 2)
   const lineBottom = PAD + totalW * step + NODE / 2
   const axisLen = Math.max(1, lineBottom - lineTop)
 
@@ -151,7 +153,7 @@ export function GeoRail({
             className={`cl-tn-node${s.major ? '' : ' is-minor'}${s.run === activeRun ? ' is-active' : ''}${
               activeRun >= 0 && s.run < activeRun ? ' is-passed' : ''
             }`}
-            style={{ transform: `translateY(${yOf(s.run)}px)` }}
+            style={{ transform: `translateY(${yOf(s.run, s.major)}px)` }}
             onClick={() => onJump(s.run)}
             title={[s.country, s.city, s.district].filter(Boolean).join(' · ') + ` · ${s.count}`}
           >
