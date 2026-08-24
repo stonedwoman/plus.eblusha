@@ -83,18 +83,35 @@ export function Modal({
 
 // ── Тосты ────────────────────────────────────────────────────────────────────
 
-type Toast = { id: number; text: string; kind: 'info' | 'error' | 'success' }
+type Toast = { id: number; text: string; kind: 'info' | 'error' | 'success'; leaving?: boolean }
 type ToastStore = { toasts: Toast[]; push: (t: Omit<Toast, 'id'>) => void; drop: (id: number) => void }
+
+/** Длительность прощального кадра — совпадает с clToastOut в cloud.css. */
+const TOAST_OUT_MS = 220
 
 const useToastStore = create<ToastStore>((set) => ({
   toasts: [],
   push: (t) =>
     set((s) => {
       const id = Date.now() + Math.random()
-      setTimeout(() => set((cur) => ({ toasts: cur.toasts.filter((x) => x.id !== id) })), t.kind === 'error' ? 7000 : 3800)
+      const ttl = t.kind === 'error' ? 7000 : 3800
+      /*
+       * Уход в две фазы. Раньше тост исчезал одним размонтированием, и вся
+       * стопка ниже прыгала вверх на его высоту за кадр — заметный рывок в
+       * углу экрана каждые несколько секунд при заливке.
+       */
+      setTimeout(
+        () => set((cur) => ({ toasts: cur.toasts.map((x) => (x.id === id ? { ...x, leaving: true } : x)) })),
+        Math.max(0, ttl - TOAST_OUT_MS)
+      )
+      setTimeout(() => set((cur) => ({ toasts: cur.toasts.filter((x) => x.id !== id) })), ttl)
       return { toasts: [...s.toasts, { ...t, id }] }
     }),
-  drop: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  drop: (id) =>
+    set((s) => {
+      setTimeout(() => set((cur) => ({ toasts: cur.toasts.filter((t) => t.id !== id) })), TOAST_OUT_MS)
+      return { toasts: s.toasts.map((t) => (t.id === id ? { ...t, leaving: true } : t)) }
+    }),
 }))
 
 export const toast = {
@@ -109,7 +126,7 @@ export function Toasts() {
   return (
     <div className="cl-toasts">
       {toasts.map((t) => (
-        <div key={t.id} className={`cl-toast ${t.kind}`} onClick={() => drop(t.id)}>
+        <div key={t.id} className={`cl-toast ${t.kind}${t.leaving ? ' leaving' : ''}`} onClick={() => drop(t.id)}>
           <span>{t.text}</span>
         </div>
       ))}
@@ -208,12 +225,19 @@ export function useHideOnScrollDown(threshold = 12): boolean {
   useEffect(() => {
     const root = document.querySelector<HTMLElement>('.cl-root')
     if (!root) return
-    let last = root.scrollTop
+    /*
+     * Позицию зажимаем в реальные границы. Верхнюю резинку прежний код
+     * прикрывал (cur < 140), а нижнюю нет: на iOS флинг до конца альбома
+     * уводит scrollTop за максимум и пружинит обратно — отрицательная дельта,
+     * и спрятанная шапка выпрыгивала и снова пряталась. Дребезг у самого низа.
+     */
+    const clampScroll = () => Math.max(0, Math.min(root.scrollTop, root.scrollHeight - root.clientHeight))
+    let last = clampScroll()
     let ticking = false
 
     const update = () => {
       ticking = false
-      const cur = root.scrollTop
+      const cur = clampScroll()
       const delta = cur - last
       if (Math.abs(delta) < threshold) return
       last = cur

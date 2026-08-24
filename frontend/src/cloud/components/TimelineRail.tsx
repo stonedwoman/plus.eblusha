@@ -135,12 +135,17 @@ export function TimelineRail({
     : -1
   const lineTop = PAD + NODE / 2
   const lineBottom = y(n - 1) + NODE / 2
+  const axisLen = Math.max(1, lineBottom - lineTop)
+  // Доля пройденного пути: закрашенный отрезок рисуется полной длины и
+  // сжимается масштабом — так его рост идёт на композиторе, без релэйаута
+  // на каждом пересечении дня при прокрутке.
+  const progress = activeIdx >= 0 ? Math.max(0, Math.min(1, (y(activeIdx) + NODE / 2 - lineTop) / axisLen)) : 0
 
   return (
     <nav ref={setNode} className="cl-timenav" aria-label="Таймлайн по датам">
-      <div className="cl-tn-axis" style={{ top: lineTop, height: lineBottom - lineTop }} />
+      <div className="cl-tn-axis" style={{ top: lineTop, height: axisLen }} />
       {activeIdx >= 0 ? (
-        <div className="cl-tn-axis done" style={{ top: lineTop, height: Math.max(0, y(activeIdx) + NODE / 2 - lineTop) }} />
+        <div className="cl-tn-axis done" style={{ top: lineTop, height: axisLen, transform: `scaleY(${progress})` }} />
       ) : null}
 
       {stations.map((s, i) => {
@@ -150,7 +155,7 @@ export function TimelineRail({
           <button
             key={s.key}
             className={`cl-tn-node${active ? ' is-active' : ''}${passed ? ' is-passed' : ''}`}
-            style={{ top: y(i) }}
+            style={{ transform: `translateY(${y(i)}px)` }}
             onClick={() => onJump(s.firstDay)}
             title={`${s.label}${s.sub ? ` · ${s.sub}` : ''}`}
           >

@@ -78,7 +78,8 @@ function UploadResumeRow({ id }: { id: string }) {
       </div>
 
       <div className="cl-progress">
-        <i style={{ width: `${percent}%` }} />
+        {/* Сдвиг, а не ширина: полоса не трогает layout — см. .cl-progress > i. */}
+        <i style={{ transform: `translateX(${percent - 100}%)` }} />
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 9 }}>

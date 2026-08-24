@@ -53,6 +53,34 @@ export function Viewer({
   // снимок увеличенным и уехавшим за край.
   useEffect(() => setZoom(1), [file?.id])
 
+  /*
+   * Быстрое листание (зажатая стрелка — автоповтор ~30 Гц) не должно
+   * перезапускать фейд кадра: за 33 мс анимация успевала дойти до ~12%
+   * непрозрачности, и сцена мерцала почти чёрным вместо показа снимков.
+   */
+  /*
+   * Закрытие тоже кадр движения, а не обрыв: вход занимает .32s, и мгновенное
+   * исчезновение полноэкранного слоя читалось как сбой. Выход нарочно вдвое
+   * короче входа — на Escape интерфейс обязан ощущаться отзывчивым.
+   */
+  const [closing, setClosing] = useState(false)
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const requestClose = useCallback(() => {
+    if (closeTimer.current) return
+    setClosing(true)
+    closeTimer.current = setTimeout(onClose, 160)
+  }, [onClose])
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current) }, [])
+
+  const [fastNav, setFastNav] = useState(false)
+  const fastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const markFastNav = useCallback(() => {
+    setFastNav(true)
+    if (fastTimer.current) clearTimeout(fastTimer.current)
+    fastTimer.current = setTimeout(() => setFastNav(false), 260)
+  }, [])
+  useEffect(() => () => { if (fastTimer.current) clearTimeout(fastTimer.current) }, [])
+
   const go = useCallback(
     (delta: number) => {
       const next = index + delta
@@ -80,7 +108,7 @@ export function Viewer({
       // Escape закрывает всегда — даже из поля комментария. Иначе из
       // просмотрщика невозможно выйти, не убрав сначала фокус мышью.
       if (e.key === 'Escape') {
-        onClose()
+        requestClose()
         return
       }
       if (typing) return
@@ -92,9 +120,13 @@ export function Viewer({
       const key = e.key.toLowerCase()
 
       if (key === 'arrowleft') {
-        if (!mediaFocused) go(-1)
+        if (mediaFocused) return
+        if (e.repeat) markFastNav()
+        go(-1)
       } else if (key === 'arrowright') {
-        if (!mediaFocused) go(1)
+        if (mediaFocused) return
+        if (e.repeat) markFastNav()
+        go(1)
       } else if (e.key === ' ') {
         if (mediaFocused || !videoRef.current) return
         e.preventDefault()
@@ -110,7 +142,16 @@ export function Viewer({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [go, onClose, file, readOnly])
+  }, [go, requestClose, file, readOnly, markFastNav])
+
+  // Соседи по ленте подгружаются заранее: без этого при переходе фейд успевал
+  // отыграть на ещё пустой картинке, и снимок появлялся резким скачком.
+  useEffect(() => {
+    for (const neighbour of [files[index - 1], files[index + 1]]) {
+      const src = neighbour?.urls.preview ?? neighbour?.urls.content
+      if (src) new Image().src = src
+    }
+  }, [files, index])
 
   const toggleFavorite = useCallback(
     async (target: CloudFile) => {
@@ -149,10 +190,10 @@ export function Viewer({
   if (!file) return null
 
   return (
-    <div className={`cl-viewer${panel ? ' with-panel' : ''}`}>
+    <div className={`cl-viewer${panel ? ' with-panel' : ''}${closing ? ' is-closing' : ''}`}>
       <div className="cl-viewer-stage">
         <div className="cl-viewer-top">
-          <button className="cl-btn ghost icon sm" onClick={onClose} aria-label="Закрыть">
+          <button className="cl-btn ghost icon sm" onClick={requestClose} aria-label="Закрыть">
             ✕
           </button>
           <div className="cl-viewer-title">{file.name}</div>
@@ -199,7 +240,7 @@ export function Viewer({
           </button>
         ) : null}
 
-        <MediaStage file={file} zoom={zoom} setZoom={setZoom} videoRef={videoRef} />
+        <MediaStage file={file} zoom={zoom} setZoom={setZoom} videoRef={videoRef} fastNav={fastNav} />
       </div>
 
       {panel ? (
@@ -242,16 +283,18 @@ function MediaStage({
   zoom,
   setZoom,
   videoRef,
+  fastNav,
 }: {
   file: CloudFile
   zoom: number
   setZoom: (z: number) => void
   videoRef: React.MutableRefObject<HTMLVideoElement | null>
+  fastNav: boolean
 }) {
   if (file.kind === 'IMAGE') {
     const src = file.urls.preview ?? file.urls.content
     if (!src) return <div className="cl-muted">Превью недоступно</div>
-    return <ImageStage key={file.id} src={src} alt={file.name} zoom={zoom} setZoom={setZoom} />
+    return <ImageStage key={file.id} src={src} alt={file.name} zoom={zoom} setZoom={setZoom} fastNav={fastNav} />
   }
 
   if (file.kind === 'VIDEO') {
@@ -310,15 +353,30 @@ function ImageStage({
   alt,
   zoom,
   setZoom,
+  fastNav,
 }: {
   src: string
   alt: string
   zoom: number
   setZoom: (z: number) => void
+  /** Листают с зажатой стрелкой — фейд отключаем, иначе сцена мерцает. */
+  fastNav: boolean
 }) {
   const boxRef = useRef<HTMLDivElement | null>(null)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
-  const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null)
+  const drag = useRef<{ x: number; y: number; ox: number; oy: number; moved: boolean } | null>(null)
+  /*
+   * Перетащили или кликнули — решается накопленным сдвигом, а не
+   * MouseEvent.movementX: у события click он всегда 0, поэтому прежний гвард
+   * не срабатывал никогда, и каждое отпускание мыши после панорамирования
+   * рывком схлопывало кадр к масштабу 1.
+   */
+  const moved = useRef(false)
+  const [dragging, setDragging] = useState(false)
+  // Картинка проявляется по факту загрузки, а не по монтированию: на
+  // некэшированном кадре фейд отыгрывал на пустом <img>, и снимок возникал
+  // скачком уже после него.
+  const [loaded, setLoaded] = useState(false)
   const zoomRef = useRef(zoom)
   zoomRef.current = zoom
 
@@ -360,16 +418,22 @@ function ImageStage({
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (zoom <= 1) return
-    drag.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y }
+    drag.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y, moved: false }
+    setDragging(true)
     e.currentTarget.setPointerCapture(e.pointerId)
   }
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = drag.current
     if (!d) return
-    setOffset(clamp(d.ox + (e.clientX - d.x), d.oy + (e.clientY - d.y), zoom))
+    const dx = e.clientX - d.x
+    const dy = e.clientY - d.y
+    if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true
+    setOffset(clamp(d.ox + dx, d.oy + dy, zoom))
   }
   const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    setDragging(false)
     if (!drag.current) return
+    moved.current = drag.current.moved
     drag.current = null
     e.currentTarget.releasePointerCapture(e.pointerId)
   }
@@ -377,14 +441,17 @@ function ImageStage({
   return (
     <div
       ref={boxRef}
-      className={`cl-imgstage${zoom > 1 ? ' zoomed' : ''}`}
+      className={`cl-imgstage${zoom > 1 ? ' zoomed' : ''}${dragging ? ' dragging' : ''}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       // Клик по снимку переключает масштаб — но не после перетаскивания.
-      onClick={(e) => {
-        if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) return
+      onClick={() => {
+        if (moved.current) {
+          moved.current = false
+          return
+        }
         setZoom(zoom > 1 ? 1 : 2.5)
       }}
       title={zoom > 1 ? 'Перетащите, чтобы подвинуть · Ctrl + колесо — масштаб' : 'Клик — увеличить · Ctrl + колесо — масштаб'}
@@ -392,11 +459,15 @@ function ImageStage({
       <img
         src={src}
         alt={alt}
-        style={
-          zoom > 1
+        onLoad={() => setLoaded(true)}
+        style={{
+          // Мгновенно при быстром листании, мягко в обычном режиме.
+          opacity: loaded || fastNav ? 1 : 0,
+          transition: fastNav ? 'none' : 'opacity .28s var(--cl-ease)',
+          ...(zoom > 1
             ? { transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: 'center' }
-            : undefined
-        }
+            : {}),
+        }}
         draggable={false}
       />
     </div>

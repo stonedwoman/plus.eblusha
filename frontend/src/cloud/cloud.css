@@ -196,7 +196,7 @@
   border: 1px solid var(--surface-border);
   text-decoration: none;
   color: inherit;
-  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+  transition: transform .3s var(--cl-ease), box-shadow .3s var(--cl-ease), border-color .2s ease;
 }
 .cl-space-card:hover { transform: translateY(-3px); border-color: var(--surface-border-strong); box-shadow: var(--shadow-sharp); }
 .cl-space-cover { aspect-ratio: 16 / 10; background: var(--surface-200); position: relative; overflow: hidden; }
@@ -318,16 +318,37 @@
    */
   content-visibility: auto;
   contain-intrinsic-size: auto 220px;
-  transition: transform .3s var(--cl-ease), box-shadow .3s var(--cl-ease), border-color .2s ease;
+  /* box-shadow намеренно короче transform: тень некомпозитная, и на быстром
+     проезде мыши по сетке десятки перекрывающихся .3s перерисовок заметны. */
+  transition: transform .3s var(--cl-ease), box-shadow .12s ease, border-color .2s ease;
   /* Размеры известны заранее — плитки не «прыгают» при подгрузке превью. */
   aspect-ratio: 1;
 }
 .cl-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cl-tile.selected { border-color: var(--brand); }
+.cl-tile img { animation: clFade .3s ease; }
+/* Чипы — главный переключатель экрана: без перехода они щёлкали цветом. */
+.cl-chip { transition: background .18s var(--cl-ease-io), color .18s var(--cl-ease-io), border-color .18s var(--cl-ease-io); }
+.cl-panel-tabs button { transition: color .18s ease, border-bottom-color .18s ease; }
 .cl-tile:hover { transform: translateY(-3px); box-shadow: 0 10px 26px rgba(0, 0, 0, .38); }
 .cl-tile.selected:hover { transform: none; }
-.cl-tile.pending { background: linear-gradient(100deg, var(--surface-200) 30%, var(--surface-300) 50%, var(--surface-200) 70%); background-size: 300% 100%; animation: clShimmer 1.5s linear infinite; }
-@keyframes clShimmer { from { background-position: 120% 0; } to { background-position: -20% 0; } }
+/*
+ * Шиммер едет трансформом псевдоэлемента, а не background-position: последнее
+ * не композитное, и каждая ожидающая плитка перерисовывалась растеризатором
+ * каждый кадр без конца. При заливке пачки это десятки постоянных paint'ов
+ * ровно тогда, когда процессор занят хешированием и отправкой.
+ */
+.cl-tile.pending { background: var(--surface-200); }
+.cl-tile.pending::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, var(--surface-300) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: clShimmer 1.5s linear infinite;
+  pointer-events: none;
+}
+@keyframes clShimmer { to { transform: translateX(100%); } }
 
 .cl-tile-badge {
   position: absolute;
@@ -375,6 +396,112 @@
 .cl-tile-generic span { font-size: 11px; word-break: break-word; line-height: 1.25; max-height: 2.5em; overflow: hidden; }
 .cl-tile-failed { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(239,68,68,.14); color: #fca5a5; }
 
+/* ── Плитка загрузки в галерее ──────────────────────────────────────────────
+   Файл виден там, где в итоге окажется, а не в отдельном окне сбоку. */
+
+.cl-uptile {
+  cursor: default;
+  background: var(--surface-200);
+  border: 1px solid var(--surface-border);
+}
+.cl-uptile-bg {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  filter: saturate(.55) brightness(.5);
+}
+.cl-uptile-veil {
+  position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(10,12,16,.25), rgba(10,12,16,.78));
+}
+.cl-uptile-center {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+}
+.cl-uptile-caption {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 7px 8px;
+  display: flex; flex-direction: column; gap: 1px;
+  font-size: 11px; line-height: 1.25;
+}
+.cl-uptile-name {
+  color: #f1f3f6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cl-uptile-sub { color: #9aa0a8; font-variant-numeric: tabular-nums; }
+.cl-uptile-cancel {
+  position: absolute; top: 5px; right: 5px;
+  width: 22px; height: 22px; border-radius: 50%;
+  border: none; cursor: pointer;
+  background: rgba(8,10,14,.6); color: #d7dae0;
+  display: grid; place-items: center; font-size: 12px;
+  opacity: 0; transition: opacity .15s ease;
+}
+.cl-uptile:hover .cl-uptile-cancel { opacity: 1; }
+.cl-uptile-retry {
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 1px solid var(--surface-border-strong);
+  background: rgba(8,10,14,.65); color: var(--brand);
+  font-size: 19px; cursor: pointer;
+}
+
+/* Кольцо прогресса */
+.cl-ring { transform: rotate(-90deg); }
+.cl-ring-track { fill: none; stroke: rgba(255,255,255,.16); stroke-width: 4; }
+.cl-ring-value {
+  fill: none; stroke: var(--brand); stroke-width: 4; stroke-linecap: round;
+  transition: stroke-dashoffset .35s ease;
+}
+.cl-ring-value.paused { stroke: var(--text-muted); }
+.cl-ring-text {
+  transform: rotate(90deg);
+  transform-origin: 24px 24px;
+  fill: #f1f3f6;
+  font-size: 13px;
+  font-weight: 650;
+  text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Подготовка превью: кольцо уступает место «дыханию» — прогресса тут нет,
+   врать про 100% нельзя. */
+.cl-uptile-spinner {
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.15);
+  border-top-color: var(--brand);
+  animation: clSpin .9s linear infinite;
+}
+@keyframes clSpin { to { transform: rotate(360deg); } }
+.cl-uptile.preparing { animation: clBreathe 1.8s ease-in-out infinite; }
+@keyframes clBreathe {
+  0%, 100% { border-color: var(--surface-border); }
+  50% { border-color: var(--brand); }
+}
+
+.cl-uptile-more {
+  display: grid; place-items: center;
+  aspect-ratio: 1;
+  border-radius: 11px;
+  border: 1px dashed var(--surface-border-strong);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  text-align: center;
+  padding: 8px;
+}
+
+/* Полоска загрузки в шапке хуяпки — вместо плавающего окна в углу. */
+.cl-upbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--surface-100);
+  border: 1px solid var(--surface-border);
+  max-width: 560px;
+}
+
 /* ── Список файлов ─────────────────────────────────────────────────────── */
 
 .cl-list { border: 1px solid var(--surface-border); border-radius: var(--cl-radius); overflow: hidden; background: var(--surface-100); }
@@ -420,9 +547,23 @@
 .cl-up-item:last-child { border-bottom: none; }
 .cl-up-name { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 6px; }
 .cl-progress { height: 6px; border-radius: 99px; background: var(--surface-300); overflow: hidden; }
-.cl-progress > i { display: block; height: 100%; border-radius: 99px; background: var(--brand); transition: width .3s ease; }
+/*
+ * Полоса едет трансформом внутри overflow:hidden трека, а не растёт шириной.
+ * Ширина — layout, а прогресс тикает на каждом событии передачи: полоса живёт
+ * в липкой шапке хуяпки, и её релэйаут шёл параллельно прокрутке галереи.
+ * Скруглённые торцы при этом не плющатся, как было бы у scaleX.
+ */
+.cl-progress > i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--brand);
+  transition: transform .3s var(--cl-ease-io);
+}
 .cl-progress.indeterminate > i {
   width: 35% !important;
+  transition: none;
   background: linear-gradient(90deg, transparent, var(--brand), transparent);
   animation: clIndet 1.15s ease-in-out infinite;
 }
@@ -441,8 +582,18 @@
   background: rgba(6, 7, 10, .96);
   display: grid;
   grid-template-columns: minmax(0, 1fr) 0;
-  transition: grid-template-columns .3s var(--cl-ease, ease);
+  /*
+   * Колонки грида НЕ анимируются. Замер headless-хромиумом на живой странице:
+   * transition по grid-template-columns давал 3–10 пропущенных кадров и
+   * худший кадр в 117 мс — полноразмерный снимок с object-fit: contain
+   * перевписывался и перерастеризовывался каждый кадр все 300 мс. Кадр
+   * перестраивается один раз, а панель въезжает трансформом (композитор).
+   */
   animation: clViewerIn .32s var(--cl-ease, ease);
+}
+.cl-viewer.is-closing { animation: clViewerOut .16s var(--cl-ease-io) both; pointer-events: none; }
+@keyframes clViewerOut {
+  to { opacity: 0; transform: scale(.99); }
 }
 @keyframes clViewerIn {
   from { opacity: 0; transform: scale(1.015); }
@@ -491,10 +642,17 @@
   border-radius: 2px;
   background: rgba(148, 163, 184, .22);
 }
+/*
+ * Закрашенный отрезок оси тянется масштабом, а не высотой: активный день
+ * меняется на КАЖДОМ пересечении границы группы при прокрутке, и transition
+ * по height гнал бы релэйаут по кадру ровно во время скролла. scaleY от
+ * верхнего края — то же самое на композиторе.
+ */
 .cl-tn-axis.done {
   background: linear-gradient(var(--brand), var(--brand));
   opacity: .85;
-  transition: height .45s var(--cl-ease);
+  transform-origin: top center;
+  transition: transform .45s var(--cl-ease);
 }
 .cl-tn-node {
   position: absolute;
@@ -510,7 +668,10 @@
   background: none;
   cursor: pointer;
   color: inherit;
-  transition: top .5s var(--cl-ease);
+  /* Станции переезжают трансформом: top — layout, а переездов бывает много
+     подряд при смене гранулярности день→месяц→год. */
+  top: 0;
+  transition: transform .5s var(--cl-ease);
 }
 .cl-tn-cap {
   display: flex;
@@ -526,7 +687,8 @@
   font-weight: 560;
   color: rgba(203, 213, 225, .82);
   white-space: nowrap;
-  transition: color .15s ease;
+  transform-origin: right center;
+  transition: color .18s ease, transform .25s var(--cl-ease);
 }
 .cl-tn-cap i {
   font-style: normal;
@@ -562,13 +724,23 @@
   box-shadow: 0 0 0 2.5px var(--brand), 0 0 14px color-mix(in srgb, var(--brand) 55%, transparent), 0 2px 10px rgba(0, 0, 0, .5);
 }
 .cl-tn-node.is-active .cl-tn-ava:empty { background: var(--brand); box-shadow: 0 0 0 2.5px var(--brand); }
-.cl-tn-node.is-active .cl-tn-cap b { color: #fff; font-size: 13px; }
+/* Без смены font-size: она меняет ширину строки (текст вправо, nowrap) и
+   дёргает подпись при каждом пересечении дня. Акцент даёт цвет и масштаб. */
+.cl-tn-node.is-active .cl-tn-cap b { color: #fff; transform: scale(1.05); }
 .cl-tn-node.is-active .cl-tn-cap i { color: color-mix(in srgb, var(--brand) 80%, #fff); }
 
 /* Прыжок к дате останавливается под липкой панелью, а не под ней прячется. */
 .cl-tl-main section[data-day] { scroll-margin-top: calc(var(--cl-header-h) + 2px); }
-/* Секции всплывают мягко — и при первой загрузке, и при догрузке страниц. */
-section[data-day] { animation: clRise .5s var(--cl-ease) both; }
+/* Секции всплывают мягко — и при первой загрузке, и при догрузке страниц.
+   Комбинатор `>` у .cl-tiles обязателен: плитки внутри section[data-day] уже
+   едут вместе с секцией, иначе получилась бы двойная анимация. */
+section[data-day],
+.cl-list,
+.cl-space-grid,
+.cl-page > .cl-tiles { animation: clRise .5s var(--cl-ease) both; }
+/* Карте — только прозрачность: transform на контейнере Leaflet во время входа
+   смещает систему координат, и клики по маркерам уезжают мимо. */
+.cl-map { animation: clFade .3s ease both; }
 @keyframes clRise {
   from { opacity: 0; transform: translateY(14px); }
   to { opacity: 1; transform: none; }
@@ -612,7 +784,15 @@ section[data-day] { animation: clRise .5s var(--cl-ease) both; }
 }
 .cl-imgstage.zoomed { cursor: grab; touch-action: none; }
 .cl-imgstage.zoomed:active { cursor: grabbing; }
-.cl-imgstage img { will-change: transform; animation: clFade .28s ease; }
+/*
+ * Масштаб анимируется — иначе клик-зум прыгал 1→2.5, а Ctrl+колесо шло
+ * рывками по ×1.15. Во время перетаскивания переход снимается: со включённым
+ * transform-transition кадр вяз бы за курсором резиновой задержкой.
+ * Прозрачностью управляет сам компонент (фейд по факту загрузки), поэтому
+ * keyframe-анимации здесь нет.
+ */
+.cl-imgstage img { will-change: transform; transition: transform .28s var(--cl-ease-io); }
+.cl-imgstage.dragging img { transition: none; }
 .cl-viewer-stage video { animation: clFade .28s ease; }
 .cl-viewer-top {
   position: absolute; top: 0; left: 0; right: 0;
@@ -640,6 +820,11 @@ section[data-day] { animation: clRise .5s var(--cl-ease) both; }
   border-left: 1px solid var(--surface-border);
   overflow-y: auto;
   display: flex; flex-direction: column;
+  animation: clPanelIn .3s var(--cl-ease);
+}
+@keyframes clPanelIn {
+  from { transform: translateX(100%); opacity: .4; }
+  to { transform: none; opacity: 1; }
 }
 .cl-panel-tabs { display: flex; border-bottom: 1px solid var(--surface-border); position: sticky; top: 0; background: var(--surface-100); z-index: 2; }
 .cl-panel-tabs button {
@@ -701,7 +886,9 @@ section[data-day] { animation: clRise .5s var(--cl-ease) both; }
   border: 1px solid var(--surface-border-strong);
   border-radius: 16px;
   box-shadow: var(--shadow-soft);
-  animation: ebCardPop .2s ease;
+  /* Общая пластика Cloud, а не короткая кривая мессенджера: модалка
+     открывалась заметно резче тостов и панели выбора. */
+  animation: clToastIn .28s var(--cl-ease);
 }
 .cl-modal-head { padding: 17px 19px 13px; border-bottom: 1px solid var(--surface-border); display: flex; align-items: center; gap: 10px; }
 .cl-modal-head h2 { margin: 0; font-size: 17px; font-weight: 640; letter-spacing: -.01em; }
@@ -721,6 +908,16 @@ section[data-day] { animation: clRise .5s var(--cl-ease) both; }
   from { opacity: 0; transform: translateX(-50%) translateY(16px); }
   to { opacity: 1; transform: translateX(-50%); }
 }
+/*
+ * На узком экране панель растянута от края до края и центрируется не
+ * трансформом (transform: none в медиаблоке), поэтому общая анимация с
+ * translateX(-50%) уводила её почти за левый край на все .34s и в последнем
+ * кадре швыряла на место. Отдельные кейфреймы — без горизонтали.
+ */
+@keyframes clSelbarInWide {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
+}
 .cl-drop-overlay {
   position: fixed; inset: 0; z-index: 900;
   background: rgba(217, 119, 6, .10);
@@ -738,8 +935,16 @@ section[data-day] { animation: clRise .5s var(--cl-ease) both; }
   padding: 11px 14px; border-radius: 11px;
   background: var(--surface-200); border: 1px solid var(--surface-border-strong);
   box-shadow: var(--shadow-medium); font-size: 13.5px;
-  animation: ebCardPop .2s ease;
   display: flex; align-items: center; gap: 9px;
+}
+.cl-toast.leaving { animation: clToastOut .22s var(--cl-ease-io) forwards; pointer-events: none; }
+/* Шторка панели на узком экране приходит снизу, а не сбоку. */
+@keyframes clSheetUp {
+  from { transform: translateY(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes clToastOut {
+  to { opacity: 0; transform: translateY(8px) scale(.98); }
 }
 @keyframes clToastIn {
   from { opacity: 0; transform: translateY(12px) scale(.97); }
@@ -904,6 +1109,7 @@ section[data-day] { animation: clRise .5s var(--cl-ease) both; }
   .cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
   /* Панель — шторкой ПОВЕРХ кадра, а не отжимает его в полоску. */
   .cl-viewer-panel {
+    animation: clSheetUp .3s var(--cl-ease);
     position: absolute;
     left: 0; right: 0; bottom: 0;
     height: 70dvh;
@@ -926,6 +1132,7 @@ section[data-day] { animation: clRise .5s var(--cl-ease) both; }
     right: max(8px, var(--safe-right));
     bottom: calc(12px + var(--safe-bottom));
     transform: none;
+    animation-name: clSelbarInWide;
     max-width: none;
     flex-wrap: wrap;
     row-gap: 6px;

@@ -888,6 +888,13 @@ function smoothScrollTo(scroller: HTMLElement, targetTop: number) {
   const dist = to - from
   if (Math.abs(dist) < 2) return
 
+  // Кому движение мешает физически — прыгаем сразу: CSS-блок
+  // prefers-reduced-motion глушит переходы, но не rAF-петлю.
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    scroller.scrollTop = to
+    return
+  }
+
   const duration = Math.min(950, Math.max(420, Math.abs(dist) * 0.35))
   const start = performance.now()
   let raf = 0
@@ -942,7 +949,8 @@ function SpaceUploadBar() {
   return (
     <div className="cl-upbar">
       <div className="cl-progress" style={{ flex: 1 }}>
-        <i style={{ width: `${percent}%` }} />
+        {/* Сдвиг, а не ширина: полоса не трогает layout — см. .cl-progress > i. */}
+        <i style={{ transform: `translateX(${percent - 100}%)` }} />
       </div>
       <span className="cl-mono cl-muted" style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>
         {summary.done} из {summary.total}
