@@ -55,7 +55,6 @@ export default function SpacePage() {
   const [viewerFileId, setViewerFileId] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
-  const [query, setQuery] = useState('')
   const [kindFilter, setKindFilter] = useState<'' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'>('')
   const [onlyFavorites, setOnlyFavorites] = useState(false)
   // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
@@ -65,20 +64,45 @@ export default function SpacePage() {
   /** Где читатель: день у верхней кромки и доля пройденного внутри его
    *  группы — дробь делает заливку рельсы непрерывной. */
   const [railPos, setRailPos] = useState<RailPosition>({ day: null, fraction: 0 })
-  /** Высота видимой шапки — рельса прижимается под неё (--cl-rail-off). */
-  const [headH, setHeadH] = useState(0)
-  const headHRef = useRef(0)
-  headHRef.current = headH
+  /*
+   * Обмер шапки. Меряем ДВА узла: всю шапку и «полосу» — нижний ряд, который
+   * единственный остаётся на экране в свёрнутом виде. Разница даёт ход
+   * складывания, а видимая высота идёт в --cl-rail-off, от которого зависят
+   * липкая дата и рельса таймлайна.
+   *
+   * Сравнение перед setState обязательно: наблюдатель висит на липкой шапке, а
+   * перерисовывается страница с сотнями плиток — без него протяжка края окна
+   * гнала бы полный рендер на каждое срабатывание.
+   */
+  const [metrics, setMetrics] = useState({ h: 0, band: 0 })
   const headRef = useRef<HTMLDivElement | null>(null)
+  const bandRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const el = headRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => setHeadH(el.offsetHeight))
+    const band = bandRef.current
+    if (!el || !band) return
+    const measure = () => {
+      const next = { h: el.offsetHeight, band: band.offsetTop }
+      setMetrics((prev) => (prev.h === next.h && prev.band === next.band ? prev : next))
+    }
+    const ro = new ResizeObserver(measure)
     ro.observe(el)
-    setHeadH(el.offsetHeight)
+    ro.observe(band)
+    measure()
     return () => ro.disconnect()
   }, [space !== null])
+
+  /** На сколько шапка уезжает вверх, оставляя полосу под верхней панелью. */
+  const headShift = Math.max(0, metrics.band - 8)
+  /** Сколько шапки реально видно — ровно это и есть отступ для даты и рельсы. */
+  const visibleHeadH = headHidden ? Math.max(0, metrics.h - headShift) : metrics.h
+  const visibleHeadRef = useRef(0)
+  visibleHeadRef.current = visibleHeadH
+  const metricsRef = useRef(metrics)
+  metricsRef.current = metrics
+  const shiftRef = useRef(0)
+  shiftRef.current = headShift
   const anchorRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const dirInput = useRef<HTMLInputElement | null>(null)
@@ -105,9 +129,8 @@ export default function SpacePage() {
       view: onlyFavorites ? ('favorites' as const) : view === 'files' ? ('files' as const) : ('timeline' as const),
       ...(view === 'files' && !onlyFavorites ? { folderId: folderId ?? 'root' } : {}),
       ...(kindFilter ? { kind: kindFilter } : {}),
-      ...(query.trim() ? { q: query.trim() } : {}),
     }),
-    [spaceId, view, folderId, kindFilter, query, onlyFavorites]
+    [spaceId, view, folderId, kindFilter, onlyFavorites]
   )
   const sliceKey = useMemo(() => JSON.stringify(slice), [slice])
 
@@ -118,8 +141,8 @@ export default function SpacePage() {
    */
   const sliceKeyRef = useRef(sliceKey)
   sliceKeyRef.current = sliceKey
-  const sliceRef = useRef({ view, folderId, kindFilter, query, onlyFavorites })
-  sliceRef.current = { view, folderId, kindFilter, query, onlyFavorites }
+  const sliceRef = useRef({ view, folderId, kindFilter, onlyFavorites })
+  sliceRef.current = { view, folderId, kindFilter, onlyFavorites }
   const filesRef = useRef(files)
   filesRef.current = files
   /** Порядковый номер запроса списка: применяем только самый свежий. */
@@ -252,9 +275,9 @@ export default function SpacePage() {
   useEffect(() => {
     if (view === 'map' || view === 'activity') return
     setLoading(true)
-    const t = setTimeout(() => void loadFiles(null), query ? 280 : 0)
+    const t = setTimeout(() => void loadFiles(null), 0)
     return () => clearTimeout(t)
-  }, [loadFiles, view, query])
+  }, [loadFiles, view])
 
   /** Агрегат для рельсы. Не критичен: не построился — рельса просто не рисуется. */
   const loadDayCounts = useCallback(async () => {
@@ -265,7 +288,6 @@ export default function SpacePage() {
           spaceId,
           view: onlyFavorites ? 'favorites' : 'timeline',
           ...(kindFilter ? { kind: kindFilter } : {}),
-          ...(query.trim() ? { q: query.trim() } : {}),
           tz: -new Date().getTimezoneOffset(),
         },
       })
@@ -273,10 +295,10 @@ export default function SpacePage() {
     } catch {
       setDayCounts([])
     }
-  }, [spaceId, view, kindFilter, query, onlyFavorites, railWide])
+  }, [spaceId, view, kindFilter, onlyFavorites, railWide])
 
   useEffect(() => {
-    const t = setTimeout(() => void loadDayCounts(), query ? 300 : 0)
+    const t = setTimeout(() => void loadDayCounts(), 0)
     return () => clearTimeout(t)
   }, [loadDayCounts])
 
@@ -361,8 +383,15 @@ export default function SpacePage() {
          * возвращает), и дата-прешапка встанет под ней — значит, и секцию надо
          * сажать ниже на её высоту. Вниз — шапка спрячется, хватает 62px.
          */
+        /*
+         * Шапка больше не исчезает целиком — свёрнутая оставляет полосу.
+         * Поэтому вычитаем ВИДИМУЮ высоту того состояния, в котором прыжок
+         * закончится: вверх — развёрнутая (движение вверх её раскрывает),
+         * вниз — свёрнутая полоса.
+         */
         const goingUp = base - HEADER_OFFSET < root.scrollTop
-        const top = base - HEADER_OFFSET - (goingUp ? headHRef.current : 0)
+        const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
+        const top = base - HEADER_OFFSET - land
         smoothScrollTo(root, top, onDone)
         return true
       }
@@ -400,9 +429,8 @@ export default function SpacePage() {
               document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]')
             ).find((el) => (el.dataset.day ?? '') >= day)
             if (!target) return
-            // Ожидаемая посадка зависит от того, видна ли сейчас шапка.
-            const headShown = headRef.current && !headRef.current.classList.contains('is-hidden')
-            const expected = HEADER_OFFSET + (headShown ? headHRef.current : 0)
+            // Ожидаемая посадка — по фактически видимой высоте шапки.
+            const expected = HEADER_OFFSET + visibleHeadRef.current
             const drift = Math.abs(target.getBoundingClientRect().top - expected)
             if (drift > 30) scrollToSection(false)
           })
@@ -688,7 +716,7 @@ export default function SpacePage() {
       */}
       <div
         className={`cl-tl-layout${showRail ? ' with-rail' : ''}`}
-        style={{ ['--cl-rail-off' as string]: headHidden ? '0px' : `${headH}px` }}
+        style={{ ['--cl-rail-off' as string]: `${visibleHeadH}px` }}
       >
         {showRail ? <TimelineRail days={dayCounts} position={railPos} onJump={jumpToDay} /> : null}
         <div className="cl-tl-main">
@@ -698,76 +726,90 @@ export default function SpacePage() {
         зажат, и «Выбрать всё», поиск и фильтры всегда в одном движении, а не
         через прокрутку в самый верх.
       */}
-      <div ref={headRef} className={`cl-space-head${headHidden ? ' is-hidden' : ''}`}>
-      <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
-        <div style={{ minWidth: 0, flex: '1 1 320px' }}>
-          <h1 className="cl-h1">{space.name}</h1>
-          {space.description ? (
-            <div className="cl-muted" style={{ marginTop: 5, fontSize: 14 }}>
-              {space.description}
-            </div>
-          ) : null}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-            <div className="cl-ava-stack">
-              {space.members.map((m) => (
-                <Avatar key={m.id} user={m} online={onlineIds.has(m.id)} />
-              ))}
-            </div>
-            <span className="cl-muted" style={{ fontSize: 13 }}>
-              {space.members.map((m) => m.displayName || m.username).join(' · ')}
+      {/*
+        Шапка-полоса. При прокрутке вниз она не исчезает, а СКЛАДЫВАЕТСЯ: верхний
+        «отворот» (титул, описание, цифры) уезжает под верхнюю панель, а нижняя
+        полоса с вкладками, фильтрами и действиями остаётся на экране. Раньше
+        шапка пряталась целиком, и чтобы сменить фильтр, приходилось мотать в
+        самый верх альбома.
+      */}
+      <div
+        ref={headRef}
+        className={`cl-space-head cl-ed${headHidden ? ' is-compact' : ''}`}
+        style={{ ['--cl-head-shift' as string]: `${headShift}px` }}
+      >
+        <div className="cl-head-fold">
+          <div className="cl-ed-eyebrow">
+            <span className="cl-ed-kicker">Хуяпка</span>
+            <i className="cl-ed-rule" />
+            <span className="cl-ed-issue">
+              {space.members.length} {plural(space.members.length, 'участник', 'участника', 'участников')}
             </span>
           </div>
-          {uploads.length > 0 ? <SpaceUploadBar /> : null}
-          {space.stats ? (
-            <div className="cl-muted cl-mono" style={{ fontSize: 13, marginTop: 8 }}>
-              {space.stats.photos} фото · {space.stats.videos} видео
-              {space.stats.others > 0 ? ` · ${space.stats.others} файлов` : ''} · {formatBytes(space.stats.bytes)}
+
+          <div className="cl-ed-grid">
+            <div className="cl-ed-lede">
+              <h1 className="cl-h1 cl-ed-title">{space.name}</h1>
+              {space.description ? <p className="cl-ed-dek">{space.description}</p> : null}
             </div>
-          ) : null}
+
+            {/*
+              Цифры — главный графический элемент полосы. key по значению
+              перезапускает набегание: счётчик оживает при заливке сам собой.
+            */}
+            {space.stats ? (
+              <div className="cl-ed-figs">
+                <Figure label="Фото" value={space.stats.photos} />
+                {space.stats.videos > 0 ? <Figure label="Видео" value={space.stats.videos} /> : null}
+                {space.stats.others > 0 ? <Figure label="Файлы" value={space.stats.others} /> : null}
+                <Figure label="Объём" accent value={formatBytes(space.stats.bytes)} />
+              </div>
+            ) : null}
+          </div>
+
+          {/*
+            Слот постоянной высоты: полоска заливки приходит НА МЕСТО подписи, а
+            не добавляется рядом. Иначе старт загрузки менял высоту шапки, и
+            дата с рельсой уезжали анимацией ровно в тот момент, когда процессор
+            занят хешированием и отправкой.
+          */}
+          <div className="cl-ed-slot">{uploads.length > 0 ? <SpaceUploadBar /> : <SpaceByline space={space} onlineIds={onlineIds} />}</div>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {canEdit ? (
-            <>
-              <button className="cl-btn primary" onClick={() => fileInput.current?.click()}>
-                Загрузить
-              </button>
-              <button className="cl-btn" onClick={() => dirInput.current?.click()} title="Загрузить папку целиком">
-                Папку
-              </button>
-            </>
-          ) : null}
-          {isOwner ? (
-            <button className="cl-btn" onClick={() => setShareOpen(true)}>
-              Поделиться
-            </button>
-          ) : null}
-          <a className="cl-btn" href={`/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`}>
-            Скачать всё
-          </a>
-        </div>
-      </div>
+        {/* ── Полоса: живёт в обоих состояниях ────────────────────────────── */}
+        <div ref={bandRef} className="cl-head-band">
+          <div className="cl-band-who">
+            <div className="cl-ava-stack">
+              {space.members.slice(0, 4).map((m, i) => (
+                <span className="cl-ed-ava" key={m.id} style={{ ['--i' as string]: i }}>
+                  <Avatar user={m} online={onlineIds.has(m.id)} />
+                </span>
+              ))}
+            </div>
+            <span className="cl-band-title">{space.name}</span>
+          </div>
 
-      {/* ── Вкладки и фильтры ───────────────────────────────────────────── */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
-        <div className="cl-chips">
-          {(['timeline', 'files', 'map', 'activity'] as View[]).map((v) => (
-            <button key={v} className={`cl-chip${view === v ? ' is-active' : ''}`} onClick={() => setView(v)}>
-              {v === 'timeline' ? 'Таймлайн' : v === 'files' ? 'Файлы' : v === 'map' ? 'Карта' : 'Активность'}
-            </button>
-          ))}
-        </div>
-        <div className="cl-spacer" />
-        {view !== 'activity' && view !== 'map' ? (
-          <>
-            <input
-              className="cl-input"
-              style={{ width: 220 }}
-              placeholder="Поиск по имени…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-            <div className="cl-chips">
+          {/*
+            Сегмент без единого замера: колонки равной ширины, пилюля шириной в
+            одну колонку и сдвигом на индекс. Никаких offsetLeft, а значит и
+            промаха на первом кадре, пока не доехал шрифт.
+          */}
+          <div
+            className="cl-seg"
+            style={{ ['--seg-n' as string]: 4, ['--seg-i' as string]: ['timeline', 'files', 'map', 'activity'].indexOf(view) }}
+          >
+            <i className="cl-seg-pill" aria-hidden />
+            {(['timeline', 'files', 'map', 'activity'] as View[]).map((v) => (
+              <button key={v} className={`cl-seg-btn${view === v ? ' is-active' : ''}`} onClick={() => setView(v)}>
+                {v === 'timeline' ? 'Таймлайн' : v === 'files' ? 'Файлы' : v === 'map' ? 'Карта' : 'Активность'}
+              </button>
+            ))}
+          </div>
+
+          <div className="cl-spacer" />
+
+          {view !== 'activity' && view !== 'map' ? (
+            <div className="cl-chips cl-ed-filters">
               {([['', 'Все'], ['IMAGE', 'Фото'], ['VIDEO', 'Видео'], ['DOCUMENT', 'Документы']] as const).map(([value, label]) => (
                 <button
                   key={label}
@@ -781,10 +823,39 @@ export default function SpacePage() {
                 ★ Избранное
               </button>
             </div>
-          </>
-        ) : null}
-      </div>
+          ) : null}
 
+          {/*
+            Действия переехали в полосу и потому доступны в обоих состояниях —
+            это и есть место, освободившееся от поиска. Второстепенные стали
+            иконками с подписью для скринридера.
+          */}
+          <div className="cl-band-acts">
+            {canEdit ? (
+              <>
+                <button className="cl-btn primary sm cl-act-main" onClick={() => fileInput.current?.click()}>
+                  <span aria-hidden>↑</span> Загрузить
+                </button>
+                <button className="cl-btn sm icon" onClick={() => dirInput.current?.click()} title="Загрузить папку целиком" aria-label="Загрузить папку">
+                  ⊞
+                </button>
+              </>
+            ) : null}
+            {isOwner ? (
+              <button className="cl-btn sm icon" onClick={() => setShareOpen(true)} title="Поделиться" aria-label="Поделиться">
+                ↗
+              </button>
+            ) : null}
+            <a
+              className="cl-btn sm icon"
+              href={`/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`}
+              title="Скачать всё"
+              aria-label="Скачать всё"
+            >
+              ↓
+            </a>
+          </div>
+        </div>
       </div>
 
       {/* ── Содержимое ──────────────────────────────────────────────────── */}
@@ -834,9 +905,9 @@ export default function SpacePage() {
       ) : files.length === 0 && uploads.length === 0 ? (
         <Empty
           icon="📷"
-          title={query || kindFilter || onlyFavorites ? 'Ничего не найдено' : 'В хуяпке пока нет файлов'}
+          title={kindFilter || onlyFavorites ? 'Ничего не найдено' : 'В хуяпке пока нет файлов'}
           text={
-            query || kindFilter || onlyFavorites
+            kindFilter || onlyFavorites
               ? 'Попробуйте изменить фильтры.'
               : canEdit
                 ? 'Перетащите сюда фотографии и видео или нажмите «Загрузить». Порядок в таймлайне строится по времени съёмки, а не по времени загрузки.'
@@ -975,12 +1046,10 @@ export default function SpacePage() {
  */
 function matchesSlice(
   file: CloudFile,
-  s: { view: View; folderId: string | null; kindFilter: string; query: string; onlyFavorites: boolean }
+  s: { view: View; folderId: string | null; kindFilter: string; onlyFavorites: boolean }
 ): boolean {
   if (s.onlyFavorites) return false
   if (s.kindFilter && file.kind !== s.kindFilter) return false
-  const q = s.query.trim().toLowerCase()
-  if (q && !file.name.toLowerCase().includes(q)) return false
   if (s.view === 'files' && (file.folderId ?? null) !== (s.folderId ?? null)) return false
   return true
 }
@@ -1055,6 +1124,44 @@ function smoothScrollTo(scroller: HTMLElement, targetTop: number, onDone?: (fini
     else settle(true)
   }
   raf = requestAnimationFrame(tick)
+}
+
+/** Русское склонение по числу: 1 участник, 2 участника, 5 участников. */
+function plural(n: number, one: string, few: string, many: string): string {
+  const m10 = n % 10
+  const m100 = n % 100
+  if (m10 === 1 && m100 !== 11) return one
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few
+  return many
+}
+
+/**
+ * Цифра-фигура: крупное число и капслок-подпись под ним.
+ *
+ * key по значению — не украшение: при заливке счётчик меняется, и React
+ * пересоздаёт узел, из-за чего заново проигрывается набегание. Цифра оживает
+ * ровно тогда, когда за ней что-то стоит.
+ */
+function Figure({ label, value, accent }: { label: string; value: number | string; accent?: boolean }) {
+  const text = typeof value === 'number' ? String(value) : value
+  return (
+    <div className={`cl-ed-fig${accent ? ' is-accent' : ''}`}>
+      <b key={text}>{text}</b>
+      <span>{label}</span>
+    </div>
+  )
+}
+
+/** Строка авторства: кто в хуяпке. Живёт в слоте вместе с полоской заливки. */
+function SpaceByline({ space, onlineIds }: { space: CloudSpace; onlineIds: Set<string> }) {
+  return (
+    <div className="cl-ed-by">
+      <span className="cl-ed-by-names">
+        {space.members.map((m) => m.displayName || m.username).join(' · ')}
+      </span>
+      {onlineIds.size > 0 ? <span className="cl-ed-by-online">{onlineIds.size} в сети</span> : null}
+    </div>
+  )
 }
 
 /** Локальный день YYYY-MM-DD — тем же календарём, что группы галереи. */
