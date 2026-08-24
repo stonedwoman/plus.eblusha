@@ -517,6 +517,17 @@
 .cl-tile.selected { border-color: var(--brand); }
 .cl-tile img { animation: clFade .3s ease; }
 /*
+ * Вспышка подгруппы: клик по станции рельсы показывает, какие именно снимки
+ * ей принадлежат. Кольцо внутреннее (inset) — так подсветка не выходит за
+ * плитку и не расширяет область перерисовки на соседей.
+ */
+@keyframes clFlash {
+  0%   { box-shadow: inset 0 0 0 0 transparent; filter: none; }
+  10%  { box-shadow: inset 0 0 0 3px var(--brand); filter: brightness(1.2) saturate(1.08); }
+  45%  { box-shadow: inset 0 0 0 3px var(--brand); filter: brightness(1.12); }
+  100% { box-shadow: inset 0 0 0 0 transparent; filter: none; }
+}
+/*
  * Пока идёт выделение протяжкой: мышь не должна попутно выделять текст дат, а
  * подъём плитки под курсором только мешал бы целиться.
  */
@@ -855,6 +866,22 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   user-select: none;
   z-index: 5;
 }
+/*
+ * Правая колонка — зеркало левой: слева видно КОГДА снят кадр, справа ГДЕ.
+ * Отражаем ряд целиком, а не переставляем элементы вручную: подпись сама
+ * уходит наружу, узел встаёт на ось, выравнивание текста меняется на левое.
+ */
+.cl-geonav { flex: 0 0 132px; width: 132px; }
+/* Разметка узла уже зеркальная (кружок, потом подпись) — переворачивать ряд
+   не надо, достаточно прижать его влево. */
+.cl-geonav .cl-tn-node { justify-content: flex-start; padding: 0 0 0 6px; }
+.cl-geonav .cl-tn-cap { align-items: flex-start; text-align: left; min-width: 0; }
+.cl-geonav .cl-tn-cap b { transform-origin: left center; max-width: 76px; overflow: hidden; text-overflow: ellipsis; }
+.cl-geonav .cl-tn-cap i { max-width: 76px; overflow: hidden; text-overflow: ellipsis; }
+/* Ось проходит через ЦЕНТР кружка: 6px отступа + половина от 38px. */
+.cl-geonav .cl-tn-axis { left: calc(6px + 19px - 1px); }
+.cl-geonav .cl-tn-ava:empty { margin: 12px; }
+
 /* Ось проходит через центры узлов: узел 38px прижат к правому краю с отступом 6. */
 .cl-tn-axis {
   position: absolute;
@@ -950,20 +977,6 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
    дёргает подпись при каждом пересечении дня. Акцент даёт цвет и масштаб. */
 .cl-tn-node.is-active .cl-tn-cap b { color: #fff; transform: scale(1.05); }
 .cl-tn-node.is-active .cl-tn-cap i { color: color-mix(in srgb, var(--brand) 80%, #fff); }
-
-/* ── Группы мест ───────────────────────────────────────────────────────── */
-.cl-place-head { display: flex; align-items: baseline; gap: 9px; }
-.cl-place-country {
-  font-size: 10.5px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
-  color: var(--brand);
-}
-.cl-place-note {
-  margin-bottom: 12px; font-size: 12.5px; color: var(--text-muted);
-  animation: clFade .3s ease;
-}
-/* Прыжок к месту садится под панель ровно как прыжок к дате. */
-.cl-tl-main section[data-place] { scroll-margin-top: calc(var(--cl-header-h) + 2px); }
-section[data-place] { animation: clRise .5s var(--cl-ease) both; }
 
 /* Прыжок к дате останавливается под липкой панелью, а не под ней прячется. */
 .cl-tl-main section[data-day] { scroll-margin-top: calc(var(--cl-header-h) + 2px); }

@@ -192,22 +192,41 @@ router.get(
       );
     }
 
+    /*
+     * Отрезки поездки в порядке ХРОНОЛОГИИ, а не по алфавиту: правая рельса
+     * идёт рядом с той же лентой, что и левая, поэтому её станции — это
+     * подряд идущие снимки одного места. Вернулись в Тбилиси через неделю —
+     * это второй отрезок, а не тот же самый.
+     *
+     * Приём с двумя нумерациями (общая минус нумерация внутри места) —
+     * стандартный способ выделить серии подряд идущих одинаковых значений.
+     */
     const rows = await prisma.$queryRaw<
       { path: string; country: string; city: string | null; district: string | null; count: number; fileId: string | null }[]
     >(Prisma.sql`
-      SELECT f."geoPath" AS path,
-             min(f."geoCountry") AS country,
-             min(f."geoCity") AS city,
-             min(f."geoDistrict") AS district,
+      WITH ordered AS (
+        SELECT f."id", f."geoCountry", f."geoCity", f."geoDistrict", f."takenAt",
+               f."geoCountry" || '|' || coalesce(f."geoCity", '') AS ckey,
+               row_number() OVER (ORDER BY f."takenAt", f."id") AS rn,
+               row_number() OVER (
+                 PARTITION BY f."geoCountry" || '|' || coalesce(f."geoCity", '')
+                 ORDER BY f."takenAt", f."id"
+               ) AS rp
+        FROM "CloudFile" f
+        WHERE ${Prisma.join(conds, " AND ")} AND f."geoPath" IS NOT NULL
+      )
+      SELECT ckey AS path,
+             min("geoCountry") AS country,
+             min("geoCity") AS city,
+             -- Район подписываем, только если он один на весь отрезок: иначе
+             -- станция врала бы, называя пригородом весь заезд в город.
+             CASE WHEN count(DISTINCT coalesce("geoDistrict", '')) = 1
+                  THEN min("geoDistrict") ELSE NULL END AS district,
              count(*)::int AS count,
-             (array_agg(f."id" ORDER BY
-                EXISTS(SELECT 1 FROM "CloudFileVariant" v
-                       WHERE v."fileId" = f."id" AND v."kind"::text = 'THUMB' AND v."status"::text = 'READY') DESC,
-                f."takenAt" ASC))[1] AS "fileId"
-      FROM "CloudFile" f
-      WHERE ${Prisma.join(conds, " AND ")} AND f."geoPath" IS NOT NULL
-      GROUP BY f."geoPath"
-      ORDER BY f."geoPath"
+             (array_agg("id" ORDER BY "takenAt" ASC))[1] AS "fileId"
+      FROM ordered
+      GROUP BY ckey, rn - rp
+      ORDER BY min(rn)
     `);
 
     // Сколько снимков осталось без места — честно показываем, а не прячем.

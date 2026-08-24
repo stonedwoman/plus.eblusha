@@ -14,8 +14,8 @@ import {
   useUploadSummary,
 } from '../uploads/manager'
 import { UploadTile } from '../components/UploadTile'
-import { PlacesView, TimelineView, Tiles } from '../components/Gallery'
-import { PlaceRail, type PlaceGroup, type PlacePosition } from '../components/PlaceRail'
+import { TimelineView, Tiles } from '../components/Gallery'
+import { GeoRail, type GeoPosition, type GeoSegment } from '../components/GeoRail'
 import { useDragSelect, type PaintMode } from '../components/dragSelect'
 import { Viewer } from '../components/Viewer'
 import { MapView } from '../components/MapView'
@@ -24,7 +24,7 @@ import { ShareDialog } from '../components/ShareDialog'
 import { Avatar, Empty, Modal, SkeletonTiles, useInfiniteSentinel, useHideOnScrollDown, toast } from '../components/ui'
 import type { CloudContext } from './CloudLayout'
 
-type View = 'timeline' | 'places' | 'files' | 'map' | 'activity'
+type View = 'timeline' | 'files' | 'map' | 'activity'
 
 /** Столько id уходит в один запрос: совпадает с лимитом валидации на сервере. */
 const BATCH = 1000
@@ -60,10 +60,9 @@ export default function SpacePage() {
   const [onlyFavorites, setOnlyFavorites] = useState(false)
   // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
   const headHidden = useHideOnScrollDown()
-  /** Иерархия мест для рельсы «Места» и счётчик снимков без геометки. */
-  const [places, setPlaces] = useState<PlaceGroup[]>([])
-  const [withoutPlace, setWithoutPlace] = useState(0)
-  const [placePos, setPlacePos] = useState<PlacePosition>({ path: null, fraction: 0 })
+  /** Отрезки поездки для правой рельсы: где человек был, в порядке ленты. */
+  const [segments, setSegments] = useState<GeoSegment[]>([])
+  const [geoPos, setGeoPos] = useState<GeoPosition>({ run: -1, fraction: 0 })
 
   /** Счётчики по дням для рельсы: весь срез, не только загруженные страницы. */
   const [dayCounts, setDayCounts] = useState<TimelineDay[]>([])
@@ -132,13 +131,7 @@ export default function SpacePage() {
   const slice = useMemo(
     () => ({
       spaceId,
-      view: onlyFavorites
-        ? ('favorites' as const)
-        : view === 'files'
-          ? ('files' as const)
-          : view === 'places'
-            ? ('places' as const)
-            : ('timeline' as const),
+      view: onlyFavorites ? ('favorites' as const) : view === 'files' ? ('files' as const) : ('timeline' as const),
       ...(view === 'files' && !onlyFavorites ? { folderId: folderId ?? 'root' } : {}),
       ...(kindFilter ? { kind: kindFilter } : {}),
     }),
@@ -173,7 +166,7 @@ export default function SpacePage() {
     mq.addEventListener('change', on)
     return () => mq.removeEventListener('change', on)
   }, [])
-  const showRail = railWide && (view === 'timeline' || view === 'places')
+  const showRail = railWide && view === 'timeline'
   const canEdit = space?.role === 'OWNER' || space?.role === 'EDITOR'
   const isOwner = space?.role === 'OWNER'
 
@@ -314,48 +307,67 @@ export default function SpacePage() {
     return () => clearTimeout(t)
   }, [loadDayCounts])
 
-  const loadPlaces = useCallback(async () => {
-    if (view !== 'places' || !railWide) return
+  const loadSegments = useCallback(async () => {
+    if (view !== 'timeline' || !railWide) return
     try {
-      const { data } = await cloudApi.get<{ places: PlaceGroup[]; withoutPlace: number }>('/files/places', {
+      const { data } = await cloudApi.get<{ places: GeoSegment[] }>('/files/places', {
         params: { spaceId, view: onlyFavorites ? 'favorites' : 'places', ...(kindFilter ? { kind: kindFilter } : {}) },
       })
-      setPlaces(data.places)
-      setWithoutPlace(data.withoutPlace)
+      setSegments(data.places)
     } catch {
-      setPlaces([])
+      setSegments([])
     }
   }, [spaceId, view, kindFilter, onlyFavorites, railWide])
 
   useEffect(() => {
-    void loadPlaces()
-  }, [loadPlaces])
+    void loadSegments()
+  }, [loadSegments])
 
   /*
-   * Бегунок рельсы мест — та же механика, что у дат, только шкала
-   * географическая: ищем последнюю группу, чей верх ушёл под панель.
+   * Бегунок правой рельсы: какой отрезок поездки сейчас под линией отсчёта.
+   *
+   * Плитка под точкой берётся через elementFromPoint — это одно обращение на
+   * кадр вместо обхода сотен плиток. Номер отрезка плитки проставляет
+   * раскладка ленты (data-run), нумерация совпадает с серверной, потому что
+   * порядок один и тот же.
    */
   useEffect(() => {
-    if (view !== 'places' || !railWide) return
+    if (view !== 'timeline' || !railWide) return
     const root = document.querySelector<HTMLElement>('.cl-root')
     if (!root) return
     let raf = 0
     const measure = () => {
       raf = 0
-      const sections = Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-place]'))
-      if (sections.length === 0) return
-      let current: string | null = null
-      let fraction = 0
-      for (const el of sections) {
-        const r = el.getBoundingClientRect()
-        if (r.top > RAIL_ANCHOR) break
-        current = el.dataset.place ?? null
-        fraction = Math.max(0, Math.min(1, (RAIL_ANCHOR - r.top) / Math.max(1, r.height)))
+      const main = document.querySelector<HTMLElement>('.cl-tl-main')
+      if (!main) return
+      const box = main.getBoundingClientRect()
+      /*
+       * Точку щупаем ниже видимой шапки и берём ВЕСЬ стек элементов под ней:
+       * поверх плиток лежат липкие слои (заголовок дня, шапка), и одиночный
+       * elementFromPoint возвращал именно их, а не снимок.
+       */
+      const probeY = 60 + visibleHeadRef.current + 30
+      const stack = document.elementsFromPoint(box.left + box.width / 2, probeY) as HTMLElement[]
+      let tile: HTMLElement | null = null
+      for (const el of stack) {
+        const hit = el.closest<HTMLElement>('[data-run]')
+        if (hit) {
+          tile = hit
+          break
+        }
       }
-      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) fraction = 1
-      const path = current ?? sections[0]?.dataset.place ?? null
-      setPlacePos((prev) =>
-        prev.path === path && Math.abs(prev.fraction - fraction) < 0.002 ? prev : { path, fraction }
+      const run = tile ? Number(tile.dataset.run) : NaN
+      if (!Number.isFinite(run)) return
+      // Доля пройденного внутри отрезка — по его крайним плиткам в разметке.
+      const same = main.querySelectorAll<HTMLElement>(`[data-run="${run}"]`)
+      let fraction = 0
+      if (same.length > 0) {
+        const top = same[0]!.getBoundingClientRect().top
+        const bottom = same[same.length - 1]!.getBoundingClientRect().bottom
+        fraction = Math.max(0, Math.min(1, (probeY - top) / Math.max(1, bottom - top)))
+      }
+      setGeoPos((prev) =>
+        prev.run === run && Math.abs(prev.fraction - fraction) < 0.004 ? prev : { run, fraction }
       )
     }
     const onScroll = () => {
@@ -369,43 +381,19 @@ export default function SpacePage() {
     }
   }, [view, railWide, files])
 
-  /** Прыжок к месту: группы всегда рядом, догрузка идёт тем же курсором. */
-  const jumpToPlace = useCallback(
-    async (path: string) => {
+  /** Прыжок к отрезку поездки: первая его плитка встаёт под панель. */
+  const jumpToRun = useCallback(
+    (run: number) => {
+      flashGroup(`.cl-tl-main [data-run="${CSS.escape(String(run))}"]`)
       const root = document.querySelector<HTMLElement>('.cl-root')
-      const startKey = sliceKeyRef.current
-      const find = () =>
-        Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-place]')).find(
-          (el) => (el.dataset.place ?? '') === path || (el.dataset.place ?? '').startsWith(path)
-        )
-      const go = () => {
-        const target = find()
-        if (!root || !target) return false
-        const base = target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
-        const goingUp = base - HEADER_OFFSET < root.scrollTop
-        const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
-        smoothScrollTo(root, base - HEADER_OFFSET - land)
-        return true
-      }
-      if (go()) return
-      if (!cursorRef.current || jumpingRef.current) return
-      jumpingRef.current = true
-      try {
-        let c: string | null = cursorRef.current
-        for (let i = 0; c && i < 200; i++) {
-          const batch = await loadFiles(c, 'append')
-          if (!batch || !aliveRef.current || sliceKeyRef.current !== startKey) return
-          c = batch.nextCursor
-          if (batch.files.some((f) => (f.geoPath ?? '') >= path)) break
-        }
-        requestAnimationFrame(() => {
-          if (aliveRef.current && sliceKeyRef.current === startKey) go()
-        })
-      } finally {
-        jumpingRef.current = false
-      }
+      const tile = document.querySelector<HTMLElement>(`.cl-tl-main [data-run="${run}"]`)
+      if (!root || !tile) return
+      const base = tile.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
+      const goingUp = base - HEADER_OFFSET < root.scrollTop
+      const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
+      smoothScrollTo(root, base - HEADER_OFFSET - land - 34)
     },
-    [loadFiles]
+    []
   )
 
   /*
@@ -469,6 +457,7 @@ export default function SpacePage() {
 
   const jumpToDay = useCallback(
     async (day: string) => {
+      flashGroup(`.cl-tl-main section[data-day="${CSS.escape(day)}"] .cl-tile`)
       const root = document.querySelector<HTMLElement>('.cl-root')
       // Срез на момент клика: любая его смена (фильтр, поиск, другая хуяпка)
       // делает и цикл догрузки, и посадку недействительными.
@@ -824,13 +813,7 @@ export default function SpacePage() {
         className={`cl-tl-layout${showRail ? ' with-rail' : ''}`}
         style={{ ['--cl-rail-off' as string]: `${visibleHeadH}px` }}
       >
-        {showRail ? (
-          view === 'places' ? (
-            <PlaceRail places={places} position={placePos} onJump={jumpToPlace} />
-          ) : (
-            <TimelineRail days={dayCounts} position={railPos} onJump={jumpToDay} />
-          )
-        ) : null}
+        {showRail ? <TimelineRail days={dayCounts} position={railPos} onJump={jumpToDay} /> : null}
         <div className="cl-tl-main">
       {/*
         Шапка и фильтры — единый липкий блок, который прячется при прокрутке
@@ -908,23 +891,12 @@ export default function SpacePage() {
           */}
           <div
             className="cl-seg"
-            style={{
-              ['--seg-n' as string]: 5,
-              ['--seg-i' as string]: ['timeline', 'places', 'files', 'map', 'activity'].indexOf(view),
-            }}
+            style={{ ['--seg-n' as string]: 4, ['--seg-i' as string]: ['timeline', 'files', 'map', 'activity'].indexOf(view) }}
           >
             <i className="cl-seg-pill" aria-hidden />
-            {(['timeline', 'places', 'files', 'map', 'activity'] as View[]).map((v) => (
+            {(['timeline', 'files', 'map', 'activity'] as View[]).map((v) => (
               <button key={v} className={`cl-seg-btn${view === v ? ' is-active' : ''}`} onClick={() => setView(v)}>
-                {v === 'timeline'
-                  ? 'Таймлайн'
-                  : v === 'places'
-                    ? 'Места'
-                    : v === 'files'
-                      ? 'Файлы'
-                      : v === 'map'
-                        ? 'Карта'
-                        : 'Активность'}
+                {v === 'timeline' ? 'Таймлайн' : v === 'files' ? 'Файлы' : v === 'map' ? 'Карта' : 'Активность'}
               </button>
             ))}
           </div>
@@ -1044,21 +1016,6 @@ export default function SpacePage() {
             ) : null
           }
         />
-      ) : view === 'places' ? (
-        <>
-          {withoutPlace > 0 ? (
-            <div className="cl-place-note">
-              {withoutPlace} {plural(withoutPlace, 'снимок', 'снимка', 'снимков')} без геометки — их здесь нет
-            </div>
-          ) : null}
-          <PlacesView
-            files={files}
-            selection={selection}
-            selectMode={selection.size > 0}
-            onOpen={openFile}
-            onToggleSelect={toggleSelect}
-          />
-        </>
       ) : (
         <>
           <TimelineView
@@ -1083,6 +1040,8 @@ export default function SpacePage() {
         </div>
       ) : null}
         </div>
+        {/* Правая колонка — зеркало левой: слева видно КОГДА, справа ГДЕ. */}
+        {showRail ? <GeoRail segments={segments} position={geoPos} onJump={jumpToRun} /> : null}
       </div>
 
       {/* ── Панель выбора ───────────────────────────────────────────────── */}
@@ -1190,6 +1149,38 @@ function matchesSlice(
   if (s.kindFilter && file.kind !== s.kindFilter) return false
   if (s.view === 'files' && (file.folderId ?? null) !== (s.folderId ?? null)) return false
   return true
+}
+
+/**
+ * Подсветить разом все плитки подгруппы — вспышка с плавным угасанием.
+ *
+ * Правило вставляем ОДНОЙ строкой в служебный <style>, а не вешаем класс на
+ * каждую плитку: в группе бывают сотни снимков, и перебор с перезапуском
+ * анимации на каждом означал бы сотни принудительных пересчётов раскладки
+ * ровно в момент прыжка. Здесь же — одна запись в CSSOM.
+ */
+const FLASH_MS = 1500
+let flashTimer: ReturnType<typeof setTimeout> | null = null
+
+function flashGroup(selector: string): void {
+  let tag = document.getElementById('cl-flash') as HTMLStyleElement | null
+  if (!tag) {
+    tag = document.createElement('style')
+    tag.id = 'cl-flash'
+    document.head.appendChild(tag)
+  }
+  // Пустой шаг нужен, чтобы повторный клик по той же станции проиграл вспышку
+  // заново: без смены правила анимация не перезапускается.
+  tag.textContent = ''
+  const rule = `${selector} { animation: clFlash ${FLASH_MS}ms var(--cl-ease) both; }`
+  requestAnimationFrame(() => {
+    if (tag) tag.textContent = rule
+  })
+  if (flashTimer) clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => {
+    if (tag) tag.textContent = ''
+    flashTimer = null
+  }, FLASH_MS + 120)
 }
 
 /** Куда сажаем цель прыжка: сразу под липкой панелью, с дыханием в пару px. */

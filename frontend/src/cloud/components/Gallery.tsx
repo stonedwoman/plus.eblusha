@@ -50,12 +50,14 @@ const Tile = memo(function Tile({
   selectMode,
   onOpen,
   onToggle,
+  run,
 }: {
   file: CloudFile
   selected: boolean
   selectMode: boolean
   onOpen: () => void
   onToggle: (shift: boolean) => void
+  run?: number
 }) {
   const thumb = file.urls.thumb
   const processing = file.status === 'PROCESSING'
@@ -67,6 +69,9 @@ const Tile = memo(function Tile({
       /* Выделение протяжкой читает id и состояние прямо из DOM — см. useDragSelect. */
       data-file-id={file.id}
       data-selected={selected ? '1' : '0'}
+      /* Номер географического отрезка: по нему правая рельса понимает, где
+         читатель сейчас. Считается при раскладке — см. TimelineView. */
+      data-run={run}
       onClick={(e) => {
         if (selectMode || e.ctrlKey || e.metaKey) onToggle(e.shiftKey)
         else onOpen()
@@ -117,71 +122,6 @@ const Tile = memo(function Tile({
     </div>
   )
 })
-
-/**
- * Галерея, сгруппированная по МЕСТУ съёмки — сестра таймлайна.
- *
- * Заголовок группы — полный путь «Страна · Город · Район», а data-place на
- * секции читают рельса мест и трекер прокрутки, ровно как data-day у дат.
- */
-export function PlacesView({
-  files,
-  selection,
-  onOpen,
-  onToggleSelect,
-  selectMode,
-}: {
-  files: CloudFile[]
-  selection: Set<string>
-  onOpen: (file: CloudFile) => void
-  onToggleSelect: (id: string, shift: boolean) => void
-  selectMode: boolean
-}) {
-  const groups = useMemo(() => {
-    const out: { key: string; country: string; rest: string; files: CloudFile[] }[] = []
-    for (const file of files) {
-      const key = file.geoPath ?? ''
-      const last = out[out.length - 1]
-      if (last && last.key === key) {
-        last.files.push(file)
-        continue
-      }
-      const rest = [file.geoCity, file.geoDistrict].filter(Boolean).join(' · ')
-      out.push({ key, country: file.geoCountry ?? 'Без места', rest, files: [file] })
-    }
-    return out
-  }, [files])
-
-  return (
-    <>
-      {groups.map((group, i) => (
-        <section key={group.key} data-place={group.key}>
-          <div className="cl-day-head cl-place-head">
-            {/* Страна печатается только когда сменилась: внутри одной страны
-                повторять её у каждого города — визуальный шум. */}
-            {i === 0 || groups[i - 1]!.country !== group.country ? (
-              <span className="cl-place-country">{group.country}</span>
-            ) : null}
-            {group.rest ? <span>{group.rest}</span> : null}
-            <span className="cl-muted">{group.files.length}</span>
-          </div>
-          <div className="cl-tiles">
-            {group.files.map((file) => (
-              <Tile
-                key={file.id}
-                file={file}
-                selected={selection.has(file.id)}
-                selectMode={selectMode}
-                onOpen={() => onOpen(file)}
-                onToggle={(shift) => onToggleSelect(file.id, shift)}
-              />
-            ))}
-          </div>
-        </section>
-      ))}
-    </>
-  )
-}
 
 /** Группировка по дню съёмки — сердце таймлайна поездки. */
 export function groupByDay(files: CloudFile[]): { key: string; label: string; files: CloudFile[] }[] {
@@ -252,13 +192,33 @@ export function TimelineView({
     // а не ленту новостей. Порядок совпадает с серверным (takenAt asc).
     entries.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1))
 
-    const out: { key: string; label: string; entries: TimelineEntry[] }[] = []
+    /*
+     * Номер географического отрезка: сквозная нумерация по всей ленте, новый
+     * отрезок начинается там, где сменилось место съёмки. Порядок тот же, что
+     * у сервера, поэтому нумерация совпадает с сегментами правой рельсы.
+     */
+    const runOf = new Map<string, number>()
+    let run = -1
+    let prevPath: string | null = null
+    for (const entry of entries) {
+      if (entry.kind !== 'file') continue
+      // Ключ отрезка — страна и город, без района: иначе Тбилиси и его
+      // Окрокана чередовались бы десятками мелких отрезков.
+      const path = `${entry.file.geoCountry ?? ''}|${entry.file.geoCity ?? ''}`
+      if (run < 0 || path !== prevPath) {
+        run++
+        prevPath = path
+      }
+      runOf.set(entry.id, run)
+    }
+
+    const out: { key: string; label: string; entries: TimelineEntry[]; runOf: Map<string, number> }[] = []
     for (const entry of entries) {
       const d = new Date(entry.at)
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       const last = out[out.length - 1]
       if (last && last.key === key) last.entries.push(entry)
-      else out.push({ key, label: formatDayLabel(d), entries: [entry] })
+      else out.push({ key, label: formatDayLabel(d), entries: [entry], runOf })
     }
     return out
   }, [files, uploads])
@@ -285,6 +245,7 @@ export function TimelineView({
                   selectMode={selectMode}
                   onOpen={() => onOpen(entry.file)}
                   onToggle={(shift) => onToggleSelect(entry.id, shift)}
+                  run={group.runOf.get(entry.id)}
                 />
               )
             )}
