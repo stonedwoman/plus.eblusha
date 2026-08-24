@@ -21,6 +21,8 @@ export function Viewer({
   readOnly,
   spaceId,
   canComment,
+  hasMore,
+  onNeedMore,
 }: {
   files: CloudFile[]
   index: number
@@ -30,6 +32,10 @@ export function Viewer({
   readOnly?: boolean
   spaceId?: string
   canComment?: boolean
+  /** Есть ли ещё непрогруженные файлы дальше по списку. */
+  hasMore?: boolean
+  /** Догрузить следующую страницу — вызывается на последнем кадре. */
+  onNeedMore?: () => void
 }) {
   const file = files[index]
   const [panel, setPanel] = useState<'info' | 'comments' | null>(readOnly ? 'info' : 'comments')
@@ -42,9 +48,15 @@ export function Viewer({
       if (next >= 0 && next < files.length) {
         setZoom(1)
         onIndexChange(next)
+        // Подтягиваем следующую страницу заранее, за пару кадров до конца:
+        // иначе на последнем снимке стрелка «вперёд» упиралась в пустоту, хотя
+        // в хуяпке оставались сотни файлов.
+        if (hasMore && next >= files.length - 3) onNeedMore?.()
+        return
       }
+      if (delta > 0 && hasMore) onNeedMore?.()
     },
-    [index, files.length, onIndexChange]
+    [index, files.length, onIndexChange, hasMore, onNeedMore]
   )
 
   useEffect(() => {
@@ -147,7 +159,7 @@ export function Viewer({
             ‹
           </button>
         ) : null}
-        {index < files.length - 1 ? (
+        {index < files.length - 1 || hasMore ? (
           <button className="cl-viewer-nav next" onClick={() => go(1)} aria-label="Следующий">
             ›
           </button>

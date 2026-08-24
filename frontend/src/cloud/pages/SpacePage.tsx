@@ -471,6 +471,10 @@ export default function SpacePage() {
           files={files}
           index={viewerIndex}
           spaceId={spaceId}
+          hasMore={Boolean(cursor)}
+          onNeedMore={() => {
+            if (cursor && !loading) void loadFiles(cursor)
+          }}
           canComment={space.role === 'OWNER' || space.role === 'EDITOR' || space.viewerCanComment}
           onIndexChange={setViewerIndex}
           onClose={() => setViewerIndex(null)}
@@ -563,6 +567,13 @@ function toggleSelect(id: string, setSelection: React.Dispatch<React.SetStateAct
   })
 }
 
+/**
+ * Открыть файл, которого ещё нет в загруженной странице (клик по точке на карте).
+ *
+ * Раньше файл приклеивался в начало списка и открывался как индекс 0 — из-за
+ * этого он вставал не на своё место в хронологии, а листание стрелками уводило
+ * в соседей по случайному соседству, а не по времени съёмки.
+ */
 async function openSingle(
   fileId: string,
   setFiles: React.Dispatch<React.SetStateAction<CloudFile[]>>,
@@ -571,10 +582,12 @@ async function openSingle(
   try {
     const { data } = await cloudApi.get<{ file: CloudFile }>(`/files/${fileId}`)
     setFiles((prev) => {
-      const next = [data.file, ...prev.filter((f) => f.id !== fileId)]
+      const without = prev.filter((f) => f.id !== fileId)
+      const next = insertByTakenAt(without, data.file)
+      // Индекс считаем по итоговому списку, а не гадаем.
+      setViewerIndex(next.findIndex((f) => f.id === fileId))
       return next
     })
-    setViewerIndex(0)
   } catch {
     toast.error('Не удалось открыть файл')
   }
