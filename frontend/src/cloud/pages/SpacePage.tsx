@@ -123,9 +123,20 @@ export default function SpacePage() {
   /** Порядковый номер запроса списка: применяем только самый свежий. */
   const reqSeq = useRef(0)
 
-  /** Рельса живёт только в таймлайне: в «Файлах» сортировка по имени, дата там
-   *  ничего не значит, а карта и активность — вообще не лента. */
-  const showRail = view === 'timeline'
+  /*
+   * Рельса живёт только в таймлайне И только на широком экране. На узком она
+   * спрятана CSS-ом, но конвейер иначе молотил бы вхолостую: трекер позиции
+   * мерил секции на каждом кадре скролла, агрегат /files/timeline грузился —
+   * всё ради элемента, который на телефоне невозможно увидеть.
+   */
+  const [railWide, setRailWide] = useState(() => window.matchMedia('(min-width: 861px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 861px)')
+    const on = () => setRailWide(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  const showRail = railWide && view === 'timeline'
   const canEdit = space?.role === 'OWNER' || space?.role === 'EDITOR'
   const isOwner = space?.role === 'OWNER'
 
@@ -155,7 +166,10 @@ export default function SpacePage() {
       nextCursor: string | null,
       mode: 'replace' | 'append' | 'merge' = nextCursor ? 'append' : 'replace'
     ): Promise<{ files: CloudFile[]; nextCursor: string | null } | null> => {
-      const seq = ++reqSeq.current
+      // merge подмешивает, а не заменяет, и seq не проверяет — потому не должен
+      // его и сжигать: тик фонового merge иначе обрывал летящий append
+      // (страницу прыжка по рельсе или сентинела) как «устаревший».
+      const seq = mode === 'merge' ? reqSeq.current : ++reqSeq.current
       try {
         const { data } = await cloudApi.get<{ files: CloudFile[]; nextCursor: string | null }>('/files', {
           params: { ...slice, limit: 80, ...(nextCursor ? { cursor: nextCursor } : {}) },
@@ -222,6 +236,11 @@ export default function SpacePage() {
     setSelection(new Set())
     setViewerFileId(null)
     anchorRef.current = null
+    // Курсор — тоже часть среза. Пока он сбрасывался только ответом replace,
+    // клик по рельсе в окне перезагрузки запускал догрузку с курсором СТАРОГО
+    // среза и приклеивал к списку страницу чужого фильтра из середины альбома.
+    setCursor(null)
+    cursorRef.current = null
   }, [sliceKey])
 
   useEffect(() => {
@@ -237,7 +256,7 @@ export default function SpacePage() {
 
   /** Агрегат для рельсы. Не критичен: не построился — рельса просто не рисуется. */
   const loadDayCounts = useCallback(async () => {
-    if (view !== 'timeline') return
+    if (view !== 'timeline' || !railWide) return
     try {
       const { data } = await cloudApi.get<{ days: TimelineDay[] }>('/files/timeline', {
         params: {
@@ -252,7 +271,7 @@ export default function SpacePage() {
     } catch {
       setDayCounts([])
     }
-  }, [spaceId, view, kindFilter, query, onlyFavorites])
+  }, [spaceId, view, kindFilter, query, onlyFavorites, railWide])
 
   useEffect(() => {
     const t = setTimeout(() => void loadDayCounts(), query ? 300 : 0)
@@ -266,7 +285,7 @@ export default function SpacePage() {
    * Один rAF на кадр, слушатель пассивный — на плавность скролла не влияет.
    */
   useEffect(() => {
-    if (view !== 'timeline') return
+    if (view !== 'timeline' || !railWide) return
     const root = document.querySelector<HTMLElement>('.cl-root')
     if (!root) return
     let raf = 0
@@ -299,7 +318,7 @@ export default function SpacePage() {
       root.removeEventListener('scroll', onScroll)
       if (raf) cancelAnimationFrame(raf)
     }
-  }, [view, files])
+  }, [view, railWide, files])
 
   /**
    * Прыжок по рельсе: просто довозим страницу до нужного дня.
@@ -310,10 +329,23 @@ export default function SpacePage() {
    * не висит служебный чип, который нужно было отдельно понимать и сбрасывать.
    */
   const jumpingRef = useRef(false)
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => {
+      aliveRef.current = false
+    }
+  }, [])
+
   const jumpToDay = useCallback(
     async (day: string) => {
       const root = document.querySelector<HTMLElement>('.cl-root')
-      const scrollToSection = (exactOnly: boolean) => {
+      // Срез на момент клика: любая его смена (фильтр, поиск, другая хуяпка)
+      // делает и цикл догрузки, и посадку недействительными.
+      const startKey = sliceKeyRef.current
+      const expired = () =>
+        !aliveRef.current || sliceKeyRef.current !== startKey || sliceRef.current.view !== 'timeline'
+      const scrollToSection = (exactOnly: boolean, onDone?: (finished: boolean) => void) => {
         if (!root) return false
         const sections = Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]'))
         const target =
@@ -322,7 +354,7 @@ export default function SpacePage() {
           (exactOnly ? undefined : sections.find((el) => (el.dataset.day ?? '') > day))
         if (!target) return false
         const top = target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - HEADER_OFFSET
-        smoothScrollTo(root, top)
+        smoothScrollTo(root, top, onDone)
         return true
       }
 
@@ -341,24 +373,27 @@ export default function SpacePage() {
         // Потолок — страховка от бесконечного цикла, не рабочий предел.
         for (let i = 0; c && i < 200; i++) {
           const batch = await loadFiles(c, 'append')
-          if (!batch) return
+          // Смена среза, уход со страницы или в другую вкладку посреди цикла —
+          // выходим: иначе догрузка молотила бы страницы на мёртвом экране.
+          if (!batch || expired()) return
           c = batch.nextCursor
           if (batch.files.some((f) => dayKeyOf(new Date(f.takenAt)) > day)) break
         }
-        // Секции рендерятся после коммита — целимся на следующий кадр, а через
-        // полсекунды проверяем посадку: если раскладка успела уехать (поздние
-        // вставки, счётчики), поправляем прицел один раз.
+        // Секции рендерятся после коммита — целимся на следующий кадр. Посадку
+        // проверяем ТОЛЬКО после естественного завершения анимации: пока она
+        // едет, дрейф заведомо велик, а если человек перехватил скролл колесом,
+        // возвращать его к цели против его же жеста нельзя.
         requestAnimationFrame(() => {
-          scrollToSection(false)
-          setTimeout(() => {
-            const root2 = document.querySelector<HTMLElement>('.cl-root')
+          if (expired()) return
+          scrollToSection(false, (finished) => {
+            if (!finished || expired() || !root) return
             const target = Array.from(
               document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]')
             ).find((el) => (el.dataset.day ?? '') >= day)
-            if (!root2 || !target) return
+            if (!target) return
             const drift = Math.abs(target.getBoundingClientRect().top - HEADER_OFFSET)
             if (drift > 30) scrollToSection(false)
-          }, 600)
+          })
         })
       } finally {
         jumpingRef.current = false
@@ -954,7 +989,13 @@ const RAIL_ANCHOR = 78
  */
 let cancelActiveScroll: (() => void) | null = null
 
-function smoothScrollTo(scroller: HTMLElement, targetTop: number) {
+/**
+ * onDone(finished): true — анимация доехала сама; false — её перехватил
+ * человек (колесо/палец) либо вытеснил новый прыжок. Проверка посадки после
+ * прыжка опирается ровно на это: поправлять прицел можно только после
+ * естественного финиша, отменённый жест пользователя священен.
+ */
+function smoothScrollTo(scroller: HTMLElement, targetTop: number, onDone?: (finished: boolean) => void) {
   // Два быстрых тапа по рельсе — две rAF-петли, дерущиеся за scrollTop с
   // видимым дрожанием. Новая анимация всегда сперва хоронит предыдущую.
   cancelActiveScroll?.()
@@ -962,34 +1003,44 @@ function smoothScrollTo(scroller: HTMLElement, targetTop: number) {
   const from = scroller.scrollTop
   const to = Math.max(0, Math.min(targetTop, scroller.scrollHeight - scroller.clientHeight))
   const dist = to - from
-  if (Math.abs(dist) < 2) return
+  if (Math.abs(dist) < 2) {
+    onDone?.(true)
+    return
+  }
 
   // Кому движение мешает физически — прыгаем сразу: CSS-блок
   // prefers-reduced-motion глушит переходы, но не rAF-петлю.
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     scroller.scrollTop = to
+    onDone?.(true)
     return
   }
 
   const duration = Math.min(950, Math.max(420, Math.abs(dist) * 0.35))
   const start = performance.now()
   let raf = 0
-  const cancel = () => {
+  let settled = false
+  const settle = (finished: boolean) => {
+    if (settled) return
+    settled = true
     cancelAnimationFrame(raf)
-    scroller.removeEventListener('wheel', cancel)
-    scroller.removeEventListener('touchstart', cancel)
-    if (cancelActiveScroll === cancel) cancelActiveScroll = null
+    scroller.removeEventListener('wheel', onUser)
+    scroller.removeEventListener('touchstart', onUser)
+    if (cancelActiveScroll === abort) cancelActiveScroll = null
+    onDone?.(finished)
   }
-  cancelActiveScroll = cancel
-  scroller.addEventListener('wheel', cancel, { passive: true, once: true })
-  scroller.addEventListener('touchstart', cancel, { passive: true, once: true })
+  const onUser = () => settle(false)
+  const abort = () => settle(false)
+  cancelActiveScroll = abort
+  scroller.addEventListener('wheel', onUser, { passive: true, once: true })
+  scroller.addEventListener('touchstart', onUser, { passive: true, once: true })
 
   const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
   const tick = (now: number) => {
     const t = Math.min(1, (now - start) / duration)
     scroller.scrollTop = from + dist * ease(t)
     if (t < 1) raf = requestAnimationFrame(tick)
-    else cancel()
+    else settle(true)
   }
   raf = requestAnimationFrame(tick)
 }

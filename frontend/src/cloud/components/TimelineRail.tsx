@@ -72,12 +72,26 @@ export function TimelineRail({
    */
   const [node, setNode] = useState<HTMLElement | null>(null)
   const [h, setH] = useState(0)
+  /*
+   * База для ГРАНУЛЯРНОСТИ — высота рельсы при спрятанной шапке, то есть
+   * clientHeight плюс текущий --cl-rail-off. Живой h дышит на высоту шапки при
+   * каждом повороте прокрутки (621↔810), и если считать от него capacity,
+   * альбом на 9–11 дней флипался бы день↔месяц на каждом развороте: ключи
+   * станций меняются, узлы пересоздаются — мигание вместо переезда. Пиксельная
+   * раскладка (шаг, ось) остаётся на живом h.
+   */
+  const [baseH, setBaseH] = useState(0)
 
   useEffect(() => {
     if (!node) return
-    const ro = new ResizeObserver(() => setH(node.clientHeight))
+    const apply = () => {
+      setH(node.clientHeight)
+      const off = parseFloat(getComputedStyle(node).getPropertyValue('--cl-rail-off')) || 0
+      setBaseH(node.clientHeight + off)
+    }
+    const ro = new ResizeObserver(apply)
     ro.observe(node)
-    setH(node.clientHeight)
+    apply()
     return () => ro.disconnect()
   }, [node])
 
@@ -85,7 +99,7 @@ export function TimelineRail({
     if (days.length === 0) return []
     // −1 на хвост: под последней станцией остаётся отрезок такой же длины,
     // по которому полоска доходит до низа, пока листаешь последний период.
-    const capacity = Math.max(3, Math.floor((h - PAD * 2) / STEP) - 1)
+    const capacity = Math.max(3, Math.floor((baseH - PAD * 2) / STEP) - 1)
     const thisYear = String(new Date().getFullYear())
 
     if (days.length <= capacity) {
@@ -129,9 +143,9 @@ export function TimelineRail({
       firstDay: items[0]!.day,
       days: items.map((d) => d.day),
     }))
-  }, [days, h])
+  }, [days, baseH])
 
-  if (stations.length < 2 || h < 200) {
+  if (stations.length < 2 || baseH < 200) {
     // Однодневный альбом навигации не требует; держим колонку, чтобы сетка
     // плиток не прыгала при переключении фильтров.
     return days.length > 0 ? <div ref={setNode} className="cl-timenav" aria-hidden /> : null
