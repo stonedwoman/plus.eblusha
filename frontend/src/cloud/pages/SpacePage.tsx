@@ -18,8 +18,7 @@ import { TimelineView, Tiles } from '../components/Gallery'
 import { useDragSelect, type PaintMode } from '../components/dragSelect'
 import { Viewer } from '../components/Viewer'
 import { MapView } from '../components/MapView'
-import { TimelineRail, dayKeyToDate, type RailPosition, type TimelineDay } from '../components/TimelineRail'
-import { formatDayLabel } from '../components/Gallery'
+import { TimelineRail, type RailPosition, type TimelineDay } from '../components/TimelineRail'
 import { ShareDialog } from '../components/ShareDialog'
 import { Avatar, Empty, Modal, SkeletonTiles, useInfiniteSentinel, useHideOnScrollDown, toast } from '../components/ui'
 import type { CloudContext } from './CloudLayout'
@@ -41,6 +40,8 @@ export default function SpacePage() {
   const [presence, setPresence] = useState<PresenceEntry[]>([])
   const [files, setFiles] = useState<CloudFile[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
+  /** Зеркало курсора для async-цикла прыжка по рельсе. */
+  const cursorRef = useRef<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [selection, setSelection] = useState<Set<string>>(new Set())
   /*
@@ -61,11 +62,21 @@ export default function SpacePage() {
   const headHidden = useHideOnScrollDown()
   /** Счётчики по дням для рельсы: весь срез, не только загруженные страницы. */
   const [dayCounts, setDayCounts] = useState<TimelineDay[]>([])
-  /** Где читатель сейчас: день у верхней кромки плюс доля пройденного внутри
-   *  его группы. Дробь и делает полоску рельсы непрерывной. */
+  /** Где читатель: день у верхней кромки и доля пройденного внутри его
+   *  группы — дробь делает заливку рельсы непрерывной. */
   const [railPos, setRailPos] = useState<RailPosition>({ day: null, fraction: 0 })
-  /** Якорь «показывать с даты» — клик по рельсе в ещё не загруженный день. */
-  const [fromDay, setFromDay] = useState<string | null>(null)
+  /** Высота видимой шапки — рельса прижимается под неё (--cl-rail-off). */
+  const [headH, setHeadH] = useState(0)
+  const headRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const el = headRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setHeadH(el.offsetHeight))
+    ro.observe(el)
+    setHeadH(el.offsetHeight)
+    return () => ro.disconnect()
+  }, [space !== null])
   const anchorRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const dirInput = useRef<HTMLInputElement | null>(null)
@@ -93,15 +104,8 @@ export default function SpacePage() {
       ...(view === 'files' && !onlyFavorites ? { folderId: folderId ?? 'root' } : {}),
       ...(kindFilter ? { kind: kindFilter } : {}),
       ...(query.trim() ? { q: query.trim() } : {}),
-      // Якорь рельсы действует только в таймлайне: «Файлам» с их сортировкой по
-      // имени дата съёмки ничего не говорит.
-      // Локальная полночь выбранного дня, переведённая в абсолютный момент:
-      // сервер сравнивает takenAt как инстант, а группы галереи — локальные.
-      ...(view === 'timeline' && !onlyFavorites && fromDay
-        ? { from: new Date(`${fromDay}T00:00:00`).toISOString() }
-        : {}),
     }),
-    [spaceId, view, folderId, kindFilter, query, onlyFavorites, fromDay]
+    [spaceId, view, folderId, kindFilter, query, onlyFavorites]
   )
   const sliceKey = useMemo(() => JSON.stringify(slice), [slice])
 
@@ -112,8 +116,8 @@ export default function SpacePage() {
    */
   const sliceKeyRef = useRef(sliceKey)
   sliceKeyRef.current = sliceKey
-  const sliceRef = useRef({ view, folderId, kindFilter, query, onlyFavorites, fromDay })
-  sliceRef.current = { view, folderId, kindFilter, query, onlyFavorites, fromDay }
+  const sliceRef = useRef({ view, folderId, kindFilter, query, onlyFavorites })
+  sliceRef.current = { view, folderId, kindFilter, query, onlyFavorites }
   const filesRef = useRef(files)
   filesRef.current = files
   /** Порядковый номер запроса списка: применяем только самый свежий. */
@@ -147,7 +151,10 @@ export default function SpacePage() {
    *             закрывался.
    */
   const loadFiles = useCallback(
-    async (nextCursor: string | null, mode: 'replace' | 'append' | 'merge' = nextCursor ? 'append' : 'replace') => {
+    async (
+      nextCursor: string | null,
+      mode: 'replace' | 'append' | 'merge' = nextCursor ? 'append' : 'replace'
+    ): Promise<{ files: CloudFile[]; nextCursor: string | null } | null> => {
       const seq = ++reqSeq.current
       try {
         const { data } = await cloudApi.get<{ files: CloudFile[]; nextCursor: string | null }>('/files', {
@@ -159,8 +166,8 @@ export default function SpacePage() {
          * (в галерее оказывались чужие файлы), либо два быстрых набора в поиске
          * вернулись не в том порядке (список показывал предыдущий запрос).
          */
-        if (sliceKeyRef.current !== sliceKey) return
-        if (mode !== 'merge' && seq !== reqSeq.current) return
+        if (sliceKeyRef.current !== sliceKey) return null
+        if (mode !== 'merge' && seq !== reqSeq.current) return null
         // Дедуп по id обязателен: файл мог уже прилететь realtime-событием, и
         // тогда страница пагинации привозит его второй раз. Именно из-за этого
         // «Выбрать все» насчитывало больше файлов, чем есть в хуяпке.
@@ -184,10 +191,15 @@ export default function SpacePage() {
         })
         // Курсор при merge не трогаем: иначе подгрузка следующих страниц
         // сбрасывалась бы на первую при каждом фоновом обновлении.
-        if (mode !== 'merge') setCursor(data.nextCursor)
+        if (mode !== 'merge') {
+          setCursor(data.nextCursor)
+          cursorRef.current = data.nextCursor
+        }
+        return { files: data.files, nextCursor: data.nextCursor }
       } catch (err) {
-        if (sliceKeyRef.current !== sliceKey) return
+        if (sliceKeyRef.current !== sliceKey) return null
         toast.error(toCloudError(err).message)
+        return null
       } finally {
         // Скелет снимает только актуальный запрос: иначе устаревший ответ гасил
         // загрузку нового среза и на миг показывал «ничего не найдено».
@@ -213,7 +225,6 @@ export default function SpacePage() {
   }, [sliceKey])
 
   useEffect(() => {
-    setFromDay(null)
     setRailPos({ day: null, fraction: 0 })
   }, [spaceId])
 
@@ -271,8 +282,8 @@ export default function SpacePage() {
         current = el.dataset.day ?? null
         fraction = Math.max(0, Math.min(1, (RAIL_ANCHOR - r.top) / Math.max(1, r.height)))
       }
-      // У самого низа список кончился, а последняя группа пройдена не до конца
-      // (её низ выше линии отсчёта) — иначе полоска не доходила бы до края.
+      // На дне списка последняя группа считается пройденной целиком — иначе
+      // заливка не доходила бы до края.
       if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) fraction = 1
       const day = current ?? sections[0]?.dataset.day ?? null
       setRailPos((prev) =>
@@ -291,31 +302,69 @@ export default function SpacePage() {
   }, [view, files])
 
   /**
-   * Прыжок по рельсе. Загруженный день — плавный анимированный скролл к его
-   * группе; ещё не загруженный — якорь from: список пересобирается с этой
-   * даты, а чип над галереей возвращает всё как было.
+   * Прыжок по рельсе: просто довозим страницу до нужного дня.
+   *
+   * День уже в списке — плавный скролл к его группе. Ещё не догружен — тянем
+   * страницы пагинации, пока группа не появится, и едем к ней. Никаких
+   * якорей «показывать с даты»: список всегда остаётся непрерывным, и над ним
+   * не висит служебный чип, который нужно было отдельно понимать и сбрасывать.
    */
+  const jumpingRef = useRef(false)
   const jumpToDay = useCallback(
-    (day: string) => {
+    async (day: string) => {
       const root = document.querySelector<HTMLElement>('.cl-root')
-      const sections = Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]'))
-      const target =
-        sections.find((el) => el.dataset.day === day) ??
-        // Весь срез уже в браузере — значит, в этот день просто не снимали;
-        // ведём к ближайшему следующему дню съёмки.
-        (!cursor ? sections.find((el) => (el.dataset.day ?? '') > day) : undefined)
-      if (target && root) {
-        const top =
-          target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - HEADER_OFFSET
+      const scrollToSection = (exactOnly: boolean) => {
+        if (!root) return false
+        const sections = Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]'))
+        const target =
+          sections.find((el) => el.dataset.day === day) ??
+          // Ближайший следующий день съёмки — если в самом дне не снимали.
+          (exactOnly ? undefined : sections.find((el) => (el.dataset.day ?? '') > day))
+        if (!target) return false
+        const top = target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - HEADER_OFFSET
         smoothScrollTo(root, top)
-        return
+        return true
       }
-      // Клик в самое начало альбома — это отмена якоря, а не якорь на первый день.
-      const first = dayCounts[0]?.day
-      setFromDay(first !== undefined && day <= first ? null : day)
-      root?.scrollTo({ top: 0 })
+
+      // Точная группа уже на месте — едем сразу. Приблизительную (следующий
+      // день) принимаем только когда догружать больше нечего.
+      if (scrollToSection(Boolean(cursorRef.current))) return
+      if (!cursorRef.current || jumpingRef.current) return
+
+      jumpingRef.current = true
+      try {
+        let c: string | null = cursorRef.current
+        // Грузим, пока не увидим день ПОЗЖЕ целевого (или конец альбома).
+        // Остановка на первом же файле нужного дня коварна: последующая
+        // догрузка вставляла остаток предыдущего дня ВЫШЕ цели, всё уезжало
+        // вниз, и человек оказывался не на том дне, куда кликал.
+        // Потолок — страховка от бесконечного цикла, не рабочий предел.
+        for (let i = 0; c && i < 200; i++) {
+          const batch = await loadFiles(c, 'append')
+          if (!batch) return
+          c = batch.nextCursor
+          if (batch.files.some((f) => dayKeyOf(new Date(f.takenAt)) > day)) break
+        }
+        // Секции рендерятся после коммита — целимся на следующий кадр, а через
+        // полсекунды проверяем посадку: если раскладка успела уехать (поздние
+        // вставки, счётчики), поправляем прицел один раз.
+        requestAnimationFrame(() => {
+          scrollToSection(false)
+          setTimeout(() => {
+            const root2 = document.querySelector<HTMLElement>('.cl-root')
+            const target = Array.from(
+              document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]')
+            ).find((el) => (el.dataset.day ?? '') >= day)
+            if (!root2 || !target) return
+            const drift = Math.abs(target.getBoundingClientRect().top - HEADER_OFFSET)
+            if (drift > 30) scrollToSection(false)
+          }, 600)
+        })
+      } finally {
+        jumpingRef.current = false
+      }
     },
-    [cursor, dayCounts]
+    [loadFiles]
   )
 
   // Счётчики «842 фото · 37 видео» пересчитываются пачкой, а не на каждый файл.
@@ -590,7 +639,10 @@ export default function SpacePage() {
         соседом сверху и на всю ширину: при прокрутке вверх шапка возвращалась
         и накрывала верхние станции — таймлайн выглядел обрезанным.
       */}
-      <div className={`cl-tl-layout${showRail ? ' with-rail' : ''}`}>
+      <div
+        className={`cl-tl-layout${showRail ? ' with-rail' : ''}`}
+        style={{ ['--cl-rail-off' as string]: headHidden ? '0px' : `${headH}px` }}
+      >
         {showRail ? <TimelineRail days={dayCounts} position={railPos} onJump={jumpToDay} /> : null}
         <div className="cl-tl-main">
       {/*
@@ -599,7 +651,7 @@ export default function SpacePage() {
         зажат, и «Выбрать всё», поиск и фильтры всегда в одном движении, а не
         через прокрутку в самый верх.
       */}
-      <div className={`cl-space-head${headHidden ? ' is-hidden' : ''}`}>
+      <div ref={headRef} className={`cl-space-head${headHidden ? ' is-hidden' : ''}`}>
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
         <div style={{ minWidth: 0, flex: '1 1 320px' }}>
           <h1 className="cl-h1">{space.name}</h1>
@@ -753,14 +805,6 @@ export default function SpacePage() {
         />
       ) : (
         <>
-          {fromDay ? (
-            <div className="cl-fromchip">
-              Показаны дни с {formatDayLabel(dayKeyToDate(fromDay))}
-              <button onClick={() => setFromDay(null)} title="Показать альбом с начала" aria-label="Сбросить">
-                ✕
-              </button>
-            </div>
-          ) : null}
           <TimelineView
             files={files}
             uploads={uploads}
@@ -884,22 +928,13 @@ export default function SpacePage() {
  */
 function matchesSlice(
   file: CloudFile,
-  s: {
-    view: View
-    folderId: string | null
-    kindFilter: string
-    query: string
-    onlyFavorites: boolean
-    fromDay: string | null
-  }
+  s: { view: View; folderId: string | null; kindFilter: string; query: string; onlyFavorites: boolean }
 ): boolean {
   if (s.onlyFavorites) return false
   if (s.kindFilter && file.kind !== s.kindFilter) return false
   const q = s.query.trim().toLowerCase()
   if (q && !file.name.toLowerCase().includes(q)) return false
   if (s.view === 'files' && (file.folderId ?? null) !== (s.folderId ?? null)) return false
-  // При якоре рельсы файлы раньше выбранной даты на экране не живут.
-  if (s.view === 'timeline' && s.fromDay && dayKeyOf(new Date(file.takenAt)) < s.fromDay) return false
   return true
 }
 
