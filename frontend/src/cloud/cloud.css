@@ -839,8 +839,9 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   min-height: 0;
   overflow: hidden;
 }
-.cl-viewer-stage img,
-.cl-viewer-stage video {
+/* Узко и намеренно: прежний .cl-viewer-stage img накрывал бы ВСЁ внутри
+   сцены — слои качества, тринадцать миниатюр полосы, зарево. */
+.cl-viewer-stage > .cl-rail video {
   max-width: 100%;
   max-height: 100%;
   display: block;
@@ -1039,32 +1040,122 @@ section[data-day],
   to { opacity: 1; transform: none; }
 }
 
-/*
- * Сцена снимка занимает всю ячейку грида: жест перетаскивания должен ловиться
- * по всей площади, а не только по пикселям картинки — иначе увеличенный кадр
- * невозможно подвинуть, ухватив за поле рядом.
- */
-.cl-imgstage {
-  width: 100%;
-  height: 100%;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  cursor: zoom-in;
-}
-.cl-imgstage.zoomed { cursor: grab; touch-action: none; }
-.cl-imgstage.zoomed:active { cursor: grabbing; }
-/*
- * Масштаб анимируется — иначе клик-зум прыгал 1→2.5, а Ctrl+колесо шло
- * рывками по ×1.15. Во время перетаскивания переход снимается: со включённым
- * transform-transition кадр вяз бы за курсором резиновой задержкой.
- * Прозрачностью управляет сам компонент (фейд по факту загрузки), поэтому
- * keyframe-анимации здесь нет.
- */
-.cl-imgstage img { will-change: transform; transition: transform .28s var(--cl-ease-io); }
-.cl-imgstage.dragging img { transition: none; }
 .cl-viewer-stage video { animation: clFade .28s ease; }
+/* ── Зал ─────────────────────────────────────────────────────────────────
+ * Тёмная комната, свет идёт от самого кадра. Ни одного backdrop-filter:
+ * над едущей рельсой он заставлял бы браузер копировать и размывать подложку
+ * каждый кадр слайда, зума и протяжки.
+ */
+.cl-vbackdrop {
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 45%, rgba(14, 16, 21, .82), rgba(5, 6, 9, .98));
+  transition: opacity .22s var(--cl-ease);
+}
+/* Зарево: размытая копия миниатюры подсвечивает стены. Один слой, размытие
+   запекается в растр и на каждом кадре не пересчитывается. */
+.cl-vglow {
+  position: absolute; inset: -12%; z-index: 0; pointer-events: none;
+  background-size: cover; background-position: center;
+  filter: blur(90px) saturate(1.5);
+  opacity: .3;
+  transform: translateZ(0);
+  transition: opacity .5s var(--cl-ease);
+}
+.cl-viewer.is-idle .cl-vglow { opacity: .42; }
+
+.cl-viewer-stage { --cl-gutter: 104px; cursor: zoom-in; }
+.cl-viewer.is-idle .cl-viewer-stage { cursor: none; }
+
+/* Рельса: три слота, каждый на своём месте. Старый кадр не исчезает — уезжает. */
+.cl-rail {
+  position: absolute;
+  left: 0; right: 0; top: 0; bottom: var(--cl-gutter);
+  transform: translate3d(var(--nudge, 0px), 0, 0);
+  transition: transform .3s var(--cl-ease);
+}
+.cl-rail.is-live { transition: none; }
+.cl-shot { position: absolute; inset: 0; display: grid; place-items: center; }
+.cl-shot-media {
+  width: 100%; height: 100%;
+  display: grid; place-items: center;
+  will-change: transform;
+}
+/* Кадр чуть подаётся вперёд, когда весь хром ушёл. */
+.cl-viewer.is-idle .cl-shot-media { transition: transform .6s var(--cl-ease); }
+.cl-shot-layers { position: relative; width: 100%; height: 100%; }
+.cl-layer {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity .3s var(--cl-ease);
+}
+/* Миниатюра видна сразу: ею только что нарисована плитка, она уже в кэше. */
+.cl-layer.is-lq { opacity: 1; filter: blur(1px); }
+.cl-layer.is-on { opacity: 1; }
+.cl-shot-media > .cl-layer { opacity: 1; }
+.cl-shot-generic { display: grid; place-items: center; text-align: center; padding: 24px; }
+.cl-shot-generic h3 { margin: 10px 0 4px; }
+.cl-shot-generic p { margin: 0; color: var(--text-muted); font-size: 13px; }
+
+.cl-zoom-pill {
+  padding: 3px 8px; border-radius: 99px;
+  background: rgba(255, 255, 255, .12);
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
+}
+
+/* ── Полоса превью ──────────────────────────────────────────────────────
+ * Место под неё выделено раз и навсегда (--cl-gutter), поэтому появление и
+ * скрытие не двигают кадр ни на пиксель.
+ */
+.cl-strip {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: var(--cl-gutter);
+  display: grid; place-items: center;
+  z-index: 3;
+  transition: opacity .3s var(--cl-ease), transform .3s var(--cl-ease);
+}
+.cl-strip-rail { position: relative; width: 64px; height: 64px; transition: transform .3s var(--cl-ease); }
+.cl-strip-cell {
+  position: absolute; top: 0;
+  width: 64px; height: 64px;
+  padding: 0; border: none; background: var(--surface-200);
+  border-radius: 9px; overflow: hidden; cursor: pointer;
+  opacity: .5;
+  transition: opacity .25s var(--cl-ease), transform .25s var(--cl-ease);
+}
+.cl-strip-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cl-strip-cell:hover { opacity: .85; transform: translateY(-3px); }
+.cl-strip-cell.is-active { opacity: 1; transform: scale(1.14); z-index: 1; }
+/* Кольцо активной — псевдоэлементом по opacity: box-shadow перерисовывался бы
+   на каждом кадре трёхсотмиллисекундного проезда ленты. */
+.cl-strip-cell::after {
+  content: ''; position: absolute; inset: 0;
+  border-radius: 9px; box-shadow: inset 0 0 0 2px var(--brand);
+  opacity: 0; transition: opacity .25s var(--cl-ease);
+}
+.cl-strip-cell.is-active::after { opacity: 1; }
+
+/* Плёночная риска прогресса — видна, даже когда весь хром ушёл. */
+.cl-vprogress {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--brand);
+  transform-origin: left center;
+  z-index: 4;
+  transition: transform .3s var(--cl-ease);
+}
+
+/* ── Иммерсивный режим: остаётся только снимок ─────────────────────────── */
+.cl-viewer.is-idle .cl-viewer-top,
+.cl-viewer.is-idle .cl-viewer-nav,
+.cl-viewer.is-idle .cl-strip {
+  opacity: 0;
+  pointer-events: none;
+}
+.cl-viewer.is-idle .cl-strip { transform: translateY(12px); }
+
 .cl-viewer-top {
+  transition: opacity .3s var(--cl-ease);
   position: absolute; top: 0; left: 0; right: 0;
   display: flex; align-items: center; gap: 9px;
   padding: 13px 15px;
@@ -1082,6 +1173,7 @@ section[data-day],
   z-index: 3;
   transition: background .15s ease;
 }
+.cl-viewer-nav { transition: opacity .3s var(--cl-ease), background .15s ease; }
 .cl-viewer-nav:hover { background: rgba(30, 34, 44, .8); }
 .cl-viewer-nav.prev { left: 0; border-radius: 0 12px 12px 0; }
 .cl-viewer-nav.next { right: 0; border-radius: 12px 0 0 12px; }
