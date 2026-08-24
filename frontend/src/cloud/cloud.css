@@ -539,7 +539,7 @@
   z-index: 0;
 }
 .cl-map .leaflet-container { background: var(--surface-200); font: inherit; }
-.cl-map-pin { position: relative; cursor: pointer; }
+.cl-map-pin { cursor: pointer; }
 .cl-map-pin img {
   width: 46px; height: 46px;
   border-radius: 9px; object-fit: cover;
@@ -561,6 +561,18 @@
   border: 2px solid #fff;
   font-variant-numeric: tabular-nums;
 }
+
+.cl-map-note {
+  margin-top: 10px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: var(--surface-100);
+  border: 1px solid var(--surface-border);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.cl-map-note.error { border-color: rgba(239, 68, 68, .5); color: #fca5a5; }
 
 .cl-activity-item { display: flex; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--surface-border); font-size: 13.5px; }
 .cl-activity-item:last-child { border-bottom: none; }
