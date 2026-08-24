@@ -19,7 +19,8 @@ import { useEffect, useRef } from 'react'
  * зависит от того, где живёт множество выделенного, и одинаково работает в
  * хуяпке, в «Файлах» и в сквозных лентах.
  */
-export type PaintMode = 'add' | 'remove'
+/** reset — сбросить выделение целиком: рамка без модификатора заменяет его. */
+export type PaintMode = 'add' | 'remove' | 'reset'
 
 /** Насколько близко к краю нужно подвести курсор, чтобы список поехал сам. */
 const EDGE_PX = 96
@@ -55,7 +56,6 @@ export function useDragSelect({
 
     let mode: PaintMode | null = null
     let painting = false
-    let pending = false
     let activePointer = -1
     let startX = 0
     let startY = 0
@@ -65,6 +65,63 @@ export function useDragSelect({
     let raf = 0
     /** Была ли протяжка: по ней глушим завершающий click, чтобы не открыть кадр. */
     let dragged = false
+
+    /*
+     * Рамка выделения — как на рабочем столе: тянешь по пустому месту, и всё,
+     * что попало в прямоугольник, отмечается. Прямоугольник считаем в
+     * координатах ДОКУМЕНТА, а не окна: иначе автопрокрутка у края съезжала бы
+     * относительно уже отмеченного.
+     */
+    let marquee: { x0: number; y0: number; add: boolean } | null = null
+    let box: HTMLElement | null = null
+    let cache: { id: string; l: number; t: number; r: number; b: number }[] = []
+
+    const docY = () => root.scrollTop
+    const buildCache = () => {
+      const rootBox = root.getBoundingClientRect()
+      cache = []
+      for (const el of document.querySelectorAll<HTMLElement>('.cl-tl-main [data-file-id]')) {
+        const r = el.getBoundingClientRect()
+        const id = el.dataset.fileId
+        if (!id) continue
+        cache.push({
+          id,
+          l: r.left,
+          t: r.top - rootBox.top + root.scrollTop,
+          r: r.right,
+          b: r.bottom - rootBox.top + root.scrollTop,
+        })
+      }
+    }
+
+    const drawMarquee = (x1: number, y1: number) => {
+      if (!marquee || !box) return
+      const rootBox = root.getBoundingClientRect()
+      const x0 = marquee.x0
+      const y0 = marquee.y0 - root.scrollTop + rootBox.top
+      const vy1 = y1
+      box.style.left = `${Math.min(x0, x1)}px`
+      box.style.top = `${Math.min(y0, vy1)}px`
+      box.style.width = `${Math.abs(x1 - x0)}px`
+      box.style.height = `${Math.abs(vy1 - y0)}px`
+    }
+
+    const applyMarquee = (x1: number, y1: number) => {
+      if (!marquee) return
+      const rootBox = root.getBoundingClientRect()
+      const dy1 = y1 - rootBox.top + root.scrollTop
+      const l = Math.min(marquee.x0, x1)
+      const r = Math.max(marquee.x0, x1)
+      const t = Math.min(marquee.y0, dy1)
+      const b = Math.max(marquee.y0, dy1)
+      for (const tile of cache) {
+        // Пересечение, а не полное вхождение: на рабочем столе задетый краем
+        // значок тоже выделяется.
+        const hit = tile.l < r && tile.r > l && tile.t < b && tile.b > t
+        if (hit) onPaintRef.current(tile.id, 'add')
+        else if (!marquee.add) onPaintRef.current(tile.id, 'remove')
+      }
+    }
 
     const tileAt = (x: number, y: number): HTMLElement | null => {
       const el = document.elementFromPoint(x, y) as HTMLElement | null
@@ -89,7 +146,7 @@ export function useDragSelect({
      */
     const autoScroll = () => {
       raf = 0
-      if (!painting) return
+      if (!painting && !marquee) return
       const box = root.getBoundingClientRect()
       const fromTop = lastY - box.top
       const fromBottom = box.bottom - lastY
@@ -99,8 +156,14 @@ export function useDragSelect({
       if (dy !== 0) {
         const before = root.scrollTop
         root.scrollTop += dy
-        // Сдвинулись — под курсором уже другая плитка, её тоже красим.
-        if (root.scrollTop !== before) paintAt(lastX, lastY)
+        if (root.scrollTop !== before) {
+          // Сдвинулись — под курсором уже другая плитка, её тоже красим.
+          if (painting) paintAt(lastX, lastY)
+          if (marquee) {
+            drawMarquee(lastX, lastY)
+            applyMarquee(lastX, lastY)
+          }
+        }
       }
       raf = requestAnimationFrame(autoScroll)
     }
@@ -120,10 +183,13 @@ export function useDragSelect({
 
     const finish = () => {
       stopAutoScroll()
+      marquee = null
+      box?.remove()
+      box = null
+      cache = []
       if (longPress) clearTimeout(longPress)
       longPress = null
       painting = false
-      pending = false
       mode = null
       activePointer = -1
       document.body.classList.remove('cl-dragging-select')
@@ -132,30 +198,48 @@ export function useDragSelect({
     const onPointerDown = (e: PointerEvent) => {
       if (e.button !== 0 && e.pointerType === 'mouse') return
       if (activePointer !== -1) return
+      const target = e.target as HTMLElement | null
       const tile = tileAt(e.clientX, e.clientY)
-      if (!tile) return
-      /*
-       * Кому позволено начинать.
-       *
-       * Мышь — только в режиме выделения либо с самой галочки: иначе протяжка
-       * отняла бы обычный клик по кадру. Палец — всегда, потому что долгое
-       * нажатие и есть общепринятый способ ВОЙТИ в режим выделения на телефоне;
-       * галочка там слишком мелкая, чтобы делать её единственной дверью.
-       */
-      const fromCheckbox = Boolean((e.target as HTMLElement | null)?.closest?.('.cl-tile-check'))
-      if (e.pointerType === 'mouse' && !enabledRef.current && !fromCheckbox) return
+      const fromCheckbox = Boolean(target?.closest?.('.cl-tile-check'))
 
+      /*
+       * МЫШЬ — всегда рамка, как на рабочем столе: отмечается всё, что попало
+       * в прямоугольник, а не только то, по чему прошёл курсор. В плотной
+       * сетке это принципиально: протяжкой по диагонали захватываешь пять
+       * рядов разом, а покраска по пути брала лишь тонкую полоску под курсором.
+       *
+       * Пускаем в режиме выделения, с самой галочки и с пустого места ленты.
+       * Интерактивные элементы пропускаем, иначе кнопка тянула бы рамку
+       * вместо нажатия.
+       */
+      if (e.pointerType === 'mouse') {
+        if (!target || !target.closest('.cl-tl-main')) return
+        if (target.closest('button, a, input, textarea, select, .cl-space-head, .cl-timenav')) {
+          if (!fromCheckbox) return
+        }
+        if (!enabledRef.current && !fromCheckbox && tile) return
+
+        const rootBox = root.getBoundingClientRect()
+        activePointer = e.pointerId
+        startX = lastX = e.clientX
+        startY = lastY = e.clientY
+        dragged = false
+        marquee = {
+          x0: e.clientX,
+          y0: e.clientY - rootBox.top + root.scrollTop,
+          add: e.ctrlKey || e.metaKey || e.shiftKey,
+        }
+        buildCache()
+        return
+      }
+
+      // ПАЛЕЦ: долгое нажатие и покраска по пути — привычный жест телефона.
+      if (!tile) return
       activePointer = e.pointerId
       startX = lastX = e.clientX
       startY = lastY = e.clientY
       dragged = false
-
-      if (e.pointerType === 'mouse') {
-        pending = true
-        return
-      }
       // Палец: ждём долгое нажатие, иначе отняли бы у него прокрутку.
-      pending = false
       longPress = setTimeout(() => {
         longPress = null
         if (activePointer === e.pointerId) begin(lastX, lastY)
@@ -167,19 +251,29 @@ export function useDragSelect({
       lastX = e.clientX
       lastY = e.clientY
 
+      if (marquee) {
+        if (!box) {
+          // Прямоугольник создаём при первом же движении: одиночный клик по
+          // пустому месту не должен мигать рамкой.
+          if (Math.abs(lastX - startX) + Math.abs(lastY - startY) <= DRAG_SLOP_PX) return
+          box = document.createElement('div')
+          box.className = 'cl-marquee'
+          document.body.appendChild(box)
+          document.body.classList.add('cl-dragging-select')
+          dragged = true
+          if (!marquee.add) onPaintRef.current('*', 'reset')
+          raf = requestAnimationFrame(autoScroll)
+        }
+        drawMarquee(lastX, lastY)
+        applyMarquee(lastX, lastY)
+        return
+      }
       if (painting) {
         paintAt(lastX, lastY)
         return
       }
       const far = Math.abs(lastX - startX) + Math.abs(lastY - startY) > DRAG_SLOP_PX
       if (!far) return
-      if (pending) {
-        pending = false
-        // Мышь: сдвинулись — это протяжка, а не клик по плитке.
-        if (!begin(startX, startY)) finish()
-        else paintAt(lastX, lastY)
-        return
-      }
       // Палец поехал раньше долгого нажатия — человек листает, не выделяет.
       if (longPress) {
         clearTimeout(longPress)

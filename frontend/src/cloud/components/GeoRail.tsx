@@ -76,49 +76,82 @@ export function GeoRail({
      */
     const total = withRun.reduce((n, s) => n + s.count, 0)
     const floor = Math.max(4, Math.round(total * 0.02))
-    let kept = withRun.filter((s) => s.count >= floor)
-    if (kept.length < Math.min(4, withRun.length)) {
-      kept = [...withRun].sort((a, b) => b.count - a.count).slice(0, Math.min(4, withRun.length))
+    let majorRuns = new Set(withRun.filter((s) => s.count >= floor).map((s) => s.run))
+    if (majorRuns.size < Math.min(4, withRun.length)) {
+      majorRuns = new Set(
+        [...withRun].sort((a, b) => b.count - a.count).slice(0, Math.min(4, withRun.length)).map((s) => s.run)
+      )
     }
-    if (kept.length > capacity) {
-      const top = new Set([...kept].sort((a, b) => b.count - a.count).slice(0, capacity).map((s) => s.run))
-      kept = kept.filter((s) => top.has(s.run))
+    if (majorRuns.size > capacity) {
+      majorRuns = new Set(
+        withRun.filter((s) => majorRuns.has(s.run)).sort((a, b) => b.count - a.count).slice(0, capacity).map((s) => s.run)
+      )
     }
-    return kept.sort((a, b) => a.run - b.run)
+    // Мелкие остановки не выбрасываем: они остаются точками на оси — как
+    // промежуточные станции на схеме метро. Иначе исчезал целый Ереван, и
+    // выглядело так, будто география не догрузилась.
+    return withRun.map((s) => ({ ...s, major: majorRuns.has(s.run) }))
   }, [segments, baseH])
 
   if (stations.length < 2 || baseH < 200) {
     return segments.length > 0 ? <div ref={setNode} className="cl-timenav cl-geonav" aria-hidden /> : null
   }
 
-  const n = stations.length
-  const step = (h - PAD * 2 - NODE) / n
-  const y = (i: number) => PAD + i * step
+  /*
+   * Раскладка по ВЕСАМ, а не по числу снимков.
+   *
+   * Пропорционально числу кадров Тбилиси занимал три четверти оси, и все
+   * армянские остановки слипались в кучу с наезжающими подписями. Крупная
+   * станция получает полный шаг, мелкая точка — треть: порядок поездки
+   * сохраняется, подписи не сталкиваются, а мелочь читается как
+   * промежуточные станции на схеме.
+   */
+  const MINOR_W = 0.34
+  const weights = stations.map((st) => (st.major ? 1 : MINOR_W))
+  const totalW = Math.max(1, weights.reduce((a, b) => a + b, 0))
+  const step = (h - PAD * 2 - NODE) / totalW
   const lineTop = PAD + NODE / 2
-  const lineBottom = y(n - 1) + NODE / 2 + step
+
+  const startW = new Map<number, number>()
+  let acc = 0
+  stations.forEach((st, i) => {
+    startW.set(st.run, acc)
+    acc += weights[i]!
+  })
+  const yOf = (run: number) => PAD + (startW.get(run) ?? 0) * step
+  const lineBottom = PAD + totalW * step + NODE / 2
   const axisLen = Math.max(1, lineBottom - lineTop)
 
   // Активная станция — последняя, чей отрезок уже начался.
-  let activeIdx = -1
-  for (let i = 0; i < n; i++) if (stations[i]!.run <= position.run) activeIdx = i
-  const inside = activeIdx >= 0 ? Math.max(0, Math.min(1, position.fraction)) : 0
-  const progress = activeIdx < 0 ? 0 : Math.max(0, Math.min(1, (activeIdx + inside) / n))
+  let activeRun = -1
+  let activeIndex = -1
+  stations.forEach((st, i) => {
+    if (st.run <= position.run) {
+      activeRun = st.run
+      activeIndex = i
+    }
+  })
+  const inside = activeIndex >= 0 ? Math.max(0, Math.min(1, position.fraction)) * weights[activeIndex]! : 0
+  const progress =
+    activeRun < 0 ? 0 : Math.max(0, Math.min(1, ((startW.get(activeRun) ?? 0) + inside) / totalW))
 
   return (
     <nav ref={setNode} className="cl-timenav cl-geonav" aria-label="Места съёмки">
       <div className="cl-tn-axis" style={{ top: lineTop, height: axisLen }} />
-      {activeIdx >= 0 ? (
+      {activeRun >= 0 ? (
         <div className="cl-tn-axis done" style={{ top: lineTop, height: axisLen, transform: `scaleY(${progress})` }} />
       ) : null}
 
-      {stations.map((s, i) => {
+      {stations.map((s) => {
         const label = s.district ?? s.city ?? s.country
         const sub = s.district ? (s.city ?? s.country) : s.city ? s.country : ''
         return (
           <button
             key={`${s.run}-${s.path}`}
-            className={`cl-tn-node${i === activeIdx ? ' is-active' : ''}${activeIdx >= 0 && i < activeIdx ? ' is-passed' : ''}`}
-            style={{ transform: `translateY(${y(i)}px)` }}
+            className={`cl-tn-node${s.major ? '' : ' is-minor'}${s.run === activeRun ? ' is-active' : ''}${
+              activeRun >= 0 && s.run < activeRun ? ' is-passed' : ''
+            }`}
+            style={{ transform: `translateY(${yOf(s.run)}px)` }}
             onClick={() => onJump(s.run)}
             title={[s.country, s.city, s.district].filter(Boolean).join(' · ') + ` · ${s.count}`}
           >

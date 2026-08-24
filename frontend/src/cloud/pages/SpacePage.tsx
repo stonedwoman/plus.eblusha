@@ -366,6 +366,13 @@ export default function SpacePage() {
         const bottom = same[same.length - 1]!.getBoundingClientRect().bottom
         fraction = Math.max(0, Math.min(1, (probeY - top) / Math.max(1, bottom - top)))
       }
+      /*
+       * На дне списка последний отрезок считается пройденным целиком. Линия
+       * отсчёта стоит у верха окна, поэтому у длинного отрезка (весь Тбилиси)
+       * доля упиралась в 0.77, и полоска гео не доходила до края, хотя дальше
+       * прокручивать уже некуда.
+       */
+      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) fraction = 1
       setGeoPos((prev) =>
         prev.run === run && Math.abs(prev.fraction - fraction) < 0.004 ? prev : { run, fraction }
       )
@@ -716,6 +723,10 @@ export default function SpacePage() {
   /** Красим плитку под курсором при протяжке. Идемпотентно: одна и та же
    *  плитка приходит десятками событий подряд, и лишний setState тут не нужен. */
   const paintSelect = useCallback((id: string, mode: PaintMode) => {
+    if (mode === 'reset') {
+      setSelection((prev) => (prev.size === 0 ? prev : new Set()))
+      return
+    }
     setSelection((prev) => {
       if (mode === 'add' ? prev.has(id) : !prev.has(id)) return prev
       const next = new Set(prev)
@@ -1172,7 +1183,15 @@ function flashGroup(selector: string): void {
   // Пустой шаг нужен, чтобы повторный клик по той же станции проиграл вспышку
   // заново: без смены правила анимация не перезапускается.
   tag.textContent = ''
-  const rule = `${selector} { animation: clFlash ${FLASH_MS}ms var(--cl-ease) both; }`
+  /*
+   * Два правила разом: всё остальное гаснет, подгруппа остаётся в свету и
+   * получает мягкое свечение наружу. Соседние плитки стоят вплотную, их ореолы
+   * сливаются — и подсвеченной читается вся ОБЛАСТЬ, а не каждый снимок по
+   * отдельности. Обводки внутри плитки для этого не хватало.
+   */
+  const rule =
+    `.cl-tl-main .cl-tile { animation: clDim ${FLASH_MS}ms var(--cl-ease) both; }\n` +
+    `${selector} { animation: clLit ${FLASH_MS}ms var(--cl-ease) both; z-index: 2; }`
   requestAnimationFrame(() => {
     if (tag) tag.textContent = rule
   })
