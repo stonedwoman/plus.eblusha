@@ -9,14 +9,18 @@ import { cloudPath } from '../basePath'
 export default function CloudHome() {
   const [spaces, setSpaces] = useState<CloudSpace[] | null>(null)
   const [creating, setCreating] = useState(false)
+  // Ошибку держим отдельно: раньше сбой сети подменялся пустым массивом, и
+  // человек видел «здесь пока пусто» вместо «не удалось загрузить». Разница
+  // принципиальная — во втором случае у него есть что нажать.
+  const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
       const { data } = await cloudApi.get<{ spaces: CloudSpace[] }>('/spaces')
       setSpaces(data.spaces)
+      setError(null)
     } catch (err) {
-      toast.error(toCloudError(err).message)
-      setSpaces([])
+      setError(toCloudError(err).message)
     }
   }, [])
 
@@ -37,7 +41,18 @@ export default function CloudHome() {
         </button>
       </div>
 
-      {spaces === null ? (
+      {error ? (
+        <Empty
+          icon="⚠"
+          title="Не удалось загрузить список"
+          text={error}
+          action={
+            <button className="cl-btn primary" onClick={() => void load()}>
+              Повторить
+            </button>
+          }
+        />
+      ) : spaces === null ? (
         <div className="cl-space-grid">
           {Array.from({ length: 4 }, (_, i) => (
             <div key={i} className="cl-skeleton" style={{ height: 250 }} />

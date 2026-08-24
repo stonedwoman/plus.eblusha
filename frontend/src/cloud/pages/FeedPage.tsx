@@ -31,6 +31,7 @@ function FilesFeed({ view }: { view: 'recent' | 'favorites' | 'trash' }) {
   const [done, setDone] = useState(false)
   const [selection, setSelection] = useState<Set<string>>(new Set())
   const [viewerIndex, setViewerIndex] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(
     async (nextCursor: string | null) => {
@@ -38,11 +39,16 @@ function FilesFeed({ view }: { view: 'recent' | 'favorites' | 'trash' }) {
         const { data } = await cloudApi.get<{ files: FeedFile[]; nextCursor: string | null }>('/files/feed', {
           params: { view, limit: 60, ...(nextCursor ? { cursor: nextCursor } : {}) },
         })
-        setFiles((prev) => (nextCursor ? [...prev, ...data.files] : data.files))
+        setFiles((prev) => {
+          if (!nextCursor) return data.files
+          const seen = new Set(prev.map((f) => f.id))
+          return [...prev, ...data.files.filter((f) => !seen.has(f.id))]
+        })
         setCursor(data.nextCursor)
+        setError(null)
         if (!data.nextCursor) setDone(true)
       } catch (err) {
-        toast.error(toCloudError(err).message)
+        setError(toCloudError(err).message)
         setDone(true)
       } finally {
         setLoading(false)
@@ -98,6 +104,17 @@ function FilesFeed({ view }: { view: 'recent' | 'favorites' | 'trash' }) {
 
       {loading ? (
         <SkeletonTiles />
+      ) : error ? (
+        <Empty
+          icon="⚠"
+          title="Не удалось загрузить"
+          text={error}
+          action={
+            <button className="cl-btn primary" onClick={() => { setError(null); setLoading(true); void load(null) }}>
+              Повторить
+            </button>
+          }
+        />
       ) : files.length === 0 ? (
         <Empty title="Пусто" text={meta.empty} />
       ) : (

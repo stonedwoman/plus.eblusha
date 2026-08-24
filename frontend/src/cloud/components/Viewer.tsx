@@ -62,16 +62,39 @@ export function Viewer({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
-      if (e.key === 'Escape') onClose()
-      else if (e.key === 'ArrowLeft') go(-1)
-      else if (e.key === 'ArrowRight') go(1)
-      else if (e.key === ' ' && videoRef.current) {
+      const tag = target?.tagName
+      const typing =
+        tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable === true || e.isComposing
+
+      // Escape закрывает всегда — даже из поля комментария. Иначе из
+      // просмотрщика невозможно выйти, не убрав сначала фокус мышью.
+      if (e.key === 'Escape') {
+        onClose()
+        return
+      }
+      if (typing) return
+      // Сочетания отдаём браузеру: Ctrl+F, Cmd+R и прочее не наши.
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+
+      // Плеер в фокусе сам обрабатывает стрелки и пробел — не отнимаем.
+      const mediaFocused = tag === 'VIDEO' || tag === 'AUDIO'
+      const key = e.key.toLowerCase()
+
+      if (key === 'arrowleft') {
+        if (!mediaFocused) go(-1)
+      } else if (key === 'arrowright') {
+        if (!mediaFocused) go(1)
+      } else if (e.key === ' ') {
+        if (mediaFocused || !videoRef.current) return
         e.preventDefault()
         if (videoRef.current.paused) void videoRef.current.play()
         else videoRef.current.pause()
-      } else if (e.key === 'i') setPanel((p) => (p === 'info' ? null : 'info'))
-      else if (e.key === 'f' && !readOnly && file) void toggleFavorite(file)
+      } else if (key === 'i' || e.code === 'KeyI') {
+        setPanel((p) => (p === 'info' ? null : 'info'))
+      } else if ((key === 'f' || e.code === 'KeyF') && !readOnly && file) {
+        // Матч по e.code тоже: на русской раскладке e.key придёт «а»/«ш».
+        void toggleFavorite(file)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -185,6 +208,7 @@ export function Viewer({
               <MetadataPanel file={file} onReact={!readOnly ? (emoji) => void react(file, emoji) : undefined} />
             ) : (
               <CommentsPanel
+                key={file.id}
                 file={file}
                 spaceId={spaceId ?? file.spaceId}
                 onSeek={file.kind === 'VIDEO' ? seekTo : undefined}

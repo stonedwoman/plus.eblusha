@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import '../cloud.css'
 import { ensureCloudSession, type CloudMe } from '../auth'
 import { toCloudError } from '../api'
 import { connectCloudSocket, disconnectCloudSocket, onCloudEvent } from '../realtime'
-import { hydrateServerUploads, startUploadReconciler, takeDuplicateCount, useUploadSummary } from '../uploads/manager'
+import { hydrateServerUploads, startUploadReconciler, takeDuplicateCount, useUploadBusy } from '../uploads/manager'
 import { Toasts, toast } from '../components/ui'
 import { cloudPath } from '../basePath'
 
@@ -69,8 +69,10 @@ export default function CloudLayout() {
   // Страховка на случай потерянных realtime-событий: см. startUploadReconciler.
   useEffect(() => startUploadReconciler(), [])
 
-  // Один итог по уже загруженным снимкам, когда пачка догрузилась.
-  const uploadsBusy = useUploadSummary().active > 0
+  // Булев селектор, а не сводка: useUploadSummary пересчитывался на КАЖДЫЙ тик
+  // прогресса и перерисовывал каркас вместе со всей галереей под ним. Это и был
+  // главный источник тормозов при заливке пачки в сотни файлов.
+  const uploadsBusy = useUploadBusy()
   useEffect(() => {
     if (uploadsBusy) return
     const dupes = takeDuplicateCount()
@@ -96,6 +98,10 @@ export default function CloudLayout() {
       </div>
     )
   }
+
+  // Контекст мемоизируем: новый объект на каждом рендере каркаса заставлял
+  // перерисовываться все страницы под Outlet.
+  const outletContext = useMemo<CloudContext | null>(() => (me ? { me } : null), [me])
 
   if (!me) {
     return (
@@ -151,7 +157,7 @@ export default function CloudLayout() {
         </a>
       </header>
 
-      <Outlet context={{ me } satisfies CloudContext} />
+      <Outlet context={outletContext} />
       <Toasts />
     </div>
   )

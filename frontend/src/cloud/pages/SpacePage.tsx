@@ -3,7 +3,16 @@ import { useOutletContext, useParams, useSearchParams } from 'react-router-dom'
 import { cloudApi, formatBytes, formatEta, toCloudError } from '../api'
 import type { CloudActivity, CloudFile, CloudFolder, CloudSpace, PresenceEntry } from '../types'
 import { joinSpaceRoom, onCloudEvent } from '../realtime'
-import { enqueueFiles, parseUploadRefs, pauseAll, resumeAll, useSpaceUploads, useUploadStore, useUploadSummary } from '../uploads/manager'
+import {
+  enqueueFiles,
+  parseUploadRefs,
+  pauseAll,
+  resumeAll,
+  useSpaceUploads,
+  useSpaceUploadsBusy,
+  useUploadStore,
+  useUploadSummary,
+} from '../uploads/manager'
 import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
 import { Viewer } from '../components/Viewer'
@@ -31,12 +40,21 @@ export default function SpacePage() {
   const [cursor, setCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [selection, setSelection] = useState<Set<string>>(new Set())
-  const [viewerIndex, setViewerIndex] = useState<number | null>(null)
+  /*
+   * Просмотрщик держится за ID файла, а не за индекс.
+   *
+   * Индекс — производная от массива: приход cloud.file.created вставлял файл в
+   * середину (порядок takenAt asc), и открытый кадр молча подменялся соседним;
+   * удаление сдвигало всё на единицу; фоновое обновление списка вообще
+   * закрывало просмотрщик. По id этого не происходит.
+   */
+  const [viewerFileId, setViewerFileId] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [kindFilter, setKindFilter] = useState<'' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'>('')
   const [onlyFavorites, setOnlyFavorites] = useState(false)
+  const anchorRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const dirInput = useRef<HTMLInputElement | null>(null)
 
@@ -44,6 +62,11 @@ export default function SpacePage() {
   // тик прогресса не перерисовывает страницу целиком.
   const uploadRefs = useSpaceUploads(spaceId)
   const uploads = useMemo(() => parseUploadRefs(uploadRefs), [uploadRefs])
+
+  const viewerIndex = useMemo(
+    () => (viewerFileId ? files.findIndex((f) => f.id === viewerFileId) : -1),
+    [viewerFileId, files]
+  )
 
   const canEdit = space?.role === 'OWNER' || space?.role === 'EDITOR'
   const isOwner = space?.role === 'OWNER'
@@ -59,8 +82,18 @@ export default function SpacePage() {
     }
   }, [spaceId])
 
+  /**
+   * mode:
+   *   replace — первая страница, список пересобирается (смена фильтров);
+   *   append  — следующая страница по курсору;
+   *   merge   — фоновое обновление: подмешиваем свежие файлы, НЕ трогая
+   *             курсор, скролл и уже загруженные страницы. Прежний код звал
+   *             replace каждые 10 секунд во время заливки: список схлопывался
+   *             до первой страницы, скролл прыгал, а открытый просмотрщик
+   *             закрывался.
+   */
   const loadFiles = useCallback(
-    async (nextCursor: string | null) => {
+    async (nextCursor: string | null, mode: 'replace' | 'append' | 'merge' = nextCursor ? 'append' : 'replace') => {
       try {
         const { data } = await cloudApi.get<{ files: CloudFile[]; nextCursor: string | null }>('/files', {
           params: {
@@ -77,11 +110,26 @@ export default function SpacePage() {
         // тогда страница пагинации привозит его второй раз. Именно из-за этого
         // «Выбрать все» насчитывало больше файлов, чем есть в хуяпке.
         setFiles((prev) => {
-          if (!nextCursor) return data.files
-          const seen = new Set(prev.map((f) => f.id))
-          return [...prev, ...data.files.filter((f) => !seen.has(f.id))]
+          if (mode === 'replace') return data.files
+          if (mode === 'append') {
+            const seen = new Set(prev.map((f) => f.id))
+            return [...prev, ...data.files.filter((f) => !seen.has(f.id))]
+          }
+          // merge: обновляем известные, новые вставляем на своё место в хронологии
+          const byId = new Map(prev.map((f) => [f.id, f]))
+          let next = prev
+          for (const incoming of data.files) {
+            if (byId.has(incoming.id)) {
+              next = next.map((f) => (f.id === incoming.id ? { ...f, ...incoming } : f))
+            } else {
+              next = insertByTakenAt(next, incoming)
+            }
+          }
+          return next
         })
-        setCursor(data.nextCursor)
+        // Курсор при merge не трогаем: иначе подгрузка следующих страниц
+        // сбрасывалась бы на первую при каждом фоновом обновлении.
+        if (mode !== 'merge') setCursor(data.nextCursor)
       } catch (err) {
         toast.error(toCloudError(err).message)
       } finally {
@@ -94,6 +142,17 @@ export default function SpacePage() {
   useEffect(() => {
     void loadSpace()
   }, [loadSpace])
+
+  /*
+   * Один сброс на все смены среза. Выделение, сделанное в одной папке или под
+   * одним фильтром, переживало переход в другую — и «Удалить» отправляло в
+   * корзину файлы, которых человек уже не видел на экране.
+   */
+  useEffect(() => {
+    setSelection(new Set())
+    setViewerFileId(null)
+    anchorRef.current = null
+  }, [spaceId, view, folderId, kindFilter, query, onlyFavorites])
 
   useEffect(() => {
     if (view === 'map' || view === 'activity') return
@@ -122,11 +181,15 @@ export default function SpacePage() {
    * файлы уже лежали на сервере — 464 файла в базе против «в хуяпке пока нет
    * файлов» на экране.
    */
-  const uploadingNow = uploads.length > 0
+  // Именно BUSY, а не «есть плитки»: пауза, ошибка и «нужен файл» ждут человека,
+  // и держать из-за них десятисекундный опрос списка незачем.
+  const uploadingNow = useSpaceUploadsBusy(spaceId)
   useEffect(() => {
     if (!uploadingNow || view === 'activity' || view === 'map') return
     const t = setInterval(() => {
-      void loadFiles(null)
+      // Только при видимой вкладке: в фоне обновлять нечего и некому смотреть.
+      if (document.visibilityState !== 'visible') return
+      void loadFiles(null, 'merge')
       void loadSpace()
     }, 10_000)
     return () => clearInterval(t)
@@ -135,7 +198,7 @@ export default function SpacePage() {
   const wasUploading = useRef(false)
   useEffect(() => {
     if (wasUploading.current && !uploadingNow) {
-      void loadFiles(null)
+      void loadFiles(null, 'merge')
       void loadSpace()
     }
     wasUploading.current = uploadingNow
@@ -235,7 +298,6 @@ export default function SpacePage() {
     p.set('view', next)
     if (next !== 'files') p.delete('folder')
     setParams(p, { replace: true })
-    setSelection(new Set())
   }
 
   const onlineIds = useMemo(() => new Set(presence.map((p) => p.userId)), [presence])
@@ -376,9 +438,10 @@ export default function SpacePage() {
           tileUrl={me.map.tileUrl}
           attribution={me.map.attribution}
           onOpen={(fileId) => {
-            const idx = files.findIndex((f) => f.id === fileId)
-            if (idx >= 0) setViewerIndex(idx)
-            else void openSingle(fileId, setFiles, setViewerIndex)
+            // Файл может быть вне загруженной страницы — тогда подтянем его
+            // отдельно и вставим в хронологию, не ломая порядок.
+            if (files.some((f) => f.id === fileId)) setViewerFileId(fileId)
+            else void openSingle(fileId, setFiles, setViewerFileId)
           }}
         />
       ) : loading ? (
@@ -417,7 +480,7 @@ export default function SpacePage() {
             else p.delete('folder')
             setParams(p, { replace: true })
           }}
-          onOpen={(file) => setViewerIndex(files.findIndex((f) => f.id === file.id))}
+          onOpen={(file) => setViewerFileId(file.id)}
           onToggleSelect={(id) => toggleSelect(id, setSelection)}
         />
       ) : (
@@ -427,12 +490,22 @@ export default function SpacePage() {
             uploads={uploads}
             selection={selection}
             selectMode={selection.size > 0}
-            onOpen={(file) => setViewerIndex(files.findIndex((f) => f.id === file.id))}
+            onOpen={(file) => setViewerFileId(file.id)}
             onToggleSelect={(id) => toggleSelect(id, setSelection)}
           />
-          <div ref={sentinel} />
         </>
       )}
+
+      {/* Один наблюдатель на все режимы: раньше он жил внутри ветки таймлайна,
+          и в «Файлах» подгрузка не работала вовсе. */}
+      {view !== 'activity' && view !== 'map' ? <div ref={sentinel} /> : null}
+      {cursor && !loading ? (
+        <div style={{ textAlign: 'center', marginTop: 18 }}>
+          <button className="cl-btn" onClick={() => void loadFiles(cursor, 'append')}>
+            Показать ещё
+          </button>
+        </div>
+      ) : null}
 
       {/* ── Панель выбора ───────────────────────────────────────────────── */}
       {selection.size > 0 ? (
@@ -466,7 +539,7 @@ export default function SpacePage() {
         </div>
       ) : null}
 
-      {viewerIndex !== null && files[viewerIndex] ? (
+      {viewerIndex >= 0 && files[viewerIndex] ? (
         <Viewer
           files={files}
           index={viewerIndex}
@@ -476,8 +549,8 @@ export default function SpacePage() {
             if (cursor && !loading) void loadFiles(cursor)
           }}
           canComment={space.role === 'OWNER' || space.role === 'EDITOR' || space.viewerCanComment}
-          onIndexChange={setViewerIndex}
-          onClose={() => setViewerIndex(null)}
+          onIndexChange={(next) => setViewerFileId(files[next]?.id ?? null)}
+          onClose={() => setViewerFileId(null)}
           onFileChanged={(file) => setFiles((prev) => prev.map((f) => (f.id === file.id ? { ...f, ...file } : f)))}
         />
       ) : null}
@@ -577,17 +650,12 @@ function toggleSelect(id: string, setSelection: React.Dispatch<React.SetStateAct
 async function openSingle(
   fileId: string,
   setFiles: React.Dispatch<React.SetStateAction<CloudFile[]>>,
-  setViewerIndex: (i: number) => void
+  setViewerFileId: (id: string | null) => void
 ) {
   try {
     const { data } = await cloudApi.get<{ file: CloudFile }>(`/files/${fileId}`)
-    setFiles((prev) => {
-      const without = prev.filter((f) => f.id !== fileId)
-      const next = insertByTakenAt(without, data.file)
-      // Индекс считаем по итоговому списку, а не гадаем.
-      setViewerIndex(next.findIndex((f) => f.id === fileId))
-      return next
-    })
+    setFiles((prev) => insertByTakenAt(prev.filter((f) => f.id !== fileId), data.file))
+    setViewerFileId(fileId)
   } catch {
     toast.error('Не удалось открыть файл')
   }

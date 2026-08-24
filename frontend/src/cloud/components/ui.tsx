@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { create } from 'zustand'
 import type { CloudUserLite } from '../types'
 import { convertToProxyUrl } from '../../utils/media'
@@ -160,24 +160,36 @@ export function SkeletonTiles({ count = 12 }: { count?: number }) {
   )
 }
 
-/** Наблюдатель «конца списка» — бесконечная подгрузка вместо кнопки «ещё». */
+/**
+ * Наблюдатель «конца списка» — бесконечная подгрузка вместо кнопки «ещё».
+ *
+ * Ref-объект здесь не годится: его присвоение не вызывает повторный рендер, и
+ * если узел появлялся ПОСЛЕ первого прогона эффекта (а он появляется — сначала
+ * рисуется скелетон, потом список), наблюдатель молча цеплялся к null и не
+ * работал вовсе. Поэтому callback-ref: узел живёт в состоянии и входит в deps.
+ *
+ * root тоже важен: реальный скроллер — .cl-root, а не окно (у документа
+ * прокрутка залочена мессенджером). Без него rootMargin считался от вьюпорта и
+ * срабатывал не тогда, когда нужно.
+ */
 export function useInfiniteSentinel(onHit: () => void, enabled: boolean) {
-  const ref = useRef<HTMLDivElement | null>(null)
+  const [node, setNode] = useState<HTMLDivElement | null>(null)
   const cb = useRef(onHit)
   cb.current = onHit
+
   useEffect(() => {
-    if (!enabled || !ref.current) return
-    const el = ref.current
+    if (!enabled || !node) return
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) cb.current()
       },
-      { rootMargin: '600px 0px' }
+      { root: node.closest('.cl-root'), rootMargin: '600px 0px' }
     )
-    io.observe(el)
+    io.observe(node)
     return () => io.disconnect()
-  }, [enabled])
-  return ref
+  }, [enabled, node])
+
+  return useCallback((el: HTMLDivElement | null) => setNode(el), [])
 }
 
 /** QR генерируется в браузере: отдельный серверный генератор картинок не нужен. */

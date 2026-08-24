@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import { formatBytes, formatDuration } from '../api'
 import { UploadTile } from './UploadTile'
 import type { CloudFile } from '../types'
@@ -39,7 +39,12 @@ export function Tiles({
   )
 }
 
-function Tile({
+/**
+ * Плитка мемоизирована: при 400+ файлах любое изменение состояния страницы
+ * (тик прогресса, приход события) иначе перерисовывало всю сетку целиком.
+ * Колбэки сюда обязаны приходить стабильными — см. useCallback в SpacePage.
+ */
+const Tile = memo(function Tile({
   file,
   selected,
   selectMode,
@@ -108,7 +113,7 @@ function Tile({
       ) : null}
     </div>
   )
-}
+})
 
 /** Группировка по дню съёмки — сердце таймлайна поездки. */
 export function groupByDay(files: CloudFile[]): { key: string; label: string; files: CloudFile[] }[] {
