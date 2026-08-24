@@ -188,6 +188,7 @@ export async function processVideo(fileId: string): Promise<void> {
     await upsertVariant(fileId, "POSTER", { status: "FAILED", error: String(err).slice(0, 300) });
   }
 
+  let playbackError: string | null = null;
   if (!direct) {
     // Формат браузеру не по зубам (HEVC/ProRes/экзотический контейнер) —
     // делаем ОДНУ универсальную web-версию, а не лестницу разрешений.
@@ -208,10 +209,23 @@ export async function processVideo(fileId: string): Promise<void> {
       logger.error({ err, fileId }, "cloud: playback transcode failed");
       await rmQuiet(playAbs);
       await upsertVariant(fileId, "PLAYBACK", { status: "FAILED", error: String(err).slice(0, 300) });
+      playbackError = `Не удалось собрать web-версию: ${String(err).slice(0, 300)}`;
     }
   }
 
-  await prisma.cloudFile.update({ where: { id: fileId }, data: { status: "READY", processingError: null } });
+  /*
+   * Провал перекодирования обязан попасть в processingError.
+   *
+   * Раньше файл всё равно помечался READY с пустой ошибкой: в просмотрщике
+   * висело «Видео готовится» — вечно, потому что готовиться было уже нечему.
+   * Статус оставляем READY (оригинал цел, метаданные прочитаны, скачать можно),
+   * но причину записываем — по ней интерфейс показывает провал и кнопку
+   * повторной обработки.
+   */
+  await prisma.cloudFile.update({
+    where: { id: fileId },
+    data: { status: "READY", processingError: playbackError },
+  });
   await announce(fileId, "cloud.file.ready");
 }
 

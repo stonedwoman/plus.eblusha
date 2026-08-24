@@ -48,10 +48,19 @@ const FILE_INCLUDE = {
   uploader: { select: { id: true, username: true, displayName: true, avatarUrl: true } },
 } satisfies Prisma.CloudFileInclude;
 
-export async function listFiles(params: FileListParams) {
-  const { spaceId, view, viewerId } = params;
-  const limit = Math.min(Math.max(params.limit, 1), 200);
+/** Срез файлов — фильтры без пагинации. */
+export type FileSliceParams = Omit<FileListParams, "limit" | "cursor">;
 
+/**
+ * Единственное место, где срез превращается в условие выборки.
+ *
+ * Вынесено из listFiles, потому что тем же срезом пользуются «Выбрать все» и
+ * сборка ZIP по выделению. Пока условие дублировалось, счётчик выделения
+ * расходился со списком на экране: человек видел «Выбрано: 1341» там, где
+ * файлов 1147.
+ */
+export function buildFileWhere(params: FileSliceParams): Prisma.CloudFileWhereInput {
+  const { spaceId, view, viewerId } = params;
   const where: Prisma.CloudFileWhereInput = { spaceId };
   where.deletedAt = view === "trash" ? { not: null } : null;
   // Безвозвратно удалённые не показываются нигде, включая корзину.
@@ -73,32 +82,85 @@ export async function listFiles(params: FileListParams) {
     const q = params.q.trim().slice(0, 120);
     where.originalName = { contains: q, mode: "insensitive" };
   }
+  return where;
+}
 
-  // Порядок зависит от смысла экрана:
-  //   timeline/map — ХРОНОЛОГИЯ поездки, от раннего к позднему. Листаешь сверху
-  //                  вниз и идёшь по дням вперёд, как в фотоальбоме;
-  //   trash/recent — недавнее сверху, там интересен последний по времени;
-  //   files        — по имени.
-  const byName = view === "files";
-  const chronological = view === "timeline" || view === "map" || view === "favorites";
+/**
+ * Идентификаторы всего среза, в порядке экрана.
+ *
+ * Нужен «Выбрать все», который выбирает действительно все файлы фильтра, а не
+ * те 80, что успели подгрузиться. Отдаём голые id — на десять тысяч файлов это
+ * порядка 400 КБ, тогда как те же файлы со всеми полями — десятки мегабайт.
+ */
+export async function listFileIds(params: FileSliceParams, cap = 20000): Promise<string[]> {
+  const rows = await prisma.cloudFile.findMany({
+    where: buildFileWhere(params),
+    orderBy: orderForView(params.view),
+    take: Math.min(Math.max(cap, 1), 50000),
+    select: { id: true },
+  });
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Порядок зависит от смысла экрана:
+ *   timeline/map — ХРОНОЛОГИЯ поездки, от раннего к позднему. Листаешь сверху
+ *                  вниз и идёшь по дням вперёд, как в фотоальбоме;
+ *   trash        — по времени УДАЛЕНИЯ, свежее сверху. По createdAt корзина
+ *                  сортировалась по дате съёмки-загрузки: только что удалённый
+ *                  снимок 2019 года оказывался в самом низу списка, и «отменить,
+ *                  я не то удалил» превращалось в поиск;
+ *   recent       — недавно добавленное сверху;
+ *   files        — по имени.
+ */
+type OrderMode = "name" | "taken" | "deleted" | "created";
+
+function orderModeFor(view: FileListView): OrderMode {
+  if (view === "files") return "name";
+  if (view === "timeline" || view === "map" || view === "favorites") return "taken";
+  if (view === "trash") return "deleted";
+  return "created";
+}
+
+function orderForView(view: FileListView): Prisma.CloudFileOrderByWithRelationInput[] {
+  switch (orderModeFor(view)) {
+    case "name":
+      return [{ originalName: "asc" }, { id: "asc" }];
+    case "taken":
+      return [{ takenAt: "asc" }, { id: "asc" }];
+    case "deleted":
+      return [{ deletedAt: "desc" }, { id: "desc" }];
+    default:
+      return [{ createdAt: "desc" }, { id: "desc" }];
+  }
+}
+
+export async function listFiles(params: FileListParams) {
+  const { view, viewerId } = params;
+  const limit = Math.min(Math.max(params.limit, 1), 200);
+
+  const where = buildFileWhere(params);
+
+  const mode = orderModeFor(view);
   const cursor = decodeCursor(params.cursor);
   if (cursor) {
-    if (byName) {
+    // Условие продолжения обязано совпадать с orderBy до последнего поля, иначе
+    // вторая страница либо теряет записи, либо повторяет уже показанные.
+    if (mode === "name") {
       where.OR = [{ originalName: { gt: cursor.k } }, { originalName: cursor.k, id: { gt: cursor.id } }];
-    } else if (chronological) {
+    } else if (mode === "taken") {
       const at = new Date(cursor.k);
       where.OR = [{ takenAt: { gt: at } }, { takenAt: at, id: { gt: cursor.id } }];
+    } else if (mode === "deleted") {
+      const at = new Date(cursor.k);
+      where.OR = [{ deletedAt: { lt: at } }, { deletedAt: at, id: { lt: cursor.id } }];
     } else {
       const at = new Date(cursor.k);
       where.OR = [{ createdAt: { lt: at } }, { createdAt: at, id: { lt: cursor.id } }];
     }
   }
 
-  const orderBy: Prisma.CloudFileOrderByWithRelationInput[] = byName
-    ? [{ originalName: "asc" }, { id: "asc" }]
-    : chronological
-      ? [{ takenAt: "asc" }, { id: "asc" }]
-      : [{ createdAt: "desc" }, { id: "desc" }];
+  const orderBy = orderForView(view);
 
   const rows = await prisma.cloudFile.findMany({
     where,
@@ -113,7 +175,15 @@ export async function listFiles(params: FileListParams) {
   const nextCursor =
     hasMore && last
       ? encodeCursor({
-          k: byName ? last.originalName : (chronological ? last.takenAt : last.createdAt).toISOString(),
+          k:
+            mode === "name"
+              ? last.originalName
+              : (mode === "taken"
+                  ? last.takenAt
+                  : mode === "deleted"
+                    ? (last.deletedAt ?? last.createdAt)
+                    : last.createdAt
+                ).toISOString(),
           id: last.id,
         })
       : null;

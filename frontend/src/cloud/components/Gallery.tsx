@@ -198,7 +198,9 @@ export function TimelineView({
   return (
     <>
       {groups.map((group) => (
-        <section key={group.key}>
+        // data-day читают рельса таймлайна (прыжок к дате) и трекер текущего
+        // дня при прокрутке — см. SpacePage.
+        <section key={group.key} data-day={group.key}>
           <div className="cl-day-head">
             {group.label}
             <span className="cl-muted">{group.entries.length}</span>

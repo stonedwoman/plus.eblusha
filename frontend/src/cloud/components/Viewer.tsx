@@ -23,6 +23,8 @@ export function Viewer({
   canComment,
   hasMore,
   onNeedMore,
+  meId,
+  isOwner,
 }: {
   files: CloudFile[]
   index: number
@@ -36,11 +38,20 @@ export function Viewer({
   hasMore?: boolean
   /** Догрузить следующую страницу — вызывается на последнем кадре. */
   onNeedMore?: () => void
+  /** Кто смотрит: от этого зависят «Изменить» и «Удалить» у комментариев. */
+  meId?: string
+  /** Владелец хуяпки модерирует чужие комментарии — но не правит их. */
+  isOwner?: boolean
 }) {
   const file = files[index]
   const [panel, setPanel] = useState<'info' | 'comments' | null>(readOnly ? 'info' : 'comments')
   const [zoom, setZoom] = useState(1)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+
+  // Смена кадра любым путём — стрелкой, кликом по карте, приходом события —
+  // обязана сбрасывать масштаб. Сброс только внутри go() оставлял следующий
+  // снимок увеличенным и уехавшим за край.
+  useEffect(() => setZoom(1), [file?.id])
 
   const go = useCallback(
     (delta: number) => {
@@ -214,6 +225,8 @@ export function Viewer({
                 onSeek={file.kind === 'VIDEO' ? seekTo : undefined}
                 currentTimeMs={() => Math.round((videoRef.current?.currentTime ?? 0) * 1000)}
                 canComment={canComment !== false}
+                {...(meId ? { meId } : {})}
+                isOwner={isOwner === true}
                 onCountChange={(count) => onFileChanged?.({ ...file, commentCount: count })}
               />
             )}
@@ -238,35 +251,11 @@ function MediaStage({
   if (file.kind === 'IMAGE') {
     const src = file.urls.preview ?? file.urls.content
     if (!src) return <div className="cl-muted">Превью недоступно</div>
-    return (
-      <img
-        src={src}
-        alt={file.name}
-        className={zoom > 1 ? 'zoomed' : ''}
-        style={zoom > 1 ? { transform: `scale(${zoom})`, transformOrigin: 'center' } : undefined}
-        onClick={() => setZoom(zoom > 1 ? 1 : 2.5)}
-        onWheel={(e) => {
-          if (!e.ctrlKey) return
-          e.preventDefault()
-          setZoom(Math.min(6, Math.max(1, zoom * (e.deltaY < 0 ? 1.15 : 0.87))))
-        }}
-        draggable={false}
-      />
-    )
+    return <ImageStage key={file.id} src={src} alt={file.name} zoom={zoom} setZoom={setZoom} />
   }
 
   if (file.kind === 'VIDEO') {
-    if (!file.urls.playback) {
-      return (
-        <div className="cl-empty">
-          <h3>Видео готовится</h3>
-          <p>
-            Формат не воспроизводится браузером напрямую, поэтому сервер делает web-версию. Оригинал уже сохранён и
-            доступен для скачивания.
-          </p>
-        </div>
-      )
-    }
+    if (!file.urls.playback) return <VideoUnavailable file={file} />
     return (
       <video
         ref={videoRef}
@@ -304,6 +293,167 @@ function MediaStage({
           </a>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * Снимок с масштабом и перетаскиванием.
+ *
+ * Колесо вешаем НАТИВНЫМ слушателем с passive: false. React вешает wheel на
+ * корень пассивно, поэтому preventDefault() в onWheel не делал ничего: Ctrl +
+ * колесо масштабировало всю страницу вместе с интерфейсом вместо снимка, а в
+ * консоль сыпались предупреждения.
+ */
+function ImageStage({
+  src,
+  alt,
+  zoom,
+  setZoom,
+}: {
+  src: string
+  alt: string
+  zoom: number
+  setZoom: (z: number) => void
+}) {
+  const boxRef = useRef<HTMLDivElement | null>(null)
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null)
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+
+  /*
+   * Смещение зажимаем так, чтобы за краем снимка не открывалась пустота:
+   * увеличенный в 2.5 раза кадр можно увести максимум на (зум−1)/2 своей
+   * стороны в каждую сторону.
+   */
+  const clamp = useCallback((x: number, y: number, z: number) => {
+    const box = boxRef.current?.getBoundingClientRect()
+    if (!box || z <= 1) return { x: 0, y: 0 }
+    const maxX = (box.width * (z - 1)) / 2
+    const maxY = (box.height * (z - 1)) / 2
+    return {
+      x: Math.min(maxX, Math.max(-maxX, x)),
+      y: Math.min(maxY, Math.max(-maxY, y)),
+    }
+  }, [])
+
+  useEffect(() => {
+    const node = boxRef.current
+    if (!node) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      const next = Math.min(6, Math.max(1, zoomRef.current * (e.deltaY < 0 ? 1.15 : 0.87)))
+      setZoom(next)
+      setOffset((o) => clamp(o.x, o.y, next))
+    }
+    node.addEventListener('wheel', onWheel, { passive: false })
+    return () => node.removeEventListener('wheel', onWheel)
+  }, [setZoom, clamp])
+
+  // Возврат к единице обязан вернуть и смещение: иначе снимок оставался
+  // сдвинутым и обрезанным на обычном масштабе.
+  useEffect(() => {
+    if (zoom <= 1) setOffset({ x: 0, y: 0 })
+  }, [zoom])
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (zoom <= 1) return
+    drag.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = drag.current
+    if (!d) return
+    setOffset(clamp(d.ox + (e.clientX - d.x), d.oy + (e.clientY - d.y), zoom))
+  }
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!drag.current) return
+    drag.current = null
+    e.currentTarget.releasePointerCapture(e.pointerId)
+  }
+
+  return (
+    <div
+      ref={boxRef}
+      className={`cl-imgstage${zoom > 1 ? ' zoomed' : ''}`}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      // Клик по снимку переключает масштаб — но не после перетаскивания.
+      onClick={(e) => {
+        if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) return
+        setZoom(zoom > 1 ? 1 : 2.5)
+      }}
+      title={zoom > 1 ? 'Перетащите, чтобы подвинуть · Ctrl + колесо — масштаб' : 'Клик — увеличить · Ctrl + колесо — масштаб'}
+    >
+      <img
+        src={src}
+        alt={alt}
+        style={
+          zoom > 1
+            ? { transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: 'center' }
+            : undefined
+        }
+        draggable={false}
+      />
+    </div>
+  )
+}
+
+/**
+ * Видео, для которого нет воспроизводимой дорожки.
+ *
+ * Раньше здесь всегда висело «Видео готовится» — в том числе когда обработка
+ * упала окончательно. Человек ждал часами того, чего не будет. Теперь провал
+ * назван провалом, показана причина и есть кнопка «Попробовать ещё раз».
+ */
+function VideoUnavailable({ file }: { file: CloudFile }) {
+  const [retrying, setRetrying] = useState(false)
+  const [sent, setSent] = useState(false)
+  const failed = file.status === 'FAILED' || Boolean(file.processingError)
+
+  const retry = async () => {
+    setRetrying(true)
+    try {
+      await cloudApi.post(`/files/${file.id}/reprocess`)
+      setSent(true)
+      toast.success('Отправили на повторную обработку')
+    } catch (err) {
+      toast.error(toCloudError(err).message)
+    } finally {
+      setRetrying(false)
+    }
+  }
+
+  return (
+    <div className="cl-empty">
+      <div style={{ fontSize: 46 }}>{failed ? '⚠' : '⏳'}</div>
+      <h3>{failed ? 'Не удалось подготовить видео' : 'Видео готовится'}</h3>
+      <p>
+        {failed
+          ? 'Сервер не смог собрать web-версию этого файла. Оригинал цел и доступен для скачивания.'
+          : 'Формат не воспроизводится браузером напрямую, поэтому сервер делает web-версию. Оригинал уже сохранён и доступен для скачивания.'}
+      </p>
+      {failed && file.processingError ? (
+        <p className="cl-muted cl-mono" style={{ fontSize: 12.5 }}>
+          {file.processingError}
+        </p>
+      ) : null}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 16, flexWrap: 'wrap' }}>
+        {failed ? (
+          <button className="cl-btn primary" onClick={() => void retry()} disabled={retrying || sent}>
+            {sent ? 'В очереди' : retrying ? 'Отправляем…' : 'Попробовать ещё раз'}
+          </button>
+        ) : null}
+        {file.urls.download ? (
+          <a className="cl-btn" href={file.urls.download} download>
+            Скачать оригинал
+          </a>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -394,6 +544,8 @@ function CommentsPanel({
   onSeek,
   currentTimeMs,
   canComment,
+  meId,
+  isOwner,
   onCountChange,
 }: {
   file: CloudFile
@@ -401,6 +553,8 @@ function CommentsPanel({
   onSeek?: (ms: number) => void
   currentTimeMs: () => number
   canComment: boolean
+  meId?: string
+  isOwner: boolean
   onCountChange?: (count: number) => void
 }) {
   const [comments, setComments] = useState<CloudComment[]>([])
@@ -573,12 +727,23 @@ function CommentsPanel({
                       <button className="cl-btn ghost sm" onClick={() => setReplyTo(comment)}>
                         Ответить
                       </button>
-                      <button className="cl-btn ghost sm" onClick={() => setEditing(comment.id)}>
-                        Изменить
-                      </button>
-                      <button className="cl-btn ghost sm" onClick={() => void remove(comment.id)}>
-                        Удалить
-                      </button>
+                      {/*
+                        Права ровно те же, что на сервере: править — только свой
+                        текст, удалять — свой или любой, если ты владелец хуяпки.
+                        Раньше кнопки висели у каждого комментария и приводили
+                        к 403 «Можно править только свои комментарии» — интерфейс
+                        обещал то, чего не мог.
+                      */}
+                      {meId && comment.author?.id === meId ? (
+                        <button className="cl-btn ghost sm" onClick={() => setEditing(comment.id)}>
+                          Изменить
+                        </button>
+                      ) : null}
+                      {meId && (comment.author?.id === meId || isOwner) ? (
+                        <button className="cl-btn ghost sm" onClick={() => void remove(comment.id)}>
+                          Удалить
+                        </button>
+                      ) : null}
                     </>
                   ) : null}
                 </div>

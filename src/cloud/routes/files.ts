@@ -9,11 +9,14 @@ import type { Archiver, ArchiverOptions } from "archiver";
 // один раз, чтобы дальше работать с нормально типизированным Archiver.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const createArchive = require("archiver") as (format: string, options?: ArchiverOptions) => Archiver;
+import crypto from "node:crypto";
+import { Prisma } from "@prisma/client";
 import prisma from "../../lib/prisma";
+import { getRedisClient } from "../../lib/redis";
 import logger from "../../config/logger";
 import { ah, forbidden, invalid, notFound } from "../errors";
 import { listAccessibleSpaceIds, requireFileAccess, requireSpaceAccess } from "../acl";
-import { listFiles, loadFileWithSocial, socialFor } from "../queries";
+import { listFileIds, listFiles, loadFileWithSocial, socialFor } from "../queries";
 import { DERIVED_DIR, objectAbsPath, safeJoin } from "../paths";
 import { serveFile } from "../serve";
 import { recordActivity } from "../activity";
@@ -61,6 +64,92 @@ router.get(
       limit: p.limit,
     });
     res.json(result);
+  })
+);
+
+/**
+ * Идентификаторы всего текущего среза — для «Выбрать все».
+ *
+ * Раньше кнопка выбирала только подгруженную страницу, но называлась «Выбрать
+ * все»: человек нажимал её на 3000 файлов, получал 80 и удалял «всё» — не всё.
+ */
+router.get(
+  "/ids",
+  ah(async (req: Request, res) => {
+    const parsed = listQuery.omit({ cursor: true, limit: true }).safeParse(req.query);
+    if (!parsed.success) throw invalid("Некорректные параметры выборки");
+    const p = parsed.data;
+    await requireSpaceAccess(req, p.spaceId, "space:view");
+
+    const folderId = p.view === "files" ? (p.folderId === undefined || p.folderId === "root" ? null : p.folderId) : undefined;
+    const ids = await listFileIds({
+      spaceId: p.spaceId,
+      viewerId: req.cloudUser!.id,
+      view: p.view,
+      ...(folderId !== undefined ? { folderId } : {}),
+      ...(p.kind ? { kind: p.kind } : {}),
+      ...(p.q ? { q: p.q } : {}),
+      ...(p.uploaderId ? { uploaderId: p.uploaderId } : {}),
+      ...(p.from ? { from: p.from } : {}),
+      ...(p.to ? { to: p.to } : {}),
+    });
+    res.json({ ids, truncated: ids.length >= 20000 });
+  })
+);
+
+const timelineQuery = z.object({
+  spaceId: z.string().min(1),
+  view: z.enum(["timeline", "favorites"]).default("timeline"),
+  kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
+  q: z.string().max(120).optional(),
+  /** Смещение локального времени клиента в минутах к востоку от UTC. */
+  tz: z.coerce.number().int().min(-840).max(840).default(0),
+});
+
+/** % и _ в ILIKE — метасимволы; имя файла ими быть управляемым не должно. */
+function escapeLike(v: string): string {
+  return v.replace(/[\\%_]/g, "\\$&");
+}
+
+/**
+ * Счётчики по дням съёмки — данные для вертикальной рельсы таймлайна.
+ *
+ * Один агрегат по всему срезу вместо перелистывания страниц: рельса должна
+ * видеть ВСЮ поездку сразу, даже когда в браузер загружена первая сотня файлов.
+ * Группируем по локальному дню клиента (tz), тем же календарём, каким галерея
+ * собирает группы, — иначе вечерние кадры съезжали бы на соседний день и клик
+ * по рельсе промахивался.
+ */
+router.get(
+  "/timeline",
+  ah(async (req: Request, res) => {
+    const parsed = timelineQuery.safeParse(req.query);
+    if (!parsed.success) throw invalid("Некорректные параметры выборки");
+    const p = parsed.data;
+    await requireSpaceAccess(req, p.spaceId, "space:view");
+
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`f."spaceId" = ${p.spaceId}`,
+      Prisma.sql`f."deletedAt" IS NULL`,
+      Prisma.sql`f."purgedAt" IS NULL`,
+    ];
+    if (p.kind) conds.push(Prisma.sql`f."kind"::text = ${p.kind}`);
+    if (p.q?.trim()) conds.push(Prisma.sql`f."originalName" ILIKE ${"%" + escapeLike(p.q.trim()) + "%"}`);
+    if (p.view === "favorites") {
+      conds.push(
+        Prisma.sql`EXISTS (SELECT 1 FROM "CloudFavorite" fav WHERE fav."fileId" = f."id" AND fav."userId" = ${req.cloudUser!.id})`
+      );
+    }
+
+    const rows = await prisma.$queryRaw<{ day: string; count: number }[]>(Prisma.sql`
+      SELECT to_char(date_trunc('day', f."takenAt" + make_interval(mins => ${p.tz}::int)), 'YYYY-MM-DD') AS day,
+             count(*)::int AS count
+      FROM "CloudFile" f
+      WHERE ${Prisma.join(conds, " AND ")}
+      GROUP BY 1
+      ORDER BY 1
+    `);
+    res.json({ days: rows });
   })
 );
 
@@ -178,9 +267,63 @@ const zipSchema = z.object({
   all: z.boolean().optional(),
 });
 
+/** Столько живёт талон на архив: ровно чтобы браузер успел начать скачивание. */
+const ZIP_TICKET_TTL_SEC = 300;
+
+/**
+ * Талон на архив по выделению.
+ *
+ * Скачивание идёт навигацией (нужен Content-Disposition), а значит GET'ом — но
+ * список из тысяч id в query упирается в лимит строки запроса у nginx, и
+ * «Скачать ZIP» на большом выделении молча ломался. Поэтому список кладём в
+ * Redis и отдаём короткий одноразовый талон.
+ */
+router.post(
+  "/zip/prepare",
+  ah(async (req: Request, res) => {
+    const parsed = z
+      .object({ spaceId: z.string().min(1), ids: z.array(z.string().min(1)).min(1).max(5000) })
+      .safeParse(req.body);
+    if (!parsed.success) throw invalid("Некорректный запрос");
+    const access = await requireSpaceAccess(req, parsed.data.spaceId, "file:download");
+
+    // Проверяем принадлежность СЕЙЧАС, а не при скачивании: талон не должен
+    // становиться способом дотянуться до файлов, уехавших в другую хуяпку.
+    const rows = await prisma.cloudFile.findMany({
+      where: { id: { in: parsed.data.ids }, spaceId: access.space.id, deletedAt: null },
+      select: { id: true },
+    });
+    if (rows.length === 0) throw notFound("Нечего скачивать");
+
+    const token = crypto.randomBytes(24).toString("base64url");
+    const redis = await getRedisClient();
+    await redis.set(
+      `cloud:zip:${token}`,
+      JSON.stringify({ spaceId: access.space.id, userId: req.cloudUser!.id, ids: rows.map((r) => r.id) }),
+      { EX: ZIP_TICKET_TTL_SEC }
+    );
+    res.json({ token, count: rows.length, expiresIn: ZIP_TICKET_TTL_SEC });
+  })
+);
+
 router.get(
   "/zip",
   ah(async (req: Request, res) => {
+    const ticket = typeof req.query.token === "string" ? req.query.token : null;
+    if (ticket) {
+      const redis = await getRedisClient();
+      const raw = await redis.get(`cloud:zip:${ticket}`);
+      if (!raw) throw notFound("Ссылка на архив устарела — соберите заново");
+      const payload = JSON.parse(raw) as { spaceId: string; userId: string; ids: string[] };
+      // Талон именной: чужая сессия не должна им воспользоваться, даже если
+      // ссылка утекла из истории браузера.
+      if (payload.userId !== req.cloudUser!.id) throw notFound("Ссылка на архив устарела — соберите заново");
+      const access = await requireSpaceAccess(req, payload.spaceId, "file:download");
+      const entries = await buildZipEntries(payload.ids, { withFolders: true });
+      await streamZip(res, entries, `${access.space.name}.zip`);
+      return;
+    }
+
     const parsed = zipSchema.safeParse({
       spaceId: req.query.spaceId,
       ids: typeof req.query.ids === "string" ? String(req.query.ids).split(",").filter(Boolean) : undefined,

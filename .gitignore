@@ -1,4 +1,6 @@
-uploads/
+/uploads/
+# Исходники Cloud-очереди загрузок игнорировать нельзя — это код, не данные
+!frontend/src/cloud/uploads/
 tmp/
 
 .env

@@ -444,7 +444,86 @@
   display: block;
   object-fit: contain;
 }
-.cl-viewer-stage img.zoomed { cursor: grab; touch-action: none; }
+/* ── Вертикальная рельса таймлайна ──────────────────────────────────────────
+ * Липнет под шапкой и живёт всю высоту окна. Прячется на узких экранах:
+ * пальцем по ней не попасть, а место дорого.
+ */
+.cl-tl-layout { display: flex; gap: 16px; align-items: flex-start; }
+.cl-tl-main { flex: 1 1 auto; min-width: 0; }
+.cl-timenav {
+  position: sticky;
+  top: calc(var(--cl-header-h) + 10px);
+  flex: 0 0 64px;
+  width: 64px;
+  height: calc(100vh - var(--cl-header-h) - 26px);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  z-index: 5;
+}
+.cl-timenav-svg { display: block; overflow: visible; }
+.cl-tn-track { stroke: rgba(148, 163, 184, .22); stroke-width: 2; stroke-linecap: round; }
+.cl-tn-bar { fill: rgba(148, 163, 184, .34); transition: fill .12s ease; }
+.cl-tn-bar.is-hover { fill: rgba(226, 232, 240, .75); }
+.cl-tn-bar.is-active { fill: var(--brand); }
+.cl-tn-dot { fill: var(--brand); stroke: var(--paper); stroke-width: 2; }
+.cl-tn-label { fill: rgba(148, 163, 184, .78); font-size: 10px; letter-spacing: .04em; }
+.cl-tn-label.year { fill: rgba(226, 232, 240, .92); font-weight: 700; }
+.cl-tn-bubble {
+  position: absolute;
+  left: 72px;
+  transform: translateY(-50%);
+  background: var(--surface-100, #171b24);
+  border: 1px solid var(--surface-border, rgba(148,163,184,.18));
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+  z-index: 6;
+}
+/* Прыжок к дате останавливается под липкой панелью, а не под ней прячется. */
+.cl-tl-main section[data-day] { scroll-margin-top: calc(var(--cl-header-h) + 2px); }
+.cl-fromchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 5px 8px 5px 12px;
+  border: 1px dashed var(--surface-border, rgba(148,163,184,.3));
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--ink-dim, #94a3b8);
+}
+.cl-fromchip button {
+  border: none;
+  background: rgba(148, 163, 184, .15);
+  color: inherit;
+  border-radius: 999px;
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  line-height: 1;
+}
+.cl-fromchip button:hover { background: rgba(148, 163, 184, .3); }
+
+/*
+ * Сцена снимка занимает всю ячейку грида: жест перетаскивания должен ловиться
+ * по всей площади, а не только по пикселям картинки — иначе увеличенный кадр
+ * невозможно подвинуть, ухватив за поле рядом.
+ */
+.cl-imgstage {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.cl-imgstage.zoomed { cursor: grab; touch-action: none; }
+.cl-imgstage.zoomed:active { cursor: grabbing; }
+.cl-imgstage img { will-change: transform; }
 .cl-viewer-top {
   position: absolute; top: 0; left: 0; right: 0;
   display: flex; align-items: center; gap: 9px;
@@ -695,6 +774,7 @@
 .cl-activity-item:last-child { border-bottom: none; }
 
 @media (max-width: 860px) {
+  .cl-timenav { display: none; }
   /*
    * Верхняя панель на узком экране переносится в две строки: раньше при
    * фиксированной высоте из шести вкладок была видна одна, а остальные уезжали

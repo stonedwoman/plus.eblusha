@@ -17,6 +17,8 @@ import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
 import { Viewer } from '../components/Viewer'
 import { MapView } from '../components/MapView'
+import { TimelineRail, dayKeyToDate, type TimelineDay } from '../components/TimelineRail'
+import { formatDayLabel } from '../components/Gallery'
 import { ShareDialog } from '../components/ShareDialog'
 import { Avatar, Empty, Modal, SkeletonTiles, useInfiniteSentinel, useHideOnScrollDown, toast } from '../components/ui'
 import type { CloudContext } from './CloudLayout'
@@ -56,6 +58,12 @@ export default function SpacePage() {
   const [onlyFavorites, setOnlyFavorites] = useState(false)
   // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
   const headHidden = useHideOnScrollDown()
+  /** Счётчики по дням для рельсы: весь срез, не только загруженные страницы. */
+  const [dayCounts, setDayCounts] = useState<TimelineDay[]>([])
+  /** День, чья группа сейчас вверху экрана, — бегунок рельсы. */
+  const [activeDay, setActiveDay] = useState<string | null>(null)
+  /** Якорь «показывать с даты» — клик по рельсе в ещё не загруженный день. */
+  const [fromDay, setFromDay] = useState<string | null>(null)
   const anchorRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const dirInput = useRef<HTMLInputElement | null>(null)
@@ -69,6 +77,45 @@ export default function SpacePage() {
     () => (viewerFileId ? files.findIndex((f) => f.id === viewerFileId) : -1),
     [viewerFileId, files]
   )
+
+  /*
+   * Срез — единственное описание того, «что сейчас на экране»: вкладка, папка,
+   * фильтр вида, поиск, избранное. Из него собирается и запрос списка, и запрос
+   * «Выбрать все», и предикат для realtime. Пока эти три места жили порознь,
+   * пришедший по сокету файл попадал в галерею мимо действующего фильтра.
+   */
+  const slice = useMemo(
+    () => ({
+      spaceId,
+      view: onlyFavorites ? ('favorites' as const) : view === 'files' ? ('files' as const) : ('timeline' as const),
+      ...(view === 'files' && !onlyFavorites ? { folderId: folderId ?? 'root' } : {}),
+      ...(kindFilter ? { kind: kindFilter } : {}),
+      ...(query.trim() ? { q: query.trim() } : {}),
+      // Якорь рельсы действует только в таймлайне: «Файлам» с их сортировкой по
+      // имени дата съёмки ничего не говорит.
+      // Локальная полночь выбранного дня, переведённая в абсолютный момент:
+      // сервер сравнивает takenAt как инстант, а группы галереи — локальные.
+      ...(view === 'timeline' && !onlyFavorites && fromDay
+        ? { from: new Date(`${fromDay}T00:00:00`).toISOString() }
+        : {}),
+    }),
+    [spaceId, view, folderId, kindFilter, query, onlyFavorites, fromDay]
+  )
+  const sliceKey = useMemo(() => JSON.stringify(slice), [slice])
+
+  /*
+   * Ссылки, читаемые из колбэков и обработчиков сокета. Присваиваем прямо в
+   * теле: к моменту, когда прилетит ответ или событие, здесь уже лежит то, что
+   * человек видит, а не то, что было на момент создания замыкания.
+   */
+  const sliceKeyRef = useRef(sliceKey)
+  sliceKeyRef.current = sliceKey
+  const sliceRef = useRef({ view, folderId, kindFilter, query, onlyFavorites, fromDay })
+  sliceRef.current = { view, folderId, kindFilter, query, onlyFavorites, fromDay }
+  const filesRef = useRef(files)
+  filesRef.current = files
+  /** Порядковый номер запроса списка: применяем только самый свежий. */
+  const reqSeq = useRef(0)
 
   const canEdit = space?.role === 'OWNER' || space?.role === 'EDITOR'
   const isOwner = space?.role === 'OWNER'
@@ -96,18 +143,19 @@ export default function SpacePage() {
    */
   const loadFiles = useCallback(
     async (nextCursor: string | null, mode: 'replace' | 'append' | 'merge' = nextCursor ? 'append' : 'replace') => {
+      const seq = ++reqSeq.current
       try {
         const { data } = await cloudApi.get<{ files: CloudFile[]; nextCursor: string | null }>('/files', {
-          params: {
-            spaceId,
-            view: onlyFavorites ? 'favorites' : view === 'files' ? 'files' : 'timeline',
-            ...(view === 'files' && !onlyFavorites ? { folderId: folderId ?? 'root' } : {}),
-            ...(kindFilter ? { kind: kindFilter } : {}),
-            ...(query.trim() ? { q: query.trim() } : {}),
-            limit: 80,
-            ...(nextCursor ? { cursor: nextCursor } : {}),
-          },
+          params: { ...slice, limit: 80, ...(nextCursor ? { cursor: nextCursor } : {}) },
         })
+        /*
+         * Ответ мог опоздать. Два случая, и оба на экране выглядели одинаково
+         * скверно: человек переключил фильтр, пока летел ответ по прошлому
+         * (в галерее оказывались чужие файлы), либо два быстрых набора в поиске
+         * вернулись не в том порядке (список показывал предыдущий запрос).
+         */
+        if (sliceKeyRef.current !== sliceKey) return
+        if (mode !== 'merge' && seq !== reqSeq.current) return
         // Дедуп по id обязателен: файл мог уже прилететь realtime-событием, и
         // тогда страница пагинации привозит его второй раз. Именно из-за этого
         // «Выбрать все» насчитывало больше файлов, чем есть в хуяпке.
@@ -133,12 +181,15 @@ export default function SpacePage() {
         // сбрасывалась бы на первую при каждом фоновом обновлении.
         if (mode !== 'merge') setCursor(data.nextCursor)
       } catch (err) {
+        if (sliceKeyRef.current !== sliceKey) return
         toast.error(toCloudError(err).message)
       } finally {
-        setLoading(false)
+        // Скелет снимает только актуальный запрос: иначе устаревший ответ гасил
+        // загрузку нового среза и на миг показывал «ничего не найдено».
+        if (sliceKeyRef.current === sliceKey && (mode === 'merge' || seq === reqSeq.current)) setLoading(false)
       }
     },
-    [spaceId, view, folderId, kindFilter, query, onlyFavorites]
+    [slice, sliceKey]
   )
 
   useEffect(() => {
@@ -154,7 +205,12 @@ export default function SpacePage() {
     setSelection(new Set())
     setViewerFileId(null)
     anchorRef.current = null
-  }, [spaceId, view, folderId, kindFilter, query, onlyFavorites])
+  }, [sliceKey])
+
+  useEffect(() => {
+    setFromDay(null)
+    setActiveDay(null)
+  }, [spaceId])
 
   useEffect(() => {
     if (view === 'map' || view === 'activity') return
@@ -163,6 +219,86 @@ export default function SpacePage() {
     return () => clearTimeout(t)
   }, [loadFiles, view, query])
 
+  /** Агрегат для рельсы. Не критичен: не построился — рельса просто не рисуется. */
+  const loadDayCounts = useCallback(async () => {
+    if (view !== 'timeline') return
+    try {
+      const { data } = await cloudApi.get<{ days: TimelineDay[] }>('/files/timeline', {
+        params: {
+          spaceId,
+          view: onlyFavorites ? 'favorites' : 'timeline',
+          ...(kindFilter ? { kind: kindFilter } : {}),
+          ...(query.trim() ? { q: query.trim() } : {}),
+          tz: -new Date().getTimezoneOffset(),
+        },
+      })
+      setDayCounts(data.days)
+    } catch {
+      setDayCounts([])
+    }
+  }, [spaceId, view, kindFilter, query, onlyFavorites])
+
+  useEffect(() => {
+    const t = setTimeout(() => void loadDayCounts(), query ? 300 : 0)
+    return () => clearTimeout(t)
+  }, [loadDayCounts])
+
+  /*
+   * Бегунок рельсы: при прокрутке ищем последнюю группу дня, чей верх уже
+   * зашёл под липкую панель. Один rAF на кадр, слушатель пассивный — на
+   * плавность прокрутки не влияет.
+   */
+  useEffect(() => {
+    if (view !== 'timeline') return
+    const root = document.querySelector('.cl-root')
+    if (!root) return
+    let raf = 0
+    const measure = () => {
+      raf = 0
+      const sections = document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]')
+      let current: string | null = null
+      for (const el of Array.from(sections)) {
+        if (el.getBoundingClientRect().top <= 130) current = el.dataset.day ?? null
+        else break
+      }
+      setActiveDay(current ?? sections[0]?.dataset.day ?? null)
+    }
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(measure)
+    }
+    root.addEventListener('scroll', onScroll, { passive: true })
+    measure()
+    return () => {
+      root.removeEventListener('scroll', onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [view, files])
+
+  /**
+   * Прыжок по рельсе. Загруженный день — плавный скролл к его группе; ещё не
+   * загруженный — якорь from: список пересобирается с этой даты, а чип над
+   * галереей возвращает всё как было.
+   */
+  const jumpToDay = useCallback(
+    (day: string) => {
+      const sections = Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]'))
+      const target =
+        sections.find((el) => el.dataset.day === day) ??
+        // Весь срез уже в браузере — значит, в этот день просто не снимали;
+        // ведём к ближайшему следующему дню съёмки.
+        (!cursor ? sections.find((el) => (el.dataset.day ?? '') > day) : undefined)
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        return
+      }
+      // Клик в самое начало альбома — это отмена якоря, а не якорь на первый день.
+      const first = dayCounts[0]?.day
+      setFromDay(first !== undefined && day <= first ? null : day)
+      document.querySelector('.cl-root')?.scrollTo({ top: 0 })
+    },
+    [cursor, dayCounts]
+  )
+
   // Счётчики «842 фото · 37 видео» пересчитываются пачкой, а не на каждый файл.
   const statsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleStatsRefresh = useCallback(() => {
@@ -170,8 +306,9 @@ export default function SpacePage() {
     statsTimer.current = setTimeout(() => {
       statsTimer.current = null
       void loadSpace()
+      void loadDayCounts()
     }, 4000)
-  }, [loadSpace])
+  }, [loadSpace, loadDayCounts])
   useEffect(() => () => { if (statsTimer.current) clearTimeout(statsTimer.current) }, [])
 
   /*
@@ -202,9 +339,10 @@ export default function SpacePage() {
     if (wasUploading.current && !uploadingNow) {
       void loadFiles(null, 'merge')
       void loadSpace()
+      void loadDayCounts()
     }
     wasUploading.current = uploadingNow
-  }, [uploadingNow, loadFiles, loadSpace])
+  }, [uploadingNow, loadFiles, loadSpace, loadDayCounts])
 
   const sentinel = useInfiniteSentinel(() => {
     if (cursor && !loading) void loadFiles(cursor)
@@ -221,6 +359,10 @@ export default function SpacePage() {
         // таймлайн группирует по дням в порядке массива, и файл 2023 года,
         // приклеенный сверху, создавал вторую группу той же даты и выглядел
         // как «ничего не появилось».
+        // Файл, не подходящий под текущий фильтр, в галерее не место: при
+        // включённом «Видео» или поиске по имени свежая загрузка иначе
+        // проваливалась в список мимо среза и путала счётчик выделения.
+        if (!matchesSlice(payload.file, sliceRef.current)) return
         setFiles((prev) => (prev.some((f) => f.id === payload.file.id) ? prev : insertByTakenAt(prev, payload.file)))
         // НЕ дёргаем loadSpace() на каждый файл: при заливке пачки в 400+ штук
         // это 400 запросов с агрегацией по БД — именно они и подвешивали и
@@ -304,6 +446,57 @@ export default function SpacePage() {
 
   const onlineIds = useMemo(() => new Set(presence.map((p) => p.userId)), [presence])
 
+  /**
+   * Отметить файл; с Shift — весь диапазон от прошлой отметки.
+   *
+   * Колбэк обязан быть стабильным: плитка мемоизирована, и новая функция на
+   * каждый рендер обесценивала memo — при 400+ файлах перерисовывалась вся
+   * сетка. Поэтому список читаем через filesRef, а не из замыкания.
+   */
+  const toggleSelect = useCallback((id: string, shift = false) => {
+    setSelection((prev) => {
+      const next = new Set(prev)
+      const anchor = anchorRef.current
+      if (shift && anchor && anchor !== id) {
+        const list = filesRef.current
+        const from = list.findIndex((f) => f.id === anchor)
+        const to = list.findIndex((f) => f.id === id)
+        if (from >= 0 && to >= 0) {
+          for (let i = Math.min(from, to); i <= Math.max(from, to); i++) next.add(list[i]!.id)
+          return next
+        }
+      }
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    anchorRef.current = id
+  }, [])
+
+  const openFile = useCallback((file: CloudFile) => setViewerFileId(file.id), [])
+
+  /**
+   * «Выбрать все» — именно все файлы среза, а не подгруженная страница.
+   *
+   * Раньше кнопка звалась «Выбрать все», а брала только то, что успело
+   * подгрузиться: на трёх тысячах файлов человек выбирал 80 и нажимал
+   * «Удалить», будучи уверенным, что убрал всё.
+   */
+  const [selectingAll, setSelectingAll] = useState(false)
+  const selectAllInSlice = async () => {
+    setSelectingAll(true)
+    try {
+      const { data } = await cloudApi.get<{ ids: string[]; truncated: boolean }>('/files/ids', { params: slice })
+      setSelection(new Set(data.ids))
+      anchorRef.current = null
+      if (data.truncated) toast.info(`Выбраны первые ${data.ids.length} файлов`)
+    } catch (err) {
+      toast.error(toCloudError(err).message)
+    } finally {
+      setSelectingAll(false)
+    }
+  }
+
   const deleteSelected = async () => {
     const ids = Array.from(selection)
     try {
@@ -321,16 +514,30 @@ export default function SpacePage() {
     }
   }
 
-  const downloadSelected = () => {
+  /*
+   * Архив по выделению собирается через талон.
+   *
+   * Скачивание — навигация (нужен Content-Disposition), то есть GET, а список
+   * из тысяч id в строке запроса упирался в лимит nginx: «Скачать ZIP» на
+   * большом выделении просто не работал, и вместо выбранного отдавалась вся
+   * хуяпка целиком — совсем не то, что человек просил.
+   */
+  const [zipping, setZipping] = useState(false)
+  const downloadSelected = async () => {
     const ids = Array.from(selection)
-    // URL с тысячами id упрётся в лимит длины строки запроса у nginx. Если
-    // выбрано слишком много — честнее отдать архив всей хуяпки целиком.
-    if (ids.length > 300) {
-      toast.info('Выбрано слишком много — скачиваем архив хуяпки целиком')
-      window.location.href = `/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`
-      return
+    setZipping(true)
+    try {
+      const { data } = await cloudApi.post<{ token: string; count: number }>('/files/zip/prepare', {
+        spaceId,
+        ids: ids.slice(0, 5000),
+      })
+      if (data.count < ids.length) toast.info(`В архив уйдут ${data.count} файлов из ${ids.length}`)
+      window.location.href = `/api/cloud/files/zip?token=${encodeURIComponent(data.token)}`
+    } catch (err) {
+      toast.error(toCloudError(err).message)
+    } finally {
+      setZipping(false)
     }
-    window.location.href = `/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&ids=${ids.join(',')}`
   }
 
   if (!space) {
@@ -454,6 +661,33 @@ export default function SpacePage() {
             else void openSingle(fileId, setFiles, setViewerFileId)
           }}
         />
+      ) : view === 'files' ? (
+        /*
+         * «Файлы» — ВЫШЕ проверок загрузки и пустоты.
+         *
+         * Раньше пустая папка отдавала общий экран «В хуяпке пока нет файлов»
+         * вместо файлового браузера: хлебные крошки и кнопка «+ Папка»
+         * исчезали, и из пустой папки нельзя было ни создать вложенную, ни
+         * вернуться в корень иначе как правкой адреса.
+         */
+        <FilesBrowser
+          spaceId={spaceId}
+          folderId={folderId}
+          files={files}
+          uploads={uploads}
+          selection={selection}
+          canEdit={canEdit}
+          loading={loading}
+          onNavigate={(id) => {
+            const p = new URLSearchParams(params)
+            p.set('view', 'files')
+            if (id) p.set('folder', id)
+            else p.delete('folder')
+            setParams(p, { replace: true })
+          }}
+          onOpen={openFile}
+          onToggleSelect={toggleSelect}
+        />
       ) : loading ? (
         <SkeletonTiles />
       ) : files.length === 0 && uploads.length === 0 ? (
@@ -475,35 +709,28 @@ export default function SpacePage() {
             ) : null
           }
         />
-      ) : view === 'files' ? (
-        <FilesBrowser
-          spaceId={spaceId}
-          folderId={folderId}
-          files={files}
-          uploads={uploads}
-          selection={selection}
-          canEdit={canEdit}
-          onNavigate={(id) => {
-            const p = new URLSearchParams(params)
-            p.set('view', 'files')
-            if (id) p.set('folder', id)
-            else p.delete('folder')
-            setParams(p, { replace: true })
-          }}
-          onOpen={(file) => setViewerFileId(file.id)}
-          onToggleSelect={(id) => toggleSelect(id, setSelection)}
-        />
       ) : (
-        <>
-          <TimelineView
-            files={files}
-            uploads={uploads}
-            selection={selection}
-            selectMode={selection.size > 0}
-            onOpen={(file) => setViewerFileId(file.id)}
-            onToggleSelect={(id) => toggleSelect(id, setSelection)}
-          />
-        </>
+        <div className="cl-tl-layout">
+          <TimelineRail days={dayCounts} activeDay={activeDay} onJump={jumpToDay} />
+          <div className="cl-tl-main">
+            {fromDay ? (
+              <div className="cl-fromchip">
+                Показаны дни с {formatDayLabel(dayKeyToDate(fromDay))}
+                <button onClick={() => setFromDay(null)} title="Показать альбом с начала" aria-label="Сбросить">
+                  ✕
+                </button>
+              </div>
+            ) : null}
+            <TimelineView
+              files={files}
+              uploads={uploads}
+              selection={selection}
+              selectMode={selection.size > 0}
+              onOpen={openFile}
+              onToggleSelect={toggleSelect}
+            />
+          </div>
+        </div>
       )}
 
       {/* Один наблюдатель на все режимы: раньше он жил внутри ветки таймлайна,
@@ -522,10 +749,15 @@ export default function SpacePage() {
         <div className="cl-selbar">
           <span>Выбрано: {selection.size}</span>
           <button className="cl-btn sm" onClick={() => setSelection(new Set(files.map((f) => f.id)))}>
-            Выбрать все
+            Всё на экране
           </button>
-          <button className="cl-btn sm" onClick={downloadSelected}>
-            Скачать ZIP
+          {cursor ? (
+            <button className="cl-btn sm" onClick={() => void selectAllInSlice()} disabled={selectingAll}>
+              {selectingAll ? 'Выбираем…' : 'Выбрать все'}
+            </button>
+          ) : null}
+          <button className="cl-btn sm" onClick={() => void downloadSelected()} disabled={zipping}>
+            {zipping ? 'Собираем…' : 'Скачать ZIP'}
           </button>
           {isOwner ? (
             <button className="cl-btn sm" onClick={() => setShareOpen(true)}>
@@ -559,6 +791,8 @@ export default function SpacePage() {
             if (cursor && !loading) void loadFiles(cursor)
           }}
           canComment={space.role === 'OWNER' || space.role === 'EDITOR' || space.viewerCanComment}
+          meId={me.user.id}
+          isOwner={isOwner}
           onIndexChange={(next) => setViewerFileId(files[next]?.id ?? null)}
           onClose={() => setViewerFileId(null)}
           onFileChanged={(file) => setFiles((prev) => prev.map((f) => (f.id === file.id ? { ...f, ...file } : f)))}
@@ -601,6 +835,38 @@ export default function SpacePage() {
   )
 }
 
+/**
+ * Подходит ли пришедший по сокету файл под то, что сейчас на экране.
+ *
+ * Избранное здесь всегда мимо: только что загруженный файл не может быть
+ * отмечен звёздочкой, и подмешивать его в этот срез неправильно.
+ */
+function matchesSlice(
+  file: CloudFile,
+  s: {
+    view: View
+    folderId: string | null
+    kindFilter: string
+    query: string
+    onlyFavorites: boolean
+    fromDay: string | null
+  }
+): boolean {
+  if (s.onlyFavorites) return false
+  if (s.kindFilter && file.kind !== s.kindFilter) return false
+  const q = s.query.trim().toLowerCase()
+  if (q && !file.name.toLowerCase().includes(q)) return false
+  if (s.view === 'files' && (file.folderId ?? null) !== (s.folderId ?? null)) return false
+  // При якоре рельсы файлы раньше выбранной даты на экране не живут.
+  if (s.view === 'timeline' && s.fromDay && dayKeyOf(new Date(file.takenAt)) < s.fromDay) return false
+  return true
+}
+
+/** Локальный день YYYY-MM-DD — тем же календарём, что группы галереи. */
+function dayKeyOf(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 /** Вставка с сохранением хронологии таймлайна (takenAt asc, затем id asc). */
 function insertByTakenAt(list: CloudFile[], file: CloudFile): CloudFile[] {
   const at = new Date(file.takenAt).getTime()
@@ -640,14 +906,6 @@ function SpaceUploadBar() {
       </button>
     </div>
   )
-}
-
-function toggleSelect(id: string, setSelection: React.Dispatch<React.SetStateAction<Set<string>>>) {
-  setSelection((prev) => {
-    const next = new Set(prev)
-    next.has(id) ? next.delete(id) : next.add(id)
-    return next
-  })
 }
 
 /**
@@ -713,6 +971,7 @@ function FilesBrowser({
   uploads,
   selection,
   canEdit,
+  loading,
   onNavigate,
   onOpen,
   onToggleSelect,
@@ -723,9 +982,10 @@ function FilesBrowser({
   uploads: { id: string; at: number }[]
   selection: Set<string>
   canEdit: boolean
+  loading: boolean
   onNavigate: (folderId: string | null) => void
   onOpen: (file: CloudFile) => void
-  onToggleSelect: (id: string) => void
+  onToggleSelect: (id: string, shift: boolean) => void
 }) {
   const [folders, setFolders] = useState<CloudFolder[]>([])
   const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>([])
@@ -807,14 +1067,24 @@ function FilesBrowser({
           <UploadTile key={u.id} id={u.id} withPreview={false} />
         ))}
       </div>
-      <Tiles
-        files={files}
-        selection={selection}
-        selectMode={selection.size > 0}
-        onOpen={onOpen}
-        onToggleSelect={onToggleSelect}
-        dense
-      />
+      {loading ? (
+        <SkeletonTiles />
+      ) : files.length === 0 && uploads.length === 0 && folders.length === 0 ? (
+        <Empty
+          icon="📂"
+          title="Папка пуста"
+          text={canEdit ? 'Перетащите сюда файлы или создайте вложенную папку.' : 'Здесь пока ничего нет.'}
+        />
+      ) : (
+        <Tiles
+          files={files}
+          selection={selection}
+          selectMode={selection.size > 0}
+          onOpen={onOpen}
+          onToggleSelect={onToggleSelect}
+          dense
+        />
+      )}
 
       {creating ? (
         <Modal

@@ -57,8 +57,16 @@ export default function AdminStoragePage() {
   if (!report) return <div className="cl-page"><div className="cl-skeleton" style={{ height: 260 }} /></div>
 
   const s = report.storage
-  const usedOfQuota = Math.min(100, (s.originals / Math.max(1, s.quotaMax)) * 100)
+  /*
+   * Считаем ровно то, что считает assertCanAccept: оригиналы ПЛЮС незавершённые
+   * загрузки. Полоса по одним оригиналам показывала «480 ГБ из 520» в тот
+   * момент, когда сервер уже отвечал «Достигнута квота Cloud», — по дашборду
+   * выходило, что места полно.
+   */
+  const usedBytes = s.originals + s.staging
+  const usedOfQuota = Math.min(100, (usedBytes / Math.max(1, s.quotaMax)) * 100)
   const lowSpace = s.free < s.minFree
+  const quotaTight = usedBytes >= s.quotaMax
 
   return (
     <div className="cl-page narrow">
@@ -71,12 +79,19 @@ export default function AdminStoragePage() {
           Свободного места меньше обязательного резерва ({formatBytes(s.minFree)}) — новые загрузки отклоняются.
         </div>
       ) : null}
+      {quotaTight ? (
+        <div className="cl-toast error" style={{ marginBottom: 16 }}>
+          Квота выбрана полностью — новые загрузки отклоняются. Освободите место или поднимите
+          CLOUD_STORAGE_MAX_BYTES.
+        </div>
+      ) : null}
 
       <div className="cl-bar" style={{ marginBottom: 10 }}>
-        <i style={{ width: `${usedOfQuota}%`, background: lowSpace ? 'var(--danger)' : 'var(--brand)' }} />
+        <i style={{ width: `${usedOfQuota}%`, background: lowSpace || quotaTight ? 'var(--danger)' : 'var(--brand)' }} />
       </div>
       <div className="cl-muted cl-mono" style={{ fontSize: 12.5, marginBottom: 20 }}>
-        {formatBytes(s.originals)} из квоты {formatBytes(s.quotaMax)} ({Math.round(usedOfQuota)}%)
+        {formatBytes(usedBytes)} из квоты {formatBytes(s.quotaMax)} ({Math.round(usedOfQuota)}%)
+        {s.staging > 0 ? ` · в том числе ${formatBytes(s.staging)} в незавершённых загрузках` : ''}
       </div>
 
       <dl style={{ margin: 0 }}>

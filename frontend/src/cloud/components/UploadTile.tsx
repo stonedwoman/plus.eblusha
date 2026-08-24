@@ -1,6 +1,7 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { formatBytes } from '../api'
-import { cancelUpload, resumeUpload, useUploadItem } from '../uploads/manager'
+import { attachFileToUpload, cancelUpload, resumeUpload, useUploadItem } from '../uploads/manager'
+import { toast } from './ui'
 
 /**
  * Плитка загружаемого файла прямо в галерее.
@@ -16,6 +17,7 @@ import { cancelUpload, resumeUpload, useUploadItem } from '../uploads/manager'
 export const UploadTile = memo(function UploadTile({ id, withPreview = true }: { id: string; withPreview?: boolean }) {
   const item = useUploadItem(id)
   const [thumb, setThumb] = useState<string | null>(null)
+  const pickRef = useRef<HTMLInputElement | null>(null)
 
   // Локальное превью из самого файла: показываем картинку до того, как сервер
   // построит настоящую миниатюру. Для крупных файлов пропускаем — createObjectURL
@@ -43,10 +45,16 @@ export const UploadTile = memo(function UploadTile({ id, withPreview = true }: {
 
       <div className="cl-uptile-center">
         {failed || needsFile ? (
+          /*
+           * Для «нужен файл» кнопка ОТКРЫВАЕТ выбор файла. Раньше её обработчик
+           * возвращал undefined — плитка выглядела кликабельной и не делала
+           * ничего, а продолжить прерванную загрузку можно было только уйдя на
+           * отдельную страницу «Загрузки».
+           */
           <button
             className="cl-uptile-retry"
-            onClick={() => (needsFile ? undefined : resumeUpload(item.id))}
-            title={item.error ?? 'Повторить'}
+            onClick={() => (needsFile ? pickRef.current?.click() : resumeUpload(item.id))}
+            title={needsFile ? 'Выбрать тот же файл и продолжить' : (item.error ?? 'Повторить')}
           >
             {needsFile ? '📄' : '↻'}
           </button>
@@ -76,15 +84,31 @@ export const UploadTile = memo(function UploadTile({ id, withPreview = true }: {
         </span>
       </div>
 
-      {transferring || failed ? (
+      {transferring || failed || needsFile ? (
         <button
           className="cl-uptile-cancel"
-          onClick={() => void cancelUpload(item.id)}
+          onClick={() => cancelUpload(item.id)}
           title="Отменить"
           aria-label="Отменить загрузку"
         >
           ✕
         </button>
+      ) : null}
+
+      {needsFile ? (
+        <input
+          ref={pickRef}
+          type="file"
+          hidden
+          onChange={(e) => {
+            const picked = e.target.files?.[0]
+            e.target.value = ''
+            if (!picked) return
+            void attachFileToUpload(item.id, picked).then((res) => {
+              if (!res.ok) toast.error(res.reason ?? 'Файл не подошёл')
+            })
+          }}
+        />
       ) : null}
     </div>
   )
