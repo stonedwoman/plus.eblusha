@@ -64,6 +64,9 @@ const Tile = memo(function Tile({
   return (
     <div
       className={`cl-tile${selected ? ' selected' : ''}${processing && !thumb ? ' pending' : ''}`}
+      /* Выделение протяжкой читает id и состояние прямо из DOM — см. useDragSelect. */
+      data-file-id={file.id}
+      data-selected={selected ? '1' : '0'}
       onClick={(e) => {
         if (selectMode || e.ctrlKey || e.metaKey) onToggle(e.shiftKey)
         else onOpen()

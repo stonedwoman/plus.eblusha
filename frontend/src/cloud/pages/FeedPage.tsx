@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { cloudApi, toCloudError } from '../api'
 import type { CloudFile } from '../types'
 import { Tiles } from '../components/Gallery'
+import { useDragSelect, type PaintMode } from '../components/dragSelect'
 import { Viewer } from '../components/Viewer'
 import { Empty, SkeletonTiles, useInfiniteSentinel, toast } from '../components/ui'
 import { UploadsPage } from './UploadsPage'
@@ -32,6 +33,19 @@ function FilesFeed({ view }: { view: 'recent' | 'favorites' | 'trash' }) {
   const [selection, setSelection] = useState<Set<string>>(new Set())
   const [viewerIndex, setViewerIndex] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Та же протяжка, что и в хуяпке: сквозные ленты — первое место, где хочется
+  // разом отметить десяток кадров.
+  const paintSelect = useCallback((id: string, mode: PaintMode) => {
+    setSelection((prev) => {
+      if (mode === 'add' ? prev.has(id) : !prev.has(id)) return prev
+      const next = new Set(prev)
+      if (mode === 'add') next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+  useDragSelect({ enabled: selection.size > 0, onPaint: paintSelect })
 
   const load = useCallback(
     async (nextCursor: string | null) => {

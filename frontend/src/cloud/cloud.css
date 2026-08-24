@@ -327,6 +327,13 @@
 .cl-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cl-tile.selected { border-color: var(--brand); }
 .cl-tile img { animation: clFade .3s ease; }
+/*
+ * Пока идёт выделение протяжкой: мышь не должна попутно выделять текст дат, а
+ * подъём плитки под курсором только мешал бы целиться.
+ */
+body.cl-dragging-select { user-select: none; -webkit-user-select: none; }
+body.cl-dragging-select .cl-tile:hover { transform: none; box-shadow: none; }
+body.cl-dragging-select .cl-tile { cursor: cell; }
 /* Чипы — главный переключатель экрана: без перехода они щёлкали цветом. */
 .cl-chip { transition: background .18s var(--cl-ease-io), color .18s var(--cl-ease-io), border-color .18s var(--cl-ease-io); }
 .cl-panel-tabs button { transition: color .18s ease, border-bottom-color .18s ease; }

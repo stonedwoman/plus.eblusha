@@ -15,6 +15,7 @@ import {
 } from '../uploads/manager'
 import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
+import { useDragSelect, type PaintMode } from '../components/dragSelect'
 import { Viewer } from '../components/Viewer'
 import { MapView } from '../components/MapView'
 import { TimelineRail, dayKeyToDate, type RailPosition, type TimelineDay } from '../components/TimelineRail'
@@ -492,6 +493,20 @@ export default function SpacePage() {
   }, [])
 
   const openFile = useCallback((file: CloudFile) => setViewerFileId(file.id), [])
+
+  /** Красим плитку под курсором при протяжке. Идемпотентно: одна и та же
+   *  плитка приходит десятками событий подряд, и лишний setState тут не нужен. */
+  const paintSelect = useCallback((id: string, mode: PaintMode) => {
+    setSelection((prev) => {
+      if (mode === 'add' ? prev.has(id) : !prev.has(id)) return prev
+      const next = new Set(prev)
+      if (mode === 'add') next.add(id)
+      else next.delete(id)
+      return next
+    })
+    anchorRef.current = id
+  }, [])
+  useDragSelect({ enabled: selection.size > 0, onPaint: paintSelect })
 
   /**
    * «Выбрать все» — именно все файлы среза, а не подгруженная страница.
