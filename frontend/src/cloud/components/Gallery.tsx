@@ -202,6 +202,13 @@ export function TimelineView({
     let prevPath: string | null = null
     for (const entry of entries) {
       if (entry.kind !== 'file') continue
+      /*
+       * Снимки БЕЗ места пропускаем: сервер считает отрезки только по ним же,
+       * и если нумеровать «пустое место» как отдельный отрезок, номера у
+       * клиента и сервера разъезжаются. В альбоме, где geo есть у четверти
+       * файлов, это уводило рельсу совсем не туда.
+       */
+      if (!entry.file.geoPath) continue
       // Ключ отрезка — страна и город, без района: иначе Тбилиси и его
       // Окрокана чередовались бы десятками мелких отрезков.
       const path = `${entry.file.geoCountry ?? ''}|${entry.file.geoCity ?? ''}`

@@ -29,10 +29,13 @@ const PAD = 12
 
 export function GeoRail({
   segments,
+  withoutPlace,
   position,
   onJump,
 }: {
   segments: GeoSegment[]
+  /** Сколько снимков без геометки — их место в рельсе не показать. */
+  withoutPlace: number
   position: GeoPosition
   onJump: (run: number) => void
 }) {
@@ -93,8 +96,13 @@ export function GeoRail({
     return withRun.map((s) => ({ ...s, major: majorRuns.has(s.run) }))
   }, [segments, baseH])
 
-  if (stations.length < 2 || baseH < 200) {
-    return segments.length > 0 ? <div ref={setNode} className="cl-timenav cl-geonav" aria-hidden /> : null
+  /*
+   * Одну станцию тоже показываем. Порог в две отрезал целые альбомы: снимки
+   * одного города давали единственный отрезок, и геолайн пропадал целиком —
+   * выглядело так, будто места не определились вовсе.
+   */
+  if (stations.length < 1 || baseH < 200) {
+    return <div ref={setNode} className="cl-timenav cl-geonav" aria-hidden />
   }
 
   /*
@@ -178,6 +186,14 @@ export function GeoRail({
           </button>
         )
       })}
+
+      {/* Прямо говорим, почему часть альбома в геолайне не представлена:
+          у старых снимков GPS в EXIF попросту нет. */}
+      {withoutPlace > 0 ? (
+        <span className="cl-geonav-rest" style={{ top: PAD + totalW * step + NODE }}>
+          {withoutPlace} без геометки
+        </span>
+      ) : null}
     </nav>
   )
 }

@@ -892,13 +892,15 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
  * Отражаем ряд целиком, а не переставляем элементы вручную: подпись сама
  * уходит наружу, узел встаёт на ось, выравнивание текста меняется на левое.
  */
-.cl-geonav { flex: 0 0 132px; width: 132px; }
+/* Шире левой: города бывают длинными («Санкт-Петербург»), и обрезать их
+   многоточием там, где место есть, незачем. */
+.cl-geonav { flex: 0 0 152px; width: 152px; }
 /* Разметка узла уже зеркальная (кружок, потом подпись) — переворачивать ряд
    не надо, достаточно прижать его влево. */
 .cl-geonav .cl-tn-node { justify-content: flex-start; padding: 0 0 0 6px; }
 .cl-geonav .cl-tn-cap { align-items: flex-start; text-align: left; min-width: 0; }
-.cl-geonav .cl-tn-cap b { transform-origin: left center; max-width: 76px; overflow: hidden; text-overflow: ellipsis; }
-.cl-geonav .cl-tn-cap i { max-width: 76px; overflow: hidden; text-overflow: ellipsis; }
+.cl-geonav .cl-tn-cap b { transform-origin: left center; font-size: 12px; max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+.cl-geonav .cl-tn-cap i { max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
 /* Ось проходит через ЦЕНТР кружка: 6px отступа + половина от 38px. */
 .cl-geonav .cl-tn-axis { left: calc(6px + 19px - 1px); }
 .cl-geonav .cl-tn-ava:empty { margin: 12px; }
@@ -915,6 +917,13 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
 .cl-geonav .cl-tn-node.is-minor.is-passed .cl-tn-ava { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--brand) 60%, transparent); }
 .cl-geonav .cl-tn-node.is-minor.is-active .cl-tn-ava { box-shadow: 0 0 0 2px var(--brand); transform: scale(1.1); }
 .cl-geonav .cl-tn-node.is-minor.is-active .cl-tn-cap b { color: #fff; }
+.cl-geonav-rest {
+  position: absolute;
+  left: 13px;
+  font-size: 10.5px;
+  color: rgba(148, 163, 184, .6);
+  white-space: nowrap;
+}
 
 /* Ось проходит через центры узлов: узел 38px прижат к правому краю с отступом 6. */
 .cl-tn-axis {

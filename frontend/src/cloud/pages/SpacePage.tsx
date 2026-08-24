@@ -62,6 +62,7 @@ export default function SpacePage() {
   const headHidden = useHideOnScrollDown()
   /** Отрезки поездки для правой рельсы: где человек был, в порядке ленты. */
   const [segments, setSegments] = useState<GeoSegment[]>([])
+  const [withoutPlace, setWithoutPlace] = useState(0)
   const [geoPos, setGeoPos] = useState<GeoPosition>({ run: -1, fraction: 0 })
 
   /** Счётчики по дням для рельсы: весь срез, не только загруженные страницы. */
@@ -310,12 +311,14 @@ export default function SpacePage() {
   const loadSegments = useCallback(async () => {
     if (view !== 'timeline' || !railWide) return
     try {
-      const { data } = await cloudApi.get<{ places: GeoSegment[] }>('/files/places', {
+      const { data } = await cloudApi.get<{ places: GeoSegment[]; withoutPlace: number }>('/files/places', {
         params: { spaceId, view: onlyFavorites ? 'favorites' : 'places', ...(kindFilter ? { kind: kindFilter } : {}) },
       })
       setSegments(data.places)
+      setWithoutPlace(data.withoutPlace)
     } catch {
       setSegments([])
+      setWithoutPlace(0)
     }
   }, [spaceId, view, kindFilter, onlyFavorites, railWide])
 
@@ -1080,7 +1083,7 @@ export default function SpacePage() {
       ) : null}
         </div>
         {/* Правая колонка — зеркало левой: слева видно КОГДА, справа ГДЕ. */}
-        {showRail ? <GeoRail segments={segments} position={geoPos} onJump={jumpToRun} /> : null}
+        {showRail ? <GeoRail segments={segments} withoutPlace={withoutPlace} position={geoPos} onJump={jumpToRun} /> : null}
       </div>
 
       {/* ── Панель выбора ───────────────────────────────────────────────── */}
