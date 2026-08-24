@@ -80,4 +80,25 @@ describe('clusterize', () => {
   it('пустой вход даёт пустой выход', () => {
     expect(clusterize([], 10)).toEqual([])
   })
+
+  it('выше порога группировки каждая точка отдельно', () => {
+    // Раньше Math.min(zoom, MAX_CLUSTER_ZOOM) замораживал ШАГ СЕТКИ, а не
+    // отключал группировку: на зуме 19+ ячейка оставалась ~38 м, и плотная
+    // группа не распадалась ни на каком масштабе — её снимки были недоступны.
+    const tight = [
+      p('t1', 41.69380, 44.80150),
+      p('t2', 41.69381, 44.80151),
+      p('t3', 41.69382, 44.80152),
+    ]
+    expect(clusterize(tight, 18).length).toBeLessThan(3)
+    for (const zoom of [19, 20, 22]) {
+      expect(clusterize(tight, zoom)).toHaveLength(3)
+    }
+  })
+
+  it('не схлопывает всё в одну группу при запредельном зуме', () => {
+    // Math.pow(2, 1e9) === Infinity → шаг 0 → ключи "Infinity|Infinity".
+    const groups = clusterize([TBILISI, KUTAISI], 1e9)
+    expect(groups).toHaveLength(2)
+  })
 })

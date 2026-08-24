@@ -103,9 +103,12 @@ export function MapView({
                 // Превью может быть ещё не построено, а может исчезнуть из кэша
                 // производных. И то, и другое раньше давало битую картинку и
                 // визуально пустой маркер, поэтому здесь и заглушка, и onerror.
+                // width/height атрибутами, без loading="lazy": все маркеры по
+                // построению во вьюпорте, а иконки пересоздаются на каждом
+                // zoomend — ленивость тут только добавляет мигание.
                 html:
                   (first.thumb
-                    ? `<img src="${first.thumb}" alt="" loading="lazy" draggable="false"` +
+                    ? `<img src="${first.thumb}" alt="" width="46" height="46" decoding="async" draggable="false"` +
                       ` onerror="this.replaceWith(Object.assign(document.createElement('i'),{className:'cl-map-fallback',textContent:'🖼'}))" />`
                     : `<i class="cl-map-fallback">${first.kind === 'VIDEO' ? '🎬' : '🖼'}</i>`) +
                   (count > 1 ? `<b>${count}</b>` : ''),
@@ -120,17 +123,27 @@ export function MapView({
                 openRef.current(first.id)
                 return
               }
-              // Приближаемся так, чтобы группа гарантированно распалась: считаем
-              // зум по охвату её точек, а не «текущий + 3» вслепую.
-              const inner = L.latLngBounds(group.items.map((i) => [i.lat, i.lon] as [number, number]))
-              const innerSW = inner.getSouthWest()
-              const innerNE = inner.getNorthEast()
-              if (innerSW.equals(innerNE)) {
-                // Все снимки строго в одной точке — разводить нечего, открываем первый.
-                openRef.current(first.id)
+              /*
+               * Целевой зум спрашиваем У КАРТЫ (getBoundsZoom уже зажат её
+               * собственными min/max), а не задаём константой. Прежний
+               * fitBounds(..., {maxZoom: 18}) упирался в тот же потолок, что и
+               * сетка: когда карта уже на 18 — а после первого клика она именно
+               * там, — зум не менялся, zoomend не стрелял, redraw не звался.
+               * Клик выглядел как микропан и полное бездействие.
+               */
+              const padded = L.latLngBounds(
+                group.items.map((i) => [i.lat, i.lon] as [number, number])
+              ).pad(0.3)
+              const target = map.getBoundsZoom(padded)
+              // Двигаемся, только если это реально разобьёт группу.
+              if (target > map.getZoom() && clusterize(group.items, target).length > 1) {
+                map.fitBounds(padded)
                 return
               }
-              map.fitBounds(inner.pad(0.3), { maxZoom: 18 })
+              // Группа не распадётся ни на каком доступном масштабе — кадры сняты
+              // с одной точки. Открываем первый: остальные рядом в ленте
+              // просмотрщика и долистываются стрелками.
+              openRef.current(first.id)
             })
             layer.addLayer(marker)
           }

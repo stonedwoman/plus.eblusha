@@ -539,8 +539,31 @@
   z-index: 0;
 }
 .cl-map .leaflet-container { background: var(--surface-200); font: inherit; }
-.cl-map-pin { cursor: pointer; }
-.cl-map-pin img {
+/*
+ * Подложка на самом пине: иконки пересоздаются на КАЖДОМ zoomend, и пока
+ * очередная миниатюра не декодирована, без фона маркер был бы невидим.
+ */
+.cl-map-pin {
+  cursor: pointer;
+  border-radius: 9px;
+  background: var(--surface-300);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .5);
+}
+
+/*
+ * Селектор намеренно длинный. leaflet.css содержит
+ *   .leaflet-container .leaflet-marker-pane img { width: auto; max-width: none !important }
+ * со специфичностью (0,2,1) — против (0,1,1) у простого `.cl-map-pin img`. Плюс
+ * этот файл грузится ПОЗЖЕ бандла (динамический import внутри MapView), так что
+ * Leaflet выигрывал и по специфичности, и по порядку: от нашего правила
+ * оставалась только высота, а ширина становилась auto.
+ *
+ * Для ещё не декодированной картинки width:auto — это НОЛЬ. Пин превращался в
+ * белый волосок 4×46 из одних рамок: маркеры в DOM есть, на карте пусто.
+ * После загрузки ширина шла по пропорциям превью (4:3 → 60px, 16:9 → 79px),
+ * пины наезжали друг на друга, а счётчик уезжал на середину картинки.
+ */
+.leaflet-container .leaflet-marker-pane .cl-map-pin img {
   width: 46px; height: 46px;
   border-radius: 9px; object-fit: cover;
   border: 2px solid #fff;

@@ -24,7 +24,15 @@ export function clusterize(points: MapPoint[], zoom: number): Cluster[] {
   // Невалидный масштаб (карта ещё не получила view) превратил бы шаг в NaN, а
   // ключи бакетов — в "NaN|NaN": все точки схлопнулись бы в одну группу с
   // произвольным центром. Подстраховываемся явно.
-  const safeZoom = Number.isFinite(zoom) ? Math.max(0, Math.min(zoom, MAX_CLUSTER_ZOOM)) : 2
+  const z = Number.isFinite(zoom) ? Math.max(0, zoom) : 2
+  const valid = points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
+
+  // Выше порога не группируем ВООБЩЕ. Раньше здесь стоял Math.min(zoom, MAX_CLUSTER_ZOOM),
+  // и это клампило не кластеризацию, а ШАГ СЕТКИ: на любом зуме ≥18 ячейка
+  // замирала на ~38×28 м, поэтому плотная группа не распадалась ни на каком
+  // масштабе — снимки внутри неё оставались недоступны с карты.
+  if (z > MAX_CLUSTER_ZOOM) return valid.map((p) => ({ lat: p.lat, lon: p.lon, items: [p] }))
+  const safeZoom = z
   /*
    * Шаг сетки задаём В ПИКСЕЛЯХ ЭКРАНА, а не в градусах.
    *
@@ -37,9 +45,12 @@ export function clusterize(points: MapPoint[], zoom: number): Cluster[] {
    */
   const step = (360 / (256 * Math.pow(2, safeZoom))) * CLUSTER_CELL_PX
 
+  // Нулевой или неконечный шаг дал бы ключи вида "Infinity|Infinity" и схлопнул
+  // всё в одну группу с произвольным центром.
+  if (!(step > 0) || !Number.isFinite(step)) return valid.map((p) => ({ lat: p.lat, lon: p.lon, items: [p] }))
+
   const buckets = new Map<string, Cluster>()
-  for (const p of points) {
-    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue
+  for (const p of valid) {
     const key = `${Math.round(p.lat / step)}|${Math.round(p.lon / step)}`
     const bucket = buckets.get(key)
     if (bucket) {
