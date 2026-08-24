@@ -118,6 +118,71 @@ const Tile = memo(function Tile({
   )
 })
 
+/**
+ * Галерея, сгруппированная по МЕСТУ съёмки — сестра таймлайна.
+ *
+ * Заголовок группы — полный путь «Страна · Город · Район», а data-place на
+ * секции читают рельса мест и трекер прокрутки, ровно как data-day у дат.
+ */
+export function PlacesView({
+  files,
+  selection,
+  onOpen,
+  onToggleSelect,
+  selectMode,
+}: {
+  files: CloudFile[]
+  selection: Set<string>
+  onOpen: (file: CloudFile) => void
+  onToggleSelect: (id: string, shift: boolean) => void
+  selectMode: boolean
+}) {
+  const groups = useMemo(() => {
+    const out: { key: string; country: string; rest: string; files: CloudFile[] }[] = []
+    for (const file of files) {
+      const key = file.geoPath ?? ''
+      const last = out[out.length - 1]
+      if (last && last.key === key) {
+        last.files.push(file)
+        continue
+      }
+      const rest = [file.geoCity, file.geoDistrict].filter(Boolean).join(' · ')
+      out.push({ key, country: file.geoCountry ?? 'Без места', rest, files: [file] })
+    }
+    return out
+  }, [files])
+
+  return (
+    <>
+      {groups.map((group, i) => (
+        <section key={group.key} data-place={group.key}>
+          <div className="cl-day-head cl-place-head">
+            {/* Страна печатается только когда сменилась: внутри одной страны
+                повторять её у каждого города — визуальный шум. */}
+            {i === 0 || groups[i - 1]!.country !== group.country ? (
+              <span className="cl-place-country">{group.country}</span>
+            ) : null}
+            {group.rest ? <span>{group.rest}</span> : null}
+            <span className="cl-muted">{group.files.length}</span>
+          </div>
+          <div className="cl-tiles">
+            {group.files.map((file) => (
+              <Tile
+                key={file.id}
+                file={file}
+                selected={selection.has(file.id)}
+                selectMode={selectMode}
+                onOpen={() => onOpen(file)}
+                onToggle={(shift) => onToggleSelect(file.id, shift)}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+    </>
+  )
+}
+
 /** Группировка по дню съёмки — сердце таймлайна поездки. */
 export function groupByDay(files: CloudFile[]): { key: string; label: string; files: CloudFile[] }[] {
   const groups = new Map<string, CloudFile[]>()

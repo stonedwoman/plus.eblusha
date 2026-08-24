@@ -26,6 +26,11 @@ export type CloudFile = {
   deletedAt: string | null
   latitude: number | null
   longitude: number | null
+  /** Место съёмки: офлайн-геокодирование EXIF-координат, глубже района не идём. */
+  geoCountry: string | null
+  geoCity: string | null
+  geoDistrict: string | null
+  geoPath: string | null
   cameraMake: string | null
   cameraModel: string | null
   videoCodec: string | null

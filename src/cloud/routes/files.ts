@@ -30,7 +30,7 @@ const router = Router();
 
 const listQuery = z.object({
   spaceId: z.string().min(1),
-  view: z.enum(["timeline", "files", "map", "trash", "favorites", "recent"]).default("timeline"),
+  view: z.enum(["timeline", "files", "map", "places", "trash", "favorites", "recent"]).default("timeline"),
   folderId: z.string().optional(),
   kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
   q: z.string().max(120).optional(),
@@ -156,6 +156,66 @@ router.get(
       ORDER BY 1
     `);
     res.json({ days: rows });
+  })
+);
+
+/**
+ * Иерархия мест съёмки для рельсы «Места»: страна → город → район, со
+ * счётчиками и представительским снимком на каждый узел.
+ *
+ * Один агрегат по всему срезу, а не по загруженной странице: рельса обязана
+ * показывать всю поездку, даже когда в браузере первая сотня файлов.
+ */
+router.get(
+  "/places",
+  ah(async (req: Request, res) => {
+    const parsed = z
+      .object({
+        spaceId: z.string().min(1),
+        view: z.enum(["places", "favorites"]).default("places"),
+        kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
+      })
+      .safeParse(req.query);
+    if (!parsed.success) throw invalid("Некорректные параметры выборки");
+    const p = parsed.data;
+    await requireSpaceAccess(req, p.spaceId, "space:view");
+
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`f."spaceId" = ${p.spaceId}`,
+      Prisma.sql`f."deletedAt" IS NULL`,
+      Prisma.sql`f."purgedAt" IS NULL`,
+    ];
+    if (p.kind) conds.push(Prisma.sql`f."kind"::text = ${p.kind}`);
+    if (p.view === "favorites") {
+      conds.push(
+        Prisma.sql`EXISTS (SELECT 1 FROM "CloudFavorite" fav WHERE fav."fileId" = f."id" AND fav."userId" = ${req.cloudUser!.id})`
+      );
+    }
+
+    const rows = await prisma.$queryRaw<
+      { path: string; country: string; city: string | null; district: string | null; count: number; fileId: string | null }[]
+    >(Prisma.sql`
+      SELECT f."geoPath" AS path,
+             min(f."geoCountry") AS country,
+             min(f."geoCity") AS city,
+             min(f."geoDistrict") AS district,
+             count(*)::int AS count,
+             (array_agg(f."id" ORDER BY
+                EXISTS(SELECT 1 FROM "CloudFileVariant" v
+                       WHERE v."fileId" = f."id" AND v."kind"::text = 'THUMB' AND v."status"::text = 'READY') DESC,
+                f."takenAt" ASC))[1] AS "fileId"
+      FROM "CloudFile" f
+      WHERE ${Prisma.join(conds, " AND ")} AND f."geoPath" IS NOT NULL
+      GROUP BY f."geoPath"
+      ORDER BY f."geoPath"
+    `);
+
+    // Сколько снимков осталось без места — честно показываем, а не прячем.
+    const withoutPlace = await prisma.cloudFile.count({
+      where: { spaceId: p.spaceId, deletedAt: null, purgedAt: null, geoPath: null, ...(p.kind ? { kind: p.kind } : {}) },
+    });
+
+    res.json({ places: rows, withoutPlace });
   })
 );
 

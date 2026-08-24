@@ -9,7 +9,7 @@ import { fileDto } from "./serialize";
  * Пагинация курсорная: галерея на несколько тысяч файлов не должна тянуть всё
  * разом ни в SQL, ни в браузер.
  */
-export type FileListView = "timeline" | "files" | "map" | "trash" | "favorites" | "recent";
+export type FileListView = "timeline" | "files" | "map" | "places" | "trash" | "favorites" | "recent";
 
 export type FileListParams = {
   spaceId: string;
@@ -26,7 +26,12 @@ export type FileListParams = {
   limit: number;
 };
 
-type Cursor = { k: string; id: string };
+/**
+ * Курсор пагинации. `t` заполняется только в режиме мест: там сортировка идёт
+ * по трём полям (место → время съёмки → id), и без второго ключа страница на
+ * границе группы теряла бы или повторяла снимки.
+ */
+type Cursor = { k: string; id: string; t?: string };
 
 function encodeCursor(c: Cursor): string {
   return Buffer.from(JSON.stringify(c)).toString("base64url");
@@ -68,6 +73,9 @@ export function buildFileWhere(params: FileSliceParams): Prisma.CloudFileWhereIn
 
   if (view === "files" && params.folderId !== undefined) where.folderId = params.folderId;
   if (view === "map") where.AND = [{ latitude: { not: null } }, { longitude: { not: null } }];
+  // В «Местах» живут только распознанные снимки: пустая группа «неизвестно где»
+  // ничего не рассказывает о поездке, а её счётчик отдаётся отдельно.
+  if (view === "places") where.geoPath = { not: null };
   if (view === "favorites") where.favorites = { some: { userId: viewerId } };
   if (params.kind) where.kind = params.kind;
   if (params.uploaderId) where.uploaderId = params.uploaderId;
@@ -113,10 +121,11 @@ export async function listFileIds(params: FileSliceParams, cap = 20000): Promise
  *   recent       — недавно добавленное сверху;
  *   files        — по имени.
  */
-type OrderMode = "name" | "taken" | "deleted" | "created";
+type OrderMode = "name" | "taken" | "deleted" | "created" | "place";
 
 function orderModeFor(view: FileListView): OrderMode {
   if (view === "files") return "name";
+  if (view === "places") return "place";
   if (view === "timeline" || view === "map" || view === "favorites") return "taken";
   if (view === "trash") return "deleted";
   return "created";
@@ -128,6 +137,9 @@ function orderForView(view: FileListView): Prisma.CloudFileOrderByWithRelationIn
       return [{ originalName: "asc" }, { id: "asc" }];
     case "taken":
       return [{ takenAt: "asc" }, { id: "asc" }];
+    case "place":
+      // Внутри места — снова хронология: группа читается как отрезок поездки.
+      return [{ geoPath: "asc" }, { takenAt: "asc" }, { id: "asc" }];
     case "deleted":
       return [{ deletedAt: "desc" }, { id: "desc" }];
     default:
@@ -151,6 +163,14 @@ export async function listFiles(params: FileListParams) {
     } else if (mode === "taken") {
       const at = new Date(cursor.k);
       where.OR = [{ takenAt: { gt: at } }, { takenAt: at, id: { gt: cursor.id } }];
+    } else if (mode === "place") {
+      // Условие продолжения повторяет сортировку поле в поле.
+      const at = cursor.t ? new Date(cursor.t) : new Date(0);
+      where.OR = [
+        { geoPath: { gt: cursor.k } },
+        { geoPath: cursor.k, takenAt: { gt: at } },
+        { geoPath: cursor.k, takenAt: at, id: { gt: cursor.id } },
+      ];
     } else if (mode === "deleted") {
       const at = new Date(cursor.k);
       where.OR = [{ deletedAt: { lt: at } }, { deletedAt: at, id: { lt: cursor.id } }];
@@ -175,8 +195,11 @@ export async function listFiles(params: FileListParams) {
   const nextCursor =
     hasMore && last
       ? encodeCursor({
+          ...(mode === "place" ? { t: last.takenAt.toISOString() } : {}),
           k:
-            mode === "name"
+            mode === "place"
+              ? (last.geoPath ?? "")
+              : mode === "name"
               ? last.originalName
               : (mode === "taken"
                   ? last.takenAt

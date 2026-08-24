@@ -14,7 +14,8 @@ import {
   useUploadSummary,
 } from '../uploads/manager'
 import { UploadTile } from '../components/UploadTile'
-import { TimelineView, Tiles } from '../components/Gallery'
+import { PlacesView, TimelineView, Tiles } from '../components/Gallery'
+import { PlaceRail, type PlaceGroup, type PlacePosition } from '../components/PlaceRail'
 import { useDragSelect, type PaintMode } from '../components/dragSelect'
 import { Viewer } from '../components/Viewer'
 import { MapView } from '../components/MapView'
@@ -23,7 +24,7 @@ import { ShareDialog } from '../components/ShareDialog'
 import { Avatar, Empty, Modal, SkeletonTiles, useInfiniteSentinel, useHideOnScrollDown, toast } from '../components/ui'
 import type { CloudContext } from './CloudLayout'
 
-type View = 'timeline' | 'files' | 'map' | 'activity'
+type View = 'timeline' | 'places' | 'files' | 'map' | 'activity'
 
 /** Столько id уходит в один запрос: совпадает с лимитом валидации на сервере. */
 const BATCH = 1000
@@ -59,6 +60,11 @@ export default function SpacePage() {
   const [onlyFavorites, setOnlyFavorites] = useState(false)
   // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
   const headHidden = useHideOnScrollDown()
+  /** Иерархия мест для рельсы «Места» и счётчик снимков без геометки. */
+  const [places, setPlaces] = useState<PlaceGroup[]>([])
+  const [withoutPlace, setWithoutPlace] = useState(0)
+  const [placePos, setPlacePos] = useState<PlacePosition>({ path: null, fraction: 0 })
+
   /** Счётчики по дням для рельсы: весь срез, не только загруженные страницы. */
   const [dayCounts, setDayCounts] = useState<TimelineDay[]>([])
   /** Где читатель: день у верхней кромки и доля пройденного внутри его
@@ -126,7 +132,13 @@ export default function SpacePage() {
   const slice = useMemo(
     () => ({
       spaceId,
-      view: onlyFavorites ? ('favorites' as const) : view === 'files' ? ('files' as const) : ('timeline' as const),
+      view: onlyFavorites
+        ? ('favorites' as const)
+        : view === 'files'
+          ? ('files' as const)
+          : view === 'places'
+            ? ('places' as const)
+            : ('timeline' as const),
       ...(view === 'files' && !onlyFavorites ? { folderId: folderId ?? 'root' } : {}),
       ...(kindFilter ? { kind: kindFilter } : {}),
     }),
@@ -161,7 +173,7 @@ export default function SpacePage() {
     mq.addEventListener('change', on)
     return () => mq.removeEventListener('change', on)
   }, [])
-  const showRail = railWide && view === 'timeline'
+  const showRail = railWide && (view === 'timeline' || view === 'places')
   const canEdit = space?.role === 'OWNER' || space?.role === 'EDITOR'
   const isOwner = space?.role === 'OWNER'
 
@@ -301,6 +313,100 @@ export default function SpacePage() {
     const t = setTimeout(() => void loadDayCounts(), 0)
     return () => clearTimeout(t)
   }, [loadDayCounts])
+
+  const loadPlaces = useCallback(async () => {
+    if (view !== 'places' || !railWide) return
+    try {
+      const { data } = await cloudApi.get<{ places: PlaceGroup[]; withoutPlace: number }>('/files/places', {
+        params: { spaceId, view: onlyFavorites ? 'favorites' : 'places', ...(kindFilter ? { kind: kindFilter } : {}) },
+      })
+      setPlaces(data.places)
+      setWithoutPlace(data.withoutPlace)
+    } catch {
+      setPlaces([])
+    }
+  }, [spaceId, view, kindFilter, onlyFavorites, railWide])
+
+  useEffect(() => {
+    void loadPlaces()
+  }, [loadPlaces])
+
+  /*
+   * Бегунок рельсы мест — та же механика, что у дат, только шкала
+   * географическая: ищем последнюю группу, чей верх ушёл под панель.
+   */
+  useEffect(() => {
+    if (view !== 'places' || !railWide) return
+    const root = document.querySelector<HTMLElement>('.cl-root')
+    if (!root) return
+    let raf = 0
+    const measure = () => {
+      raf = 0
+      const sections = Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-place]'))
+      if (sections.length === 0) return
+      let current: string | null = null
+      let fraction = 0
+      for (const el of sections) {
+        const r = el.getBoundingClientRect()
+        if (r.top > RAIL_ANCHOR) break
+        current = el.dataset.place ?? null
+        fraction = Math.max(0, Math.min(1, (RAIL_ANCHOR - r.top) / Math.max(1, r.height)))
+      }
+      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) fraction = 1
+      const path = current ?? sections[0]?.dataset.place ?? null
+      setPlacePos((prev) =>
+        prev.path === path && Math.abs(prev.fraction - fraction) < 0.002 ? prev : { path, fraction }
+      )
+    }
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(measure)
+    }
+    root.addEventListener('scroll', onScroll, { passive: true })
+    measure()
+    return () => {
+      root.removeEventListener('scroll', onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [view, railWide, files])
+
+  /** Прыжок к месту: группы всегда рядом, догрузка идёт тем же курсором. */
+  const jumpToPlace = useCallback(
+    async (path: string) => {
+      const root = document.querySelector<HTMLElement>('.cl-root')
+      const startKey = sliceKeyRef.current
+      const find = () =>
+        Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-place]')).find(
+          (el) => (el.dataset.place ?? '') === path || (el.dataset.place ?? '').startsWith(path)
+        )
+      const go = () => {
+        const target = find()
+        if (!root || !target) return false
+        const base = target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
+        const goingUp = base - HEADER_OFFSET < root.scrollTop
+        const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
+        smoothScrollTo(root, base - HEADER_OFFSET - land)
+        return true
+      }
+      if (go()) return
+      if (!cursorRef.current || jumpingRef.current) return
+      jumpingRef.current = true
+      try {
+        let c: string | null = cursorRef.current
+        for (let i = 0; c && i < 200; i++) {
+          const batch = await loadFiles(c, 'append')
+          if (!batch || !aliveRef.current || sliceKeyRef.current !== startKey) return
+          c = batch.nextCursor
+          if (batch.files.some((f) => (f.geoPath ?? '') >= path)) break
+        }
+        requestAnimationFrame(() => {
+          if (aliveRef.current && sliceKeyRef.current === startKey) go()
+        })
+      } finally {
+        jumpingRef.current = false
+      }
+    },
+    [loadFiles]
+  )
 
   /*
    * Бегунок рельсы. Ищем последнюю группу дня, чей верх уже ушёл под липкую
@@ -718,7 +824,13 @@ export default function SpacePage() {
         className={`cl-tl-layout${showRail ? ' with-rail' : ''}`}
         style={{ ['--cl-rail-off' as string]: `${visibleHeadH}px` }}
       >
-        {showRail ? <TimelineRail days={dayCounts} position={railPos} onJump={jumpToDay} /> : null}
+        {showRail ? (
+          view === 'places' ? (
+            <PlaceRail places={places} position={placePos} onJump={jumpToPlace} />
+          ) : (
+            <TimelineRail days={dayCounts} position={railPos} onJump={jumpToDay} />
+          )
+        ) : null}
         <div className="cl-tl-main">
       {/*
         Шапка и фильтры — единый липкий блок, который прячется при прокрутке
@@ -796,12 +908,23 @@ export default function SpacePage() {
           */}
           <div
             className="cl-seg"
-            style={{ ['--seg-n' as string]: 4, ['--seg-i' as string]: ['timeline', 'files', 'map', 'activity'].indexOf(view) }}
+            style={{
+              ['--seg-n' as string]: 5,
+              ['--seg-i' as string]: ['timeline', 'places', 'files', 'map', 'activity'].indexOf(view),
+            }}
           >
             <i className="cl-seg-pill" aria-hidden />
-            {(['timeline', 'files', 'map', 'activity'] as View[]).map((v) => (
+            {(['timeline', 'places', 'files', 'map', 'activity'] as View[]).map((v) => (
               <button key={v} className={`cl-seg-btn${view === v ? ' is-active' : ''}`} onClick={() => setView(v)}>
-                {v === 'timeline' ? 'Таймлайн' : v === 'files' ? 'Файлы' : v === 'map' ? 'Карта' : 'Активность'}
+                {v === 'timeline'
+                  ? 'Таймлайн'
+                  : v === 'places'
+                    ? 'Места'
+                    : v === 'files'
+                      ? 'Файлы'
+                      : v === 'map'
+                        ? 'Карта'
+                        : 'Активность'}
               </button>
             ))}
           </div>
@@ -921,6 +1044,21 @@ export default function SpacePage() {
             ) : null
           }
         />
+      ) : view === 'places' ? (
+        <>
+          {withoutPlace > 0 ? (
+            <div className="cl-place-note">
+              {withoutPlace} {plural(withoutPlace, 'снимок', 'снимка', 'снимков')} без геометки — их здесь нет
+            </div>
+          ) : null}
+          <PlacesView
+            files={files}
+            selection={selection}
+            selectMode={selection.size > 0}
+            onOpen={openFile}
+            onToggleSelect={toggleSelect}
+          />
+        </>
       ) : (
         <>
           <TimelineView

@@ -46,7 +46,9 @@
     "cloud:maintenance": "node dist/scripts/cloudMaintenance.js",
     "test:cloud": "ts-node test/cloud.smoke.test.ts",
     "cloud:dedupe": "ts-node src/scripts/cloudDedupeSpaceFiles.ts",
-    "cloud:wipe": "ts-node src/scripts/cloudWipe.ts"
+    "cloud:wipe": "ts-node src/scripts/cloudWipe.ts",
+    "cloud:geo-fetch": "ts-node src/scripts/cloudGeoFetch.ts",
+    "cloud:geo-backfill": "ts-node src/scripts/cloudGeoBackfill.ts"
   },
   "keywords": [],
   "author": "",

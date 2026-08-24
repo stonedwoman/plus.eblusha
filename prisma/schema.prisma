@@ -717,6 +717,20 @@ model CloudFile {
   /// и файл спокойно возвращался кнопкой «Восстановить» из корзины.
   purgedAt       DateTime?
 
+  /// Обратное геокодирование EXIF-координат, офлайн по датасету GeoNames.
+  /// Район заполняется ТОЛЬКО когда ближайший населённый пункт честно ближе
+  /// города: у GeoNames нет городских районов, и без этого условия на весь
+  /// центр вешался случайный пригород.
+  geoCountryCode String?
+  geoCountry     String?
+  geoCity        String?
+  geoDistrict    String?
+  /// «Страна\u0001Город\u0001Район» — один сортируемый ключ. Нужен, чтобы
+  /// группы мест шли подряд и работала та же двухполевая курсорная пагинация,
+  /// что и у остальных выборок.
+  geoPath        String?
+  geoResolvedAt  DateTime?
+
   space         CloudSpace         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   folder        CloudFolder?       @relation(fields: [folderId], references: [id])
   storageObject CloudStorageObject @relation(fields: [storageObjectId], references: [id])
@@ -730,6 +744,7 @@ model CloudFile {
   @@index([spaceId, folderId, deletedAt, originalName])
   @@index([spaceId, deletedAt, createdAt])
   @@index([spaceId, kind, deletedAt])
+  @@index([spaceId, deletedAt, geoPath])
   @@index([uploaderId, createdAt])
   @@index([storageObjectId])
   @@index([deletedAt])

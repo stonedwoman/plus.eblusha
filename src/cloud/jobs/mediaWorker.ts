@@ -11,6 +11,7 @@ import { emitCloud, spaceRoom } from "../realtime";
 import { readImageMetadata, renderRendition } from "../media/images";
 import { canDirectPlay, ffprobe } from "../media/probe";
 import { renderPlayback, renderPoster } from "../media/video";
+import { resolvePlace } from "../geo/reverse";
 import { sniffFile, kindFromMime } from "../media/sniff";
 import { fileDto } from "../serialize";
 import { CLOUD_IMAGE_QUEUE, CLOUD_VIDEO_QUEUE, type CloudImageJob, type CloudVideoJob } from "./queues";
@@ -75,6 +76,25 @@ async function markFailed(fileId: string, message: string) {
   await announce(fileId, "cloud.file.ready");
 }
 
+/**
+ * Дописать место съёмки в набор полей обновления.
+ *
+ * Вынесено отдельно, потому что вызывается и для фото, и для видео. Если
+ * координат нет или справочник не загружен, поля остаются нетронутыми: пустое
+ * место честнее выдуманного.
+ */
+function applyPlace(update: Record<string, unknown>, lat: unknown, lon: unknown): void {
+  if (typeof lat !== "number" || typeof lon !== "number") return;
+  const place = resolvePlace(lat, lon);
+  if (!place) return;
+  update.geoCountryCode = place.countryCode;
+  update.geoCountry = place.country;
+  update.geoCity = place.city;
+  update.geoDistrict = place.district;
+  update.geoPath = place.path;
+  update.geoResolvedAt = new Date();
+}
+
 export async function processImage(fileId: string): Promise<void> {
   const file = await loadFile(fileId);
   if (!file || file.deletedAt) return;
@@ -97,6 +117,9 @@ export async function processImage(fileId: string): Promise<void> {
     update.takenAt = meta.takenAt;
     update.takenAtSource = "exif";
   }
+  // Место съёмки — офлайн по справочнику, тут же при обработке: отдельный
+  // проход по хранилищу ради этого гонять незачем.
+  applyPlace(update, meta.latitude, meta.longitude);
   await prisma.cloudFile.update({ where: { id: fileId }, data: update as never });
 
   let failures = 0;
