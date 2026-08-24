@@ -8,6 +8,14 @@
   --cl-radius: 14px;
   --cl-header-h: 60px;
   /*
+   * Единые кривые движения. «Свифт-аут» (резкий старт, длинное мягкое
+   * торможение) — для всего, что появляется или едет; симметричная — для
+   * состояний туда-обратно. Разнобой из линейных ease по 150 мс и давал
+   * ощущение дёрганности.
+   */
+  --cl-ease: cubic-bezier(.22, 1, .36, 1);
+  --cl-ease-io: cubic-bezier(.65, 0, .35, 1);
+  /*
    * Страница мессенджера намеренно залочена: html/body имеют overflow:hidden,
    * #app — height:100svh, потому что в чате скроллится внутренняя лента, а не
    * документ. Из-за этого Cloud, унаследовав ту же оболочку, не прокручивался
@@ -248,7 +256,7 @@
   padding: 14px 18px 12px;
   background: var(--paper);
   border-bottom: 1px solid var(--surface-border);
-  transition: transform .22s ease, opacity .18s ease;
+  transition: transform .34s var(--cl-ease), opacity .26s ease;
   will-change: transform;
 }
 .cl-space-head.is-hidden {
@@ -310,12 +318,14 @@
    */
   content-visibility: auto;
   contain-intrinsic-size: auto 220px;
+  transition: transform .3s var(--cl-ease), box-shadow .3s var(--cl-ease), border-color .2s ease;
   /* Размеры известны заранее — плитки не «прыгают» при подгрузке превью. */
   aspect-ratio: 1;
-  transition: border-color .15s ease;
 }
 .cl-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cl-tile.selected { border-color: var(--brand); }
+.cl-tile:hover { transform: translateY(-3px); box-shadow: 0 10px 26px rgba(0, 0, 0, .38); }
+.cl-tile.selected:hover { transform: none; }
 .cl-tile.pending { background: linear-gradient(100deg, var(--surface-200) 30%, var(--surface-300) 50%, var(--surface-200) 70%); background-size: 300% 100%; animation: clShimmer 1.5s linear infinite; }
 @keyframes clShimmer { from { background-position: 120% 0; } to { background-position: -20% 0; } }
 
@@ -431,7 +441,12 @@
   background: rgba(6, 7, 10, .96);
   display: grid;
   grid-template-columns: minmax(0, 1fr) 0;
-  transition: grid-template-columns .22s ease;
+  transition: grid-template-columns .3s var(--cl-ease, ease);
+  animation: clViewerIn .32s var(--cl-ease, ease);
+}
+@keyframes clViewerIn {
+  from { opacity: 0; transform: scale(1.015); }
+  to { opacity: 1; transform: none; }
 }
 .cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr) 372px; }
 .cl-viewer-stage {
@@ -479,7 +494,7 @@
 .cl-tn-axis.done {
   background: linear-gradient(var(--brand), var(--brand));
   opacity: .85;
-  transition: height .25s ease;
+  transition: height .45s var(--cl-ease);
 }
 .cl-tn-node {
   position: absolute;
@@ -495,7 +510,7 @@
   background: none;
   cursor: pointer;
   color: inherit;
-  transition: top .25s ease;
+  transition: top .5s var(--cl-ease);
 }
 .cl-tn-cap {
   display: flex;
@@ -527,7 +542,7 @@
   overflow: hidden;
   box-shadow: 0 0 0 2px rgba(148, 163, 184, .35), 0 2px 8px rgba(0, 0, 0, .4);
   background: var(--paper);
-  transition: box-shadow .15s ease, transform .15s ease;
+  transition: box-shadow .25s var(--cl-ease), transform .25s var(--cl-ease);
 }
 .cl-tn-ava img { width: 100%; height: 100%; object-fit: cover; display: block; }
 /* День без миниатюры — полый кружок на оси, как станция без фото. */
@@ -552,7 +567,14 @@
 
 /* Прыжок к дате останавливается под липкой панелью, а не под ней прячется. */
 .cl-tl-main section[data-day] { scroll-margin-top: calc(var(--cl-header-h) + 2px); }
+/* Секции всплывают мягко — и при первой загрузке, и при догрузке страниц. */
+section[data-day] { animation: clRise .5s var(--cl-ease) both; }
+@keyframes clRise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
 .cl-fromchip {
+  animation: clFade .3s ease;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -590,7 +612,8 @@
 }
 .cl-imgstage.zoomed { cursor: grab; touch-action: none; }
 .cl-imgstage.zoomed:active { cursor: grabbing; }
-.cl-imgstage img { will-change: transform; }
+.cl-imgstage img { will-change: transform; animation: clFade .28s ease; }
+.cl-viewer-stage video { animation: clFade .28s ease; }
 .cl-viewer-top {
   position: absolute; top: 0; left: 0; right: 0;
   display: flex; align-items: center; gap: 9px;
@@ -694,6 +717,10 @@
 .cl-empty h3 { color: var(--text-primary); font-size: 18px; margin: 14px 0 7px; font-weight: 620; }
 .cl-empty p { margin: 0 auto; max-width: 420px; font-size: 14px; line-height: 1.55; }
 
+@keyframes clSelbarIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+  to { opacity: 1; transform: translateX(-50%); }
+}
 .cl-drop-overlay {
   position: fixed; inset: 0; z-index: 900;
   background: rgba(217, 119, 6, .10);
@@ -707,11 +734,16 @@
 
 .cl-toasts { position: fixed; bottom: 18px; left: 18px; z-index: 1200; display: flex; flex-direction: column; gap: 8px; max-width: min(400px, calc(100vw - 36px)); }
 .cl-toast {
+  animation: clToastIn .32s var(--cl-ease, ease);
   padding: 11px 14px; border-radius: 11px;
   background: var(--surface-200); border: 1px solid var(--surface-border-strong);
   box-shadow: var(--shadow-medium); font-size: 13.5px;
   animation: ebCardPop .2s ease;
   display: flex; align-items: center; gap: 9px;
+}
+@keyframes clToastIn {
+  from { opacity: 0; transform: translateY(12px) scale(.97); }
+  to { opacity: 1; transform: none; }
 }
 .cl-toast.error { border-color: rgba(239, 68, 68, .5); color: #fca5a5; }
 .cl-toast.success { border-color: rgba(34, 197, 94, .45); }
@@ -722,6 +754,7 @@
 .cl-selbar {
   position: fixed;
   left: 50%; bottom: 20px; transform: translateX(-50%);
+  animation: clSelbarIn .34s var(--cl-ease, ease);
   z-index: 70;
   display: flex; align-items: center; gap: 9px;
   padding: 9px 11px;
@@ -839,6 +872,15 @@
 
 .cl-activity-item { display: flex; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--surface-border); font-size: 13.5px; }
 .cl-activity-item:last-child { border-bottom: none; }
+
+/* Кому анимации мешают физически — отключаем всё разом. */
+@media (prefers-reduced-motion: reduce) {
+  .cl-root *, .cl-root *::before, .cl-root *::after, .cl-viewer, .cl-viewer * {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
 
 @media (max-width: 860px) {
   .cl-timenav { display: none; }

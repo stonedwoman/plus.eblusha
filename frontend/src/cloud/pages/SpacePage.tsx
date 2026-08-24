@@ -275,26 +275,29 @@ export default function SpacePage() {
   }, [view, files])
 
   /**
-   * Прыжок по рельсе. Загруженный день — плавный скролл к его группе; ещё не
-   * загруженный — якорь from: список пересобирается с этой даты, а чип над
-   * галереей возвращает всё как было.
+   * Прыжок по рельсе. Загруженный день — плавный анимированный скролл к его
+   * группе; ещё не загруженный — якорь from: список пересобирается с этой
+   * даты, а чип над галереей возвращает всё как было.
    */
   const jumpToDay = useCallback(
     (day: string) => {
+      const root = document.querySelector<HTMLElement>('.cl-root')
       const sections = Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]'))
       const target =
         sections.find((el) => el.dataset.day === day) ??
         // Весь срез уже в браузере — значит, в этот день просто не снимали;
         // ведём к ближайшему следующему дню съёмки.
         (!cursor ? sections.find((el) => (el.dataset.day ?? '') > day) : undefined)
-      if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      if (target && root) {
+        const top =
+          target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - HEADER_OFFSET
+        smoothScrollTo(root, top)
         return
       }
       // Клик в самое начало альбома — это отмена якоря, а не якорь на первый день.
       const first = dayCounts[0]?.day
       setFromDay(first !== undefined && day <= first ? null : day)
-      document.querySelector('.cl-root')?.scrollTo({ top: 0 })
+      root?.scrollTo({ top: 0 })
     },
     [cursor, dayCounts]
   )
@@ -860,6 +863,52 @@ function matchesSlice(
   // При якоре рельсы файлы раньше выбранной даты на экране не живут.
   if (s.view === 'timeline' && s.fromDay && dayKeyOf(new Date(file.takenAt)) < s.fromDay) return false
   return true
+}
+
+/** Куда сажаем цель прыжка: сразу под липкой панелью, с дыханием в пару px. */
+const HEADER_OFFSET = 62
+
+/**
+ * Плавный скролл с явным easing.
+ *
+ * Не scrollIntoView({behavior:'smooth'}): его длительность и кривая зашиты в
+ * браузер, на длинных дистанциях он дёргает почти мгновенно, на коротких —
+ * тянет. Здесь easeInOutCubic и длительность от расстояния, а колесо или палец
+ * пользователя мгновенно отменяют анимацию — управление всегда у человека.
+ */
+let cancelActiveScroll: (() => void) | null = null
+
+function smoothScrollTo(scroller: HTMLElement, targetTop: number) {
+  // Два быстрых тапа по рельсе — две rAF-петли, дерущиеся за scrollTop с
+  // видимым дрожанием. Новая анимация всегда сперва хоронит предыдущую.
+  cancelActiveScroll?.()
+
+  const from = scroller.scrollTop
+  const to = Math.max(0, Math.min(targetTop, scroller.scrollHeight - scroller.clientHeight))
+  const dist = to - from
+  if (Math.abs(dist) < 2) return
+
+  const duration = Math.min(950, Math.max(420, Math.abs(dist) * 0.35))
+  const start = performance.now()
+  let raf = 0
+  const cancel = () => {
+    cancelAnimationFrame(raf)
+    scroller.removeEventListener('wheel', cancel)
+    scroller.removeEventListener('touchstart', cancel)
+    if (cancelActiveScroll === cancel) cancelActiveScroll = null
+  }
+  cancelActiveScroll = cancel
+  scroller.addEventListener('wheel', cancel, { passive: true, once: true })
+  scroller.addEventListener('touchstart', cancel, { passive: true, once: true })
+
+  const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
+  const tick = (now: number) => {
+    const t = Math.min(1, (now - start) / duration)
+    scroller.scrollTop = from + dist * ease(t)
+    if (t < 1) raf = requestAnimationFrame(tick)
+    else cancel()
+  }
+  raf = requestAnimationFrame(tick)
 }
 
 /** Локальный день YYYY-MM-DD — тем же календарём, что группы галереи. */

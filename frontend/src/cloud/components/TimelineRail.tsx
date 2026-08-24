@@ -40,10 +40,8 @@ type Station = {
   firstDay: string
 }
 
-/** Вертикальный шаг станции: узел + двухстрочная подпись + воздух. */
+/** Минимальный вертикальный шаг станции: узел + двухстрочная подпись + воздух. */
 const STEP = 62
-/** Максимальный шаг: три дня не должны растягиваться на весь экран. */
-const STEP_MAX = 96
 const PAD = 12
 const NODE = 38
 
@@ -126,7 +124,10 @@ export function TimelineRail({
   }
 
   const n = stations.length
-  const step = Math.min(STEP_MAX, (h - PAD * 2 - NODE) / Math.max(1, n - 1))
+  // Станции растягиваются на ВСЮ высоту рельсы: ось живёт от шапки до низа
+  // экрана, а не жмётся в верхнем углу. Так и выглядит осью маршрута, и в
+  // каждый узел проще попасть.
+  const step = (h - PAD * 2 - NODE) / Math.max(1, n - 1)
   const y = (i: number) => PAD + i * step
 
   const activeIdx = activeDay
