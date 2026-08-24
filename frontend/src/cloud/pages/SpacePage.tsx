@@ -398,14 +398,16 @@ export default function SpacePage() {
   /** Прыжок к отрезку поездки: первая его плитка встаёт под панель. */
   const jumpToRun = useCallback(
     (run: number) => {
-      flashGroup(`.cl-tl-main [data-run="${CSS.escape(String(run))}"]`)
       const root = document.querySelector<HTMLElement>('.cl-root')
       const tile = document.querySelector<HTMLElement>(`.cl-tl-main [data-run="${run}"]`)
       if (!root || !tile) return
       const base = tile.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
       const goingUp = base - HEADER_OFFSET < root.scrollTop
       const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
-      smoothScrollTo(root, base - HEADER_OFFSET - land - 34)
+      // Подсветка — по приезде, см. jumpToDay.
+      smoothScrollTo(root, base - HEADER_OFFSET - land - 34, (finished) => {
+        if (finished) flashGroup(`.cl-tl-main [data-run="${CSS.escape(String(run))}"]`)
+      })
     },
     []
   )
@@ -478,7 +480,18 @@ export default function SpacePage() {
 
   const jumpToDay = useCallback(
     async (day: string) => {
-      flashGroup(`.cl-tl-main section[data-day="${CSS.escape(day)}"] .cl-tile`)
+      /*
+       * Вспышку зажигаем ПОСЛЕ приезда, а не по нажатию: прокрутка занимает до
+       * секунды, и подсветка успевала отгореть по дороге — человек приезжал на
+       * место уже к погасшему свету. Прерванную прокрутку не подсвечиваем
+       * вовсе: если её остановили колесом, смотрят уже другое.
+       */
+      let flashed = false
+      const flash = (finished: boolean) => {
+        if (!finished || flashed) return
+        flashed = true
+        flashGroup(`.cl-tl-main section[data-day="${CSS.escape(day)}"] .cl-tile`)
+      }
       const root = document.querySelector<HTMLElement>('.cl-root')
       // Срез на момент клика: любая его смена (фильтр, поиск, другая хуяпка)
       // делает и цикл догрузки, и посадку недействительными.
@@ -514,7 +527,7 @@ export default function SpacePage() {
 
       // Точная группа уже на месте — едем сразу. Приблизительную (следующий
       // день) принимаем только когда догружать больше нечего.
-      if (scrollToSection(Boolean(cursorRef.current))) return
+      if (scrollToSection(Boolean(cursorRef.current), flash)) return
       if (!cursorRef.current || jumpingRef.current) return
 
       jumpingRef.current = true
@@ -540,6 +553,7 @@ export default function SpacePage() {
         requestAnimationFrame(() => {
           if (expired()) return
           scrollToSection(false, (finished) => {
+            flash(finished)
             if (!finished || expired() || !root) return
             const target = Array.from(
               document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]')
