@@ -80,12 +80,18 @@ export function useDragSelect({
      */
     let marquee: { x0: number; y0: number } | null = null
     let box: HTMLElement | null = null
-    let cache: { id: string; l: number; t: number; r: number; b: number; was: boolean }[] = []
+    // on — последнее применённое состояние: по нему гасим лишние вызовы.
+    let cache: { id: string; l: number; t: number; r: number; b: number; was: boolean; on: boolean | null }[] = []
+
+    const TILES = '[data-file-id]'
 
     const buildCache = () => {
       const rootBox = root.getBoundingClientRect()
+      // Состояние «было отмечено до протяжки» переносим по id: пересборка не
+      // должна забыть, что человек уже отметил.
+      const prevWas = new Map(cache.map((c) => [c.id, c.was]))
       cache = []
-      for (const el of document.querySelectorAll<HTMLElement>('.cl-tl-main [data-file-id]')) {
+      for (const el of root.querySelectorAll<HTMLElement>(TILES)) {
         const r = el.getBoundingClientRect()
         const id = el.dataset.fileId
         if (!id) continue
@@ -95,9 +101,37 @@ export function useDragSelect({
           t: r.top - rootBox.top + root.scrollTop,
           r: r.right,
           b: r.bottom - rootBox.top + root.scrollTop,
-          was: el.dataset.selected === '1',
+          was: prevWas.get(id) ?? el.dataset.selected === '1',
+          on: null,
         })
       }
+    }
+
+    /*
+     * Во время протяжки список живёт своей жизнью: автопрокрутка у края доводит
+     * до часового пагинации и приезжает следующая страница; realtime вставляет
+     * свежий снимок ПО ВРЕМЕНИ СЪЁМКИ, сдвигая всё ниже точки вставки. Без
+     * пересборки рамка визуально накрывала новые ряды, а выделялись старые.
+     *
+     * Следим наблюдателем за разметкой, а не считаем узлы: вставка и удаление
+     * в одном такте оставляют количество прежним, а координаты уже уехали.
+     * Пересборку откладываем на кадр — миниатюры доезжают пачками, и на каждую
+     * подмену <img> обмерять всю ленту незачем.
+     */
+    let mo: MutationObserver | null = null
+    let rebuildRaf = 0
+    const scheduleRebuild = () => {
+      if (rebuildRaf || !marquee) return
+      rebuildRaf = requestAnimationFrame(() => {
+        rebuildRaf = 0
+        if (!marquee) return
+        buildCache()
+        // Переприменяем СРАЗУ: если палец стоит и прокрутка уже упёрлась в низ,
+        // следующего движения может не быть вовсе, и новые плитки так и
+        // остались бы невыделенными под нарисованным прямоугольником.
+        drawMarquee(lastX, lastY)
+        applyMarquee(lastX, lastY)
+      })
     }
 
     const drawMarquee = (x1: number, y1: number) => {
@@ -125,8 +159,15 @@ export function useDragSelect({
         // значок тоже выделяется.
         const hit = tile.l < r && tile.r > l && tile.t < b && tile.b > t
         // Отмечено = было отмечено ДО протяжки ИЛИ попало в прямоугольник.
-        if (hit || tile.was) onPaintRef.current(tile.id, 'add')
-        else onPaintRef.current(tile.id, 'remove')
+        const want = hit || tile.was
+        /*
+         * Дёргаем только изменившиеся. Раньше на каждое движение мыши уходил
+         * вызов на КАЖДУЮ плитку кэша: реально менялись единицы, а в очередь
+         * хука React ложились сотни обновлений, и он прогонял их все на рендере.
+         */
+        if (want === tile.on) continue
+        tile.on = want
+        onPaintRef.current(tile.id, want ? 'add' : 'remove')
       }
     }
 
@@ -190,6 +231,10 @@ export function useDragSelect({
 
     const finish = () => {
       stopAutoScroll()
+      mo?.disconnect()
+      mo = null
+      if (rebuildRaf) cancelAnimationFrame(rebuildRaf)
+      rebuildRaf = 0
       marquee = null
       box?.remove()
       box = null
@@ -203,6 +248,13 @@ export function useDragSelect({
     }
 
     const onPointerDown = (e: PointerEvent) => {
+      /*
+       * Флаг «была протяжка» гасим в самом начале, ДО любых проверок: после
+       * пальцевой покраски завершающий click браузер не присылает (touchmove
+       * отменён, палец ушёл далеко), флаг оставался поднятым и глушил
+       * следующий обычный клик по кадру.
+       */
+      dragged = false
       if (e.button !== 0 && e.pointerType === 'mouse') return
       if (activePointer !== -1) return
       const target = e.target as HTMLElement | null
@@ -220,7 +272,9 @@ export function useDragSelect({
        * вместо нажатия.
        */
       if (e.pointerType === 'mouse') {
-        if (!target || !target.closest('.cl-tl-main')) return
+        // Ленты «Недавние»/«Избранное»/«Корзина» рисуют плитки без обёртки
+        // хуяпки — привязка к её классу оставляла их вовсе без рамки.
+        if (!target || !target.closest('.cl-tl-main, .cl-tiles, .cl-page')) return
         if (target.closest('button, a, input, textarea, select, .cl-space-head, .cl-timenav')) {
           if (!fromCheckbox) return
         }
@@ -232,7 +286,9 @@ export function useDragSelect({
         startY = lastY = e.clientY
         dragged = false
         marquee = { x0: e.clientX, y0: e.clientY - rootBox.top + root.scrollTop }
-        buildCache()
+        // Кэш строим не здесь, а при первом движении: обмер всех плиток —
+        // это getBoundingClientRect на каждую, и делать его на КАЖДЫЙ клик в
+        // режиме выделения незачем.
         return
       }
 
@@ -259,6 +315,12 @@ export function useDragSelect({
           // Прямоугольник создаём при первом же движении: одиночный клик по
           // пустому месту не должен мигать рамкой.
           if (Math.abs(lastX - startX) + Math.abs(lastY - startY) <= DRAG_SLOP_PX) return
+          buildCache()
+          /* Область берём от .cl-root, а не от цели движения: курсор к этому
+             моменту мог уйти за пределы сетки, и наблюдатель повис бы не там. */
+          const area = root.querySelector<HTMLElement>('.cl-tl-main') ?? root
+          mo = new MutationObserver(scheduleRebuild)
+          mo.observe(area, { childList: true, subtree: true })
           box = document.createElement('div')
           box.className = 'cl-marquee'
           document.body.appendChild(box)

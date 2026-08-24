@@ -31,8 +31,8 @@ export function Tiles({
           file={file}
           selected={selection.has(file.id)}
           selectMode={selectMode}
-          onOpen={() => onOpen(file)}
-          onToggle={(shift) => onToggleSelect(file.id, shift)}
+          onOpen={onOpen}
+          onToggle={onToggleSelect}
         />
       ))}
     </div>
@@ -55,8 +55,12 @@ const Tile = memo(function Tile({
   file: CloudFile
   selected: boolean
   selectMode: boolean
-  onOpen: () => void
-  onToggle: (shift: boolean) => void
+  /* Колбэки приходят стабильными и вызываются плиткой со СВОИМ файлом.
+     Раньше сюда шли стрелки, созданные на каждый рендер, — memo сравнивал
+     их поверхностно и проваливался всегда, то есть мемоизации не было ни
+     разу, хотя код на неё рассчитан. */
+  onOpen: (file: CloudFile) => void
+  onToggle: (id: string, shift: boolean) => void
   run?: number
 }) {
   const thumb = file.urls.thumb
@@ -73,8 +77,8 @@ const Tile = memo(function Tile({
          читатель сейчас. Считается при раскладке — см. TimelineView. */
       data-run={run}
       onClick={(e) => {
-        if (selectMode || e.ctrlKey || e.metaKey) onToggle(e.shiftKey)
-        else onOpen()
+        if (selectMode || e.ctrlKey || e.metaKey) onToggle(file.id, e.shiftKey)
+        else onOpen(file)
       }}
       title={file.name}
     >
@@ -101,7 +105,7 @@ const Tile = memo(function Tile({
         className="cl-tile-check"
         onClick={(e) => {
           e.stopPropagation()
-          onToggle(e.shiftKey)
+          onToggle(file.id, e.shiftKey)
         }}
         aria-label={selected ? 'Снять выбор' : 'Выбрать'}
       >
@@ -250,8 +254,8 @@ export function TimelineView({
                   file={entry.file}
                   selected={selection.has(entry.id)}
                   selectMode={selectMode}
-                  onOpen={() => onOpen(entry.file)}
-                  onToggle={(shift) => onToggleSelect(entry.id, shift)}
+                  onOpen={onOpen}
+                  onToggle={onToggleSelect}
                   run={group.runOf.get(entry.id)}
                 />
               )

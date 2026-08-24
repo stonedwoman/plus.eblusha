@@ -761,7 +761,12 @@ export default function SpacePage() {
       else next.delete(id)
       return next
     })
-    anchorRef.current = id
+    /*
+     * Якорь Shift-диапазона тут НЕ трогаем. Рамка красит все плитки кэша
+     * подряд в порядке разметки, и якорь съезжал на последнюю подгруженную
+     * плитку альбома: Shift+клик после рамки выделял пол-ленты. Якорь —
+     * понятие клика, поэтому живёт только в toggleSelect.
+     */
   }, [])
   useDragSelect({ enabled: selection.size > 0, onPaint: paintSelect })
 

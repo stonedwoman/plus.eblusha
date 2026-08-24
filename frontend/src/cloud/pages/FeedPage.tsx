@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { cloudApi, toCloudError } from '../api'
 import type { CloudFile } from '../types'
@@ -46,6 +46,22 @@ function FilesFeed({ view }: { view: 'recent' | 'favorites' | 'trash' }) {
     })
   }, [])
   useDragSelect({ enabled: selection.size > 0, onPaint: paintSelect })
+
+  // Стабильные колбэки: плитка мемоизирована, и новая стрелка на каждый рендер
+  // обесценивала бы memo при сотнях плиток в ленте.
+  const filesRef = useRef<FeedFile[]>([])
+  filesRef.current = files
+  const openFile = useCallback((file: CloudFile) => {
+    setViewerIndex(filesRef.current.findIndex((f) => f.id === file.id))
+  }, [])
+  const toggleSelect = useCallback((id: string) => {
+    setSelection((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
 
   const load = useCallback(
     async (nextCursor: string | null) => {
@@ -132,22 +148,16 @@ function FilesFeed({ view }: { view: 'recent' | 'favorites' | 'trash' }) {
       ) : files.length === 0 ? (
         <Empty title="Пусто" text={meta.empty} />
       ) : (
-        <>
+        <div className="cl-tl-main">
           <Tiles
             files={files}
             selection={selection}
             selectMode={selection.size > 0}
-            onOpen={(file) => setViewerIndex(files.findIndex((f) => f.id === file.id))}
-            onToggleSelect={(id) =>
-              setSelection((prev) => {
-                const next = new Set(prev)
-                next.has(id) ? next.delete(id) : next.add(id)
-                return next
-              })
-            }
+            onOpen={openFile}
+            onToggleSelect={toggleSelect}
           />
           <div ref={sentinel} />
-        </>
+        </div>
       )}
 
       {selection.size > 0 ? (
