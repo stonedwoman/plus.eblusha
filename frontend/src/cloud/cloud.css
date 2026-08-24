@@ -251,18 +251,26 @@
 }
 
 /*
- * Заголовок дня липнет ПОД шапкой хуяпки, а когда та спрятана — сразу под
- * верхней панелью. Фон обязан быть плотным: полупрозрачный градиент оставлял
- * плитки просвечивать сквозь прилипшую дату.
+ * Заголовок дня липнет СРАЗУ под верхней панелью — всегда, независимо от того,
+ * показана шапка хуяпки или спрятана.
+ *
+ * Была попытка считать его top как «высота панели + высота шапки» через
+ * измеряемую переменную. Это оказалось хрупко: во время анимации показа и
+ * скрытия значения расходились, и между панелью и датой оставалась щель, сквозь
+ * которую просвечивали плитки. Теперь щели нет по построению: когда шапка
+ * видна, она просто перекрывает дату (z-index 30 против 12) — ровно то
+ * поведение, которое и нужно, ведь шапка в этот момент важнее.
+ *
+ * Фон обязан быть плотным: сквозь прежний полупрозрачный градиент плитки
+ * просвечивали насквозь.
  */
 .cl-day-head {
   position: sticky;
-  top: calc(var(--cl-header-h) + var(--cl-space-head-h, 0px));
+  top: var(--cl-header-h);
   z-index: 12;
   margin: 0 -4px;
   padding: 12px 6px 10px;
   background: var(--paper);
-  transition: top .22s ease;
   font-size: 14.5px;
   font-weight: 620;
   letter-spacing: -.01em;
@@ -410,12 +418,25 @@
   transition: grid-template-columns .22s ease;
 }
 .cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr) 372px; }
-.cl-viewer-stage { position: relative; display: grid; place-items: center; min-width: 0; overflow: hidden; }
-.cl-viewer-stage img, .cl-viewer-stage video {
-  max-width: 100%; max-height: 100dvh; display: block;
+.cl-viewer-stage {
+  position: relative;
+  display: grid;
+  /* minmax(0, 1fr) обязателен: без него строка грида раздувается по содержимому,
+     и вертикальный кадр вылезает за экран вместо того, чтобы вписаться. */
+  grid-template-rows: minmax(0, 1fr);
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.cl-viewer-stage img,
+.cl-viewer-stage video {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
   object-fit: contain;
 }
-.cl-viewer-stage img.zoomed { max-width: none; max-height: none; cursor: grab; }
+.cl-viewer-stage img.zoomed { cursor: grab; touch-action: none; }
 .cl-viewer-top {
   position: absolute; top: 0; left: 0; right: 0;
   display: flex; align-items: center; gap: 9px;
@@ -666,117 +687,68 @@
 .cl-activity-item:last-child { border-bottom: none; }
 
 @media (max-width: 860px) {
-  .cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 46dvh; }
-  .cl-viewer-panel { border-left: none; border-top: 1px solid var(--surface-border); }
+  /*
+   * Верхняя панель на узком экране переносится в две строки: раньше при
+   * фиксированной высоте из шести вкладок была видна одна, а остальные уезжали
+   * в горизонтальную прокрутку, о которой невозможно догадаться.
+   */
+  .cl-root { --cl-header-h: 108px; }
+  .cl-topbar {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding-top: max(8px, var(--safe-top));
+    padding-bottom: 8px;
+  }
+  .cl-brand-suffix { display: none; }
+  .cl-topnav { order: 3; flex: 0 0 100%; flex-wrap: wrap; overflow-x: visible; margin-left: 0; }
+  .cl-topnav a { padding: 6px 10px; font-size: 13px; }
+
+  .cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  /* Панель — шторкой ПОВЕРХ кадра, а не отжимает его в полоску. */
+  .cl-viewer-panel {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 70dvh;
+    border-left: none;
+    border-top: 1px solid var(--surface-border);
+    border-radius: 14px 14px 0 0;
+    box-shadow: var(--shadow-soft);
+    padding-bottom: var(--safe-bottom);
+  }
+
   .cl-row { grid-template-columns: 40px minmax(0, 1fr) 40px; }
   .cl-row > .cl-row-hide { display: none; }
-  .cl-page { padding: 16px 12px 120px; }
+  .cl-page { padding: 16px max(12px, var(--safe-left)) 120px max(12px, var(--safe-right)); }
   .cl-space-head { margin: 0 -12px 12px; padding: 12px 12px 10px; }
-  .cl-dock { right: 8px; left: 8px; bottom: 8px; width: auto; }
+  .cl-dock { right: 8px; left: 8px; bottom: calc(8px + var(--safe-bottom)); width: auto; }
+
+  /* Панель выбора помещается целиком: «Удалить» и «Снять» уезжали за край. */
+  .cl-selbar {
+    left: max(8px, var(--safe-left));
+    right: max(8px, var(--safe-right));
+    bottom: calc(12px + var(--safe-bottom));
+    transform: none;
+    max-width: none;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    justify-content: center;
+  }
+  .cl-toasts { left: max(12px, var(--safe-left)); right: max(12px, var(--safe-right)); max-width: none; }
+  .cl-upbar { flex-wrap: wrap; row-gap: 6px; }
+  .cl-upbar .cl-progress { flex: 1 1 140px; }
 }
 
-/* ── Плитка загрузки в галерее ──────────────────────────────────────────────
-   Файл виден там, где в итоге окажется, а не в отдельном окне сбоку. */
+/* Тосты не должны прятаться под панелью выбора. */
+.cl-root:has(.cl-selbar) .cl-toasts { bottom: calc(88px + var(--safe-bottom)); }
 
-.cl-uptile {
-  cursor: default;
-  background: var(--surface-200);
-  border: 1px solid var(--surface-border);
+/* Отмена загрузки: по наведению — только там, где наведение есть. */
+@media (hover: hover) and (pointer: fine) {
+  .cl-uptile-cancel { opacity: 0; }
+  .cl-uptile:hover .cl-uptile-cancel { opacity: 1; }
 }
-.cl-uptile-bg {
-  position: absolute; inset: 0;
-  width: 100%; height: 100%;
-  object-fit: cover;
-  filter: saturate(.55) brightness(.5);
+@media (hover: none) {
+  .cl-uptile-cancel { opacity: 1; }
 }
-.cl-uptile-veil {
-  position: absolute; inset: 0;
-  background: linear-gradient(180deg, rgba(10,12,16,.25), rgba(10,12,16,.78));
-}
-.cl-uptile-center {
-  position: absolute; inset: 0;
-  display: grid; place-items: center;
-}
-.cl-uptile-caption {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  padding: 7px 8px;
-  display: flex; flex-direction: column; gap: 1px;
-  font-size: 11px; line-height: 1.25;
-}
-.cl-uptile-name {
-  color: #f1f3f6;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.cl-uptile-sub { color: #9aa0a8; font-variant-numeric: tabular-nums; }
-.cl-uptile-cancel {
-  position: absolute; top: 5px; right: 5px;
-  width: 22px; height: 22px; border-radius: 50%;
-  border: none; cursor: pointer;
-  background: rgba(8,10,14,.6); color: #d7dae0;
-  display: grid; place-items: center; font-size: 12px;
-  opacity: 0; transition: opacity .15s ease;
-}
-.cl-uptile:hover .cl-uptile-cancel { opacity: 1; }
-.cl-uptile-retry {
-  width: 46px; height: 46px; border-radius: 50%;
-  border: 1px solid var(--surface-border-strong);
-  background: rgba(8,10,14,.65); color: var(--brand);
-  font-size: 19px; cursor: pointer;
-}
-
-/* Кольцо прогресса */
-.cl-ring { transform: rotate(-90deg); }
-.cl-ring-track { fill: none; stroke: rgba(255,255,255,.16); stroke-width: 4; }
-.cl-ring-value {
-  fill: none; stroke: var(--brand); stroke-width: 4; stroke-linecap: round;
-  transition: stroke-dashoffset .35s ease;
-}
-.cl-ring-value.paused { stroke: var(--text-muted); }
-.cl-ring-text {
-  transform: rotate(90deg);
-  transform-origin: 24px 24px;
-  fill: #f1f3f6;
-  font-size: 13px;
-  font-weight: 650;
-  text-anchor: middle;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Подготовка превью: кольцо уступает место «дыханию» — прогресса тут нет,
-   врать про 100% нельзя. */
-.cl-uptile-spinner {
-  width: 44px; height: 44px; border-radius: 50%;
-  border: 3px solid rgba(255,255,255,.15);
-  border-top-color: var(--brand);
-  animation: clSpin .9s linear infinite;
-}
-@keyframes clSpin { to { transform: rotate(360deg); } }
-.cl-uptile.preparing { animation: clBreathe 1.8s ease-in-out infinite; }
-@keyframes clBreathe {
-  0%, 100% { border-color: var(--surface-border); }
-  50% { border-color: var(--brand); }
-}
-
-.cl-uptile-more {
-  display: grid; place-items: center;
-  aspect-ratio: 1;
-  border-radius: 11px;
-  border: 1px dashed var(--surface-border-strong);
-  color: var(--text-muted);
-  font-size: 12.5px;
-  text-align: center;
-  padding: 8px;
-}
-
-/* Полоска загрузки в шапке хуяпки — вместо плавающего окна в углу. */
-.cl-upbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-  padding: 7px 10px;
-  border-radius: 10px;
-  background: var(--surface-100);
-  border: 1px solid var(--surface-border);
-  max-width: 560px;
-}
+.cl-uptile-cancel::before { content: ''; position: absolute; inset: -9px; }
+.cl-uptile-cancel:focus-visible { opacity: 1; outline: 2px solid var(--brand); }
