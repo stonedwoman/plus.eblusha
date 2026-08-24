@@ -754,10 +754,6 @@ export default function SpacePage() {
   /** Красим плитку под курсором при протяжке. Идемпотентно: одна и та же
    *  плитка приходит десятками событий подряд, и лишний setState тут не нужен. */
   const paintSelect = useCallback((id: string, mode: PaintMode) => {
-    if (mode === 'reset') {
-      setSelection((prev) => (prev.size === 0 ? prev : new Set()))
-      return
-    }
     setSelection((prev) => {
       if (mode === 'add' ? prev.has(id) : !prev.has(id)) return prev
       const next = new Set(prev)

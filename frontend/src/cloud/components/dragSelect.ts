@@ -19,8 +19,7 @@ import { useEffect, useRef } from 'react'
  * зависит от того, где живёт множество выделенного, и одинаково работает в
  * хуяпке, в «Файлах» и в сквозных лентах.
  */
-/** reset — сбросить выделение целиком: рамка без модификатора заменяет его. */
-export type PaintMode = 'add' | 'remove' | 'reset'
+export type PaintMode = 'add' | 'remove'
 
 /** Насколько близко к краю нужно подвести курсор, чтобы список поехал сам. */
 const EDGE_PX = 96
@@ -67,16 +66,22 @@ export function useDragSelect({
     let dragged = false
 
     /*
-     * Рамка выделения — как на рабочем столе: тянешь по пустому месту, и всё,
-     * что попало в прямоугольник, отмечается. Прямоугольник считаем в
-     * координатах ДОКУМЕНТА, а не окна: иначе автопрокрутка у края съезжала бы
+     * Рамка выделения — как на рабочем столе: тянешь, и всё, что попало в
+     * прямоугольник, отмечается. Прямоугольник считаем в координатах
+     * ДОКУМЕНТА, а не окна: иначе автопрокрутка у края съезжала бы
      * относительно уже отмеченного.
+     *
+     * Рамка НАКАПЛИВАЕТ: каждая новая добавляется к тому, что уже отмечено.
+     * Разбирают альбом по кускам — сначала один ряд, потом другой, — и
+     * сбрасывать предыдущее на каждой протяжке значит заставлять держать всё
+     * в одном движении. Чтобы внутри ОДНОЙ протяжки рамку можно было сжать
+     * обратно, запоминаем состояние каждой плитки на момент начала (was):
+     * вышла из прямоугольника — возвращается к нему, а не гаснет.
      */
-    let marquee: { x0: number; y0: number; add: boolean } | null = null
+    let marquee: { x0: number; y0: number } | null = null
     let box: HTMLElement | null = null
-    let cache: { id: string; l: number; t: number; r: number; b: number }[] = []
+    let cache: { id: string; l: number; t: number; r: number; b: number; was: boolean }[] = []
 
-    const docY = () => root.scrollTop
     const buildCache = () => {
       const rootBox = root.getBoundingClientRect()
       cache = []
@@ -90,6 +95,7 @@ export function useDragSelect({
           t: r.top - rootBox.top + root.scrollTop,
           r: r.right,
           b: r.bottom - rootBox.top + root.scrollTop,
+          was: el.dataset.selected === '1',
         })
       }
     }
@@ -118,8 +124,9 @@ export function useDragSelect({
         // Пересечение, а не полное вхождение: на рабочем столе задетый краем
         // значок тоже выделяется.
         const hit = tile.l < r && tile.r > l && tile.t < b && tile.b > t
-        if (hit) onPaintRef.current(tile.id, 'add')
-        else if (!marquee.add) onPaintRef.current(tile.id, 'remove')
+        // Отмечено = было отмечено ДО протяжки ИЛИ попало в прямоугольник.
+        if (hit || tile.was) onPaintRef.current(tile.id, 'add')
+        else onPaintRef.current(tile.id, 'remove')
       }
     }
 
@@ -224,11 +231,7 @@ export function useDragSelect({
         startX = lastX = e.clientX
         startY = lastY = e.clientY
         dragged = false
-        marquee = {
-          x0: e.clientX,
-          y0: e.clientY - rootBox.top + root.scrollTop,
-          add: e.ctrlKey || e.metaKey || e.shiftKey,
-        }
+        marquee = { x0: e.clientX, y0: e.clientY - rootBox.top + root.scrollTop }
         buildCache()
         return
       }
@@ -261,7 +264,6 @@ export function useDragSelect({
           document.body.appendChild(box)
           document.body.classList.add('cl-dragging-select')
           dragged = true
-          if (!marquee.add) onPaintRef.current('*', 'reset')
           raf = requestAnimationFrame(autoScroll)
         }
         drawMarquee(lastX, lastY)

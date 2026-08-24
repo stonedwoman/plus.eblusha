@@ -37,10 +37,6 @@ function FilesFeed({ view }: { view: 'recent' | 'favorites' | 'trash' }) {
   // Та же протяжка, что и в хуяпке: сквозные ленты — первое место, где хочется
   // разом отметить десяток кадров.
   const paintSelect = useCallback((id: string, mode: PaintMode) => {
-    if (mode === 'reset') {
-      setSelection((prev) => (prev.size === 0 ? prev : new Set()))
-      return
-    }
     setSelection((prev) => {
       if (mode === 'add' ? prev.has(id) : !prev.has(id)) return prev
       const next = new Set(prev)
