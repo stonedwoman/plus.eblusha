@@ -141,9 +141,15 @@ router.get(
       );
     }
 
-    const rows = await prisma.$queryRaw<{ day: string; count: number }[]>(Prisma.sql`
+    // Помимо счётчика — представитель дня: его миниатюра становится узлом на
+    // рельсе. Предпочитаем файл с готовым THUMB, чтобы узел не был битым.
+    const rows = await prisma.$queryRaw<{ day: string; count: number; fileId: string | null }[]>(Prisma.sql`
       SELECT to_char(date_trunc('day', f."takenAt" + make_interval(mins => ${p.tz}::int)), 'YYYY-MM-DD') AS day,
-             count(*)::int AS count
+             count(*)::int AS count,
+             (array_agg(f."id" ORDER BY
+                EXISTS(SELECT 1 FROM "CloudFileVariant" v
+                       WHERE v."fileId" = f."id" AND v."kind"::text = 'THUMB' AND v."status"::text = 'READY') DESC,
+                f."takenAt" ASC))[1] AS "fileId"
       FROM "CloudFile" f
       WHERE ${Prisma.join(conds, " AND ")}
       GROUP BY 1

@@ -105,7 +105,22 @@ function SpaceGrid({ spaces }: { spaces: CloudSpace[] }) {
       {spaces.map((space) => (
         <Link className="cl-space-card" key={space.id} to={cloudPath(`/space/${space.id}`)}>
           <div className={`cl-space-cover${space.coverUrl ? '' : ' empty'}`}>
-            {space.coverUrl ? <img src={space.coverUrl} alt="" loading="lazy" /> : <span style={{ fontSize: 34 }}>🗂</span>}
+            {space.coverUrl ? (
+              /* Обложка могла умереть (файл удалён, кэш производных подрезан):
+                 битая картинка превращает карточку в сломанную — прячем её и
+                 остаётся нейтральный фон с пиктограммой. */
+              <img
+                src={space.coverUrl}
+                alt=""
+                loading="lazy"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none'
+                  e.currentTarget.parentElement?.classList.add('empty')
+                }}
+              />
+            ) : (
+              <span style={{ fontSize: 34 }}>🗂</span>
+            )}
           </div>
           <div className="cl-space-body">
             <div className="cl-space-name">{space.name}</div>

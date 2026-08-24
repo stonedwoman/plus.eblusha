@@ -50,6 +50,25 @@ export default function CloudLayout() {
     }
   }, [])
 
+  /*
+   * Протухшая сессия: сбрасываем кэш и заново проходим ensureCloudSession —
+   * тот сам решит, хватит ли тихого обмена или нужен редирект на SSO.
+   */
+  useEffect(() => {
+    const onDead = () => {
+      sharedMe = null
+      setMe(null)
+      ensureCloudSession()
+        .then((session) => {
+          sharedMe = session
+          setMe(session)
+        })
+        .catch((err) => setError(toCloudError(err).status === 401 ? 'Нужно войти в Еблушу' : toCloudError(err).message))
+    }
+    window.addEventListener('cloud:unauthorized', onDead)
+    return () => window.removeEventListener('cloud:unauthorized', onDead)
+  }, [])
+
   useEffect(() => {
     const off = onCloudEvent('__connected', (payload) => {
       const connected = Boolean(payload)

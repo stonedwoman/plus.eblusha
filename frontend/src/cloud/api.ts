@@ -35,6 +35,29 @@ cloudApi.interceptors.request.use((config) => {
   return config
 })
 
+/**
+ * Событие «сессия умерла». Ловит CloudLayout и заново проходит SSO.
+ *
+ * Раньше протухшая cloud_sid оставляла человека на живой с виду странице, где
+ * каждый клик отвечал тостом «Нужно войти заново» — и ничего не предлагал.
+ * Перехватчик один на приложение; шлём событие с антидребезгом, чтобы пачка
+ * одновременно упавших запросов не устроила шторм повторных логинов.
+ */
+let lastAuthEventAt = 0
+cloudApi.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    const status = axios.isAxiosError(err) ? err.response?.status : 0
+    const url = axios.isAxiosError(err) ? (err.config?.url ?? '') : ''
+    // /auth/* не трогаем: их 401 — часть нормального протокола входа.
+    if (status === 401 && !url.startsWith('/auth') && Date.now() - lastAuthEventAt > 15_000) {
+      lastAuthEventAt = Date.now()
+      window.dispatchEvent(new CustomEvent('cloud:unauthorized'))
+    }
+    return Promise.reject(err)
+  }
+)
+
 export type CloudApiError = {
   code: string
   message: string
@@ -74,6 +97,20 @@ function humanStatus(status: number): string {
       return 'В хранилище не хватает места'
     default:
       return 'Ошибка сервера'
+  }
+}
+
+/** Роль по-русски: enum из БД человеку показывать нельзя. */
+export function roleLabel(role: string | null | undefined): string {
+  switch (role) {
+    case 'OWNER':
+      return 'Владелец'
+    case 'EDITOR':
+      return 'Редактор'
+    case 'VIEWER':
+      return 'Зритель'
+    default:
+      return role ?? ''
   }
 }
 

@@ -563,6 +563,7 @@ function CommentsPanel({
   const [replyTo, setReplyTo] = useState<CloudComment | null>(null)
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -611,7 +612,10 @@ function CommentsPanel({
 
   const submit = async () => {
     const body = text.trim()
-    if (!body) return
+    // Ctrl+Enter и клик по «Отправить» наперегонки давали два одинаковых
+    // комментария — сервер-то оба принимает честно.
+    if (!body || sending) return
+    setSending(true)
     try {
       await cloudApi.post('/comments', {
         spaceId,
@@ -625,6 +629,8 @@ function CommentsPanel({
       await load()
     } catch (err) {
       toast.error(toCloudError(err).message)
+    } finally {
+      setSending(false)
     }
   }
 
@@ -780,8 +786,8 @@ function CommentsPanel({
               </label>
             ) : null}
             <div className="cl-spacer" />
-            <button className="cl-btn primary sm" onClick={() => void submit()} disabled={!text.trim()}>
-              Отправить
+            <button className="cl-btn primary sm" onClick={() => void submit()} disabled={!text.trim() || sending}>
+              {sending ? 'Отправляем…' : 'Отправить'}
             </button>
           </div>
         </div>

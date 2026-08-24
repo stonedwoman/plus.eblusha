@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { cloudApi, toCloudError } from '../api'
+import { cloudApi, roleLabel, toCloudError } from '../api'
 import type { CloudInvite, CloudShare } from '../types'
 import { Modal, QrCode, copyToClipboard, toast } from './ui'
 
@@ -202,12 +202,17 @@ function PublicShareTab({ spaceId, preselectedFileIds }: { spaceId: string; pres
       {shares.length > 0 ? (
         <>
           <div className="cl-section-title">Активные ссылки</div>
-          {shares.map((share) => (
-            <div key={share.id} className="cl-meta-row" style={{ alignItems: 'center' }}>
+          {shares.map((share) => {
+            const expired = share.expiresAt ? new Date(share.expiresAt).getTime() < Date.now() : false
+            return (
+            <div key={share.id} className="cl-meta-row" style={{ alignItems: 'center', opacity: expired ? 0.6 : 1 }}>
               <div>
                 <div style={{ fontSize: 13.5 }}>
                   {share.targetType === 'SPACE' ? 'Вся хуяпка' : share.targetType === 'SELECTION' ? `${share.fileCount} файлов` : share.targetType}
                   {share.hasPassword ? ' · с паролем' : ''}
+                  {/* Мёртвая ссылка не должна выглядеть живой: раньше истёкшие
+                      висели в списке неотличимо от рабочих. */}
+                  {expired ? <span className="cl-badge-dead"> истекла</span> : null}
                 </div>
                 <div className="cl-muted" style={{ fontSize: 11.5 }}>
                   {share.expiresAt ? `до ${new Date(share.expiresAt).toLocaleDateString('ru-RU')}` : 'бессрочно'} ·{' '}
@@ -216,10 +221,10 @@ function PublicShareTab({ spaceId, preselectedFileIds }: { spaceId: string; pres
                 </div>
               </div>
               <button className="cl-btn danger sm" onClick={() => void revoke(share.id)}>
-                Отозвать
+                {expired ? 'Убрать' : 'Отозвать'}
               </button>
             </div>
-          ))}
+          )})}
         </>
       ) : null}
     </div>
@@ -370,10 +375,15 @@ function InviteTab({ spaceId }: { spaceId: string }) {
           {invites.map((invite) => (
             <div key={invite.id} className="cl-meta-row" style={{ alignItems: 'center' }}>
               <div>
-                <div style={{ fontSize: 13.5 }}>{invite.role}</div>
+                <div style={{ fontSize: 13.5 }}>{roleLabel(invite.role)}</div>
                 <div className="cl-muted" style={{ fontSize: 11.5 }}>
                   использовано {invite.useCount} из {invite.maxUses}
-                  {invite.expiresAt ? ` · до ${new Date(invite.expiresAt).toLocaleDateString('ru-RU')}` : ''}
+                  {invite.useCount >= invite.maxUses ? ' · исчерпано' : ''}
+                  {invite.expiresAt && new Date(invite.expiresAt).getTime() < Date.now()
+                    ? ' · истекло'
+                    : invite.expiresAt
+                      ? ` · до ${new Date(invite.expiresAt).toLocaleDateString('ru-RU')}`
+                      : ''}
                 </div>
               </div>
               <button

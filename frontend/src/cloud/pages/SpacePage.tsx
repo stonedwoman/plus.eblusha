@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useOutletContext, useParams, useSearchParams } from 'react-router-dom'
-import { cloudApi, formatBytes, formatEta, toCloudError } from '../api'
+import { cloudApi, formatBytes, formatEta, roleLabel, toCloudError } from '../api'
 import type { CloudActivity, CloudFile, CloudFolder, CloudSpace, PresenceEntry } from '../types'
 import { joinSpaceRoom, onCloudEvent } from '../realtime'
 import {
@@ -991,6 +991,7 @@ function FilesBrowser({
   const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>([])
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
+  const [savingFolder, setSavingFolder] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -1012,7 +1013,10 @@ function FilesBrowser({
   }, [load])
 
   const createFolder = async () => {
-    if (!newName.trim()) return
+    // Дребезг: Enter в поле и клик по кнопке (или два быстрых Enter) создавали
+    // папку дважды — сервер отвечал конфликтом имени на вторую.
+    if (!newName.trim() || savingFolder) return
+    setSavingFolder(true)
     try {
       await cloudApi.post('/folders', { spaceId, parentId: folderId, name: newName.trim() })
       setNewName('')
@@ -1020,6 +1024,8 @@ function FilesBrowser({
       await load()
     } catch (err) {
       toast.error(toCloudError(err).message)
+    } finally {
+      setSavingFolder(false)
     }
   }
 
@@ -1095,8 +1101,8 @@ function FilesBrowser({
               <button className="cl-btn ghost" onClick={() => setCreating(false)}>
                 Отмена
               </button>
-              <button className="cl-btn primary" onClick={() => void createFolder()} disabled={!newName.trim()}>
-                Создать
+              <button className="cl-btn primary" onClick={() => void createFolder()} disabled={!newName.trim() || savingFolder}>
+                {savingFolder ? 'Создаём…' : 'Создать'}
               </button>
             </>
           }
@@ -1122,7 +1128,7 @@ const ACTIVITY_TEXT: Record<string, (payload: Record<string, unknown>) => string
   SPACE_UPDATED: () => 'изменил настройки хуяпки',
   MEMBER_ADDED: (p) => `добавил участника${p.name ? ` ${p.name}` : ''}`,
   MEMBER_REMOVED: (p) => (p.self ? 'вышел из хуяпки' : 'исключил участника'),
-  MEMBER_ROLE_CHANGED: (p) => `изменил роль на ${p.role}`,
+  MEMBER_ROLE_CHANGED: (p) => `изменил роль на «${roleLabel(String(p.role ?? ''))}»`,
   FILES_UPLOADED: (p) => `загрузил ${p.count ?? 1} файл(ов)`,
   FILES_DELETED: (p) => `удалил ${p.count ?? 1} файл(ов)`,
   FILES_RESTORED: (p) => `восстановил ${p.count ?? 1} файл(ов)`,

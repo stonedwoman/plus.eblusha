@@ -21,10 +21,37 @@ const CloudCallback = lazy(() => import('./pages/CloudCallbackPage'))
 
 const withSuspense = (node: ReactNode) => <Suspense fallback={null}>{node}</Suspense>
 
+/**
+ * Свой экран падения вместо стандартного белого «Unexpected Application Error!»
+ * react-router. Ошибка рендера любой страницы Cloud не должна выглядеть как
+ * смерть всего приложения: даём перезагрузить или вернуться к списку хуяпок.
+ */
+function CloudErrorPage() {
+  return (
+    <div className="cl-root">
+      <div className="cl-page narrow">
+        <div className="cl-empty" style={{ marginTop: 60 }}>
+          <div style={{ fontSize: 44 }}>💥</div>
+          <h3>Что-то сломалось</h3>
+          <p>Страница упала с ошибкой. Это наша вина, не ваша.</p>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 14 }}>
+            <button className="cl-btn primary" onClick={() => window.location.reload()}>
+              Перезагрузить
+            </button>
+            <button className="cl-btn" onClick={() => (window.location.href = '/')}>
+              К хуяпкам
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function cloudRoutes(prefix: '' | '/cloud'): RouteObject[] {
   return [
     // Публичная share-ссылка: открывают люди без Еблуши, никакого гейта.
-    { path: `${prefix}/s/:publicId`, element: withSuspense(<CloudShare />) },
+    { path: `${prefix}/s/:publicId`, element: withSuspense(<CloudShare />), errorElement: <CloudErrorPage /> },
     // Возврат с кодом: сессии Cloud тут ещё нет, она здесь и создаётся.
     { path: `${prefix}/callback`, element: withSuspense(<CloudCallback />) },
     {
@@ -32,6 +59,7 @@ export function cloudRoutes(prefix: '' | '/cloud'): RouteObject[] {
       // в localStorage нет и быть не может. Гейт — CloudLayout.
       path: prefix || '/',
       element: withSuspense(<CloudLayout />),
+      errorElement: <CloudErrorPage />,
       children: [
         { index: true, element: withSuspense(<CloudHome />) },
         { path: 'space/:spaceId', element: withSuspense(<CloudSpace />) },

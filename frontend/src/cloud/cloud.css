@@ -302,6 +302,14 @@
   background: var(--surface-200);
   cursor: pointer;
   border: 2px solid transparent;
+  /*
+   * Плитки за пределами экрана не считаются и не рисуются вовсе: на альбоме в
+   * тысячи файлов это разница между плавной прокруткой и слайд-шоу. Квадратная
+   * геометрия задана aspect-ratio, поэтому пропуск отрисовки раскладку не
+   * меняет; contain-intrinsic-size держит высоту до первого показа.
+   */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 220px;
   /* Размеры известны заранее — плитки не «прыгают» при подгрузке превью. */
   aspect-ratio: 1;
   transition: border-color .15s ease;
@@ -444,45 +452,104 @@
   display: block;
   object-fit: contain;
 }
-/* ── Вертикальная рельса таймлайна ──────────────────────────────────────────
- * Липнет под шапкой и живёт всю высоту окна. Прячется на узких экранах:
- * пальцем по ней не попасть, а место дорого.
+/* ── Вертикальный таймлайн слева от плиток ──────────────────────────────────
+ * Тонкая ось со «станциями»: дата слева muted-текстом, на линии — круглый
+ * узел с миниатюрой дня (без миниатюры — полый кружок). Пройденный отрезок
+ * оси закрашен фирменным цветом. Прячется на узких экранах.
  */
-.cl-tl-layout { display: flex; gap: 16px; align-items: flex-start; }
+.cl-tl-layout { display: flex; gap: 18px; align-items: flex-start; }
 .cl-tl-main { flex: 1 1 auto; min-width: 0; }
 .cl-timenav {
   position: sticky;
-  top: calc(var(--cl-header-h) + 10px);
-  flex: 0 0 64px;
-  width: 64px;
-  height: calc(100vh - var(--cl-header-h) - 26px);
-  cursor: pointer;
-  touch-action: none;
+  top: calc(var(--cl-header-h) + 12px);
+  flex: 0 0 118px;
+  width: 118px;
+  height: calc(100vh - var(--cl-header-h) - 30px);
   user-select: none;
   z-index: 5;
 }
-.cl-timenav-svg { display: block; overflow: visible; }
-.cl-tn-track { stroke: rgba(148, 163, 184, .22); stroke-width: 2; stroke-linecap: round; }
-.cl-tn-bar { fill: rgba(148, 163, 184, .34); transition: fill .12s ease; }
-.cl-tn-bar.is-hover { fill: rgba(226, 232, 240, .75); }
-.cl-tn-bar.is-active { fill: var(--brand); }
-.cl-tn-dot { fill: var(--brand); stroke: var(--paper); stroke-width: 2; }
-.cl-tn-label { fill: rgba(148, 163, 184, .78); font-size: 10px; letter-spacing: .04em; }
-.cl-tn-label.year { fill: rgba(226, 232, 240, .92); font-weight: 700; }
-.cl-tn-bubble {
+/* Ось проходит через центры узлов: узел 38px прижат к правому краю с отступом 6. */
+.cl-tn-axis {
   position: absolute;
-  left: 72px;
-  transform: translateY(-50%);
-  background: var(--surface-100, #171b24);
-  border: 1px solid var(--surface-border, rgba(148,163,184,.18));
-  border-radius: 8px;
-  padding: 5px 9px;
-  font-size: 12.5px;
-  white-space: nowrap;
-  pointer-events: none;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
-  z-index: 6;
+  left: calc(100% - 6px - 19px - 1px);
+  width: 2px;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, .22);
 }
+.cl-tn-axis.done {
+  background: linear-gradient(var(--brand), var(--brand));
+  opacity: .85;
+  transition: height .25s ease;
+}
+.cl-tn-node {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 0 6px 0 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  transition: top .25s ease;
+}
+.cl-tn-cap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  min-width: 0;
+  text-align: right;
+  line-height: 1.25;
+}
+.cl-tn-cap b {
+  font-size: 12.5px;
+  font-weight: 560;
+  color: rgba(203, 213, 225, .82);
+  white-space: nowrap;
+  transition: color .15s ease;
+}
+.cl-tn-cap i {
+  font-style: normal;
+  font-size: 10.5px;
+  color: rgba(148, 163, 184, .6);
+  white-space: nowrap;
+}
+.cl-tn-ava {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, .35), 0 2px 8px rgba(0, 0, 0, .4);
+  background: var(--paper);
+  transition: box-shadow .15s ease, transform .15s ease;
+}
+.cl-tn-ava img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* День без миниатюры — полый кружок на оси, как станция без фото. */
+.cl-tn-ava:empty {
+  width: 14px;
+  height: 14px;
+  margin: 12px;
+  background: var(--paper);
+  box-shadow: inset 0 0 0 2px rgba(148, 163, 184, .5);
+}
+.cl-tn-node:hover .cl-tn-ava { transform: scale(1.08); box-shadow: 0 0 0 2px rgba(226, 232, 240, .75), 0 2px 10px rgba(0, 0, 0, .45); }
+.cl-tn-node:hover .cl-tn-cap b { color: #e2e8f0; }
+.cl-tn-node.is-passed .cl-tn-ava { box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 65%, transparent), 0 2px 8px rgba(0, 0, 0, .4); }
+.cl-tn-node.is-passed .cl-tn-ava:empty { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--brand) 65%, transparent); }
+.cl-tn-node.is-active .cl-tn-ava {
+  transform: scale(1.14);
+  box-shadow: 0 0 0 2.5px var(--brand), 0 0 14px color-mix(in srgb, var(--brand) 55%, transparent), 0 2px 10px rgba(0, 0, 0, .5);
+}
+.cl-tn-node.is-active .cl-tn-ava:empty { background: var(--brand); box-shadow: 0 0 0 2.5px var(--brand); }
+.cl-tn-node.is-active .cl-tn-cap b { color: #fff; font-size: 13px; }
+.cl-tn-node.is-active .cl-tn-cap i { color: color-mix(in srgb, var(--brand) 80%, #fff); }
+
 /* Прыжок к дате останавливается под липкой панелью, а не под ней прячется. */
 .cl-tl-main section[data-day] { scroll-margin-top: calc(var(--cl-header-h) + 2px); }
 .cl-fromchip {

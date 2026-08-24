@@ -72,8 +72,17 @@ router.get(
         // Обложка: явная, иначе самое свежее фото Space.
         let cover = space.coverFileId;
         if (!cover) {
+          // Только файл с ГОТОВОЙ миниатюрой: авто-обложка без неё — битая
+          // картинка на карточке хуяпки, пока не доехал медиа-конвейер.
           const latest = await prisma.cloudFile.findFirst({
-            where: { spaceId: space.id, deletedAt: null, kind: { in: ["IMAGE", "VIDEO"] }, status: "READY" },
+            where: {
+              spaceId: space.id,
+              deletedAt: null,
+              purgedAt: null,
+              kind: { in: ["IMAGE", "VIDEO"] },
+              status: "READY",
+              variants: { some: { kind: "THUMB", status: "READY" } },
+            },
             orderBy: { takenAt: "desc" },
             select: { id: true },
           });

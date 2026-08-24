@@ -98,7 +98,10 @@ const parsed = schema.parse(process.env);
 
 export const cloudConfig = {
   ...parsed,
-  THUMB_MAX: 512,
+  /// 384, не 512: плитка галереи ~210 CSS-px, на retina это 420 физических.
+  /// 384 почти неотличима глазом, но миниатюра легче на ~40% — при первом
+  /// открытии альбома на сотни файлов это главный сетевой трафик.
+  THUMB_MAX: 384,
   PREVIEW_MAX: 2048,
   /// Максимальная длинная сторона web-версии видео
   PLAYBACK_MAX_HEIGHT: 1080,

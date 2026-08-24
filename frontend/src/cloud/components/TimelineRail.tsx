@@ -1,30 +1,51 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { formatDayLabel } from './Gallery'
+import { useEffect, useMemo, useState } from 'react'
 
 /**
- * Вертикальная рельса-навигатор слева от плиток.
+ * Вертикальный таймлайн слева от плиток.
  *
- * Вся поездка одним взглядом: каждый день — горизонтальный штрих, длина ∝
- * количеству кадров, вертикальная протяжённость ∝ доле дня в альбоме (как в
- * Google Photos: рельса отражает объём, а не календарь, поэтому насыщенные дни
- * занимают на ней больше места, чем пустые месяцы между поездками). Клик или
- * перетаскивание — прыжок к дате; бегунок следует за прокруткой галереи.
+ * Не гистограмма, а маршрут поездки: вертикальная ось со «станциями»-узлами,
+ * у каждой — круглая миниатюра дня, дата и счётчик кадров. Линия до текущего
+ * дня закрашена фирменным цветом — видно, где ты в альбоме. Клик по узлу —
+ * прыжок к дате.
  *
- * Данные приходят одним агрегатом /files/timeline по всему срезу, а не из
- * подгруженных страниц: рельса обязана показывать и то, до чего галерея ещё
- * не долистала.
+ * Масштаб выбирает себя сам по высоте окна: пока дни помещаются — станции-дни;
+ * дней больше, чем влезает, — станции-месяцы; совсем длинная история — годы.
+ * Так рельса одинаково выглядит и у поездки на три дня, и у архива за десять
+ * лет.
  */
-export type TimelineDay = { day: string; count: number }
+export type TimelineDay = { day: string; count: number; fileId: string | null }
 
 const MONTH_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+const MONTH_FULL = [
+  'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
+]
 
-/** Полдень, а не полночь: парсинг YYYY-MM-DD без времени дал бы UTC-полночь и
- * съехавший на сутки ярлык в поясах западнее Гринвича. */
+/** Полдень, а не полночь: YYYY-MM-DD без времени парсился бы как UTC-полночь
+ * и в поясах западнее Гринвича ярлык уезжал бы на сутки назад. */
 export function dayKeyToDate(day: string): Date {
   return new Date(`${day}T12:00:00`)
 }
 
-type Seg = TimelineDay & { y0: number; y1: number; w: number }
+/** Станция на оси: день, месяц или год — смотря сколько влезает. */
+type Station = {
+  key: string
+  /** Крупная строка: «24 мар», «март», «2023». */
+  label: string
+  /** Мелкая строка: счётчик, год месяца. */
+  sub: string
+  count: number
+  fileId: string | null
+  /** Куда прыгать: первый день станции, где реально есть съёмка. */
+  firstDay: string
+}
+
+/** Вертикальный шаг станции: узел + двухстрочная подпись + воздух. */
+const STEP = 62
+/** Максимальный шаг: три дня не должны растягиваться на весь экран. */
+const STEP_MAX = 96
+const PAD = 12
+const NODE = 38
 
 export function TimelineRail({
   days,
@@ -35,133 +56,141 @@ export function TimelineRail({
   activeDay: string | null
   onJump: (day: string) => void
 }) {
-  const wrapRef = useRef<HTMLDivElement | null>(null)
+  /*
+   * Колбэк-реф, а не useRef + эффект с пустыми deps: до прихода данных
+   * компонент отдаёт null, эффект успевал отработать по несуществующему узлу,
+   * и высота навсегда оставалась нулевой — рельса застревала в пустой
+   * заглушке. Со state-рефом наблюдатель цепляется к тому элементу, который
+   * реально в DOM, каким бы по счёту рендером он ни появился.
+   */
+  const [node, setNode] = useState<HTMLElement | null>(null)
   const [h, setH] = useState(0)
-  const [hover, setHover] = useState<{ y: number; seg: Seg } | null>(null)
-  const dragging = useRef(false)
 
   useEffect(() => {
-    const node = wrapRef.current
     if (!node) return
     const ro = new ResizeObserver(() => setH(node.clientHeight))
     ro.observe(node)
     setH(node.clientHeight)
     return () => ro.disconnect()
-  }, [])
+  }, [node])
 
-  const model = useMemo(() => {
-    const total = days.reduce((n, d) => n + d.count, 0)
-    if (total === 0) return null
-    const max = Math.max(...days.map((d) => d.count))
-    let cum = 0
-    const segs: Seg[] = days.map((d) => {
-      const y0 = cum / total
-      cum += d.count
-      // Корень, не линейно: день с 300 кадрами не должен визуально стирать
-      // день с десятком — рельса про форму поездки, а не про соревнование.
-      return { ...d, y0, y1: cum / total, w: 7 + Math.sqrt(d.count / max) * 17 }
-    })
-    return { segs, total }
-  }, [days])
+  const stations = useMemo<Station[]>(() => {
+    if (days.length === 0) return []
+    const capacity = Math.max(3, Math.floor((h - PAD * 2) / STEP))
+    const thisYear = String(new Date().getFullYear())
 
-  /** Ярлыки месяцев: у первого дня каждого месяца, без наползания друг на друга. */
-  const labels = useMemo(() => {
-    if (!model || h < 80) return []
-    const out: { day: string; y: number; text: string; year: boolean }[] = []
-    let prevMonth = ''
-    let prevYear = ''
-    let lastY = -100
-    for (const seg of model.segs) {
-      const month = seg.day.slice(0, 7)
-      if (month === prevMonth) continue
-      prevMonth = month
-      const y = seg.y0 * h
-      if (y - lastY < 20) continue
-      lastY = y
-      const yearStr = seg.day.slice(0, 4)
-      const newYear = yearStr !== prevYear
-      prevYear = yearStr
-      const m = Number(seg.day.slice(5, 7)) - 1
-      out.push({ day: seg.day, y, text: newYear ? `${MONTH_SHORT[m]} ${yearStr.slice(2)}` : MONTH_SHORT[m]!, year: newYear })
+    if (days.length <= capacity) {
+      return days.map((d) => {
+        const [y, m, dd] = d.day.split('-')
+        return {
+          key: d.day,
+          label: `${Number(dd)} ${MONTH_SHORT[Number(m) - 1]}`,
+          sub: y === thisYear ? String(d.count) : `${y} · ${d.count}`,
+          count: d.count,
+          fileId: d.fileId,
+          firstDay: d.day,
+        }
+      })
     }
-    return out
-  }, [model, h])
 
-  if (!model || days.length < 2) return null
-
-  const dayAt = (frac: number): Seg => {
-    const segs = model.segs
-    const f = Math.min(0.9999, Math.max(0, frac))
-    let lo = 0
-    let hi = segs.length - 1
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (segs[mid]!.y1 <= f) lo = mid + 1
-      else hi = mid
+    const byMonth = groupBy(days, (d) => d.day.slice(0, 7))
+    if (byMonth.length <= capacity) {
+      return byMonth.map(({ key, items }) => {
+        const [y, m] = key.split('-')
+        return {
+          key,
+          label: MONTH_FULL[Number(m) - 1]!,
+          sub: y === thisYear ? String(sum(items)) : `${y} · ${sum(items)}`,
+          count: sum(items),
+          fileId: items[0]!.fileId,
+          firstDay: items[0]!.day,
+        }
+      })
     }
-    return segs[lo]!
+
+    const byYear = groupBy(days, (d) => d.day.slice(0, 4))
+    return byYear.map(({ key, items }) => ({
+      key,
+      label: key,
+      sub: String(sum(items)),
+      count: sum(items),
+      fileId: items[0]!.fileId,
+      firstDay: items[0]!.day,
+    }))
+  }, [days, h])
+
+  if (stations.length < 2 || h < 200) {
+    // Однодневный альбом навигации не требует; держим колонку, чтобы сетка
+    // плиток не прыгала при переключении фильтров.
+    return days.length > 0 ? <div ref={setNode} className="cl-timenav" aria-hidden /> : null
   }
 
-  const locate = (e: React.PointerEvent) => {
-    const rect = wrapRef.current!.getBoundingClientRect()
-    const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top))
-    return { y, seg: dayAt(y / rect.height) }
-  }
+  const n = stations.length
+  const step = Math.min(STEP_MAX, (h - PAD * 2 - NODE) / Math.max(1, n - 1))
+  const y = (i: number) => PAD + i * step
 
-  const active = activeDay ? model.segs.find((s) => s.day === activeDay) : null
+  const activeIdx = activeDay
+    ? stations.findIndex((s) => activeDay === s.key || activeDay.startsWith(s.key))
+    : -1
+  const lineTop = PAD + NODE / 2
+  const lineBottom = y(n - 1) + NODE / 2
 
   return (
-    <div
-      ref={wrapRef}
-      className="cl-timenav"
-      onPointerDown={(e) => {
-        dragging.current = true
-        e.currentTarget.setPointerCapture(e.pointerId)
-        setHover(locate(e))
-      }}
-      onPointerMove={(e) => setHover(locate(e))}
-      onPointerUp={(e) => {
-        if (!dragging.current) return
-        dragging.current = false
-        e.currentTarget.releasePointerCapture(e.pointerId)
-        onJump(locate(e).seg.day)
-      }}
-      onPointerLeave={() => {
-        if (!dragging.current) setHover(null)
-      }}
-      role="slider"
-      aria-label="Навигация по датам"
-      aria-valuetext={activeDay ? formatDayLabel(dayKeyToDate(activeDay)) : undefined}
-      tabIndex={-1}
-    >
-      {h > 0 ? (
-        <svg width="64" height={h} className="cl-timenav-svg" aria-hidden>
-          <line x1="57.5" x2="57.5" y1="2" y2={h - 2} className="cl-tn-track" />
-          {model.segs.map((s) => (
-            <rect
-              key={s.day}
-              x={57 - s.w}
-              y={s.y0 * h}
-              width={s.w}
-              height={Math.max(1.5, (s.y1 - s.y0) * h - 0.6)}
-              rx="1"
-              className={`cl-tn-bar${s.day === activeDay ? ' is-active' : ''}${hover?.seg.day === s.day ? ' is-hover' : ''}`}
-            />
-          ))}
-          {labels.map((l) => (
-            <text key={l.day} x="1" y={l.y + 4} className={`cl-tn-label${l.year ? ' year' : ''}`}>
-              {l.text}
-            </text>
-          ))}
-          {active ? <circle cx="57.5" cy={((active.y0 + active.y1) / 2) * h} r="3.6" className="cl-tn-dot" /> : null}
-        </svg>
+    <nav ref={setNode} className="cl-timenav" aria-label="Таймлайн по датам">
+      <div className="cl-tn-axis" style={{ top: lineTop, height: lineBottom - lineTop }} />
+      {activeIdx >= 0 ? (
+        <div className="cl-tn-axis done" style={{ top: lineTop, height: Math.max(0, y(activeIdx) + NODE / 2 - lineTop) }} />
       ) : null}
 
-      {hover ? (
-        <div className="cl-tn-bubble" style={{ top: hover.y }}>
-          {formatDayLabel(dayKeyToDate(hover.seg.day))} · {hover.seg.count}
-        </div>
-      ) : null}
-    </div>
+      {stations.map((s, i) => {
+        const active = i === activeIdx
+        const passed = activeIdx >= 0 && i < activeIdx
+        return (
+          <button
+            key={s.key}
+            className={`cl-tn-node${active ? ' is-active' : ''}${passed ? ' is-passed' : ''}`}
+            style={{ top: y(i) }}
+            onClick={() => onJump(s.firstDay)}
+            title={`${s.label}${s.sub ? ` · ${s.sub}` : ''}`}
+          >
+            {/* Подпись слева от оси, узел — на самой оси. Пустой узел (нет
+                миниатюры) стилем превращается в полый кружок на линии. */}
+            <span className="cl-tn-cap">
+              <b>{s.label}</b>
+              <i>{s.sub}</i>
+            </span>
+            <span className="cl-tn-ava">
+              {s.fileId ? (
+                <img
+                  src={`/api/cloud/files/${s.fileId}/thumb`}
+                  alt=""
+                  width={NODE}
+                  height={NODE}
+                  loading="lazy"
+                  decoding="async"
+                  draggable={false}
+                  onError={(e) => e.currentTarget.remove()}
+                />
+              ) : null}
+            </span>
+          </button>
+        )
+      })}
+    </nav>
   )
+}
+
+function groupBy(days: TimelineDay[], keyOf: (d: TimelineDay) => string): { key: string; items: TimelineDay[] }[] {
+  const out: { key: string; items: TimelineDay[] }[] = []
+  for (const d of days) {
+    const key = keyOf(d)
+    const last = out[out.length - 1]
+    if (last && last.key === key) last.items.push(d)
+    else out.push({ key, items: [d] })
+  }
+  return out
+}
+
+function sum(items: TimelineDay[]): number {
+  return items.reduce((n, d) => n + d.count, 0)
 }
