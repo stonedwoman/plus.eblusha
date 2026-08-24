@@ -21,7 +21,8 @@ export type MapPoint = {
   takenAt: string
   kind: string
   name: string
-  thumb: string
+  /** null, пока превью не построено — тогда рисуем заглушку, а не битую картинку. */
+  thumb: string | null
 }
 
 type Status = { kind: 'loading' } | { kind: 'ready'; count: number } | { kind: 'empty' } | { kind: 'error'; text: string }
@@ -99,9 +100,15 @@ export function MapView({
             const marker = L.marker([group.lat, group.lon], {
               icon: L.divIcon({
                 className: 'cl-map-pin',
-                html: `<img src="${first.thumb}" alt="" loading="lazy" draggable="false" />${
-                  count > 1 ? `<b>${count}</b>` : ''
-                }`,
+                // Превью может быть ещё не построено, а может исчезнуть из кэша
+                // производных. И то, и другое раньше давало битую картинку и
+                // визуально пустой маркер, поэтому здесь и заглушка, и onerror.
+                html:
+                  (first.thumb
+                    ? `<img src="${first.thumb}" alt="" loading="lazy" draggable="false"` +
+                      ` onerror="this.replaceWith(Object.assign(document.createElement('i'),{className:'cl-map-fallback',textContent:'🖼'}))" />`
+                    : `<i class="cl-map-fallback">${first.kind === 'VIDEO' ? '🎬' : '🖼'}</i>`) +
+                  (count > 1 ? `<b>${count}</b>` : ''),
                 iconSize: [46, 46],
                 iconAnchor: [23, 23],
               }),

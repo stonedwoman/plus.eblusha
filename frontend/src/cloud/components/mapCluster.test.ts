@@ -19,22 +19,33 @@ const KUTAISI = p('c', 42.2679, 42.6946)
 const SOUTH = p('d', 41.54, 45.0)
 
 describe('clusterize', () => {
-  it('на мелком масштабе собирает всё в одну группу', () => {
-    const groups = clusterize([TBILISI, TBILISI_NEXT, KUTAISI, SOUTH], 6)
+  it('на обзорном масштабе собирает всю страну в одну группу', () => {
+    const groups = clusterize([TBILISI, TBILISI_NEXT, KUTAISI, SOUTH], 2)
     expect(groups).toHaveLength(1)
     expect(groups[0]!.items).toHaveLength(4)
   })
 
-  it('на крупном масштабе разделяет удалённые точки', () => {
+  it('уже на среднем масштабе разводит города', () => {
+    // Кутаиси в двух сотнях километров от Тбилиси: слипаться они должны только
+    // на обзорном виде. Ячейка в 64 px разводит их заметно раньше, чем прежняя
+    // в 512 px, из-за которой карта показывала пару пинов вместо поездки.
+    const groups = clusterize([TBILISI, TBILISI_NEXT, KUTAISI, SOUTH], 6)
+    expect(groups.length).toBeGreaterThan(1)
+    const withKutaisi = groups.find((g) => g.items.some((i) => i.id === 'c'))
+    expect(withKutaisi!.items.map((i) => i.id)).toEqual(['c'])
+  })
+
+  it('на крупном масштабе соседние кадры остаются вместе', () => {
     const groups = clusterize([TBILISI, TBILISI_NEXT, KUTAISI, SOUTH], 14)
     expect(groups.length).toBeGreaterThan(1)
-    // Соседние кадры остаются вместе — иначе на карте каша из миниатюр.
+    // Два кадра, снятых в паре метров друг от друга, не должны раздваиваться:
+    // иначе на карте каша из наезжающих миниатюр.
     const withTbilisi = groups.find((g) => g.items.some((i) => i.id === 'a'))
     expect(withTbilisi!.items.map((i) => i.id).sort()).toEqual(['a', 'b'])
   })
 
   it('центр группы — среднее, а не координаты первой точки', () => {
-    const groups = clusterize([TBILISI, TBILISI_NEXT], 6)
+    const groups = clusterize([TBILISI, TBILISI_NEXT], 2)
     expect(groups[0]!.lat).toBeCloseTo((41.6938 + 41.694) / 2, 6)
     expect(groups[0]!.lon).toBeCloseTo((44.8015 + 44.8017) / 2, 6)
   })

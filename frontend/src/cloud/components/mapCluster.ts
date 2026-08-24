@@ -17,12 +17,25 @@ export type Cluster = { lat: number; lon: number; items: MapPoint[] }
 /** Максимальный масштаб, на котором ещё группируем; выше — каждая точка сама по себе. */
 export const MAX_CLUSTER_ZOOM = 18
 
+/** Сторона ячейки группировки в пикселях экрана. Маркер — 46 px. */
+export const CLUSTER_CELL_PX = 64
+
 export function clusterize(points: MapPoint[], zoom: number): Cluster[] {
   // Невалидный масштаб (карта ещё не получила view) превратил бы шаг в NaN, а
   // ключи бакетов — в "NaN|NaN": все точки схлопнулись бы в одну группу с
   // произвольным центром. Подстраховываемся явно.
   const safeZoom = Number.isFinite(zoom) ? Math.max(0, Math.min(zoom, MAX_CLUSTER_ZOOM)) : 2
-  const step = (360 / Math.pow(2, safeZoom)) * 2
+  /*
+   * Шаг сетки задаём В ПИКСЕЛЯХ ЭКРАНА, а не в градусах.
+   *
+   * Тайл Leaflet — 256 px и покрывает 360/2^zoom градусов долготы, значит один
+   * пиксель это 360/(256·2^zoom) градусов. Прежняя формула (360/2^zoom · 2)
+   * давала ячейку в 512 px при маркере в 46 px: почти всё схлопывалось в одну
+   * группу на любом масштабе, и карта выглядела как пара пинов вместо поездки.
+   * CLUSTER_CELL_PX чуть больше маркера — соседние миниатюры не наезжают,
+   * но и лишнего не слипается.
+   */
+  const step = (360 / (256 * Math.pow(2, safeZoom))) * CLUSTER_CELL_PX
 
   const buckets = new Map<string, Cluster>()
   for (const p of points) {

@@ -562,6 +562,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+.cl-map-fallback {
+  width: 46px; height: 46px;
+  border-radius: 9px;
+  border: 2px solid #fff;
+  background: var(--surface-300);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .5);
+  display: grid; place-items: center;
+  font-size: 20px; font-style: normal;
+}
+
 .cl-map-note {
   margin-top: 10px;
   padding: 11px 14px;

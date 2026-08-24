@@ -73,7 +73,19 @@ router.get(
     await requireSpaceAccess(req, spaceId, "space:view");
     const points = await prisma.cloudFile.findMany({
       where: { spaceId, deletedAt: null, latitude: { not: null }, longitude: { not: null } },
-      select: { id: true, latitude: true, longitude: true, takenAt: true, kind: true, originalName: true },
+      select: {
+        id: true,
+        latitude: true,
+        longitude: true,
+        takenAt: true,
+        kind: true,
+        originalName: true,
+        // Готовность миниатюры проверяем ЗДЕСЬ. Иначе карта получала ссылку на
+        // ещё не построенное превью, /thumb отвечал 404, картинка не рисовалась
+        // — и маркер становился невидимым. Со стороны это выглядело как пустая
+        // карта, хотя точки были.
+        variants: { where: { kind: "THUMB", status: "READY" }, select: { id: true }, take: 1 },
+      },
       orderBy: { takenAt: "asc" },
       take: 5000,
     });
@@ -85,7 +97,7 @@ router.get(
         takenAt: p.takenAt,
         kind: p.kind,
         name: p.originalName,
-        thumb: `/api/cloud/files/${p.id}/thumb`,
+        thumb: p.variants.length > 0 ? `/api/cloud/files/${p.id}/thumb` : null,
       })),
     });
   })
