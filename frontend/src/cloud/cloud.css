@@ -625,12 +625,30 @@
  */
 .cl-tl-layout { display: flex; gap: 18px; align-items: flex-start; }
 .cl-tl-main { flex: 1 1 auto; min-width: 0; }
+/*
+ * Шапка живёт ВНУТРИ правой колонки, поэтому её липкое полотно перестаёт
+ * бледнеть на рельсу. Отрицательный вылет влево здесь убираем — иначе фон
+ * шапки снова заезжал бы на колонку станций; вправо вылет сохраняем, чтобы
+ * полотно доходило до края страницы.
+ */
+.cl-tl-layout.with-rail .cl-space-head { margin-left: 0; padding-left: 0; }
+/*
+ * Липкий элемент не может выйти за нижнюю границу своего контейнера, а тот
+ * кончался за 120px до низа страницы (нижний отступ .cl-page): у самого конца
+ * альбома рельсу выдавливало вверх и верхняя станция пряталась под панелью.
+ * Переносим этот отступ ВНУТРЬ колонки контента — она и задаёт высоту флекса,
+ * так что липкой рельсе хватает хода до самого низа прокрутки. Padding на
+ * самом флекс-контейнере не помог бы: он вне его content-box, а именно тот
+ * ограничивает липкого ребёнка.
+ */
+.cl-page.with-rail { padding-bottom: 0; }
+.cl-page.with-rail .cl-tl-main { padding-bottom: 120px; }
 .cl-timenav {
   position: sticky;
   top: calc(var(--cl-header-h) + 12px);
   flex: 0 0 118px;
   width: 118px;
-  height: calc(100vh - var(--cl-header-h) - 30px);
+  height: calc(100dvh - var(--cl-header-h) - 30px);
   user-select: none;
   z-index: 5;
 }
@@ -652,7 +670,8 @@
   background: linear-gradient(var(--brand), var(--brand));
   opacity: .85;
   transform-origin: top center;
-  transition: transform .45s var(--cl-ease);
+  /* Без перехода: значение обновляется каждый кадр прокрутки, и любой
+     transition превратился бы в отставание полоски от скролла. */
 }
 .cl-tn-node {
   position: absolute;
@@ -737,7 +756,8 @@
 section[data-day],
 .cl-list,
 .cl-space-grid,
-.cl-page > .cl-tiles { animation: clRise .5s var(--cl-ease) both; }
+.cl-page > .cl-tiles,
+.cl-tl-main > .cl-tiles { animation: clRise .5s var(--cl-ease) both; }
 /* Карте — только прозрачность: transform на контейнере Leaflet во время входа
    смещает систему координат, и клики по маркерам уезжают мимо. */
 .cl-map { animation: clFade .3s ease both; }
@@ -1089,6 +1109,9 @@ section[data-day],
 
 @media (max-width: 860px) {
   .cl-timenav { display: none; }
+  /* Колонки рельсы нет — значит, и подвинутой шапке взяться неоткуда:
+     возвращаем вылет к краю экрана вместе с мобильными отступами. */
+  .cl-tl-layout.with-rail .cl-space-head { margin-left: -12px; padding-left: 12px; }
   /*
    * Верхняя панель на узком экране переносится в две строки: раньше при
    * фиксированной высоте из шести вкладок была видна одна, а остальные уезжали

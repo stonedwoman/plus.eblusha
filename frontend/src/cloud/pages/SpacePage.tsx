@@ -17,7 +17,7 @@ import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
 import { Viewer } from '../components/Viewer'
 import { MapView } from '../components/MapView'
-import { TimelineRail, dayKeyToDate, type TimelineDay } from '../components/TimelineRail'
+import { TimelineRail, dayKeyToDate, type RailPosition, type TimelineDay } from '../components/TimelineRail'
 import { formatDayLabel } from '../components/Gallery'
 import { ShareDialog } from '../components/ShareDialog'
 import { Avatar, Empty, Modal, SkeletonTiles, useInfiniteSentinel, useHideOnScrollDown, toast } from '../components/ui'
@@ -60,8 +60,9 @@ export default function SpacePage() {
   const headHidden = useHideOnScrollDown()
   /** Счётчики по дням для рельсы: весь срез, не только загруженные страницы. */
   const [dayCounts, setDayCounts] = useState<TimelineDay[]>([])
-  /** День, чья группа сейчас вверху экрана, — бегунок рельсы. */
-  const [activeDay, setActiveDay] = useState<string | null>(null)
+  /** Где читатель сейчас: день у верхней кромки плюс доля пройденного внутри
+   *  его группы. Дробь и делает полоску рельсы непрерывной. */
+  const [railPos, setRailPos] = useState<RailPosition>({ day: null, fraction: 0 })
   /** Якорь «показывать с даты» — клик по рельсе в ещё не загруженный день. */
   const [fromDay, setFromDay] = useState<string | null>(null)
   const anchorRef = useRef<string | null>(null)
@@ -117,6 +118,9 @@ export default function SpacePage() {
   /** Порядковый номер запроса списка: применяем только самый свежий. */
   const reqSeq = useRef(0)
 
+  /** Рельса живёт только в таймлайне: в «Файлах» сортировка по имени, дата там
+   *  ничего не значит, а карта и активность — вообще не лента. */
+  const showRail = view === 'timeline'
   const canEdit = space?.role === 'OWNER' || space?.role === 'EDITOR'
   const isOwner = space?.role === 'OWNER'
 
@@ -209,7 +213,7 @@ export default function SpacePage() {
 
   useEffect(() => {
     setFromDay(null)
-    setActiveDay(null)
+    setRailPos({ day: null, fraction: 0 })
   }, [spaceId])
 
   useEffect(() => {
@@ -244,24 +248,35 @@ export default function SpacePage() {
   }, [loadDayCounts])
 
   /*
-   * Бегунок рельсы: при прокрутке ищем последнюю группу дня, чей верх уже
-   * зашёл под липкую панель. Один rAF на кадр, слушатель пассивный — на
-   * плавность прокрутки не влияет.
+   * Бегунок рельсы. Ищем последнюю группу дня, чей верх уже ушёл под липкую
+   * панель, и заодно считаем, насколько эта группа пройдена: без дробной части
+   * полоска дёргалась бы скачками от даты к дате, а не отражала прокрутку.
+   * Один rAF на кадр, слушатель пассивный — на плавность скролла не влияет.
    */
   useEffect(() => {
     if (view !== 'timeline') return
-    const root = document.querySelector('.cl-root')
+    const root = document.querySelector<HTMLElement>('.cl-root')
     if (!root) return
     let raf = 0
     const measure = () => {
       raf = 0
-      const sections = document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]')
+      const sections = Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]'))
+      if (sections.length === 0) return
       let current: string | null = null
-      for (const el of Array.from(sections)) {
-        if (el.getBoundingClientRect().top <= 130) current = el.dataset.day ?? null
-        else break
+      let fraction = 0
+      for (const el of sections) {
+        const r = el.getBoundingClientRect()
+        if (r.top > RAIL_ANCHOR) break
+        current = el.dataset.day ?? null
+        fraction = Math.max(0, Math.min(1, (RAIL_ANCHOR - r.top) / Math.max(1, r.height)))
       }
-      setActiveDay(current ?? sections[0]?.dataset.day ?? null)
+      // У самого низа список кончился, а последняя группа пройдена не до конца
+      // (её низ выше линии отсчёта) — иначе полоска не доходила бы до края.
+      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) fraction = 1
+      const day = current ?? sections[0]?.dataset.day ?? null
+      setRailPos((prev) =>
+        prev.day === day && Math.abs(prev.fraction - fraction) < 0.002 ? prev : { day, fraction }
+      )
     }
     const onScroll = () => {
       if (!raf) raf = requestAnimationFrame(measure)
@@ -553,7 +568,16 @@ export default function SpacePage() {
   }
 
   return (
-    <div className="cl-page">
+    <div className={`cl-page${showRail ? ' with-rail' : ''}`}>
+      {/*
+        Рельса — САМОСТОЯТЕЛЬНАЯ колонка страницы, рядом с шапкой, а не под ней.
+        Пока она жила внутри ветки таймлайна, липкая шапка (z-index 30) была её
+        соседом сверху и на всю ширину: при прокрутке вверх шапка возвращалась
+        и накрывала верхние станции — таймлайн выглядел обрезанным.
+      */}
+      <div className={`cl-tl-layout${showRail ? ' with-rail' : ''}`}>
+        {showRail ? <TimelineRail days={dayCounts} position={railPos} onJump={jumpToDay} /> : null}
+        <div className="cl-tl-main">
       {/*
         Шапка и фильтры — единый липкий блок, который прячется при прокрутке
         вниз и возвращается при малейшем движении вверх. Так и контент не
@@ -713,27 +737,24 @@ export default function SpacePage() {
           }
         />
       ) : (
-        <div className="cl-tl-layout">
-          <TimelineRail days={dayCounts} activeDay={activeDay} onJump={jumpToDay} />
-          <div className="cl-tl-main">
-            {fromDay ? (
-              <div className="cl-fromchip">
-                Показаны дни с {formatDayLabel(dayKeyToDate(fromDay))}
-                <button onClick={() => setFromDay(null)} title="Показать альбом с начала" aria-label="Сбросить">
-                  ✕
-                </button>
-              </div>
-            ) : null}
-            <TimelineView
-              files={files}
-              uploads={uploads}
-              selection={selection}
-              selectMode={selection.size > 0}
-              onOpen={openFile}
-              onToggleSelect={toggleSelect}
-            />
-          </div>
-        </div>
+        <>
+          {fromDay ? (
+            <div className="cl-fromchip">
+              Показаны дни с {formatDayLabel(dayKeyToDate(fromDay))}
+              <button onClick={() => setFromDay(null)} title="Показать альбом с начала" aria-label="Сбросить">
+                ✕
+              </button>
+            </div>
+          ) : null}
+          <TimelineView
+            files={files}
+            uploads={uploads}
+            selection={selection}
+            selectMode={selection.size > 0}
+            onOpen={openFile}
+            onToggleSelect={toggleSelect}
+          />
+        </>
       )}
 
       {/* Один наблюдатель на все режимы: раньше он жил внутри ветки таймлайна,
@@ -746,6 +767,8 @@ export default function SpacePage() {
           </button>
         </div>
       ) : null}
+        </div>
+      </div>
 
       {/* ── Панель выбора ───────────────────────────────────────────────── */}
       {selection.size > 0 ? (
@@ -867,6 +890,9 @@ function matchesSlice(
 
 /** Куда сажаем цель прыжка: сразу под липкой панелью, с дыханием в пару px. */
 const HEADER_OFFSET = 62
+
+/** Линия отсчёта «где читатель»: сразу под верхней панелью. */
+const RAIL_ANCHOR = 78
 
 /**
  * Плавный скролл с явным easing.

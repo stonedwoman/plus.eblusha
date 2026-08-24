@@ -38,6 +38,8 @@ type Station = {
   fileId: string | null
   /** Куда прыгать: первый день станции, где реально есть съёмка. */
   firstDay: string
+  /** Дни, свёрнутые в станцию: по ним считается доля пройденного пути. */
+  days: string[]
 }
 
 /** Минимальный вертикальный шаг станции: узел + двухстрочная подпись + воздух. */
@@ -45,13 +47,20 @@ const STEP = 62
 const PAD = 12
 const NODE = 38
 
+/**
+ * Где сейчас читатель: день у верхней кромки и доля пройденного внутри его
+ * группы. Дробная часть и делает полоску непрерывной — она отражает прокрутку,
+ * а не прыгает от даты к дате.
+ */
+export type RailPosition = { day: string | null; fraction: number }
+
 export function TimelineRail({
   days,
-  activeDay,
+  position,
   onJump,
 }: {
   days: TimelineDay[]
-  activeDay: string | null
+  position: RailPosition
   onJump: (day: string) => void
 }) {
   /*
@@ -74,7 +83,9 @@ export function TimelineRail({
 
   const stations = useMemo<Station[]>(() => {
     if (days.length === 0) return []
-    const capacity = Math.max(3, Math.floor((h - PAD * 2) / STEP))
+    // −1 на хвост: под последней станцией остаётся отрезок такой же длины,
+    // по которому полоска доходит до низа, пока листаешь последний период.
+    const capacity = Math.max(3, Math.floor((h - PAD * 2) / STEP) - 1)
     const thisYear = String(new Date().getFullYear())
 
     if (days.length <= capacity) {
@@ -87,6 +98,7 @@ export function TimelineRail({
           count: d.count,
           fileId: d.fileId,
           firstDay: d.day,
+          days: [d.day],
         }
       })
     }
@@ -102,6 +114,7 @@ export function TimelineRail({
           count: sum(items),
           fileId: items[0]!.fileId,
           firstDay: items[0]!.day,
+          days: items.map((d) => d.day),
         }
       })
     }
@@ -114,6 +127,7 @@ export function TimelineRail({
       count: sum(items),
       fileId: items[0]!.fileId,
       firstDay: items[0]!.day,
+      days: items.map((d) => d.day),
     }))
   }, [days, h])
 
@@ -124,22 +138,46 @@ export function TimelineRail({
   }
 
   const n = stations.length
-  // Станции растягиваются на ВСЮ высоту рельсы: ось живёт от шапки до низа
-  // экрана, а не жмётся в верхнем углу. Так и выглядит осью маршрута, и в
-  // каждый узел проще попасть.
-  const step = (h - PAD * 2 - NODE) / Math.max(1, n - 1)
+  /*
+   * Станции растягиваются на ВСЮ высоту рельсы, но шкала делится на n частей,
+   * а не на n−1: под последним узлом остаётся отрезок ровно в один шаг.
+   *
+   * Он не украшение. Узел отмечает НАЧАЛО периода, и без хвоста полоска
+   * упиралась в край, едва начавшись последний день, — а в нём могут быть ещё
+   * сотни кадров. Теперь она честно доползает до низа по мере их просмотра.
+   */
+  const step = (h - PAD * 2 - NODE) / n
   const y = (i: number) => PAD + i * step
 
-  const activeIdx = activeDay
-    ? stations.findIndex((s) => activeDay === s.key || activeDay.startsWith(s.key))
+  const activeIdx = position.day
+    ? stations.findIndex((s) => s.days.includes(position.day as string))
     : -1
   const lineTop = PAD + NODE / 2
-  const lineBottom = y(n - 1) + NODE / 2
+  // Линия идёт на шаг ДАЛЬШЕ последнего узла — это и есть хвост последнего дня.
+  const lineBottom = y(n - 1) + NODE / 2 + step
   const axisLen = Math.max(1, lineBottom - lineTop)
-  // Доля пройденного пути: закрашенный отрезок рисуется полной длины и
-  // сжимается масштабом — так его рост идёт на композиторе, без релэйаута
-  // на каждом пересечении дня при прокрутке.
-  const progress = activeIdx >= 0 ? Math.max(0, Math.min(1, (y(activeIdx) + NODE / 2 - lineTop) / axisLen)) : 0
+
+  /*
+   * Дробная позиция в шкале станций.
+   *
+   * Целая часть — станция, у верхней кромки которой читатель; дробная —
+   * насколько он её прошёл. Когда станция свёрнута из нескольких дней, доля
+   * складывается из номера дня внутри станции и прокрутки внутри самого дня,
+   * поэтому полоска ползёт ровно и всегда приходит точно в узел следующей
+   * станции, а не обгоняет его и не отстаёт.
+   */
+  const posIdx = (() => {
+    if (activeIdx < 0) return -1
+    const st = stations[activeIdx]!
+    const k = st.days.indexOf(position.day as string)
+    if (k < 0) return activeIdx
+    return activeIdx + (k + Math.max(0, Math.min(1, position.fraction))) / st.days.length
+  })()
+  // Закрашенный отрезок рисуется полной длины и сжимается масштабом: рост идёт
+  // на композиторе, без релэйаута на каждом кадре прокрутки.
+  // Делим на n, а не на n−1: шкала включает хвост, поэтому доля станции i
+  // приходится ровно на центр её узла, а конец альбома — на низ линии.
+  const progress = posIdx < 0 ? 0 : Math.max(0, Math.min(1, posIdx / n))
 
   return (
     <nav ref={setNode} className="cl-timenav" aria-label="Таймлайн по датам">
