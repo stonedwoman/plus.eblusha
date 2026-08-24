@@ -67,6 +67,8 @@ export default function SpacePage() {
   const [railPos, setRailPos] = useState<RailPosition>({ day: null, fraction: 0 })
   /** Высота видимой шапки — рельса прижимается под неё (--cl-rail-off). */
   const [headH, setHeadH] = useState(0)
+  const headHRef = useRef(0)
+  headHRef.current = headH
   const headRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -353,7 +355,14 @@ export default function SpacePage() {
           // Ближайший следующий день съёмки — если в самом дне не снимали.
           (exactOnly ? undefined : sections.find((el) => (el.dataset.day ?? '') > day))
         if (!target) return false
-        const top = target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - HEADER_OFFSET
+        const base = target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
+        /*
+         * Прыжок вверх закончится с ПОКАЗАННОЙ шапкой (движение вверх её
+         * возвращает), и дата-прешапка встанет под ней — значит, и секцию надо
+         * сажать ниже на её высоту. Вниз — шапка спрячется, хватает 62px.
+         */
+        const goingUp = base - HEADER_OFFSET < root.scrollTop
+        const top = base - HEADER_OFFSET - (goingUp ? headHRef.current : 0)
         smoothScrollTo(root, top, onDone)
         return true
       }
@@ -391,7 +400,10 @@ export default function SpacePage() {
               document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]')
             ).find((el) => (el.dataset.day ?? '') >= day)
             if (!target) return
-            const drift = Math.abs(target.getBoundingClientRect().top - HEADER_OFFSET)
+            // Ожидаемая посадка зависит от того, видна ли сейчас шапка.
+            const headShown = headRef.current && !headRef.current.classList.contains('is-hidden')
+            const expected = HEADER_OFFSET + (headShown ? headHRef.current : 0)
+            const drift = Math.abs(target.getBoundingClientRect().top - expected)
             if (drift > 30) scrollToSection(false)
           })
         })
