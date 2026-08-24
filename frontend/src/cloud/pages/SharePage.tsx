@@ -197,7 +197,7 @@ export default function SharePage() {
           <span className="cl-brand-suffix">Cloud</span>
         </span>
         <div className="cl-spacer" />
-        {signedIn ? (
+        {signedIn && info.share.allowDownload ? (
           <button className="cl-btn sm" onClick={() => void saveToMyCloud()} disabled={saving}>
             {saving ? 'Сохраняем…' : 'Сохранить в мой Cloud'}
           </button>

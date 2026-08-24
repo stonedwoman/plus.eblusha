@@ -311,6 +311,9 @@ router.get(
   requireShareSession,
   ah(async (req: Request, res: Response) => {
     const active = req.shareLink!;
+    // Список id — это заготовка для «Сохранить к себе», то есть по сути
+    // копирование содержимого. Без права на скачивание его выдавать нельзя.
+    if (!active.share.allowDownload) throw forbidden("Скачивание запрещено");
     const where = await shareFileWhere(active.share);
     const rows = await prisma.cloudFile.findMany({ where, select: { id: true }, take: 2000 });
     res.json({ shareId: active.share.id, fileIds: rows.map((r) => r.id) });

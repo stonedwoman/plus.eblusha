@@ -456,6 +456,13 @@ router.post(
 async function shareAllowedFileIds(shareId: string): Promise<Set<string>> {
   const share = await prisma.cloudShareLink.findUnique({ where: { id: shareId } });
   if (!share || share.revokedAt || (share.expiresAt && share.expiresAt < new Date())) return new Set();
+  /*
+   * Запрет на скачивание обязан распространяться и на «Сохранить к себе».
+   * Иначе он не запрет, а видимость: получатель ссылки без allowDownload
+   * копировал файлы в свою хуяпку одним запросом и качал их уже оттуда —
+   * причём копия ссылается на ТОТ ЖЕ физический объект.
+   */
+  if (!share.allowDownload) return new Set();
   const { resolveShareFileScope } = await import("./shareScope");
   return resolveShareFileScope(share);
 }
