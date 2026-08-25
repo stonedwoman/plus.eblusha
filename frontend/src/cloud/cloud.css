@@ -521,12 +521,6 @@
  * ей принадлежат. Кольцо внутреннее (inset) — так подсветка не выходит за
  * плитку и не расширяет область перерисовки на соседей.
  */
-@keyframes clDim {
-  0%   { filter: none; }
-  12%  { filter: brightness(.34) saturate(.5); }
-  55%  { filter: brightness(.34) saturate(.5); }
-  100% { filter: none; }
-}
 /*
  * Обводка ВНУТРЕННЯЯ. Внешняя рисуется за пределами плитки, и у верхнего ряда
  * её срезала липкая шапка, у крайних колонок — горизонтальное подрезание
@@ -535,11 +529,20 @@
  * сливалось в сплошное оранжевое полотно, за которым не читались сами кадры.
  * Ощущение области держит затемнение всего остального.
  */
+/*
+ * Пометка группы: яркая ВНУТРЕННЯЯ обводка плюс короткий подскок.
+ *
+ * Обводка внутренняя, потому что внешнюю срезает липкая шапка у верхнего ряда
+ * и подрезание прокрутчика у крайних колонок. Подскок трансформом — он и
+ * ведёт взгляд: неподвижную обводку на пёстрой сетке легко не заметить, а
+ * движение видно боковым зрением.
+ */
 @keyframes clLit {
-  0%   { box-shadow: inset 0 0 0 0 transparent; filter: none; }
-  12%  { box-shadow: inset 0 0 0 3px var(--brand); filter: brightness(1.16) saturate(1.06); }
-  55%  { box-shadow: inset 0 0 0 3px var(--brand); filter: brightness(1.1); }
-  100% { box-shadow: inset 0 0 0 0 transparent; filter: none; }
+  0%   { box-shadow: inset 0 0 0 0 transparent; transform: none; filter: none; }
+  14%  { box-shadow: inset 0 0 0 3px var(--brand); transform: scale(1.035); filter: brightness(1.14) saturate(1.05); }
+  38%  { box-shadow: inset 0 0 0 3px var(--brand); transform: none; filter: brightness(1.08); }
+  70%  { box-shadow: inset 0 0 0 3px var(--brand); transform: none; filter: none; }
+  100% { box-shadow: inset 0 0 0 0 transparent; transform: none; filter: none; }
 }
 /*
  * Пока идёт выделение протяжкой: мышь не должна попутно выделять текст дат, а
