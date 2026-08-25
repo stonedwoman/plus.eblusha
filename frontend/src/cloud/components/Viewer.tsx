@@ -563,68 +563,6 @@ export function Viewer({
           {zoomPct !== 100 ? <span className="cl-zoom-pill">{zoomPct}%</span> : null}
         </div>
 
-        {/*
-          Язычки у правого края: закладки ящика, а не ряд одинаковых кнопок.
-          Живут внутри сцены, поэтому при выдвинутой панели сами оказываются
-          на её кромке — сцена сужается, right: 0 едет вместе с ней.
-        */}
-        <div className="cl-vtabs">
-          <button
-            className={`cl-vtab${panel === 'info' ? ' is-on' : ''}`}
-            onClick={() => setPanel(panel === 'info' ? null : 'info')}
-            title="Сведения о кадре (i)"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 11v5.5" />
-              <circle cx="12" cy="7.7" r="1.1" fill="currentColor" stroke="none" />
-            </svg>
-            <span>Инфо</span>
-          </button>
-
-          {!readOnly ? (
-            <button
-              className={`cl-vtab${panel === 'comments' ? ' is-on' : ''}`}
-              onClick={() => setPanel(panel === 'comments' ? null : 'comments')}
-              title="Обсуждение кадра"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-                <path d="M20 12.4c0 3.9-3.6 7-8 7a9 9 0 0 1-2.4-.3L5 21l1.1-3.4A6.7 6.7 0 0 1 4 12.4c0-3.9 3.6-7 8-7s8 3.1 8 7Z" />
-              </svg>
-              <span>Комменты{file.commentCount ? ` (${file.commentCount})` : ''}</span>
-            </button>
-          ) : null}
-
-          {file.urls.download ? (
-            <a
-              className="cl-vtab"
-              href={file.urls.download}
-              download={file.name}
-              draggable
-              /*
-               * Перетаскивание прямо в папку: DownloadURL — единственный способ
-               * отдать системе имя, тип и адрес файла так, чтобы отпускание над
-               * рабочим столом сохранило именно файл, а не ярлык на страницу.
-               * Рядом кладём обычный адрес: тем, кто DownloadURL не понимает,
-               * достанется хотя бы ссылка.
-               */
-              onDragStart={(e) => {
-                const url = new URL(file.urls.download as string, window.location.origin).href
-                e.dataTransfer.setData('DownloadURL', `${file.mime}:${file.name}:${url}`)
-                e.dataTransfer.setData('text/uri-list', url)
-                e.dataTransfer.setData('text/plain', url)
-                e.dataTransfer.effectAllowed = 'copy'
-              }}
-              title="Скачать · можно перетащить в папку"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" />
-              </svg>
-              <span>Скачать</span>
-            </a>
-          ) : null}
-        </div>
-
         {index > 0 ? (
           <button className="cl-viewer-nav prev" onClick={() => go(-1)} aria-label="Предыдущий">
             ‹
@@ -686,6 +624,70 @@ export function Viewer({
 
         {/* Плёночная риска: видна даже когда весь хром ушёл. */}
         <div className="cl-vprogress" style={{ transform: `scaleX(${(index + 1) / Math.max(1, files.length)})` }} aria-hidden />
+      </div>
+
+      {/*
+        Закладки ящика. Одно целое с панелью: то же полотно, та же рамка, и
+        при открытии right уезжает ровно на ширину панели — закладки едут
+        ВМЕСТЕ с выдвигающимся полотном и остаются на его кромке. Подписи
+        горизонтальные: повёрнутый набок русский текст не читался.
+      */}
+      <div className="cl-vtabs">
+        <button
+          className={`cl-vtab${panel === 'info' ? ' is-on' : ''}`}
+          onClick={() => setPanel(panel === 'info' ? null : 'info')}
+          title="Сведения о кадре (i)"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v5.5" />
+            <circle cx="12" cy="7.7" r="1.1" fill="currentColor" stroke="none" />
+          </svg>
+          <span>Инфо</span>
+        </button>
+
+        {!readOnly ? (
+          <button
+            className={`cl-vtab${panel === 'comments' ? ' is-on' : ''}`}
+            onClick={() => setPanel(panel === 'comments' ? null : 'comments')}
+            title="Обсуждение кадра"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+              <path d="M20 12.4c0 3.9-3.6 7-8 7a9 9 0 0 1-2.4-.3L5 21l1.1-3.4A6.7 6.7 0 0 1 4 12.4c0-3.9 3.6-7 8-7s8 3.1 8 7Z" />
+            </svg>
+            <span>Комменты</span>
+            {file.commentCount ? <i className="cl-vtab-dot">{file.commentCount}</i> : null}
+          </button>
+        ) : null}
+
+        {file.urls.download ? (
+          <a
+            className="cl-vtab is-dl"
+            href={file.urls.download}
+            download={file.name}
+            draggable
+            /*
+             * Перетаскивание прямо в папку: DownloadURL — единственный способ
+             * отдать системе имя, тип и адрес файла так, чтобы отпускание над
+             * рабочим столом сохранило именно файл, а не ярлык на страницу.
+             * Рядом кладём обычный адрес: тем, кто DownloadURL не понимает,
+             * достанется хотя бы ссылка.
+             */
+            onDragStart={(e) => {
+              const url = new URL(file.urls.download as string, window.location.origin).href
+              e.dataTransfer.setData('DownloadURL', `${file.mime}:${file.name}:${url}`)
+              e.dataTransfer.setData('text/uri-list', url)
+              e.dataTransfer.setData('text/plain', url)
+              e.dataTransfer.effectAllowed = 'copy'
+            }}
+            title="Скачать · можно перетащить в папку"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" />
+            </svg>
+            <span>Скачать</span>
+          </a>
+        ) : null}
       </div>
 
       {panel ? (
