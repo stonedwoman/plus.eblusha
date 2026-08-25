@@ -434,6 +434,8 @@ export function Viewer({
   // ── Колесо: внутри кадра масштаб, снаружи листание ──────────────────────
   const navAccum = useRef(0)
   const navAt = useRef(0)
+  /** Когда колесо в последний раз было занято зумом — см. шлюз тишины ниже. */
+  const wheelZoomAt = useRef(0)
   useEffect(() => {
     const stage = stageRef.current
     if (!stage) return
@@ -448,12 +450,15 @@ export function Viewer({
       const inside =
         !!r && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom
 
+      const now = performance.now()
+
       /*
        * Уменьшение на уже вписанном кадре отдаём листанию: иначе жест на
        * снимке, который и так помещается целиком, ощущается мёртвым.
        */
       const zoomable = inside && !(view.current.zoom <= 1.001 && deltaPx > 0)
       if (zoomable) {
+        wheelZoomAt.current = now
         const factor = clamp(Math.exp(-deltaPx * 0.00075), 0.85, 1.18)
         const box = stage.getBoundingClientRect()
         setZoom(view.current.zoom * factor, {
@@ -464,13 +469,28 @@ export function Viewer({
       }
 
       /*
+       * ШЛЮЗ ТИШИНЫ — развязка зума и листания на одном колесе.
+       *
+       * Отдаляешь снимок колесом вниз, зум доезжает до вписанного — и тот же
+       * непрерывный жест тут же перелистывал на следующий кадр. Модификаторы
+       * (Ctrl) неудобны, поэтому решает пауза: пока жест отдаления продолжается,
+       * кадр у упора глотает колесо; каждый проглоченный тик продлевает
+       * тишину — инерция трекпада тоже не пролистнёт. Отпустил колесо на
+       * полсекунды — следующий скролл уже осознанное листание. Вне кадра шлюз
+       * не действует: там колесо всегда листает.
+       */
+      if (inside && deltaPx > 0 && now - wheelZoomAt.current < 450) {
+        wheelZoomAt.current = now
+        return
+      }
+
+      /*
        * Накопитель с порогом и кулдауном: один жест трекпада не должен
        * пролистывать пять кадров. Резинки-«надвига» больше нет: она давала
        * ненужный мелкий сдвиг на первом щелчке колеса, а при недоборе порога
        * ещё и оставляла кадр смещённым — обратной анимации у неё не было.
        * Обратная связь теперь — сам проезд слотов.
        */
-      const now = performance.now()
       if (Math.sign(deltaPx) !== Math.sign(navAccum.current)) navAccum.current = 0
       navAccum.current += deltaPx
       if (now - navAt.current < 260) return
@@ -573,28 +593,18 @@ export function Viewer({
     if (backdropRef.current) backdropRef.current.style.opacity = ''
   }
 
+  /*
+   * Клик — только ВЫХОД из зума. Увеличение по клику убрано по просьбе:
+   * зум живёт на колесе (и на «+»/«−»), а случайный клик по кадру больше
+   * не прыгает в двести процентов.
+   */
   const onStageClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement | null
     if (target?.tagName === 'VIDEO' || target?.tagName === 'AUDIO') return
     if (target?.closest('button, a, video, audio, .cl-viewer-panel, .cl-strip')) return
     if (drag.current?.moved) return
     if (!file || file.kind !== 'IMAGE') return
-    const stage = stageRef.current
-    if (!stage) return
-    const box = stage.getBoundingClientRect()
-    const anchor = {
-      x: e.clientX - box.left - box.width / 2,
-      y: e.clientY - box.top - (box.height - gutterRef.current) / 2,
-    }
-    if (view.current.zoom > 1.001) {
-      setZoom(1)
-      return
-    }
-    // Двойной уровень — честные сто процентов оригинала, а не число из воздуха.
-    const fit = fitRef.current
-    const natural = file.width || 0
-    const target100 = natural && fit.w ? clamp(natural / fit.w, 1.4, 8) : 2.6
-    setZoom(target100, anchor)
+    if (view.current.zoom > 1.001) setZoom(1)
   }
 
   if (!file) return null
