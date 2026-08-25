@@ -51,6 +51,7 @@ const Tile = memo(function Tile({
   onOpen,
   onToggle,
   run,
+  geo,
 }: {
   file: CloudFile
   selected: boolean
@@ -62,6 +63,8 @@ const Tile = memo(function Tile({
   onOpen: (file: CloudFile) => void
   onToggle: (id: string, shift: boolean) => void
   run?: number
+  /** Есть ли у кадра своя геометка — по ним подсвечивается место. */
+  geo?: boolean
 }) {
   const thumb = file.urls.thumb
   const processing = file.status === 'PROCESSING'
@@ -76,6 +79,7 @@ const Tile = memo(function Tile({
       /* Номер географического отрезка: по нему правая рельса понимает, где
          читатель сейчас. Считается при раскладке — см. TimelineView. */
       data-run={run}
+      data-geo={geo ? '1' : undefined}
       onClick={(e) => {
         if (selectMode || e.ctrlKey || e.metaKey) onToggle(file.id, e.shiftKey)
         else onOpen(file)
@@ -202,34 +206,48 @@ export function TimelineView({
      * у сервера, поэтому нумерация совпадает с сегментами правой рельсы.
      */
     const runOf = new Map<string, number>()
+    /** Кадры с настоящей геометкой: по ним подсвечивается место. */
+    const geoOf = new Set<string>()
     let run = -1
     let prevPath: string | null = null
     for (const entry of entries) {
       if (entry.kind !== 'file') continue
       /*
-       * Снимки БЕЗ места пропускаем: сервер считает отрезки только по ним же,
-       * и если нумеровать «пустое место» как отдельный отрезок, номера у
-       * клиента и сервера разъезжаются. В альбоме, где geo есть у четверти
-       * файлов, это уводило рельсу совсем не туда.
+       * Номер отрезка увеличивается ТОЛЬКО на снимках с местом — сервер
+       * считает отрезки по ним же, и нумерация обязана совпасть.
+       *
+       * Но снимок без геометки всё равно получает номер текущего отрезка:
+       * он снят где-то между теми же городами, и бегунок рельсы должен
+       * понимать, где читатель. Без этого щуп, попавший на кадр без
+       * координат, не находил ничего и рельса замирала без фокуса — а таких
+       * кадров в альбоме бывает больше половины.
        */
-      if (!entry.file.geoPath) continue
-      // Ключ отрезка — страна и город, без района: иначе Тбилиси и его
-      // Окрокана чередовались бы десятками мелких отрезков.
-      const path = `${entry.file.geoCountry ?? ''}|${entry.file.geoCity ?? ''}`
-      if (run < 0 || path !== prevPath) {
-        run++
-        prevPath = path
+      if (entry.file.geoPath) {
+        // Ключ отрезка — страна и город, без района: иначе Тбилиси и его
+        // Окрокана чередовались бы десятками мелких отрезков.
+        const path = `${entry.file.geoCountry ?? ''}|${entry.file.geoCity ?? ''}`
+        if (run < 0 || path !== prevPath) {
+          run++
+          prevPath = path
+        }
+        geoOf.add(entry.id)
       }
-      runOf.set(entry.id, run)
+      if (run >= 0) runOf.set(entry.id, run)
     }
 
-    const out: { key: string; label: string; entries: TimelineEntry[]; runOf: Map<string, number> }[] = []
+    const out: {
+      key: string
+      label: string
+      entries: TimelineEntry[]
+      runOf: Map<string, number>
+      geoOf: Set<string>
+    }[] = []
     for (const entry of entries) {
       const d = new Date(entry.at)
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       const last = out[out.length - 1]
       if (last && last.key === key) last.entries.push(entry)
-      else out.push({ key, label: formatDayLabel(d), entries: [entry], runOf })
+      else out.push({ key, label: formatDayLabel(d), entries: [entry], runOf, geoOf })
     }
     return out
   }, [files, uploads])
@@ -257,6 +275,7 @@ export function TimelineView({
                   onOpen={onOpen}
                   onToggle={onToggleSelect}
                   run={group.runOf.get(entry.id)}
+                  geo={group.geoOf.has(entry.id)}
                 />
               )
             )}

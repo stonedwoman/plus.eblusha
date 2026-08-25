@@ -402,14 +402,14 @@ export default function SpacePage() {
   const jumpToRun = useCallback(
     (run: number) => {
       const root = document.querySelector<HTMLElement>('.cl-root')
-      const tile = document.querySelector<HTMLElement>(`.cl-tl-main [data-run="${run}"]`)
+      const tile = document.querySelector<HTMLElement>(`.cl-tl-main [data-run="${run}"][data-geo="1"]`)
       if (!root || !tile) return
       const base = tile.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
       const goingUp = base - HEADER_OFFSET < root.scrollTop
       const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
       // Подсветка — по приезде, см. jumpToDay.
       smoothScrollTo(root, base - HEADER_OFFSET - land - 34, (finished) => {
-        if (finished) flashGroup(`.cl-tl-main [data-run="${CSS.escape(String(run))}"]`)
+        if (finished) flashGroup(`.cl-tl-main [data-run="${CSS.escape(String(run))}"][data-geo="1"]`)
       })
     },
     []

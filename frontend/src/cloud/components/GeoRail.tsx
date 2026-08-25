@@ -24,6 +24,7 @@ export type GeoSegment = {
 export type GeoPosition = { run: number; fraction: number }
 
 const NODE = 38
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 const STEP = 62
 const PAD = 12
 
@@ -105,33 +106,6 @@ export function GeoRail({
     return <div ref={setNode} className="cl-timenav cl-geonav" aria-hidden />
   }
 
-  /*
-   * Раскладка по ВЕСАМ, а не по числу снимков.
-   *
-   * Пропорционально числу кадров Тбилиси занимал три четверти оси, и все
-   * армянские остановки слипались в кучу с наезжающими подписями. Крупная
-   * станция получает полный шаг, мелкая точка — треть: порядок поездки
-   * сохраняется, подписи не сталкиваются, а мелочь читается как
-   * промежуточные станции на схеме.
-   */
-  const MINOR_W = 0.52
-  const weights = stations.map((st) => (st.major ? 1 : MINOR_W))
-  const totalW = Math.max(1, weights.reduce((a, b) => a + b, 0))
-  const step = (h - PAD * 2 - NODE) / totalW
-  const lineTop = PAD + NODE / 2
-
-  const startW = new Map<number, number>()
-  let acc = 0
-  stations.forEach((st, i) => {
-    startW.set(st.run, acc)
-    acc += weights[i]!
-  })
-  /* Мелкий узел ниже крупного, поэтому его центр смещаем: иначе иконка
-     садилась бы выше своей отметки на оси. */
-  const yOf = (run: number, major: boolean) => PAD + (startW.get(run) ?? 0) * step + (major ? 0 : (NODE - 24) / 2)
-  const lineBottom = PAD + totalW * step + NODE / 2
-  const axisLen = Math.max(1, lineBottom - lineTop)
-
   // Активная станция — последняя, чей отрезок уже начался.
   let activeRun = -1
   let activeIndex = -1
@@ -141,7 +115,55 @@ export function GeoRail({
       activeIndex = i
     }
   })
-  const inside = activeIndex >= 0 ? Math.max(0, Math.min(1, position.fraction)) * weights[activeIndex]! : 0
+
+  /*
+   * Раскладка «фокус и контекст»: рельса расступается вокруг того места, где
+   * читатель сейчас, и сжимает далёкое.
+   *
+   * Постоянная плотность не работает: на поездке в двадцать городов подписи
+   * налезали друг на друга, а миниатюры сливались в кашу. Здесь вес станции
+   * зависит от расстояния до текущей — соседи получают полный шаг, дальние
+   * ужимаются. Сумма весов нормируется на высоту рельсы, поэтому узлы
+   * физически не могут столкнуться, сколько бы мест ни было.
+   *
+   * Значимость остановки тоже учитываем: крупный город остаётся заметнее
+   * проездом схваченного посёлка, даже когда до него далеко.
+   */
+  // Пока до первой геометки не дошли, фокус держим на первой станции: рельса
+  // без акцента выглядит как ровная сыпь и не подсказывает, куда смотреть.
+  const focusAt = activeIndex < 0 ? 0 : activeIndex
+  const focusWeight = (i: number) => {
+    const d = Math.abs(i - focusAt)
+    const near = d === 0 ? 1.5 : d === 1 ? 1.15 : d === 2 ? 0.9 : d <= 4 ? 0.62 : 0.4
+    return near * (stations[i]!.major ? 1.18 : 1)
+  }
+  const weights = stations.map((_, i) => focusWeight(i))
+  const totalW = Math.max(1, weights.reduce((a, b) => a + b, 0))
+  const step = (h - PAD * 2 - NODE) / totalW
+  const lineTop = PAD + NODE / 2
+
+  const startW = new Map<number, number>()
+  let acc = 0
+  const laid = stations.map((st, i) => {
+    const start = acc
+    acc += weights[i]!
+    startW.set(st.run, start)
+    /*
+     * Размер узла выводится из ФАКТИЧЕСКИ доставшегося места, а не задаётся
+     * заранее: где просторно — полноценный кружок с подписью, где тесно —
+     * точка. Плотность подстраивается сама, и отдельного порога «мелкая или
+     * крупная» больше не нужно.
+     */
+    const room = weights[i]! * step
+    // Запас против соседа: узел никогда не занимает всё доставшееся место.
+    const k = clamp(room / 52, 0.26, 1)
+    return { ...st, i, k, room, top: PAD + start * step + (NODE * (1 - k)) / 2 }
+  })
+  const lineBottom = PAD + totalW * step + NODE / 2
+  const axisLen = Math.max(1, lineBottom - lineTop)
+
+  const activeStation = laid.find((s) => s.run === activeRun)
+  const inside = activeStation ? Math.max(0, Math.min(1, position.fraction)) * weights[activeStation.i]! : 0
   const progress =
     activeRun < 0 ? 0 : Math.max(0, Math.min(1, ((startW.get(activeRun) ?? 0) + inside) / totalW))
 
@@ -152,16 +174,19 @@ export function GeoRail({
         <div className="cl-tn-axis done" style={{ top: lineTop, height: axisLen, transform: `scaleY(${progress})` }} />
       ) : null}
 
-      {stations.map((s) => {
+      {laid.map((s) => {
         const label = s.district ?? s.city ?? s.country
         const sub = s.district ? (s.city ?? s.country) : s.city ? s.country : ''
+        // Подпись показываем, только когда узлу досталось место под неё —
+        // иначе она наползла бы на соседнюю.
+        const showCap = s.k >= 0.72 || s.run === activeRun
         return (
           <button
             key={`${s.run}-${s.path}`}
-            className={`cl-tn-node${s.major ? '' : ' is-minor'}${s.run === activeRun ? ' is-active' : ''}${
+            className={`cl-tn-node${s.k < 0.72 ? ' is-minor' : ''}${s.run === activeRun ? ' is-active' : ''}${
               activeRun >= 0 && s.run < activeRun ? ' is-passed' : ''
             }`}
-            style={{ transform: `translateY(${yOf(s.run, s.major)}px)` }}
+            style={{ transform: `translateY(${s.top}px)`, ['--k' as string]: s.k }}
             onClick={() => onJump(s.run)}
             title={[s.country, s.city, s.district].filter(Boolean).join(' · ') + ` · ${s.count}`}
           >
@@ -179,7 +204,7 @@ export function GeoRail({
                 />
               ) : null}
             </span>
-            <span className="cl-tn-cap">
+            <span className="cl-tn-cap" style={{ opacity: showCap ? 1 : 0 }}>
               <b>{label}</b>
               <i>{sub ? `${sub} · ${s.count}` : String(s.count)}</i>
             </span>
