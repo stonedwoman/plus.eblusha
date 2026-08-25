@@ -1040,23 +1040,12 @@ export default function SpacePage() {
           ) : null}
 
           {/*
-            Действия переехали в полосу и потому доступны в обоих состояниях —
-            это и есть место, освободившееся от поиска. Второстепенные стали
-            иконками с подписью для скринридера.
-          */}
-          {/*
-            Действия подписаны словами. Иконки ⊞ ↗ ↓ угадать невозможно: «плюс
-            в рамке» с равным успехом читается и как «создать папку», и как
-            «выделить всё». Второстепенные собраны под одной кнопкой «Ещё» —
-            в полосе остаётся один заметный призыв к действию.
+            Все действия стоят ОТКРЫТО — никакого «Ещё»: спрятанную там
+            загрузку папки не находили, а полоса вмещает всё и так.
+            Второстепенные — тихими кнопками со значком и словом.
           */}
           <div className="cl-band-acts">
             {canEdit ? (
-              /*
-               * Двойная кнопка: одна капсула, два сегмента. Обычный случай —
-               * «Загрузить файл» — занимает главное место; «или папку» стоит
-               * рядом в том же теле, а не прячется в «Ещё», где его не находили.
-               */
               <div className="cl-split cl-act-main">
                 <button className="cl-split-main" onClick={() => fileInput.current?.click()}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -1068,32 +1057,38 @@ export default function SpacePage() {
                 <button
                   className="cl-split-alt"
                   onClick={() => dirInput.current?.click()}
-                  aria-label="Загрузить папку"
                   title="Загрузить папку со всем содержимым"
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
                     <path className="cl-split-lid" d="M3.5 9.5h17l-1.6 9a1.6 1.6 0 0 1-1.6 1.3H6.7a1.6 1.6 0 0 1-1.6-1.3l-1.6-9Z" />
                     <path d="M4.5 9.5V6.2c0-.9.7-1.6 1.6-1.6h3.4l2 2.2h6.4c.9 0 1.6.7 1.6 1.6v1.1" />
                   </svg>
+                  папку
                 </button>
               </div>
             ) : null}
-            <MoreMenu
-              items={[
-                ...(isOwner
-                  ? [{ key: 'share', icon: '🔗', label: 'Поделиться', hint: 'ссылка для тех, у кого нет Еблуши', onClick: () => setShareOpen(true) }]
-                  : []),
-                {
-                  key: 'zip',
-                  icon: '⤓',
-                  label: 'Скачать всё',
-                  hint: 'одним архивом',
-                  onClick: () => {
-                    window.location.href = `/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`
-                  },
-                },
-              ]}
-            />
+            {isOwner ? (
+              <button className="cl-btn ghost sm cl-act-quiet" onClick={() => setShareOpen(true)} title="Ссылка для тех, у кого нет Еблуши">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.1" />
+                  <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.1" />
+                </svg>
+                Поделиться
+              </button>
+            ) : null}
+            <button
+              className="cl-btn ghost sm cl-act-quiet"
+              title="Скачать всё одним архивом"
+              onClick={() => {
+                window.location.href = `/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`
+              }}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 4v10m0 0 4-4m-4 4-4-4" />
+                <path d="M5 19h14" />
+              </svg>
+              Скачать всё
+            </button>
           </div>
         </div>
       </div>
@@ -1407,74 +1402,6 @@ function smoothScrollTo(scroller: HTMLElement, targetTop: number, onDone?: (fini
   raf = requestAnimationFrame(tick)
 }
 
-/**
- * Меню второстепенных действий.
- *
- * В полосе остаётся один заметный призыв — «Загрузить», остальное прячется
- * сюда с человеческими подписями и пояснениями. Закрывается по клику мимо и
- * по Escape, как всякое меню.
- */
-function MoreMenu({
-  items,
-}: {
-  items: { key: string; icon: string; label: string; hint: string; onClick: () => void }[]
-}) {
-  const [open, setOpen] = useState(false)
-  const boxRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (!boxRef.current?.contains(e.target as Node)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  if (items.length === 0) return null
-  return (
-    <div className="cl-more" ref={boxRef}>
-      <button
-        className={`cl-btn sm${open ? ' primary' : ''}`}
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        Ещё <span aria-hidden>▾</span>
-      </button>
-      {open ? (
-        <div className="cl-more-list" role="menu">
-          {items.map((it) => (
-            <button
-              key={it.key}
-              className="cl-more-item"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false)
-                it.onClick()
-              }}
-            >
-              <span className="cl-more-ico" aria-hidden>
-                {it.icon}
-              </span>
-              <span>
-                <b>{it.label}</b>
-                <i>{it.hint}</i>
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
-}
 
 /** Русское склонение по числу: 1 участник, 2 участника, 5 участников. */
 function plural(n: number, one: string, few: string, many: string): string {

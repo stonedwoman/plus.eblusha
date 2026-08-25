@@ -384,6 +384,8 @@
 .cl-head-band {
   display: flex; align-items: center; gap: 12px;
   min-height: 46px; padding: 4px 0 6px;
+  flex-wrap: wrap;
+  row-gap: 8px;
 }
 .cl-band-who { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .cl-ed-ava { display: block; transition: transform .3s var(--cl-ease); }
@@ -435,48 +437,15 @@
 
 .cl-band-acts { display: flex; align-items: center; gap: 6px; }
 
-/* ── Меню второстепенных действий ──────────────────────────────────────── */
-.cl-more { position: relative; }
-.cl-more-list {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 50;
-  min-width: 268px;
-  padding: 6px;
-  border-radius: 13px;
-  background: var(--surface-100);
-  border: 1px solid var(--surface-border-strong);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, .55);
-  animation: clToastIn .22s var(--cl-ease);
-}
-.cl-more-item {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  width: 100%;
-  padding: 9px 10px;
-  border: none;
-  border-radius: 9px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background .16s var(--cl-ease-io);
-}
-.cl-more-item:hover { background: var(--surface-200); }
-.cl-more-ico {
-  flex: none;
-  width: 32px; height: 32px;
-  display: grid; place-items: center;
-  border-radius: 9px;
-  background: var(--surface-200);
-  font-size: 15px;
-}
-.cl-more-item:hover .cl-more-ico { background: var(--surface-300); }
-.cl-more-item b { display: block; font-size: 13.5px; font-weight: 560; }
-.cl-more-item i { display: block; font-style: normal; font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+/* Тихие действия полосы: значок и слово, без рамок и крика. */
+/* Полоса вмещает всё без «Ещё»: блоки не ломаются изнутри — при нехватке
+   места переносится ЦЕЛЫЙ блок, а не последняя кнопка из него. */
+.cl-ed-filters { flex-wrap: nowrap; }
+.cl-ed-filters .cl-chip { padding: 5px 10px; }
+.cl-act-quiet { display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; color: var(--text-muted); }
+.cl-act-quiet svg { width: 15px; height: 15px; }
+.cl-act-quiet:hover { color: var(--text-primary); }
+
 .cl-band-acts .cl-btn { transition: transform .3s var(--cl-ease), background .18s ease, border-color .18s ease; }
 .cl-band-acts .cl-btn:hover:not(:disabled) { transform: translateY(-1.5px); }
 .cl-band-acts .cl-btn:active:not(:disabled) { transform: translateY(0); }
