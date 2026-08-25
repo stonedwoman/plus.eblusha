@@ -373,7 +373,13 @@ export default function SpacePage() {
         }
       }
 
-      const probeY = 60 + visibleHeadRef.current + 30
+      /*
+       * Щуп — от верхней кромки САМОГО списка, а не от фиксированных 60 px
+       * окна: верхняя навигация прячется при прокрутке вниз и возвращается при
+       * прокрутке вверх, и с зашитой константой щуп ошибался ровно на её
+       * высоту (та же болезнь, что была у левой рельсы).
+       */
+      const probeY = root.getBoundingClientRect().top + visibleHeadRef.current + 30
       let tile: HTMLElement | null = null
       /*
        * Крайняя левая позиция обязательна: в день с одним-двумя снимками
@@ -487,13 +493,23 @@ export default function SpacePage() {
       raf = 0
       const sections = Array.from(document.querySelectorAll<HTMLElement>('.cl-tl-main section[data-day]'))
       if (sections.length === 0) return
+      /*
+       * Линия отсчёта — ровно там, куда садится прыжок: под липкой панелью,
+       * высота которой дышит вместе со свёрнутой шапкой. Прежняя константа
+       * отсчитывалась от окна и не знала ни про верхнюю навигацию, ни про
+       * шапку: после прыжка ВВЕРХ навигация возвращалась, нужный день уезжал
+       * ниже линии, и рельса подсвечивала предыдущий — щёлкнув по 2020, ты
+       * приезжал в январь 2020 и видел горящий 2019. Пара пикселей запаса:
+       * приехавшая точно на линию группа обязана считаться текущей.
+       */
+      const anchor = root.getBoundingClientRect().top + HEADER_OFFSET + visibleHeadRef.current + 6
       let current: string | null = null
       let fraction = 0
       for (const el of sections) {
         const r = el.getBoundingClientRect()
-        if (r.top > RAIL_ANCHOR) break
+        if (r.top > anchor) break
         current = el.dataset.day ?? null
-        fraction = Math.max(0, Math.min(1, (RAIL_ANCHOR - r.top) / Math.max(1, r.height)))
+        fraction = Math.max(0, Math.min(1, (anchor - r.top) / Math.max(1, r.height)))
       }
       /*
        * На самом дне списка текущий день — ПОСЛЕДНИЙ, а не тот, что попал под
@@ -539,7 +555,7 @@ export default function SpacePage() {
   }, [])
 
   const jumpToDay = useCallback(
-    async (day: string) => {
+    async (day: string, groupKey?: string) => {
       /*
        * Вспышку зажигаем ПОСЛЕ приезда, а не по нажатию: прокрутка занимает до
        * секунды, и подсветка успевала отгореть по дороге — человек приезжал на
@@ -550,7 +566,13 @@ export default function SpacePage() {
       const flash = (finished: boolean) => {
         if (!finished || flashed) return
         flashed = true
-        flashGroup(`.cl-tl-main section[data-day="${CSS.escape(day)}"] .cl-tile`)
+        /*
+         * Подсвечиваем ВЕСЬ период станции, а не день её начала. Ключ станции
+         * — префикс даты (`2021`, `2021-03`, `2021-03-24`), поэтому одно
+         * правило одинаково берёт и год, и месяц, и отдельный день: щёлкнув по
+         * году, человек ждёт, что загорится год.
+         */
+        flashGroup(`.cl-tl-main section[data-day^="${CSS.escape(groupKey ?? day)}"] .cl-tile`)
       }
       const root = document.querySelector<HTMLElement>('.cl-root')
       // Срез на момент клика: любая его смена (фильтр, поиск, другая хуяпка)
@@ -1299,9 +1321,6 @@ function flashGroup(selector: string): void {
 
 /** Куда сажаем цель прыжка: сразу под липкой панелью, с дыханием в пару px. */
 const HEADER_OFFSET = 62
-
-/** Линия отсчёта «где читатель»: сразу под верхней панелью. */
-const RAIL_ANCHOR = 78
 
 /**
  * Плавный скролл с явным easing.

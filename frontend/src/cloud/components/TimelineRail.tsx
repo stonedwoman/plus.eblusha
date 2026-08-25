@@ -61,7 +61,12 @@ export function TimelineRail({
 }: {
   days: TimelineDay[]
   position: RailPosition
-  onJump: (day: string) => void
+  /**
+   * Куда прыгать и ЧТО подсвечивать. Второй аргумент — ключ станции
+   * (`2021`, `2021-03` или `2021-03-24`): по нему подсвечивается весь её
+   * период, а не только день, с которого она начинается.
+   */
+  onJump: (day: string, groupKey: string) => void
 }) {
   /*
    * Колбэк-реф, а не useRef + эффект с пустыми deps: до прихода данных
@@ -213,7 +218,7 @@ export function TimelineRail({
             key={s.key}
             className={`cl-tn-node${active ? ' is-active' : ''}${passed ? ' is-passed' : ''}`}
             style={{ transform: `translateY(${y(i)}px)` }}
-            onClick={() => onJump(s.firstDay)}
+            onClick={() => onJump(s.firstDay, s.key)}
             title={`${s.label}${s.sub ? ` · ${s.sub}` : ''}`}
           >
             {/* Подпись слева от оси, узел — на самой оси. Пустой узел (нет
