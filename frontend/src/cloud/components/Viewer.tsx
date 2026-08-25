@@ -137,6 +137,48 @@ export function Viewer({
    */
   const [leaving, setLeaving] = useState<'info' | 'comments' | null>(null)
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const withPanel = Boolean(panel || leaving)
+  /*
+   * Плавное открытие/закрытие ящика для СЦЕНЫ. Грид-колонки не анимируются
+   * принципиально (замерено: перевписывание снимка на каждом кадре — до
+   * 117мс/кадр), поэтому FLIP: раскладка меняется мгновенно, а рельса
+   * стартует из СТАРОЙ геометрии (сдвиг центра и отношение вписанных
+   * масштабов, посчитанные из ширин руками) и доезжает трансформом по
+   * композитору. Ленте и стрелке «вперёд» — тот же сдвиг без масштаба.
+   */
+  const prevStageW = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    const w2 = stage.clientWidth
+    const w1 = prevStageW.current
+    prevStageW.current = w2
+    if (w1 === null || w1 === w2) return
+    const f = file
+    const dx = (w1 - w2) / 2
+    const H = stage.clientHeight - gutterRef.current
+    let scale = 1
+    if (f?.width && f?.height && H > 0) {
+      const k1 = Math.min(w1 / f.width, H / f.height)
+      const k2 = Math.min(w2 / f.width, H / f.height)
+      if (k2 > 0) scale = k1 / k2
+    }
+    const opts = { duration: 340, easing: 'cubic-bezier(.22, .61, .36, 1)' }
+    railRef.current?.animate(
+      [{ transform: `translateX(${dx}px) scale(${scale})` }, { transform: 'none' }],
+      opts
+    )
+    stage.querySelector('.cl-strip')?.animate(
+      [{ transform: `translateX(${dx}px)` }, { transform: 'none' }],
+      opts
+    )
+    stage.querySelector('.cl-viewer-nav.next')?.animate(
+      [{ transform: `translate(${w1 - w2}px, -50%)` }, { transform: 'translate(0, -50%)' }],
+      opts
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [withPanel])
+
   const togglePanel = useCallback((which: 'info' | 'comments') => {
     setPanel((cur) => {
       if (cur === which) {
@@ -639,6 +681,7 @@ export function Viewer({
   }
 
   if (!file) return null
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
 
   const stripFrom = Math.max(0, Math.min(index - Math.floor(STRIP_WINDOW / 2), files.length - STRIP_WINDOW))
   const strip = files.slice(Math.max(0, stripFrom), Math.max(0, stripFrom) + STRIP_WINDOW)
@@ -648,7 +691,7 @@ export function Viewer({
 
   return (
     <div
-      className={`cl-viewer${panel || leaving ? ' with-panel' : ''}${closing ? ' is-closing' : ''}${idle ? ' is-idle' : ''}`}
+      className={`cl-viewer${withPanel ? ' with-panel' : ''}${closing ? ' is-closing' : ''}${idle ? ' is-idle' : ''}`}
       onPointerMove={wake}
     >
       <div className="cl-vbackdrop" ref={backdropRef} aria-hidden />
