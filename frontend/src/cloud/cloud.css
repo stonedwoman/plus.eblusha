@@ -487,8 +487,49 @@
   background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, .45) 50%, transparent 65%);
   transform: translateX(-120%);
   transition: transform .6s var(--cl-ease);
+  /* Блик — украшение: клики обязаны проходить сквозь него к сегментам. */
+  pointer-events: none;
 }
 .cl-act-main:hover::after { transform: translateX(120%); }
+
+/*
+ * Двойная кнопка загрузки: одна капсула, два сегмента — «файл» и «папку».
+ * Тело единое (поднимается и бликует целиком), а подсветка и жизнь иконок —
+ * посегментные: видно, что нажмётся именно то, над чем курсор.
+ */
+.cl-split {
+  display: inline-flex; align-items: stretch;
+  height: 32px; border-radius: 9px;
+  background: var(--brand); color: #14100a;
+  transition: transform .3s var(--cl-ease), box-shadow .3s var(--cl-ease);
+}
+.cl-band-acts .cl-split:hover { transform: translateY(-1.5px); box-shadow: 0 6px 18px color-mix(in srgb, var(--brand) 35%, transparent); }
+.cl-split button {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: none; background: none; color: inherit;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 0 12px;
+  transition: background .18s ease;
+}
+.cl-split button:hover { background: var(--brand-600); }
+.cl-split button svg { width: 15px; height: 15px; }
+.cl-split-main { border-radius: 9px 0 0 9px; }
+.cl-split-main svg { transition: transform .25s var(--cl-ease); }
+.cl-split-main:hover svg { transform: translateY(-2px); }
+.cl-split-alt {
+  border-radius: 0 9px 9px 0;
+  border-left: 1px solid rgba(20, 16, 10, .28);
+  padding: 0 12px 0 10px;
+  font-weight: 560;
+}
+.cl-split-alt em { font-style: normal; opacity: .62; font-weight: 500; }
+/* Папка приоткрывается навстречу курсору. */
+.cl-split-lid { transform-origin: 50% 42%; transition: transform .25s var(--cl-ease); }
+.cl-split-alt:hover .cl-split-lid { transform: rotate(-7deg) translateY(.6px); }
+
+@media (max-width: 860px) {
+  .cl-split-word { display: none; }
+}
 
 
 /*
