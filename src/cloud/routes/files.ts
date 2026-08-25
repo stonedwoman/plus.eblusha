@@ -473,6 +473,47 @@ router.patch(
   })
 );
 
+const rotateSchema = z.object({ dir: z.enum(["cw", "ccw"]).default("cw") });
+
+/*
+ * Поворот кадра. Оригинал неприкосновенен: хранилище контент-адресуемое, и
+ * перезапись байтов сломала бы дедупликацию. Угол живёт на файле; превью фото
+ * перезапекаются повёрнутыми воркером, видео доворачивает плеер на клиенте —
+ * перекодировать ролик ради поворота на четырёх ядрах безумие. Пока превью не
+ * перепечено, клиент видит расхождение rotation/bakedRotation и доворачивает
+ * картинку CSS-ом сам.
+ */
+router.post(
+  "/:id/rotate",
+  ah(async (req: Request, res) => {
+    const { file } = await requireFileAccess(req, String(req.params.id), "file:update");
+    const parsed = rotateSchema.safeParse(req.body ?? {});
+    if (!parsed.success) throw invalid("Некорректное направление");
+    if (file.kind !== "IMAGE" && file.kind !== "VIDEO") throw invalid("Поворачивать можно только фото и видео");
+    const step = parsed.data.dir === "cw" ? 90 : 270;
+    /*
+     * Атомарный инкремент вместо read-modify-write: два быстрых щелчка иначе
+     * читали бы один и тот же угол и один из них молча пропадал. Postgres
+     * вычисляет правую часть по СТАРЫМ значениям строки, поэтому свап
+     * width/height в том же UPDATE легален.
+     */
+    await prisma.$executeRaw`
+      UPDATE "CloudFile"
+      SET rotation = ((rotation + ${step}) % 360 + 360) % 360,
+          width = height,
+          height = width
+      WHERE id = ${file.id}`;
+    const freshRot = await prisma.cloudFile.findUnique({ where: { id: file.id }, select: { rotation: true } });
+    const rotation = freshRot?.rotation ?? 0;
+    // reason уникален: jobId строится из него, и второй щелчок с тем же id
+    // молча отбрасывался бы, пока жив след предыдущей задачи.
+    if (file.kind === "IMAGE") await enqueueImageJob(file.id, `rotate-${rotation}-${Date.now()}`);
+    const dto = await loadFileWithSocial(file.id, req.cloudUser!.id);
+    await emitCloud("cloud.file.updated", [spaceRoom(file.spaceId)], { spaceId: file.spaceId, file: dto });
+    res.json({ file: dto });
+  })
+);
+
 function sanitizeDisplayName(raw: string): string {
   let out = "";
   for (const ch of raw) {
@@ -648,6 +689,9 @@ router.post(
             width: src.width,
             height: src.height,
             orientation: src.orientation,
+            // Поворот — часть того, как человек видит кадр: копия без него
+            // приезжала бы лежащей на боку без каких-либо следов почему.
+            rotation: src.rotation,
             durationMs: src.durationMs,
             takenAt: src.takenAt,
             takenAtSource: src.takenAtSource,

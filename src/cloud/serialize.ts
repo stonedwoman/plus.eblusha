@@ -21,6 +21,24 @@ export function fileDto(
   const has = (kind: string) => variants.some((v) => v.kind === kind && v.status === "READY");
   const base = opts.urlBase ?? "/api/cloud/files";
   const playbackReady = has("PLAYBACK");
+  /*
+   * Версия превью в URL: превью отдаются с immutable-кэшем, и после
+   * перегенерации (поворот) браузер обязан увидеть НОВЫЙ адрес — иначе
+   * повёрнутая картинка не доедет до экрана никогда.
+   */
+  const thumbVar = variants.find((v) => v.kind === "THUMB");
+  const previewVar = variants.find((v) => v.kind === "PREVIEW");
+  /*
+   * Запечённость отдаётся ПО СЛОЯМ: миниатюра и превью пекутся в разные
+   * моменты (thumb за доли секунды, превью дольше), и одна общая цифра в
+   * окне между ними доворачивала бы CSS-ом не тот слой.
+   */
+  const bakedRotation = thumbVar?.rotation ?? 0;
+  const previewRotation = previewVar?.rotation ?? 0;
+  const rev = (kind: string) => {
+    const v = variants.find((x) => x.kind === kind);
+    return v && v.rotation ? `?v=${v.rotation}` : "";
+  };
 
   return {
     id: file.id,
@@ -51,13 +69,16 @@ export function fileDto(
     audioCodec: file.audioCodec,
     bitrate: file.bitrate,
     metadata: file.metadata ?? null,
+    rotation: file.rotation,
+    bakedRotation,
+    previewRotation,
     uploader: userLite(file.uploader),
     commentCount: opts.commentCount ?? 0,
     reactions: opts.reactions ?? {},
     myReactions: opts.myReactions ?? [],
     urls: {
-      thumb: has("THUMB") ? `${base}/${file.id}/thumb` : null,
-      preview: has("PREVIEW") ? `${base}/${file.id}/preview` : null,
+      thumb: has("THUMB") ? `${base}/${file.id}/thumb${rev("THUMB")}` : null,
+      preview: has("PREVIEW") ? `${base}/${file.id}/preview${rev("PREVIEW")}` : null,
       poster: has("POSTER") ? `${base}/${file.id}/poster` : null,
       content: `${base}/${file.id}/content`,
       // Оригинал играбелен напрямую → отдаём его, экономя гигабайты на web-версии.

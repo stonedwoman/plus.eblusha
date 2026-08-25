@@ -124,20 +124,45 @@ export async function renderRendition(
   sourceAbs: string,
   targetAbs: string,
   maxSide: number,
-  quality: number
+  quality: number,
+  /** Пользовательский поворот по часовой: 0/90/180/270, поверх EXIF-ориентации. */
+  rotation = 0
 ): Promise<RenditionResult> {
   await fsp.mkdir(path.dirname(targetAbs), { recursive: true });
   let input = sourceAbs;
   let tempDecoded: string | null = null;
+  /*
+   * Пишем во временный файл и переименовываем: rename в пределах ФС атомарен,
+   * и параллельный GET никогда не увидит наполовину записанный webp — при
+   * перепечке после поворота старые байты живут до последнего мгновения.
+   */
+  const tmpTarget = `${targetAbs}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
 
   try {
-    const info = await sharp(input, { limitInputPixels: MAX_PIXELS, failOn: "error" })
+    /*
+     * Пользовательский поворот — вторым проходом по уже уменьшенному кадру:
+     * в одном конвейере sharp EXIF-нормализация и явный угол вытесняют друг
+     * друга. Между проходами — СЫРЫЕ пиксели, не промежуточный JPEG: иначе
+     * каждое повёрнутое превью собирало бы лишнее поколение lossy-артефактов.
+     * Буфер уже ограничен maxSide, память копеечная.
+     */
+    const scaled = sharp(input, { limitInputPixels: MAX_PIXELS, failOn: "error" })
       .rotate() // применяет EXIF-ориентацию
-      .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
-      .webp({ quality, effort: 4 })
-      .toFile(targetAbs);
+      .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true });
+    let info;
+    if (rotation) {
+      const { data, info: ri } = await scaled.raw().toBuffer({ resolveWithObject: true });
+      info = await sharp(data, { raw: { width: ri.width, height: ri.height, channels: ri.channels } })
+        .rotate(rotation)
+        .webp({ quality, effort: 4 })
+        .toFile(tmpTarget);
+    } else {
+      info = await scaled.webp({ quality, effort: 4 }).toFile(tmpTarget);
+    }
+    await fsp.rename(tmpTarget, targetAbs);
     return { path: targetAbs, width: info.width, height: info.height, size: info.size, mime: "image/webp" };
   } catch (err) {
+    await fsp.rm(tmpTarget, { force: true }).catch(() => undefined);
     logger.debug({ err }, "cloud: sharp decode failed, falling back to ffmpeg");
   }
 
@@ -155,9 +180,11 @@ export async function renderRendition(
   input = tempDecoded;
   try {
     const info = await sharp(input, { limitInputPixels: MAX_PIXELS })
+      .rotate(rotation || 0)
       .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
       .webp({ quality, effort: 4 })
-      .toFile(targetAbs);
+      .toFile(tmpTarget);
+    await fsp.rename(tmpTarget, targetAbs);
     return { path: targetAbs, width: info.width, height: info.height, size: info.size, mime: "image/webp" };
   } finally {
     if (tempDecoded) await fsp.rm(tempDecoded, { force: true }).catch(() => undefined);

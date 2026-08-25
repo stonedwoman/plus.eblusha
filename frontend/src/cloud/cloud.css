@@ -932,7 +932,9 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
  * изображением, и органы управления прижаты к самому ролику.
  */
 .cl-player { position: absolute; inset: 0; display: grid; place-items: center; }
-.cl-player-frame { position: relative; width: 100%; height: 100%; max-width: 100%; max-height: 100%; }
+/* container-type: транспонированный размер повёрнутого видео задаётся в cq-
+   единицах рамки и потому переживает полноэкранный режим без пересчётов. */
+.cl-player-frame { position: relative; width: 100%; height: 100%; max-width: 100%; max-height: 100%; container-type: size; }
 .cl-player video {
   display: block;
   width: 100%; height: 100%;
@@ -940,6 +942,15 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   cursor: pointer;
   border-radius: 4px;
 }
+/* Поворот потока: элемент рисуется лёжа (транспонированные cq-размеры) и
+   доворачивается на месте — сам файл не перекодируется. */
+.cl-player.is-flipped video { transform: rotate(180deg); }
+.cl-player.is-turned video {
+  position: absolute; left: 50%; top: 50%;
+  width: 100cqh; height: 100cqw;
+  transform: translate(-50%, -50%) rotate(var(--cl-turn, 90deg));
+}
+
 .cl-player-big {
   position: absolute; left: 50%; top: 50%;
   transform: translate(-50%, -50%);
@@ -1336,6 +1347,13 @@ section[data-day],
 /* Кадр чуть подаётся вперёд, когда весь хром ушёл. */
 .cl-viewer.is-idle .cl-shot-media { transition: transform .6s var(--cl-ease); }
 .cl-shot-layers { position: relative; width: 100%; height: 100%; }
+/*
+ * Докрутка недопечённого поворота: transform живёт, только пока превью
+ * отстаёт от заданного угла. Переход объявлен на классе намеренно — щелчок
+ * анимирует кадр, а когда приезжает перепечённое превью, класс уходит вместе
+ * с transform-ом, и подмена происходит мгновенно, без обратного проворота.
+ */
+.cl-shot-layers.is-turning { transition: transform .35s var(--cl-ease); }
 .cl-layer {
   position: absolute; inset: 0;
   width: 100%; height: 100%;
@@ -1533,6 +1551,9 @@ section[data-day],
   border-radius: 999px; background: var(--brand); color: #14100a;
   font-style: normal; font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
 }
+/* Группа действий отделена от вкладок панелей; внутри группы ключи вплотную. */
+.cl-sp-tab.is-act { margin-top: 10px; }
+.cl-sp-tab.is-act + .cl-sp-tab.is-dl { margin-top: 2px; }
 .cl-sp-tab.is-dl { margin-top: 10px; }
 .cl-sp-tab.is-dl:active { cursor: grabbing; }
 
@@ -2077,7 +2098,7 @@ section[data-day],
   }
   .cl-vspine-in { flex-direction: row; justify-content: space-around; align-items: stretch; }
   .cl-sp-tab { flex: 1; margin: 3px 2px; padding: 5px 2px 4px; gap: 2px; }
-  .cl-sp-tab.is-dl { margin-top: 3px; }
+  .cl-sp-tab.is-act, .cl-sp-tab.is-dl { margin-top: 3px; }
   .cl-sp-tab.is-on::before { left: 8px; right: 8px; top: -4px; bottom: auto; width: auto; height: 3px; border-radius: 0 0 3px 3px; }
   /* Счётчик и зум остаются в планке — без них не видно, где ты в альбоме
      из трёх сотен кадров; прячутся только дата и город. */

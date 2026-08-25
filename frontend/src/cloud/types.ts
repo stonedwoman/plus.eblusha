@@ -31,6 +31,12 @@ export type CloudFile = {
   geoCity: string | null
   geoDistrict: string | null
   geoPath: string | null
+  /** Пользовательский поворот 0/90/180/270 по часовой. */
+  rotation: number
+  /** Запечённый поворот миниатюры; расхождение доворачивается CSS-ом. */
+  bakedRotation: number
+  /** Запечённый поворот превью — печётся позже миниатюры, слой свой. */
+  previewRotation: number
   cameraMake: string | null
   cameraModel: string | null
   videoCodec: string | null

@@ -85,6 +85,44 @@ export function Viewer({
   isOwner?: boolean
 }) {
   const file = files[index]
+
+  /*
+   * Видимый поворот кадра: НЕнормализованные градусы, привязанные к id кадра.
+   * Ненормализованность — чтобы два щелчка крутили 0→90→180, а против часовой
+   * шло через −90, а не длинной дорогой через 270. Привязка к id — чтобы откат
+   * неудавшегося запроса не прилетал в СОСЕДНИЙ кадр, на который человек успел
+   * перелистнуть, а свежий кадр не рисовался один фрейм с чужим углом: для
+   * чужого id угол берётся из данных сервера прямо в рендере.
+   */
+  const [vis, setVis] = useState<{ id: string; deg: number } | null>(null)
+  const baseDelta = file ? (((file.rotation - file.previewRotation) % 360) + 360) % 360 : 0
+  const spin = vis && vis.id === file?.id ? vis.deg : baseDelta
+  useEffect(() => {
+    if (!file) return
+    setVis((v) =>
+      v && v.id === file.id && ((v.deg % 360) + 360) % 360 === baseDelta ? v : { id: file.id, deg: baseDelta }
+    )
+  }, [file?.id, baseDelta])
+
+  const rotate = useCallback(
+    async (dir: 'cw' | 'ccw') => {
+      const target = file
+      if (!target || (target.kind !== 'IMAGE' && target.kind !== 'VIDEO')) return
+      const step = dir === 'cw' ? 90 : -90
+      const targetBase = (((target.rotation - target.previewRotation) % 360) + 360) % 360
+      // Оптимистично: кадр поворачивается сразу, ответ лишь подтверждает.
+      setVis((v) => ({ id: target.id, deg: (v && v.id === target.id ? v.deg : targetBase) + step }))
+      try {
+        const { data } = await cloudApi.post<{ file: CloudFile }>(`/files/${target.id}/rotate`, { dir })
+        onFileChanged?.(data.file)
+      } catch (err) {
+        // Откат строго своему кадру: человек мог уже перелистнуть.
+        setVis((v) => (v && v.id === target.id ? { ...v, deg: v.deg - step } : v))
+        toast.error(toCloudError(err).message)
+      }
+    },
+    [file, onFileChanged]
+  )
   /*
    * Панель закрыта по умолчанию: в зале герой — кадр, а не пустое обсуждение
    * на треть экрана. Открывается кнопкой или клавишей i; пока она открыта,
@@ -309,6 +347,8 @@ export function Viewer({
         setZoom(view.current.zoom / 1.25)
       } else if (e.key === '0') {
         setZoom(1)
+      } else if (key === 'r' || e.code === 'KeyR') {
+        if (!readOnly) void rotate(e.shiftKey ? 'ccw' : 'cw')
       } else if (key === 'i' || e.code === 'KeyI') {
         setPanel((p) => (p === 'info' ? null : 'info'))
       }
@@ -316,7 +356,7 @@ export function Viewer({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [go, requestClose, file, readOnly, wake, setZoom])
+  }, [go, requestClose, file, readOnly, wake, setZoom, rotate])
 
   // Соседей подгружаем заранее: без этого фейд успевал отыграть на пустом
   // месте, и снимок появлялся скачком уже после него.
@@ -591,14 +631,44 @@ export function Viewer({
                       переезжает с предыдущего снимка, и его приходится гасить
                       эффектом — а тот успевает затереть готовность, выставленную
                       колбэк-рефом в том же коммите. */}
-                  <CurrentMedia key={f.id} file={f} videoRef={videoRef} zoomPct={zoomPct} />
+                  <CurrentMedia
+                    key={f.id}
+                    file={f}
+                    videoRef={videoRef}
+                    zoomPct={zoomPct}
+                    spin={spin}
+                    spinScale={(() => {
+                      /*
+                       * Пока фото довёрнуто CSS-ом (превью ещё старое), при
+                       * нечётном угле контейнер ужимается, чтобы повёрнутый
+                       * кадр не вылезал за сцену. Точность не нужна — через
+                       * секунду приедет перепечённое превью и transform уйдёт.
+                       */
+                      if (!(((spin % 360) + 360) % 360 % 180)) return 1
+                      const st = stageRef.current
+                      if (!st) return 1
+                      const w = st.clientWidth
+                      const h = st.clientHeight - gutterRef.current
+                      return Math.min(w, h) / Math.max(w, h)
+                    })()}
+                  />
                 </div>
               ) : (
                 /* Соседям — РОВНО одна картинка. Три слоя качества на каждом
                    слоте это до сотни мегабайт декодированных битмапов. */
                 <div className="cl-shot-media">
                   {f.urls.preview || f.urls.thumb ? (
-                    <img className="cl-layer" src={f.urls.preview ?? f.urls.thumb ?? ''} alt="" draggable={false} />
+                    <img
+                      className="cl-layer"
+                      src={f.urls.preview ?? f.urls.thumb ?? ''}
+                      alt=""
+                      draggable={false}
+                      style={
+                        (f.rotation - f.bakedRotation) % 360
+                          ? { transform: `rotate(${(((f.rotation - f.bakedRotation) % 360) + 360) % 360}deg)` }
+                          : undefined
+                      }
+                    />
                   ) : null}
                 </div>
               )}
@@ -622,7 +692,19 @@ export function Viewer({
                   onClick={() => go(stripFrom + i - index)}
                   title={f.name}
                 >
-                  {f.urls.thumb ? <img src={f.urls.thumb} alt="" loading="lazy" draggable={false} /> : null}
+                  {f.urls.thumb ? (
+                    <img
+                      src={f.urls.thumb}
+                      alt=""
+                      loading="lazy"
+                      draggable={false}
+                      style={
+                        (f.rotation - f.bakedRotation) % 360
+                          ? { transform: `rotate(${(((f.rotation - f.bakedRotation) % 360) + 360) % 360}deg)` }
+                          : undefined
+                      }
+                    />
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -704,6 +786,20 @@ export function Viewer({
             </button>
           ) : null}
 
+          {!readOnly && (file.kind === 'IMAGE' || file.kind === 'VIDEO') ? (
+            <button
+              className="cl-sp-tab is-act"
+              onClick={(e) => void rotate(e.shiftKey ? 'ccw' : 'cw')}
+              title="Повернуть по часовой (R) · с Shift — против"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20.5 9A8.6 8.6 0 0 0 12 3.5 8.5 8.5 0 1 0 20.5 12" />
+                <path d="M20.5 3.5V9H15" />
+              </svg>
+              <span>Повернуть</span>
+            </button>
+          ) : null}
+
           {file.urls.download ? (
             <a
               className="cl-sp-tab is-dl"
@@ -765,13 +861,46 @@ function CurrentMedia({
   file,
   videoRef,
   zoomPct,
+  spin,
+  spinScale,
 }: {
   file: CloudFile
   videoRef: React.MutableRefObject<HTMLVideoElement | null>
   zoomPct: number
+  /** Видимый CSS-поворот: у фото — до перепечки превью, у видео — всегда. */
+  spin: number
+  spinScale: number
 }) {
   const [previewOn, setPreviewOn] = useState(false)
   const [fullOn, setFullOn] = useState(false)
+  /*
+   * Показанное превью «заморожено» вместе со своей запечённостью. Когда после
+   * поворота приезжает перепечка, сервер меняет URL и previewRotation
+   * ОДНОВРЕМЕННО, но новый битмап ещё не скачан — если снять CSS-доворот сразу,
+   * кадр на время загрузки «отворачивается» обратно. Поэтому старый URL и его
+   * угол живут, пока новый не декодирован, а контейнер докручивает разницу
+   * previewRotation − shown.baked: в момент подмены суммарный угол не меняется.
+   */
+  const [shown, setShown] = useState(() => ({
+    url: file.urls.preview ?? file.urls.content,
+    baked: file.previewRotation,
+  }))
+  useEffect(() => {
+    const next = file.urls.preview ?? file.urls.content
+    if (!next || next === shown.url) return
+    let dead = false
+    const nextBaked = file.previewRotation
+    const im = new Image()
+    im.src = next
+    const apply = () => {
+      if (!dead) setShown({ url: next, baked: nextBaked })
+    }
+    void im.decode().then(apply, apply)
+    return () => {
+      dead = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file.urls.preview, file.urls.content, file.previewRotation])
 
   /*
    * Готовность слоя проверяем ДВУМЯ путями: событием и полем complete.
@@ -788,15 +917,26 @@ function CurrentMedia({
   }
 
   if (file.kind === 'IMAGE') {
-    const preview = file.urls.preview ?? file.urls.content
-    const wantFull = zoomPct > 160 && Boolean(file.urls.content)
+    /*
+     * Слой полного разрешения — всегда НЕповёрнутый оригинал (оригиналы не
+     * перепекаются никогда), поэтому у повёрнутого кадра его не монтируем:
+     * иначе при зуме поверх правильного превью проявлялся бы кадр в старой
+     * ориентации. Зум остаётся на превью 2048px — этого достаточно.
+     */
+    const wantFull =
+      zoomPct > 160 && Boolean(file.urls.content) && ((file.rotation % 360) + 360) % 360 === 0
+    const total = spin + file.previewRotation - shown.baked
+    const turning = ((total % 360) + 360) % 360 !== 0
     return (
-      <div className="cl-shot-layers">
+      <div
+        className={`cl-shot-layers${turning ? ' is-turning' : ''}`}
+        style={turning || total ? { transform: `rotate(${total}deg) scale(${turning ? spinScale : 1})` } : undefined}
+      >
         {file.urls.thumb ? <img className="cl-layer is-lq" src={file.urls.thumb} alt="" draggable={false} /> : null}
-        {preview ? (
+        {shown.url ? (
           <img
             className={`cl-layer${previewOn ? ' is-on' : ''}`}
-            src={preview}
+            src={shown.url}
             alt={file.name}
             ref={settle(() => setPreviewOn(true))}
             onLoad={() => setPreviewOn(true)}
@@ -819,7 +959,7 @@ function CurrentMedia({
 
   if (file.kind === 'VIDEO') {
     if (!file.urls.playback) return <VideoUnavailable file={file} />
-    return <Player key={file.id} file={file} videoRef={videoRef} />
+    return <Player key={file.id} file={file} videoRef={videoRef} turn={((spin % 360) + 360) % 360} />
   }
 
   if (file.kind === 'AUDIO' && file.urls.content) {
@@ -871,7 +1011,16 @@ const fmt = (sec: number): string => {
  * отказе повторяем беззвучно и честно показываем, что звук выключен, — вместо
  * молчаливого кадра, который выглядит как поломка.
  */
-function Player({ file, videoRef }: { file: CloudFile; videoRef: React.MutableRefObject<HTMLVideoElement | null> }) {
+function Player({
+  file,
+  videoRef,
+  turn = 0,
+}: {
+  file: CloudFile
+  videoRef: React.MutableRefObject<HTMLVideoElement | null>
+  /** Поворот потока: видео не перекодируется, элемент доворачивается CSS-ом. */
+  turn?: number
+}) {
   const ref = useRef<HTMLVideoElement | null>(null)
   const barRef = useRef<HTMLDivElement | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -972,12 +1121,24 @@ function Player({ file, videoRef }: { file: CloudFile; videoRef: React.MutableRe
   }
 
   return (
-    <div ref={hostRef} className={`cl-player${playing ? '' : ' is-paused'}`}>
+    <div
+      ref={hostRef}
+      className={`cl-player${playing ? '' : ' is-paused'}${turn % 180 !== 0 ? ' is-turned' : turn ? ' is-flipped' : ''}`}
+    >
       <div className="cl-player-frame" style={box ? { width: box.w, height: box.h } : undefined}>
       <video
         ref={attach}
         src={file.urls.playback ?? undefined}
         poster={file.urls.poster ?? undefined}
+        /*
+         * Кадровая коробка уже посчитана из ДИСПЛЕЙНЫХ размеров (при нечётном
+         * повороте они переставлены на сервере). Сам элемент при нечётном угле
+         * рисуется в транспонированных КОНТЕЙНЕРНЫХ единицах рамки (100cqh на
+         * 100cqw, см. CSS): пиксели из box ломались в полноэкранном режиме —
+         * рамка растягивалась на монитор, а видео оставалось оконного размера.
+         * Постер крутится вместе с элементом, двойного поворота нет.
+         */
+        style={turn ? ({ ['--cl-turn' as string]: `${turn}deg` } as React.CSSProperties) : undefined}
         playsInline
         preload="auto"
         onClick={toggle}

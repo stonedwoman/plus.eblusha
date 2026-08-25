@@ -87,7 +87,21 @@ const Tile = memo(function Tile({
       title={file.name}
     >
       {thumb ? (
-        <img src={thumb} alt={file.name} loading="lazy" decoding="async" draggable={false} />
+        /* Недопечённый поворот доворачивается CSS-ом: плитка квадратная, и
+           кратный 90° угол не ломает раскладку. У фото после перегенерации
+           превью расхождение обнуляется само. */
+        <img
+          src={thumb}
+          alt={file.name}
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          style={
+            (file.rotation - file.bakedRotation) % 360
+              ? { transform: `rotate(${(((file.rotation - file.bakedRotation) % 360) + 360) % 360}deg)` }
+              : undefined
+          }
+        />
       ) : file.kind === 'IMAGE' || file.kind === 'VIDEO' ? (
         processing ? null : (
           <div className="cl-tile-generic">

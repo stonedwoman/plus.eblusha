@@ -35,7 +35,7 @@ async function loadFile(fileId: string) {
 async function upsertVariant(
   fileId: string,
   kind: "THUMB" | "PREVIEW" | "POSTER" | "PLAYBACK",
-  data: { storagePath?: string; mimeType?: string; size?: number; width?: number | null; height?: number | null; status: "READY" | "FAILED" | "PENDING"; error?: string | null }
+  data: { storagePath?: string; mimeType?: string; size?: number; width?: number | null; height?: number | null; status: "READY" | "FAILED" | "PENDING"; error?: string | null; rotation?: number }
 ) {
   await prisma.cloudFileVariant.upsert({
     where: { fileId_kind: { fileId, kind } },
@@ -43,6 +43,7 @@ async function upsertVariant(
       fileId,
       kind,
       status: data.status,
+      rotation: data.rotation ?? 0,
       storagePath: data.storagePath ?? null,
       mimeType: data.mimeType ?? null,
       size: data.size !== undefined ? BigInt(data.size) : null,
@@ -52,6 +53,9 @@ async function upsertVariant(
     },
     update: {
       status: data.status,
+      // rotation обновляем только когда он явно передан: FAILED-запись не
+      // должна затирать угол ЖИВЫХ байтов на диске — они не менялись.
+      ...(data.rotation !== undefined ? { rotation: data.rotation } : {}),
       storagePath: data.storagePath ?? null,
       mimeType: data.mimeType ?? null,
       size: data.size !== undefined ? BigInt(data.size) : null,
@@ -102,8 +106,6 @@ export async function processImage(fileId: string): Promise<void> {
 
   const meta = await readImageMetadata(source);
   const update: Record<string, unknown> = {
-    width: meta.width,
-    height: meta.height,
     orientation: meta.orientation,
     latitude: meta.latitude,
     longitude: meta.longitude,
@@ -122,36 +124,65 @@ export async function processImage(fileId: string): Promise<void> {
   applyPlace(update, meta.latitude, meta.longitude);
   await prisma.cloudFile.update({ where: { id: fileId }, data: update as never });
 
+  /*
+   * Перепечка сходится к АКТУАЛЬНОМУ углу. Пока рендерились превью, человек
+   * мог щёлкнуть «Повернуть» ещё раз, а второй воркер — закончить раньше
+   * первого. Поэтому угол перечитывается перед каждым проходом и после него:
+   * последний завершившийся проход всегда согласован — байты на диске, строки
+   * вариантов и размеры файла отвечают одному и тому же углу.
+   */
   let failures = 0;
-  for (const [kind, maxSide, quality] of [
-    ["THUMB", cloudConfig.THUMB_MAX, 72],
-    ["PREVIEW", cloudConfig.PREVIEW_MAX, 82],
-  ] as const) {
-    const rel = derivedRelPath(fileId, `${kind.toLowerCase()}.webp`);
-    const abs = path.join(DERIVED_DIR, rel);
-    try {
-      const res = await renderRendition(source, abs, maxSide, quality);
-      await upsertVariant(fileId, kind, {
-        storagePath: rel,
-        mimeType: res.mime,
-        size: res.size,
-        width: res.width,
-        height: res.height,
-        status: "READY",
-      });
-      // Размеры из реального декода надёжнее EXIF (который врёт при кропах).
-      if (kind === "PREVIEW" && !meta.width) {
-        const scale = Math.max(res.width, res.height) / Math.min(cloudConfig.PREVIEW_MAX, Math.max(res.width, res.height));
-        await prisma.cloudFile.update({
-          where: { id: fileId },
-          data: { width: Math.round(res.width * scale), height: Math.round(res.height * scale) },
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const fresh = await prisma.cloudFile.findUnique({ where: { id: fileId }, select: { rotation: true } });
+    const userRotation = (((fresh?.rotation ?? 0) % 360) + 360) % 360;
+
+    failures = 0;
+    for (const [kind, maxSide, quality] of [
+      ["THUMB", cloudConfig.THUMB_MAX, 72],
+      ["PREVIEW", cloudConfig.PREVIEW_MAX, 82],
+    ] as const) {
+      const rel = derivedRelPath(fileId, `${kind.toLowerCase()}.webp`);
+      const abs = path.join(DERIVED_DIR, rel);
+      try {
+        const res = await renderRendition(source, abs, maxSide, quality, userRotation);
+        await upsertVariant(fileId, kind, {
+          storagePath: rel,
+          mimeType: res.mime,
+          size: res.size,
+          width: res.width,
+          height: res.height,
+          status: "READY",
+          rotation: userRotation,
         });
+        // Размеры из реального декода надёжнее EXIF (который врёт при кропах).
+        if (kind === "PREVIEW" && !meta.width) {
+          const scale = Math.max(res.width, res.height) / Math.min(cloudConfig.PREVIEW_MAX, Math.max(res.width, res.height));
+          await prisma.cloudFile.update({
+            where: { id: fileId },
+            data: { width: Math.round(res.width * scale), height: Math.round(res.height * scale) },
+          });
+        }
+      } catch (err) {
+        failures++;
+        logger.warn({ err, fileId, kind }, "cloud: rendition failed");
+        await upsertVariant(fileId, kind, { status: "FAILED", error: String(err).slice(0, 300) });
       }
-    } catch (err) {
-      failures++;
-      logger.warn({ err, fileId, kind }, "cloud: rendition failed");
-      await upsertVariant(fileId, kind, { status: "FAILED", error: String(err).slice(0, 300) });
     }
+
+    /*
+     * width/height в БД — ДИСПЛЕЙНЫЕ размеры. readImageMetadata уже учёл
+     * EXIF-ориентацию (5–8 переворачивают кадр набок), здесь остаётся только
+     * пользовательский поворот.
+     */
+    if (meta.width && meta.height) {
+      let dispW = meta.width;
+      let dispH = meta.height;
+      if (userRotation === 90 || userRotation === 270) [dispW, dispH] = [dispH, dispW];
+      await prisma.cloudFile.update({ where: { id: fileId }, data: { width: dispW, height: dispH } });
+    }
+
+    const check = await prisma.cloudFile.findUnique({ where: { id: fileId }, select: { rotation: true } });
+    if ((((check?.rotation ?? 0) % 360) + 360) % 360 === userRotation) break;
   }
 
   // Даже без превью файл остаётся полноценным: скачать и посмотреть метаданные можно.
@@ -169,11 +200,21 @@ export async function processVideo(fileId: string): Promise<void> {
 
   const probe = await ffprobe(source);
   const direct = await canDirectPlay(source, probe);
+  /*
+   * probe отдаёт дисплейные размеры С УЧЁТОМ вращения контейнера, но ничего
+   * не знает о пользовательском повороте: без свапа переобработка (ретрай
+   * упавшей задачи, ручная перегенерация) молча возвращала бы кадру старые
+   * пропорции, и плеер рисовал бы повёрнутый поток в неповёрнутой коробке.
+   */
+  const vidRotation = ((file.rotation % 360) + 360) % 360;
+  let vidW = probe?.width ?? null;
+  let vidH = probe?.height ?? null;
+  if (vidRotation === 90 || vidRotation === 270) [vidW, vidH] = [vidH, vidW];
   await prisma.cloudFile.update({
     where: { id: fileId },
     data: {
-      width: probe?.width ?? null,
-      height: probe?.height ?? null,
+      width: vidW,
+      height: vidH,
       durationMs: probe?.durationMs ?? null,
       videoCodec: probe?.videoCodec ?? null,
       audioCodec: probe?.audioCodec ?? null,

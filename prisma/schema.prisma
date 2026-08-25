@@ -693,6 +693,10 @@ model CloudFile {
   height         Int?
   /// EXIF Orientation (1..8)
   orientation    Int?
+  /// Поворот, заданный пользователем: 0/90/180/270 по часовой. Оригинал
+  /// неприкосновенен (контент-адресуемое хранилище) — угол хранится здесь,
+  /// а превью перегенерируются уже повёрнутыми.
+  rotation      Int       @default(0)
   durationMs     Int?
   /// Дата съёмки: EXIF DateTimeOriginal → mtime клиента → время загрузки
   takenAt        DateTime
@@ -761,6 +765,10 @@ model CloudFileVariant {
   width       Int?
   height      Int?
   error       String?
+  /// Какой пользовательский поворот запечён в этот вариант. По расхождению
+  /// с CloudFile.rotation клиент понимает, что превью ещё старое, и до
+  /// перегенерации доворачивает картинку CSS-ом.
+  rotation    Int                @default(0)
 
   file CloudFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
