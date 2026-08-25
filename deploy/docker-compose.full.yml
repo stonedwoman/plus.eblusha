@@ -126,6 +126,29 @@ services:
     networks:
       - eblusha-net
 
+  face-worker:
+    build:
+      context: ..
+      dockerfile: deploy/faces.Dockerfile
+    container_name: eblusha-face-worker
+    restart: unless-stopped
+    user: "1000:101"
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql://eblusha:${POSTGRES_PASSWORD:-eblusha}@postgres:5432/eblusha?schema=public
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - /var/lib/eblusha/cloud:/var/lib/eblusha/cloud
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - eblusha-net
+
+
   maintenance:
     build:
       context: ..

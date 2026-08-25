@@ -561,3 +561,20 @@ protocol: QUIC, 4 HA-соединения
   себе» — ссылка на тот же физический объект).
 * Поиск — по имени файла средствами PostgreSQL. Elasticsearch не ставился
   и не нужен на таком объёме.
+
+## Распознавание лиц
+
+Вкладка «Лица» в хуяпке. Полностью офлайн: InsightFace buffalo_l
+(SCRFD det_10g — детекция, ArcFace w600k_r50 — эмбеддинги 512-d) через
+onnxruntime-node в отдельном контейнере `eblusha-face-worker`
+(`deploy/faces.Dockerfile`, Debian — onnxruntime требует glibc).
+
+- Модели (~275 МБ, разово): `docker exec eblusha-face-worker node /app/dist/scripts/cloudFacesFetch.js`
+  → `CLOUD_STORAGE_ROOT/models/insightface/`.
+- Скан старых фото: `... node /app/dist/scripts/cloudFacesBackfill.js [--all] [--space <id>]`.
+  Новые загрузки сканируются автоматически (после превью).
+- Разметка ручная: на вкладке «Лица» неопознанные сгруппированы кластеризацией
+  (косинус ≥0.45); «Это…» называет ВЕСЬ кластер. Дальше матчер дотягивает новые
+  лица к персоне по центроиду (порог CLOUD_FACE_MATCH, по умолчанию 0.38).
+  Ручную разметку перескан не трогает никогда.
+- Порог детекции 0.7 (ниже — облака и узоры), мелкие лица (<40px) отбрасываются.

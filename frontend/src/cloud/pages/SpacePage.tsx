@@ -15,6 +15,7 @@ import {
 } from '../uploads/manager'
 import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
+import { PeopleView } from '../components/PeopleView'
 import { GeoRail, type GeoPosition, type GeoSegment } from '../components/GeoRail'
 import { useDragSelect, type PaintMode } from '../components/dragSelect'
 import { Viewer } from '../components/Viewer'
@@ -24,7 +25,7 @@ import { ShareDialog } from '../components/ShareDialog'
 import { Avatar, Empty, Modal, SkeletonTiles, useInfiniteSentinel, useHideOnScrollDown, toast } from '../components/ui'
 import type { CloudContext } from './CloudLayout'
 
-type View = 'timeline' | 'files' | 'map' | 'activity'
+type View = 'timeline' | 'people' | 'files' | 'map' | 'activity'
 
 /** Столько id уходит в один запрос: совпадает с лимитом валидации на сервере. */
 const BATCH = 1000
@@ -997,9 +998,9 @@ export default function SpacePage() {
         <div ref={bandRef} className="cl-head-band">
           {/* Ряд вкладок-папок: активный РАЗДЕЛ срастается с телом ниже. */}
           <div className="cl-tabs">
-            {(['timeline', 'files', 'map', 'activity'] as View[]).map((v) => (
+            {(['timeline', 'people', 'files', 'map', 'activity'] as View[]).map((v) => (
               <button key={v} className={`cl-tab${view === v ? ' is-active' : ''}`} onClick={() => setView(v)}>
-                {v === 'timeline' ? 'Таймлайн' : v === 'files' ? 'Файлы' : v === 'map' ? 'Карта' : 'Активность'}
+                {v === 'timeline' ? 'Таймлайн' : v === 'people' ? 'Лица' : v === 'files' ? 'Файлы' : v === 'map' ? 'Карта' : 'Активность'}
               </button>
             ))}
             {/* Компакт-идентичность: проявляется, когда титул уехал вверх. */}
@@ -1017,7 +1018,7 @@ export default function SpacePage() {
 
           {/* Тело раздела: фильтры и действия ПРИНАДЛЕЖАТ активной вкладке. */}
           <div className="cl-tab-body">
-            {view !== 'activity' && view !== 'map' ? (
+            {view !== 'activity' && view !== 'map' && view !== 'people' ? (
               <div className="cl-chips cl-ed-filters">
                 {([['', 'Все'], ['IMAGE', 'Фото'], ['VIDEO', 'Видео'], ['DOCUMENT', 'Документы']] as const).map(([value, label]) => (
                   <button
@@ -1031,7 +1032,11 @@ export default function SpacePage() {
               </div>
             ) : (
               <span className="cl-tab-note">
-                {view === 'map' ? 'Снимки с геометкой — на карте' : 'Журнал действий участников'}
+                {view === 'map'
+                  ? 'Снимки с геометкой — на карте'
+                  : view === 'people'
+                    ? 'Люди на снимках: назовите лицо — дальше узнаю сам'
+                    : 'Журнал действий участников'}
               </span>
             )}
             <div className="cl-spacer" />
@@ -1087,7 +1092,9 @@ export default function SpacePage() {
       </div>
 
       {/* ── Содержимое ──────────────────────────────────────────────────── */}
-      {view === 'activity' ? (
+      {view === 'people' ? (
+        <PeopleView spaceId={spaceId} canEdit={canEdit} />
+      ) : view === 'activity' ? (
         <ActivityView spaceId={spaceId} />
       ) : view === 'map' ? (
         <MapView

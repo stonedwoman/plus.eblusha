@@ -14,7 +14,7 @@ import { renderPlayback, renderPoster } from "../media/video";
 import { resolvePlace } from "../geo/reverse";
 import { sniffFile, kindFromMime } from "../media/sniff";
 import { fileDto } from "../serialize";
-import { CLOUD_IMAGE_QUEUE, CLOUD_VIDEO_QUEUE, type CloudImageJob, type CloudVideoJob } from "./queues";
+import { CLOUD_IMAGE_QUEUE, CLOUD_VIDEO_QUEUE, enqueueFacesJob, type CloudImageJob, type CloudVideoJob } from "./queues";
 
 /**
  * Медиа-конвейер. Джобы идемпотентны: повторный запуск просто перезапишет
@@ -191,6 +191,8 @@ export async function processImage(fileId: string): Promise<void> {
     data: { status: "READY", processingError: failures === 2 ? "Превью создать не удалось" : null },
   });
   await announce(fileId, "cloud.file.ready");
+  // Лица — вдогонку, из превью: своя очередь, свой контейнер, не мешает превью.
+  await enqueueFacesJob(fileId, "upload");
 }
 
 export async function processVideo(fileId: string): Promise<void> {

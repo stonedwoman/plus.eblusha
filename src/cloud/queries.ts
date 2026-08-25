@@ -22,6 +22,7 @@ export type FileListParams = {
   from?: Date | undefined;
   to?: Date | undefined;
   fileIds?: string[] | undefined;
+  personId?: string | undefined;
   cursor?: string | undefined;
   limit: number;
 };
@@ -77,6 +78,8 @@ export function buildFileWhere(params: FileSliceParams): Prisma.CloudFileWhereIn
   // ничего не рассказывает о поездке, а её счётчик отдаётся отдельно.
   if (view === "places") where.geoPath = { not: null };
   if (params.kind) where.kind = params.kind;
+  // Вкладка «Лица»: снимки, где есть лицо выбранной персоны.
+  if (params.personId) where.faces = { some: { personId: params.personId } };
   if (params.uploaderId) where.uploaderId = params.uploaderId;
   if (params.fileIds?.length) where.id = { in: params.fileIds };
   if (params.from || params.to) {

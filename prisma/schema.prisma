@@ -733,6 +733,8 @@ model CloudFile {
   /// что и у остальных выборок.
   geoPath        String?
   geoResolvedAt  DateTime?
+  /// Когда по файлу прогнано распознавание лиц (null — ещё не сканирован).
+  facesScannedAt DateTime?
 
   space         CloudSpace         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   folder        CloudFolder?       @relation(fields: [folderId], references: [id])
@@ -740,6 +742,7 @@ model CloudFile {
   uploader      User               @relation("CloudFileUploader", fields: [uploaderId], references: [id])
   variants      CloudFileVariant[]
   comments      CloudComment[]
+  faces         CloudFace[]
 
   @@index([purgedAt])
   @@index([spaceId, deletedAt, takenAt])
@@ -933,4 +936,43 @@ model CloudAuditEvent {
   @@index([actorId, createdAt])
   @@index([spaceId, createdAt])
   @@index([action, createdAt])
+}
+
+/// Человек из семейного круга. Глобален для инстанса: одни и те же люди
+/// встречаются во всех хуяпках. Имена задаются вручную.
+model CloudPerson {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  name        String
+  /// Лицо-обложка для аватара персоны.
+  coverFaceId String?
+
+  faces CloudFace[]
+}
+
+/// Найденное на снимке лицо: рамка в долях кадра и ArcFace-эмбеддинг.
+model CloudFace {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  fileId     String
+  /// Рамка в ДОЛЯХ дисплейного кадра (0..1) — не зависит от размера превью.
+  x          Float
+  y          Float
+  w          Float
+  h          Float
+  /// Уверенность детектора (SCRFD).
+  score      Float
+  /// 512 float32 little-endian — эмбеддинг ArcFace (w600k_r50).
+  embedding  Bytes
+  personId   String?
+  /// user — привязал человек; auto — дотянул матчер по центроиду.
+  assignedBy String?
+  /// Косинусная близость к центроиду на момент автопривязки.
+  matchScore Float?
+
+  file   CloudFile    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  person CloudPerson? @relation(fields: [personId], references: [id], onDelete: SetNull)
+
+  @@index([fileId])
+  @@index([personId])
 }

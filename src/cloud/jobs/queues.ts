@@ -11,10 +11,12 @@ import logger from "../../config/logger";
 export const CLOUD_IMAGE_QUEUE = "cloud-media-images";
 export const CLOUD_VIDEO_QUEUE = "cloud-media-video";
 export const CLOUD_MAINTENANCE_QUEUE = "cloud-maintenance";
+export const CLOUD_FACES_QUEUE = "cloud-faces";
 
 export type CloudImageJob = { fileId: string; reason?: string };
 export type CloudVideoJob = { fileId: string; reason?: string };
 export type CloudMaintenanceJob = { task: "trash-purge" | "upload-gc" | "derived-gc" | "refcount-audit" };
+export type CloudFacesJob = { fileId: string; reason?: string };
 
 let connection: IORedis | null = null;
 const queues = new Map<string, Queue>();
@@ -51,6 +53,18 @@ export async function enqueueImageJob(fileId: string, reason = "upload"): Promis
     await getQueue<CloudImageJob>(CLOUD_IMAGE_QUEUE).add("image", { fileId, reason }, { jobId: `img:${fileId}:${reason}` });
   } catch (err) {
     logger.error({ err, fileId }, "cloud: failed to enqueue image job");
+  }
+}
+
+/**
+ * Лица — отдельная очередь и отдельный воркер (glibc-контейнер с ONNX):
+ * распознавание не должно тормозить превью, и наоборот.
+ */
+export async function enqueueFacesJob(fileId: string, reason = "upload"): Promise<void> {
+  try {
+    await getQueue<CloudFacesJob>(CLOUD_FACES_QUEUE).add("faces", { fileId, reason }, { jobId: `face:${fileId}:${reason}` });
+  } catch (err) {
+    logger.error({ err, fileId }, "cloud: failed to enqueue faces job");
   }
 }
 

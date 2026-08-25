@@ -2260,3 +2260,44 @@ section[data-day],
 }
 .cl-uptile-cancel::before { content: ''; position: absolute; inset: -9px; }
 .cl-uptile-cancel:focus-visible { opacity: 1; outline: 2px solid var(--brand); }
+
+
+/* ── Лица ──────────────────────────────────────────────────────────────── */
+.cl-people { padding-top: 6px; }
+.cl-people-strip { display: flex; gap: 14px; flex-wrap: wrap; padding: 8px 0 16px; }
+.cl-person {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  width: 84px; padding: 8px 4px 7px;
+  border: 1px solid transparent; border-radius: 14px;
+  background: none; cursor: pointer; font: inherit; color: var(--text-primary);
+  transition: background .18s ease, border-color .18s ease, transform .2s var(--cl-ease);
+}
+.cl-person:hover { background: var(--surface-100); transform: translateY(-2px); }
+.cl-person.is-active { background: var(--surface-100); border-color: color-mix(in srgb, var(--brand) 55%, var(--surface-border)); }
+.cl-person b { font-size: 12.5px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cl-person i { font-style: normal; font-size: 11px; color: var(--text-muted); }
+
+/* Кружок-кроп лица: превью позиционируется по нормированной рамке. */
+.cl-face {
+  position: relative; display: inline-block; flex: none;
+  border-radius: 50%; overflow: hidden;
+  background: var(--surface-200);
+  border: 2px solid var(--surface-border);
+}
+.cl-face img { position: absolute; display: block; max-width: none; }
+.cl-face-empty { display: grid; place-items: center; font-size: 24px; }
+.cl-person.is-active .cl-face { border-color: var(--brand); }
+
+.cl-people-hint { color: var(--text-muted); font-size: 13.5px; padding: 6px 2px; max-width: 560px; line-height: 1.5; }
+
+.cl-face-groups { display: flex; flex-direction: column; gap: 10px; }
+.cl-face-group {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 12px; border-radius: 14px;
+  background: var(--surface-100); border: 1px solid var(--surface-border);
+  animation: clRise .4s var(--cl-ease) both;
+}
+.cl-face-row { display: flex; align-items: center; gap: 6px; }
+.cl-face-more { font-size: 12px; color: var(--text-muted); padding-left: 2px; }
+.cl-face-nameform { display: flex; gap: 8px; align-items: center; }
+.cl-face-nameform .cl-input { height: 32px; width: 200px; }
