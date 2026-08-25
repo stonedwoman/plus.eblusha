@@ -13,7 +13,7 @@ type FeedFile = CloudFile & { spaceName?: string | null }
 /** Сквозные экраны поверх всех Space: недавние, избранное, корзина, загрузки. */
 export default function FeedPage() {
   const { pathname } = useLocation()
-  const view = pathname.endsWith('/favorites') ? 'favorites' : pathname.endsWith('/trash') ? 'trash' : pathname.endsWith('/uploads') ? 'uploads' : 'recent'
+  const view = pathname.endsWith('/trash') ? 'trash' : pathname.endsWith('/uploads') ? 'uploads' : 'recent'
 
   if (view === 'uploads') return <UploadsPage />
   return <FilesFeed key={view} view={view} />
@@ -21,11 +21,10 @@ export default function FeedPage() {
 
 const TITLES: Record<string, { title: string; empty: string }> = {
   recent: { title: 'Недавние', empty: 'Здесь появятся последние загруженные файлы из всех ваших хуяпок.' },
-  favorites: { title: 'Избранное', empty: 'Отмечайте файлы звёздочкой — они соберутся здесь. Избранное личное и не влияет на других участников.' },
   trash: { title: 'Корзина', empty: 'Удалённые файлы попадают сюда и хранятся 30 дней, после чего исчезают навсегда.' },
 }
 
-function FilesFeed({ view }: { view: 'recent' | 'favorites' | 'trash' }) {
+function FilesFeed({ view }: { view: 'recent' | 'trash' }) {
   const [files, setFiles] = useState<FeedFile[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)

@@ -6,9 +6,9 @@
  * физический объект. Места это не занимало (blob один), но галерею засоряло.
  *
  * Скрипт оставляет САМУЮ РАННЮЮ копию и уносит остальные в корзину — то есть
- * действие обратимо в течение CLOUD_TRASH_RETENTION_DAYS. Комментарии, реакции
- * и избранное, привязанные к дубликатам, переносятся на оставшуюся копию,
- * иначе они исчезли бы вместе с ней из виду.
+ * действие обратимо в течение CLOUD_TRASH_RETENTION_DAYS. Комментарии и реакции,
+ * привязанные к дубликатам, переносятся на оставшуюся копию, иначе они исчезли
+ * бы вместе с ней из виду.
  *
  *   npx ts-node src/scripts/cloudDedupeSpaceFiles.ts              # показать, что будет
  *   npx ts-node src/scripts/cloudDedupeSpaceFiles.ts --apply      # выполнить
@@ -65,23 +65,9 @@ async function main(): Promise<void> {
   // Соцданные переносим на остающуюся копию — терять обсуждение снимка из-за
   // технической чистки нельзя.
   let movedComments = 0;
-  let movedFavorites = 0;
   for (const [from, to] of keepers) {
     const c = await prisma.cloudComment.updateMany({ where: { fileId: from }, data: { fileId: to } });
     movedComments += c.count;
-    // Избранное уникально по (userId, fileId): если у пользователя уже отмечена
-    // остающаяся копия, перенос упёрся бы в constraint — такие просто удаляем.
-    const favs = await prisma.cloudFavorite.findMany({ where: { fileId: from } });
-    for (const fav of favs) {
-      const exists = await prisma.cloudFavorite.findUnique({
-        where: { userId_fileId: { userId: fav.userId, fileId: to } },
-      });
-      if (exists) await prisma.cloudFavorite.delete({ where: { id: fav.id } });
-      else {
-        await prisma.cloudFavorite.update({ where: { id: fav.id }, data: { fileId: to } });
-        movedFavorites++;
-      }
-    }
     await prisma.cloudReaction.updateMany({ where: { targetType: "FILE", targetId: from }, data: { targetId: to } });
   }
 
@@ -93,8 +79,6 @@ async function main(): Promise<void> {
     moved += res.count;
   }
 
-  logger.info({ moved, movedComments, movedFavorites }, "cloud: duplicates collapsed");
-  console.log(`\nГотово. В корзину: ${moved}. Перенесено комментариев: ${movedComments}, избранного: ${movedFavorites}.`);
   console.log("Восстановить всё можно из корзины, пока не истёк retention.");
   await prisma.$disconnect();
 }

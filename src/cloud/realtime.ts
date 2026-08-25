@@ -35,7 +35,6 @@ export type CloudEventName =
   | "cloud.comment.updated"
   | "cloud.comment.deleted"
   | "cloud.reaction.changed"
-  | "cloud.favorite.changed"
   | "cloud.member.joined"
   | "cloud.member.left"
   | "cloud.presence.changed"

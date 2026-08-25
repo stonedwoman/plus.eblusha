@@ -154,9 +154,6 @@ export default function CloudLayout() {
           <NavLink to={cloudPath('/recent')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
             Недавние
           </NavLink>
-          <NavLink to={cloudPath('/favorites')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
-            Избранное
-          </NavLink>
           <NavLink to={cloudPath('/uploads')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
             Загрузки
           </NavLink>

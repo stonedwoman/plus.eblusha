@@ -300,9 +300,6 @@ export function Viewer({
         setZoom(1)
       } else if (key === 'i' || e.code === 'KeyI') {
         setPanel((p) => (p === 'info' ? null : 'info'))
-      } else if ((key === 'f' || e.code === 'KeyF') && !readOnly && file) {
-        // Матч по e.code тоже: на русской раскладке e.key придёт «а»/«ш».
-        void toggleFavorite(file)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -339,18 +336,6 @@ export function Viewer({
     measureFit()
     applyView()
   }, [index, measureFit, applyView])
-
-  const toggleFavorite = useCallback(
-    async (target: CloudFile) => {
-      try {
-        const { data } = await cloudApi.post<{ favorite: boolean }>('/favorites', { fileId: target.id })
-        onFileChanged?.({ ...target, favorite: data.favorite })
-      } catch (err) {
-        toast.error(toCloudError(err).message)
-      }
-    },
-    [onFileChanged]
-  )
 
   const react = useCallback(
     async (target: CloudFile, emoji: string) => {
@@ -439,7 +424,13 @@ export function Viewer({
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return
     const target = e.target as HTMLElement | null
-    if (target?.closest('button, a, input, textarea, .cl-viewer-panel, .cl-strip')) return
+    /*
+     * Видео и аудио не трогаем совсем. Их органы управления живут в теневом
+     * дереве, поэтому по closest() не отличаются от самого элемента — сцена
+     * забирала указатель себе, и нажать «играть» было невозможно.
+     */
+    if (target?.tagName === 'VIDEO' || target?.tagName === 'AUDIO') return
+    if (target?.closest('button, a, input, textarea, video, audio, .cl-viewer-panel, .cl-strip')) return
     drag.current = {
       x: e.clientX,
       y: e.clientY,
@@ -508,7 +499,8 @@ export function Viewer({
 
   const onStageClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement | null
-    if (target?.closest('button, a, .cl-viewer-panel, .cl-strip')) return
+    if (target?.tagName === 'VIDEO' || target?.tagName === 'AUDIO') return
+    if (target?.closest('button, a, video, audio, .cl-viewer-panel, .cl-strip')) return
     if (drag.current?.moved) return
     if (!file || file.kind !== 'IMAGE') return
     const stage = stageRef.current
@@ -559,39 +551,47 @@ export function Viewer({
         onClick={onStageClick}
       >
         <div className="cl-viewer-top">
-          <button className="cl-btn ghost icon sm" onClick={requestClose} aria-label="Закрыть">
-            ✕
+          <button className="cl-vbtn" onClick={requestClose} aria-label="Закрыть" title="Закрыть (Esc)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
           </button>
-          <div className="cl-viewer-title">{file.name}</div>
-          <span className="cl-muted" style={{ fontSize: 12.5 }}>
-            {index + 1} / {files.length}
+          <div className="cl-viewer-title" title={file.name}>{file.name}</div>
+          <span className="cl-viewer-count">
+            {index + 1} <em>/</em> {files.length}
           </span>
           {zoomPct !== 100 ? <span className="cl-zoom-pill">{zoomPct}%</span> : null}
           <div className="cl-spacer" />
-          {!readOnly ? (
-            <button
-              className="cl-btn ghost icon sm"
-              onClick={() => void toggleFavorite(file)}
-              title="В избранное (F)"
-              style={file.favorite ? { color: '#fbbf24' } : undefined}
-            >
-              {file.favorite ? '★' : '☆'}
-            </button>
-          ) : null}
           {file.urls.download ? (
-            <a className="cl-btn ghost sm" href={file.urls.download} download>
-              Скачать
+            <a className="cl-vbtn" href={file.urls.download} download aria-label="Скачать" title="Скачать">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" />
+              </svg>
             </a>
           ) : null}
-          <button className={`cl-btn ghost sm${panel === 'info' ? ' primary' : ''}`} onClick={() => setPanel(panel === 'info' ? null : 'info')}>
-            Инфо
+          <button
+            className={`cl-vbtn${panel === 'info' ? ' is-on' : ''}`}
+            onClick={() => setPanel(panel === 'info' ? null : 'info')}
+            aria-label="Сведения"
+            title="Сведения (i)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5.5" />
+              <circle cx="12" cy="7.7" r="1.1" fill="currentColor" stroke="none" />
+            </svg>
           </button>
           {!readOnly ? (
             <button
-              className={`cl-btn ghost sm${panel === 'comments' ? ' primary' : ''}`}
+              className={`cl-vbtn${panel === 'comments' ? ' is-on' : ''}`}
               onClick={() => setPanel(panel === 'comments' ? null : 'comments')}
+              aria-label="Обсуждение"
+              title="Обсуждение"
             >
-              💬 {file.commentCount || ''}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+                <path d="M20 12.4c0 3.9-3.6 7-8 7a9 9 0 0 1-2.4-.3L5 21l1.1-3.4A6.7 6.7 0 0 1 4 12.4c0-3.9 3.6-7 8-7s8 3.1 8 7Z" />
+              </svg>
+              {file.commentCount ? <i className="cl-vbtn-dot">{file.commentCount}</i> : null}
             </button>
           ) : null}
         </div>
@@ -658,14 +658,22 @@ export function Viewer({
       {panel ? (
         <aside className="cl-viewer-panel">
           <div className="cl-panel-tabs">
-            <button className={panel === 'info' ? 'is-active' : ''} onClick={() => setPanel('info')}>
-              Метаданные
-            </button>
-            {!readOnly ? (
-              <button className={panel === 'comments' ? 'is-active' : ''} onClick={() => setPanel('comments')}>
-                Обсуждение
+            {/* Сегментированный переключатель: бегунок ездит под активной
+                вкладкой, поэтому переход читается как движение, а не как
+                перекраска текста. */}
+            <div className={`cl-panel-seg${readOnly ? ' solo' : ''}`}>
+              {!readOnly ? (
+                <span className="cl-panel-thumb" style={panel === 'comments' ? { transform: 'translateX(100%)' } : undefined} />
+              ) : null}
+              <button className={panel === 'info' ? 'is-active' : ''} onClick={() => setPanel('info')}>
+                Сведения
               </button>
-            ) : null}
+              {!readOnly ? (
+                <button className={panel === 'comments' ? 'is-active' : ''} onClick={() => setPanel('comments')}>
+                  Обсуждение{file.commentCount ? <b>{file.commentCount}</b> : null}
+                </button>
+              ) : null}
+            </div>
           </div>
           <div className="cl-panel-body">
             {panel === 'info' ? (
@@ -745,16 +753,7 @@ function CurrentMedia({
 
   if (file.kind === 'VIDEO') {
     if (!file.urls.playback) return <VideoUnavailable file={file} />
-    return (
-      <video
-        ref={videoRef}
-        src={file.urls.playback}
-        poster={file.urls.poster ?? undefined}
-        controls
-        playsInline
-        preload="metadata"
-      />
-    )
+    return <Player key={file.id} file={file} videoRef={videoRef} />
   }
 
   if (file.kind === 'AUDIO' && file.urls.content) {
@@ -781,6 +780,259 @@ function CurrentMedia({
           </a>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+const fmt = (sec: number): string => {
+  if (!Number.isFinite(sec) || sec < 0) return '0:00'
+  const s = Math.floor(sec % 60)
+  const m = Math.floor(sec / 60) % 60
+  const h = Math.floor(sec / 3600)
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`
+}
+
+/**
+ * Свой проигрыватель.
+ *
+ * Штатные органы управления браузера выглядят чужеродно и вдобавок живут в
+ * теневом дереве: их нельзя ни оформить, ни надёжно отличить от самого
+ * элемента в обработчиках сцены — из-за этого сцена забирала указатель себе, и
+ * нажать «играть» было невозможно. Здесь всё своё: те же токены темы, что и у
+ * остального интерфейса, и обычные кнопки, мимо которых сцена проходит.
+ *
+ * Запуск автоматический. Со звуком браузер разрешает не всегда, поэтому при
+ * отказе повторяем беззвучно и честно показываем, что звук выключен, — вместо
+ * молчаливого кадра, который выглядит как поломка.
+ */
+function Player({ file, videoRef }: { file: CloudFile; videoRef: React.MutableRefObject<HTMLVideoElement | null> }) {
+  const ref = useRef<HTMLVideoElement | null>(null)
+  const barRef = useRef<HTMLDivElement | null>(null)
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [muted, setMuted] = useState(false)
+  const [time, setTime] = useState(0)
+  const [dur, setDur] = useState(0)
+  const [buffered, setBuffered] = useState(0)
+  const [scrubbing, setScrubbing] = useState(false)
+
+  /*
+   * Коробка кадра — ровно вписанный ролик, посчитанный по месту.
+   *
+   * Одним aspect-ratio не обойтись: max-width и max-height вместе с ним не
+   * ужимают элемент по обеим осям сразу, и вертикальный ролик 2160×3840
+   * разъезжался на 2844 пикселя высоты. А знать точный кадр нужно: по нему
+   * выставлена полоса управления — иначе она висит через всю сцену, отдельно
+   * от изображения.
+   *
+   * Меряем САМУ сцену, растянутую по inset: 0. Замер контейнера, чей размер
+   * зависит от содержимого, сходился к нулю — кадр ужимал контейнер, тот
+   * ужимал следующий замер, и от ролика оставалось 43×77.
+   */
+  const w = file.width
+  const h = file.height
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host || !w || !h) return
+    const fit = () => {
+      /*
+       * clientWidth/Height, а НЕ getBoundingClientRect: прямоугольник считается
+       * вместе с трансформами, а сцена въезжает от плитки — замер попадал в
+       * середину анимации открытия и давал кадр 43×77. Наблюдатель размеров
+       * при этом молчит: коробка вёрстки не менялась, менялся только сдвиг.
+       */
+      const rw = host.clientWidth
+      const rh = host.clientHeight
+      if (rw < 1 || rh < 1) return
+      const scale = Math.min(rw / w, rh / h)
+      const next = { w: Math.round(w * scale), h: Math.round(h * scale) }
+      setBox((prev) => (prev && prev.w === next.w && prev.h === next.h ? prev : next))
+    }
+    const ro = new ResizeObserver(fit)
+    ro.observe(host)
+    fit()
+    return () => ro.disconnect()
+  }, [w, h])
+
+  const attach = useCallback(
+    (el: HTMLVideoElement | null) => {
+      ref.current = el
+      videoRef.current = el
+    },
+    [videoRef]
+  )
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    let cancelled = false
+    void (async () => {
+      try {
+        await el.play()
+      } catch {
+        if (cancelled) return
+        el.muted = true
+        setMuted(true)
+        try {
+          await el.play()
+        } catch {
+          // Совсем не пустили — остаётся крупная кнопка по центру кадра.
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [file.id])
+
+  const seekAt = (clientX: number) => {
+    const el = ref.current
+    const bar = barRef.current
+    if (!el || !bar || !dur) return
+    const r = bar.getBoundingClientRect()
+    const at = clamp((clientX - r.left) / Math.max(1, r.width), 0, 1) * dur
+    el.currentTime = at
+    setTime(at)
+  }
+
+  const pct = dur > 0 ? (time / dur) * 100 : 0
+  const bufPct = dur > 0 ? (buffered / dur) * 100 : 0
+  const toggle = () => {
+    const el = ref.current
+    if (!el) return
+    if (el.paused) void el.play()
+    else el.pause()
+  }
+
+  return (
+    <div ref={hostRef} className={`cl-player${playing ? '' : ' is-paused'}`}>
+      <div className="cl-player-frame" style={box ? { width: box.w, height: box.h } : undefined}>
+      <video
+        ref={attach}
+        src={file.urls.playback ?? undefined}
+        poster={file.urls.poster ?? undefined}
+        playsInline
+        preload="auto"
+        onClick={toggle}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onTimeUpdate={(e) => {
+          if (!scrubbing) setTime(e.currentTarget.currentTime)
+        }}
+        onDurationChange={(e) => setDur(e.currentTarget.duration || 0)}
+        onLoadedMetadata={(e) => setDur(e.currentTarget.duration || 0)}
+        onProgress={(e) => {
+          const b = e.currentTarget.buffered
+          if (b.length) setBuffered(b.end(b.length - 1))
+        }}
+        onVolumeChange={(e) => setMuted(e.currentTarget.muted)}
+      />
+
+      {/* Пока не играет, главное действие — крупная кнопка по центру. */}
+      {!playing ? (
+        <button className="cl-player-big" onClick={toggle} aria-label="Воспроизвести">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5.6v12.8c0 .9 1 1.4 1.7.9l9.3-6.4a1.1 1.1 0 0 0 0-1.8L9.7 4.7A1.1 1.1 0 0 0 8 5.6Z" />
+          </svg>
+        </button>
+      ) : null}
+
+      <div className="cl-player-bar" onPointerDown={(e) => e.stopPropagation()}>
+        <button className="cl-player-btn" onClick={toggle} aria-label={playing ? 'Пауза' : 'Воспроизвести'}>
+          {playing ? (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6.5" y="5" width="4" height="14" rx="1.3" />
+              <rect x="13.5" y="5" width="4" height="14" rx="1.3" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5.6v12.8c0 .9 1 1.4 1.7.9l9.3-6.4a1.1 1.1 0 0 0 0-1.8L9.7 4.7A1.1 1.1 0 0 0 8 5.6Z" />
+            </svg>
+          )}
+        </button>
+
+        <span className="cl-player-time">{fmt(time)}</span>
+
+        <div
+          className={`cl-player-track${scrubbing ? ' is-live' : ''}`}
+          ref={barRef}
+          role="slider"
+          aria-label="Перемотка"
+          aria-valuenow={Math.round(pct)}
+          onPointerDown={(e) => {
+            setScrubbing(true)
+            e.currentTarget.setPointerCapture(e.pointerId)
+            seekAt(e.clientX)
+          }}
+          onPointerMove={(e) => {
+            if (scrubbing) seekAt(e.clientX)
+          }}
+          onPointerUp={(e) => {
+            setScrubbing(false)
+            e.currentTarget.releasePointerCapture(e.pointerId)
+          }}
+        >
+          <i className="cl-player-buf" style={{ transform: `scaleX(${bufPct / 100})` }} />
+          <i className="cl-player-fill" style={{ transform: `scaleX(${pct / 100})` }} />
+          <i className="cl-player-knob" style={{ left: `${pct}%` }} />
+        </div>
+
+        <span className="cl-player-time">{fmt(dur)}</span>
+
+        <button
+          className={`cl-player-btn${muted ? ' is-off' : ''}`}
+          onClick={() => {
+            const el = ref.current
+            if (!el) return
+            el.muted = !el.muted
+            setMuted(el.muted)
+          }}
+          aria-label={muted ? 'Включить звук' : 'Выключить звук'}
+        >
+          {muted ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M11 5 6.5 9H3v6h3.5L11 19V5Z" />
+              <path d="m16 10 4 4m0-4-4 4" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M11 5 6.5 9H3v6h3.5L11 19V5Z" />
+              <path d="M15.5 9.2a4 4 0 0 1 0 5.6M18.2 6.6a7.7 7.7 0 0 1 0 10.8" />
+            </svg>
+          )}
+        </button>
+
+        <button
+          className="cl-player-btn"
+          onClick={() => {
+            const el = ref.current?.parentElement
+            if (!el) return
+            if (document.fullscreenElement) void document.exitFullscreen()
+            else void el.requestFullscreen?.()
+          }}
+          aria-label="На весь экран"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15" />
+          </svg>
+        </button>
+      </div>
+
+      {muted && playing ? (
+        <button
+          className="cl-player-unmute"
+          onClick={() => {
+            const el = ref.current
+            if (!el) return
+            el.muted = false
+            setMuted(false)
+          }}
+        >
+          Звук выключен — включить
+        </button>
+      ) : null}
+      </div>
     </div>
   )
 }
@@ -833,42 +1085,93 @@ function VideoUnavailable({ file }: { file: CloudFile }) {
   )
 }
 
+/**
+ * Сведения о кадре.
+ *
+ * Не таблица «поле — значение» на четырнадцать строк: в ней всё весит
+ * одинаково, и глаз не находит главного. Сверху — то, ради чего панель вообще
+ * открывают: ГДЕ и КОГДА снято. Ниже — параметры съёмки крупными плитками, как
+ * их показывает сама камера. Технические подробности убраны в разделы, чтобы не
+ * забивать собой смысл.
+ */
 function MetadataPanel({ file, onReact }: { file: CloudFile; onReact?: (emoji: string) => void }) {
-  const rows: [string, string | null][] = [
-    ['Имя файла', file.name],
-    ['Загрузил', file.uploader?.displayName || file.uploader?.username || null],
-    ['Загружено', new Date(file.createdAt).toLocaleString('ru-RU')],
-    [
-      'Снято',
-      `${new Date(file.takenAt).toLocaleString('ru-RU')}${
-        file.takenAtSource === 'exif' ? ' (EXIF)' : file.takenAtSource === 'client' ? ' (файл)' : ' (загрузка)'
-      }`,
-    ],
-    ['Размеры', file.width && file.height ? `${file.width} × ${file.height}` : null],
-    ['Длительность', file.durationMs ? formatDuration(file.durationMs) : null],
-    ['Размер', formatBytes(file.size)],
-    ['Тип', file.mime],
-    ['Камера', [file.cameraMake, file.cameraModel].filter(Boolean).join(' ') || null],
-    ['Кодек', [file.videoCodec, file.audioCodec].filter(Boolean).join(' / ') || null],
-    ['Битрейт', file.bitrate ? `${Math.round(file.bitrate / 1000)} кбит/с` : null],
-    ['GPS', file.latitude && file.longitude ? `${file.latitude.toFixed(5)}, ${file.longitude.toFixed(5)}` : null],
-  ]
+  const [copied, setCopied] = useState<string | null>(null)
+  const copy = (key: string, value: string) => {
+    void navigator.clipboard?.writeText(value)
+    setCopied(key)
+    window.setTimeout(() => setCopied((c) => (c === key ? null : c)), 1200)
+  }
+
+  const place = [file.geoCountry, file.geoCity, file.geoDistrict].filter(Boolean) as string[]
+  const taken = new Date(file.takenAt)
+  const source =
+    file.takenAtSource === 'exif' ? 'EXIF' : file.takenAtSource === 'client' ? 'файл' : 'загрузка'
+
   const extra = (file.metadata ?? {}) as Record<string, unknown>
   const lens = typeof extra.lensModel === 'string' ? extra.lensModel : null
-  const iso = typeof extra.iso === 'number' ? `ISO ${extra.iso}` : null
-  const aperture = typeof extra.fNumber === 'number' ? `f/${extra.fNumber}` : null
+  const camera = [file.cameraMake, file.cameraModel].filter(Boolean).join(' ')
   const shutter =
     typeof extra.exposureTime === 'number'
       ? extra.exposureTime >= 1
-        ? `${extra.exposureTime}s`
-        : `1/${Math.round(1 / extra.exposureTime)}s`
+        ? `${extra.exposureTime}″`
+        : `1/${Math.round(1 / extra.exposureTime)}`
       : null
-  const shot = [aperture, shutter, iso, lens].filter(Boolean).join(' · ')
+  // Плитки съёмки: три главных параметра кадра. Показываем, только если
+  // камера их записала — пустые ячейки хуже отсутствующего блока.
+  const shots = [
+    typeof extra.fNumber === 'number' ? { v: `f/${extra.fNumber}`, t: 'диафрагма' } : null,
+    shutter ? { v: shutter, t: 'выдержка' } : null,
+    typeof extra.iso === 'number' ? { v: String(extra.iso), t: 'ISO' } : null,
+  ].filter(Boolean) as { v: string; t: string }[]
+
+  const fileRows: [string, string | null, string?][] = [
+    ['Имя', file.name, 'name'],
+    ['Размер', formatBytes(file.size), 'size'],
+    ['Тип', file.mime],
+    ['Разрешение', file.width && file.height ? `${file.width} × ${file.height}` : null],
+    ['Длительность', file.durationMs ? formatDuration(file.durationMs) : null],
+  ]
+  const techRows: [string, string | null, string?][] = [
+    ['Загрузил', file.uploader?.displayName || file.uploader?.username || null],
+    ['Загружено', new Date(file.createdAt).toLocaleString('ru-RU')],
+    ['Кодек', [file.videoCodec, file.audioCodec].filter(Boolean).join(' / ') || null],
+    ['Битрейт', file.bitrate ? `${Math.round(file.bitrate / 1000)} кбит/с` : null],
+    ['Воспроизведение', file.playbackSource ? (file.playbackSource === 'original' ? 'оригинал' : 'web-версия') : null],
+    [
+      'Координаты',
+      file.latitude != null && file.longitude != null
+        ? `${file.latitude.toFixed(5)}, ${file.longitude.toFixed(5)}`
+        : null,
+      'gps',
+    ],
+  ]
+
+  const section = (title: string, rows: [string, string | null, string?][]) => {
+    const shown = rows.filter(([, value]) => value)
+    if (shown.length === 0) return null
+    return (
+      <section className="cl-mi-sect">
+        <h4>{title}</h4>
+        <dl>
+          {shown.map(([label, value, key]) => (
+            <div
+              className={`cl-mi-row${key ? ' can-copy' : ''}${copied === key ? ' is-copied' : ''}`}
+              key={label}
+              {...(key ? { onClick: () => copy(key, value as string), title: 'Скопировать' } : {})}
+            >
+              <dt>{label}</dt>
+              <dd>{copied === key ? 'скопировано' : value}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+    )
+  }
 
   return (
-    <>
+    <div className="cl-mi">
       {onReact ? (
-        <div className="cl-reactions" style={{ marginBottom: 14 }}>
+        <div className="cl-reactions">
           {EMOJI.map((emoji) => (
             <button
               key={emoji}
@@ -882,36 +1185,60 @@ function MetadataPanel({ file, onReact }: { file: CloudFile; onReact?: (emoji: s
       ) : null}
 
       {file.status === 'FAILED' ? (
-        <div className="cl-toast error" style={{ marginBottom: 12 }}>
-          Обработка не удалась: {file.processingError ?? 'неизвестная ошибка'}
+        <div className="cl-toast error">Обработка не удалась: {file.processingError ?? 'неизвестная ошибка'}</div>
+      ) : null}
+
+      <div className="cl-mi-hero">
+        {place.length > 0 ? (
+          <div className="cl-mi-place">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 21s7-5.7 7-11a7 7 0 1 0-14 0c0 5.3 7 11 7 11Z" />
+              <circle cx="12" cy="10" r="2.6" />
+            </svg>
+            <span>
+              {place.map((part, i) => (
+                <span key={part} className={i === 0 ? 'top' : ''}>
+                  {i > 0 ? <em>·</em> : null}
+                  {part}
+                </span>
+              ))}
+            </span>
+          </div>
+        ) : null}
+        <div className="cl-mi-when">
+          <b>{taken.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</b>
+          <span>{taken.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
+          <i className="cl-mi-badge">{source}</i>
+        </div>
+      </div>
+
+      {shots.length > 0 || camera ? (
+        <div className="cl-mi-cam">
+          {shots.length > 0 ? (
+            <div className="cl-mi-shots">
+              {shots.map((s) => (
+                <div className="cl-mi-shot" key={s.t}>
+                  <b>{s.v}</b>
+                  <i>{s.t}</i>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {camera ? (
+            <div className="cl-mi-lens">
+              <b>{camera}</b>
+              {lens ? <span>{lens}</span> : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
-      <dl style={{ margin: 0 }}>
-        {rows
-          .filter(([, value]) => value)
-          .map(([label, value]) => (
-            <div className="cl-meta-row" key={label}>
-              <dt>{label}</dt>
-              <dd>{value}</dd>
-            </div>
-          ))}
-        {shot ? (
-          <div className="cl-meta-row">
-            <dt>Съёмка</dt>
-            <dd>{shot}</dd>
-          </div>
-        ) : null}
-        {file.playbackSource ? (
-          <div className="cl-meta-row">
-            <dt>Воспроизведение</dt>
-            <dd>{file.playbackSource === 'original' ? 'оригинал' : 'web-версия'}</dd>
-          </div>
-        ) : null}
-      </dl>
-    </>
+      {section('Файл', fileRows)}
+      {section('Подробности', techRows)}
+    </div>
   )
 }
+
 
 function CommentsPanel({
   file,

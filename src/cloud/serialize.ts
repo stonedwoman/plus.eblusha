@@ -15,7 +15,7 @@ export type FileDto = ReturnType<typeof fileDto>;
 
 export function fileDto(
   file: CloudFile & { variants?: CloudFileVariant[]; uploader?: UserLite | null },
-  opts: { favorite?: boolean; commentCount?: number; reactions?: Record<string, number>; myReactions?: string[]; urlBase?: string } = {}
+  opts: { commentCount?: number; reactions?: Record<string, number>; myReactions?: string[]; urlBase?: string } = {}
 ) {
   const variants = file.variants ?? [];
   const has = (kind: string) => variants.some((v) => v.kind === kind && v.status === "READY");
@@ -52,7 +52,6 @@ export function fileDto(
     bitrate: file.bitrate,
     metadata: file.metadata ?? null,
     uploader: userLite(file.uploader),
-    favorite: opts.favorite ?? false,
     commentCount: opts.commentCount ?? 0,
     reactions: opts.reactions ?? {},
     myReactions: opts.myReactions ?? [],

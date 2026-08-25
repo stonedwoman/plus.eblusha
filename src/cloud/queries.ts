@@ -9,7 +9,7 @@ import { fileDto } from "./serialize";
  * Пагинация курсорная: галерея на несколько тысяч файлов не должна тянуть всё
  * разом ни в SQL, ни в браузер.
  */
-export type FileListView = "timeline" | "files" | "map" | "places" | "trash" | "favorites" | "recent";
+export type FileListView = "timeline" | "files" | "map" | "places" | "trash" | "recent";
 
 export type FileListParams = {
   spaceId: string;
@@ -76,7 +76,6 @@ export function buildFileWhere(params: FileSliceParams): Prisma.CloudFileWhereIn
   // В «Местах» живут только распознанные снимки: пустая группа «неизвестно где»
   // ничего не рассказывает о поездке, а её счётчик отдаётся отдельно.
   if (view === "places") where.geoPath = { not: null };
-  if (view === "favorites") where.favorites = { some: { userId: viewerId } };
   if (params.kind) where.kind = params.kind;
   if (params.uploaderId) where.uploaderId = params.uploaderId;
   if (params.fileIds?.length) where.id = { in: params.fileIds };
@@ -126,7 +125,7 @@ type OrderMode = "name" | "taken" | "deleted" | "created" | "place";
 function orderModeFor(view: FileListView): OrderMode {
   if (view === "files") return "name";
   if (view === "places") return "place";
-  if (view === "timeline" || view === "map" || view === "favorites") return "taken";
+  if (view === "timeline" || view === "map") return "taken";
   if (view === "trash") return "deleted";
   return "created";
 }
@@ -215,7 +214,6 @@ export async function listFiles(params: FileListParams) {
   return {
     files: page.map((f) =>
       fileDto(f, {
-        favorite: social.favorites.has(f.id),
         commentCount: social.comments.get(f.id) ?? 0,
         reactions: social.reactions.get(f.id) ?? {},
         myReactions: social.mine.get(f.id) ?? [],
@@ -225,20 +223,16 @@ export async function listFiles(params: FileListParams) {
   };
 }
 
-/** Избранное/комментарии/реакции для набора файлов — одним пакетом, без N+1. */
+/** Комментарии и реакции для набора файлов — одним пакетом, без N+1. */
 export async function socialFor(fileIds: string[], viewerId: string | null) {
   const empty = {
-    favorites: new Set<string>(),
     comments: new Map<string, number>(),
     reactions: new Map<string, Record<string, number>>(),
     mine: new Map<string, string[]>(),
   };
   if (fileIds.length === 0) return empty;
 
-  const [favorites, comments, reactions] = await Promise.all([
-    viewerId
-      ? prisma.cloudFavorite.findMany({ where: { userId: viewerId, fileId: { in: fileIds } }, select: { fileId: true } })
-      : Promise.resolve([]),
+  const [comments, reactions] = await Promise.all([
     prisma.cloudComment.groupBy({
       by: ["fileId"],
       where: { fileId: { in: fileIds }, deletedAt: null },
@@ -251,7 +245,6 @@ export async function socialFor(fileIds: string[], viewerId: string | null) {
   ]);
 
   const out = {
-    favorites: new Set(favorites.map((f) => f.fileId)),
     comments: new Map<string, number>(),
     reactions: new Map<string, Record<string, number>>(),
     mine: new Map<string, string[]>(),
@@ -273,7 +266,6 @@ export async function loadFileWithSocial(fileId: string, viewerId: string | null
   if (!file) return null;
   const social = await socialFor([file.id], viewerId);
   return fileDto(file, {
-    favorite: social.favorites.has(file.id),
     commentCount: social.comments.get(file.id) ?? 0,
     reactions: social.reactions.get(file.id) ?? {},
     myReactions: social.mine.get(file.id) ?? [],

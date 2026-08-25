@@ -30,7 +30,7 @@ const router = Router();
 
 const listQuery = z.object({
   spaceId: z.string().min(1),
-  view: z.enum(["timeline", "files", "map", "places", "trash", "favorites", "recent"]).default("timeline"),
+  view: z.enum(["timeline", "files", "map", "places", "trash", "recent"]).default("timeline"),
   folderId: z.string().optional(),
   kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
   q: z.string().max(120).optional(),
@@ -99,7 +99,7 @@ router.get(
 
 const timelineQuery = z.object({
   spaceId: z.string().min(1),
-  view: z.enum(["timeline", "favorites"]).default("timeline"),
+  view: z.literal("timeline").default("timeline"),
   kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
   q: z.string().max(120).optional(),
   /** Смещение локального времени клиента в минутах к востоку от UTC. */
@@ -135,11 +135,6 @@ router.get(
     ];
     if (p.kind) conds.push(Prisma.sql`f."kind"::text = ${p.kind}`);
     if (p.q?.trim()) conds.push(Prisma.sql`f."originalName" ILIKE ${"%" + escapeLike(p.q.trim()) + "%"}`);
-    if (p.view === "favorites") {
-      conds.push(
-        Prisma.sql`EXISTS (SELECT 1 FROM "CloudFavorite" fav WHERE fav."fileId" = f."id" AND fav."userId" = ${req.cloudUser!.id})`
-      );
-    }
 
     // Помимо счётчика — представитель дня: его миниатюра становится узлом на
     // рельсе. Предпочитаем файл с готовым THUMB, чтобы узел не был битым.
@@ -172,7 +167,7 @@ router.get(
     const parsed = z
       .object({
         spaceId: z.string().min(1),
-        view: z.enum(["places", "favorites"]).default("places"),
+        view: z.literal("places").default("places"),
         kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
       })
       .safeParse(req.query);
@@ -186,11 +181,6 @@ router.get(
       Prisma.sql`f."purgedAt" IS NULL`,
     ];
     if (p.kind) conds.push(Prisma.sql`f."kind"::text = ${p.kind}`);
-    if (p.view === "favorites") {
-      conds.push(
-        Prisma.sql`EXISTS (SELECT 1 FROM "CloudFavorite" fav WHERE fav."fileId" = f."id" AND fav."userId" = ${req.cloudUser!.id})`
-      );
-    }
 
     /*
      * Отрезки поездки в порядке ХРОНОЛОГИИ, а не по алфавиту: правая рельса
@@ -287,7 +277,7 @@ router.get(
   ah(async (req: Request, res) => {
     const user = req.cloudUser!;
     const view = String(req.query.view ?? "recent");
-    if (!["recent", "favorites", "trash"].includes(view)) throw invalid("Неизвестный режим");
+    if (!["recent", "trash"].includes(view)) throw invalid("Неизвестный режим");
     const limit = Math.min(Number(req.query.limit ?? 60) || 60, 200);
     const spaceIds = await listAccessibleSpaceIds(user.id);
     if (spaceIds.length === 0) {
@@ -311,7 +301,6 @@ router.get(
         spaceId: { in: spaceIds },
         deletedAt: view === "trash" ? { not: null } : null,
         purgedAt: null,
-        ...(view === "favorites" ? { favorites: { some: { userId: user.id } } } : {}),
         ...cursorFilter,
       },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -333,7 +322,6 @@ router.get(
     res.json({
       files: page.map((f) => ({
         ...fileDto(f, {
-          favorite: social.favorites.has(f.id),
           commentCount: social.comments.get(f.id) ?? 0,
           reactions: social.reactions.get(f.id) ?? {},
           myReactions: social.mine.get(f.id) ?? [],

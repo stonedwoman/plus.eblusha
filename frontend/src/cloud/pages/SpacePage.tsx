@@ -57,7 +57,6 @@ export default function SpacePage() {
   const [dragging, setDragging] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [kindFilter, setKindFilter] = useState<'' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'>('')
-  const [onlyFavorites, setOnlyFavorites] = useState(false)
   // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
   const headHidden = useHideOnScrollDown()
   /** Отрезки поездки для правой рельсы: где человек был, в порядке ленты. */
@@ -132,11 +131,11 @@ export default function SpacePage() {
   const slice = useMemo(
     () => ({
       spaceId,
-      view: onlyFavorites ? ('favorites' as const) : view === 'files' ? ('files' as const) : ('timeline' as const),
-      ...(view === 'files' && !onlyFavorites ? { folderId: folderId ?? 'root' } : {}),
+      view: view === 'files' ? ('files' as const) : ('timeline' as const),
+      ...(view === 'files' ? { folderId: folderId ?? 'root' } : {}),
       ...(kindFilter ? { kind: kindFilter } : {}),
     }),
-    [spaceId, view, folderId, kindFilter, onlyFavorites]
+    [spaceId, view, folderId, kindFilter]
   )
   const sliceKey = useMemo(() => JSON.stringify(slice), [slice])
 
@@ -147,8 +146,8 @@ export default function SpacePage() {
    */
   const sliceKeyRef = useRef(sliceKey)
   sliceKeyRef.current = sliceKey
-  const sliceRef = useRef({ view, folderId, kindFilter, onlyFavorites })
-  sliceRef.current = { view, folderId, kindFilter, onlyFavorites }
+  const sliceRef = useRef({ view, folderId, kindFilter })
+  sliceRef.current = { view, folderId, kindFilter }
   const filesRef = useRef(files)
   filesRef.current = files
   /** Порядковый номер запроса списка: применяем только самый свежий. */
@@ -292,7 +291,7 @@ export default function SpacePage() {
       const { data } = await cloudApi.get<{ days: TimelineDay[] }>('/files/timeline', {
         params: {
           spaceId,
-          view: onlyFavorites ? 'favorites' : 'timeline',
+          view: 'timeline',
           ...(kindFilter ? { kind: kindFilter } : {}),
           tz: -new Date().getTimezoneOffset(),
         },
@@ -301,7 +300,7 @@ export default function SpacePage() {
     } catch {
       setDayCounts([])
     }
-  }, [spaceId, view, kindFilter, onlyFavorites, railWide])
+  }, [spaceId, view, kindFilter, railWide])
 
   useEffect(() => {
     const t = setTimeout(() => void loadDayCounts(), 0)
@@ -312,7 +311,7 @@ export default function SpacePage() {
     if (view !== 'timeline' || !railWide) return
     try {
       const { data } = await cloudApi.get<{ places: GeoSegment[]; withoutPlace: number }>('/files/places', {
-        params: { spaceId, view: onlyFavorites ? 'favorites' : 'places', ...(kindFilter ? { kind: kindFilter } : {}) },
+        params: { spaceId, view: 'places', ...(kindFilter ? { kind: kindFilter } : {}) },
       })
       setSegments(data.places)
       setWithoutPlace(data.withoutPlace)
@@ -320,7 +319,7 @@ export default function SpacePage() {
       setSegments([])
       setWithoutPlace(0)
     }
-  }, [spaceId, view, kindFilter, onlyFavorites, railWide])
+  }, [spaceId, view, kindFilter, railWide])
 
   useEffect(() => {
     void loadSegments()
@@ -1015,9 +1014,6 @@ export default function SpacePage() {
                   {label}
                 </button>
               ))}
-              <button className={`cl-chip${onlyFavorites ? ' is-active' : ''}`} onClick={() => setOnlyFavorites((v) => !v)}>
-                ★ Избранное
-              </button>
             </div>
           ) : null}
 
@@ -1026,30 +1022,37 @@ export default function SpacePage() {
             это и есть место, освободившееся от поиска. Второстепенные стали
             иконками с подписью для скринридера.
           */}
+          {/*
+            Действия подписаны словами. Иконки ⊞ ↗ ↓ угадать невозможно: «плюс
+            в рамке» с равным успехом читается и как «создать папку», и как
+            «выделить всё». Второстепенные собраны под одной кнопкой «Ещё» —
+            в полосе остаётся один заметный призыв к действию.
+          */}
           <div className="cl-band-acts">
             {canEdit ? (
-              <>
-                <button className="cl-btn primary sm cl-act-main" onClick={() => fileInput.current?.click()}>
-                  <span aria-hidden>↑</span> Загрузить
-                </button>
-                <button className="cl-btn sm icon" onClick={() => dirInput.current?.click()} title="Загрузить папку целиком" aria-label="Загрузить папку">
-                  ⊞
-                </button>
-              </>
-            ) : null}
-            {isOwner ? (
-              <button className="cl-btn sm icon" onClick={() => setShareOpen(true)} title="Поделиться" aria-label="Поделиться">
-                ↗
+              <button className="cl-btn primary sm cl-act-main" onClick={() => fileInput.current?.click()}>
+                <span aria-hidden>↑</span> Загрузить
               </button>
             ) : null}
-            <a
-              className="cl-btn sm icon"
-              href={`/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`}
-              title="Скачать всё"
-              aria-label="Скачать всё"
-            >
-              ↓
-            </a>
+            <MoreMenu
+              items={[
+                ...(canEdit
+                  ? [{ key: 'dir', icon: '📁', label: 'Загрузить папку', hint: 'со всем содержимым', onClick: () => dirInput.current?.click() }]
+                  : []),
+                ...(isOwner
+                  ? [{ key: 'share', icon: '🔗', label: 'Поделиться', hint: 'ссылка для тех, у кого нет Еблуши', onClick: () => setShareOpen(true) }]
+                  : []),
+                {
+                  key: 'zip',
+                  icon: '⤓',
+                  label: 'Скачать всё',
+                  hint: 'одним архивом',
+                  onClick: () => {
+                    window.location.href = `/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`
+                  },
+                },
+              ]}
+            />
           </div>
         </div>
       </div>
@@ -1101,9 +1104,9 @@ export default function SpacePage() {
       ) : files.length === 0 && uploads.length === 0 ? (
         <Empty
           icon="📷"
-          title={kindFilter || onlyFavorites ? 'Ничего не найдено' : 'В хуяпке пока нет файлов'}
+          title={kindFilter ? 'Ничего не найдено' : 'В хуяпке пока нет файлов'}
           text={
-            kindFilter || onlyFavorites
+            kindFilter
               ? 'Попробуйте изменить фильтры.'
               : canEdit
                 ? 'Перетащите сюда фотографии и видео или нажмите «Загрузить». Порядок в таймлайне строится по времени съёмки, а не по времени загрузки.'
@@ -1244,9 +1247,8 @@ export default function SpacePage() {
  */
 function matchesSlice(
   file: CloudFile,
-  s: { view: View; folderId: string | null; kindFilter: string; onlyFavorites: boolean }
+  s: { view: View; folderId: string | null; kindFilter: string }
 ): boolean {
-  if (s.onlyFavorites) return false
   if (s.kindFilter && file.kind !== s.kindFilter) return false
   if (s.view === 'files' && (file.folderId ?? null) !== (s.folderId ?? null)) return false
   return true
@@ -1365,6 +1367,75 @@ function smoothScrollTo(scroller: HTMLElement, targetTop: number, onDone?: (fini
     else settle(true)
   }
   raf = requestAnimationFrame(tick)
+}
+
+/**
+ * Меню второстепенных действий.
+ *
+ * В полосе остаётся один заметный призыв — «Загрузить», остальное прячется
+ * сюда с человеческими подписями и пояснениями. Закрывается по клику мимо и
+ * по Escape, как всякое меню.
+ */
+function MoreMenu({
+  items,
+}: {
+  items: { key: string; icon: string; label: string; hint: string; onClick: () => void }[]
+}) {
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  if (items.length === 0) return null
+  return (
+    <div className="cl-more" ref={boxRef}>
+      <button
+        className={`cl-btn sm${open ? ' primary' : ''}`}
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        Ещё <span aria-hidden>▾</span>
+      </button>
+      {open ? (
+        <div className="cl-more-list" role="menu">
+          {items.map((it) => (
+            <button
+              key={it.key}
+              className="cl-more-item"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false)
+                it.onClick()
+              }}
+            >
+              <span className="cl-more-ico" aria-hidden>
+                {it.icon}
+              </span>
+              <span>
+                <b>{it.label}</b>
+                <i>{it.hint}</i>
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 /** Русское склонение по числу: 1 участник, 2 участника, 5 участников. */

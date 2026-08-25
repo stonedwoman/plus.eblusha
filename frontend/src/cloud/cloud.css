@@ -434,6 +434,49 @@
 }
 
 .cl-band-acts { display: flex; align-items: center; gap: 6px; }
+
+/* ── Меню второстепенных действий ──────────────────────────────────────── */
+.cl-more { position: relative; }
+.cl-more-list {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 50;
+  min-width: 268px;
+  padding: 6px;
+  border-radius: 13px;
+  background: var(--surface-100);
+  border: 1px solid var(--surface-border-strong);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .55);
+  animation: clToastIn .22s var(--cl-ease);
+}
+.cl-more-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 9px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .16s var(--cl-ease-io);
+}
+.cl-more-item:hover { background: var(--surface-200); }
+.cl-more-ico {
+  flex: none;
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+  border-radius: 9px;
+  background: var(--surface-200);
+  font-size: 15px;
+}
+.cl-more-item:hover .cl-more-ico { background: var(--surface-300); }
+.cl-more-item b { display: block; font-size: 13.5px; font-weight: 560; }
+.cl-more-item i { display: block; font-style: normal; font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
 .cl-band-acts .cl-btn { transition: transform .3s var(--cl-ease), background .18s ease, border-color .18s ease; }
 .cl-band-acts .cl-btn:hover:not(:disabled) { transform: translateY(-1.5px); }
 .cl-band-acts .cl-btn:active:not(:disabled) { transform: translateY(0); }
@@ -864,14 +907,145 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   min-height: 0;
   overflow: hidden;
 }
-/* Узко и намеренно: прежний .cl-viewer-stage img накрывал бы ВСЁ внутри
-   сцены — слои качества, тринадцать миниатюр полосы, зарево. */
-.cl-viewer-stage > .cl-rail video {
-  max-width: 100%;
-  max-height: 100%;
+/*
+ * Видео ведёт себя ровно как слой снимка: занимает всю область кадра, картинка
+ * вписывается внутрь. Прежние max-width/max-height до него не доходили, и
+ * вертикальный ролик 2160×3840 разворачивался на 2276 пикселей высоты при
+ * области в 740 — верх и низ уезжали за экран вместе с органами управления,
+ * так что включить его было нечем.
+ *
+ * Узко и намеренно: прежний .cl-viewer-stage img накрывал бы ВСЁ внутри
+ * сцены — слои качества, тринадцать миниатюр полосы, зарево.
+ */
+/* ── Проигрыватель ─────────────────────────────────────────────────────── */
+/*
+ * Коробка плеера повторяет пропорции ролика, а не всю сцену. Раньше video
+ * растягивался на всю ширину с object-fit: contain, картинка оказывалась
+ * заметно уже своего элемента — и полоса управления висела в полутора метрах
+ * от кадра, будто от другого приложения. С aspect-ratio коробка совпадает с
+ * изображением, и органы управления прижаты к самому ролику.
+ */
+.cl-player { position: absolute; inset: 0; display: grid; place-items: center; }
+.cl-player-frame { position: relative; width: 100%; height: 100%; max-width: 100%; max-height: 100%; }
+.cl-player video {
+  display: block;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.cl-player-big {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 84px; height: 84px;
+  display: grid; place-items: center;
+  border: none; border-radius: 50%;
+  background: rgba(12, 14, 18, .62);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .16), 0 14px 40px rgba(0, 0, 0, .5);
+  color: #fff;
+  cursor: pointer;
+  transition: transform .25s var(--cl-ease), background .2s ease;
+  animation: clFade .25s ease;
+}
+.cl-player-big:hover { transform: translate(-50%, -50%) scale(1.07); background: var(--brand); color: #14100a; }
+.cl-player-big svg { width: 30px; height: 30px; margin-left: 3px; }
+.cl-player-btn svg { width: 16px; height: 16px; }
+
+.cl-player-bar {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; gap: 11px;
+  padding: 30px 12px 10px;
+  border-radius: 0 0 4px 4px;
+  background: linear-gradient(transparent, rgba(6, 8, 11, .82));
+  opacity: 0;
+  transition: opacity .22s var(--cl-ease);
+}
+/*
+ * Панель видна по наведению — и всегда, пока стоит пауза: на паузе она и есть
+ * способ вернуться к воспроизведению. Правило про паузу стоит ПОСЛЕ правила
+ * покоя намеренно: у них равный вес, и побеждает последнее, иначе засыпающий
+ * интерфейс прятал органы управления у остановленного ролика.
+ */
+.cl-viewer.is-idle .cl-player-bar { opacity: 0; }
+.cl-player:hover .cl-player-bar,
+.cl-player:focus-within .cl-player-bar { opacity: 1; }
+/*
+ * На паузе — БЕЗ перехода. Панель в этот момент единственный способ вернуть
+ * воспроизведение, и появляться она обязана мгновенно; плавное проявление тут
+ * зависело от того, дошёл ли до элемента кадр композитора, и при остановленном
+ * видео панель иногда так и не проступала.
+ */
+.cl-player.is-paused .cl-player-bar { opacity: 1; transition: none; }
+
+.cl-player-btn {
+  flex: none;
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+  border: none; border-radius: 9px;
+  background: rgba(255, 255, 255, .1);
+  color: #fff; font-size: 13px; cursor: pointer;
+  transition: background .16s ease, transform .2s var(--cl-ease);
+}
+.cl-player-btn:hover { background: rgba(255, 255, 255, .22); transform: translateY(-1px); }
+.cl-player-btn.is-off { color: var(--brand); }
+.cl-player-time { font-size: 12px; font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, .82); }
+
+.cl-player-track {
+  position: relative;
+  flex: 1;
+  height: 16px;
+  display: flex; align-items: center;
+  cursor: pointer;
+  touch-action: none;
+}
+.cl-player-track::before {
+  content: ''; position: absolute; left: 0; right: 0; height: 4px;
+  border-radius: 99px; background: rgba(255, 255, 255, .2);
+  transition: height .18s var(--cl-ease);
+}
+.cl-player-track:hover::before, .cl-player-track.is-live::before { height: 6px; }
+.cl-player-buf, .cl-player-fill {
+  position: absolute; left: 0; right: 0; height: 4px;
+  border-radius: 99px;
+  transform-origin: left center;
+  transition: height .18s var(--cl-ease);
+}
+.cl-player-track:hover .cl-player-buf, .cl-player-track:hover .cl-player-fill,
+.cl-player-track.is-live .cl-player-buf, .cl-player-track.is-live .cl-player-fill { height: 6px; }
+.cl-player-buf { background: rgba(255, 255, 255, .28); }
+.cl-player-fill { background: var(--brand); }
+.cl-player-knob {
+  position: absolute; top: 50%;
+  width: 12px; height: 12px; margin-left: -6px;
+  border-radius: 50%; background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+  transform: translateY(-50%) scale(0);
+  transition: transform .18s var(--cl-ease);
+}
+.cl-player-track:hover .cl-player-knob, .cl-player-track.is-live .cl-player-knob { transform: translateY(-50%) scale(1); }
+
+.cl-player-unmute {
+  position: absolute; left: 50%; bottom: 74px;
+  transform: translateX(-50%);
+  padding: 7px 13px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 99px;
+  background: rgba(12, 14, 18, .78);
+  color: #fff; font: inherit; font-size: 12.5px; cursor: pointer;
+  animation: clToastIn .3s var(--cl-ease);
+}
+.cl-player-unmute:hover { background: var(--brand); color: #14100a; }
+
+.cl-shot-media > video,
+.cl-shot-media > audio {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   display: block;
   object-fit: contain;
 }
+.cl-shot-media > audio { height: auto; top: auto; bottom: 50%; }
 /* ── Вертикальный таймлайн слева от плиток ──────────────────────────────────
  * Тонкая ось со «станциями»: дата слева muted-текстом, на линии — круглый
  * узел с миниатюрой дня (без миниатюры — полый кружок). Пройденный отрезок
@@ -1136,13 +1310,19 @@ section[data-day],
 /* Рельса: три слота, каждый на своём месте. Старый кадр не исчезает — уезжает. */
 .cl-rail {
   position: absolute;
-  left: 0; right: 0; top: 0; bottom: var(--cl-gutter);
+  /*
+   * Сверху отступаем на высоту панели: вертикальный кадр занимает всю высоту,
+   * и его верх уходил под кнопки — у видео туда же уезжала часть картинки.
+   * Отступ постоянный, чтобы кадр не прыгал при скрытии хрома.
+   */
+  left: 0; right: 0; top: 56px; bottom: var(--cl-gutter);
   transform: translate3d(var(--nudge, 0px), 0, 0);
   transition: transform .3s var(--cl-ease);
 }
 .cl-rail.is-live { transition: none; }
 .cl-shot { position: absolute; inset: 0; display: grid; place-items: center; }
 .cl-shot-media {
+  position: relative;
   width: 100%; height: 100%;
   display: grid; place-items: center;
   will-change: transform;
@@ -1231,6 +1411,31 @@ section[data-day],
   z-index: 3;
 }
 .cl-viewer-title { font-size: 14px; font-weight: 560; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cl-viewer-count { font-size: 12.5px; color: rgba(255,255,255,.6); font-variant-numeric: tabular-nums; flex: none; }
+.cl-viewer-count em { font-style: normal; opacity: .5; }
+/*
+ * Кнопки верхней панели — один язык со всем остальным хромом: стеклянный
+ * кружок, знак нарисован вектором. Раньше здесь стояли текст «Скачать» со
+ * ссылочным подчёркиванием и эмодзи-иконки, и панель выглядела собранной из
+ * разных приложений.
+ */
+.cl-vbtn {
+  flex: none; width: 34px; height: 34px; border-radius: 11px;
+  display: grid; place-items: center; position: relative;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.07); color: rgba(255,255,255,.86);
+  cursor: pointer; text-decoration: none; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  transition: background .17s ease, color .17s ease, transform .17s var(--cl-ease), border-color .17s ease;
+}
+.cl-vbtn svg { width: 18px; height: 18px; }
+.cl-vbtn:hover { background: rgba(255,255,255,.16); color: #fff; transform: translateY(-1px); }
+.cl-vbtn.is-on { background: var(--brand); border-color: transparent; color: #14100a; }
+.cl-vbtn-dot {
+  position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--brand); color: #14100a;
+  font-style: normal; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+}
+.cl-vbtn.is-on .cl-vbtn-dot { background: #14100a; color: var(--brand); }
 .cl-viewer-nav {
   position: absolute; top: 50%; transform: translateY(-50%);
   width: 52px; height: 92px;
@@ -1251,22 +1456,108 @@ section[data-day],
   display: flex; flex-direction: column;
   animation: clPanelIn .3s var(--cl-ease);
 }
+/*
+ * Анимируем ТОЛЬКО сдвиг. Прозрачность в кейфрейме оставляла панель тусклой:
+ * анимация зависала в начальном кадре, и «Инфо» открывалось полупрозрачным,
+ * будто выключенным. Панель с текстом обязана быть читаемой независимо от
+ * того, доиграла анимация или нет.
+ */
 @keyframes clPanelIn {
-  from { transform: translateX(100%); opacity: .4; }
-  to { transform: none; opacity: 1; }
+  from { transform: translateX(100%); }
+  to { transform: none; }
 }
-.cl-panel-tabs { display: flex; border-bottom: 1px solid var(--surface-border); position: sticky; top: 0; background: var(--surface-100); z-index: 2; }
+.cl-panel-tabs { position: sticky; top: 0; z-index: 2; padding: 10px; background: var(--surface-100); border-bottom: 1px solid var(--surface-border); }
+.cl-panel-seg {
+  position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 2px;
+  padding: 3px; border-radius: 12px; background: var(--surface-300); border: 1px solid var(--surface-border);
+}
+.cl-panel-seg.solo { grid-template-columns: 1fr; }
+.cl-panel-thumb {
+  position: absolute; left: 3px; top: 3px; bottom: 3px; width: calc(50% - 3px);
+  border-radius: 9px; background: var(--surface-100);
+  box-shadow: 0 2px 8px rgba(0,0,0,.28);
+  transition: transform .26s var(--cl-ease);
+}
 .cl-panel-tabs button {
-  flex: 1; padding: 12px 8px; background: none; border: none; border-bottom: 2px solid transparent;
-  color: var(--text-muted); font: inherit; font-size: 13px; font-weight: 560; cursor: pointer;
+  position: relative; z-index: 1;
+  padding: 7px 6px; background: none; border: none; border-radius: 9px;
+  color: var(--text-muted); font: inherit; font-size: 12.5px; font-weight: 560; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  transition: color .2s ease;
 }
-.cl-panel-tabs button.is-active { color: var(--text-primary); border-bottom-color: var(--brand); }
+.cl-panel-tabs button.is-active { color: var(--text-primary); }
+.cl-panel-tabs button b {
+  min-width: 17px; padding: 0 5px; border-radius: 999px;
+  background: var(--brand); color: #14100a; font-size: 10.5px; line-height: 16px;
+}
 .cl-panel-body { padding: 14px; flex: 1; }
 
-.cl-meta-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--surface-border); font-size: 13px; }
-.cl-meta-row:last-child { border-bottom: none; }
-.cl-meta-row dt { color: var(--text-muted); flex: 0 0 auto; }
-.cl-meta-row dd { margin: 0; text-align: right; word-break: break-word; }
+/* ── Сведения о кадре ──────────────────────────────────────────────────── */
+.cl-mi { display: flex; flex-direction: column; gap: 14px; }
+/*
+ * Въезд разделов — ТОЛЬКО сдвигом. Прозрачность в кейфрейме уже однажды
+ * оставила панель тусклой навсегда: анимация зависла в начальном кадре, и текст
+ * стало не прочесть. Сведения обязаны быть читаемы вне зависимости от того,
+ * доиграла анимация или нет.
+ */
+.cl-mi > * { animation: clMiIn .34s var(--cl-ease) both; }
+.cl-mi > :nth-child(2) { animation-delay: .04s; }
+.cl-mi > :nth-child(3) { animation-delay: .08s; }
+.cl-mi > :nth-child(4) { animation-delay: .12s; }
+@keyframes clMiIn { from { transform: translateY(9px); } to { transform: none; } }
+
+.cl-mi-hero {
+  position: relative; overflow: hidden;
+  border-radius: 16px; padding: 14px 15px;
+  border: 1px solid var(--surface-border);
+  background:
+    radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--brand) 20%, transparent), transparent 62%),
+    var(--surface-200);
+}
+.cl-mi-place { display: flex; gap: 9px; align-items: flex-start; font-size: 14.5px; font-weight: 600; line-height: 1.35; }
+.cl-mi-place svg { flex: none; margin-top: 2px; color: var(--brand); }
+.cl-mi-place .top { color: var(--text-muted); font-weight: 560; }
+.cl-mi-place em { font-style: normal; color: var(--text-muted); margin: 0 5px; }
+.cl-mi-when { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.cl-mi-when b { font-size: 13.5px; font-weight: 600; }
+.cl-mi-when span { font-size: 13px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.cl-mi-badge {
+  font-style: normal; font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px; color: var(--text-muted);
+  background: var(--surface-300); border: 1px solid var(--surface-border);
+}
+
+.cl-mi-cam { display: flex; flex-direction: column; gap: 9px; }
+.cl-mi-shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 8px; }
+.cl-mi-shot {
+  padding: 10px 6px; border-radius: 13px; text-align: center;
+  background: var(--surface-200); border: 1px solid var(--surface-border);
+  transition: transform .18s var(--cl-ease), border-color .18s ease;
+}
+.cl-mi-shot:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--brand) 45%, var(--surface-border)); }
+.cl-mi-shot b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+.cl-mi-shot i { font-style: normal; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+.cl-mi-lens { display: flex; flex-direction: column; gap: 2px; padding-left: 2px; }
+.cl-mi-lens b { font-size: 13px; font-weight: 600; }
+.cl-mi-lens span { font-size: 12px; color: var(--text-muted); }
+
+.cl-mi-sect > h4 {
+  margin: 0 0 4px; padding-left: 2px;
+  font-size: 10.5px; font-weight: 640; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+.cl-mi-sect dl { margin: 0; }
+.cl-mi-row {
+  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+  padding: 7px 8px; margin: 0 -8px; border-radius: 9px; font-size: 13px;
+  transition: background .16s ease;
+}
+.cl-mi-row + .cl-mi-row { box-shadow: inset 0 1px 0 var(--surface-border); }
+.cl-mi-row dt { color: var(--text-muted); flex: 0 0 auto; }
+.cl-mi-row dd { margin: 0; text-align: right; word-break: break-word; }
+.cl-mi-row.can-copy { cursor: copy; }
+.cl-mi-row.can-copy:hover { background: var(--surface-200); }
+.cl-mi-row.is-copied dd { color: var(--brand); }
 
 /* ── Комментарии ───────────────────────────────────────────────────────── */
 

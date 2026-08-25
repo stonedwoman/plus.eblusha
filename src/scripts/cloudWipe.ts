@@ -68,7 +68,6 @@ async function main(): Promise<void> {
   // Часть связей стоит на Cascade, но полагаться на неё не будем — явное
   // удаление читается однозначно и не зависит от текущей схемы.
   await prisma.cloudReaction.deleteMany({});
-  await prisma.cloudFavorite.deleteMany({});
   await prisma.cloudComment.deleteMany({});
   await prisma.cloudFileVariant.deleteMany({});
   await prisma.cloudActivityEvent.deleteMany({});

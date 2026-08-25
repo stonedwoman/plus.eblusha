@@ -128,7 +128,7 @@ export default function AdminStoragePage() {
         <>
           <div className="cl-section-title">Упавшие задачи</div>
           {report.failedJobs.map((job) => (
-            <div key={`${job.queue}-${job.id}`} className="cl-meta-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+            <div key={`${job.queue}-${job.id}`} className="cl-mi-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
               <div style={{ fontSize: 12.5 }}>
                 {job.queue} · {job.id}
               </div>
@@ -166,7 +166,7 @@ export default function AdminStoragePage() {
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="cl-meta-row">
+    <div className="cl-mi-row">
       <dt>{label}</dt>
       <dd className="cl-mono">{value}</dd>
     </div>

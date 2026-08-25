@@ -64,7 +64,6 @@ export function cloudRoutes(prefix: '' | '/cloud'): RouteObject[] {
         { index: true, element: withSuspense(<CloudHome />) },
         { path: 'space/:spaceId', element: withSuspense(<CloudSpace />) },
         { path: 'recent', element: withSuspense(<CloudFeed />) },
-        { path: 'favorites', element: withSuspense(<CloudFeed />) },
         { path: 'uploads', element: withSuspense(<CloudFeed />) },
         { path: 'trash', element: withSuspense(<CloudFeed />) },
         { path: 'join/:publicId', element: withSuspense(<CloudJoin />) },

@@ -272,7 +272,7 @@ export function useDragSelect({
        * вместо нажатия.
        */
       if (e.pointerType === 'mouse') {
-        // Ленты «Недавние»/«Избранное»/«Корзина» рисуют плитки без обёртки
+        // Сквозные ленты рисуют плитки без обёртки
         // хуяпки — привязка к её классу оставляла их вовсе без рамки.
         if (!target || !target.closest('.cl-tl-main, .cl-tiles, .cl-page')) return
         if (target.closest('button, a, input, textarea, select, .cl-space-head, .cl-timenav')) {

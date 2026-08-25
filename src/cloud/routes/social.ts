@@ -239,31 +239,6 @@ router.post(
   })
 );
 
-// ── Избранное ────────────────────────────────────────────────────────────────
-
-router.post(
-  "/favorites",
-  ah(async (req: Request, res) => {
-    const fileId = z.string().min(1).safeParse((req.body ?? {}).fileId);
-    if (!fileId.success) throw invalid("Нужен fileId");
-    const user = req.cloudUser!;
-    const { file } = await requireFileAccess(req, fileId.data, "space:view");
-
-    const existing = await prisma.cloudFavorite.findUnique({
-      where: { userId_fileId: { userId: user.id, fileId: file.id } },
-    });
-    if (existing) {
-      await prisma.cloudFavorite.delete({ where: { id: existing.id } });
-    } else {
-      // Избранное личное: на состояние файла для остальных участников не влияет.
-      await prisma.cloudFavorite.create({ data: { userId: user.id, fileId: file.id, spaceId: file.spaceId } });
-    }
-    res.json({ favorite: !existing });
-  })
-);
-
-// ── Лента активности ─────────────────────────────────────────────────────────
-
 router.get(
   "/activity",
   ah(async (req: Request, res) => {

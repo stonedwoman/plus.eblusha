@@ -56,7 +56,6 @@ model User {
   cloudUploads                  CloudUploadSession[]
   cloudComments                 CloudComment[]                             @relation("CloudCommentAuthor")
   cloudReactions                CloudReaction[]
-  cloudFavorites                CloudFavorite[]
   cloudActivity                 CloudActivityEvent[]                       @relation("CloudActivityActor")
   cloudShares                   CloudShareLink[]                           @relation("CloudShareCreator")
   cloudInvites                  CloudInvite[]                              @relation("CloudInviteCreator")
@@ -737,7 +736,6 @@ model CloudFile {
   uploader      User               @relation("CloudFileUploader", fields: [uploaderId], references: [id])
   variants      CloudFileVariant[]
   comments      CloudComment[]
-  favorites     CloudFavorite[]
 
   @@index([purgedAt])
   @@index([spaceId, deletedAt, takenAt])
@@ -894,21 +892,6 @@ model CloudReaction {
   @@unique([targetType, targetId, userId, emoji])
   @@index([targetType, targetId])
   @@index([spaceId])
-}
-
-model CloudFavorite {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  userId    String
-  fileId    String
-  spaceId   String
-
-  user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  file CloudFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, fileId])
-  @@index([userId, createdAt])
-  @@index([fileId])
 }
 
 model CloudActivityEvent {

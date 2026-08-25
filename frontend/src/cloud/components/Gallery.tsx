@@ -103,7 +103,6 @@ const Tile = memo(function Tile({
       )}
 
       {failed ? <div className="cl-tile-failed" title={file.processingError ?? 'Обработка не удалась'}>⚠</div> : null}
-      {file.favorite ? <div className="cl-tile-fav">★</div> : null}
 
       <button
         className="cl-tile-check"
