@@ -350,22 +350,28 @@ export default function SpacePage() {
        * elementFromPoint возвращал именно их, а не снимок.
        */
       /*
-       * Щупаем НЕСКОЛЬКО точек по вертикали: одна фиксированная попадала в
-       * зазор между рядами плиток, и трекер молча выходил — фокус замирал на
-       * целые экраны прокрутки.
+       * Щупаем СЕТКУ точек, а не одну.
+       *
+       * Одна точка регулярно попадала в промежуток: по вертикали — между
+       * рядами, по горизонтали — в зазор между колонками. На ширине 1440
+       * центр колонки приходился ровно между снимками, и трекер выходил
+       * впустую на КАЖДОМ кадре — фокус не двигался вообще, сколько ни
+       * прокручивай. Зазор всего восемь пикселей, поэтому трёх позиций по
+       * ширине заведомо достаточно; обычно срабатывает первая же проба.
        */
       const probeY = 60 + visibleHeadRef.current + 30
       let tile: HTMLElement | null = null
-      for (const dy of [0, 46, 96, 150]) {
-        const stack = document.elementsFromPoint(box.left + box.width / 2, probeY + dy) as HTMLElement[]
-        for (const el of stack) {
-          const hit = el.closest<HTMLElement>('[data-run]')
-          if (hit) {
-            tile = hit
-            break
+      outer: for (const dy of [0, 46, 96, 150]) {
+        for (const fx of [0.5, 0.28, 0.72]) {
+          const stack = document.elementsFromPoint(box.left + box.width * fx, probeY + dy) as HTMLElement[]
+          for (const el of stack) {
+            const hit = el.closest<HTMLElement>('[data-run]')
+            if (hit) {
+              tile = hit
+              break outer
+            }
           }
         }
-        if (tile) break
       }
       const run = tile ? Number(tile.dataset.run) : NaN
       if (!Number.isFinite(run)) return
@@ -428,7 +434,10 @@ export default function SpacePage() {
         const goingUp = base - HEADER_OFFSET < root.scrollTop
         const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
         // Подсветка — по приезде, см. jumpToDay.
-        smoothScrollTo(root, base - HEADER_OFFSET - land - 34, (finished) => {
+        // Без добавочного сдвига: цель должна вставать ровно туда же, куда её
+        // ставит прыжок по дате, иначе она уезжает ниже линии отсчёта и
+        // бегунок показывает предыдущее место.
+        smoothScrollTo(root, base - HEADER_OFFSET - land, (finished) => {
           if (finished && !expired()) {
             flashGroup(`.cl-tl-main [data-run="${CSS.escape(String(run))}"][data-geo="1"]`)
           }
