@@ -137,6 +137,15 @@ export function GeoRail({
    * которые показываются только у текущей станции и её соседей.
    */
   const n = stations.length
+  /*
+   * Одно место — не маршрут.
+   *
+   * Ось со шкалой подразумевает движение между остановками; при единственном
+   * месте она вырождалась в длинную линию в никуда с одиноким кружком наверху
+   * и читалась как обломок вёрстки. Показываем просто отметку по центру
+   * колонки: «всё это снято здесь» — и ничего больше.
+   */
+  const solo = n === 1
   const step = (h - PAD * 2 - NODE) / Math.max(1, n)
   const lineTop = PAD + NODE / 2
   const lineBottom = PAD + n * step + NODE / 2
@@ -148,8 +157,9 @@ export function GeoRail({
     // Рядом с текущей позволяем чуть крупнее, но строго в пределах шага.
     const d = activeIndex < 0 ? 9 : Math.abs(i - activeIndex)
     const boost = d === 0 ? 1.18 : d === 1 ? 1.08 : 1
-    const k = clamp(baseK * boost, 0.26, clamp(step / 42, 0.26, 1))
-    return { ...st, i, k, top: PAD + i * step + (NODE * (1 - k)) / 2 }
+    const k = solo ? 1 : clamp(baseK * boost, 0.26, clamp(step / 42, 0.26, 1))
+    const top = solo ? Math.max(PAD, (h - NODE) / 2) : PAD + i * step + (NODE * (1 - k)) / 2
+    return { ...st, i, k, top }
   })
 
   const activeStation = laid.find((s) => s.run === activeRun)
@@ -165,9 +175,13 @@ export function GeoRail({
 
   return (
     <nav ref={setNode} className="cl-timenav cl-geonav" aria-label="Места съёмки">
-      <div className="cl-tn-axis" style={{ top: lineTop, height: axisLen }} />
-      {activeRun >= 0 ? (
-        <div className="cl-tn-axis done" style={{ top: lineTop, height: axisLen, transform: `scaleY(${progress})` }} />
+      {!solo ? (
+        <>
+          <div className="cl-tn-axis" style={{ top: lineTop, height: axisLen }} />
+          {activeRun >= 0 ? (
+            <div className="cl-tn-axis done" style={{ top: lineTop, height: axisLen, transform: `scaleY(${progress})` }} />
+          ) : null}
+        </>
       ) : null}
 
       {laid.map((s) => {
@@ -178,7 +192,7 @@ export function GeoRail({
         // Подписи — у текущей станции и её ближайших соседей: это и есть
         // акцент, который едет за прокруткой. Остальные читаются по наведению.
         const near = activeIndex < 0 ? s.i <= 1 : Math.abs(s.i - activeIndex) <= 1
-        const showCap = near && s.k >= 0.5
+        const showCap = solo || (near && s.k >= 0.5)
         return (
           <button
             key={`${s.run}-${s.path}`}
