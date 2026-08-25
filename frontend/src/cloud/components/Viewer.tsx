@@ -445,10 +445,26 @@ export function Viewer({
       const deltaPx =
         e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * window.innerHeight : e.deltaY
 
+      /*
+       * «Внутри кадра» — над САМИМ снимком, а не над контейнером: контейнер
+       * растянут на всю сцену, и тёмные поля вокруг фото считались «кадром» —
+       * колесо вверх сбоку от снимка зумило вместо возврата к предыдущим.
+       * Считаем прямоугольник показанного изображения из вписанного размера,
+       * зума и панорамы: рядом с фото колесо всегда листает — вверх назад,
+       * вниз вперёд.
+       */
       const media = mediaRef.current
       const r = media?.getBoundingClientRect()
-      const inside =
-        !!r && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom
+      const fit = fitRef.current
+      let inside = false
+      if (r && fit.w > 0) {
+        const cx = r.left + r.width / 2 + view.current.x
+        const cy = r.top + r.height / 2 + view.current.y
+        const halfW = (fit.w * view.current.zoom) / 2
+        const halfH = (fit.h * view.current.zoom) / 2
+        inside =
+          e.clientX >= cx - halfW && e.clientX <= cx + halfW && e.clientY >= cy - halfH && e.clientY <= cy + halfH
+      }
 
       const now = performance.now()
 
