@@ -46,10 +46,15 @@ export function GeoRail({
 
   useEffect(() => {
     if (!node) return
+    /*
+     * Высота рельсы постоянна (см. .cl-timenav), поэтому наблюдатель срабатывает
+     * только на настоящем изменении окна. Сравнение перед записью обязательно:
+     * без него любое срабатывание тянуло за собой перерисовку всех станций.
+     */
     const apply = () => {
-      setH(node.clientHeight)
-      const off = parseFloat(getComputedStyle(node).getPropertyValue('--cl-rail-off')) || 0
-      setBaseH(node.clientHeight + off)
+      const next = node.clientHeight
+      setH((prev) => (prev === next ? prev : next))
+      setBaseH((prev) => (prev === next ? prev : next))
     }
     const ro = new ResizeObserver(apply)
     ro.observe(node)
