@@ -255,7 +255,6 @@
   margin: 0 -18px 14px;
   padding: 16px 18px 0;
   background: var(--paper);
-  border-bottom: 1px solid var(--surface-border);
   /* Складывание — решительное, разворот — мягкий: возврат к фильтрам должен
      ощущаться приглашением, а не рывком. */
   transition: transform .42s var(--cl-ease);
@@ -381,55 +380,86 @@
 .cl-ed-slot .cl-upbar { margin-top: 0; max-width: none; flex: 1; }
 
 /* ── Полоса: единственное, что остаётся свёрнутым ───────────────────────── */
-.cl-head-band {
-  display: flex; align-items: center; gap: 12px;
-  min-height: 46px; padding: 4px 0 6px;
-  flex-wrap: wrap;
-  row-gap: 8px;
+/*
+ * КАРТОТЕКА. Полоса — один предмет из двух частей: ряд вкладок-папок и тело
+ * активного раздела. Фильтры и действия лежат ВНУТРИ тела — они принадлежат
+ * разделу, а не рассыпаны по углам. Класс .cl-head-band и bandRef неизменны:
+ * на них держится контракт замеров складывания (metrics/headShift).
+ */
+.cl-head-band { display: block; padding: 6px 0 12px; }
+
+.cl-tabs { display: flex; align-items: flex-end; gap: 4px; flex-wrap: nowrap; }
+.cl-tab {
+  position: relative;
+  margin-bottom: -1px; /* активная наезжает на рамку тела и сращивается с ним */
+  padding: 9px 15px 8px;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  background: none; cursor: pointer; font: inherit;
+  /* Рубричный ключ — тем же голосом, что киккер «Хуяпка» сверху. */
+  font-size: 12.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-muted); white-space: nowrap;
+  transition: color .2s ease, background .2s ease;
 }
-.cl-band-who { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.cl-tab:hover { color: var(--text-primary); }
+.cl-tab.is-active {
+  color: var(--text-primary);
+  background: var(--surface-200);
+  border-color: var(--surface-border);
+  z-index: 1;
+}
+/* Оранжевый гребень активной папки. */
+.cl-tab.is-active::before {
+  content: ''; position: absolute; left: 10px; right: 10px; top: -1px; height: 2px;
+  border-radius: 0 0 2px 2px; background: var(--brand);
+}
+
+.cl-tab-body {
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; gap: 10px; flex-wrap: nowrap;
+  /*
+   * КОНТРАКТ: высота тела не зависит от наполнения (фильтры ⇄ подпись при
+   * смене раздела) — иначе ResizeObserver дёрнет --cl-rail-off, и липкая
+   * дата с рельсами прыгнут по клику.
+   */
+  min-height: 46px;
+  padding: 5px 12px;
+  background: var(--surface-200);
+  border: 1px solid var(--surface-border);
+  border-radius: 0 12px 12px 12px;
+}
+.cl-tab-note { font-size: 12.5px; color: var(--text-muted); padding-left: 4px; }
+
+/* Компакт-идентичность в ряду вкладок: проявляется, когда титул уехал. */
+.cl-tabs .cl-band-who {
+  margin-left: auto; align-self: center; padding-bottom: 3px;
+  display: flex; align-items: center; gap: 9px; min-width: 0;
+  opacity: 0; pointer-events: none;
+  transition: opacity .24s var(--cl-ease);
+}
+.cl-space-head.is-compact .cl-tabs .cl-band-who { opacity: 1; pointer-events: auto; }
 .cl-ed-ava { display: block; transition: transform .3s var(--cl-ease); }
 .cl-ed-ava:hover { transform: scale(1.14) translateY(-2px); z-index: 1; position: relative; }
-/* Название хуяпки в полосе — подсказка «где я», когда титул уехал. */
 .cl-band-title {
   font-size: 13px; font-weight: 620; letter-spacing: -.01em;
   max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  opacity: 0; transform: translateX(-6px);
-  transition: opacity .22s var(--cl-ease), transform .3s var(--cl-ease);
 }
-.cl-space-head.is-compact .cl-band-title { opacity: 1; transform: none; }
 
-/*
- * Сегмент вкладок БЕЗ единого замера: колонки равной ширины, пилюля шириной в
- * колонку и сдвигом на индекс. Прежний измеряемый индикатор промахивался на
- * первом кадре (до раскладки) и после поздней загрузки шрифта.
- */
-.cl-seg {
-  position: relative;
-  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
-  padding: 3px; border-radius: 11px;
-  background: var(--surface-200); border: 1px solid var(--surface-border);
+/* Заливка в компакте: fold с прогрессом сложен, но тонкая бегущая нить по
+   низу тела честно говорит «идёт загрузка» (композитно). */
+.cl-tab-progress {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--brand);
+  transform: translateX(-100%) scaleX(.4); transform-origin: left center;
+  animation: clBusy 1.3s var(--cl-ease) infinite;
 }
-.cl-seg-pill {
-  position: absolute; top: 3px; bottom: 3px; left: 3px;
-  width: calc((100% - 6px) / var(--seg-n));
-  border-radius: 8px; background: var(--brand);
-  transform: translate3d(calc(var(--seg-i) * 100%), 0, 0);
-  transition: transform .38s var(--cl-ease);
-  box-shadow: 0 4px 14px -4px color-mix(in srgb, var(--brand) 70%, transparent);
+@keyframes clBusy {
+  to { transform: translateX(250%) scaleX(.4); }
 }
-.cl-seg-btn {
-  position: relative; z-index: 1;
-  padding: 7px 14px; border: none; background: none; cursor: pointer;
-  font: inherit; font-size: 12.5px; font-weight: 600;
-  color: var(--text-muted); white-space: nowrap;
-  transition: color .22s var(--cl-ease-io);
-}
-.cl-seg-btn:hover { color: var(--text-primary); }
-.cl-seg-btn.is-active { color: #14100a; }
 
 .cl-ed-filters .cl-chip { border-color: transparent; background: transparent; }
-.cl-ed-filters .cl-chip:hover { background: var(--surface-200); }
+.cl-ed-filters .cl-chip:hover { background: var(--surface-300); }
+.cl-tab-body .cl-act-quiet:hover { background: var(--surface-300); }
 .cl-ed-filters .cl-chip.is-active {
   background: var(--surface-300); color: var(--text-primary);
   border-color: var(--surface-border-strong);
@@ -2193,9 +2223,10 @@ section[data-day],
   .cl-ed-figs { justify-self: start; }
   .cl-ed-fig { padding: 0 14px; }
   .cl-ed-fig:first-child { padding-left: 0; }
-  .cl-head-band { flex-wrap: wrap; row-gap: 8px; }
-  .cl-band-who { order: -1; }
-  .cl-seg { width: 100%; }
+  /* Вкладки листаются пальцем, тело переносит блоки целиком. */
+  .cl-tabs { overflow-x: auto; scrollbar-width: none; }
+  .cl-tabs .cl-band-who { display: none; }
+  .cl-tab-body { flex-wrap: wrap; row-gap: 6px; }
   .cl-band-acts { margin-left: auto; }
   .cl-dock { right: 8px; left: 8px; bottom: calc(8px + var(--safe-bottom)); width: auto; }
 

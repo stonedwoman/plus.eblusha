@@ -995,56 +995,47 @@ export default function SpacePage() {
 
         {/* ── Полоса: живёт в обоих состояниях ────────────────────────────── */}
         <div ref={bandRef} className="cl-head-band">
-          <div className="cl-band-who">
-            <div className="cl-ava-stack">
-              {space.members.slice(0, 4).map((m, i) => (
-                <span className="cl-ed-ava" key={m.id} style={{ ['--i' as string]: i }}>
-                  <Avatar user={m} online={onlineIds.has(m.id)} />
-                </span>
-              ))}
-            </div>
-            <span className="cl-band-title">{space.name}</span>
-          </div>
-
-          {/*
-            Сегмент без единого замера: колонки равной ширины, пилюля шириной в
-            одну колонку и сдвигом на индекс. Никаких offsetLeft, а значит и
-            промаха на первом кадре, пока не доехал шрифт.
-          */}
-          <div
-            className="cl-seg"
-            style={{ ['--seg-n' as string]: 4, ['--seg-i' as string]: ['timeline', 'files', 'map', 'activity'].indexOf(view) }}
-          >
-            <i className="cl-seg-pill" aria-hidden />
+          {/* Ряд вкладок-папок: активный РАЗДЕЛ срастается с телом ниже. */}
+          <div className="cl-tabs">
             {(['timeline', 'files', 'map', 'activity'] as View[]).map((v) => (
-              <button key={v} className={`cl-seg-btn${view === v ? ' is-active' : ''}`} onClick={() => setView(v)}>
+              <button key={v} className={`cl-tab${view === v ? ' is-active' : ''}`} onClick={() => setView(v)}>
                 {v === 'timeline' ? 'Таймлайн' : v === 'files' ? 'Файлы' : v === 'map' ? 'Карта' : 'Активность'}
               </button>
             ))}
+            {/* Компакт-идентичность: проявляется, когда титул уехал вверх. */}
+            <div className="cl-band-who">
+              <div className="cl-ava-stack">
+                {space.members.slice(0, 4).map((m, i) => (
+                  <span className="cl-ed-ava" key={m.id} style={{ ['--i' as string]: i }}>
+                    <Avatar user={m} online={onlineIds.has(m.id)} />
+                  </span>
+                ))}
+              </div>
+              <span className="cl-band-title">{space.name}</span>
+            </div>
           </div>
 
-          <div className="cl-spacer" />
-
-          {view !== 'activity' && view !== 'map' ? (
-            <div className="cl-chips cl-ed-filters">
-              {([['', 'Все'], ['IMAGE', 'Фото'], ['VIDEO', 'Видео'], ['DOCUMENT', 'Документы']] as const).map(([value, label]) => (
-                <button
-                  key={label}
-                  className={`cl-chip${kindFilter === value ? ' is-active' : ''}`}
-                  onClick={() => setKindFilter(value as typeof kindFilter)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-
-          {/*
-            Все действия стоят ОТКРЫТО — никакого «Ещё»: спрятанную там
-            загрузку папки не находили, а полоса вмещает всё и так.
-            Второстепенные — тихими кнопками со значком и словом.
-          */}
-          <div className="cl-band-acts">
+          {/* Тело раздела: фильтры и действия ПРИНАДЛЕЖАТ активной вкладке. */}
+          <div className="cl-tab-body">
+            {view !== 'activity' && view !== 'map' ? (
+              <div className="cl-chips cl-ed-filters">
+                {([['', 'Все'], ['IMAGE', 'Фото'], ['VIDEO', 'Видео'], ['DOCUMENT', 'Документы']] as const).map(([value, label]) => (
+                  <button
+                    key={label}
+                    className={`cl-chip${kindFilter === value ? ' is-active' : ''}`}
+                    onClick={() => setKindFilter(value as typeof kindFilter)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <span className="cl-tab-note">
+                {view === 'map' ? 'Снимки с геометкой — на карте' : 'Журнал действий участников'}
+              </span>
+            )}
+            <div className="cl-spacer" />
+            <div className="cl-band-acts">
             {canEdit ? (
               <div className="cl-split cl-act-main">
                 <button className="cl-split-main" onClick={() => fileInput.current?.click()}>
@@ -1089,6 +1080,8 @@ export default function SpacePage() {
               </svg>
               Скачать всё
             </button>
+          </div>
+            {uploads.length > 0 ? <i className="cl-tab-progress" aria-hidden /> : null}
           </div>
         </div>
       </div>
@@ -1433,6 +1426,11 @@ function Figure({ label, value, accent }: { label: string; value: number | strin
 function SpaceByline({ space, onlineIds }: { space: CloudSpace; onlineIds: Set<string> }) {
   return (
     <div className="cl-ed-by">
+      <div className="cl-ava-stack">
+        {space.members.slice(0, 4).map((m) => (
+          <Avatar key={m.id} user={m} online={onlineIds.has(m.id)} />
+        ))}
+      </div>
       <span className="cl-ed-by-names">
         {space.members.map((m) => m.displayName || m.username).join(' · ')}
       </span>
