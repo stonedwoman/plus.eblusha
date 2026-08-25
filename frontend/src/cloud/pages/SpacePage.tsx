@@ -1282,7 +1282,9 @@ function flashGroup(selector: string): void {
    * стоит первым рядом под шапкой и в кадр попадают в основном соседи.
    * Положительная пометка однозначна: помечено то, что светится.
    */
-  const rule = `${selector} { animation: clLit ${FLASH_MS}ms var(--cl-ease) both; }`
+  const rule =
+    `${selector} { animation: clLit ${FLASH_MS}ms var(--cl-ease) both; }\n` +
+    `${selector}::before { animation: clLitRing ${FLASH_MS}ms var(--cl-ease) both; }`
   requestAnimationFrame(() => {
     if (tag) tag.textContent = rule
   })

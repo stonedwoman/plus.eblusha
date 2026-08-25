@@ -530,19 +530,39 @@
  * Ощущение области держит затемнение всего остального.
  */
 /*
- * Пометка группы: яркая ВНУТРЕННЯЯ обводка плюс короткий подскок.
+ * Пометка группы: рамка ПОВЕРХ снимка плюс короткий подскок.
  *
- * Обводка внутренняя, потому что внешнюю срезает липкая шапка у верхнего ряда
- * и подрезание прокрутчика у крайних колонок. Подскок трансформом — он и
- * ведёт взгляд: неподвижную обводку на пёстрой сетке легко не заметить, а
- * движение видно боковым зрением.
+ * Рамка живёт в отдельной накладке, а не в тени самой плитки: внутренняя тень
+ * рисуется НИЖЕ содержимого, а снимок заполняет плитку целиком — её попросту
+ * не было видно. Внешняя же обводка не годится: её срезает липкая шапка у
+ * верхнего ряда и подрезание прокрутчика у крайних колонок.
+ *
+ * Подскок трансформом — он и ведёт взгляд: неподвижную рамку на пёстрой сетке
+ * легко не заметить, а движение видно боковым зрением.
  */
+.cl-tile::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  /* Тёмная подложка под брендовой линией: на светлых кадрах чистый оранжевый
+     теряется, с ней рамка читается на любом снимке. */
+  box-shadow: inset 0 0 0 3px var(--brand), inset 0 0 0 4.5px rgba(0, 0, 0, .45);
+}
+@keyframes clLitRing {
+  0%   { opacity: 0; }
+  12%  { opacity: 1; }
+  72%  { opacity: 1; }
+  100% { opacity: 0; }
+}
 @keyframes clLit {
-  0%   { box-shadow: inset 0 0 0 0 transparent; transform: none; filter: none; }
-  14%  { box-shadow: inset 0 0 0 3px var(--brand); transform: scale(1.035); filter: brightness(1.14) saturate(1.05); }
-  38%  { box-shadow: inset 0 0 0 3px var(--brand); transform: none; filter: brightness(1.08); }
-  70%  { box-shadow: inset 0 0 0 3px var(--brand); transform: none; filter: none; }
-  100% { box-shadow: inset 0 0 0 0 transparent; transform: none; filter: none; }
+  0%   { transform: none; filter: none; }
+  14%  { transform: scale(1.035); filter: brightness(1.12) saturate(1.04); }
+  38%  { transform: none; filter: brightness(1.06); }
+  100% { transform: none; filter: none; }
 }
 /*
  * Пока идёт выделение протяжкой: мышь не должна попутно выделять текст дат, а
