@@ -556,11 +556,13 @@ export function Viewer({
       }
       if (Math.abs(dx) > SWIPE_PX) go(dx < 0 ? 1 : -1)
       if (rail) {
-        rail.style.transition = 'transform .22s var(--cl-ease)'
+        // Та же длительность и кривая, что у проезда слотов: возврат рельсы и
+        // переезд кадра складываются в одно непрерывное движение.
+        rail.style.transition = 'transform .3s var(--cl-ease)'
         rail.style.transform = ''
         setTimeout(() => {
           if (railRef.current) railRef.current.style.transition = ''
-        }, 240)
+        }, 320)
       }
       if (backdropRef.current) backdropRef.current.style.opacity = ''
       return
