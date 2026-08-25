@@ -561,38 +561,67 @@ export function Viewer({
             {index + 1} <em>/</em> {files.length}
           </span>
           {zoomPct !== 100 ? <span className="cl-zoom-pill">{zoomPct}%</span> : null}
-          <div className="cl-spacer" />
-          {file.urls.download ? (
-            <a className="cl-vbtn" href={file.urls.download} download aria-label="Скачать" title="Скачать">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" />
-              </svg>
-            </a>
-          ) : null}
+        </div>
+
+        {/*
+          Язычки у правого края: закладки ящика, а не ряд одинаковых кнопок.
+          Живут внутри сцены, поэтому при выдвинутой панели сами оказываются
+          на её кромке — сцена сужается, right: 0 едет вместе с ней.
+        */}
+        <div className="cl-vtabs">
           <button
-            className={`cl-vbtn${panel === 'info' ? ' is-on' : ''}`}
+            className={`cl-vtab${panel === 'info' ? ' is-on' : ''}`}
             onClick={() => setPanel(panel === 'info' ? null : 'info')}
-            aria-label="Сведения"
-            title="Сведения (i)"
+            title="Сведения о кадре (i)"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="12" cy="12" r="9" />
               <path d="M12 11v5.5" />
               <circle cx="12" cy="7.7" r="1.1" fill="currentColor" stroke="none" />
             </svg>
+            <span>Инфо</span>
           </button>
+
           {!readOnly ? (
             <button
-              className={`cl-vbtn${panel === 'comments' ? ' is-on' : ''}`}
+              className={`cl-vtab${panel === 'comments' ? ' is-on' : ''}`}
               onClick={() => setPanel(panel === 'comments' ? null : 'comments')}
-              aria-label="Обсуждение"
-              title="Обсуждение"
+              title="Обсуждение кадра"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
                 <path d="M20 12.4c0 3.9-3.6 7-8 7a9 9 0 0 1-2.4-.3L5 21l1.1-3.4A6.7 6.7 0 0 1 4 12.4c0-3.9 3.6-7 8-7s8 3.1 8 7Z" />
               </svg>
-              {file.commentCount ? <i className="cl-vbtn-dot">{file.commentCount}</i> : null}
+              <span>Комменты{file.commentCount ? ` (${file.commentCount})` : ''}</span>
             </button>
+          ) : null}
+
+          {file.urls.download ? (
+            <a
+              className="cl-vtab"
+              href={file.urls.download}
+              download={file.name}
+              draggable
+              /*
+               * Перетаскивание прямо в папку: DownloadURL — единственный способ
+               * отдать системе имя, тип и адрес файла так, чтобы отпускание над
+               * рабочим столом сохранило именно файл, а не ярлык на страницу.
+               * Рядом кладём обычный адрес: тем, кто DownloadURL не понимает,
+               * достанется хотя бы ссылка.
+               */
+              onDragStart={(e) => {
+                const url = new URL(file.urls.download as string, window.location.origin).href
+                e.dataTransfer.setData('DownloadURL', `${file.mime}:${file.name}:${url}`)
+                e.dataTransfer.setData('text/uri-list', url)
+                e.dataTransfer.setData('text/plain', url)
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
+              title="Скачать · можно перетащить в папку"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" />
+              </svg>
+              <span>Скачать</span>
+            </a>
           ) : null}
         </div>
 
@@ -661,23 +690,13 @@ export function Viewer({
 
       {panel ? (
         <aside className="cl-viewer-panel">
-          <div className="cl-panel-tabs">
-            {/* Сегментированный переключатель: бегунок ездит под активной
-                вкладкой, поэтому переход читается как движение, а не как
-                перекраска текста. */}
-            <div className={`cl-panel-seg${readOnly ? ' solo' : ''}`}>
-              {!readOnly ? (
-                <span className="cl-panel-thumb" style={panel === 'comments' ? { transform: 'translateX(calc(100% + 2px))' } : undefined} />
-              ) : null}
-              <button className={panel === 'info' ? 'is-active' : ''} onClick={() => setPanel('info')}>
-                Сведения
-              </button>
-              {!readOnly ? (
-                <button className={panel === 'comments' ? 'is-active' : ''} onClick={() => setPanel('comments')}>
-                  Обсуждение{file.commentCount ? <b>{file.commentCount}</b> : null}
-                </button>
-              ) : null}
-            </div>
+          <div className="cl-panel-head">
+            <b>{panel === 'info' ? 'Сведения' : 'Обсуждение'}</b>
+            <button onClick={() => setPanel(null)} aria-label="Закрыть панель">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
           </div>
           <div className={`cl-panel-body${panel === 'comments' ? ' is-talk' : ''}`}>
             {panel === 'info' ? (

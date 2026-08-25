@@ -625,7 +625,6 @@ body.cl-dragging-select .cl-tile:hover { transform: none; box-shadow: none; }
 body.cl-dragging-select .cl-tile { cursor: cell; }
 /* Чипы — главный переключатель экрана: без перехода они щёлкали цветом. */
 .cl-chip { transition: background .18s var(--cl-ease-io), color .18s var(--cl-ease-io), border-color .18s var(--cl-ease-io); }
-.cl-panel-tabs button { transition: color .18s ease, border-bottom-color .18s ease; }
 .cl-tile:hover { transform: translateY(-3px); box-shadow: 0 10px 26px rgba(0, 0, 0, .38); }
 .cl-tile.selected:hover { transform: none; }
 /*
@@ -1448,7 +1447,9 @@ section[data-day],
 .cl-viewer-nav { transition: opacity .3s var(--cl-ease), background .15s ease; }
 .cl-viewer-nav:hover { background: rgba(30, 34, 44, .8); }
 .cl-viewer-nav.prev { left: 0; border-radius: 0 12px 12px 0; }
-.cl-viewer-nav.next { right: 0; border-radius: 12px 0 0 12px; }
+/* Стрелка уходит левее язычков: в невысоком окне закладки доезжают до
+   середины края, и «вперёд» оказывалась ровно под ними. */
+.cl-viewer-nav.next { right: 42px; border-radius: 12px; }
 .cl-viewer-panel {
   /*
    * Своя ступень в стопке. Зарево (.cl-vglow) — позиционированный слой с
@@ -1474,32 +1475,56 @@ section[data-day],
   from { transform: translateX(100%); }
   to { transform: none; }
 }
-.cl-panel-tabs { position: sticky; top: 0; z-index: 2; padding: 10px; background: var(--surface-100); border-bottom: 1px solid var(--surface-border); }
-.cl-panel-seg {
-  position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 2px;
-  padding: 3px; border-radius: 12px; background: var(--surface-300); border: 1px solid var(--surface-border);
+/* Заголовок панели: что открыто и как закрыть. Выбор ушёл на язычки. */
+.cl-panel-head {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 13px 10px 13px 15px;
+  border-bottom: 1px solid var(--surface-border);
 }
-.cl-panel-seg.solo { grid-template-columns: 1fr; }
-.cl-panel-thumb {
-  position: absolute; left: 3px; top: 3px; bottom: 3px; width: calc(50% - 4px);
-  border-radius: 9px; background: var(--surface-100);
-  box-shadow: 0 2px 8px rgba(0,0,0,.28);
-  transition: transform .26s var(--cl-ease);
+.cl-panel-head b { flex: 1; font-size: 13.5px; font-weight: 620; }
+.cl-panel-head button {
+  flex: none; width: 28px; height: 28px; display: grid; place-items: center;
+  border: none; border-radius: 9px; background: none; color: var(--text-muted); cursor: pointer;
+  transition: background .15s ease, color .15s ease;
 }
-.cl-panel-tabs button {
-  position: relative; z-index: 1;
-  padding: 7px 6px; background: none; border: none; border-radius: 9px;
-  color: var(--text-muted); font: inherit; font-size: 12.5px; font-weight: 560; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  transition: color .2s ease;
+.cl-panel-head button svg { width: 15px; height: 15px; }
+.cl-panel-head button:hover { background: var(--surface-200); color: var(--text-primary); }
+
+/*
+ * Язычки у правого края — закладки выдвижного ящика.
+ *
+ * Ряд одинаковых круглых кнопок в шапке не говорил, что за ними: значок «i»
+ * и значок облачка читались одинаково и оба выглядели служебными. Закладка
+ * подписана, торчит из края и прямо показывает, что её можно потянуть.
+ */
+.cl-vtabs {
+  position: absolute; top: 62px; right: 0; z-index: 4;
+  display: flex; flex-direction: column; gap: 7px;
+  transition: opacity .3s var(--cl-ease);
 }
-.cl-panel-tabs button.is-active { color: var(--text-primary); }
-/* Свой фокусный ободок: системный рисовался белой рамкой поверх бегунка. */
-.cl-panel-tabs button:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
-.cl-panel-tabs button b {
-  min-width: 17px; padding: 0 5px; border-radius: 999px;
-  background: var(--brand); color: #14100a; font-size: 10.5px; line-height: 16px;
+.cl-viewer.is-idle .cl-vtabs { opacity: 0; pointer-events: none; }
+.cl-vtab {
+  writing-mode: vertical-rl;
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 15px 9px 15px 8px;
+  border: 1px solid rgba(255, 255, 255, .12); border-right: none;
+  border-radius: 13px 0 0 13px;
+  background: rgba(18, 21, 28, .66);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  color: rgba(255, 255, 255, .84);
+  font: inherit; font-size: 12px; font-weight: 560; letter-spacing: .015em;
+  text-decoration: none; cursor: pointer;
+  transition: background .18s ease, color .18s ease, padding-left .18s var(--cl-ease);
 }
+/* Значок остаётся стоймя: вертикальный поток разворачивает буквы, но не
+   заменяемые элементы — знак читается, подпись идёт сверху вниз. */
+.cl-vtab svg { width: 15px; height: 15px; flex: none; }
+.cl-vtab:hover { background: rgba(32, 37, 48, .9); color: #fff; padding-left: 13px; }
+.cl-vtab.is-on {
+  background: var(--brand); border-color: transparent; color: #14100a;
+}
+.cl-vtab:active { cursor: grabbing; }
+
 .cl-panel-body { padding: 14px; flex: 1; min-height: 0; overflow-y: auto; }
 /* Обсуждение само распоряжается прокруткой: список едет, поле ввода стоит. */
 .cl-panel-body.is-talk { overflow: hidden; display: flex; }
