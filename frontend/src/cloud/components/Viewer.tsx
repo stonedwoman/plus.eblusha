@@ -129,6 +129,27 @@ export function Viewer({
    * хром не прячется.
    */
   const [panel, setPanel] = useState<'info' | 'comments' | null>(null)
+  /*
+   * Панель не исчезает, а УЕЗЖАЕТ. leaving держит её смонтированной (и грид
+   * трёхколоночным) на время выездной анимации: ящик задвигается обратно под
+   * корешок, и только потом сцена расширяется. Раньше закрытие было мгновенным
+   * схлопыванием — единственная непроанимированная смена состояния вьюера.
+   */
+  const [leaving, setLeaving] = useState<'info' | 'comments' | null>(null)
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const togglePanel = useCallback((which: 'info' | 'comments') => {
+    setPanel((cur) => {
+      if (cur === which) {
+        setLeaving(which)
+        if (leaveTimer.current) clearTimeout(leaveTimer.current)
+        // Страховка: если animationend потеряется, панель всё равно уйдёт.
+        leaveTimer.current = setTimeout(() => setLeaving(null), 420)
+        return null
+      }
+      setLeaving(null)
+      return which
+    })
+  }, [])
   const [closing, setClosing] = useState(false)
   const [idle, setIdle] = useState(false)
   /** Показываемый процент масштаба: обновляется редко, поэтому в состоянии. */
@@ -350,7 +371,7 @@ export function Viewer({
       } else if (key === 'r' || e.code === 'KeyR') {
         if (!readOnly) void rotate(e.shiftKey ? 'ccw' : 'cw')
       } else if (key === 'i' || e.code === 'KeyI') {
-        setPanel((p) => (p === 'info' ? null : 'info'))
+        togglePanel('info')
       }
     }
     window.addEventListener('keydown', onKey)
@@ -582,7 +603,7 @@ export function Viewer({
 
   return (
     <div
-      className={`cl-viewer${panel ? ' with-panel' : ''}${closing ? ' is-closing' : ''}${idle ? ' is-idle' : ''}`}
+      className={`cl-viewer${panel || leaving ? ' with-panel' : ''}${closing ? ' is-closing' : ''}${idle ? ' is-idle' : ''}`}
       onPointerMove={wake}
     >
       <div className="cl-vbackdrop" ref={backdropRef} aria-hidden />
@@ -712,18 +733,23 @@ export function Viewer({
         ) : null}
       </div>
 
-      {panel ? (
-        <aside className="cl-viewer-panel">
+      {panel || leaving ? (
+        <aside
+          className={`cl-viewer-panel${leaving ? ' is-leaving' : ''}`}
+          onAnimationEnd={(e) => {
+            if (leaving && (e.animationName === 'clPanelOut' || e.animationName === 'clSheetDown')) setLeaving(null)
+          }}
+        >
           <div className="cl-panel-head">
-            <b>{panel === 'info' ? 'Сведения' : 'Обсуждение'}</b>
-            <button onClick={() => setPanel(null)} aria-label="Закрыть панель">
+            <b>{(panel ?? leaving) === 'info' ? 'Сведения' : 'Обсуждение'}</b>
+            <button onClick={() => togglePanel(panel ?? 'info')} aria-label="Закрыть панель">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <path d="M6 6l12 12M18 6L6 18" />
               </svg>
             </button>
           </div>
-          <div className={`cl-panel-body${panel === 'comments' ? ' is-talk' : ''}`}>
-            {panel === 'info' ? (
+          <div className={`cl-panel-body${(panel ?? leaving) === 'comments' ? ' is-talk' : ''}`}>
+            {(panel ?? leaving) === 'info' ? (
               <MetadataPanel file={file} onReact={!readOnly ? (emoji) => void react(file, emoji) : undefined} />
             ) : (
               <CommentsPanel
@@ -761,7 +787,7 @@ export function Viewer({
         <div className="cl-vspine-in">
           <button
             className={`cl-sp-tab${panel === 'info' ? ' is-on' : ''}`}
-            onClick={() => setPanel(panel === 'info' ? null : 'info')}
+            onClick={() => togglePanel('info')}
             title="Сведения о кадре (i)"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -775,7 +801,7 @@ export function Viewer({
           {!readOnly ? (
             <button
               className={`cl-sp-tab${panel === 'comments' ? ' is-on' : ''}`}
-              onClick={() => setPanel(panel === 'comments' ? null : 'comments')}
+              onClick={() => togglePanel('comments')}
               title="Обсуждение кадра"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
@@ -1024,7 +1050,30 @@ function Player({
   const ref = useRef<HTMLVideoElement | null>(null)
   const barRef = useRef<HTMLDivElement | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
+  const frameRef = useRef<HTMLDivElement | null>(null)
   const [box, setBox] = useState<{ w: number; h: number } | null>(null)
+
+  /*
+   * Плавный доворот: раскладка применяется мгновенно (коробка и размеры уже
+   * конечные), а рамка стартует довёрнутой НАЗАД на шаг и раскручивается в
+   * ноль — FLIP на композиторе, без прерываний и без анимации layout-свойств.
+   * Раньше видео просто щёлкало в новую ориентацию.
+   */
+  const prevTurnRef = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const prev = prevTurnRef.current
+    prevTurnRef.current = turn
+    const el = frameRef.current
+    if (prev === null || prev === turn || !el || !el.animate) return
+    let delta = turn - prev
+    // Кратчайшая дуга: 270 → 0 крутится через −90, а не через +270.
+    if (delta > 180) delta -= 360
+    if (delta < -180) delta += 360
+    el.animate(
+      [{ transform: `rotate(${-delta}deg)` }, { transform: 'rotate(0deg)' }],
+      { duration: 380, easing: 'cubic-bezier(.22, .61, .36, 1)' }
+    )
+  }, [turn])
   const [playing, setPlaying] = useState(false)
   const [muted, setMuted] = useState(false)
   const [time, setTime] = useState(0)
@@ -1125,7 +1174,7 @@ function Player({
       ref={hostRef}
       className={`cl-player${playing ? '' : ' is-paused'}${turn % 180 !== 0 ? ' is-turned' : turn ? ' is-flipped' : ''}`}
     >
-      <div className="cl-player-frame" style={box ? { width: box.w, height: box.h } : undefined}>
+      <div ref={frameRef} className="cl-player-frame" style={box ? { width: box.w, height: box.h } : undefined}>
       <video
         ref={attach}
         src={file.urls.playback ?? undefined}

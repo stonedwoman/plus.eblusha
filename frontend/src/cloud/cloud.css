@@ -556,7 +556,7 @@
   /* Размеры известны заранее — плитки не «прыгают» при подгрузке превью. */
   aspect-ratio: 1;
 }
-.cl-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cl-tile img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .35s var(--cl-ease); }
 .cl-tile.selected { border-color: var(--brand); }
 .cl-tile img { animation: clFade .3s ease; }
 /*
@@ -1359,7 +1359,7 @@ section[data-day],
   width: 100%; height: 100%;
   object-fit: contain;
   opacity: 0;
-  transition: opacity .3s var(--cl-ease);
+  transition: opacity .3s var(--cl-ease), transform .35s var(--cl-ease);
 }
 /* Миниатюра видна сразу: ею только что нарисована плитка, она уже в кэше. */
 .cl-layer.is-lq { opacity: 1; filter: blur(1px); }
@@ -1390,7 +1390,7 @@ section[data-day],
   opacity: .5;
   transition: opacity .25s var(--cl-ease), transform .25s var(--cl-ease);
 }
-.cl-strip-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cl-strip-cell img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .35s var(--cl-ease); }
 .cl-strip-cell:hover { opacity: .85; transform: translateY(-3px); }
 .cl-strip-cell.is-active { opacity: 1; transform: scale(1.14); z-index: 1; }
 /* Кольцо активной — псевдоэлементом по opacity: box-shadow перерисовывался бы
@@ -1482,6 +1482,12 @@ section[data-day],
 @keyframes clPanelIn {
   from { transform: translateX(100%); }
   to { transform: none; }
+}
+/* Закрытие — тем же путём обратно: ящик задвигается под корешок. */
+.cl-viewer-panel.is-leaving { animation: clPanelOut .26s var(--cl-ease-io) both; }
+@keyframes clPanelOut {
+  from { transform: none; }
+  to { transform: translateX(100%); }
 }
 /* Заголовок панели: что открыто и как закрыть. Выбор ушёл на язычки. */
 .cl-panel-head {
@@ -1851,6 +1857,15 @@ section[data-day],
   padding: 18px;
   animation: clFade .16s ease;
 }
+/* Уход: подложка гаснет, окно слегка оседает — зеркально появлению. */
+.cl-modal-back.is-out { animation: clFadeOut .17s ease both; pointer-events: none; }
+.cl-modal-back.is-out .cl-modal { animation: clModalOut .17s var(--cl-ease-io) both; }
+@keyframes clFadeOut {
+  to { opacity: 0; }
+}
+@keyframes clModalOut {
+  to { opacity: 0; transform: translateY(8px) scale(.98); }
+}
 @keyframes clFade { from { opacity: 0 } to { opacity: 1 } }
 .cl-modal {
   width: min(520px, 100%);
@@ -1913,6 +1928,10 @@ section[data-day],
 }
 .cl-toast.leaving { animation: clToastOut .22s var(--cl-ease-io) forwards; pointer-events: none; }
 /* Шторка панели на узком экране приходит снизу, а не сбоку. */
+@keyframes clSheetDown {
+  from { transform: none; }
+  to { transform: translateY(100%); }
+}
 @keyframes clSheetUp {
   from { transform: translateY(24px); opacity: 0; }
   to { transform: none; opacity: 1; }
@@ -2120,6 +2139,7 @@ section[data-day],
    */
   .cl-viewer.with-panel .cl-rail { transform: translate3d(var(--nudge, 0px), -24dvh, 0); }
   /* Панель — шторкой ПОВЕРХ кадра, а не отжимает его в полоску. */
+  .cl-viewer-panel.is-leaving { animation: clSheetDown .24s var(--cl-ease-io) both; }
   .cl-viewer-panel {
     /* Сброс колонки обязателен: у absolute-ребёнка грида с назначенной
        областью containing block — сама область, а колонки 2 здесь нет,

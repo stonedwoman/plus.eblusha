@@ -56,21 +56,36 @@ export function Modal({
   footer?: ReactNode
   wide?: boolean
 }) {
+  /*
+   * Закрытие с уходом: крестик, клик по подложке и Escape сперва проигрывают
+   * выездную анимацию и только потом отдают onClose родителю. Программные
+   * закрытия (после успешного действия) по-прежнему мгновенные — их вызывает
+   * родитель напрямую, и анимировать чужой демонтаж отсюда невозможно.
+   */
+  const [out, setOut] = useState(false)
+  const close = () => {
+    setOut((was) => {
+      if (!was) window.setTimeout(onClose, 170)
+      return true
+    })
+  }
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') close()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onClose])
 
   return (
-    <div className="cl-modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className={`cl-modal-back${out ? ' is-out' : ''}`} onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="cl-modal" style={wide ? { width: 'min(720px, 100%)' } : undefined} role="dialog" aria-modal="true">
         <div className="cl-modal-head">
           <h2>{title}</h2>
           <div className="cl-spacer" />
-          <button className="cl-btn ghost icon sm" onClick={onClose} aria-label="Закрыть">
+          <button className="cl-btn ghost icon sm" onClick={close} aria-label="Закрыть">
             ✕
           </button>
         </div>
