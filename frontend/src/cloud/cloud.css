@@ -922,7 +922,26 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   transform-origin: center;
   transition: transform .3s var(--cl-ease), box-shadow .25s var(--cl-ease);
 }
-.cl-geonav .cl-tn-cap { transition: opacity .25s var(--cl-ease), transform .3s var(--cl-ease); }
+/*
+ * Подпись видна у текущей станции с соседями — и у любой под курсором:
+ * без этого было непонятно, что за место пролистываешь. Наведённая всплывает
+ * на подложке, чтобы не сливаться с соседними.
+ */
+.cl-geonav .cl-tn-cap {
+  opacity: 0;
+  transition: opacity .2s var(--cl-ease), transform .3s var(--cl-ease);
+}
+.cl-geonav .cl-tn-node.is-labeled .cl-tn-cap { opacity: 1; }
+.cl-geonav .cl-tn-node:hover { z-index: 2; }
+.cl-geonav .cl-tn-node:hover .cl-tn-cap {
+  opacity: 1;
+  padding: 3px 8px;
+  margin: -3px -8px;
+  border-radius: 8px;
+  background: var(--surface-200);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+.cl-geonav .cl-tn-node:hover .cl-tn-cap b { color: #e2e8f0; }
 /* Далёкая остановка — компактная точка: подпись убрана, кружок ужат. */
 .cl-geonav .cl-tn-node.is-minor { pointer-events: auto; }
 .cl-geonav .cl-tn-node.is-minor .cl-tn-ava { box-shadow: 0 0 0 1.5px rgba(148, 163, 184, .5); }

@@ -359,10 +359,30 @@ export default function SpacePage() {
        * прокручивай. Зазор всего восемь пикселей, поэтому трёх позиций по
        * ширине заведомо достаточно; обычно срабатывает первая же проба.
        */
+      /*
+       * Низ списка проверяем ПЕРВЫМ делом, до всякого щупа: там прокручивать
+       * больше нечего, и рельса обязана дойти до конца независимо от того,
+       * попал щуп в плитку или нет. Раньше проверка стояла после щупа, и на
+       * последних днях с одним снимком геолайн замирал на предыдущем месте.
+       */
+      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) {
+        const tiles = main.querySelectorAll<HTMLElement>('[data-run]')
+        const lastRun = Number(tiles[tiles.length - 1]?.dataset.run)
+        if (Number.isFinite(lastRun)) {
+          setGeoPos((prev) => (prev.run === lastRun && prev.fraction === 1 ? prev : { run: lastRun, fraction: 1 }))
+          return
+        }
+      }
+
       const probeY = 60 + visibleHeadRef.current + 30
       let tile: HTMLElement | null = null
+      /*
+       * Крайняя левая позиция обязательна: в день с одним-двумя снимками
+       * плитки жмутся к левому краю, а пробы по центру и правее уходили в
+       * пустоту — трекер не находил ничего и фокус застревал.
+       */
       outer: for (const dy of [0, 46, 96, 150]) {
-        for (const fx of [0.5, 0.28, 0.72]) {
+        for (const fx of [0.06, 0.5, 0.28, 0.72]) {
           const stack = document.elementsFromPoint(box.left + box.width * fx, probeY + dy) as HTMLElement[]
           for (const el of stack) {
             const hit = el.closest<HTMLElement>('[data-run]')
@@ -382,20 +402,6 @@ export default function SpacePage() {
         const top = same[0]!.getBoundingClientRect().top
         const bottom = same[same.length - 1]!.getBoundingClientRect().bottom
         fraction = Math.max(0, Math.min(1, (probeY - top) / Math.max(1, bottom - top)))
-      }
-      /*
-       * На самом дне списка текущий отрезок — ПОСЛЕДНИЙ, а не тот, что попал
-       * под линию отсчёта. Линия стоит у верха окна, и когда хвост альбома
-       * короче экрана, наверху оставались старые снимки: рельса показывала
-       * Телави, пока на экране был уже Дилижан.
-       */
-      if (root.scrollTop >= root.scrollHeight - root.clientHeight - 2) {
-        const tiles = main.querySelectorAll<HTMLElement>('[data-run]')
-        const lastRun = Number(tiles[tiles.length - 1]?.dataset.run)
-        setGeoPos((prev) =>
-          prev.run === lastRun && prev.fraction === 1 ? prev : { run: Number.isFinite(lastRun) ? lastRun : run, fraction: 1 }
-        )
-        return
       }
       setGeoPos((prev) =>
         prev.run === run && Math.abs(prev.fraction - fraction) < 0.004 ? prev : { run, fraction }

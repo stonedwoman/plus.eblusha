@@ -177,9 +177,9 @@ export function GeoRail({
         return (
           <button
             key={`${s.run}-${s.path}`}
-            className={`cl-tn-node${s.k < 0.6 ? ' is-minor' : ''}${s.run === activeRun ? ' is-active' : ''}${
-              activeRun >= 0 && s.run < activeRun ? ' is-passed' : ''
-            }`}
+            className={`cl-tn-node${s.k < 0.6 ? ' is-minor' : ''}${showCap ? ' is-labeled' : ''}${
+              s.run === activeRun ? ' is-active' : ''
+            }${activeRun >= 0 && s.run < activeRun ? ' is-passed' : ''}`}
             style={{ transform: `translateY(${s.top}px)`, ['--k' as string]: s.k }}
             onClick={() => onJump(s.run)}
             title={[s.country, s.city, s.district].filter(Boolean).join(' · ') + ` · ${s.count}`}
@@ -198,7 +198,7 @@ export function GeoRail({
                 />
               ) : null}
             </span>
-            <span className="cl-tn-cap" style={{ opacity: showCap ? 1 : 0 }}>
+            <span className="cl-tn-cap">
               <b>{label}</b>
               <i>{sub ? `${sub} · ${s.count}` : String(s.count)}</i>
             </span>
