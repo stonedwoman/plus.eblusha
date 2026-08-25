@@ -463,19 +463,21 @@ export function Viewer({
         return
       }
 
-      // Накопитель с порогом и кулдауном: один жест трекпада не должен
-      // пролистывать пять кадров.
+      /*
+       * Накопитель с порогом и кулдауном: один жест трекпада не должен
+       * пролистывать пять кадров. Резинки-«надвига» больше нет: она давала
+       * ненужный мелкий сдвиг на первом щелчке колеса, а при недоборе порога
+       * ещё и оставляла кадр смещённым — обратной анимации у неё не было.
+       * Обратная связь теперь — сам проезд слотов.
+       */
       const now = performance.now()
       if (Math.sign(deltaPx) !== Math.sign(navAccum.current)) navAccum.current = 0
       navAccum.current += deltaPx
-      // Пока порог не набран — рельса чуть подаётся, как резинка.
-      railRef.current?.style.setProperty('--nudge', `${clamp(-navAccum.current * 0.16, -22, 22)}px`)
       if (now - navAt.current < 260) return
       if (Math.abs(navAccum.current) < 90) return
       navAt.current = now
       const dir = navAccum.current > 0 ? 1 : -1
       navAccum.current = 0
-      railRef.current?.style.setProperty('--nudge', '0px')
       go(dir)
     }
     stage.addEventListener('wheel', onWheel, { passive: false })
@@ -703,15 +705,24 @@ export function Viewer({
             её появление и скрытие не двигают кадр ни на пиксель. */}
         {files.length > 1 ? (
           <div className="cl-strip" aria-label="Кадры">
+            {/*
+              Координаты ячеек — ГЛОБАЛЬНЫЕ (по номеру кадра в альбоме), а не
+              оконные. Окно из тринадцати миниатюр пересчитывается на каждом
+              шаге, и в оконных координатах left каждой выжившей ячейки прыгал
+              на клетку БЕЗ перехода, а транс рельсы в середине альбома вовсе
+              не менялся — лента щёлкала. В глобальных координатах ячейка
+              прибита к своему кадру навсегда, а едет сама рельса — её
+              transition уже существовал и просто не имел шанса сработать.
+            */}
             <div
               className="cl-strip-rail"
-              style={{ transform: `translate3d(${-(index - stripFrom) * CELL}px, 0, 0)` }}
+              style={{ transform: `translate3d(${-index * CELL}px, 0, 0)` }}
             >
               {strip.map((f, i) => (
                 <button
                   key={f.id}
                   className={`cl-strip-cell${stripFrom + i === index ? ' is-active' : ''}`}
-                  style={{ left: i * CELL }}
+                  style={{ left: (stripFrom + i) * CELL }}
                   onClick={() => go(stripFrom + i - index)}
                   title={f.name}
                 >

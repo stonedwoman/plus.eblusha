@@ -1333,7 +1333,7 @@ section[data-day],
    * Отступ постоянный, чтобы кадр не прыгал при скрытии хрома.
    */
   left: 0; right: 0; top: 56px; bottom: var(--cl-gutter);
-  transform: translate3d(var(--nudge, 0px), 0, 0);
+  transform: translate3d(0, 0, 0);
   transition: transform .3s var(--cl-ease);
 }
 .cl-rail.is-live { transition: none; }
@@ -2142,7 +2142,7 @@ section[data-day],
    * оставалась пустая чернота. Транспорт на композиторе — существующий
    * transition .cl-rail подхватывает сдвиг без релэйаута.
    */
-  .cl-viewer.with-panel .cl-rail { transform: translate3d(var(--nudge, 0px), -24dvh, 0); }
+  .cl-viewer.with-panel .cl-rail { transform: translate3d(0, -24dvh, 0); }
   /* Панель — шторкой ПОВЕРХ кадра, а не отжимает его в полоску. */
   .cl-viewer-panel.is-leaving { animation: clSheetDown .24s var(--cl-ease-io) both; }
   .cl-viewer-panel {
