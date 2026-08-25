@@ -1063,15 +1063,18 @@ export default function SpacePage() {
                     <path d="M12 17V5m0 0 5 5m-5-5-5 5" />
                     <path d="M5 20h14" />
                   </svg>
-                  Загрузить<span className="cl-split-word">&nbsp;файл</span>
+                  Загрузить
                 </button>
-                <button className="cl-split-alt" onClick={() => dirInput.current?.click()} title="Загрузить папку со всем содержимым">
-                  <em>или</em>
+                <button
+                  className="cl-split-alt"
+                  onClick={() => dirInput.current?.click()}
+                  aria-label="Загрузить папку"
+                  title="Загрузить папку со всем содержимым"
+                >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
                     <path className="cl-split-lid" d="M3.5 9.5h17l-1.6 9a1.6 1.6 0 0 1-1.6 1.3H6.7a1.6 1.6 0 0 1-1.6-1.3l-1.6-9Z" />
                     <path d="M4.5 9.5V6.2c0-.9.7-1.6 1.6-1.6h3.4l2 2.2h6.4c.9 0 1.6.7 1.6 1.6v1.1" />
                   </svg>
-                  папку
                 </button>
               </div>
             ) : null}

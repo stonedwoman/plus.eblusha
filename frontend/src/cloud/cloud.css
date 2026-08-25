@@ -519,17 +519,13 @@
 .cl-split-alt {
   border-radius: 0 9px 9px 0;
   border-left: 1px solid rgba(20, 16, 10, .28);
-  padding: 0 12px 0 10px;
-  font-weight: 560;
+  padding: 0 10px;
 }
-.cl-split-alt em { font-style: normal; opacity: .62; font-weight: 500; }
+.cl-split-alt svg { width: 16px; height: 16px; }
 /* Папка приоткрывается навстречу курсору. */
 .cl-split-lid { transform-origin: 50% 42%; transition: transform .25s var(--cl-ease); }
 .cl-split-alt:hover .cl-split-lid { transform: rotate(-7deg) translateY(.6px); }
 
-@media (max-width: 860px) {
-  .cl-split-word { display: none; }
-}
 
 
 /*
@@ -1362,7 +1358,18 @@ section[data-day],
 }
 .cl-viewer.is-idle .cl-vglow { opacity: .42; }
 
-.cl-viewer-stage { --cl-gutter: 104px; cursor: zoom-in; }
+/*
+ * Курсор объясняет колесо заранее: вне снимка — ‹›-листалка (свой SVG-курсор:
+ * стандартного «перелистнуть» не существует, ew-resize — запасной), над
+ * снимком — лупа, в зуме — лупа с минусом. Правило покоя niže (три класса)
+ * сильнее и по-прежнему прячет курсор совсем.
+ */
+.cl-viewer-stage {
+  --cl-gutter: 104px;
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="30" height="16" viewBox="0 0 30 16"><g fill="none" stroke="%23000" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" opacity=".5"><path d="M9 3 4 8l5 5"/><path d="m21 3 5 5-5 5"/></g><g fill="none" stroke="%23fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3 4 8l5 5"/><path d="m21 3 5 5-5 5"/></g></svg>') 15 8, ew-resize;
+}
+.cl-viewer-stage.is-over-media { cursor: zoom-in; }
+.cl-viewer-stage.is-over-media.is-zoomed { cursor: zoom-out; }
 .cl-viewer.is-idle .cl-viewer-stage { cursor: none; }
 
 /* Рельса: три слота, каждый на своём месте. Старый кадр не исчезает — уезжает. */

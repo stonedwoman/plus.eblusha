@@ -431,6 +431,22 @@ export function Viewer({
     void videoRef.current.play()
   }, [])
 
+  /*
+   * «Над снимком» — над САМИМ изображением с учётом зума и панорамы, а не над
+   * контейнером во всю сцену. Общая точка правды для колеса, курсора и клика.
+   */
+  const isOverMedia = useCallback((clientX: number, clientY: number) => {
+    const media = mediaRef.current
+    const fit = fitRef.current
+    if (!media || !(fit.w > 0)) return false
+    const r = media.getBoundingClientRect()
+    const cx = r.left + r.width / 2 + view.current.x
+    const cy = r.top + r.height / 2 + view.current.y
+    const halfW = (fit.w * view.current.zoom) / 2
+    const halfH = (fit.h * view.current.zoom) / 2
+    return clientX >= cx - halfW && clientX <= cx + halfW && clientY >= cy - halfH && clientY <= cy + halfH
+  }, [])
+
   // ── Колесо: внутри кадра масштаб, снаружи листание ──────────────────────
   const navAccum = useRef(0)
   const navAt = useRef(0)
@@ -445,26 +461,8 @@ export function Viewer({
       const deltaPx =
         e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * window.innerHeight : e.deltaY
 
-      /*
-       * «Внутри кадра» — над САМИМ снимком, а не над контейнером: контейнер
-       * растянут на всю сцену, и тёмные поля вокруг фото считались «кадром» —
-       * колесо вверх сбоку от снимка зумило вместо возврата к предыдущим.
-       * Считаем прямоугольник показанного изображения из вписанного размера,
-       * зума и панорамы: рядом с фото колесо всегда листает — вверх назад,
-       * вниз вперёд.
-       */
-      const media = mediaRef.current
-      const r = media?.getBoundingClientRect()
-      const fit = fitRef.current
-      let inside = false
-      if (r && fit.w > 0) {
-        const cx = r.left + r.width / 2 + view.current.x
-        const cy = r.top + r.height / 2 + view.current.y
-        const halfW = (fit.w * view.current.zoom) / 2
-        const halfH = (fit.h * view.current.zoom) / 2
-        inside =
-          e.clientX >= cx - halfW && e.clientX <= cx + halfW && e.clientY >= cy - halfH && e.clientY <= cy + halfH
-      }
+      // Рядом с фото колесо всегда листает: вверх назад, вниз вперёд.
+      const inside = isOverMedia(e.clientX, e.clientY)
 
       const now = performance.now()
 
@@ -518,7 +516,7 @@ export function Viewer({
     }
     stage.addEventListener('wheel', onWheel, { passive: false })
     return () => stage.removeEventListener('wheel', onWheel)
-  }, [go, setZoom, wake])
+  }, [go, setZoom, wake, isOverMedia])
 
   // ── Указатель: панорама при зуме, протяжка вниз/вбок при обычном ────────
   const drag = useRef<{
@@ -530,8 +528,12 @@ export function Viewer({
     mode: 'pan' | 'dismiss' | null
   } | null>(null)
   const [dragging, setDragging] = useState(false)
+  /* Над снимком курсор — лупа, вне — ‹›-листалка: жест колеса виден заранее. */
+  const [overMedia, setOverMedia] = useState(false)
+  const lastPointerType = useRef('mouse')
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    lastPointerType.current = e.pointerType
     if (e.button !== 0 && e.pointerType === 'mouse') return
     const target = e.target as HTMLElement | null
     /*
@@ -555,6 +557,8 @@ export function Viewer({
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     wake()
+    const over = isOverMedia(e.clientX, e.clientY)
+    setOverMedia((prev) => (prev === over ? prev : over))
     const d = drag.current
     if (!d) return
     const dx = e.clientX - d.x
@@ -610,17 +614,28 @@ export function Viewer({
   }
 
   /*
-   * Клик — только ВЫХОД из зума. Увеличение по клику убрано по просьбе:
-   * зум живёт на колесе (и на «+»/«−»), а случайный клик по кадру больше
-   * не прыгает в двести процентов.
+   * Клик над снимком — только ВЫХОД из зума (увеличение по клику убрано по
+   * просьбе). Клик МИМО снимка — закрытие просмотра: тёмное поле и есть
+   * «подложка» оверлея. Правая кнопка закрывает откуда угодно — но только
+   * мышиная: длинное нажатие пальцем не должно вышвыривать из просмотра.
    */
   const onStageClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement | null
     if (target?.tagName === 'VIDEO' || target?.tagName === 'AUDIO') return
-    if (target?.closest('button, a, video, audio, .cl-viewer-panel, .cl-strip')) return
+    if (target?.closest('button, a, video, audio, .cl-viewer-panel, .cl-strip, .cl-viewer-top')) return
     if (drag.current?.moved) return
-    if (!file || file.kind !== 'IMAGE') return
-    if (view.current.zoom > 1.001) setZoom(1)
+    if (!file) return
+    if (!isOverMedia(e.clientX, e.clientY)) {
+      requestClose()
+      return
+    }
+    if (file.kind === 'IMAGE' && view.current.zoom > 1.001) setZoom(1)
+  }
+
+  const onStageContextMenu = (e: React.MouseEvent) => {
+    if (lastPointerType.current === 'touch') return
+    e.preventDefault()
+    requestClose()
   }
 
   if (!file) return null
@@ -644,13 +659,14 @@ export function Viewer({
       ) : null}
 
       <div
-        className="cl-viewer-stage"
+        className={`cl-viewer-stage${overMedia ? ' is-over-media' : ''}${zoomPct > 101 ? ' is-zoomed' : ''}`}
         ref={stageRef}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onClick={onStageClick}
+        onContextMenu={onStageContextMenu}
       >
         <div className="cl-viewer-top">
           <button className="cl-vbtn" onClick={requestClose} aria-label="Закрыть" title="Закрыть (Esc)">
