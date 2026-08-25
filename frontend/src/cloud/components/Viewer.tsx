@@ -481,9 +481,15 @@ export function Viewer({
     const media = mediaRef.current
     const fit = fitRef.current
     if (!media || !(fit.w > 0)) return false
+    /*
+     * Прямоугольник медиа-контейнера УЖЕ включает пан и зум — applyView вешает
+     * transform на него самого. Центр берём из rect как есть (прибавлять
+     * view.x/y сверху значило бы учесть панораму дважды), а размер снимка —
+     * вписанный × зум: сам кадр внутри контейнера отрисован contain-ом.
+     */
     const r = media.getBoundingClientRect()
-    const cx = r.left + r.width / 2 + view.current.x
-    const cy = r.top + r.height / 2 + view.current.y
+    const cx = r.left + r.width / 2
+    const cy = r.top + r.height / 2
     const halfW = (fit.w * view.current.zoom) / 2
     const halfH = (fit.h * view.current.zoom) / 2
     return clientX >= cx - halfW && clientX <= cx + halfW && clientY >= cy - halfH && clientY <= cy + halfH
@@ -503,6 +509,7 @@ export function Viewer({
       const deltaPx =
         e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * window.innerHeight : e.deltaY
 
+      lastMouse.current = { x: e.clientX, y: e.clientY }
       // Рядом с фото колесо всегда листает: вверх назад, вниз вперёд.
       const inside = isOverMedia(e.clientX, e.clientY)
 
@@ -573,6 +580,7 @@ export function Viewer({
   /* Над снимком курсор — лупа, вне — ‹›-листалка: жест колеса виден заранее. */
   const [overMedia, setOverMedia] = useState(false)
   const lastPointerType = useRef('mouse')
+  const lastMouse = useRef<{ x: number; y: number } | null>(null)
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     lastPointerType.current = e.pointerType
@@ -599,6 +607,7 @@ export function Viewer({
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     wake()
+    lastMouse.current = { x: e.clientX, y: e.clientY }
     const over = isOverMedia(e.clientX, e.clientY)
     setOverMedia((prev) => (prev === over ? prev : over))
     const d = drag.current
@@ -654,6 +663,29 @@ export function Viewer({
     if (rail) rail.style.transform = ''
     if (backdropRef.current) backdropRef.current.style.opacity = ''
   }
+
+  /*
+   * Курсор пересчитывается и БЕЗ движения мыши: пролистнул колесом с кадра
+   * 16:9 на 9:16 — точка под неподвижным курсором могла выйти из снимка (или
+   * войти в него), и лупа обязана смениться листалкой сама. Считаем дважды:
+   * сразу (грубо) и после того, как доехали проезд слотов и FLIP панели —
+   * прямоугольник медиа во время анимаций ещё в пути.
+   */
+  useEffect(() => {
+    const refresh = () => {
+      const m = lastMouse.current
+      if (!m) return
+      const over = isOverMedia(m.x, m.y)
+      setOverMedia((prev) => (prev === over ? prev : over))
+    }
+    const raf = requestAnimationFrame(refresh)
+    // Ступени: середина проезда, сразу после (300мс слоты + запас), контрольная.
+    const timers = [140, 420, 800].map((ms) => setTimeout(refresh, ms))
+    return () => {
+      cancelAnimationFrame(raf)
+      timers.forEach(clearTimeout)
+    }
+  }, [index, zoomPct, withPanel, file?.width, isOverMedia])
 
   /*
    * Клик над снимком — только ВЫХОД из зума (увеличение по клику убрано по
