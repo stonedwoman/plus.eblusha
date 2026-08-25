@@ -1281,7 +1281,7 @@ function flashGroup(selector: string): void {
    */
   const rule =
     `.cl-tl-main .cl-tile { animation: clDim ${FLASH_MS}ms var(--cl-ease) both; }\n` +
-    `${selector} { animation: clLit ${FLASH_MS}ms var(--cl-ease) both; z-index: 2; }`
+    `${selector} { animation: clLit ${FLASH_MS}ms var(--cl-ease) both; }`
   requestAnimationFrame(() => {
     if (tag) tag.textContent = rule
   })
