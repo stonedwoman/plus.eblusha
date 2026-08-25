@@ -349,15 +349,23 @@ export default function SpacePage() {
        * поверх плиток лежат липкие слои (заголовок дня, шапка), и одиночный
        * elementFromPoint возвращал именно их, а не снимок.
        */
+      /*
+       * Щупаем НЕСКОЛЬКО точек по вертикали: одна фиксированная попадала в
+       * зазор между рядами плиток, и трекер молча выходил — фокус замирал на
+       * целые экраны прокрутки.
+       */
       const probeY = 60 + visibleHeadRef.current + 30
-      const stack = document.elementsFromPoint(box.left + box.width / 2, probeY) as HTMLElement[]
       let tile: HTMLElement | null = null
-      for (const el of stack) {
-        const hit = el.closest<HTMLElement>('[data-run]')
-        if (hit) {
-          tile = hit
-          break
+      for (const dy of [0, 46, 96, 150]) {
+        const stack = document.elementsFromPoint(box.left + box.width / 2, probeY + dy) as HTMLElement[]
+        for (const el of stack) {
+          const hit = el.closest<HTMLElement>('[data-run]')
+          if (hit) {
+            tile = hit
+            break
+          }
         }
+        if (tile) break
       }
       const run = tile ? Number(tile.dataset.run) : NaN
       if (!Number.isFinite(run)) return
@@ -398,21 +406,56 @@ export default function SpacePage() {
     }
   }, [view, railWide, files])
 
-  /** Прыжок к отрезку поездки: первая его плитка встаёт под панель. */
+  /**
+   * Прыжок к отрезку поездки: первая его плитка встаёт под панель.
+   *
+   * Место может быть дальше загруженного — тогда тянем страницы, как это
+   * делает прыжок по дате. Без этого клик по дальней станции молча не делал
+   * ничего: половина кликов «срабатывала», половина нет, и разница была
+   * ровно в том, докрутил ли человек до неё раньше.
+   */
   const jumpToRun = useCallback(
-    (run: number) => {
+    async (run: number) => {
       const root = document.querySelector<HTMLElement>('.cl-root')
-      const tile = document.querySelector<HTMLElement>(`.cl-tl-main [data-run="${run}"][data-geo="1"]`)
-      if (!root || !tile) return
-      const base = tile.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
-      const goingUp = base - HEADER_OFFSET < root.scrollTop
-      const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
-      // Подсветка — по приезде, см. jumpToDay.
-      smoothScrollTo(root, base - HEADER_OFFSET - land - 34, (finished) => {
-        if (finished) flashGroup(`.cl-tl-main [data-run="${CSS.escape(String(run))}"][data-geo="1"]`)
-      })
+      if (!root) return
+      const startKey = sliceKeyRef.current
+      const expired = () => !aliveRef.current || sliceKeyRef.current !== startKey
+      const find = () => document.querySelector<HTMLElement>(`.cl-tl-main [data-run="${run}"][data-geo="1"]`)
+      const go = () => {
+        const tile = find()
+        if (!tile) return false
+        const base = tile.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
+        const goingUp = base - HEADER_OFFSET < root.scrollTop
+        const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
+        // Подсветка — по приезде, см. jumpToDay.
+        smoothScrollTo(root, base - HEADER_OFFSET - land - 34, (finished) => {
+          if (finished && !expired()) {
+            flashGroup(`.cl-tl-main [data-run="${CSS.escape(String(run))}"][data-geo="1"]`)
+          }
+        })
+        return true
+      }
+      if (go()) return
+      if (!cursorRef.current || jumpingRef.current) return
+      jumpingRef.current = true
+      try {
+        let c: string | null = cursorRef.current
+        for (let i = 0; c && i < 200; i++) {
+          const batch = await loadFiles(c, 'append')
+          if (!batch || expired()) return
+          c = batch.nextCursor
+          // Ждём кадр СЛЕДУЮЩЕГО отрезка: остановка на первом же кадре нужного
+          // означала бы, что остаток предыдущего места ещё не приехал.
+          if (find()) break
+        }
+        requestAnimationFrame(() => {
+          if (!expired()) go()
+        })
+      } finally {
+        jumpingRef.current = false
+      }
     },
-    []
+    [loadFiles]
   )
 
   /*

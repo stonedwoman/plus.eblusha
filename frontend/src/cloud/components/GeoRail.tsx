@@ -117,55 +117,46 @@ export function GeoRail({
   })
 
   /*
-   * Раскладка «фокус и контекст»: рельса расступается вокруг того места, где
-   * читатель сейчас, и сжимает далёкое.
+   * Позиции станций РАВНОМЕРНЫЕ, меняются только размер и акцент.
    *
-   * Постоянная плотность не работает: на поездке в двадцать городов подписи
-   * налезали друг на друга, а миниатюры сливались в кашу. Здесь вес станции
-   * зависит от расстояния до текущей — соседи получают полный шаг, дальние
-   * ужимаются. Сумма весов нормируется на высоту рельсы, поэтому узлы
-   * физически не могут столкнуться, сколько бы мест ни было.
+   * Пробовал «рыбий глаз» — вес по расстоянию до текущей станции. Он
+   * красиво расступается, но деформирует саму шкалу: когда фокус переходит
+   * дальше, предыдущие станции сжимаются, и следующая уползает ВВЕРХ.
+   * Полоска заливки при движении вперёд ехала назад — замерено: 0.26 на
+   * Барселоне, 0.23 на Болонье. Для оси, по которой читают маршрут, это
+   * недопустимо: положение обязано быть монотонным.
    *
-   * Значимость остановки тоже учитываем: крупный город остаётся заметнее
-   * проездом схваченного посёлка, даже когда до него далеко.
+   * Поэтому плотность выражается иначе: шаг делится поровну, а размер узла
+   * выводится из доставшегося шага — мест мало, узлы крупные; мест много,
+   * узлы ужимаются в точки. Акцент при проматывании даёт кольцо и подписи,
+   * которые показываются только у текущей станции и её соседей.
    */
-  // Пока до первой геометки не дошли, фокус держим на первой станции: рельса
-  // без акцента выглядит как ровная сыпь и не подсказывает, куда смотреть.
-  const focusAt = activeIndex < 0 ? 0 : activeIndex
-  const focusWeight = (i: number) => {
-    const d = Math.abs(i - focusAt)
-    const near = d === 0 ? 1.5 : d === 1 ? 1.15 : d === 2 ? 0.9 : d <= 4 ? 0.62 : 0.4
-    return near * (stations[i]!.major ? 1.18 : 1)
-  }
-  const weights = stations.map((_, i) => focusWeight(i))
-  const totalW = Math.max(1, weights.reduce((a, b) => a + b, 0))
-  const step = (h - PAD * 2 - NODE) / totalW
+  const n = stations.length
+  const step = (h - PAD * 2 - NODE) / Math.max(1, n)
   const lineTop = PAD + NODE / 2
-
-  const startW = new Map<number, number>()
-  let acc = 0
-  const laid = stations.map((st, i) => {
-    const start = acc
-    acc += weights[i]!
-    startW.set(st.run, start)
-    /*
-     * Размер узла выводится из ФАКТИЧЕСКИ доставшегося места, а не задаётся
-     * заранее: где просторно — полноценный кружок с подписью, где тесно —
-     * точка. Плотность подстраивается сама, и отдельного порога «мелкая или
-     * крупная» больше не нужно.
-     */
-    const room = weights[i]! * step
-    // Запас против соседа: узел никогда не занимает всё доставшееся место.
-    const k = clamp(room / 52, 0.26, 1)
-    return { ...st, i, k, room, top: PAD + start * step + (NODE * (1 - k)) / 2 }
-  })
-  const lineBottom = PAD + totalW * step + NODE / 2
+  const lineBottom = PAD + n * step + NODE / 2
   const axisLen = Math.max(1, lineBottom - lineTop)
+  // Запас против соседа: узел не занимает весь доставшийся шаг.
+  const baseK = clamp(step / 52, 0.26, 1)
+
+  const laid = stations.map((st, i) => {
+    // Рядом с текущей позволяем чуть крупнее, но строго в пределах шага.
+    const d = activeIndex < 0 ? 9 : Math.abs(i - activeIndex)
+    const boost = d === 0 ? 1.18 : d === 1 ? 1.08 : 1
+    const k = clamp(baseK * boost, 0.26, clamp(step / 42, 0.26, 1))
+    return { ...st, i, k, top: PAD + i * step + (NODE * (1 - k)) / 2 }
+  })
 
   const activeStation = laid.find((s) => s.run === activeRun)
-  const inside = activeStation ? Math.max(0, Math.min(1, position.fraction)) * weights[activeStation.i]! : 0
-  const progress =
-    activeRun < 0 ? 0 : Math.max(0, Math.min(1, ((startW.get(activeRun) ?? 0) + inside) / totalW))
+  const centerOf = (st: { top: number; k: number }) => st.top + (NODE * st.k) / 2
+  let fillPx = 0
+  if (activeStation) {
+    const from = centerOf(activeStation)
+    const next = laid[activeStation.i + 1]
+    const to = next ? centerOf(next) : lineBottom
+    fillPx = from - lineTop + (to - from) * Math.max(0, Math.min(1, position.fraction))
+  }
+  const progress = activeRun < 0 ? 0 : Math.max(0, Math.min(1, fillPx / axisLen))
 
   return (
     <nav ref={setNode} className="cl-timenav cl-geonav" aria-label="Места съёмки">
@@ -179,11 +170,14 @@ export function GeoRail({
         const sub = s.district ? (s.city ?? s.country) : s.city ? s.country : ''
         // Подпись показываем, только когда узлу досталось место под неё —
         // иначе она наползла бы на соседнюю.
-        const showCap = s.k >= 0.72 || s.run === activeRun
+        // Подписи — у текущей станции и её ближайших соседей: это и есть
+        // акцент, который едет за прокруткой. Остальные читаются по наведению.
+        const near = activeIndex < 0 ? s.i <= 1 : Math.abs(s.i - activeIndex) <= 1
+        const showCap = near && s.k >= 0.5
         return (
           <button
             key={`${s.run}-${s.path}`}
-            className={`cl-tn-node${s.k < 0.72 ? ' is-minor' : ''}${s.run === activeRun ? ' is-active' : ''}${
+            className={`cl-tn-node${s.k < 0.6 ? ' is-minor' : ''}${s.run === activeRun ? ' is-active' : ''}${
               activeRun >= 0 && s.run < activeRun ? ' is-passed' : ''
             }`}
             style={{ transform: `translateY(${s.top}px)`, ['--k' as string]: s.k }}
@@ -215,7 +209,7 @@ export function GeoRail({
       {/* Прямо говорим, почему часть альбома в геолайне не представлена:
           у старых снимков GPS в EXIF попросту нет. */}
       {withoutPlace > 0 ? (
-        <span className="cl-geonav-rest" style={{ top: PAD + totalW * step + NODE }}>
+        <span className="cl-geonav-rest" style={{ top: lineBottom + NODE / 2 }}>
           {withoutPlace} без геометки
         </span>
       ) : null}
