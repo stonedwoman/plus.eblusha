@@ -613,7 +613,11 @@ export function Viewer({
             <div className="cl-shot" key={f.id} style={{ transform: `translate3d(${d * 100}%, 0, 0)` }}>
               {d === 0 ? (
                 <div className="cl-shot-media" ref={mediaRef}>
-                  <CurrentMedia file={f} videoRef={videoRef} zoomPct={zoomPct} />
+                  {/* key: свой экземпляр на каждый кадр. Иначе состояние слоёв
+                      переезжает с предыдущего снимка, и его приходится гасить
+                      эффектом — а тот успевает затереть готовность, выставленную
+                      колбэк-рефом в том же коммите. */}
+                  <CurrentMedia key={f.id} file={f} videoRef={videoRef} zoomPct={zoomPct} />
                 </div>
               ) : (
                 /* Соседям — РОВНО одна картинка. Три слоя качества на каждом
@@ -663,7 +667,7 @@ export function Viewer({
                 перекраска текста. */}
             <div className={`cl-panel-seg${readOnly ? ' solo' : ''}`}>
               {!readOnly ? (
-                <span className="cl-panel-thumb" style={panel === 'comments' ? { transform: 'translateX(100%)' } : undefined} />
+                <span className="cl-panel-thumb" style={panel === 'comments' ? { transform: 'translateX(calc(100% + 2px))' } : undefined} />
               ) : null}
               <button className={panel === 'info' ? 'is-active' : ''} onClick={() => setPanel('info')}>
                 Сведения
@@ -675,7 +679,7 @@ export function Viewer({
               ) : null}
             </div>
           </div>
-          <div className="cl-panel-body">
+          <div className={`cl-panel-body${panel === 'comments' ? ' is-talk' : ''}`}>
             {panel === 'info' ? (
               <MetadataPanel file={file} onReact={!readOnly ? (emoji) => void react(file, emoji) : undefined} />
             ) : (
@@ -718,10 +722,19 @@ function CurrentMedia({
   const [previewOn, setPreviewOn] = useState(false)
   const [fullOn, setFullOn] = useState(false)
 
-  useEffect(() => {
-    setPreviewOn(false)
-    setFullOn(false)
-  }, [file.id])
+  /*
+   * Готовность слоя проверяем ДВУМЯ путями: событием и полем complete.
+   *
+   * Одного onLoad мало. Пролистывая колёсиком, человек идёт по кадрам,
+   * которые только что стояли в соседних слотах, — их превью уже в кэше и
+   * успевает догрузиться раньше, чем React повесит обработчик. Событие
+   * теряется, слой навсегда остаётся прозрачным, и сверху видна размытая
+   * миниатюра: «все фото мутные». Колбэк-реф срабатывает после вставки узла в
+   * документ, и complete у кэшированной картинки там уже true.
+   */
+  const settle = (on: () => void) => (el: HTMLImageElement | null) => {
+    if (el?.complete && el.naturalWidth > 0) on()
+  }
 
   if (file.kind === 'IMAGE') {
     const preview = file.urls.preview ?? file.urls.content
@@ -734,6 +747,7 @@ function CurrentMedia({
             className={`cl-layer${previewOn ? ' is-on' : ''}`}
             src={preview}
             alt={file.name}
+            ref={settle(() => setPreviewOn(true))}
             onLoad={() => setPreviewOn(true)}
             draggable={false}
           />
@@ -743,6 +757,7 @@ function CurrentMedia({
             className={`cl-layer${fullOn ? ' is-on' : ''}`}
             src={file.urls.content ?? ''}
             alt=""
+            ref={settle(() => setFullOn(true))}
             onLoad={() => setFullOn(true)}
             draggable={false}
           />
@@ -1371,145 +1386,213 @@ function CommentsPanel({
   }
 
   const byId = new Map(comments.map((c) => [c.id, c]))
+  const visible = comments.filter((c) => !c.deletedAt)
+
+  const grow = (el: HTMLTextAreaElement | null) => {
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(150, el.scrollHeight)}px`
+  }
 
   return (
-    <>
-      {loading ? (
-        <div className="cl-muted">Загружаем обсуждение…</div>
-      ) : comments.length === 0 ? (
-        <div className="cl-muted" style={{ fontSize: 13.5, padding: '10px 0' }}>
-          Пока никто ничего не написал.
-        </div>
-      ) : (
-        comments
-          .filter((c) => !c.deletedAt)
-          .map((comment) => (
-            <div className="cl-comment" key={comment.id}>
-              <Avatar user={comment.author} />
-              <div className="cl-comment-main">
-                <div className="cl-comment-head">
-                  <span className="cl-comment-author">
-                    {comment.author?.displayName || comment.author?.username || 'Кто-то'}
-                  </span>
-                  {comment.videoTimestampMs !== null && onSeek ? (
-                    <button className="cl-ts-chip" onClick={() => onSeek(comment.videoTimestampMs as number)}>
-                      ▶ {formatDuration(comment.videoTimestampMs)}
-                    </button>
-                  ) : null}
-                  <span className="cl-muted">{new Date(comment.createdAt).toLocaleString('ru-RU')}</span>
-                  {comment.editedAt ? <span className="cl-muted">(изменено)</span> : null}
-                </div>
-
-                {comment.parentCommentId && byId.get(comment.parentCommentId) ? (
-                  <div className="cl-reply-quote">
-                    {byId.get(comment.parentCommentId)?.author?.displayName ??
-                      byId.get(comment.parentCommentId)?.author?.username}
-                    : {byId.get(comment.parentCommentId)?.body?.slice(0, 80)}
+    <div className="cl-talk">
+      <div className="cl-talk-list">
+        {loading ? (
+          <div className="cl-talk-empty">
+            <span className="cl-talk-wait" />
+          </div>
+        ) : visible.length === 0 ? (
+          <div className="cl-talk-empty">
+            <span className="cl-talk-mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round">
+                <path d="M20 12.4c0 3.9-3.6 7-8 7a9 9 0 0 1-2.4-.3L5 21l1.1-3.4A6.7 6.7 0 0 1 4 12.4c0-3.9 3.6-7 8-7s8 3.1 8 7Z" />
+              </svg>
+            </span>
+            <b>Пока тихо</b>
+            <span>{canComment ? 'Напишите первым — остальные увидят сразу.' : 'Здесь появятся комментарии.'}</span>
+          </div>
+        ) : (
+          visible.map((comment) => {
+            const mine = Boolean(meId && comment.author?.id === meId)
+            const parent = comment.parentCommentId ? byId.get(comment.parentCommentId) : null
+            const name = comment.author?.displayName || comment.author?.username || 'Кто-то'
+            return (
+              <article className={`cl-talk-item${mine ? ' is-mine' : ''}`} key={comment.id}>
+                <Avatar user={comment.author} />
+                <div className="cl-talk-main">
+                  <div className="cl-talk-head">
+                    <b>{name}</b>
+                    <time title={new Date(comment.createdAt).toLocaleString('ru-RU')}>{ago(comment.createdAt)}</time>
+                    {comment.editedAt ? <i>изменено</i> : null}
                   </div>
-                ) : null}
 
-                {editing === comment.id ? (
-                  <EditBox initial={comment.body ?? ''} onCancel={() => setEditing(null)} onSave={(v) => void saveEdit(comment.id, v)} />
-                ) : (
-                  /* Текст рендерится как текстовый узел — никакого dangerouslySetInnerHTML. */
-                  <div className="cl-comment-body">{comment.body}</div>
-                )}
+                  <div className="cl-talk-bubble">
+                    {parent ? (
+                      <div className="cl-talk-quote">
+                        <b>{parent.author?.displayName || parent.author?.username || 'Кто-то'}</b>
+                        {parent.body?.slice(0, 90)}
+                      </div>
+                    ) : null}
+                    {comment.videoTimestampMs !== null && onSeek ? (
+                      <button className="cl-ts-chip" onClick={() => onSeek(comment.videoTimestampMs as number)}>
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M8 5.6v12.8c0 .9 1 1.4 1.7.9l9.3-6.4a1.1 1.1 0 0 0 0-1.8L9.7 4.7A1.1 1.1 0 0 0 8 5.6Z" />
+                        </svg>
+                        {formatDuration(comment.videoTimestampMs)}
+                      </button>
+                    ) : null}
+                    {editing === comment.id ? (
+                      <EditBox
+                        initial={comment.body ?? ''}
+                        onCancel={() => setEditing(null)}
+                        onSave={(v) => void saveEdit(comment.id, v)}
+                      />
+                    ) : (
+                      /* Текст рендерится как текстовый узел — никакого dangerouslySetInnerHTML. */
+                      <p>{comment.body}</p>
+                    )}
+                  </div>
 
-                <div className="cl-reactions">
-                  {EMOJI.map((emoji) =>
-                    comment.reactions[emoji] || comment.myReactions.includes(emoji) ? (
-                      <button
-                        key={emoji}
-                        className={`cl-reaction${comment.myReactions.includes(emoji) ? ' mine' : ''}`}
-                        onClick={() => void toggleReaction(comment, emoji)}
-                      >
-                        {emoji} {comment.reactions[emoji] ?? 0}
-                      </button>
-                    ) : null
-                  )}
-                  {canComment ? (
-                    <>
-                      <button className="cl-btn ghost sm" onClick={() => void toggleReaction(comment, '👍')}>
-                        + 👍
-                      </button>
-                      <button className="cl-btn ghost sm" onClick={() => setReplyTo(comment)}>
-                        Ответить
-                      </button>
-                      {/*
-                        Права ровно те же, что на сервере: править — только свой
-                        текст, удалять — свой или любой, если ты владелец хуяпки.
-                        Раньше кнопки висели у каждого комментария и приводили
-                        к 403 «Можно править только свои комментарии» — интерфейс
-                        обещал то, чего не мог.
-                      */}
-                      {meId && comment.author?.id === meId ? (
-                        <button className="cl-btn ghost sm" onClick={() => setEditing(comment.id)}>
-                          Изменить
+                  <div className="cl-talk-foot">
+                    {EMOJI.map((emoji) =>
+                      comment.reactions[emoji] || comment.myReactions.includes(emoji) ? (
+                        <button
+                          key={emoji}
+                          className={`cl-reaction${comment.myReactions.includes(emoji) ? ' mine' : ''}`}
+                          onClick={() => void toggleReaction(comment, emoji)}
+                        >
+                          {emoji} {comment.reactions[emoji] ?? 0}
                         </button>
-                      ) : null}
-                      {meId && (comment.author?.id === meId || isOwner) ? (
-                        <button className="cl-btn ghost sm" onClick={() => void remove(comment.id)}>
-                          Удалить
+                      ) : null
+                    )}
+                    {canComment ? (
+                      <span className="cl-talk-acts">
+                        <button onClick={() => void toggleReaction(comment, '👍')} title="Отметить">
+                          👍
                         </button>
-                      ) : null}
-                    </>
-                  ) : null}
+                        <button onClick={() => setReplyTo(comment)}>Ответить</button>
+                        {/*
+                          Права ровно те же, что на сервере: править — только свой
+                          текст, удалять — свой или любой, если ты владелец хуяпки.
+                          Раньше кнопки висели у каждого комментария и приводили
+                          к 403 «Можно править только свои комментарии» — интерфейс
+                          обещал то, чего не мог.
+                        */}
+                        {mine ? <button onClick={() => setEditing(comment.id)}>Изменить</button> : null}
+                        {mine || isOwner ? (
+                          <button className="is-danger" onClick={() => void remove(comment.id)}>
+                            Удалить
+                          </button>
+                        ) : null}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            </div>
-          ))
-      )}
+              </article>
+            )
+          })
+        )}
+      </div>
 
       {canComment ? (
-        <div style={{ marginTop: 14, position: 'sticky', bottom: 0, background: 'var(--surface-100)', paddingTop: 8 }}>
+        <div className="cl-talk-compose">
           {replyTo ? (
-            <div className="cl-reply-quote" style={{ marginBottom: 6 }}>
-              Ответ: {replyTo.author?.displayName ?? replyTo.author?.username} · {replyTo.body?.slice(0, 60)}
-              <button className="cl-btn ghost sm" onClick={() => setReplyTo(null)}>
-                ✕
+            <div className="cl-talk-replyto">
+              <span>
+                <b>{replyTo.author?.displayName || replyTo.author?.username || 'Кто-то'}</b>
+                {replyTo.body?.slice(0, 70)}
+              </span>
+              <button onClick={() => setReplyTo(null)} aria-label="Не отвечать">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
               </button>
             </div>
           ) : null}
-          <textarea
-            className="cl-textarea"
-            placeholder="Написать комментарий…"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) void submit()
-            }}
-            style={{ minHeight: 62 }}
-          />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 8 }}>
-            {onSeek ? (
-              <label className="cl-check-row" style={{ padding: 0, fontSize: 13 }}>
-                <input type="checkbox" checked={withTimestamp} onChange={(e) => setWithTimestamp(e.target.checked)} />
-                привязать к {formatDuration(currentTimeMs())}
-              </label>
-            ) : null}
-            <div className="cl-spacer" />
-            <button className="cl-btn primary sm" onClick={() => void submit()} disabled={!text.trim() || sending}>
-              {sending ? 'Отправляем…' : 'Отправить'}
+
+          <div className="cl-talk-field">
+            <textarea
+              rows={1}
+              placeholder="Написать комментарий…"
+              value={text}
+              ref={grow}
+              onChange={(e) => {
+                setText(e.target.value)
+                grow(e.target)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) void submit()
+              }}
+            />
+            <button
+              className="cl-talk-send"
+              onClick={() => void submit()}
+              disabled={!text.trim() || sending}
+              aria-label="Отправить"
+              title="Отправить (Ctrl+Enter)"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+                <path d="M4.5 12 20 4.6 15.6 20l-3.7-5.6L4.5 12Z" />
+              </svg>
             </button>
           </div>
+
+          {onSeek ? (
+            <button
+              type="button"
+              className={`cl-talk-ts${withTimestamp ? ' is-on' : ''}`}
+              onClick={() => setWithTimestamp((v) => !v)}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="12" cy="12" r="8.5" />
+                <path d="M12 7.6V12l3 1.8" />
+              </svg>
+              привязать к {formatDuration(currentTimeMs())}
+            </button>
+          ) : null}
         </div>
       ) : null}
-    </>
+    </div>
   )
+}
+
+/**
+ * «5 минут назад» вместо «24.08.2026, 22:24:29».
+ *
+ * В ленте обсуждения важна свежесть, а не протокольная точность: полная дата
+ * читается дольше, чем сам комментарий. Точное время остаётся в подсказке.
+ */
+function ago(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  const min = Math.floor(ms / 60000)
+  if (min < 1) return 'только что'
+  if (min < 60) return `${min} мин назад`
+  const hours = Math.floor(min / 60)
+  if (hours < 24) return `${hours} ч назад`
+  const days = Math.floor(hours / 24)
+  if (days === 1) return 'вчера'
+  if (days < 7) return `${days} дн назад`
+  return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 function EditBox({ initial, onSave, onCancel }: { initial: string; onSave: (v: string) => void; onCancel: () => void }) {
   const [value, setValue] = useState(initial)
   return (
-    <div style={{ marginTop: 5 }}>
-      <textarea className="cl-textarea" value={value} onChange={(e) => setValue(e.target.value)} style={{ minHeight: 56 }} />
-      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-        <button className="cl-btn primary sm" onClick={() => onSave(value.trim())} disabled={!value.trim()}>
+    <div className="cl-talk-edit">
+      <textarea
+        value={value}
+        autoFocus
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && value.trim()) onSave(value.trim())
+        }}
+      />
+      <div className="cl-talk-edit-acts">
+        <button className="cl-talk-save" onClick={() => onSave(value.trim())} disabled={!value.trim()}>
           Сохранить
         </button>
-        <button className="cl-btn ghost sm" onClick={onCancel}>
-          Отмена
-        </button>
+        <button onClick={onCancel}>Отмена</button>
       </div>
     </div>
   )

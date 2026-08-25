@@ -258,6 +258,16 @@ export function useDragSelect({
       if (e.button !== 0 && e.pointerType === 'mouse') return
       if (activePointer !== -1) return
       const target = e.target as HTMLElement | null
+      /*
+       * Слои ПОВЕРХ ленты — не лента.
+       *
+       * Просмотрщик и модалки живут внутри .cl-page, и проверка «мы в ленте»
+       * их пропускала: любая протяжка мышью по фотографии — панорама
+       * увеличенного кадра, смахивание — тянула рамку по НЕВИДИМОЙ ленте под
+       * просмотром. Человек закрывал кадр и находил случайно отмеченный кусок
+       * альбома: «выделение появляется само после просмотра фото».
+       */
+      if (target?.closest('.cl-viewer, .cl-modal, .cl-modal-back, [role="dialog"]')) return
       const tile = tileAt(e.clientX, e.clientY)
       const fromCheckbox = Boolean(target?.closest?.('.cl-tile-check'))
 

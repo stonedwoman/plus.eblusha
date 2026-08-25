@@ -1450,9 +1450,17 @@ section[data-day],
 .cl-viewer-nav.prev { left: 0; border-radius: 0 12px 12px 0; }
 .cl-viewer-nav.next { right: 0; border-radius: 12px 0 0 12px; }
 .cl-viewer-panel {
+  /*
+   * Своя ступень в стопке. Зарево (.cl-vglow) — позиционированный слой с
+   * z-index: 0, а панель была обычным блоком: по правилам отрисовки блок идёт
+   * НИЖЕ позиционированных соседей, и размытая копия снимка ложилась поверх
+   * текста. Липкая полоса вкладок при этом оставалась яркой — она сама
+   * позиционирована, отсюда и странная картина «шапка читается, тело нет».
+   */
+  position: relative; z-index: 1;
   background: var(--surface-100);
   border-left: 1px solid var(--surface-border);
-  overflow-y: auto;
+  overflow: hidden;
   display: flex; flex-direction: column;
   animation: clPanelIn .3s var(--cl-ease);
 }
@@ -1473,7 +1481,7 @@ section[data-day],
 }
 .cl-panel-seg.solo { grid-template-columns: 1fr; }
 .cl-panel-thumb {
-  position: absolute; left: 3px; top: 3px; bottom: 3px; width: calc(50% - 3px);
+  position: absolute; left: 3px; top: 3px; bottom: 3px; width: calc(50% - 4px);
   border-radius: 9px; background: var(--surface-100);
   box-shadow: 0 2px 8px rgba(0,0,0,.28);
   transition: transform .26s var(--cl-ease);
@@ -1486,11 +1494,15 @@ section[data-day],
   transition: color .2s ease;
 }
 .cl-panel-tabs button.is-active { color: var(--text-primary); }
+/* Свой фокусный ободок: системный рисовался белой рамкой поверх бегунка. */
+.cl-panel-tabs button:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .cl-panel-tabs button b {
   min-width: 17px; padding: 0 5px; border-radius: 999px;
   background: var(--brand); color: #14100a; font-size: 10.5px; line-height: 16px;
 }
-.cl-panel-body { padding: 14px; flex: 1; }
+.cl-panel-body { padding: 14px; flex: 1; min-height: 0; overflow-y: auto; }
+/* Обсуждение само распоряжается прокруткой: список едет, поле ввода стоит. */
+.cl-panel-body.is-talk { overflow: hidden; display: flex; }
 
 /* ── Сведения о кадре ──────────────────────────────────────────────────── */
 .cl-mi { display: flex; flex-direction: column; gap: 14px; }
@@ -1561,21 +1573,148 @@ section[data-day],
 
 /* ── Комментарии ───────────────────────────────────────────────────────── */
 
-.cl-comment { display: flex; gap: 9px; padding: 10px 0; border-bottom: 1px solid var(--surface-border); }
-.cl-comment:last-of-type { border-bottom: none; }
-.cl-comment-main { min-width: 0; flex: 1; }
-.cl-comment-head { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; font-size: 12.5px; }
-.cl-comment-author { font-weight: 620; font-size: 13px; }
-.cl-comment-body { font-size: 13.5px; line-height: 1.5; margin-top: 3px; white-space: pre-wrap; word-break: break-word; }
-.cl-ts-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  background: rgba(217, 119, 6, .16); color: var(--brand-600);
-  border: none; font: inherit; font-size: 11.5px; font-weight: 640;
-  padding: 1px 7px; border-radius: 6px; cursor: pointer;
-  font-variant-numeric: tabular-nums;
+/* ── Обсуждение ────────────────────────────────────────────────────────── */
+.cl-talk { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.cl-talk-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+
+.cl-talk-empty {
+  margin: auto; padding: 30px 10px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
 }
-.cl-ts-chip:hover { background: rgba(217, 119, 6, .28); }
-.cl-reply-quote { font-size: 12px; color: var(--text-muted); border-left: 2px solid var(--surface-border-strong); padding-left: 7px; margin-bottom: 4px; }
+.cl-talk-mark {
+  width: 52px; height: 52px; margin-bottom: 4px; border-radius: 50%;
+  display: grid; place-items: center; color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent);
+}
+.cl-talk-mark svg { width: 24px; height: 24px; }
+.cl-talk-empty b { font-size: 14px; }
+.cl-talk-empty span { font-size: 12.5px; color: var(--text-muted); max-width: 210px; line-height: 1.5; }
+.cl-talk-wait {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--surface-border); border-top-color: var(--brand);
+  animation: clSpin .8s linear infinite;
+}
+@keyframes clSpin { to { transform: rotate(360deg); } }
+
+.cl-talk-item { display: flex; gap: 9px; }
+.cl-talk-main { min-width: 0; flex: 1; }
+.cl-talk-head { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; margin-bottom: 4px; }
+.cl-talk-head b { font-size: 12.5px; font-weight: 620; }
+.cl-talk-head time, .cl-talk-head i { font-size: 11.5px; font-style: normal; color: var(--text-muted); }
+.cl-talk-bubble {
+  padding: 9px 11px; border-radius: 4px 13px 13px 13px;
+  background: var(--surface-200); border: 1px solid var(--surface-border);
+}
+/* Свои реплики подкрашены — взгляд отделяет их от чужих без чтения имени. */
+.cl-talk-item.is-mine .cl-talk-bubble {
+  background: color-mix(in srgb, var(--brand) 11%, var(--surface-200));
+  border-color: color-mix(in srgb, var(--brand) 24%, var(--surface-border));
+}
+.cl-talk-bubble p { margin: 0; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.cl-talk-quote {
+  margin-bottom: 6px; padding-left: 8px; font-size: 12px; line-height: 1.45; color: var(--text-muted);
+  border-left: 2px solid var(--brand);
+}
+.cl-talk-quote b { display: block; color: var(--text-primary); font-weight: 600; }
+
+.cl-talk-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 5px; min-height: 22px; }
+/*
+ * Действия проявляются по наведению: у каждой реплики их до четырёх, и
+ * постоянно висящий ряд «Ответить · Изменить · Удалить» перевешивал сам текст.
+ * Там, где наведения нет (палец), показываем всегда — иначе они недостижимы.
+ */
+.cl-talk-acts { display: inline-flex; gap: 2px; opacity: 0; transition: opacity .18s ease; }
+.cl-talk-item:hover .cl-talk-acts, .cl-talk-acts:focus-within { opacity: 1; }
+@media (hover: none) { .cl-talk-acts { opacity: 1; } }
+.cl-talk-acts button {
+  padding: 3px 7px; border: none; border-radius: 8px; background: none;
+  color: var(--text-muted); font: inherit; font-size: 11.5px; cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.cl-talk-acts button:hover { background: var(--surface-200); color: var(--text-primary); }
+.cl-talk-acts button.is-danger:hover { background: color-mix(in srgb, #ef4444 20%, transparent); color: #fca5a5; }
+
+.cl-ts-chip {
+  display: inline-flex; align-items: center; gap: 5px; margin-bottom: 6px;
+  padding: 3px 9px 3px 7px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
+  background: color-mix(in srgb, var(--brand) 16%, transparent);
+  color: var(--brand); font: inherit; font-size: 11.5px; font-variant-numeric: tabular-nums; cursor: pointer;
+  transition: background .15s ease;
+}
+.cl-ts-chip svg { width: 10px; height: 10px; }
+.cl-ts-chip:hover { background: color-mix(in srgb, var(--brand) 30%, transparent); }
+
+.cl-talk-compose { flex: none; padding-top: 12px; }
+.cl-talk-replyto {
+  display: flex; align-items: flex-start; gap: 8px; margin-bottom: 7px;
+  padding: 7px 8px 7px 9px; border-radius: 10px;
+  background: var(--surface-200); border-left: 2px solid var(--brand);
+  font-size: 12px; color: var(--text-muted); line-height: 1.45;
+}
+.cl-talk-replyto span { flex: 1; min-width: 0; }
+.cl-talk-replyto b { display: block; color: var(--text-primary); font-weight: 600; }
+.cl-talk-replyto button {
+  flex: none; width: 20px; height: 20px; display: grid; place-items: center;
+  border: none; border-radius: 6px; background: none; color: var(--text-muted); cursor: pointer;
+}
+.cl-talk-replyto button svg { width: 13px; height: 13px; }
+.cl-talk-replyto button:hover { background: var(--surface-300); color: var(--text-primary); }
+
+/* Поле и отправка — одна коробка: кнопка внутри, а не в отдельной полосе снизу. */
+.cl-talk-field {
+  display: flex; align-items: flex-end; gap: 7px;
+  padding: 6px 6px 6px 12px; border-radius: 16px;
+  background: var(--surface-200); border: 1px solid var(--surface-border);
+  transition: border-color .18s ease;
+}
+.cl-talk-field:focus-within { border-color: color-mix(in srgb, var(--brand) 55%, var(--surface-border)); }
+.cl-talk-field textarea {
+  flex: 1; min-width: 0; height: 34px; max-height: 150px; padding: 8px 0;
+  border: none; background: none; color: var(--text-primary);
+  font: inherit; font-size: 13.5px; line-height: 1.45; resize: none; outline: none;
+}
+.cl-talk-field textarea::placeholder { color: var(--text-muted); }
+.cl-talk-send {
+  flex: none; width: 34px; height: 34px; border-radius: 12px;
+  display: grid; place-items: center; border: none;
+  background: var(--brand); color: #14100a; cursor: pointer;
+  transition: transform .18s var(--cl-ease), opacity .18s ease, background .18s ease;
+}
+.cl-talk-send svg { width: 17px; height: 17px; }
+.cl-talk-send:hover:not(:disabled) { transform: translateY(-1px) scale(1.04); }
+.cl-talk-send:disabled { background: var(--surface-300); color: var(--text-muted); cursor: default; }
+
+.cl-talk-ts {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 8px;
+  padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--surface-border); background: none;
+  color: var(--text-muted); font: inherit; font-size: 12px; cursor: pointer;
+  transition: color .16s ease, border-color .16s ease, background .16s ease;
+}
+.cl-talk-ts svg { width: 13px; height: 13px; }
+.cl-talk-edit textarea {
+  width: 100%; min-height: 62px; max-height: 200px; padding: 8px 10px;
+  border-radius: 10px; border: 1px solid color-mix(in srgb, var(--brand) 45%, var(--surface-border));
+  background: var(--surface-100); color: var(--text-primary);
+  font: inherit; font-size: 13.5px; line-height: 1.45; resize: vertical; outline: none;
+}
+.cl-talk-edit-acts { display: flex; gap: 6px; margin-top: 7px; }
+.cl-talk-edit-acts button {
+  padding: 5px 12px; border-radius: 9px; border: 1px solid var(--surface-border);
+  background: none; color: var(--text-muted); font: inherit; font-size: 12px; cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.cl-talk-edit-acts button:hover { background: var(--surface-300); color: var(--text-primary); }
+.cl-talk-edit-acts .cl-talk-save { background: var(--brand); border-color: transparent; color: #14100a; font-weight: 560; }
+.cl-talk-edit-acts .cl-talk-save:disabled { background: var(--surface-300); color: var(--text-muted); cursor: default; }
+
+.cl-talk-ts.is-on {
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--brand) 45%, transparent);
+  background: color-mix(in srgb, var(--brand) 13%, transparent);
+}
 .cl-reactions { display: flex; gap: 5px; margin-top: 6px; flex-wrap: wrap; }
 .cl-reaction {
   display: inline-flex; align-items: center; gap: 4px;
