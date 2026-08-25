@@ -6,8 +6,14 @@ import { Avatar, toast } from './ui'
 
 const EMOJI = ['👍', '❤️', '😂', '😮', '😢']
 
-/** Место под полосу превью резервируется раз и навсегда — см. --cl-gutter. */
-const GUTTER = 104
+/**
+ * Резерв по низу сцены (полоса превью, на узком экране — плюс планка корешка
+ * и safe-area). Единственный источник правды — вычисленный --cl-gutter со
+ * сцены: JS-двойник в пикселях неизбежно расходился бы с CSS при повороте
+ * планшета и на устройствах с home-индикатором.
+ */
+const gutterOf = (stage: HTMLElement): number =>
+  parseFloat(getComputedStyle(stage).getPropertyValue('--cl-gutter')) || 104
 /** Ширина ячейки полосы превью вместе с зазором. */
 const CELL = 72
 /** Сколько миниатюр держим в полосе: окно вокруг текущей, а не весь альбом. */
@@ -112,6 +118,8 @@ export function Viewer({
   }, [])
 
   /** Границы панорамы считаются из размера ВПИСАННОГО снимка, а не бокса. */
+  const gutterRef = useRef(104)
+
   const clampOffset = useCallback(() => {
     const v = view.current
     const stage = stageRef.current
@@ -124,7 +132,7 @@ export function Viewer({
       return
     }
     const maxX = Math.max(0, (fit.w * v.zoom - stage.clientWidth) / 2)
-    const maxY = Math.max(0, (fit.h * v.zoom - (stage.clientHeight - GUTTER)) / 2)
+    const maxY = Math.max(0, (fit.h * v.zoom - (stage.clientHeight - gutterRef.current)) / 2)
     v.x = clamp(v.x, -maxX, maxX)
     v.y = clamp(v.y, -maxY, maxY)
   }, [])
@@ -133,8 +141,11 @@ export function Viewer({
   const measureFit = useCallback(() => {
     const stage = stageRef.current
     if (!stage || !file) return
+    // Гаттер перечитывается здесь: measureFit дёргается и наблюдателем размера,
+    // и сменой кадра — ровно те моменты, когда медиазапрос мог переключиться.
+    gutterRef.current = gutterOf(stage)
     const boxW = stage.clientWidth
-    const boxH = stage.clientHeight - GUTTER
+    const boxH = stage.clientHeight - gutterRef.current
     const w = file.width || 0
     const h = file.height || 0
     if (!w || !h || boxW <= 0 || boxH <= 0) {
@@ -386,7 +397,7 @@ export function Viewer({
         const box = stage.getBoundingClientRect()
         setZoom(view.current.zoom * factor, {
           x: e.clientX - box.left - box.width / 2,
-          y: e.clientY - box.top - (box.height - GUTTER) / 2,
+          y: e.clientY - box.top - (box.height - gutterRef.current) / 2,
         })
         return
       }
@@ -508,7 +519,7 @@ export function Viewer({
     const box = stage.getBoundingClientRect()
     const anchor = {
       x: e.clientX - box.left - box.width / 2,
-      y: e.clientY - box.top - (box.height - GUTTER) / 2,
+      y: e.clientY - box.top - (box.height - gutterRef.current) / 2,
     }
     if (view.current.zoom > 1.001) {
       setZoom(1)
@@ -557,10 +568,6 @@ export function Viewer({
             </svg>
           </button>
           <div className="cl-viewer-title" title={file.name}>{file.name}</div>
-          <span className="cl-viewer-count">
-            {index + 1} <em>/</em> {files.length}
-          </span>
-          {zoomPct !== 100 ? <span className="cl-zoom-pill">{zoomPct}%</span> : null}
         </div>
 
         {index > 0 ? (
@@ -621,73 +628,6 @@ export function Viewer({
             </div>
           </div>
         ) : null}
-
-        {/* Плёночная риска: видна даже когда весь хром ушёл. */}
-        <div className="cl-vprogress" style={{ transform: `scaleX(${(index + 1) / Math.max(1, files.length)})` }} aria-hidden />
-      </div>
-
-      {/*
-        Закладки ящика. Одно целое с панелью: то же полотно, та же рамка, и
-        при открытии right уезжает ровно на ширину панели — закладки едут
-        ВМЕСТЕ с выдвигающимся полотном и остаются на его кромке. Подписи
-        горизонтальные: повёрнутый набок русский текст не читался.
-      */}
-      <div className="cl-vtabs">
-        <button
-          className={`cl-vtab${panel === 'info' ? ' is-on' : ''}`}
-          onClick={() => setPanel(panel === 'info' ? null : 'info')}
-          title="Сведения о кадре (i)"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M12 11v5.5" />
-            <circle cx="12" cy="7.7" r="1.1" fill="currentColor" stroke="none" />
-          </svg>
-          <span>Инфо</span>
-        </button>
-
-        {!readOnly ? (
-          <button
-            className={`cl-vtab${panel === 'comments' ? ' is-on' : ''}`}
-            onClick={() => setPanel(panel === 'comments' ? null : 'comments')}
-            title="Обсуждение кадра"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-              <path d="M20 12.4c0 3.9-3.6 7-8 7a9 9 0 0 1-2.4-.3L5 21l1.1-3.4A6.7 6.7 0 0 1 4 12.4c0-3.9 3.6-7 8-7s8 3.1 8 7Z" />
-            </svg>
-            <span>Комменты</span>
-            {file.commentCount ? <i className="cl-vtab-dot">{file.commentCount}</i> : null}
-          </button>
-        ) : null}
-
-        {file.urls.download ? (
-          <a
-            className="cl-vtab is-dl"
-            href={file.urls.download}
-            download={file.name}
-            draggable
-            /*
-             * Перетаскивание прямо в папку: DownloadURL — единственный способ
-             * отдать системе имя, тип и адрес файла так, чтобы отпускание над
-             * рабочим столом сохранило именно файл, а не ярлык на страницу.
-             * Рядом кладём обычный адрес: тем, кто DownloadURL не понимает,
-             * достанется хотя бы ссылка.
-             */
-            onDragStart={(e) => {
-              const url = new URL(file.urls.download as string, window.location.origin).href
-              e.dataTransfer.setData('DownloadURL', `${file.mime}:${file.name}:${url}`)
-              e.dataTransfer.setData('text/uri-list', url)
-              e.dataTransfer.setData('text/plain', url)
-              e.dataTransfer.effectAllowed = 'copy'
-            }}
-            title="Скачать · можно перетащить в папку"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" />
-            </svg>
-            <span>Скачать</span>
-          </a>
-        ) : null}
       </div>
 
       {panel ? (
@@ -719,6 +659,96 @@ export function Viewer({
           </div>
         </aside>
       ) : null}
+
+      {/*
+        Корешок. Правая колонка существует ВСЕГДА — это несущая поверхность
+        для кнопок и постоянная граница сцены, а панель — ящик, выезжающий
+        влево ИЗ-ПОД него (панель z:1, корешок z:2 — метафору даёт уже
+        существующий въезд clPanelIn). Кнопки стоят на полотне, а не висят
+        над фотографией; счётчик и зум дают корешку содержание карточки.
+      */}
+      <aside className="cl-vspine">
+        {/* Вертикальный прогресс альбома на левом ребре — виден даже в покое,
+            когда корешок утончается до нити. Значение через переменную:
+            десктоп рисует scaleY, мобильная планка — scaleX. */}
+        <i
+          className="cl-vprogress"
+          style={{ ['--p' as string]: (index + 1) / Math.max(1, files.length) }}
+          aria-hidden
+        />
+        <div className="cl-vspine-in">
+          <button
+            className={`cl-sp-tab${panel === 'info' ? ' is-on' : ''}`}
+            onClick={() => setPanel(panel === 'info' ? null : 'info')}
+            title="Сведения о кадре (i)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5.5" />
+              <circle cx="12" cy="7.7" r="1.1" fill="currentColor" stroke="none" />
+            </svg>
+            <span>Инфо</span>
+          </button>
+
+          {!readOnly ? (
+            <button
+              className={`cl-sp-tab${panel === 'comments' ? ' is-on' : ''}`}
+              onClick={() => setPanel(panel === 'comments' ? null : 'comments')}
+              title="Обсуждение кадра"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+                <path d="M20 12.4c0 3.9-3.6 7-8 7a9 9 0 0 1-2.4-.3L5 21l1.1-3.4A6.7 6.7 0 0 1 4 12.4c0-3.9 3.6-7 8-7s8 3.1 8 7Z" />
+              </svg>
+              <span>Комменты</span>
+              {file.commentCount ? <i className="cl-sp-dot">{file.commentCount}</i> : null}
+            </button>
+          ) : null}
+
+          {file.urls.download ? (
+            <a
+              className="cl-sp-tab is-dl"
+              href={file.urls.download}
+              download={file.name}
+              draggable
+              /*
+               * Перетаскивание прямо в папку: DownloadURL — единственный способ
+               * отдать системе имя, тип и адрес файла так, чтобы отпускание над
+               * рабочим столом сохранило именно файл, а не ярлык на страницу.
+               * Рядом кладём обычный адрес: тем, кто DownloadURL не понимает,
+               * достанется хотя бы ссылка.
+               */
+              onDragStart={(e) => {
+                const url = new URL(file.urls.download as string, window.location.origin).href
+                e.dataTransfer.setData('DownloadURL', `${file.mime}:${file.name}:${url}`)
+                e.dataTransfer.setData('text/uri-list', url)
+                e.dataTransfer.setData('text/plain', url)
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
+              title="Скачать · можно перетащить в папку"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" />
+              </svg>
+              <span>Скачать</span>
+            </a>
+          ) : null}
+
+          <div className="cl-vspine-meta">
+            {zoomPct !== 100 ? <span className="cl-sp-zoom">{zoomPct}%</span> : null}
+            <span className="cl-sp-fact">{new Date(file.takenAt).toLocaleDateString('ru-RU')}</span>
+            {file.geoCity ? (
+              <span className="cl-sp-fact is-city" title={file.geoCity}>
+                {file.geoCity}
+              </span>
+            ) : null}
+            <div className="cl-vspine-count">
+              <b>{index + 1}</b>
+              <i />
+              <span>{files.length}</span>
+            </div>
+          </div>
+        </div>
+      </aside>
     </div>
   )
 }

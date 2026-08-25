@@ -874,9 +874,15 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
 
 .cl-viewer {
   position: fixed; inset: 0; z-index: 1000;
+  --cl-spine-w: 72px;
   background: rgba(6, 7, 10, .96);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 0;
+  /* Три колонки ВСЕГДА: сцена | панель (0 или 372) | корешок. Привязки
+     grid-column явные — иначе при размонтированной панели корешок
+     автоплейсментом падал бы в её нулевую колонку. */
+  grid-template-columns: minmax(0, 1fr) 0 var(--cl-spine-w);
+  overflow: hidden;
+  overscroll-behavior: contain;
   /*
    * Колонки грида НЕ анимируются. Замер headless-хромиумом на живой странице:
    * transition по grid-template-columns давал 3–10 пропущенных кадров и
@@ -894,8 +900,9 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   from { opacity: 0; transform: scale(1.015); }
   to { opacity: 1; transform: none; }
 }
-.cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr) 372px; }
+.cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr) 372px var(--cl-spine-w); }
 .cl-viewer-stage {
+  grid-column: 1;
   position: relative;
   display: grid;
   /* minmax(0, 1fr) обязателен: без него строка грида раздувается по содержимому,
@@ -1344,11 +1351,6 @@ section[data-day],
 .cl-shot-generic h3 { margin: 10px 0 4px; }
 .cl-shot-generic p { margin: 0; color: var(--text-muted); font-size: 13px; }
 
-.cl-zoom-pill {
-  padding: 3px 8px; border-radius: 99px;
-  background: rgba(255, 255, 255, .12);
-  font-size: 11.5px; font-variant-numeric: tabular-nums;
-}
 
 /* ── Полоса превью ──────────────────────────────────────────────────────
  * Место под неё выделено раз и навсегда (--cl-gutter), поэтому появление и
@@ -1382,15 +1384,6 @@ section[data-day],
 }
 .cl-strip-cell.is-active::after { opacity: 1; }
 
-/* Плёночная риска прогресса — видна, даже когда весь хром ушёл. */
-.cl-vprogress {
-  position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
-  background: var(--brand);
-  transform-origin: left center;
-  z-index: 4;
-  transition: transform .3s var(--cl-ease);
-}
-
 /* ── Иммерсивный режим: остаётся только снимок ─────────────────────────── */
 .cl-viewer.is-idle .cl-viewer-top,
 .cl-viewer.is-idle .cl-viewer-nav,
@@ -1410,8 +1403,6 @@ section[data-day],
   z-index: 3;
 }
 .cl-viewer-title { font-size: 14px; font-weight: 560; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cl-viewer-count { font-size: 12.5px; color: rgba(255,255,255,.6); font-variant-numeric: tabular-nums; flex: none; }
-.cl-viewer-count em { font-style: normal; opacity: .5; }
 /*
  * Кнопки верхней панели — один язык со всем остальным хромом: стеклянный
  * кружок, знак нарисован вектором. Раньше здесь стояли текст «Скачать» со
@@ -1449,6 +1440,7 @@ section[data-day],
 .cl-viewer-nav.prev { left: 0; border-radius: 0 12px 12px 0; }
 .cl-viewer-nav.next { right: 0; border-radius: 12px 0 0 12px; }
 .cl-viewer-panel {
+  grid-column: 2;
   /*
    * Своя ступень в стопке. Зарево (.cl-vglow) — позиционированный слой с
    * z-index: 0, а панель была обычным блоком: по правилам отрисовки блок идёт
@@ -1489,64 +1481,113 @@ section[data-day],
 .cl-panel-head button:hover { background: var(--surface-200); color: var(--text-primary); }
 
 /*
- * Закладки ящика у правого края.
+ * Корешок — постоянная правая колонка просмотрщика.
  *
- * Одно целое с панелью, а не ряд кнопок над фотографией: то же полотно
- * (--surface-100/200), та же рамка, и right уезжает ровно на ширину панели —
- * закладки движутся вместе с выдвигающимся полотном и остаются на его кромке,
- * заходя на 1px, чтобы фон активной перекрывал рамку панели без шва.
- * Подписи горизонтальные: повёрнутый набок русский текст не читался.
+ * Это ответ на «нецелостно, кнопки висят в пустоте»: у кнопок есть несущая
+ * поверхность, существующая в КАЖДОМ состоянии, а граница сцена/сайдбар —
+ * левое ребро корешка — прочерчена всегда, а не появляется вместе с панелью.
+ * Панель выезжает влево ИЗ-ПОД корешка (она z:1, корешок z:2): существующий
+ * въезд clPanelIn бесплатно даёт метафору выдвижного ящика. При открытой
+ * панели шов между полотнами гасится — рамка остаётся одна на двоих, и
+ * корешок с панелью читаются одним предметом.
  */
-.cl-vtabs {
-  position: absolute; top: 62px; right: 0; z-index: 4;
-  display: flex; flex-direction: column; gap: 7px;
+.cl-vspine {
+  grid-column: 3;
+  position: relative; z-index: 2;
+  background: var(--surface-100);
+  border-left: 1px solid var(--surface-border);
+  display: flex; flex-direction: column;
+  padding: max(10px, var(--safe-top)) 0 10px;
+  transition: transform .45s var(--cl-ease), border-color .3s var(--cl-ease);
+}
+.cl-viewer.with-panel .cl-vspine { border-left-color: transparent; }
+
+.cl-vspine-in {
+  display: flex; flex-direction: column; flex: 1; min-height: 0;
   transition: opacity .3s var(--cl-ease);
 }
-.cl-viewer.is-idle .cl-vtabs { opacity: 0; pointer-events: none; }
-/*
- * Открытие анимируется той же длительностью и кривой, что въезд панели, —
- * закладки и полотно движутся как один предмет. Закрытие мгновенно, как и
- * сама панель (она размонтируется без прощального жеста): transition
- * объявлен только в открытом состоянии. Пока панель открыта, закладки не
- * гаснут в режиме покоя — они часть ящика, а не хрома над снимком.
- */
-.cl-viewer.with-panel .cl-vtabs {
-  right: calc(372px - 1px);
-  transition: right .3s var(--cl-ease), opacity .3s var(--cl-ease);
-  opacity: 1; pointer-events: auto;
-}
-.cl-vtab {
+
+.cl-sp-tab {
   position: relative;
-  /* 72px — самая длинная подпись «Комменты» помещается целиком: обрезать
-     ярлык до «Комме…» хуже, чем отдать снимку лишние пиксели ширины. */
-  width: 72px; padding: 8px 5px 7px;
   display: flex; flex-direction: column; align-items: center; gap: 4px;
-  border: 1px solid var(--surface-border); border-right: none;
-  border-radius: 12px 0 0 12px;
-  background: var(--surface-200);
-  color: var(--text-muted);
-  font: inherit; font-size: 10.5px; font-weight: 560; letter-spacing: 0;
+  margin: 2px 5px; padding: 10px 2px 8px;
+  border: none; border-radius: 11px;
+  background: none; color: var(--text-muted);
+  font: inherit; font-size: 10.5px; font-weight: 560;
   text-decoration: none; cursor: pointer;
-  transition: color .18s ease, background .18s ease, transform .18s var(--cl-ease);
+  transition: color .18s ease, background .18s ease;
 }
-.cl-vtab svg { width: 17px; height: 17px; }
-.cl-vtab span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cl-vtab:not(.is-on):hover { color: var(--text-primary); transform: translateX(-3px); }
-/* Активная — то самое полотно панели: фон совпадает, шов перекрыт, остаётся
-   только акцентная риска на внешнем ребре. Неактивные темнее — «позади». */
-.cl-vtab.is-on { background: var(--surface-100); color: var(--text-primary); }
-.cl-vtab.is-on::before {
-  content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
+.cl-sp-tab svg { width: 18px; height: 18px; }
+.cl-sp-tab span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cl-sp-tab:hover { color: var(--text-primary); background: var(--surface-200); }
+.cl-sp-tab.is-on { color: var(--text-primary); background: var(--surface-200); }
+/* Риска активной вкладки смотрит на панель, которую открыла, и с погашенным
+   швом приваривается к её полотну. */
+.cl-sp-tab.is-on::before {
+  content: ''; position: absolute; left: -5px; top: 7px; bottom: 7px; width: 3px;
   border-radius: 0 3px 3px 0; background: var(--brand);
 }
-.cl-vtab.is-dl { margin-top: 9px; }
-.cl-vtab.is-dl:active { cursor: grabbing; }
-.cl-vtab-dot {
-  position: absolute; top: 3px; right: 5px;
+.cl-sp-dot {
+  position: absolute; top: 3px; right: 6px;
   min-width: 15px; height: 15px; padding: 0 4px;
   border-radius: 999px; background: var(--brand); color: #14100a;
   font-style: normal; font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
 }
+.cl-sp-tab.is-dl { margin-top: 10px; }
+.cl-sp-tab.is-dl:active { cursor: grabbing; }
+
+/* Низ корешка — карточка кадра: зум, дата, место, счётчик. */
+.cl-vspine-meta {
+  margin-top: auto;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 10px 6px 2px;
+  font-size: 10px; color: var(--text-muted);
+  text-align: center;
+}
+.cl-sp-zoom {
+  padding: 3px 8px; border-radius: 8px;
+  background: var(--surface-200); border: 1px solid var(--surface-border);
+  font-variant-numeric: tabular-nums;
+}
+.cl-sp-fact { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cl-sp-fact.is-city { color: var(--text-primary); opacity: .75; }
+.cl-vspine-count {
+  display: grid; justify-items: center; gap: 3px;
+  padding-top: 6px;
+  font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-muted);
+}
+.cl-vspine-count b { color: var(--text-primary); font-weight: 620; font-size: 13px; }
+.cl-vspine-count i { width: 16px; height: 1px; background: var(--surface-border); }
+
+/*
+ * Прогресс альбома: вертикальная нить на левом ребре корешка. Заменяет
+ * прежнюю нижнюю риску и остаётся видимой даже в покое, когда корешок
+ * утончается до нити. Значение через --p: десктоп рисует scaleY,
+ * мобильная планка — scaleX, без конфликта с inline-transform.
+ */
+.cl-vprogress {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--brand);
+  transform: scaleY(var(--p, 0)); transform-origin: center top;
+  transition: transform .3s var(--cl-ease), opacity .3s var(--cl-ease);
+}
+/* Тусклая дорожка под нитью — видно и пройденное, и целое. */
+.cl-vspine::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: color-mix(in srgb, var(--brand) 16%, transparent);
+}
+/* На внутреннем шве открытого ящика оранжевая нить читалась бы как
+   случайный разделитель — приглушаем. */
+.cl-viewer.with-panel .cl-vprogress { opacity: .45; }
+
+/*
+ * Покой: корешок утончается до нити — уезжает вправо, оставляя 3px
+ * (рамка + прогресс). Колонка грида остаётся 72px, кадр НЕ перевписывается:
+ * весь транспорт на композиторе. Guard :not(.with-panel): открытый ящик
+ * не сворачивается — он часть чтения, а не хром.
+ */
+.cl-viewer.is-idle:not(.with-panel) .cl-vspine { transform: translateX(calc(100% - 3px)); }
+.cl-viewer.is-idle:not(.with-panel) .cl-vspine-in { opacity: 0; pointer-events: none; }
 
 .cl-panel-body { padding: 14px; flex: 1; min-height: 0; overflow-y: auto; }
 /* Обсуждение само распоряжается прокруткой: список едет, поле ввода стоит. */
@@ -1622,7 +1663,12 @@ section[data-day],
 /* ── Комментарии ───────────────────────────────────────────────────────── */
 
 /* ── Обсуждение ────────────────────────────────────────────────────────── */
-.cl-talk { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/*
+ * flex:1 обязателен: .cl-talk — флекс-ребёнок панели, и без него ширина
+ * сжималась до max-content содержимого — всё обсуждение съезжало к левому
+ * краю, а справа оставалась пустая полоса.
+ */
+.cl-talk { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100%; min-height: 0; }
 .cl-talk-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
 
 .cl-talk-empty {
@@ -2016,15 +2062,58 @@ section[data-day],
   .cl-topnav { order: 3; flex: 0 0 100%; flex-wrap: wrap; overflow-x: visible; margin-left: 0; }
   .cl-topnav a { padding: 6px 10px; font-size: 13px; }
 
-  .cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-  /* Панель здесь — шторка снизу, кромки справа нет: закладки не уезжают. */
-  .cl-viewer.with-panel .cl-vtabs { right: 0; transition: opacity .3s var(--cl-ease); }
+  .cl-viewer, .cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  /*
+   * Корешок поворачивается в нижнюю планку — несущую поверхность на кромке
+   * экрана. Полоса превью поднимается и живёт над планкой (см. --cl-gutter
+   * 156px и парную константу gutterPx() в Viewer.tsx).
+   */
+  .cl-vspine {
+    grid-column: 1;
+    position: absolute; left: 0; right: 0; bottom: 0; top: auto;
+    height: calc(52px + var(--safe-bottom));
+    padding: 0 6px var(--safe-bottom);
+    border-left: none; border-top: 1px solid var(--surface-border);
+  }
+  .cl-vspine-in { flex-direction: row; justify-content: space-around; align-items: stretch; }
+  .cl-sp-tab { flex: 1; margin: 3px 2px; padding: 5px 2px 4px; gap: 2px; }
+  .cl-sp-tab.is-dl { margin-top: 3px; }
+  .cl-sp-tab.is-on::before { left: 8px; right: 8px; top: -4px; bottom: auto; width: auto; height: 3px; border-radius: 0 0 3px 3px; }
+  /* Счётчик и зум остаются в планке — без них не видно, где ты в альбоме
+     из трёх сотен кадров; прячутся только дата и город. */
+  .cl-vspine-meta { flex-direction: row; align-items: center; gap: 7px; margin: 0; padding: 0 9px 0 4px; }
+  .cl-sp-fact { display: none; }
+  .cl-vspine-count { grid-auto-flow: column; align-items: baseline; gap: 4px; padding-top: 0; }
+  .cl-vspine-count i { width: 7px; }
+  .cl-vprogress { left: 0; right: 0; top: 0; bottom: auto; width: auto; height: 2px; transform: scaleX(var(--p, 0)); transform-origin: left center; }
+  .cl-vspine::before { left: 0; right: 0; top: 0; bottom: auto; width: auto; height: 2px; }
+  .cl-viewer-stage { --cl-gutter: calc(156px + var(--safe-bottom)); }
+  .cl-strip { bottom: calc(52px + var(--safe-bottom)); height: 104px; }
+  /* Покой: планка ныряет вниз, оставляя ту же 3px-нить. */
+  .cl-viewer.is-idle:not(.with-panel) .cl-vspine { transform: translateY(calc(100% - 3px)); }
+  /*
+   * С открытой шторкой кадр приподнимается: без сдвига панорамный снимок,
+   * отцентрованный в полной сцене, целиком уходил под шторку, и над ней
+   * оставалась пустая чернота. Транспорт на композиторе — существующий
+   * transition .cl-rail подхватывает сдвиг без релэйаута.
+   */
+  .cl-viewer.with-panel .cl-rail { transform: translate3d(var(--nudge, 0px), -24dvh, 0); }
   /* Панель — шторкой ПОВЕРХ кадра, а не отжимает его в полоску. */
   .cl-viewer-panel {
+    /* Сброс колонки обязателен: у absolute-ребёнка грида с назначенной
+       областью containing block — сама область, а колонки 2 здесь нет,
+       и шторка позиционировалась от нулевой полосы за экраном. */
+    grid-column: 1;
     animation: clSheetUp .3s var(--cl-ease);
     position: absolute;
-    left: 0; right: 0; bottom: 0;
-    height: 70dvh;
+    z-index: 3;
+    /*
+     * Шторка встаёт НА планку, а не поверх неё: планка остаётся видимой и
+     * кликабельной, и Инфо↔Комменты переключаются одним тапом — иначе
+     * пришлось бы закрывать шторку крестиком и открывать заново.
+     */
+    left: 0; right: 0; bottom: calc(52px + var(--safe-bottom));
+    height: calc(70dvh - 52px);
     border-left: none;
     border-top: 1px solid var(--surface-border);
     border-radius: 14px 14px 0 0;
