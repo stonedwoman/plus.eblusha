@@ -55,6 +55,7 @@ model User {
   cloudFiles                    CloudFile[]                                @relation("CloudFileUploader")
   cloudUploads                  CloudUploadSession[]
   cloudComments                 CloudComment[]                             @relation("CloudCommentAuthor")
+  cloudPerson                   CloudPerson?
   cloudReactions                CloudReaction[]
   cloudActivity                 CloudActivityEvent[]                       @relation("CloudActivityActor")
   cloudShares                   CloudShareLink[]                           @relation("CloudShareCreator")
@@ -946,7 +947,10 @@ model CloudPerson {
   name        String
   /// Лицо-обложка для аватара персоны.
   coverFaceId String?
+  /// Привязка к аккаунту Еблуши: один аккаунт — одна персона.
+  userId      String?  @unique
 
+  user  User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
   faces CloudFace[]
 }
 

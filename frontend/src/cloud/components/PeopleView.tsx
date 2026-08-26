@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { cloudApi, toCloudError } from '../api'
-import type { CloudFile } from '../types'
+import type { CloudFile, CloudUserLite } from '../types'
+import { Avatar } from './ui'
 import { Tiles } from './Gallery'
 import { Viewer } from './Viewer'
 import { toast } from './ui'
@@ -19,6 +20,8 @@ type Person = {
   name: string
   countInSpace: number
   cover: FaceRef | null
+  /** Привязанный аккаунт Еблуши: имя и аватар тогда берутся из него. */
+  user: CloudUserLite | null
 }
 type FaceRef = {
   id: string
@@ -64,7 +67,16 @@ export function FaceCrop({ face, size = 72 }: { face: FaceRef; size?: number }) 
   )
 }
 
-export function PeopleView({ spaceId, canEdit }: { spaceId: string; canEdit: boolean }) {
+export function PeopleView({
+  spaceId,
+  canEdit,
+  members,
+}: {
+  spaceId: string
+  canEdit: boolean
+  /** Участники хуяпки — кандидаты на привязку «это аккаунт такого-то». */
+  members: CloudUserLite[]
+}) {
   const [people, setPeople] = useState<Person[]>([])
   const [groups, setGroups] = useState<UnnamedGroup[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -108,12 +120,21 @@ export function PeopleView({ spaceId, canEdit }: { spaceId: string; canEdit: boo
     else setFiles([])
   }, [selected, loadFiles])
 
-  const name = async (group: UnnamedGroup, personName: string) => {
+  const name = async (group: UnnamedGroup, opts: { name?: string; userId?: string }) => {
     try {
-      await cloudApi.post('/faces/name', { name: personName.trim(), faceIds: group.faceIds })
-      toast.success(`Готово: ${personName.trim()}`)
+      await cloudApi.post('/faces/name', { ...opts, faceIds: group.faceIds })
+      toast.success('Готово')
       setNaming(null)
       setNameInput('')
+      await load()
+    } catch (err) {
+      toast.error(toCloudError(err).message)
+    }
+  }
+
+  const link = async (personId: string, userId: string | null) => {
+    try {
+      await cloudApi.post(`/faces/people/${personId}/link`, { userId })
       await load()
     } catch (err) {
       toast.error(toCloudError(err).message)
@@ -133,7 +154,14 @@ export function PeopleView({ spaceId, canEdit }: { spaceId: string; canEdit: boo
             onClick={() => setSelected(selected === p.id ? null : p.id)}
             title={`${p.name} · ${p.countInSpace} в этой хуяпке`}
           >
-            {p.cover ? <FaceCrop face={p.cover} size={64} /> : <span className="cl-face cl-face-empty" style={{ width: 64, height: 64 }}>🙂</span>}
+            <span className="cl-person-ava">
+              {p.cover ? <FaceCrop face={p.cover} size={64} /> : <span className="cl-face cl-face-empty" style={{ width: 64, height: 64 }}>🙂</span>}
+              {p.user ? (
+                <span className="cl-person-badge" title={`Аккаунт: ${p.user.displayName || p.user.username}`}>
+                  <Avatar user={p.user} />
+                </span>
+              ) : null}
+            </span>
             <b>{p.name}</b>
             <i>{p.countInSpace}</i>
           </button>
@@ -148,8 +176,25 @@ export function PeopleView({ spaceId, canEdit }: { spaceId: string; canEdit: boo
       {/* Снимки выбранной персоны */}
       {selectedPerson ? (
         <>
-          <div className="cl-section-title">
+          <div className="cl-section-title cl-person-head">
             {selectedPerson.name} · {selectedPerson.countInSpace}
+            {canEdit ? (
+              selectedPerson.user ? (
+                <button className="cl-btn ghost sm" onClick={() => void link(selectedPerson.id, null)}>
+                  Отвязать от @{selectedPerson.user.username}
+                </button>
+              ) : (
+                <span className="cl-person-linkrow">
+                  связать с аккаунтом:
+                  {members.map((m) => (
+                    <button key={m.id} className="cl-face-member" onClick={() => void link(selectedPerson.id, m.id)}>
+                      <Avatar user={m} />
+                      <span>{m.displayName || m.username}</span>
+                    </button>
+                  ))}
+                </span>
+              )
+            ) : null}
           </div>
           <Tiles
             files={files}
@@ -192,9 +237,23 @@ export function PeopleView({ spaceId, canEdit }: { spaceId: string; canEdit: boo
                       className="cl-face-nameform"
                       onSubmit={(e) => {
                         e.preventDefault()
-                        if (nameInput.trim()) void name(g, nameInput)
+                        if (nameInput.trim()) void name(g, { name: nameInput.trim() })
                       }}
                     >
+                      {/* Свои люди — в один клик: пачка сразу привязывается к
+                          аккаунту, имя и аватар приезжают из профиля. */}
+                      {members.map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          className="cl-face-member"
+                          title={`Это ${m.displayName || m.username}`}
+                          onClick={() => void name(g, { userId: m.id })}
+                        >
+                          <Avatar user={m} />
+                          <span>{m.displayName || m.username}</span>
+                        </button>
+                      ))}
                       <input
                         autoFocus
                         className="cl-input"

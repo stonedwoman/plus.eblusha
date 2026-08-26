@@ -47,7 +47,10 @@ router.get(
     if (!spaceId) throw invalid("Нужен spaceId");
     await requireSpaceAccess(req, spaceId, "space:view");
 
-    const people = await prisma.cloudPerson.findMany({ orderBy: { createdAt: "asc" } });
+    const people = await prisma.cloudPerson.findMany({
+      orderBy: { createdAt: "asc" },
+      include: { user: { select: { id: true, username: true, displayName: true, avatarUrl: true } } },
+    });
     const rows = await prisma.cloudFace.groupBy({
       by: ["personId"],
       where: { personId: { not: null }, file: { spaceId, deletedAt: null } },
@@ -64,9 +67,12 @@ router.get(
         const cover = p.coverFaceId ? coverById.get(p.coverFaceId) : null;
         return {
           id: p.id,
-          name: p.name,
+          // Связанная персона живёт под именем аккаунта: displayName меняется
+          // в Еблуше — меняется и здесь, без рассинхрона.
+          name: p.user ? p.user.displayName || p.user.username : p.name,
           countInSpace: inSpace.get(p.id) ?? 0,
           cover: cover ? faceDto(cover) : null,
+          user: p.user,
         };
       }),
     });
@@ -111,7 +117,12 @@ router.get(
   })
 );
 
-const nameSchema = z.object({ name: z.string().trim().min(1).max(80), faceIds: z.array(z.string()).min(1).max(500) });
+const nameSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  /** Привязка к аккаунту Еблуши: имя тогда берётся из профиля. */
+  userId: z.string().min(1).optional(),
+  faceIds: z.array(z.string()).min(1).max(500),
+}).refine((v) => v.name || v.userId, { message: "Нужно имя или userId" });
 
 /** Назвать лица: новая персона или довязка к существующей по имени. */
 router.post(
@@ -128,11 +139,29 @@ router.post(
     for (const sid of new Set(faces.map((f) => f.file.spaceId))) {
       await requireSpaceAccess(req, sid, "file:upload");
     }
-    let person = await prisma.cloudPerson.findFirst({ where: { name: { equals: parsed.data.name, mode: "insensitive" } } });
-    if (!person) {
-      person = await prisma.cloudPerson.create({
-        data: { name: parsed.data.name, coverFaceId: faces[0]!.id },
+    let person = null;
+    if (parsed.data.userId) {
+      const account = await prisma.user.findUnique({
+        where: { id: parsed.data.userId },
+        select: { id: true, username: true, displayName: true },
       });
+      if (!account) throw notFound("Аккаунт не найден");
+      person =
+        (await prisma.cloudPerson.findUnique({ where: { userId: account.id } })) ??
+        (await prisma.cloudPerson.create({
+          data: {
+            name: parsed.data.name ?? account.displayName ?? account.username,
+            userId: account.id,
+            coverFaceId: faces[0]!.id,
+          },
+        }));
+    } else {
+      person = await prisma.cloudPerson.findFirst({ where: { name: { equals: parsed.data.name!, mode: "insensitive" } } });
+      if (!person) {
+        person = await prisma.cloudPerson.create({
+          data: { name: parsed.data.name!, coverFaceId: faces[0]!.id },
+        });
+      }
     }
     await prisma.cloudFace.updateMany({
       where: { id: { in: parsed.data.faceIds } },
@@ -172,6 +201,31 @@ router.post(
         : { personId: null, assignedBy: null, matchScore: null },
     });
     res.json({ assigned: faces.length });
+  })
+);
+
+const linkSchema = z.object({ userId: z.string().min(1).nullable() });
+
+/** Связать персону с аккаунтом Еблуши (null — отвязать). */
+router.post(
+  "/people/:id/link",
+  ah(async (req: Request, res) => {
+    const parsed = linkSchema.safeParse(req.body ?? {});
+    if (!parsed.success) throw invalid("Нужен userId");
+    const person = await prisma.cloudPerson.findUnique({ where: { id: String(req.params.id) } });
+    if (!person) throw notFound("Персона не найдена");
+    if (parsed.data.userId) {
+      const account = await prisma.user.findUnique({ where: { id: parsed.data.userId }, select: { id: true } });
+      if (!account) throw notFound("Аккаунт не найден");
+      const taken = await prisma.cloudPerson.findUnique({ where: { userId: parsed.data.userId } });
+      if (taken && taken.id !== person.id) throw invalid("Этот аккаунт уже связан с другой персоной");
+    }
+    const updated = await prisma.cloudPerson.update({
+      where: { id: person.id },
+      data: { userId: parsed.data.userId },
+      include: { user: { select: { id: true, username: true, displayName: true, avatarUrl: true } } },
+    });
+    res.json({ person: { id: updated.id, name: updated.user ? updated.user.displayName || updated.user.username : updated.name, user: updated.user } });
   })
 );
 

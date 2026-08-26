@@ -1093,7 +1093,7 @@ export default function SpacePage() {
 
       {/* ── Содержимое ──────────────────────────────────────────────────── */}
       {view === 'people' ? (
-        <PeopleView spaceId={spaceId} canEdit={canEdit} />
+        <PeopleView spaceId={spaceId} canEdit={canEdit} members={space.members} />
       ) : view === 'activity' ? (
         <ActivityView spaceId={spaceId} />
       ) : view === 'map' ? (
