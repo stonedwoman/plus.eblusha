@@ -524,6 +524,12 @@
 /* Папка приоткрывается навстречу курсору. */
 .cl-split-lid { transform-origin: 50% 42%; transition: transform .25s var(--cl-ease); }
 .cl-split-alt:hover .cl-split-lid { transform: rotate(-7deg) translateY(.6px); }
+/* Тач-цель 32px заметно меньше рекомендуемых ~44px для главного CTA загрузки. */
+@media (hover: none) {
+  .cl-split { height: 44px; }
+  .cl-split button { padding: 0 16px; }
+  .cl-split-alt { padding: 0 13px; }
+}
 
 
 
@@ -570,6 +576,12 @@
   gap: 8px;
 }
 .cl-tiles.dense { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+@media (max-width: 480px) {
+  /* На узком телефоне (320-375px) 164px-колонка не влезает вдвоём — сетка
+     схлопывалась в одну гигантскую плитку почти во весь экран. Тот же
+     порог, что уже даёт класс .dense у вида «Файлы». */
+  .cl-tiles:not(.dense) { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 6px; }
+}
 
 .cl-tile {
   position: relative;
@@ -772,7 +784,6 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   display: grid; place-items: center; font-size: 12px;
   opacity: 0; transition: opacity .15s ease;
 }
-.cl-uptile:hover .cl-uptile-cancel { opacity: 1; }
 .cl-uptile-retry {
   width: 46px; height: 46px; border-radius: 50%;
   border: 1px solid var(--surface-border-strong);
@@ -881,7 +892,7 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
 .cl-up-item { padding: 11px 13px; border-bottom: 1px solid var(--surface-border); }
 .cl-up-item:last-child { border-bottom: none; }
 .cl-up-name { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 6px; }
-.cl-progress { height: 6px; border-radius: 99px; background: var(--surface-300); overflow: hidden; }
+.cl-progress { flex: 1; height: 6px; border-radius: 99px; background: var(--surface-300); overflow: hidden; }
 /*
  * Полоса едет трансформом внутри overflow:hidden трека, а не растёт шириной.
  * Ширина — layout, а прогресс тикает на каждом событии передачи: полоса живёт
@@ -1033,6 +1044,13 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
  * видео панель иногда так и не проступала.
  */
 .cl-player.is-paused .cl-player-bar { opacity: 1; transition: none; }
+/*
+ * Тач-открытие: тап по играющему видео сразу ставит паузу/играет, и без
+ * этого добраться до перемотки/звука нечем — наведения на тач не бывает.
+ * Правило стоит ПОСЛЕ is-idle намеренно и с тем же весом — успевает вскрыть
+ * панель, даже если внешняя оболочка просмотрщика уже уснула.
+ */
+.cl-player.is-touch-shown .cl-player-bar { opacity: 1; }
 
 .cl-player-btn {
   flex: none;
@@ -1193,6 +1211,11 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   transition: opacity .2s var(--cl-ease), transform .3s var(--cl-ease);
 }
 .cl-geonav .cl-tn-node.is-labeled .cl-tn-cap { opacity: 1; }
+/* Тач-планшет/ноутбук в landscape: рельса видна (ширина есть), а :hover — нет.
+   Уже подписанные (is-labeled) не трогаем — это только недостающие. */
+@media (hover: none) {
+  .cl-geonav .cl-tn-node:not(.is-labeled) .cl-tn-cap { opacity: .82; }
+}
 .cl-geonav .cl-tn-node:hover { z-index: 2; }
 .cl-geonav .cl-tn-node:hover .cl-tn-cap {
   opacity: 1;
@@ -1910,7 +1933,7 @@ section[data-day],
   background: rgba(5, 6, 9, .72);
   backdrop-filter: blur(3px);
   display: grid; place-items: center;
-  padding: 18px;
+  padding: max(18px, var(--safe-top)) max(18px, var(--safe-right)) max(18px, var(--safe-bottom)) max(18px, var(--safe-left));
   animation: clFade .16s ease;
 }
 /* Уход: подложка гаснет, окно слегка оседает — зеркально появлению. */
@@ -1925,7 +1948,9 @@ section[data-day],
 @keyframes clFade { from { opacity: 0 } to { opacity: 1 } }
 .cl-modal {
   width: min(520px, 100%);
-  max-height: min(86dvh, 780px);
+  /* dvh игнорирует экранную клавиатуру iOS Safari — --vh синхронизирован с
+     visualViewport (main.tsx) и уже используется ChatsPage/ImageEditorModal. */
+  max-height: min(calc(var(--vh, 1vh) * 86), 780px);
   overflow-y: auto;
   background: var(--surface-100);
   border: 1px solid var(--surface-border-strong);
@@ -2054,6 +2079,11 @@ section[data-day],
   position: relative;
   isolation: isolate;
   z-index: 0;
+}
+@media (max-width: 860px) {
+  /* Во весь узкий экран карта не помещалась с чем-либо ещё — сужаем, чтобы
+     пояснение под ней (пустой список/ошибка) не требовало долгой прокрутки. */
+  .cl-map { height: min(52dvh, 520px); }
 }
 .cl-map .leaflet-container { background: var(--surface-200); font: inherit; }
 /*
@@ -2221,17 +2251,25 @@ section[data-day],
   .cl-row { grid-template-columns: 40px minmax(0, 1fr) 40px; }
   .cl-row > .cl-row-hide { display: none; }
   .cl-page { padding: 16px max(12px, var(--safe-left)) 120px max(12px, var(--safe-right)); }
-  .cl-space-head { margin: 0 -12px 12px; padding: 12px 12px 0; }
+  .cl-space-head {
+    margin: 0 calc(-1 * max(12px, var(--safe-right))) 12px calc(-1 * max(12px, var(--safe-left)));
+    padding: 12px max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
+  }
   /* Узкий экран: цифры уходят под титул, полоса переносится в две строки. */
   .cl-ed-grid { grid-template-columns: minmax(0, 1fr); row-gap: 12px; }
   .cl-ed-figs { justify-self: start; }
   .cl-ed-fig { padding: 0 14px; }
   .cl-ed-fig:first-child { padding-left: 0; }
   /* Вкладки листаются пальцем, тело переносит блоки целиком. */
-  .cl-tabs { overflow-x: auto; scrollbar-width: none; }
+  .cl-tabs {
+    overflow-x: auto; scrollbar-width: none;
+    /* Едва заметный намёк на переполнение: вкладки «Карта»/«Активность» иначе
+       уезжают за край без единого визуального признака, что там что-то есть. */
+    mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+  }
   .cl-tabs .cl-band-who { display: none; }
   .cl-tab-body { flex-wrap: wrap; row-gap: 6px; }
-  .cl-band-acts { margin-left: auto; }
+  .cl-band-acts { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
   .cl-dock { right: 8px; left: 8px; bottom: calc(8px + var(--safe-bottom)); width: auto; }
 
   /* Панель выбора помещается целиком: «Удалить» и «Снять» уезжали за край. */
@@ -2341,6 +2379,9 @@ section[data-day],
 .cl-face-member.is-plain:hover { color: var(--text-primary); }
 
 /* Бейдж-зов на корешке: мягкая пульсация, пока есть неопознанные. */
+@media (max-width: 860px) {
+  .cl-facebar { bottom: calc(18px + var(--safe-bottom)); left: max(8px, var(--safe-left)); right: max(8px, var(--safe-right)); transform: none; }
+}
 .cl-sp-dot.is-alert { animation: clFaceCall 2.2s var(--cl-ease) infinite; }
 @keyframes clFaceCall {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 55%, transparent); }
@@ -2377,7 +2418,12 @@ section[data-day],
   color: var(--text-muted); font-size: 12px; line-height: 1; cursor: pointer;
   opacity: 0; transition: opacity .18s ease;
 }
-.cl-person-wrap:hover .cl-person-gear { opacity: 1; }
+.cl-person-gear::before { content: ''; position: absolute; inset: -8px; }
+.cl-person-wrap:hover .cl-person-gear, .cl-person-gear:focus-visible { opacity: 1; }
+/* Без этого фолбэка шестерёнка привязки к аккаунту на тач недостижима вовсе. */
+@media (hover: none) {
+  .cl-person-gear { opacity: 1; }
+}
 .cl-person-manage {
   display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
   margin: 0 0 14px; padding: 9px 12px; border-radius: 13px;
@@ -2423,3 +2469,12 @@ section[data-day],
 .cl-tile-who .cl-ava, .cl-tile-who img { width: 20px; height: 20px; font-size: 9px; }
 .cl-page:hover .cl-tile-who { opacity: 1; transform: none; }
 body.cl-dragging-select .cl-tile-who { opacity: 0 !important; }
+/*
+ * На тач-устройствах наведения на сетку не бывает — аватар и подвинутый
+ * бейдж длительности показываем всегда, ВМЕСТЕ: порознь их чинить нельзя,
+ * иначе они лягут друг на друга в одном и том же правом нижнем углу.
+ */
+@media (hover: none) {
+  .cl-tile-who { opacity: 1; transform: none; }
+  .cl-tile-badge:not(.cl-left) { transform: translateX(-25px); }
+}

@@ -1680,8 +1680,11 @@ function SpaceUploadBar() {
 
   return (
     <div className="cl-upbar">
-      <div className="cl-progress" style={{ flex: 1 }}>
-        {/* Сдвиг, а не ширина: полоса не трогает layout — см. .cl-progress > i. */}
+      <div className="cl-progress">
+        {/* Сдвиг, а не ширина: полоса не трогает layout — см. .cl-progress > i.
+            flex:1 живёт в CSS-классе (.cl-progress), не в инлайне: инлайн-стиль
+            перебивал мобильное `.cl-upbar .cl-progress { flex: 1 1 140px }» и
+            резервированные 140px на узком экране не работали. */}
         <i style={{ transform: `translateX(${percent - 100}%)` }} />
       </div>
       <span className="cl-mono cl-muted" style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>

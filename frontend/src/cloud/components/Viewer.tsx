@@ -140,6 +140,11 @@ export function Viewer({
   // Бейдж зовёт только на повторяющихся: прохожие не зажигают тревогу.
   const unknownFaces = fileFaces ? fileFaces.filter((f) => !f.person && f.recurring).length : 0
 
+  /** Долгое нажатие на «Повернуть» в корешке — ccw-эквивалент Shift+клика для тач. */
+  const rotateHoldTimer = useRef<number | null>(null)
+  const rotateLongFired = useRef(false)
+  useEffect(() => () => { if (rotateHoldTimer.current) clearTimeout(rotateHoldTimer.current) }, [])
+
   const rotate = useCallback(
     async (dir: 'cw' | 'ccw') => {
       const target = file
@@ -365,18 +370,22 @@ export function Viewer({
     setZoomPct((prev) => (Math.abs(prev - pct) >= 1 ? pct : prev))
   }, [file])
 
+  /*
+   * Потолок — не ниже «пиксель в пиксель». Восьмикратного от вписанного
+   * кадра крупному снимку не хватает: у 8000-пиксельной панорамы это лишь
+   * шестьдесят процентов её собственного разрешения, и до настоящего
+   * размера дотянуться было нечем.
+   */
+  const zoomCeiling = useCallback(() => {
+    const oneToOne = fitRef.current.w && file?.width ? file.width / fitRef.current.w : 1
+    return Math.max(8, oneToOne)
+  }, [file])
+
   const setZoom = useCallback(
     (next: number, anchor?: { x: number; y: number }) => {
       const v = view.current
       const from = v.zoom
-      /*
-       * Потолок — не ниже «пиксель в пиксель». Восьмикратного от вписанного
-       * кадра крупному снимку не хватает: у 8000-пиксельной панорамы это лишь
-       * шестьдесят процентов её собственного разрешения, и до настоящего
-       * размера дотянуться было нечем.
-       */
-      const oneToOne = fitRef.current.w && file?.width ? file.width / fitRef.current.w : 1
-      const to = clamp(next, 1, Math.max(8, oneToOne))
+      const to = clamp(next, 1, zoomCeiling())
       if (Math.abs(to - from) < 0.0005) return
       if (anchor) {
         /*
@@ -399,7 +408,7 @@ export function Viewer({
       const pct = natural && fit.w ? Math.round((fit.w * to * 100) / natural) : Math.round(to * 100)
       setZoomPct((prev) => (Math.abs(prev - pct) >= 1 ? pct : prev))
     },
-    [applyView, clampOffset, file]
+    [applyView, clampOffset, file, zoomCeiling]
   )
 
   // ── Хром: уходит в простое, возвращается на любое движение ──────────────
@@ -732,6 +741,25 @@ export function Viewer({
    */
   const dragMoved = useRef(false)
   const lastMouse = useRef<{ x: number; y: number } | null>(null)
+  /*
+   * Свести-развести двумя пальцами. Раньше зум умел только колесо и клик —
+   * pointer-обработчики следили за ОДНИМ указателем (drag.current), и второй
+   * палец на снимке не менял ничего, кроме как ломал жест: его pointerdown
+   * перезаписывал drag.current координатами нового пальца, а move обоих
+   * пальцев мешался в одну и ту же view.current — кадр дёргался. Активные
+   * пальцы теперь считаются отдельно; на втором касании однопальцевый жест
+   * гасится и включается pinch.
+   */
+  const pointers = useRef(new Map<number, { x: number; y: number }>())
+  const pinch = useRef<{ startDist: number; startZoom: number; qx: number; qy: number } | null>(null)
+
+  /** Точка в пиксельных координатах сцены (центр = 0,0), как ждёт setZoom. */
+  const stageMid = useCallback((clientX: number, clientY: number) => {
+    const stage = stageRef.current
+    if (!stage) return { x: 0, y: 0 }
+    const box = stage.getBoundingClientRect()
+    return { x: clientX - box.left - box.width / 2, y: clientY - box.top - (box.height - gutterRef.current) / 2 }
+  }, [])
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     lastPointerType.current = e.pointerType
@@ -744,6 +772,22 @@ export function Viewer({
      */
     if (target?.tagName === 'VIDEO' || target?.tagName === 'AUDIO') return
     if (target?.closest('button, a, input, textarea, video, audio, .cl-viewer-panel, .cl-strip')) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    if (pointers.current.size === 2 && file?.kind === 'IMAGE') {
+      // Второй палец — переключаемся на pinch, однопальцевый жест гасим.
+      drag.current = null
+      setDragging(false)
+      const [a, b] = [...pointers.current.values()]
+      const dist = Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1)
+      const p = stageMid((a.x + b.x) / 2, (a.y + b.y) / 2)
+      const v = view.current
+      pinch.current = { startDist: dist, startZoom: v.zoom, qx: (p.x - v.x) / v.zoom, qy: (p.y - v.y) / v.zoom }
+      return
+    }
+    if (pointers.current.size > 2) return
+
     dragMoved.current = false
     drag.current = {
       x: e.clientX,
@@ -754,7 +798,6 @@ export function Viewer({
       mode: view.current.zoom > 1.001 ? 'pan' : 'dismiss',
     }
     setDragging(true)
-    e.currentTarget.setPointerCapture(e.pointerId)
   }
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -762,6 +805,31 @@ export function Viewer({
     lastMouse.current = { x: e.clientX, y: e.clientY }
     const over = isOverMedia(e.clientX, e.clientY)
     setOverMedia((prev) => (prev === over ? prev : over))
+    if (pointers.current.has(e.pointerId)) pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    if (pinch.current && pointers.current.size >= 2) {
+      const [a, b] = [...pointers.current.values()]
+      const dist = Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1)
+      const p = stageMid((a.x + b.x) / 2, (a.y + b.y) / 2)
+      const to = clamp((pinch.current.startZoom * dist) / pinch.current.startDist, 1, zoomCeiling())
+      const v = view.current
+      v.zoom = to
+      // Точка МЕЖДУ пальцами остаётся под пальцами весь жест, не только на тике.
+      v.x = p.x - to * pinch.current.qx
+      v.y = p.y - to * pinch.current.qy
+      if (to <= 1.001) {
+        v.x = 0
+        v.y = 0
+      }
+      clampOffset()
+      applyView()
+      setZoomPct((prev) => {
+        const pct = Math.round(fitPctRef.current * to)
+        return Math.abs(prev - pct) >= 1 ? pct : prev
+      })
+      return
+    }
+
     const d = drag.current
     if (!d) return
     const dx = e.clientX - d.x
@@ -789,6 +857,26 @@ export function Viewer({
   }
 
   const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointers.current.delete(e.pointerId)
+    if (pinch.current) {
+      if (pointers.current.size >= 2) return // третий палец ещё держит pinch
+      pinch.current = null
+      dragMoved.current = true // жест был — щелчком его не спутать
+      const [rest] = [...pointers.current.values()]
+      if (rest) {
+        // Один палец остался поднятым — продолжаем панораму без прыжка кадра.
+        drag.current = { x: rest.x, y: rest.y, ox: view.current.x, oy: view.current.y, moved: true, mode: 'pan' }
+        setDragging(true)
+      } else {
+        setDragging(false)
+      }
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId)
+      } catch {
+        /* палец уже отпущен браузером — не критично */
+      }
+      return
+    }
     const d = drag.current
     setDragging(false)
     if (!d) return
@@ -843,10 +931,11 @@ export function Viewer({
   }, [index, zoomPct, withPanel, file?.width, isOverMedia])
 
   /*
-   * Клик над снимком — только ВЫХОД из зума (увеличение по клику убрано по
-   * просьбе). Клик МИМО снимка — закрытие просмотра: тёмное поле и есть
-   * «подложка» оверлея. Правая кнопка закрывает откуда угодно — но только
-   * мышиная: длинное нажатие пальцем не должно вышвыривать из просмотра.
+   * Клик над снимком вне зума — увеличение до «пиксель в пиксель» под
+   * курсором; при уже увеличенном — выход обратно во вписанный масштаб.
+   * Клик МИМО снимка — закрытие просмотра: тёмное поле и есть «подложка»
+   * оверлея. Правая кнопка закрывает откуда угодно — но только мышиная:
+   * длинное нажатие пальцем не должно вышвыривать из просмотра.
    */
   const onStageClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement | null
@@ -1152,8 +1241,41 @@ export function Viewer({
           {!readOnly && (file.kind === 'IMAGE' || file.kind === 'VIDEO') ? (
             <button
               className="cl-sp-tab is-act"
-              onClick={(e) => void rotate(e.shiftKey ? 'ccw' : 'cw')}
-              title="Повернуть по часовой (R) · с Shift — против"
+              onClick={(e) => {
+                // Долгое нажатие уже повернуло — обычный клик вслед за ним не считаем.
+                if (rotateLongFired.current) {
+                  rotateLongFired.current = false
+                  return
+                }
+                void rotate(e.shiftKey ? 'ccw' : 'cw')
+              }}
+              onPointerDown={(e) => {
+                if (e.button !== 0 && e.pointerType === 'mouse') return
+                rotateLongFired.current = false
+                if (rotateHoldTimer.current) clearTimeout(rotateHoldTimer.current)
+                /*
+                 * Против часовой — с Shift, а на тач модификатора нет. Долгое
+                 * нажатие даёт ту же ccw-команду без второй кнопки в и так
+                 * тесном ряду корешка.
+                 */
+                rotateHoldTimer.current = window.setTimeout(() => {
+                  rotateLongFired.current = true
+                  void rotate('ccw')
+                }, 450)
+              }}
+              onPointerUp={() => {
+                if (rotateHoldTimer.current) {
+                  clearTimeout(rotateHoldTimer.current)
+                  rotateHoldTimer.current = null
+                }
+              }}
+              onPointerLeave={() => {
+                if (rotateHoldTimer.current) {
+                  clearTimeout(rotateHoldTimer.current)
+                  rotateHoldTimer.current = null
+                }
+              }}
+              title="Повернуть по часовой (R) · с Shift или долгим нажатием — против"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M20.5 9A8.6 8.6 0 0 0 12 3.5 8.5 8.5 0 1 0 20.5 12" />
@@ -1531,10 +1653,25 @@ function Player({
     else el.pause()
   }
 
+  /*
+   * На тач-устройстве панель управления показывается только на паузе — тап по
+   * играющему видео сразу ставит паузу/играет, и добраться до перемотки/звука
+   * иначе нечем. Тап теперь ещё и приоткрывает панель на пару секунд, не
+   * трогая воспроизведение.
+   */
+  const [barShown, setBarShown] = useState(false)
+  const barTimer = useRef<number | null>(null)
+  const bumpBar = () => {
+    setBarShown(true)
+    if (barTimer.current) clearTimeout(barTimer.current)
+    barTimer.current = window.setTimeout(() => setBarShown(false), 2800)
+  }
+  useEffect(() => () => { if (barTimer.current) clearTimeout(barTimer.current) }, [])
+
   return (
     <div
       ref={hostRef}
-      className={`cl-player${playing ? '' : ' is-paused'}${turn % 180 !== 0 ? ' is-turned' : turn ? ' is-flipped' : ''}`}
+      className={`cl-player${playing ? '' : ' is-paused'}${barShown ? ' is-touch-shown' : ''}${turn % 180 !== 0 ? ' is-turned' : turn ? ' is-flipped' : ''}`}
     >
       <div ref={frameRef} className="cl-player-frame" style={box ? { width: box.w, height: box.h } : undefined}>
       <video
@@ -1552,7 +1689,10 @@ function Player({
         style={turn ? ({ ['--cl-turn' as string]: `${turn}deg` } as React.CSSProperties) : undefined}
         playsInline
         preload="auto"
-        onClick={toggle}
+        onClick={() => {
+          toggle()
+          bumpBar()
+        }}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onTimeUpdate={(e) => {
@@ -1569,7 +1709,7 @@ function Player({
 
       {/* Пока не играет, главное действие — крупная кнопка по центру. */}
       {!playing ? (
-        <button className="cl-player-big" onClick={toggle} aria-label="Воспроизвести">
+        <button className="cl-player-big" onClick={() => { toggle(); bumpBar() }} aria-label="Воспроизвести">
           <svg viewBox="0 0 24 24" fill="currentColor">
             <path d="M8 5.6v12.8c0 .9 1 1.4 1.7.9l9.3-6.4a1.1 1.1 0 0 0 0-1.8L9.7 4.7A1.1 1.1 0 0 0 8 5.6Z" />
           </svg>
