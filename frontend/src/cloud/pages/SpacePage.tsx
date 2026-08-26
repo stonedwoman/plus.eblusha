@@ -269,7 +269,14 @@ export default function SpacePage() {
     mq.addEventListener('change', on)
     return () => mq.removeEventListener('change', on)
   }, [])
-  const showRail = railWide && view === 'timeline'
+  /*
+   * Рельсы дат/мест раньше жили только на широком экране (railWide) — на
+   * мобильном пропадали вовсе (данные и слежение за позицией теперь
+   * загружаются для ЛЮБОЙ ширины, см. правки ниже). Теперь showRail значит
+   * «идёт таймлайн», а компактность — отдельным пропом compact={!railWide}:
+   * на мобильном рельсы остаются, просто в узком тач-варианте.
+   */
+  const showRail = view === 'timeline'
   const canEdit = space?.role === 'OWNER' || space?.role === 'EDITOR'
   const isOwner = space?.role === 'OWNER'
 
@@ -391,7 +398,7 @@ export default function SpacePage() {
 
   /** Агрегат для рельсы. Не критичен: не построился — рельса просто не рисуется. */
   const loadDayCounts = useCallback(async () => {
-    if (view !== 'timeline' || !railWide) return
+    if (view !== 'timeline') return
     try {
       const { data } = await cloudApi.get<{ days: TimelineDay[] }>('/files/timeline', {
         params: {
@@ -406,7 +413,7 @@ export default function SpacePage() {
     } catch {
       setDayCounts([])
     }
-  }, [spaceId, view, kindFilter, personFilter, railWide])
+  }, [spaceId, view, kindFilter, personFilter])
 
   useEffect(() => {
     const t = setTimeout(() => void loadDayCounts(), 0)
@@ -414,7 +421,7 @@ export default function SpacePage() {
   }, [loadDayCounts])
 
   const loadSegments = useCallback(async () => {
-    if (view !== 'timeline' || !railWide) return
+    if (view !== 'timeline') return
     try {
       const { data } = await cloudApi.get<{ places: GeoSegment[]; withoutPlace: number }>('/files/places', {
         params: {
@@ -430,7 +437,7 @@ export default function SpacePage() {
       setSegments([])
       setWithoutPlace(0)
     }
-  }, [spaceId, view, kindFilter, personFilter, railWide])
+  }, [spaceId, view, kindFilter, personFilter])
 
   useEffect(() => {
     void loadSegments()
@@ -445,7 +452,7 @@ export default function SpacePage() {
    * порядок один и тот же.
    */
   useEffect(() => {
-    if (view !== 'timeline' || !railWide) return
+    if (view !== 'timeline') return
     const root = document.querySelector<HTMLElement>('.cl-root')
     if (!root) return
     let raf = 0
@@ -532,7 +539,7 @@ export default function SpacePage() {
       root.removeEventListener('scroll', onScroll)
       if (raf) cancelAnimationFrame(raf)
     }
-  }, [view, railWide, files])
+  }, [view, files])
 
   /**
    * Прыжок к отрезку поездки: первая его плитка встаёт под панель.
@@ -608,7 +615,7 @@ export default function SpacePage() {
    * Один rAF на кадр, слушатель пассивный — на плавность скролла не влияет.
    */
   useEffect(() => {
-    if (view !== 'timeline' || !railWide) return
+    if (view !== 'timeline') return
     const root = document.querySelector<HTMLElement>('.cl-root')
     if (!root) return
     let raf = 0
@@ -658,7 +665,7 @@ export default function SpacePage() {
       root.removeEventListener('scroll', onScroll)
       if (raf) cancelAnimationFrame(raf)
     }
-  }, [view, railWide, files])
+  }, [view, files])
 
   /**
    * Прыжок по рельсе: просто довозим страницу до нужного дня.
@@ -1064,7 +1071,7 @@ export default function SpacePage() {
         className={`cl-tl-layout${showRail ? ' with-rail' : ''}`}
         style={{ ['--cl-rail-off' as string]: `${visibleHeadH}px` }}
       >
-        {showRail ? <TimelineRail days={dayCounts} position={railPos} onJump={jumpToDay} /> : null}
+        {showRail ? <TimelineRail days={dayCounts} position={railPos} onJump={jumpToDay} compact={!railWide} /> : null}
         <div className="cl-tl-main">
       {/*
         Шапка и фильтры — единый липкий блок, который прячется при прокрутке
@@ -1384,8 +1391,15 @@ export default function SpacePage() {
       ) : null}
         </div>
         {/* Правая колонка — зеркало левой: слева видно КОГДА, справа ГДЕ. */}
-        {showRail ? <GeoRail segments={segments} withoutPlace={withoutPlace} position={geoPos} onJump={jumpToRun} /> : null}
+        {showRail ? <GeoRail segments={segments} withoutPlace={withoutPlace} position={geoPos} onJump={jumpToRun} compact={!railWide} /> : null}
       </div>
+
+      {/* Рельса дат/мест на мобильном не рендерится вовсе (see !railWide) —
+          без неё пропадает быстрый способ вернуться к началу длинной ленты.
+          Лёгкая плавающая замена: кнопка «наверх», по той же логике, что уже
+          использует автопрокрутка jumpToDay/jumpToRun (.cl-root — скроллер
+          страницы). */}
+      {!railWide && view === 'timeline' ? <MobileJumpTop /> : null}
 
       {/* ── Панель выбора ───────────────────────────────────────────────── */}
       {selection.size > 0 ? (
@@ -1664,6 +1678,37 @@ function insertByTakenAt(list: CloudFile[], file: CloudFile): CloudFile[] {
   })
   if (idx === -1) return [...list, file]
   return [...list.slice(0, idx), file, ...list.slice(idx)]
+}
+
+/**
+ * Плавающая кнопка «наверх» — мобильная замена рельсе дат/мест, которая на
+ * ≤860px не рендерится вовсе (см. !railWide в SpacePage). Появляется после
+ * заметной прокрутки; тап возвращает к самому свежему дню одним движением,
+ * не гоняя лентой из сотен плиток пальцем.
+ */
+function MobileJumpTop() {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    const root = document.querySelector<HTMLElement>('.cl-root')
+    if (!root) return
+    const onScroll = () => setVisible(root.scrollTop > 900)
+    root.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => root.removeEventListener('scroll', onScroll)
+  }, [])
+  if (!visible) return null
+  return (
+    <button
+      className="cl-jump-top"
+      onClick={() => document.querySelector('.cl-root')?.scrollTo({ top: 0, behavior: 'smooth' })}
+      aria-label="К началу ленты"
+      title="К началу ленты"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M6 15l6-6 6 6" />
+      </svg>
+    </button>
+  )
 }
 
 /**

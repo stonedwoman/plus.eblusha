@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 /**
  * Географическая рельса — зеркало таймлайна, только справа от плиток.
@@ -33,12 +33,19 @@ export function GeoRail({
   withoutPlace,
   position,
   onJump,
+  compact,
 }: {
   segments: GeoSegment[]
   /** Сколько снимков без геометки — их место в рельсе не показать. */
   withoutPlace: number
   position: GeoPosition
   onJump: (run: number) => void
+  /**
+   * Узкий тач-вариант: подписи/миниатюры прячет CSS (см. @media max-width:860px
+   * в cloud.css), а здесь появляется протяжка пальцем — на 22px-полосе тыкать
+   * по отдельным станциям бесполезно, значит листаем непрерывным драгом.
+   */
+  compact?: boolean
 }) {
   const [node, setNode] = useState<HTMLElement | null>(null)
   const [h, setH] = useState(0)
@@ -101,6 +108,13 @@ export function GeoRail({
     // выглядело так, будто география не догрузилась.
     return withRun.map((s) => ({ ...s, major: majorRuns.has(s.run) }))
   }, [segments, baseH])
+
+  /*
+   * useRef ДО раннего return ниже — тот же порядок хуков нужен на КАЖДОМ
+   * рендере, а ранний return его иначе не соблюдал (React error #310), см.
+   * идентичную правку и комментарий в TimelineRail.tsx.
+   */
+  const lastScrubRef = useRef<number | null>(null)
 
   /*
    * Одну станцию тоже показываем. Порог в две отрезал целые альбомы: снимки
@@ -180,8 +194,46 @@ export function GeoRail({
   }
   const progress = activeRun < 0 ? 0 : Math.max(0, Math.min(1, fillPx / axisLen))
 
+  /*
+   * Протяжка пальцем по узкой полосе: находим станцию, ближайшую к пальцу по
+   * вертикали, и прыгаем к ней — повторно, только когда станция СМЕНИЛАСЬ, а
+   * не на каждый пиксель движения (иначе десятки прыжков за один жест).
+   */
+  const scrubTo = (clientY: number) => {
+    if (!node || laid.length === 0) return
+    const y = clientY - node.getBoundingClientRect().top
+    let best = laid[0]!
+    let bestDist = Infinity
+    for (const s of laid) {
+      const d = Math.abs(centerOf(s) - y)
+      if (d < bestDist) {
+        bestDist = d
+        best = s
+      }
+    }
+    if (lastScrubRef.current === best.run) return
+    lastScrubRef.current = best.run
+    onJump(best.run)
+  }
+  const onScrubDown = (e: React.PointerEvent<HTMLElement>) => {
+    if (!compact) return
+    lastScrubRef.current = null
+    e.currentTarget.setPointerCapture(e.pointerId)
+    scrubTo(e.clientY)
+  }
+  const onScrubMove = (e: React.PointerEvent<HTMLElement>) => {
+    if (!compact || e.buttons === 0) return
+    scrubTo(e.clientY)
+  }
+
   return (
-    <nav ref={setNode} className="cl-timenav cl-geonav" aria-label="Места съёмки">
+    <nav
+      ref={setNode}
+      className="cl-timenav cl-geonav"
+      aria-label="Места съёмки"
+      onPointerDown={onScrubDown}
+      onPointerMove={onScrubMove}
+    >
       {!solo ? (
         <>
           <div className="cl-tn-axis" style={{ top: lineTop, height: axisLen }} />

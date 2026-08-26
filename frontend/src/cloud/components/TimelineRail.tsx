@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 /**
  * Вертикальный таймлайн слева от плиток.
@@ -58,6 +58,7 @@ export function TimelineRail({
   days,
   position,
   onJump,
+  compact,
 }: {
   days: TimelineDay[]
   position: RailPosition
@@ -67,6 +68,8 @@ export function TimelineRail({
    * период, а не только день, с которого она начинается.
    */
   onJump: (day: string, groupKey: string) => void
+  /** Узкий тач-вариант — см. одноимённый проп в GeoRail.tsx. */
+  compact?: boolean
 }) {
   /*
    * Колбэк-реф, а не useRef + эффект с пустыми deps: до прихода данных
@@ -155,6 +158,13 @@ export function TimelineRail({
     }))
   }, [days, baseH])
 
+  /*
+   * useRef ДО раннего return ниже: тот бросает раньше, чем компонент успевает
+   * дойти до хуков после себя, и на кадрах с недостаточным числом станций
+   * счётчик хуков между рендерами расходился (React error #310).
+   */
+  const lastScrubRef = useRef<string | null>(null)
+
   if (stations.length < 2 || baseH < 200) {
     // Однодневный альбом навигации не требует; держим колонку, чтобы сетка
     // плиток не прыгала при переключении фильтров.
@@ -203,8 +213,43 @@ export function TimelineRail({
   // приходится ровно на центр её узла, а конец альбома — на низ линии.
   const progress = posIdx < 0 ? 0 : Math.max(0, Math.min(1, posIdx / n))
 
+  /** Протяжка пальцем по узкой полосе — см. одноимённую логику в GeoRail.tsx. */
+  const scrubTo = (clientY: number) => {
+    if (!node) return
+    const py = clientY - node.getBoundingClientRect().top
+    let bestI = 0
+    let bestDist = Infinity
+    for (let i = 0; i < n; i++) {
+      const d = Math.abs(y(i) + NODE / 2 - py)
+      if (d < bestDist) {
+        bestDist = d
+        bestI = i
+      }
+    }
+    const st = stations[bestI]!
+    if (lastScrubRef.current === st.key) return
+    lastScrubRef.current = st.key
+    onJump(st.firstDay, st.key)
+  }
+  const onScrubDown = (e: React.PointerEvent<HTMLElement>) => {
+    if (!compact) return
+    lastScrubRef.current = null
+    e.currentTarget.setPointerCapture(e.pointerId)
+    scrubTo(e.clientY)
+  }
+  const onScrubMove = (e: React.PointerEvent<HTMLElement>) => {
+    if (!compact || e.buttons === 0) return
+    scrubTo(e.clientY)
+  }
+
   return (
-    <nav ref={setNode} className="cl-timenav" aria-label="Таймлайн по датам">
+    <nav
+      ref={setNode}
+      className="cl-timenav"
+      aria-label="Таймлайн по датам"
+      onPointerDown={onScrubDown}
+      onPointerMove={onScrubMove}
+    >
       <div className="cl-tn-axis" style={{ top: lineTop, height: axisLen }} />
       {activeIdx >= 0 ? (
         <div className="cl-tn-axis done" style={{ top: lineTop, height: axisLen, transform: `scaleY(${progress})` }} />

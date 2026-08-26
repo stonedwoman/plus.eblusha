@@ -753,17 +753,46 @@ async function reconcileOnce(): Promise<void> {
   pump()
 }
 
+/*
+ * Автовозобновление оборванных сетью загрузок.
+ *
+ * onError уже переводит элемент в phase='paused' при статусе 0 (обрыв связи —
+ * см. выше), но дальше ничего не происходит: pump() пропускает всё, что не в
+ * 'queued'. На мобильном сети такое обычное дело (переключение вышки, уход в
+ * фон, блокировка экрана), а кнопка «Продолжить» живёт в .cl-head-fold и
+ * прячется вместе с шапкой при скролле — застрявшая загрузка была
+ * недостижима физически. Здесь же phase='error' НЕ трогаем: это отдельные
+ * постоянные причины (413/403/507), их молчаливый повтор при каждом возврате
+ * на вкладку был бы просто спамом бесполезных попыток.
+ */
+function resumeStuck() {
+  if (store().paused) return // пользователь поставил на паузу сам — не перебиваем
+  let any = false
+  for (const item of store().items) {
+    if (item.phase !== 'paused') continue
+    any = true
+    if (internals.get(item.id)?.file) store().patch(item.id, { phase: 'queued', error: null })
+    else store().patch(item.id, { phase: 'needs-file' })
+  }
+  if (any) pump()
+}
+
 export function startUploadReconciler(): () => void {
   if (reconcileTimer) return () => undefined
   reconcileTimer = setInterval(() => void reconcileOnce(), RECONCILE_INTERVAL_MS)
   // Возврат к вкладке — самый частый момент, когда состояние успело разойтись.
   const onVisible = () => {
-    if (document.visibilityState === 'visible') void reconcileOnce()
+    if (document.visibilityState === 'visible') {
+      void reconcileOnce()
+      resumeStuck()
+    }
   }
   document.addEventListener('visibilitychange', onVisible)
+  window.addEventListener('online', resumeStuck)
   return () => {
     if (reconcileTimer) clearInterval(reconcileTimer)
     reconcileTimer = null
     document.removeEventListener('visibilitychange', onVisible)
+    window.removeEventListener('online', resumeStuck)
   }
 }

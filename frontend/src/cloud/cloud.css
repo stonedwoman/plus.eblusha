@@ -790,6 +790,8 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   background: rgba(8,10,14,.65); color: var(--brand);
   font-size: 19px; cursor: pointer;
 }
+/* Кольцо на паузе — тоже кнопка: тыкнуть в застрявший файл прямо в сетке. */
+.cl-uptile-resume { border: none; background: none; padding: 0; cursor: pointer; line-height: 0; }
 
 /* Кольцо прогресса */
 .cl-ring { transform: rotate(-90deg); }
@@ -867,6 +869,26 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
 .cl-row-thumb { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: var(--surface-300); display: grid; place-items: center; color: var(--text-muted); }
 .cl-row-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cl-row-sub { font-size: 12px; color: var(--text-muted); }
+
+/* Плавающая кнопка «наверх» — мобильная замена пропавшей рельсе дат/мест. */
+.cl-jump-top {
+  position: fixed;
+  right: max(14px, var(--safe-right));
+  bottom: calc(70px + var(--safe-bottom)); /* с запасом над зоной .cl-selbar/.cl-toasts снизу экрана */
+  z-index: 55;
+  width: 42px; height: 42px; border-radius: 50%;
+  display: grid; place-items: center;
+  border: 1px solid var(--surface-border-strong);
+  background: var(--surface-100);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-soft);
+  cursor: pointer;
+  animation: clRise .25s var(--cl-ease) both;
+}
+.cl-jump-top svg { width: 20px; height: 20px; }
+@media (min-width: 861px) {
+  .cl-jump-top { display: none; }
+}
 
 /* ── Панель загрузок ───────────────────────────────────────────────────── */
 
@@ -2167,10 +2189,38 @@ section[data-day],
 }
 
 @media (max-width: 860px) {
-  .cl-timenav { display: none; }
-  /* Колонки рельсы нет — значит, и подвинутой шапке взяться неоткуда:
-     возвращаем вылет к краю экрана вместе с мобильными отступами. */
-  .cl-tl-layout.with-rail .cl-space-head { margin-left: -12px; padding-left: 12px; }
+  /*
+   * Рельсы больше НЕ прячутся display:none — сжимаются в тонкую тач-полосу
+   * (см. .cl-timenav.is-compact ниже, у обеих общий базовый класс cl-timenav).
+   * Компенсация margin-у шапки, которая была нужна ИМЕННО для отсутствующей
+   * колонки, здесь больше не место — колонка снова есть, просто узкая.
+   */
+  .cl-timenav {
+    flex: 0 0 22px;
+    width: 22px;
+    /* Тач-протяжка листает станции, а не страницу под пальцем. */
+    touch-action: none;
+  }
+  /* Подпись и миниатюра уходят — узел становится точкой на оси, тач-полоса
+     листается протяжкой (см. touch-обработчик в TimelineRail/GeoRail). */
+  .cl-timenav .cl-tn-cap { display: none; }
+  .cl-timenav .cl-tn-ava,
+  .cl-timenav .cl-tn-ava:empty {
+    width: 7px; height: 7px; margin: 0;
+    transform: none !important;
+    box-shadow: none !important;
+    background: var(--surface-border-strong) !important;
+  }
+  .cl-timenav .cl-tn-ava img { display: none; }
+  .cl-timenav .cl-tn-node.is-active .cl-tn-ava,
+  .cl-timenav .cl-tn-node.is-passed .cl-tn-ava {
+    background: var(--brand) !important;
+  }
+  /* Ось пересчитана под точку у внутреннего края узкой полосы (было — под
+     центр 38px-миниатюры на 118/152px рельсе, для 22px это уезжало за край). */
+  .cl-timenav .cl-tn-axis { left: calc(100% - 10px); }
+  .cl-geonav { flex-basis: 22px; width: 22px; }
+  .cl-geonav .cl-tn-axis { left: 9px; }
   /*
    * Верхняя панель на узком экране переносится в две строки: раньше при
    * фиксированной высоте из шести вкладок была видна одна, а остальные уезжали

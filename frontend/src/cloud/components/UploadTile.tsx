@@ -60,8 +60,18 @@ export const UploadTile = memo(function UploadTile({ id, withPreview = true }: {
           </button>
         ) : preparing ? (
           <div className="cl-uptile-spinner" />
+        ) : item.phase === 'paused' ? (
+          /*
+           * Пауза наступает и автоматически (обрыв сети), и сама себя чинит
+           * при возврате на вкладку/связи (см. resumeStuck в manager.ts), но
+           * пока это не случилось — кольцо становится кнопкой: тыкнуть в
+           * застрявший файл прямо в сетке, не гоняясь за кнопкой в шапке.
+           */
+          <button className="cl-uptile-resume" onClick={() => resumeUpload(item.id)} title="Продолжить загрузку" aria-label="Продолжить загрузку">
+            <Ring percent={percent} paused />
+          </button>
         ) : (
-          <Ring percent={percent} paused={item.phase === 'paused'} />
+          <Ring percent={percent} paused={false} />
         )}
       </div>
 
