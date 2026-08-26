@@ -9,7 +9,7 @@ import { z } from "zod";
 import prisma from "../../lib/prisma";
 import { ah } from "../errors";
 import { invalid, notFound } from "../errors";
-import { requireSpaceAccess } from "../acl";
+import { requireFileAccess, requireSpaceAccess } from "../acl";
 import { enqueueFacesJob } from "../jobs/queues";
 
 const router = Router();
@@ -112,6 +112,73 @@ router.get(
         // только показанную дюжину — иначе счётчик персоны врал в разы.
         faceIds: g.members.map((f) => f.id),
         total: g.members.length,
+      })),
+    });
+  })
+);
+
+/**
+ * Кандидаты на привязку: ПРИНЯТЫЕ друзья из Еблуши плюс участники общих
+ * хуяпок — весь свой круг, а не только соседи по текущему альбому.
+ */
+router.get(
+  "/candidates",
+  ah(async (req: Request, res) => {
+    const me = req.cloudUser!.id;
+    const contacts = await prisma.contact.findMany({
+      where: { status: "ACCEPTED", OR: [{ requesterId: me }, { addresseeId: me }] },
+      select: {
+        requester: { select: { id: true, username: true, displayName: true, avatarUrl: true } },
+        addressee: { select: { id: true, username: true, displayName: true, avatarUrl: true } },
+      },
+    });
+    const mates = await prisma.cloudSpaceMember.findMany({
+      where: { space: { deletedAt: null, members: { some: { userId: me } } } },
+      select: { user: { select: { id: true, username: true, displayName: true, avatarUrl: true } } },
+    });
+    const seen = new Map<string, { id: string; username: string; displayName: string | null; avatarUrl: string | null }>();
+    for (const c of contacts) {
+      const other = c.requester.id === me ? c.addressee : c.requester;
+      seen.set(other.id, other);
+    }
+    for (const m of mates) if (m.user.id !== me) seen.set(m.user.id, m.user);
+    // Себя — первым: «это я» — самый частый кейс разметки.
+    const self = await prisma.user.findUnique({
+      where: { id: me },
+      select: { id: true, username: true, displayName: true, avatarUrl: true },
+    });
+    const linked = await prisma.cloudPerson.findMany({ where: { userId: { not: null } }, select: { userId: true } });
+    const taken = new Set(linked.map((l) => l.userId));
+    const list = [self!, ...[...seen.values()].sort((a, b) => (a.displayName ?? a.username).localeCompare(b.displayName ?? b.username, "ru"))];
+    res.json({ candidates: list.map((u) => ({ ...u, linked: taken.has(u.id) })) });
+  })
+);
+
+/** Лица конкретного снимка — для панели «Сведения» в просмотрщике. */
+router.get(
+  "/by-file",
+  ah(async (req: Request, res) => {
+    const fileId = String(req.query.fileId ?? "");
+    if (!fileId) throw invalid("Нужен fileId");
+    await requireFileAccess(req, fileId, "space:view");
+    const faces = await prisma.cloudFace.findMany({
+      where: { fileId },
+      orderBy: { w: "desc" },
+      include: {
+        file: { select: { width: true, height: true } },
+        person: { include: { user: { select: { id: true, username: true, displayName: true, avatarUrl: true } } } },
+      },
+    });
+    res.json({
+      faces: faces.map((f) => ({
+        ...faceDto(f),
+        person: f.person
+          ? {
+              id: f.person.id,
+              name: f.person.user ? f.person.user.displayName || f.person.user.username : f.person.name,
+              user: f.person.user,
+            }
+          : null,
       })),
     });
   })

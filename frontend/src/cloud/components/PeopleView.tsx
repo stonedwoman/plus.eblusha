@@ -23,7 +23,7 @@ type Person = {
   /** Привязанный аккаунт Еблуши: имя и аватар тогда берутся из него. */
   user: CloudUserLite | null
 }
-type FaceRef = {
+export type FaceRef = {
   id: string
   fileId: string
   box: { x: number; y: number; w: number; h: number }

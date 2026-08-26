@@ -3,6 +3,7 @@ import { cloudApi, formatBytes, formatDuration, toCloudError } from '../api'
 import type { CloudComment, CloudFile } from '../types'
 import { onCloudEvent } from '../realtime'
 import { Avatar, toast } from './ui'
+import { FacesPanel } from './FacesPanel'
 
 const EMOJI = ['👍', '❤️', '😂', '😮', '😢']
 
@@ -880,7 +881,7 @@ export function Viewer({
           </div>
           <div className={`cl-panel-body${(panel ?? leaving) === 'comments' ? ' is-talk' : ''}`}>
             {(panel ?? leaving) === 'info' ? (
-              <MetadataPanel file={file} onReact={!readOnly ? (emoji) => void react(file, emoji) : undefined} />
+              <MetadataPanel file={file} canEdit={!readOnly} onReact={!readOnly ? (emoji) => void react(file, emoji) : undefined} />
             ) : (
               <CommentsPanel
                 key={file.id}
@@ -1500,7 +1501,7 @@ function VideoUnavailable({ file }: { file: CloudFile }) {
  * их показывает сама камера. Технические подробности убраны в разделы, чтобы не
  * забивать собой смысл.
  */
-function MetadataPanel({ file, onReact }: { file: CloudFile; onReact?: (emoji: string) => void }) {
+function MetadataPanel({ file, onReact, canEdit }: { file: CloudFile; onReact?: (emoji: string) => void; canEdit: boolean }) {
   const [copied, setCopied] = useState<string | null>(null)
   const copy = (key: string, value: string) => {
     void navigator.clipboard?.writeText(value)
@@ -1638,6 +1639,8 @@ function MetadataPanel({ file, onReact }: { file: CloudFile; onReact?: (emoji: s
           ) : null}
         </div>
       ) : null}
+
+      <FacesPanel fileId={file.id} canEdit={canEdit} />
 
       {section('Файл', fileRows)}
       {section('Подробности', techRows)}
