@@ -2322,7 +2322,7 @@ section[data-day],
 
 /* «Люди» в сведениях кадра: лица и вопрос «Вы знаете этого человека?» */
 .cl-vfaces { display: flex; gap: 10px; flex-wrap: wrap; }
-.cl-vface { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; max-width: 64px; }
+.cl-vface { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; max-width: 64px; border: none; background: none; padding: 0; cursor: pointer; font: inherit; color: inherit; }
 .cl-vface i { font-style: normal; font-size: 10.5px; color: var(--text-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cl-vface.is-unknown .cl-face { border-style: dashed; border-color: color-mix(in srgb, var(--brand) 55%, var(--surface-border)); }
 .cl-vface.is-asking .cl-face { border-color: var(--brand); border-style: solid; box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 25%, transparent); }
@@ -2335,3 +2335,10 @@ section[data-day],
 .cl-vface-opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .cl-face-member.is-plain { padding: 4px 10px; color: var(--text-muted); }
 .cl-face-member.is-plain:hover { color: var(--text-primary); }
+
+/* Бейдж-зов на корешке: мягкая пульсация, пока есть неопознанные. */
+.cl-sp-dot.is-alert { animation: clFaceCall 2.2s var(--cl-ease) infinite; }
+@keyframes clFaceCall {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 55%, transparent); }
+  45% { box-shadow: 0 0 0 5px transparent; }
+}

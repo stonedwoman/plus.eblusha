@@ -1,45 +1,37 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { cloudApi, toCloudError } from '../api'
 import type { CloudUserLite } from '../types'
 import { FaceCrop, type FaceRef } from './PeopleView'
 import { Avatar, toast } from './ui'
 
 /**
- * Секция «Люди» в панели «Сведения» просмотрщика.
+ * Люди на кадре: отдельная вкладка ящика просмотрщика.
  *
- * Показывает лица текущего кадра; для первого неопознанного задаёт вопрос
- * «Вы знаете этого человека?» с кандидатами — принятыми друзьями Еблуши и
- * соседями по хуяпкам (себя — первым: «это я» — самый частый случай).
- * Привязка тут же дотягивается матчером на остальные снимки.
+ * Кружки лиц с именами; для неопознанных — вопрос «Вы знаете этого человека?»
+ * с кандидатами (друзья Еблуши + соседи по хуяпкам, себя — первым). Если все
+ * лица известны — никакого вопроса: панель молчит, бейдж на корешке гаснет.
+ * Клик по кружку неопознанного переводит вопрос на него.
  */
-type PanelFace = FaceRef & {
+export type PanelFace = FaceRef & {
   person: { id: string; name: string; user: CloudUserLite | null } | null
 }
 type Candidate = CloudUserLite & { linked: boolean }
 
 let candidatesCache: Candidate[] | null = null
 
-export function FacesPanel({ fileId, canEdit }: { fileId: string; canEdit: boolean }) {
-  const [faces, setFaces] = useState<PanelFace[] | null>(null)
+export function FacesPanel({
+  faces,
+  canEdit,
+  onChanged,
+}: {
+  faces: PanelFace[] | null
+  canEdit: boolean
+  onChanged: () => void
+}) {
   const [candidates, setCandidates] = useState<Candidate[]>(candidatesCache ?? [])
-  const [asking, setAsking] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [typing, setTyping] = useState(false)
   const [nameInput, setNameInput] = useState('')
-  const [skipped, setSkipped] = useState<Set<string>>(new Set())
-
-  const load = useCallback(async () => {
-    try {
-      const { data } = await cloudApi.get<{ faces: PanelFace[] }>('/faces/by-file', { params: { fileId } })
-      setFaces(data.faces)
-    } catch {
-      setFaces([])
-    }
-  }, [fileId])
-  useEffect(() => {
-    setFaces(null)
-    setAsking(null)
-    setSkipped(new Set())
-    void load()
-  }, [load])
 
   useEffect(() => {
     if (candidatesCache || !canEdit) return
@@ -55,31 +47,35 @@ export function FacesPanel({ fileId, canEdit }: { fileId: string; canEdit: boole
   const bind = async (faceId: string, opts: { userId?: string; name?: string }) => {
     try {
       await cloudApi.post('/faces/name', { ...opts, faceIds: [faceId] })
-      setAsking(null)
+      setTyping(false)
       setNameInput('')
-      await load()
+      setSelectedId(null)
+      onChanged()
     } catch (err) {
       toast.error(toCloudError(err).message)
     }
   }
 
-  if (!faces || faces.length === 0) return null
-  const unknown = faces.filter((f) => !f.person && !skipped.has(f.id))
-  const current = unknown[0] ?? null
+  if (faces === null) return <div className="cl-muted">Смотрим, кто на кадре…</div>
+  if (faces.length === 0) return <div className="cl-muted" style={{ fontSize: 13.5 }}>На этом кадре лиц не нашлось.</div>
+
+  const unknown = faces.filter((f) => !f.person)
+  // Вопрос — про выбранное рамкой/кружком лицо, иначе про первое неопознанное.
+  const current = (selectedId && unknown.find((f) => f.id === selectedId)) || (canEdit ? unknown[0] : null) || null
 
   return (
-    <section className="cl-mi-sect">
-      <h4>Люди</h4>
+    <div className="cl-vfaces-tab">
       <div className="cl-vfaces">
         {faces.map((f) => (
-          <span
+          <button
             key={f.id}
             className={`cl-vface${!f.person ? ' is-unknown' : ''}${current?.id === f.id ? ' is-asking' : ''}`}
-            title={f.person ? f.person.name : 'Неопознанный'}
+            title={f.person ? f.person.name : 'Неопознанный — нажмите, чтобы назвать'}
+            onClick={() => setSelectedId(f.person ? null : f.id)}
           >
-            <FaceCrop face={f} size={46} />
+            <FaceCrop face={f} size={52} />
             {f.person ? <i>{f.person.name}</i> : <i>?</i>}
-          </span>
+          </button>
         ))}
       </div>
 
@@ -89,7 +85,7 @@ export function FacesPanel({ fileId, canEdit }: { fileId: string; canEdit: boole
             <FaceCrop face={current} size={40} />
             <span>Вы знаете этого человека?</span>
           </div>
-          {asking === current.id ? (
+          {typing ? (
             <form
               className="cl-face-nameform"
               onSubmit={(e) => {
@@ -103,7 +99,7 @@ export function FacesPanel({ fileId, canEdit }: { fileId: string; canEdit: boole
                 placeholder="Имя…"
                 value={nameInput}
                 onChange={(e) => setNameInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Escape' && setAsking(null)}
+                onKeyDown={(e) => e.key === 'Escape' && setTyping(false)}
               />
               <button className="cl-btn primary sm" type="submit" disabled={!nameInput.trim()}>
                 Назвать
@@ -122,19 +118,16 @@ export function FacesPanel({ fileId, canEdit }: { fileId: string; canEdit: boole
                   <span>{c.displayName || c.username}</span>
                 </button>
               ))}
-              <button className="cl-face-member is-plain" onClick={() => setAsking(current.id)}>
+              <button className="cl-face-member is-plain" onClick={() => setTyping(true)}>
                 Другое имя…
-              </button>
-              <button
-                className="cl-face-member is-plain"
-                onClick={() => setSkipped((prev) => new Set(prev).add(current.id))}
-              >
-                Не знаю
               </button>
             </div>
           )}
         </div>
       ) : null}
-    </section>
+      {canEdit && !current && unknown.length === 0 ? (
+        <div className="cl-muted" style={{ fontSize: 12.5, marginTop: 10 }}>Все лица на кадре опознаны.</div>
+      ) : null}
+    </div>
   )
 }

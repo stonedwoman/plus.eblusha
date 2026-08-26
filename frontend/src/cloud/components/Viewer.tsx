@@ -3,7 +3,7 @@ import { cloudApi, formatBytes, formatDuration, toCloudError } from '../api'
 import type { CloudComment, CloudFile } from '../types'
 import { onCloudEvent } from '../realtime'
 import { Avatar, toast } from './ui'
-import { FacesPanel } from './FacesPanel'
+import { FacesPanel, type PanelFace } from './FacesPanel'
 
 const EMOJI = ['👍', '❤️', '😂', '😮', '😢']
 
@@ -105,6 +105,40 @@ export function Viewer({
     )
   }, [file?.id, baseDelta])
 
+  /*
+   * Лица кадра: бейдж на корешке (сколько неопознанных) и вкладка «Люди».
+   * Кэш по id — листание не гоняет одни и те же запросы; после привязки
+   * запись кэша сбрасывается и перечитывается.
+   */
+  const [fileFaces, setFileFaces] = useState<PanelFace[] | null>(null)
+  const facesCache = useRef(new Map<string, PanelFace[]>())
+  const loadFaces = useCallback(
+    async (fid: string, force = false) => {
+      if (!force && facesCache.current.has(fid)) {
+        setFileFaces(facesCache.current.get(fid)!)
+        return
+      }
+      try {
+        const { data } = await cloudApi.get<{ faces: PanelFace[] }>('/faces/by-file', { params: { fileId: fid } })
+        facesCache.current.set(fid, data.faces)
+        setFileFaces((prev) => (file?.id === fid ? data.faces : prev))
+      } catch {
+        if (file?.id === fid) setFileFaces([])
+      }
+    },
+    [file?.id]
+  )
+  useEffect(() => {
+    if (!file) return
+    setFileFaces(null)
+    if (file.kind !== 'IMAGE') {
+      setFileFaces([])
+      return
+    }
+    void loadFaces(file.id)
+  }, [file?.id, file?.kind, loadFaces])
+  const unknownFaces = fileFaces ? fileFaces.filter((f) => !f.person).length : 0
+
   const rotate = useCallback(
     async (dir: 'cw' | 'ccw') => {
       const target = file
@@ -129,14 +163,14 @@ export function Viewer({
    * на треть экрана. Открывается кнопкой или клавишей i; пока она открыта,
    * хром не прячется.
    */
-  const [panel, setPanel] = useState<'info' | 'comments' | null>(null)
+  const [panel, setPanel] = useState<'info' | 'comments' | 'people' | null>(null)
   /*
    * Панель не исчезает, а УЕЗЖАЕТ. leaving держит её смонтированной (и грид
    * трёхколоночным) на время выездной анимации: ящик задвигается обратно под
    * корешок, и только потом сцена расширяется. Раньше закрытие было мгновенным
    * схлопыванием — единственная непроанимированная смена состояния вьюера.
    */
-  const [leaving, setLeaving] = useState<'info' | 'comments' | null>(null)
+  const [leaving, setLeaving] = useState<'info' | 'comments' | 'people' | null>(null)
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const withPanel = Boolean(panel || leaving)
   /*
@@ -180,7 +214,7 @@ export function Viewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [withPanel])
 
-  const togglePanel = useCallback((which: 'info' | 'comments') => {
+  const togglePanel = useCallback((which: 'info' | 'comments' | 'people') => {
     setPanel((cur) => {
       if (cur === which) {
         setLeaving(which)
@@ -872,7 +906,7 @@ export function Viewer({
           }}
         >
           <div className="cl-panel-head">
-            <b>{(panel ?? leaving) === 'info' ? 'Сведения' : 'Обсуждение'}</b>
+            <b>{(panel ?? leaving) === 'info' ? 'Сведения' : (panel ?? leaving) === 'people' ? 'Люди' : 'Обсуждение'}</b>
             <button onClick={() => togglePanel(panel ?? 'info')} aria-label="Закрыть панель">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <path d="M6 6l12 12M18 6L6 18" />
@@ -880,8 +914,14 @@ export function Viewer({
             </button>
           </div>
           <div className={`cl-panel-body${(panel ?? leaving) === 'comments' ? ' is-talk' : ''}`}>
-            {(panel ?? leaving) === 'info' ? (
-              <MetadataPanel file={file} canEdit={!readOnly} onReact={!readOnly ? (emoji) => void react(file, emoji) : undefined} />
+            {(panel ?? leaving) === 'people' ? (
+              <FacesPanel
+                faces={fileFaces}
+                canEdit={!readOnly}
+                onChanged={() => file && void loadFaces(file.id, true)}
+              />
+            ) : (panel ?? leaving) === 'info' ? (
+              <MetadataPanel file={file} onReact={!readOnly ? (emoji) => void react(file, emoji) : undefined} />
             ) : (
               <CommentsPanel
                 key={file.id}
@@ -940,6 +980,22 @@ export function Viewer({
               </svg>
               <span>Комменты</span>
               {file.commentCount ? <i className="cl-sp-dot">{file.commentCount}</i> : null}
+            </button>
+          ) : null}
+
+          {file.kind === 'IMAGE' ? (
+            <button
+              className={`cl-sp-tab${panel === 'people' ? ' is-on' : ''}`}
+              onClick={() => togglePanel('people')}
+              title={unknownFaces > 0 ? `Люди на кадре · неопознанных: ${unknownFaces}` : 'Люди на кадре'}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="12" cy="8.6" r="3.6" />
+                <path d="M5.2 19.4c1.1-3 3.7-4.6 6.8-4.6s5.7 1.6 6.8 4.6" />
+              </svg>
+              <span>Люди</span>
+              {/* Бейдж зовёт, только пока есть кого опознавать. */}
+              {unknownFaces > 0 ? <i className="cl-sp-dot is-alert">{unknownFaces}</i> : null}
             </button>
           ) : null}
 
@@ -1501,7 +1557,7 @@ function VideoUnavailable({ file }: { file: CloudFile }) {
  * их показывает сама камера. Технические подробности убраны в разделы, чтобы не
  * забивать собой смысл.
  */
-function MetadataPanel({ file, onReact, canEdit }: { file: CloudFile; onReact?: (emoji: string) => void; canEdit: boolean }) {
+function MetadataPanel({ file, onReact }: { file: CloudFile; onReact?: (emoji: string) => void }) {
   const [copied, setCopied] = useState<string | null>(null)
   const copy = (key: string, value: string) => {
     void navigator.clipboard?.writeText(value)
@@ -1639,8 +1695,6 @@ function MetadataPanel({ file, onReact, canEdit }: { file: CloudFile; onReact?: 
           ) : null}
         </div>
       ) : null}
-
-      <FacesPanel fileId={file.id} canEdit={canEdit} />
 
       {section('Файл', fileRows)}
       {section('Подробности', techRows)}
