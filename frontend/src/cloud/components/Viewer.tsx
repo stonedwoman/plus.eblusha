@@ -309,6 +309,14 @@ export function Viewer({
 
   useEffect(() => () => { if (sharpenRef.current) clearTimeout(sharpenRef.current) }, [])
 
+  /*
+   * Процент ВПИСАННОГО кадра. По нему решается, показывать ли значок зума:
+   * прятать его на «ровно 100%» больше нельзя — сотня перестала означать
+   * «вписано» и стала означать «пиксель в пиксель», то есть ровно то
+   * состояние, о котором и хочется знать.
+   */
+  const fitPctRef = useRef(100)
+
   /** Границы панорамы считаются из размера ВПИСАННОГО снимка, а не бокса. */
   const gutterRef = useRef(104)
 
@@ -352,7 +360,8 @@ export function Viewer({
      * решается загрузка слоя полного разрешения, и заглушка заставляла качать
      * его сразу при открытии, до всякого зума.
      */
-    const pct = Math.round((w * k * 100 * view.current.zoom) / w)
+    fitPctRef.current = Math.round(k * 100)
+    const pct = Math.round(k * 100 * view.current.zoom)
     setZoomPct((prev) => (Math.abs(prev - pct) >= 1 ? pct : prev))
   }, [file])
 
@@ -360,7 +369,14 @@ export function Viewer({
     (next: number, anchor?: { x: number; y: number }) => {
       const v = view.current
       const from = v.zoom
-      const to = clamp(next, 1, 8)
+      /*
+       * Потолок — не ниже «пиксель в пиксель». Восьмикратного от вписанного
+       * кадра крупному снимку не хватает: у 8000-пиксельной панорамы это лишь
+       * шестьдесят процентов её собственного разрешения, и до настоящего
+       * размера дотянуться было нечем.
+       */
+      const oneToOne = fitRef.current.w && file?.width ? file.width / fitRef.current.w : 1
+      const to = clamp(next, 1, Math.max(8, oneToOne))
       if (Math.abs(to - from) < 0.0005) return
       if (anchor) {
         /*
@@ -842,7 +858,28 @@ export function Viewer({
       requestClose()
       return
     }
-    if (file.kind === 'IMAGE' && view.current.zoom > 1.001) setZoom(1)
+    if (file.kind !== 'IMAGE') return
+    if (view.current.zoom > 1.001) {
+      setZoom(1)
+      return
+    }
+    /*
+     * Щелчок по снимку — «пиксель в пиксель», точкой под курсором. Это тот же
+     * жест, которым в любой смотрелке разглядывают деталь: попал по лицу —
+     * лицо и осталось под указателем. Кадру, который и так показан крупнее
+     * своего разрешения (мелкая картинка, растянутая до сцены), увеличивать
+     * нечего — щелчок для него пустой.
+     */
+    const fit = fitRef.current
+    const oneToOne = fit.w && file.width ? file.width / fit.w : 1
+    if (oneToOne <= 1.001) return
+    const stage = stageRef.current
+    if (!stage) return
+    const box = stage.getBoundingClientRect()
+    setZoom(oneToOne, {
+      x: e.clientX - box.left - box.width / 2,
+      y: e.clientY - box.top - (box.height - gutterRef.current) / 2,
+    })
   }
 
   const onStageContextMenu = (e: React.MouseEvent) => {
@@ -1156,7 +1193,7 @@ export function Viewer({
           ) : null}
 
           <div className="cl-vspine-meta">
-            {zoomPct !== 100 ? <span className="cl-sp-zoom">{zoomPct}%</span> : null}
+            {Math.abs(zoomPct - fitPctRef.current) >= 1 ? <span className="cl-sp-zoom">{zoomPct}%</span> : null}
             <span className="cl-sp-fact">{new Date(file.takenAt).toLocaleDateString('ru-RU')}</span>
             {file.geoCity ? (
               <span className="cl-sp-fact is-city" title={file.geoCity}>
