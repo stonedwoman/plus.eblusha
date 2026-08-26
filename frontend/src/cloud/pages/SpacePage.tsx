@@ -81,6 +81,15 @@ export default function SpacePage() {
   const [unknownChips, setUnknownChips] = useState<{ faces: FaceRef[]; faceIds: string[]; total: number }[]>([])
   const [namingChip, setNamingChip] = useState<number | null>(null)
   const [chipName, setChipName] = useState('')
+  /*
+   * Мобильная шапка («Док-полоса») — по итогам дизайн-мастерской из 8
+   * концепций, выбрана та, что честнее всех сокращает высоту ДО первой
+   * фотографии (с ~400+px до ~90px): две фиксированные строки (личность +
+   * вкладки-с-действиями), а всё второстепенное — статистика, состав,
+   * фильтры, Поделиться/Скачать всё — в шторках по требованию. Триггерится
+   * тем же railWide, что и компактность рельс: одна и та же граница экрана.
+   */
+  const [mobileSheet, setMobileSheet] = useState<null | 'info' | 'filters' | 'more'>(null)
   const [linkCandidates, setLinkCandidates] = useState<Candidate[]>([])
   useEffect(() => {
     if (namingChip !== null && linkCandidates.length === 0) void loadCandidates().then(setLinkCandidates)
@@ -263,6 +272,10 @@ export default function SpacePage() {
    * всё ради элемента, который на телефоне невозможно увидеть.
    */
   const [railWide, setRailWide] = useState(() => window.matchMedia('(min-width: 861px)').matches)
+  // Развернули окно — мобильные шторки теряют смысл, десктопная шапка и так всё показывает.
+  useEffect(() => {
+    if (railWide) setMobileSheet(null)
+  }, [railWide])
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 861px)')
     const on = () => setRailWide(mq.matches)
@@ -1059,6 +1072,98 @@ export default function SpacePage() {
     )
   }
 
+  const downloadAllZip = () => {
+    window.location.href = `/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`
+  }
+
+  const mobileFilterCount = (kindFilter ? 1 : 0) + personFilter.size
+
+  /* Кружки лиц-фильтров: используются и в десктопном теле вкладки, и в
+     мобильной шторке «Фильтры» — один и тот же JSX, а не две копии. */
+  const personChipsRow = (
+    <div className="cl-person-chips">
+      {spacePeople.map((p) => (
+        <button
+          key={p.id}
+          className={`cl-person-chip${personFilter.has(p.id) ? ' is-active' : ''}`}
+          title={`${p.name} · ${p.countInSpace}${personFilter.size ? ' — совместные кадры' : ''}`}
+          onClick={() => togglePerson(p.id)}
+        >
+          {p.cover ? <FaceCrop face={p.cover} size={28} /> : <span className="cl-face cl-face-empty" style={{ width: 28, height: 28, fontSize: 14 }}>🙂</span>}
+          {personFilter.has(p.id) ? <b>{p.name}</b> : null}
+        </button>
+      ))}
+      {unknownChips.map((g, i) => (
+        <button
+          key={`u${i}`}
+          className={`cl-person-chip is-unknown${namingChip === i ? ' is-active' : ''}`}
+          title={`Неопознанный · ${g.total} — назначить`}
+          onClick={() => {
+            setNamingChip(namingChip === i ? null : i)
+            setChipName('')
+          }}
+        >
+          {g.faces[0] ? <FaceCrop face={g.faces[0]} size={28} /> : null}
+          <i>?</i>
+        </button>
+      ))}
+    </div>
+  )
+
+  /* Форма «кто это?» для выбранного «?»-чипа — тоже общая для десктопа и шторки. */
+  const namingRow =
+    namingChip !== null && unknownChips[namingChip] ? (
+      <div className="cl-tab-extra">
+        {unknownChips[namingChip]!.faces.slice(0, 5).map((f) => (
+          <FaceCrop key={f.id} face={f} size={36} />
+        ))}
+        <span className="cl-tab-extra-q">Кто это? · {unknownChips[namingChip]!.total} лиц</span>
+        {canEdit
+          ? linkCandidates.map((m) => (
+              <button key={m.id} className="cl-face-member" onClick={() => void nameUnknownChip(unknownChips[namingChip]!, { userId: m.id })}>
+                <Avatar user={m} />
+                <span>{m.displayName || m.username}</span>
+              </button>
+            ))
+          : null}
+        {canEdit ? (
+          <form
+            className="cl-face-nameform"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (chipName.trim()) void nameUnknownChip(unknownChips[namingChip]!, { name: chipName.trim() })
+            }}
+          >
+            <input className="cl-input" placeholder="Или имя…" value={chipName} onChange={(e) => setChipName(e.target.value)} />
+            <button className="cl-btn primary sm" type="submit" disabled={!chipName.trim()}>
+              Назвать
+            </button>
+          </form>
+        ) : null}
+      </div>
+    ) : null
+
+  /* Сплит-кнопка загрузки — самое частое действие, поэтому единственное
+     всегда видимое на мобиле (не спрятано в шторку), общая с десктопом. */
+  const uploadSplitButton = canEdit ? (
+    <div className="cl-split cl-act-main">
+      <button className="cl-split-main" onClick={openFilePicker} aria-label="Загрузить файлы">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 17V5m0 0 5 5m-5-5-5 5" />
+          <path d="M5 20h14" />
+        </svg>
+        <span className="cl-split-label">Загрузить</span>
+      </button>
+      <button className="cl-split-alt" onClick={() => dirInput.current?.click()} title="Загрузить папку со всем содержимым">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+          <path className="cl-split-lid" d="M3.5 9.5h17l-1.6 9a1.6 1.6 0 0 1-1.6 1.3H6.7a1.6 1.6 0 0 1-1.6-1.3l-1.6-9Z" />
+          <path d="M4.5 9.5V6.2c0-.9.7-1.6 1.6-1.6h3.4l2 2.2h6.4c.9 0 1.6.7 1.6 1.6v1.1" />
+        </svg>
+        папку
+      </button>
+    </div>
+  ) : null
+
   return (
     <div className={`cl-page${showRail ? ' with-rail' : ''}`}>
       {/*
@@ -1092,41 +1197,74 @@ export default function SpacePage() {
         style={{ ['--cl-head-shift' as string]: `${headShift}px` }}
       >
         <div className="cl-head-fold">
-          <div className="cl-ed-eyebrow">
-            <span className="cl-ed-kicker">Хуяпка</span>
-            <i className="cl-ed-rule" />
-            <span className="cl-ed-issue">
-              {space.members.length} {plural(space.members.length, 'участник', 'участника', 'участников')}
-            </span>
-          </div>
-
-          <div className="cl-ed-grid">
-            <div className="cl-ed-lede">
-              <h1 className="cl-h1 cl-ed-title">{space.name}</h1>
-              {space.description ? <p className="cl-ed-dek">{space.description}</p> : null}
-            </div>
-
-            {/*
-              Цифры — главный графический элемент полосы. key по значению
-              перезапускает набегание: счётчик оживает при заливке сам собой.
-            */}
-            {space.stats ? (
-              <div className="cl-ed-figs">
-                <Figure label="Фото" value={space.stats.photos} />
-                {space.stats.videos > 0 ? <Figure label="Видео" value={space.stats.videos} /> : null}
-                {space.stats.others > 0 ? <Figure label="Файлы" value={space.stats.others} /> : null}
-                <Figure label="Объём" accent value={formatBytes(space.stats.bytes)} />
+          {railWide ? (
+            <>
+              <div className="cl-ed-eyebrow">
+                <span className="cl-ed-kicker">Хуяпка</span>
+                <i className="cl-ed-rule" />
+                <span className="cl-ed-issue">
+                  {space.members.length} {plural(space.members.length, 'участник', 'участника', 'участников')}
+                </span>
               </div>
-            ) : null}
-          </div>
 
-          {/*
-            Слот постоянной высоты: полоска заливки приходит НА МЕСТО подписи, а
-            не добавляется рядом. Иначе старт загрузки менял высоту шапки, и
-            дата с рельсой уезжали анимацией ровно в тот момент, когда процессор
-            занят хешированием и отправкой.
-          */}
-          <div className="cl-ed-slot">{uploads.length > 0 ? <SpaceUploadBar /> : <SpaceByline space={space} onlineIds={onlineIds} />}</div>
+              <div className="cl-ed-grid">
+                <div className="cl-ed-lede">
+                  <h1 className="cl-h1 cl-ed-title">{space.name}</h1>
+                  {space.description ? <p className="cl-ed-dek">{space.description}</p> : null}
+                </div>
+
+                {/*
+                  Цифры — главный графический элемент полосы. key по значению
+                  перезапускает набегание: счётчик оживает при заливке сам собой.
+                */}
+                {space.stats ? (
+                  <div className="cl-ed-figs">
+                    <Figure label="Фото" value={space.stats.photos} />
+                    {space.stats.videos > 0 ? <Figure label="Видео" value={space.stats.videos} /> : null}
+                    {space.stats.others > 0 ? <Figure label="Файлы" value={space.stats.others} /> : null}
+                    <Figure label="Объём" accent value={formatBytes(space.stats.bytes)} />
+                  </div>
+                ) : null}
+              </div>
+
+              {/*
+                Слот постоянной высоты: полоска заливки приходит НА МЕСТО подписи, а
+                не добавляется рядом. Иначе старт загрузки менял высоту шапки, и
+                дата с рельсой уезжали анимацией ровно в тот момент, когда процессор
+                занят хешированием и отправкой.
+              */}
+              <div className="cl-ed-slot">{uploads.length > 0 ? <SpaceUploadBar /> : <SpaceByline space={space} onlineIds={onlineIds} />}</div>
+            </>
+          ) : (
+            /*
+              Мобайл: одна строка = кнопка. Аватары, имя, две компактных
+              цифры — то немногое, что нужно увидеть за секунду; полная
+              статистика/состав/описание — по тапу, в шторке «Инфо».
+            */
+            <button
+              type="button"
+              className="cl-mini-bar"
+              aria-expanded={mobileSheet === 'info'}
+              onClick={() => setMobileSheet((s) => (s === 'info' ? null : 'info'))}
+            >
+              <span className="cl-mini-avas">
+                {space.members.slice(0, 3).map((m) => (
+                  <Avatar key={m.id} user={m} online={onlineIds.has(m.id)} />
+                ))}
+              </span>
+              <span className="cl-mini-title">{space.name}</span>
+              {space.stats ? (
+                <span className="cl-mini-figs">
+                  <span>{space.stats.photos}</span>
+                  <i>·</i>
+                  <span>{formatBytes(space.stats.bytes)}</span>
+                </span>
+              ) : null}
+              <svg className="cl-mini-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </button>
+          )}
         </div>
 
         {/* ── Полоса: живёт в обоих состояниях ────────────────────────────── */}
@@ -1138,160 +1276,191 @@ export default function SpacePage() {
                 {v === 'timeline' ? 'Таймлайн' : v === 'people' ? 'Лица' : v === 'files' ? 'Файлы' : v === 'map' ? 'Карта' : 'Активность'}
               </button>
             ))}
-            {/* Компакт-идентичность: проявляется, когда титул уехал вверх. */}
-            <div className="cl-band-who">
-              <div className="cl-ava-stack">
-                {space.members.slice(0, 4).map((m, i) => (
-                  <span className="cl-ed-ava" key={m.id} style={{ ['--i' as string]: i }}>
-                    <Avatar user={m} online={onlineIds.has(m.id)} />
-                  </span>
-                ))}
+            {/* Компакт-идентичность: проявляется, когда титул уехал вверх.
+                На мобиле не нужна — .cl-mini-bar и так всегда на виду. */}
+            {railWide ? (
+              <div className="cl-band-who">
+                <div className="cl-ava-stack">
+                  {space.members.slice(0, 4).map((m, i) => (
+                    <span className="cl-ed-ava" key={m.id} style={{ ['--i' as string]: i }}>
+                      <Avatar user={m} online={onlineIds.has(m.id)} />
+                    </span>
+                  ))}
+                </div>
+                <span className="cl-band-title">{space.name}</span>
               </div>
-              <span className="cl-band-title">{space.name}</span>
-            </div>
+            ) : null}
           </div>
 
-          {/* Тело раздела: фильтры и действия ПРИНАДЛЕЖАТ активной вкладке. */}
-          <div className="cl-tab-body">
-            {view !== 'activity' && view !== 'map' && view !== 'people' ? (
-              <div className="cl-chips cl-ed-filters">
-                {([['', 'Все'], ['IMAGE', 'Фото'], ['VIDEO', 'Видео'], ['DOCUMENT', 'Документы']] as const).map(([value, label]) => (
-                  <button
-                    key={label}
-                    className={`cl-chip${kindFilter === value ? ' is-active' : ''}`}
-                    onClick={() => setKindFilter(value as typeof kindFilter)}
-                  >
-                    {label}
+          {railWide ? (
+            <>
+              {/* Тело раздела: фильтры и действия ПРИНАДЛЕЖАТ активной вкладке. */}
+              <div className="cl-tab-body">
+                {view !== 'activity' && view !== 'map' && view !== 'people' ? (
+                  <div className="cl-chips cl-ed-filters">
+                    {([['', 'Все'], ['IMAGE', 'Фото'], ['VIDEO', 'Видео'], ['DOCUMENT', 'Документы']] as const).map(([value, label]) => (
+                      <button
+                        key={label}
+                        className={`cl-chip${kindFilter === value ? ' is-active' : ''}`}
+                        onClick={() => setKindFilter(value as typeof kindFilter)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="cl-tab-note">
+                    {view === 'map'
+                      ? 'Снимки с геометкой — на карте'
+                      : view === 'people'
+                        ? 'Люди на снимках: назовите лицо — дальше узнаю сам'
+                        : 'Журнал действий участников'}
+                  </span>
+                )}
+                {view === 'timeline' && (spacePeople.length > 0 || unknownChips.length > 0) ? personChipsRow : null}
+                <div className="cl-spacer" />
+                <div className="cl-band-acts">
+                  {uploadSplitButton}
+                  {isOwner ? (
+                    <button className="cl-btn ghost sm cl-act-quiet" onClick={() => setShareOpen(true)} title="Ссылка для тех, у кого нет Еблуши">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.1" />
+                        <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.1" />
+                      </svg>
+                      Поделиться
+                    </button>
+                  ) : null}
+                  <button className="cl-btn ghost sm cl-act-quiet" title="Скачать всё одним архивом" onClick={downloadAllZip}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 4v10m0 0 4-4m-4 4-4-4" />
+                      <path d="M5 19h14" />
+                    </svg>
+                    Скачать всё
                   </button>
-                ))}
+                </div>
+                {uploads.length > 0 ? <i className="cl-tab-progress" aria-hidden /> : null}
               </div>
-            ) : (
-              <span className="cl-tab-note">
-                {view === 'map'
-                  ? 'Снимки с геометкой — на карте'
-                  : view === 'people'
-                    ? 'Люди на снимках: назовите лицо — дальше узнаю сам'
-                    : 'Журнал действий участников'}
-              </span>
-            )}
-            {/* Люди — тоже фильтр таймлайна: кружки-лица. Несколько выбранных
-                — совместные кадры. «?» — неопознанные, назначаются на месте. */}
-            {view === 'timeline' && (spacePeople.length > 0 || unknownChips.length > 0) ? (
-              <div className="cl-person-chips">
-                {spacePeople.map((p) => (
-                  <button
-                    key={p.id}
-                    className={`cl-person-chip${personFilter.has(p.id) ? ' is-active' : ''}`}
-                    title={`${p.name} · ${p.countInSpace}${personFilter.size ? ' — совместные кадры' : ''}`}
-                    onClick={() => togglePerson(p.id)}
-                  >
-                    {p.cover ? <FaceCrop face={p.cover} size={28} /> : <span className="cl-face cl-face-empty" style={{ width: 28, height: 28, fontSize: 14 }}>🙂</span>}
-                    {personFilter.has(p.id) ? <b>{p.name}</b> : null}
-                  </button>
-                ))}
-                {unknownChips.map((g, i) => (
-                  <button
-                    key={`u${i}`}
-                    className={`cl-person-chip is-unknown${namingChip === i ? ' is-active' : ''}`}
-                    title={`Неопознанный · ${g.total} — назначить`}
-                    onClick={() => {
-                      setNamingChip(namingChip === i ? null : i)
-                      setChipName('')
-                    }}
-                  >
-                    {g.faces[0] ? <FaceCrop face={g.faces[0]} size={28} /> : null}
-                    <i>?</i>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            <div className="cl-spacer" />
-            <div className="cl-band-acts">
-            {canEdit ? (
-              <div className="cl-split cl-act-main">
-                <button className="cl-split-main" onClick={openFilePicker}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 17V5m0 0 5 5m-5-5-5 5" />
-                    <path d="M5 20h14" />
-                  </svg>
-                  Загрузить
-                </button>
+
+              {/* Назначение «?»-чипа: кто это — не уходя из таймлайна. */}
+              {namingChip !== null && unknownChips[namingChip] ? namingRow : null}
+            </>
+          ) : (
+            /*
+              Мобайл: прижатый справа кластер — фильтр (если таймлайн),
+              загрузка (всегда на виду — это САМОЕ частое действие), «Ещё»
+              для Поделиться/Скачать всё. Тело вкладки и «?»-форма живут
+              внутри шторки «Фильтры», а не здесь.
+            */
+            <div className="cl-mobile-dock">
+              {view === 'timeline' ? (
                 <button
-                  className="cl-split-alt"
-                  onClick={() => dirInput.current?.click()}
-                  title="Загрузить папку со всем содержимым"
+                  type="button"
+                  className={`cl-icon-btn${mobileFilterCount ? ' is-active' : ''}`}
+                  aria-label="Фильтры"
+                  aria-expanded={mobileSheet === 'filters'}
+                  onClick={() => setMobileSheet((s) => (s === 'filters' ? null : 'filters'))}
                 >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-                    <path className="cl-split-lid" d="M3.5 9.5h17l-1.6 9a1.6 1.6 0 0 1-1.6 1.3H6.7a1.6 1.6 0 0 1-1.6-1.3l-1.6-9Z" />
-                    <path d="M4.5 9.5V6.2c0-.9.7-1.6 1.6-1.6h3.4l2 2.2h6.4c.9 0 1.6.7 1.6 1.6v1.1" />
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 6h16M7 12h10M10 18h4" />
                   </svg>
-                  папку
+                  {mobileFilterCount > 0 ? <i className="cl-dot" /> : null}
                 </button>
-              </div>
-            ) : null}
-            {isOwner ? (
-              <button className="cl-btn ghost sm cl-act-quiet" onClick={() => setShareOpen(true)} title="Ссылка для тех, у кого нет Еблуши">
+              ) : null}
+              {uploadSplitButton}
+              <button
+                type="button"
+                className="cl-icon-btn"
+                aria-label="Ещё"
+                aria-expanded={mobileSheet === 'more'}
+                onClick={() => setMobileSheet((s) => (s === 'more' ? null : 'more'))}
+              >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.1" />
-                  <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.1" />
+                  <circle cx="5" cy="12" r="1.6" />
+                  <circle cx="12" cy="12" r="1.6" />
+                  <circle cx="19" cy="12" r="1.6" />
                 </svg>
-                Поделиться
               </button>
-            ) : null}
+              {uploads.length > 0 ? <i className="cl-tab-progress" aria-hidden /> : null}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Мобильные шторки: Инфо / Фильтры / Ещё — вне потока шапки ───── */}
+      {!railWide && mobileSheet ? <div className="cl-sheet-backdrop" onClick={() => setMobileSheet(null)} /> : null}
+      {!railWide && mobileSheet === 'info' ? (
+        <div className="cl-sheet cl-info-sheet" role="dialog" aria-label="О пространстве">
+          <div className="cl-sheet-grip" />
+          <div className="cl-ed-eyebrow">
+            <span className="cl-ed-kicker">Хуяпка</span>
+            <i className="cl-ed-rule" />
+            <span className="cl-ed-issue">
+              {space.members.length} {plural(space.members.length, 'участник', 'участника', 'участников')}
+            </span>
+          </div>
+          <h2 className="cl-h1" style={{ fontSize: 22, margin: '6px 0' }}>
+            {space.name}
+          </h2>
+          {space.description ? <p className="cl-ed-dek">{space.description}</p> : null}
+          {space.stats ? (
+            <div className="cl-ed-figs">
+              <Figure label="Фото" value={space.stats.photos} />
+              {space.stats.videos > 0 ? <Figure label="Видео" value={space.stats.videos} /> : null}
+              {space.stats.others > 0 ? <Figure label="Файлы" value={space.stats.others} /> : null}
+              <Figure label="Объём" accent value={formatBytes(space.stats.bytes)} />
+            </div>
+          ) : null}
+          {uploads.length > 0 ? <SpaceUploadBar /> : <SpaceByline space={space} onlineIds={onlineIds} />}
+        </div>
+      ) : null}
+      {!railWide && mobileSheet === 'filters' && view === 'timeline' ? (
+        <div className="cl-sheet cl-filter-sheet" role="dialog" aria-label="Фильтры">
+          <div className="cl-sheet-grip" />
+          <div className="cl-chips cl-ed-filters">
+            {([['', 'Все'], ['IMAGE', 'Фото'], ['VIDEO', 'Видео'], ['DOCUMENT', 'Документы']] as const).map(([value, label]) => (
+              <button
+                key={label}
+                className={`cl-chip${kindFilter === value ? ' is-active' : ''}`}
+                onClick={() => setKindFilter(value as typeof kindFilter)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {spacePeople.length > 0 || unknownChips.length > 0 ? personChipsRow : null}
+          {namingChip !== null && unknownChips[namingChip] ? namingRow : null}
+          <button className="cl-btn ghost sm" onClick={() => setMobileSheet(null)}>
+            Готово
+          </button>
+        </div>
+      ) : null}
+      {!railWide && mobileSheet === 'more' ? (
+        <div className="cl-sheet cl-more-sheet" role="dialog" aria-label="Действия">
+          <div className="cl-sheet-grip" />
+          {isOwner ? (
             <button
               className="cl-btn ghost sm cl-act-quiet"
-              title="Скачать всё одним архивом"
               onClick={() => {
-                window.location.href = `/api/cloud/files/zip?spaceId=${encodeURIComponent(spaceId)}&all=1`
+                setShareOpen(true)
+                setMobileSheet(null)
               }}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 4v10m0 0 4-4m-4 4-4-4" />
-                <path d="M5 19h14" />
+                <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.1" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.1" />
               </svg>
-              Скачать всё
+              Поделиться
             </button>
-          </div>
-            {uploads.length > 0 ? <i className="cl-tab-progress" aria-hidden /> : null}
-          </div>
-
-          {/* Назначение «?»-чипа: кто это — не уходя из таймлайна. */}
-          {namingChip !== null && unknownChips[namingChip] ? (
-            <div className="cl-tab-extra">
-              {unknownChips[namingChip]!.faces.slice(0, 5).map((f) => (
-                <FaceCrop key={f.id} face={f} size={36} />
-              ))}
-              <span className="cl-tab-extra-q">Кто это? · {unknownChips[namingChip]!.total} лиц</span>
-              {canEdit
-                ? linkCandidates.map((m) => (
-                    <button
-                      key={m.id}
-                      className="cl-face-member"
-                      onClick={() => void nameUnknownChip(unknownChips[namingChip]!, { userId: m.id })}
-                    >
-                      <Avatar user={m} />
-                      <span>{m.displayName || m.username}</span>
-                    </button>
-                  ))
-                : null}
-              {canEdit ? (
-                <form
-                  className="cl-face-nameform"
-                  onSubmit={(e) => {
-                    e.preventDefault()
-                    if (chipName.trim()) void nameUnknownChip(unknownChips[namingChip]!, { name: chipName.trim() })
-                  }}
-                >
-                  <input className="cl-input" placeholder="Или имя…" value={chipName} onChange={(e) => setChipName(e.target.value)} />
-                  <button className="cl-btn primary sm" type="submit" disabled={!chipName.trim()}>
-                    Назвать
-                  </button>
-                </form>
-              ) : null}
-            </div>
           ) : null}
+          <button className="cl-btn ghost sm cl-act-quiet" onClick={downloadAllZip}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 4v10m0 0 4-4m-4 4-4-4" />
+              <path d="M5 19h14" />
+            </svg>
+            Скачать всё
+          </button>
         </div>
-      </div>
+      ) : null}
 
       {/* ── Содержимое ──────────────────────────────────────────────────── */}
       {view === 'people' ? (

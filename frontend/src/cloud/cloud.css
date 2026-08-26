@@ -2301,26 +2301,103 @@ section[data-day],
   .cl-row { grid-template-columns: 40px minmax(0, 1fr) 40px; }
   .cl-row > .cl-row-hide { display: none; }
   .cl-page { padding: 16px max(12px, var(--safe-left)) 120px max(12px, var(--safe-right)); }
+  .cl-dock { right: 8px; left: 8px; bottom: calc(8px + var(--safe-bottom)); width: auto; }
+
+  /*
+   * ============================================================
+   * «Док-полоса»: мобильная шапка — победитель дизайн-мастерской (7 концепций
+   * судили 3 критерия — экономия высоты / достижимость пальцем / верность
+   * метафоре «Картотеки»). Вместо переноса ВСЕГО десктопного содержимого в
+   * столбик (было ~400+px до первой фотографии) — две фиксированные строки:
+   * идентичность (.cl-mini-bar) и вкладки-с-действиями (.cl-head-band).
+   * Всё второстепенное — полная статистика, состав, фильтры, Поделиться/
+   * Скачать всё — в шторках по требованию (см. .cl-sheet). JSX-развилка
+   * (не только CSS-скрытие) — см. railWide в SpacePage.tsx: на мобиле
+   * десктопные .cl-ed-eyebrow/.cl-ed-grid/.cl-tab-body вообще не монтируются,
+   * а не просто прячутся, так что каждая аватарка/картинка не грузится дважды.
+   * ============================================================
+   */
   .cl-space-head {
-    margin: 0 calc(-1 * max(12px, var(--safe-right))) 12px calc(-1 * max(12px, var(--safe-left)));
-    padding: 12px max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
+    margin: 0 calc(-1 * max(12px, var(--safe-right))) 10px calc(-1 * max(12px, var(--safe-left)));
+    padding: 0 max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
   }
-  /* Узкий экран: цифры уходят под титул, полоса переносится в две строки. */
-  .cl-ed-grid { grid-template-columns: minmax(0, 1fr); row-gap: 12px; }
-  .cl-ed-figs { justify-self: start; }
-  .cl-ed-fig { padding: 0 14px; }
-  .cl-ed-fig:first-child { padding-left: 0; }
-  /* Вкладки листаются пальцем, тело переносит блоки целиком. */
+  .cl-head-fold { padding: max(8px, var(--safe-top)) 0 8px; }
+
+  .cl-mini-bar {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 4px 2px; margin: -4px -2px; min-width: 0;
+    border: none; background: none; font: inherit; color: inherit;
+    text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .cl-mini-avas { display: flex; flex: none; }
+  .cl-mini-avas > * { width: 28px; height: 28px; margin-left: -8px; border: 2px solid var(--paper); border-radius: 50%; }
+  .cl-mini-avas > *:first-child { margin-left: 0; }
+  .cl-mini-title {
+    flex: 1 1 auto; min-width: 0; font-size: 17px; font-weight: 700; letter-spacing: -.02em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .cl-mini-figs {
+    flex: none; display: flex; align-items: center; gap: 5px;
+    font-size: 12px; font-weight: 650; color: var(--text-muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .cl-mini-figs i { font-style: normal; opacity: .5; }
+  .cl-mini-chev { flex: none; width: 16px; height: 16px; color: var(--text-muted); }
+
+  /* ── Вкладки-папки + прижатый кластер действий в одной строке ── */
+  .cl-head-band { position: relative; padding: 0 0 8px; }
   .cl-tabs {
-    overflow-x: auto; scrollbar-width: none;
-    /* Едва заметный намёк на переполнение: вкладки «Карта»/«Активность» иначе
-       уезжают за край без единого визуального признака, что там что-то есть. */
+    display: flex; align-items: stretch; gap: 2px; height: 40px;
+    overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+    padding-right: 130px; /* место под .cl-mobile-dock — иначе последний таб под ним не дотянуть */
+    /* Тот же намёк на переполнение, что и раньше: правый край гаснет. */
     mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
   }
-  .cl-tabs .cl-band-who { display: none; }
-  .cl-tab-body { flex-wrap: wrap; row-gap: 6px; }
-  .cl-band-acts { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
-  .cl-dock { right: 8px; left: 8px; bottom: calc(8px + var(--safe-bottom)); width: auto; }
+  .cl-tabs::-webkit-scrollbar { display: none; }
+  .cl-tab { flex: none; margin: 0; padding: 0 11px; border-radius: 9px; border-bottom: none; display: inline-flex; align-items: center; font-size: 11.5px; }
+  .cl-tab.is-active::before { top: auto; bottom: -1px; left: 8px; right: 8px; }
+
+  .cl-mobile-dock {
+    position: absolute; right: 0; top: 0; height: 40px; z-index: 1;
+    display: flex; align-items: center; gap: 6px;
+    padding-left: 10px; background: linear-gradient(to right, transparent, var(--paper) 22px);
+  }
+  .cl-icon-btn {
+    width: 40px; height: 40px; border-radius: 10px; position: relative;
+    display: grid; place-items: center; flex: none;
+    background: var(--surface-200); border: 1px solid var(--surface-border); color: var(--text-muted);
+  }
+  .cl-icon-btn svg { width: 18px; height: 18px; }
+  .cl-icon-btn.is-active { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 45%, var(--surface-border)); }
+  .cl-icon-btn .cl-dot {
+    position: absolute; top: -2px; right: -2px; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--brand); border: 1.5px solid var(--paper);
+  }
+  .cl-mobile-dock .cl-split { height: 40px; flex: none; }
+  .cl-mobile-dock .cl-split-main { padding: 0 10px; }
+  .cl-mobile-dock .cl-split-label { display: none; } /* сегмент «файл» на мобиле — только иконка */
+  .cl-mobile-dock .cl-split-alt { padding: 0 10px; font-size: 11px; gap: 4px; }
+  .cl-tab-progress { bottom: 0; } /* без добавления высоты — по нижнему краю Row 2 */
+
+  /* ── Шторки: Инфо / Фильтры / Ещё ── */
+  .cl-sheet-backdrop { position: fixed; inset: 0; z-index: 59; background: rgba(6, 8, 12, .5); animation: clFade .18s ease; }
+  .cl-sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+    max-height: min(78dvh, 620px); overflow-y: auto;
+    background: var(--surface-100); border: 1px solid var(--surface-border); border-bottom: none;
+    border-radius: 16px 16px 0 0; box-shadow: var(--shadow-soft);
+    padding: 14px max(14px, var(--safe-right)) calc(14px + var(--safe-bottom)) max(14px, var(--safe-left));
+    animation: clSheetUp .26s var(--cl-ease);
+  }
+  .cl-sheet-grip { width: 36px; height: 4px; border-radius: 3px; background: var(--surface-border-strong); margin: 0 auto 12px; }
+  /* Внутри шторок содержимое десктопных блоков переиспользуется как есть —
+     те же классы (.cl-ed-figs/.cl-ed-filters/.cl-person-chips), просто в
+     новом контейнере, поэтому им возвращают видимость и перенос строк. */
+  .cl-sheet .cl-ed-eyebrow { display: flex; }
+  .cl-sheet .cl-ed-figs { display: flex; flex-wrap: wrap; justify-content: space-between; width: 100%; }
+  .cl-sheet .cl-ed-filters, .cl-sheet .cl-person-chips { display: flex; flex-wrap: wrap; margin-top: 10px; }
+  .cl-more-sheet .cl-act-quiet { width: 100%; height: 44px; padding: 0 4px; justify-content: flex-start; gap: 10px; }
+  .cl-filter-sheet > .cl-btn { margin-top: 12px; width: 100%; height: 40px; }
 
   /* Панель выбора помещается целиком: «Удалить» и «Снять» уезжали за край. */
   .cl-selbar {
