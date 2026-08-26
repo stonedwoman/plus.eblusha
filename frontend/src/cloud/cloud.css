@@ -115,6 +115,8 @@
   white-space: nowrap;
   transition: background .15s ease, color .15s ease;
 }
+/* Иконки разделов — мобильная валюта; на десктопе слова, svg спрятаны. */
+.cl-topnav a svg { display: none; }
 .cl-topnav a:hover { background: var(--surface-200); color: var(--text-primary); }
 .cl-topnav a.is-active { background: var(--surface-300); color: var(--text-primary); }
 
@@ -1157,7 +1159,18 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
  * шапки снова заезжал бы на колонку станций; вправо вылет сохраняем, чтобы
  * полотно доходило до края страницы.
  */
-.cl-tl-layout.with-rail .cl-space-head { margin-left: 0; padding-left: 0; }
+/*
+ * Полоса хуяпки — во весь экран, ПОВЕРХ колонок рельс (как на мобильном):
+ * обрубленная по средней колонке она выглядела рвано, а рельсы торчали по
+ * бокам от неё. Вылеты — рельса + зазор колонок (18) + отступ страницы (18);
+ * паддинги возвращают содержимое в границы средней колонки.
+ */
+.cl-tl-layout.with-rail .cl-space-head {
+  margin-left: calc(-118px - 18px - 18px);
+  margin-right: calc(-152px - 18px - 18px);
+  padding-left: calc(118px + 18px + 18px);
+  padding-right: calc(152px + 18px + 18px);
+}
 /*
  * Липкий элемент не может выйти за нижнюю границу своего контейнера, а тот
  * кончался за 120px до низа страницы (нижний отступ .cl-page): у самого конца
@@ -1172,21 +1185,17 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
 .cl-timenav {
   position: sticky;
   /*
-   * Габариты рельсы ПОСТОЯННЫ и от шапки не зависят.
-   *
-   * Раньше она подстраивалась под видимую высоту шапки и анимировала top с
-   * height — это layout-свойства, то есть релэйаут на каждом кадре, да ещё и
-   * наблюдатель размера успевал дёрнуть пересчёт станций десятки раз за одну
-   * анимацию: обе рельсы заметно дрожали при каждом развороте прокрутки.
-   *
-   * Подстройка была нужна, пока шапка шла на всю ширину и накрывала рельсу.
-   * После перевода на колонки шапка живёт внутри средней колонки и рельс не
-   * задевает вовсе — так что подстраиваться больше не подо что.
+   * Шапка снова на всю ширину (см. .cl-tl-layout.with-rail .cl-space-head) —
+   * рельса стартует ПОД её видимой частью. --cl-rail-off (высота видимой
+   * шапки, считает SpacePage) меняется только на развороте прокрутки, без
+   * CSS-анимации top/height: перекладка станций едет их собственным
+   * transform-переходом, а не релэйаутом на каждом кадре — дрожания, из-за
+   * которого предыдущая подстройка была выпилена, здесь нет.
    */
-  top: calc(var(--cl-header-h) + 12px);
+  top: calc(var(--cl-header-h) + var(--cl-rail-off, 0px) + 12px);
   flex: 0 0 118px;
   width: 118px;
-  height: calc(100dvh - var(--cl-header-h) - 30px);
+  height: calc(100dvh - var(--cl-header-h) - var(--cl-rail-off, 0px) - 30px);
   user-select: none;
   z-index: 5;
 }
@@ -2278,6 +2287,8 @@ section[data-day],
   .cl-topnav a span { display: none; }
 
   .cl-viewer, .cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  /* Листание — свайпом: стрелки на тач-экране только заслоняют кадр. */
+  .cl-viewer-nav { display: none; }
   /*
    * Корешок поворачивается в нижнюю планку — несущую поверхность на кромке
    * экрана. Полоса превью поднимается и живёт над планкой (см. --cl-gutter
