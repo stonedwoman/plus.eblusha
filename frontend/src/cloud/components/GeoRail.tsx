@@ -79,7 +79,8 @@ export function GeoRail({
   const stations = useMemo(() => {
     if (segments.length === 0) return []
     const withRun = segments.map((s, i) => ({ ...s, run: i }))
-    const capacity = Math.max(3, Math.floor((baseH - PAD * 2) / STEP) - 1)
+    // Компактный узел ниже десктопного — шаг меньше, major-станций больше.
+    const capacity = Math.max(3, Math.floor((baseH - PAD * 2) / (compact ? 46 : STEP)) - 1)
 
     /*
      * Показываем ЗНАЧИМЫЕ остановки, а не всё подряд.
@@ -107,7 +108,7 @@ export function GeoRail({
     // промежуточные станции на схеме метро. Иначе исчезал целый Ереван, и
     // выглядело так, будто география не догрузилась.
     return withRun.map((s) => ({ ...s, major: majorRuns.has(s.run) }))
-  }, [segments, baseH])
+  }, [segments, baseH, compact])
 
   /*
    * useRef ДО раннего return ниже — тот же порядок хуков нужен на КАЖДОМ

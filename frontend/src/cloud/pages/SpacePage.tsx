@@ -134,18 +134,33 @@ export default function SpacePage() {
   // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
   const headHidden = useHideOnScrollDown()
   /*
-   * На мобильном тем же жестом прячется и ВЕРХНЯЯ навигация облака (бренд +
-   * разделы): при листании фотографий она мертвый груз. Класс на .cl-root —
-   * навигация живёт в CloudLayout, выше этого компонента; CSS уводит её за
-   * кромку и плавно обнуляет --cl-header-h, за которой следуют все липкие
-   * слои. См. cl-chrome-hidden в cloud.css.
+   * На мобильном ВЕРХНЯЯ навигация облака (бренд + разделы) живёт только у
+   * верха ленты: порог по scrollTop, а НЕ направление прокрутки. С
+   * направлением каждый скролл вверх посреди альбома возвращал трёхэтажную
+   * кучу — навигация + имя + вкладки разом. Класс на .cl-root — навигация в
+   * CloudLayout, выше этого компонента; CSS уводит её за кромку и плавно
+   * обнуляет --cl-header-h, за которой следуют все липкие слои.
    */
   useEffect(() => {
     const root = document.querySelector<HTMLElement>('.cl-root')
     if (!root) return
-    root.classList.toggle('cl-chrome-hidden', headHidden)
-    return () => root.classList.remove('cl-chrome-hidden')
-  }, [headHidden])
+    let ticking = false
+    const update = () => {
+      ticking = false
+      root.classList.toggle('cl-chrome-hidden', root.scrollTop > 260)
+    }
+    const onScroll = () => {
+      if (ticking) return
+      ticking = true
+      requestAnimationFrame(update)
+    }
+    root.addEventListener('scroll', onScroll, { passive: true })
+    update()
+    return () => {
+      root.removeEventListener('scroll', onScroll)
+      root.classList.remove('cl-chrome-hidden')
+    }
+  }, [])
   /** Отрезки поездки для правой рельсы: где человек был, в порядке ленты. */
   const [segments, setSegments] = useState<GeoSegment[]>([])
   const [withoutPlace, setWithoutPlace] = useState(0)

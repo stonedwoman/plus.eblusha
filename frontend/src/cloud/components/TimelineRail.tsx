@@ -112,7 +112,10 @@ export function TimelineRail({
     if (days.length === 0) return []
     // −1 на хвост: под последней станцией остаётся отрезок такой же длины,
     // по которому полоска доходит до низа, пока листаешь последний период.
-    const capacity = Math.max(3, Math.floor((baseH - PAD * 2) / STEP) - 1)
+    // Компактный узел (26px кружок + подпись под ним) вдвое ниже десктопного
+    // ряда «подпись сбоку»: без своего шага восемь дней не влезали, рельса
+    // сворачивала их в один месяц и вырождалась в пустую заглушку.
+    const capacity = Math.max(3, Math.floor((baseH - PAD * 2) / (compact ? 46 : STEP)) - 1)
     const thisYear = String(new Date().getFullYear())
 
     if (days.length <= capacity) {
@@ -156,7 +159,7 @@ export function TimelineRail({
       firstDay: items[0]!.day,
       days: items.map((d) => d.day),
     }))
-  }, [days, baseH])
+  }, [days, baseH, compact])
 
   /*
    * useRef ДО раннего return ниже: тот бросает раньше, чем компонент успевает

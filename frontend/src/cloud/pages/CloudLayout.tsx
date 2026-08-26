@@ -156,22 +156,45 @@ export default function CloudLayout() {
           </span>
           <span className="cl-brand-suffix">Cloud</span>
         </Link>
+        {/* На мобильном подписи разделов сменяются иконками (см. .cl-topnav в
+            @media): пять слов не влезали в одну строку и раздували шапку до
+            двух рядов — фотографиям оставалось меньше половины экрана. */}
         <nav className="cl-topnav">
-          <NavLink to={cloudPath()} end className={({ isActive }) => (isActive ? 'is-active' : '')}>
-            Хуяпки
+          <NavLink to={cloudPath()} end className={({ isActive }) => (isActive ? 'is-active' : '')} title="Хуяпки">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
+              <path d="M3.5 8.5V6.8c0-.9.7-1.6 1.6-1.6h3.6l2 2.1h8.2c.9 0 1.6.7 1.6 1.6v8.6c0 .9-.7 1.6-1.6 1.6H5.1c-.9 0-1.6-.7-1.6-1.6V8.5Z" />
+            </svg>
+            <span>Хуяпки</span>
           </NavLink>
-          <NavLink to={cloudPath('/recent')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
-            Недавние
+          <NavLink to={cloudPath('/recent')} className={({ isActive }) => (isActive ? 'is-active' : '')} title="Недавние">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="8.2" />
+              <path d="M12 7.6V12l3 2.1" />
+            </svg>
+            <span>Недавние</span>
           </NavLink>
-          <NavLink to={cloudPath('/uploads')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
-            Загрузки
+          <NavLink to={cloudPath('/uploads')} className={({ isActive }) => (isActive ? 'is-active' : '')} title="Загрузки">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 15V4.5m0 0 4 4m-4-4-4 4" />
+              <path d="M4.5 19.5h15" />
+            </svg>
+            <span>Загрузки</span>
           </NavLink>
-          <NavLink to={cloudPath('/trash')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
-            Корзина
+          <NavLink to={cloudPath('/trash')} className={({ isActive }) => (isActive ? 'is-active' : '')} title="Корзина">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4.5 6.5h15M9.5 6.5V5c0-.8.7-1.5 1.5-1.5h2c.8 0 1.5.7 1.5 1.5v1.5m3.5 0-.8 12a1.6 1.6 0 0 1-1.6 1.5H8.4a1.6 1.6 0 0 1-1.6-1.5l-.8-12" />
+              <path d="M10 10.5v6m4-6v6" />
+            </svg>
+            <span>Корзина</span>
           </NavLink>
           {me.isAdmin ? (
-            <NavLink to={cloudPath('/admin/storage')} className={({ isActive }) => (isActive ? 'is-active' : '')}>
-              Хранилище
+            <NavLink to={cloudPath('/admin/storage')} className={({ isActive }) => (isActive ? 'is-active' : '')} title="Хранилище">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <ellipse cx="12" cy="5.5" rx="7.5" ry="2.8" />
+                <path d="M4.5 5.5v13c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-13" />
+                <path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8" />
+              </svg>
+              <span>Хранилище</span>
             </NavLink>
           ) : null}
         </nav>

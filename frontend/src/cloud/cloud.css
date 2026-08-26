@@ -2200,6 +2200,13 @@ section[data-day],
   .cl-timenav {
     flex: 0 0 52px;
     width: 52px;
+    /*
+     * Старт — ПОД полосой хуяпки, которая на мобильном тянется во весь экран
+     * поверх колонок рельс: --cl-rail-off (высота видимой части полосы) уже
+     * считается в SpacePage для липкой даты, переиспользуем её же.
+     */
+    top: calc(var(--cl-header-h) + var(--cl-rail-off, 0px) + 8px);
+    height: calc(100dvh - var(--cl-header-h) - var(--cl-rail-off, 0px) - 24px);
     /* Тач-протяжка листает станции, а не страницу под пальцем. */
     touch-action: none;
   }
@@ -2231,25 +2238,36 @@ section[data-day],
    * фиксированной высоте из шести вкладок была видна одна, а остальные уезжали
    * в горизонтальную прокрутку, о которой невозможно догадаться.
    */
-  .cl-root { --cl-header-h: 108px; transition: --cl-header-h .42s var(--cl-ease); }
+  /*
+   * Одна строка вместо двух: подписи разделов сменяются иконками, и шапка
+   * ужимается с ~108px до 48px+чёлка — фотографиям остаётся максимум экрана.
+   */
+  .cl-root { --cl-header-h: calc(48px + max(6px, var(--safe-top))); transition: --cl-header-h .42s var(--cl-ease); }
   .cl-topbar {
-    height: auto;
-    flex-wrap: wrap;
-    row-gap: 6px;
-    padding-top: max(8px, var(--safe-top));
-    padding-bottom: 8px;
+    /*
+     * Литерал, а не var(--cl-header-h): переменная анимируется к нулю при
+     * скрытии, и привязанная к ней высота схлопывала бокс — содержимое
+     * вылезало наружу и торчало обрезком у кромки. Уводит навигацию transform,
+     * высота остаётся постоянной.
+     */
+    height: calc(48px + max(6px, var(--safe-top)));
+    padding-top: max(6px, var(--safe-top));
+    padding-bottom: 4px;
     transition: transform .42s var(--cl-ease);
   }
   /*
    * Листаешь фотографии — бренд и разделы облака не нужны: навигация уезжает
-   * за верхнюю кромку тем же жестом, что складывает шапку хуяпки (класс
-   * ставит SpacePage по headHidden). Обратный скролл возвращает всё сразу.
+   * за верхнюю кромку и живёт только У ВЕРХА ленты (класс ставит SpacePage по
+   * порогу scrollTop, а не по направлению — иначе каждый скролл вверх
+   * посреди альбома возвращал трёхэтажную кучу из навигации, имени и вкладок).
    */
   .cl-root.cl-chrome-hidden { --cl-header-h: 0px; }
   .cl-root.cl-chrome-hidden .cl-topbar { transform: translateY(-100%); pointer-events: none; }
   .cl-brand-suffix { display: none; }
-  .cl-topnav { order: 3; flex: 0 0 100%; flex-wrap: wrap; overflow-x: visible; margin-left: 0; }
-  .cl-topnav a { padding: 6px 10px; font-size: 13px; }
+  .cl-topnav { margin-left: auto; gap: 3px; }
+  .cl-topnav a { padding: 8px; display: grid; place-items: center; }
+  .cl-topnav a svg { display: block; width: 21px; height: 21px; }
+  .cl-topnav a span { display: none; }
 
   .cl-viewer, .cl-viewer.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
   /*
@@ -2333,6 +2351,18 @@ section[data-day],
   .cl-space-head {
     margin: 0 calc(-1 * max(12px, var(--safe-right))) 10px calc(-1 * max(12px, var(--safe-left)));
     padding: 0 max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
+  }
+  /*
+   * Полоса — ВО ВЕСЬ ЭКРАН, поверх колонок рельс: обрубленная по средней
+   * колонке она выглядела рвано, а рельсы торчали по бокам от неё. Вылеты —
+   * ровно на ширину рельсы с зазором (52/56 + 6). Рельсы стартуют НИЖЕ
+   * полосы — см. top с --cl-rail-off у .cl-timenav ниже.
+   */
+  .cl-tl-layout.with-rail .cl-space-head {
+    margin-left: calc(-58px - max(12px, var(--safe-left)));
+    margin-right: calc(-62px - max(12px, var(--safe-right)));
+    padding-left: max(12px, var(--safe-left));
+    padding-right: max(12px, var(--safe-right));
   }
   .cl-head-fold { padding: max(8px, var(--safe-top)) 0 8px; }
 
