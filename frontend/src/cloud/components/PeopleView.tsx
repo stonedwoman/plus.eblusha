@@ -142,12 +142,19 @@ export function PeopleView({
   }
 
   const selectedPerson = useMemo(() => people.find((p) => p.id === selected) ?? null, [people, selected])
+  /*
+   * В ленте — только те, кто РЕАЛЬНО есть в этой хуяпке: персоны глобальные,
+   * и без фильтра тут стояли люди с нулём снимков из чужих альбомов. Полный
+   * список остаётся в подсказках формы имени — привязать к персоне из другой
+   * хуяпки по-прежнему можно.
+   */
+  const present = useMemo(() => people.filter((p) => p.countInSpace > 0), [people])
 
   return (
     <div className="cl-people">
       {/* Лента персон */}
       <div className="cl-people-strip">
-        {people.map((p) => (
+        {present.map((p) => (
           <button
             key={p.id}
             className={`cl-person${selected === p.id ? ' is-active' : ''}`}
@@ -166,7 +173,7 @@ export function PeopleView({
             <i>{p.countInSpace}</i>
           </button>
         ))}
-        {people.length === 0 && !loading ? (
+        {present.length === 0 && !loading ? (
           <div className="cl-people-hint">
             Пока никого не названо. Ниже — найденные лица: назовите пачку, и я буду узнавать этого человека сам.
           </div>
