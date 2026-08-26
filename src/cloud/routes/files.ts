@@ -103,6 +103,7 @@ const timelineQuery = z.object({
   spaceId: z.string().min(1),
   view: z.literal("timeline").default("timeline"),
   kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
+  personId: z.string().optional(),
   q: z.string().max(120).optional(),
   /** Смещение локального времени клиента в минутах к востоку от UTC. */
   tz: z.coerce.number().int().min(-840).max(840).default(0),
@@ -136,6 +137,7 @@ router.get(
       Prisma.sql`f."purgedAt" IS NULL`,
     ];
     if (p.kind) conds.push(Prisma.sql`f."kind"::text = ${p.kind}`);
+    if (p.personId) conds.push(Prisma.sql`EXISTS (SELECT 1 FROM "CloudFace" cf WHERE cf."fileId" = f."id" AND cf."personId" = ${p.personId})`);
     if (p.q?.trim()) conds.push(Prisma.sql`f."originalName" ILIKE ${"%" + escapeLike(p.q.trim()) + "%"}`);
 
     // Помимо счётчика — представитель дня: его миниатюра становится узлом на
@@ -171,6 +173,7 @@ router.get(
         spaceId: z.string().min(1),
         view: z.literal("places").default("places"),
         kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
+        personId: z.string().optional(),
       })
       .safeParse(req.query);
     if (!parsed.success) throw invalid("Некорректные параметры выборки");
@@ -183,6 +186,7 @@ router.get(
       Prisma.sql`f."purgedAt" IS NULL`,
     ];
     if (p.kind) conds.push(Prisma.sql`f."kind"::text = ${p.kind}`);
+    if (p.personId) conds.push(Prisma.sql`EXISTS (SELECT 1 FROM "CloudFace" cf WHERE cf."fileId" = f."id" AND cf."personId" = ${p.personId})`);
 
     /*
      * Отрезки поездки в порядке ХРОНОЛОГИИ, а не по алфавиту: правая рельса

@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { cloudApi, toCloudError } from '../api'
-import type { CloudFile, CloudUserLite } from '../types'
+import type { CloudUserLite } from '../types'
 import { Avatar } from './ui'
-import { Tiles } from './Gallery'
-import { Viewer } from './Viewer'
 import { toast } from './ui'
 
 /**
@@ -12,9 +10,6 @@ import { toast } from './ui'
  * группы лиц, собранные кластеризацией: один человек — одна пачка, назвать
  * можно всю пачку разом. Людей в круге всего несколько, разметка ручная.
  */
-const EMPTY_SET = new Set<string>()
-const noop = () => undefined
-
 type Person = {
   id: string
   name: string
@@ -71,21 +66,31 @@ export function PeopleView({
   spaceId,
   canEdit,
   members,
+  onOpenPerson,
 }: {
   spaceId: string
   canEdit: boolean
   /** Участники хуяпки — кандидаты на привязку «это аккаунт такого-то». */
   members: CloudUserLite[]
+  /** Открыть снимки персоны: таймлайн с фильтром, а не своя сетка. */
+  onOpenPerson: (p: { id: string; name: string }) => void
 }) {
   const [people, setPeople] = useState<Person[]>([])
   const [groups, setGroups] = useState<UnnamedGroup[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
-  const [files, setFiles] = useState<CloudFile[]>([])
-  const [cursor, setCursor] = useState<string | null>(null)
+  const [managing, setManaging] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [viewerIdx, setViewerIdx] = useState<number | null>(null)
   const [naming, setNaming] = useState<UnnamedGroup | null>(null)
   const [showRare, setShowRare] = useState(false)
+  /** Мультивыбор лиц: кликаешь несколько кружков — называешь разом. */
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [pickedName, setPickedName] = useState('')
+  const togglePick = (id: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   const [nameInput, setNameInput] = useState('')
 
   const load = useCallback(async () => {
@@ -105,33 +110,20 @@ export function PeopleView({
   }, [spaceId])
   useEffect(() => void load(), [load])
 
-  // Снимки выбранной персоны — обычный таймлайн-срез с фильтром personId.
-  const loadFiles = useCallback(
-    async (personId: string, after?: string | null) => {
-      const { data } = await cloudApi.get<{ files: CloudFile[]; nextCursor: string | null }>('/files', {
-        params: { spaceId, view: 'timeline', personId, limit: 100, ...(after ? { cursor: after } : {}) },
-      })
-      setFiles((prev) => (after ? [...prev, ...data.files] : data.files))
-      setCursor(data.nextCursor)
-    },
-    [spaceId]
-  )
-  useEffect(() => {
-    if (selected) void loadFiles(selected)
-    else setFiles([])
-  }, [selected, loadFiles])
-
-  const name = async (group: UnnamedGroup, opts: { name?: string; userId?: string }) => {
+  const nameFaces = async (faceIds: string[], opts: { name?: string; userId?: string }) => {
     try {
-      const { data } = await cloudApi.post<{ propagated: number }>('/faces/name', { ...opts, faceIds: group.faceIds })
+      const { data } = await cloudApi.post<{ propagated: number }>('/faces/name', { ...opts, faceIds })
       toast.success(data.propagated > 0 ? `Готово — и узнал ещё на ${data.propagated} лицах` : 'Готово')
       setNaming(null)
       setNameInput('')
+      setPicked(new Set())
+      setPickedName('')
       await load()
     } catch (err) {
       toast.error(toCloudError(err).message)
     }
   }
+  const name = (group: UnnamedGroup, opts: { name?: string; userId?: string }) => nameFaces(group.faceIds, opts)
 
   const link = async (personId: string, userId: string | null) => {
     try {
@@ -142,7 +134,7 @@ export function PeopleView({
     }
   }
 
-  const selectedPerson = useMemo(() => people.find((p) => p.id === selected) ?? null, [people, selected])
+  const managingPerson = useMemo(() => people.find((p) => p.id === managing) ?? null, [people, managing])
   /*
    * В ленте — только те, кто РЕАЛЬНО есть в этой хуяпке: персоны глобальные,
    * и без фильтра тут стояли люди с нулём снимков из чужих альбомов. Полный
@@ -156,23 +148,33 @@ export function PeopleView({
       {/* Лента персон */}
       <div className="cl-people-strip">
         {present.map((p) => (
-          <button
-            key={p.id}
-            className={`cl-person${selected === p.id ? ' is-active' : ''}`}
-            onClick={() => setSelected(selected === p.id ? null : p.id)}
-            title={`${p.name} · ${p.countInSpace} в этой хуяпке`}
-          >
-            <span className="cl-person-ava">
-              {p.cover ? <FaceCrop face={p.cover} size={64} /> : <span className="cl-face cl-face-empty" style={{ width: 64, height: 64 }}>🙂</span>}
-              {p.user ? (
-                <span className="cl-person-badge" title={`Аккаунт: ${p.user.displayName || p.user.username}`}>
-                  <Avatar user={p.user} />
-                </span>
-              ) : null}
-            </span>
-            <b>{p.name}</b>
-            <i>{p.countInSpace}</i>
-          </button>
+          <span key={p.id} className="cl-person-wrap">
+            <button
+              className={`cl-person${managing === p.id ? ' is-active' : ''}`}
+              onClick={() => onOpenPerson({ id: p.id, name: p.name })}
+              title={`${p.name} — показать снимки в таймлайне`}
+            >
+              <span className="cl-person-ava">
+                {p.cover ? <FaceCrop face={p.cover} size={64} /> : <span className="cl-face cl-face-empty" style={{ width: 64, height: 64 }}>🙂</span>}
+                {p.user ? (
+                  <span className="cl-person-badge" title={`Аккаунт: ${p.user.displayName || p.user.username}`}>
+                    <Avatar user={p.user} />
+                  </span>
+                ) : null}
+              </span>
+              <b>{p.name}</b>
+              <i>{p.countInSpace}</i>
+            </button>
+            {canEdit ? (
+              <button
+                className="cl-person-gear"
+                title="Связка с аккаунтом"
+                onClick={() => setManaging(managing === p.id ? null : p.id)}
+              >
+                ⚙
+              </button>
+            ) : null}
+          </span>
         ))}
         {present.length === 0 && !loading ? (
           <div className="cl-people-hint">
@@ -181,43 +183,27 @@ export function PeopleView({
         ) : null}
       </div>
 
-      {/* Снимки выбранной персоны */}
-      {selectedPerson ? (
-        <>
-          <div className="cl-section-title cl-person-head">
-            {selectedPerson.name} · {selectedPerson.countInSpace}
-            {canEdit ? (
-              selectedPerson.user ? (
-                <button className="cl-btn ghost sm" onClick={() => void link(selectedPerson.id, null)}>
-                  Отвязать от @{selectedPerson.user.username}
-                </button>
-              ) : (
-                <span className="cl-person-linkrow">
-                  связать с аккаунтом:
-                  {members.map((m) => (
-                    <button key={m.id} className="cl-face-member" onClick={() => void link(selectedPerson.id, m.id)}>
-                      <Avatar user={m} />
-                      <span>{m.displayName || m.username}</span>
-                    </button>
-                  ))}
-                </span>
-              )
-            ) : null}
-          </div>
-          <Tiles
-            files={files}
-            selection={EMPTY_SET}
-            selectMode={false}
-            onToggleSelect={noop}
-            onOpen={(f) => setViewerIdx(files.findIndex((x) => x.id === f.id))}
-          />
-          {cursor ? (
-            <button className="cl-btn sm" style={{ margin: '14px auto', display: 'block' }} onClick={() => void loadFiles(selectedPerson.id, cursor)}>
-              Ещё
+      {managingPerson && canEdit ? (
+        <div className="cl-person-manage">
+          <b>{managingPerson.name}</b>
+          {managingPerson.user ? (
+            <button className="cl-btn ghost sm" onClick={() => { void link(managingPerson.id, null); setManaging(null) }}>
+              Отвязать от @{managingPerson.user.username}
             </button>
-          ) : null}
-        </>
-      ) : (
+          ) : (
+            <>
+              <span className="cl-muted" style={{ fontSize: 12 }}>связать с аккаунтом:</span>
+              {members.map((m) => (
+                <button key={m.id} className="cl-face-member" onClick={() => { void link(managingPerson.id, m.id); setManaging(null) }}>
+                  <Avatar user={m} />
+                  <span>{m.displayName || m.username}</span>
+                </button>
+              ))}
+            </>
+          )}
+        </div>
+      ) : null}
+
         <>
           {/* Неопознанные группы */}
           {groups.length > 0 ? <div className="cl-section-title">Неопознанные</div> : null}
@@ -240,7 +226,14 @@ export function PeopleView({
               <div className="cl-face-group" key={i}>
                 <div className="cl-face-row">
                   {g.faces.slice(0, 6).map((f) => (
-                    <FaceCrop key={f.id} face={f} size={56} />
+                    <button
+                      key={f.id}
+                      className={`cl-face-pick${picked.has(f.id) ? ' is-picked' : ''}`}
+                      title={picked.has(f.id) ? 'Убрать из выбора' : 'Выбрать лицо'}
+                      onClick={() => togglePick(f.id)}
+                    >
+                      <FaceCrop face={f} size={56} />
+                    </button>
                   ))}
                   {g.total > 6 ? <span className="cl-face-more">+{g.total - 6}</span> : null}
                 </div>
@@ -300,18 +293,44 @@ export function PeopleView({
             </button>
           ) : null}
         </>
-      )}
 
-      {viewerIdx !== null && files[viewerIdx] ? (
-        <Viewer
-          files={files}
-          index={viewerIdx}
-          spaceId={spaceId}
-          onIndexChange={setViewerIdx}
-          onClose={() => setViewerIdx(null)}
-          onFileChanged={(f) => setFiles((prev) => prev.map((x) => (x.id === f.id ? { ...x, ...f } : x)))}
-        />
+
+      {picked.size > 0 ? (
+        <div className="cl-facebar">
+          <b>
+            {picked.size} {picked.size === 1 ? 'лицо' : picked.size < 5 ? 'лица' : 'лиц'}
+          </b>
+          {members.map((m) => (
+            <button key={m.id} className="cl-face-member" onClick={() => void nameFaces([...picked], { userId: m.id })}>
+              <Avatar user={m} />
+              <span>{m.displayName || m.username}</span>
+            </button>
+          ))}
+          <form
+            className="cl-face-nameform"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (pickedName.trim()) void nameFaces([...picked], { name: pickedName.trim() })
+            }}
+          >
+            <input
+              className="cl-input"
+              placeholder="Или имя…"
+              list="cl-people-names"
+              value={pickedName}
+              onChange={(e) => setPickedName(e.target.value)}
+            />
+            <button className="cl-btn primary sm" type="submit" disabled={!pickedName.trim()}>
+              Назвать
+            </button>
+          </form>
+          <button className="cl-btn ghost sm" onClick={() => setPicked(new Set())}>
+            Сбросить
+          </button>
+        </div>
       ) : null}
+
+
     </div>
   )
 }

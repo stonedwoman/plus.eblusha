@@ -2342,3 +2342,52 @@ section[data-day],
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 55%, transparent); }
   45% { box-shadow: 0 0 0 5px transparent; }
 }
+
+/* Мультивыбор лиц на вкладке «Лица». */
+.cl-face-pick { border: none; background: none; padding: 0; cursor: pointer; position: relative; border-radius: 50%; }
+.cl-face-pick.is-picked .cl-face { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 30%, transparent); }
+.cl-face-pick.is-picked::after {
+  content: '✓'; position: absolute; right: -2px; top: -2px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--brand); color: #14100a;
+  font-size: 11px; font-weight: 800; line-height: 18px; text-align: center;
+}
+.cl-facebar {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  z-index: 60; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  max-width: min(94vw, 980px);
+  padding: 10px 14px; border-radius: 16px;
+  background: var(--surface-100); border: 1px solid var(--surface-border);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
+  animation: clRise .3s var(--cl-ease) both;
+}
+.cl-facebar b { font-size: 13px; }
+.cl-facebar .cl-input { height: 32px; width: 160px; }
+
+/* Персоны: клик — фильтр таймлайна; шестерёнка — связка с аккаунтом. */
+.cl-person-wrap { position: relative; display: inline-block; }
+.cl-person-gear {
+  position: absolute; top: 2px; right: 2px;
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--surface-border); background: var(--surface-100);
+  color: var(--text-muted); font-size: 12px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity .18s ease;
+}
+.cl-person-wrap:hover .cl-person-gear { opacity: 1; }
+.cl-person-manage {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  margin: 0 0 14px; padding: 9px 12px; border-radius: 13px;
+  background: var(--surface-100); border: 1px solid var(--surface-border);
+  animation: clRise .3s var(--cl-ease) both;
+}
+.cl-person-chips { display: flex; align-items: center; gap: 5px; margin-left: 2px; }
+.cl-person-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 2px; border-radius: 999px;
+  border: 1px solid transparent; background: none;
+  color: var(--text-primary); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, transform .18s var(--cl-ease);
+}
+.cl-person-chip:hover { transform: translateY(-1px); background: var(--surface-300); }
+.cl-person-chip.is-active { border-color: var(--brand); background: var(--surface-300); padding-right: 10px; }
+.cl-person-chip .cl-face { border-width: 1px; }

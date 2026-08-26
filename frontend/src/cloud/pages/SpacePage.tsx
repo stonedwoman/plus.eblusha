@@ -15,7 +15,7 @@ import {
 } from '../uploads/manager'
 import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
-import { PeopleView } from '../components/PeopleView'
+import { FaceCrop, PeopleView, type FaceRef } from '../components/PeopleView'
 import { GeoRail, type GeoPosition, type GeoSegment } from '../components/GeoRail'
 import { useDragSelect, type PaintMode } from '../components/dragSelect'
 import { Viewer } from '../components/Viewer'
@@ -26,6 +26,7 @@ import { Avatar, Empty, Modal, SkeletonTiles, useInfiniteSentinel, useHideOnScro
 import type { CloudContext } from './CloudLayout'
 
 type View = 'timeline' | 'people' | 'files' | 'map' | 'activity'
+type SpacePerson = { id: string; name: string; countInSpace: number; cover: FaceRef | null }
 
 /** Столько id уходит в один запрос: совпадает с лимитом валидации на сервере. */
 const BATCH = 1000
@@ -64,6 +65,20 @@ export default function SpacePage() {
   const [dragging, setDragging] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [kindFilter, setKindFilter] = useState<'' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'>('')
+  /** Фильтр по персоне: таймлайн со всеми рельсами, но только её снимки. */
+  const [personFilter, setPersonFilter] = useState<{ id: string; name: string; cover: unknown } | null>(null)
+  const [spacePeople, setSpacePeople] = useState<SpacePerson[]>([])
+  useEffect(() => {
+    setPersonFilter(null)
+    setSpacePeople([])
+  }, [spaceId])
+  useEffect(() => {
+    if (view !== 'timeline' && view !== 'people') return
+    void cloudApi
+      .get<{ people: SpacePerson[] }>('/faces/people', { params: { spaceId } })
+      .then(({ data }) => setSpacePeople(data.people.filter((p) => p.countInSpace > 0)))
+      .catch(() => undefined)
+  }, [spaceId, view])
   // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
   const headHidden = useHideOnScrollDown()
   /** Отрезки поездки для правой рельсы: где человек был, в порядке ленты. */
@@ -141,8 +156,9 @@ export default function SpacePage() {
       view: view === 'files' ? ('files' as const) : ('timeline' as const),
       ...(view === 'files' ? { folderId: folderId ?? 'root' } : {}),
       ...(kindFilter ? { kind: kindFilter } : {}),
+      ...(personFilter ? { personId: personFilter.id } : {}),
     }),
-    [spaceId, view, folderId, kindFilter]
+    [spaceId, view, folderId, kindFilter, personFilter]
   )
   const sliceKey = useMemo(() => JSON.stringify(slice), [slice])
 
@@ -302,6 +318,7 @@ export default function SpacePage() {
           spaceId,
           view: 'timeline',
           ...(kindFilter ? { kind: kindFilter } : {}),
+          ...(personFilter ? { personId: personFilter.id } : {}),
           tz: -new Date().getTimezoneOffset(),
         },
       })
@@ -309,7 +326,7 @@ export default function SpacePage() {
     } catch {
       setDayCounts([])
     }
-  }, [spaceId, view, kindFilter, railWide])
+  }, [spaceId, view, kindFilter, personFilter, railWide])
 
   useEffect(() => {
     const t = setTimeout(() => void loadDayCounts(), 0)
@@ -320,7 +337,12 @@ export default function SpacePage() {
     if (view !== 'timeline' || !railWide) return
     try {
       const { data } = await cloudApi.get<{ places: GeoSegment[]; withoutPlace: number }>('/files/places', {
-        params: { spaceId, view: 'places', ...(kindFilter ? { kind: kindFilter } : {}) },
+        params: {
+          spaceId,
+          view: 'places',
+          ...(kindFilter ? { kind: kindFilter } : {}),
+          ...(personFilter ? { personId: personFilter.id } : {}),
+        },
       })
       setSegments(data.places)
       setWithoutPlace(data.withoutPlace)
@@ -328,7 +350,7 @@ export default function SpacePage() {
       setSegments([])
       setWithoutPlace(0)
     }
-  }, [spaceId, view, kindFilter, railWide])
+  }, [spaceId, view, kindFilter, personFilter, railWide])
 
   useEffect(() => {
     void loadSegments()
@@ -1065,6 +1087,22 @@ export default function SpacePage() {
                     : 'Журнал действий участников'}
               </span>
             )}
+            {/* Люди — тоже фильтр таймлайна: кружок-лицо вместо слова. */}
+            {view === 'timeline' && spacePeople.length > 0 ? (
+              <div className="cl-person-chips">
+                {spacePeople.map((p) => (
+                  <button
+                    key={p.id}
+                    className={`cl-person-chip${personFilter?.id === p.id ? ' is-active' : ''}`}
+                    title={`${p.name} · ${p.countInSpace}`}
+                    onClick={() => setPersonFilter(personFilter?.id === p.id ? null : { id: p.id, name: p.name, cover: null })}
+                  >
+                    {p.cover ? <FaceCrop face={p.cover} size={28} /> : <span className="cl-face cl-face-empty" style={{ width: 28, height: 28, fontSize: 14 }}>🙂</span>}
+                    {personFilter?.id === p.id ? <b>{p.name}</b> : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="cl-spacer" />
             <div className="cl-band-acts">
             {canEdit ? (
@@ -1119,7 +1157,15 @@ export default function SpacePage() {
 
       {/* ── Содержимое ──────────────────────────────────────────────────── */}
       {view === 'people' ? (
-        <PeopleView spaceId={spaceId} canEdit={canEdit} members={space.members} />
+        <PeopleView
+          spaceId={spaceId}
+          canEdit={canEdit}
+          members={space.members}
+          onOpenPerson={(p) => {
+            setPersonFilter({ id: p.id, name: p.name, cover: null })
+            setView('timeline')
+          }}
+        />
       ) : view === 'activity' ? (
         <ActivityView spaceId={spaceId} />
       ) : view === 'map' ? (
