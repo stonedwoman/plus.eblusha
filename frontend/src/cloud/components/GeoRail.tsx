@@ -152,6 +152,13 @@ export function GeoRail({
   const axisLen = Math.max(1, lineBottom - lineTop)
   // Запас против соседа: узел не занимает весь доставшийся шаг.
   const baseK = clamp(step / 52, 0.26, 1)
+  /*
+   * Свободная рельса — подписаны ВСЕ станции: двухстрочная подпись занимает
+   * ~30px, при шаге от 48px соседние даже не соприкасаются, и прятать их
+   * незачем. Акцент «текущая + соседи» остаётся для тесной рельсы, где
+   * подписи без прореживания легли бы друг на друга.
+   */
+  const roomy = step >= 48
 
   const laid = stations.map((st, i) => {
     // Рядом с текущей позволяем чуть крупнее, но строго в пределах шага.
@@ -192,7 +199,7 @@ export function GeoRail({
         // Подписи — у текущей станции и её ближайших соседей: это и есть
         // акцент, который едет за прокруткой. Остальные читаются по наведению.
         const near = activeIndex < 0 ? s.i <= 1 : Math.abs(s.i - activeIndex) <= 1
-        const showCap = solo || (near && s.k >= 0.5)
+        const showCap = solo || roomy || (near && s.k >= 0.5)
         return (
           <button
             key={`${s.run}-${s.path}`}
