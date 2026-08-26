@@ -171,6 +171,43 @@ export default function SpacePage() {
   const anchorRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const dirInput = useRef<HTMLInputElement | null>(null)
+  /**
+   * iOS 26.5.2 иногда закрывает Photos после подтверждения большой пачки, но
+   * вместо change присылает cancel (WebKit bug 318572). Помним, что picker был
+   * открыт, чтобы молчание системы не выглядело как сломанная кнопка.
+   */
+  const filePickerPending = useRef(false)
+  const openFilePicker = useCallback(() => {
+    filePickerPending.current = true
+    fileInput.current?.click()
+  }, [])
+
+  useEffect(() => {
+    const input = fileInput.current
+    if (!input) return
+
+    let focusTimer: ReturnType<typeof setTimeout> | null = null
+    const explainIosPickerFailure = () => {
+      if (!filePickerPending.current) return
+      filePickerPending.current = false
+      toast.error('iPhone не передал выбранные файлы. Выберите 20–30 фото за раз; очередь сохранит все пачки.')
+    }
+    const onCancel = () => explainIosPickerFailure()
+    const onFocus = () => {
+      // На успешном выборе change обычно приходит рядом с focus. Даём ему
+      // закончиться первым, чтобы не показывать ложную ошибку.
+      if (!filePickerPending.current) return
+      focusTimer = setTimeout(explainIosPickerFailure, 1500)
+    }
+
+    input.addEventListener('cancel', onCancel)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      input.removeEventListener('cancel', onCancel)
+      window.removeEventListener('focus', onFocus)
+      if (focusTimer) clearTimeout(focusTimer)
+    }
+  }, [])
 
   // Только id и дата: список стабилен, пока не изменился состав очереди, поэтому
   // тик прогресса не перерисовывает страницу целиком.
@@ -1160,7 +1197,7 @@ export default function SpacePage() {
             <div className="cl-band-acts">
             {canEdit ? (
               <div className="cl-split cl-act-main">
-                <button className="cl-split-main" onClick={() => fileInput.current?.click()}>
+                <button className="cl-split-main" onClick={openFilePicker}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M12 17V5m0 0 5 5m-5-5-5 5" />
                     <path d="M5 20h14" />
@@ -1311,7 +1348,7 @@ export default function SpacePage() {
           }
           action={
             canEdit ? (
-              <button className="cl-btn primary" onClick={() => fileInput.current?.click()}>
+              <button className="cl-btn primary" onClick={openFilePicker}>
                 Загрузить файлы
               </button>
             ) : null
@@ -1414,6 +1451,7 @@ export default function SpacePage() {
         multiple
         hidden
         onChange={(e) => {
+          filePickerPending.current = false
           const picked = Array.from(e.target.files ?? [])
           e.target.value = ''
           if (picked.length) void enqueueFiles(picked, { spaceId, spaceName: space.name, folderId })
