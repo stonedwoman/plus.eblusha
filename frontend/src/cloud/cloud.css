@@ -2404,12 +2404,13 @@ section[data-day],
 }
 .cl-tab-extra-q { font-size: 12.5px; font-weight: 560; }
 
-/* Аватар загрузившего — МАЛЕНЬКИЙ, в правом нижнем углу. Появляется у ВСЕХ
-   плиток разом при наведении на сетку: видно, кто что залил, одним взглядом. */
+/* Аватар загрузившего — МАЛЕНЬКИЙ, в ЛЕВОМ нижнем углу: правый занят бейджем
+   длительности у видео. Появляется у ВСЕХ плиток разом при наведении на
+   сетку: видно, кто что залил, одним взглядом. */
 .cl-tile-who {
-  position: absolute; right: 6px; bottom: 6px; z-index: 3;
+  position: absolute; left: 6px; bottom: 6px; z-index: 3;
   width: 20px; height: 20px;
-  opacity: 0; transform: translateY(3px) scale(.9); transform-origin: bottom right;
+  opacity: 0; transform: translateY(3px) scale(.9); transform-origin: bottom left;
   transition: opacity .18s ease, transform .22s var(--cl-ease);
   pointer-events: none;
   border-radius: 50%; overflow: hidden;
