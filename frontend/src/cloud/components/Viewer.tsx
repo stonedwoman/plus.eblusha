@@ -157,7 +157,13 @@ export function Viewer({
          * Несколько опросов — и DTO с перепечёнными превью доедет сам.
          */
         if (target.kind === 'IMAGE') {
-          for (const ms of [1500, 3500, 7000]) {
+          /*
+           * Хвост подлиннее: превью перепекается за пару секунд, а слой полного
+           * разрешения у 24-мегапиксельного HEIC — заметно дольше, и до его
+           * готовности зум остаётся на превью. Поздние опросы подхватывают
+           * готовый слой без единого события.
+           */
+          for (const ms of [1500, 3500, 7000, 14000, 25000]) {
             setTimeout(async () => {
               try {
                 const { data: fresh } = await cloudApi.get<{ file: CloudFile }>(`/files/${target.id}`)
@@ -492,25 +498,53 @@ export function Viewer({
     }
   }, [files, index])
 
-  // Пересчёт вписанного размера при смене кадра и размера окна.
+  /*
+   * Пересчётные функции держим в ссылках. Раньше они стояли в зависимостях
+   * эффектов, а measureFit пересоздаётся при КАЖДОЙ смене объекта файла —
+   * то есть на любое realtime-обновление (перепечка превью, скан лиц,
+   * реакция). Эффект «сбросить вид» срабатывал на них и рушил зум: человек
+   * приближал кадр, приходило событие по этому же файлу — и просмотр
+   * прыгал обратно во «вписать», роняя вместе с зумом слой полного
+   * разрешения. Сброс обязан слушать смену КАДРА, и только её.
+   */
+  const measureFitRef = useRef(measureFit)
+  const clampOffsetRef = useRef(clampOffset)
+  const applyViewRef = useRef(applyView)
+  measureFitRef.current = measureFit
+  clampOffsetRef.current = clampOffset
+  applyViewRef.current = applyView
+
+  // Наблюдатель за размером сцены живёт всё время просмотра.
   useEffect(() => {
-    measureFit()
+    measureFitRef.current()
     const stage = stageRef.current
     if (!stage) return
     const ro = new ResizeObserver(() => {
-      measureFit()
-      clampOffset()
-      applyView()
+      measureFitRef.current()
+      clampOffsetRef.current()
+      applyViewRef.current()
     })
     ro.observe(stage)
     return () => ro.disconnect()
-  }, [measureFit, clampOffset, applyView])
+  }, [])
 
+  // Сброс вида — ровно на смену кадра.
   useEffect(() => {
     view.current = { zoom: 1, x: 0, y: 0 }
-    measureFit()
-    applyView()
-  }, [index, measureFit, applyView])
+    measureFitRef.current()
+    applyViewRef.current()
+  }, [index, file?.id])
+
+  /*
+   * Кадр сменил пропорции (поворот доехал перепечкой) — перевписываем, но
+   * зум СОХРАНЯЕМ: человек разглядывал деталь, и терять её из-за фонового
+   * события незачем.
+   */
+  useEffect(() => {
+    measureFitRef.current()
+    clampOffsetRef.current()
+    applyViewRef.current()
+  }, [file?.width, file?.height])
 
   const react = useCallback(
     async (target: CloudFile, emoji: string) => {
