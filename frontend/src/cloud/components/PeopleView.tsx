@@ -122,8 +122,8 @@ export function PeopleView({
 
   const name = async (group: UnnamedGroup, opts: { name?: string; userId?: string }) => {
     try {
-      await cloudApi.post('/faces/name', { ...opts, faceIds: group.faceIds })
-      toast.success('Готово')
+      const { data } = await cloudApi.post<{ propagated: number }>('/faces/name', { ...opts, faceIds: group.faceIds })
+      toast.success(data.propagated > 0 ? `Готово — и узнал ещё на ${data.propagated} лицах` : 'Готово')
       setNaming(null)
       setNameInput('')
       await load()

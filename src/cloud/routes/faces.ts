@@ -29,6 +29,56 @@ type FaceRow = {
 };
 /** Размеры кадра нужны фронту: кроп кружка считается в пикселях, а не в
  * долях — доли по разным осям несравнимы на неквадратных превью. */
+const MATCH = Number(process.env.CLOUD_FACE_MATCH ?? 0.38);
+
+/**
+ * Мгновенное распространение привязки: пересчитать центроид персоны и
+ * привязать ВСЕ похожие непривязанные лица по всей библиотеке. Несколько
+ * раундов — свежепривязанные уточняют центроид и дотягивают пограничные.
+ * Без этого имя жило только на одном снимке до ближайшего перескана.
+ */
+async function propagatePerson(personId: string): Promise<number> {
+  let total = 0;
+  for (let round = 0; round < 3; round++) {
+    const anchors = await prisma.cloudFace.findMany({ where: { personId }, select: { embedding: true } });
+    if (anchors.length === 0) break;
+    const dim = anchors[0]!.embedding.byteLength / 4;
+    const sum = new Float64Array(dim);
+    for (const a of anchors) {
+      const v = new Float32Array(a.embedding.buffer, a.embedding.byteOffset, dim);
+      for (let i = 0; i < dim; i++) sum[i]! += v[i]!;
+    }
+    let norm = 0;
+    for (let i = 0; i < dim; i++) norm += (sum[i]! / anchors.length) ** 2;
+    norm = Math.sqrt(norm) || 1;
+    const centroid = new Float32Array(dim);
+    for (let i = 0; i < dim; i++) centroid[i] = sum[i]! / anchors.length / norm;
+
+    const candidates = await prisma.cloudFace.findMany({
+      where: { personId: null },
+      select: { id: true, embedding: true },
+    });
+    const hits: { id: string; s: number }[] = [];
+    for (const c of candidates) {
+      const v = new Float32Array(c.embedding.buffer, c.embedding.byteOffset, dim);
+      let s = 0;
+      for (let i = 0; i < dim; i++) s += v[i]! * centroid[i]!;
+      if (s >= MATCH) hits.push({ id: c.id, s });
+    }
+    if (hits.length === 0) break;
+    for (let i = 0; i < hits.length; i += 200) {
+      const chunk = hits.slice(i, i + 200);
+      await prisma.$transaction(
+        chunk.map((h) =>
+          prisma.cloudFace.update({ where: { id: h.id }, data: { personId, assignedBy: "auto", matchScore: h.s } })
+        )
+      );
+    }
+    total += hits.length;
+  }
+  return total;
+}
+
 const faceDto = (f: FaceRow) => ({
   id: f.id,
   fileId: f.fileId,
@@ -237,7 +287,8 @@ router.post(
     if (!person.coverFaceId) {
       await prisma.cloudPerson.update({ where: { id: person.id }, data: { coverFaceId: faces[0]!.id } });
     }
-    res.json({ personId: person.id, name: person.name, assigned: faces.length });
+    const propagated = await propagatePerson(person.id);
+    res.json({ personId: person.id, name: person.name, assigned: faces.length, propagated });
   })
 );
 
@@ -267,7 +318,8 @@ router.post(
         ? { personId: parsed.data.personId, assignedBy: "user", matchScore: null }
         : { personId: null, assignedBy: null, matchScore: null },
     });
-    res.json({ assigned: faces.length });
+    const propagated = parsed.data.personId ? await propagatePerson(parsed.data.personId) : 0;
+    res.json({ assigned: faces.length, propagated });
   })
 );
 

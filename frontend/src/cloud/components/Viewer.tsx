@@ -918,7 +918,12 @@ export function Viewer({
               <FacesPanel
                 faces={fileFaces}
                 canEdit={!readOnly}
-                onChanged={() => file && void loadFaces(file.id, true)}
+                onChanged={() => {
+                  // Привязка растекается по всей библиотеке — кэш лиц целиком
+                  // устарел, а не только текущий кадр.
+                  facesCache.current.clear()
+                  if (file) void loadFaces(file.id, true)
+                }}
               />
             ) : (panel ?? leaving) === 'info' ? (
               <MetadataPanel file={file} onReact={!readOnly ? (emoji) => void react(file, emoji) : undefined} />

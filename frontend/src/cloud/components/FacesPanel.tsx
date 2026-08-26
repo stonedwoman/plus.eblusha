@@ -46,7 +46,8 @@ export function FacesPanel({
 
   const bind = async (faceId: string, opts: { userId?: string; name?: string }) => {
     try {
-      await cloudApi.post('/faces/name', { ...opts, faceIds: [faceId] })
+      const { data } = await cloudApi.post<{ propagated: number }>('/faces/name', { ...opts, faceIds: [faceId] })
+      if (data.propagated > 0) toast.success(`Узнал этого человека ещё на ${data.propagated} лицах`)
       setTyping(false)
       setNameInput('')
       setSelectedId(null)
