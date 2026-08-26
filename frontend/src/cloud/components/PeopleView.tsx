@@ -3,6 +3,7 @@ import { cloudApi, toCloudError } from '../api'
 import type { CloudUserLite } from '../types'
 import { Avatar } from './ui'
 import { toast } from './ui'
+import { loadCandidates, type Candidate } from './FacesPanel'
 
 /**
  * Вкладка «Лица». Сверху — лента персон (кружки с именами и счётчиком по
@@ -79,6 +80,10 @@ export function PeopleView({
   const [groups, setGroups] = useState<UnnamedGroup[]>([])
   const [managing, setManaging] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [candidates, setCandidates] = useState<Candidate[]>([])
+  useEffect(() => {
+    if (canEdit) void loadCandidates().then(setCandidates)
+  }, [canEdit])
   const [naming, setNaming] = useState<UnnamedGroup | null>(null)
   const [showRare, setShowRare] = useState(false)
   /** Мультивыбор лиц: кликаешь несколько кружков — называешь разом. */
@@ -193,12 +198,14 @@ export function PeopleView({
           ) : (
             <>
               <span className="cl-muted" style={{ fontSize: 12 }}>связать с аккаунтом:</span>
-              {members.map((m) => (
-                <button key={m.id} className="cl-face-member" onClick={() => { void link(managingPerson.id, m.id); setManaging(null) }}>
-                  <Avatar user={m} />
-                  <span>{m.displayName || m.username}</span>
-                </button>
-              ))}
+              {candidates
+                .filter((m) => !m.linked)
+                .map((m) => (
+                  <button key={m.id} className="cl-face-member" onClick={() => { void link(managingPerson.id, m.id); setManaging(null) }}>
+                    <Avatar user={m} />
+                    <span>{m.displayName || m.username}</span>
+                  </button>
+                ))}
             </>
           )}
         </div>
@@ -248,7 +255,7 @@ export function PeopleView({
                     >
                       {/* Свои люди — в один клик: пачка сразу привязывается к
                           аккаунту, имя и аватар приезжают из профиля. */}
-                      {members.map((m) => (
+                      {candidates.map((m) => (
                         <button
                           key={m.id}
                           type="button"
@@ -300,7 +307,7 @@ export function PeopleView({
           <b>
             {picked.size} {picked.size === 1 ? 'лицо' : picked.size < 5 ? 'лица' : 'лиц'}
           </b>
-          {members.map((m) => (
+          {candidates.map((m) => (
             <button key={m.id} className="cl-face-member" onClick={() => void nameFaces([...picked], { userId: m.id })}>
               <Avatar user={m} />
               <span>{m.displayName || m.username}</span>

@@ -17,9 +17,26 @@ export type PanelFace = FaceRef & {
   /** Похожее лицо встречается в разные дни: свой, а не прохожий с кадра. */
   recurring: boolean
 }
-type Candidate = CloudUserLite & { linked: boolean }
+export type Candidate = CloudUserLite & { linked: boolean }
 
 let candidatesCache: Candidate[] | null = null
+
+/**
+ * Полный список кандидатов на привязку (друзья + соседи по хуяпкам, себя —
+ * первым) с кэшем на сессию. Общий для вьюера, вкладки «Лица» и чипов:
+ * участники ОДНОЙ хуяпки — слишком узкий круг, из-за него человека нельзя
+ * было привязать к аккаунту, которого нет в этом альбоме.
+ */
+export async function loadCandidates(): Promise<Candidate[]> {
+  if (candidatesCache) return candidatesCache
+  try {
+    const { data } = await cloudApi.get<{ candidates: Candidate[] }>('/faces/candidates')
+    candidatesCache = data.candidates
+    return data.candidates
+  } catch {
+    return []
+  }
+}
 
 export function FacesPanel({
   faces,
@@ -36,14 +53,8 @@ export function FacesPanel({
   const [nameInput, setNameInput] = useState('')
 
   useEffect(() => {
-    if (candidatesCache || !canEdit) return
-    void cloudApi
-      .get<{ candidates: Candidate[] }>('/faces/candidates')
-      .then(({ data }) => {
-        candidatesCache = data.candidates
-        setCandidates(data.candidates)
-      })
-      .catch(() => undefined)
+    if (!canEdit) return
+    void loadCandidates().then(setCandidates)
   }, [canEdit])
 
   const bind = async (faceId: string, opts: { userId?: string; name?: string }) => {

@@ -16,6 +16,7 @@ import {
 import { UploadTile } from '../components/UploadTile'
 import { TimelineView, Tiles } from '../components/Gallery'
 import { FaceCrop, PeopleView, type FaceRef } from '../components/PeopleView'
+import { loadCandidates, type Candidate } from '../components/FacesPanel'
 import { GeoRail, type GeoPosition, type GeoSegment } from '../components/GeoRail'
 import { useDragSelect, type PaintMode } from '../components/dragSelect'
 import { Viewer } from '../components/Viewer'
@@ -80,6 +81,10 @@ export default function SpacePage() {
   const [unknownChips, setUnknownChips] = useState<{ faces: FaceRef[]; faceIds: string[]; total: number }[]>([])
   const [namingChip, setNamingChip] = useState<number | null>(null)
   const [chipName, setChipName] = useState('')
+  const [linkCandidates, setLinkCandidates] = useState<Candidate[]>([])
+  useEffect(() => {
+    if (namingChip !== null && linkCandidates.length === 0) void loadCandidates().then(setLinkCandidates)
+  }, [namingChip, linkCandidates.length])
   const [spacePeople, setSpacePeople] = useState<SpacePerson[]>([])
   useEffect(() => {
     setPersonFilter(new Set())
@@ -1251,7 +1256,7 @@ export default function SpacePage() {
               ))}
               <span className="cl-tab-extra-q">Кто это? · {unknownChips[namingChip]!.total} лиц</span>
               {canEdit
-                ? space.members.map((m) => (
+                ? linkCandidates.map((m) => (
                     <button
                       key={m.id}
                       className="cl-face-member"
