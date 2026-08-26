@@ -145,7 +145,7 @@ const Tile = memo(function Tile({
       ) : null}
 
       {file.commentCount > 0 ? (
-        <div className="cl-tile-badge" style={{ left: 7, right: 'auto' }}>
+        <div className="cl-tile-badge cl-left">
           💬 {file.commentCount}
         </div>
       ) : null}

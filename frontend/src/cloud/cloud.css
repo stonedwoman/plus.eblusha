@@ -693,7 +693,11 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
   font-variant-numeric: tabular-nums;
   display: flex; align-items: center; gap: 4px;
   pointer-events: none;
+  transition: transform .22s var(--cl-ease);
 }
+.cl-tile-badge.cl-left { left: 7px; right: auto; }
+/* Аватарки видны — правый бейдж уезжает левее, чтобы не налезать. */
+.cl-page:hover .cl-tile-badge:not(.cl-left) { transform: translateX(-25px); }
 .cl-tile-fav { position: absolute; top: 6px; right: 7px; color: #fbbf24; filter: drop-shadow(0 1px 3px rgba(0,0,0,.6)); pointer-events: none; }
 .cl-tile-check {
   position: absolute; top: 6px; left: 7px;
@@ -2404,13 +2408,13 @@ section[data-day],
 }
 .cl-tab-extra-q { font-size: 12.5px; font-weight: 560; }
 
-/* Аватар загрузившего — МАЛЕНЬКИЙ, в ЛЕВОМ нижнем углу: правый занят бейджем
-   длительности у видео. Появляется у ВСЕХ плиток разом при наведении на
-   сетку: видно, кто что залил, одним взглядом. */
+/* Аватар загрузившего — МАЛЕНЬКИЙ, в правом нижнем углу. Появляется у ВСЕХ
+   плиток разом при наведении на сетку: видно, кто что залил, одним взглядом.
+   Бейдж длительности при этом уезжает левее, освобождая угол. */
 .cl-tile-who {
-  position: absolute; left: 6px; bottom: 6px; z-index: 3;
+  position: absolute; right: 6px; bottom: 6px; z-index: 3;
   width: 20px; height: 20px;
-  opacity: 0; transform: translateY(3px) scale(.9); transform-origin: bottom left;
+  opacity: 0; transform: translateY(3px) scale(.9); transform-origin: bottom right;
   transition: opacity .18s ease, transform .22s var(--cl-ease);
   pointer-events: none;
   border-radius: 50%; overflow: hidden;
