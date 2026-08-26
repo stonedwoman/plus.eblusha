@@ -8,7 +8,7 @@ import prisma from "../../lib/prisma";
 import cloudConfig from "../config";
 import { DERIVED_DIR, derivedRelPath, ensureStorageDirs, objectAbsPath, rmQuiet } from "../paths";
 import { emitCloud, spaceRoom } from "../realtime";
-import { readImageMetadata, renderRendition } from "../media/images";
+import { BROWSER_IMAGE_MIMES, readImageMetadata, renderRendition } from "../media/images";
 import { canDirectPlay, ffprobe } from "../media/probe";
 import { renderPlayback, renderPoster } from "../media/video";
 import { resolvePlace } from "../geo/reverse";
@@ -34,7 +34,7 @@ async function loadFile(fileId: string) {
 
 async function upsertVariant(
   fileId: string,
-  kind: "THUMB" | "PREVIEW" | "POSTER" | "PLAYBACK",
+  kind: "THUMB" | "PREVIEW" | "POSTER" | "PLAYBACK" | "FULL",
   data: { storagePath?: string; mimeType?: string; size?: number; width?: number | null; height?: number | null; status: "READY" | "FAILED" | "PENDING"; error?: string | null; rotation?: number }
 ) {
   await prisma.cloudFileVariant.upsert({
@@ -137,6 +137,13 @@ export async function processImage(fileId: string): Promise<void> {
     const userRotation = (((fresh?.rotation ?? 0) % 360) + 360) % 360;
 
     failures = 0;
+    /*
+     * Размеры кадра узнаём из самого декода (renderRendition их возвращает):
+     * у HEIC sharp.metadata() пуст, а EXIF врёт после кропов. До первого
+     * прохода опираться не на что, поэтому FULL решается ПОСЛЕ превью.
+     */
+    let srcW = meta.width ?? 0;
+    let srcH = meta.height ?? 0;
     for (const [kind, maxSide, quality] of [
       ["THUMB", cloudConfig.THUMB_MAX, 72],
       ["PREVIEW", cloudConfig.PREVIEW_MAX, 82],
@@ -155,12 +162,9 @@ export async function processImage(fileId: string): Promise<void> {
           rotation: userRotation,
         });
         // Размеры из реального декода надёжнее EXIF (который врёт при кропах).
-        if (kind === "PREVIEW" && !meta.width) {
-          const scale = Math.max(res.width, res.height) / Math.min(cloudConfig.PREVIEW_MAX, Math.max(res.width, res.height));
-          await prisma.cloudFile.update({
-            where: { id: fileId },
-            data: { width: Math.round(res.width * scale), height: Math.round(res.height * scale) },
-          });
+        if (kind === "PREVIEW" && res.srcWidth && res.srcHeight) {
+          srcW = res.srcWidth;
+          srcH = res.srcHeight;
         }
       } catch (err) {
         failures++;
@@ -170,13 +174,51 @@ export async function processImage(fileId: string): Promise<void> {
     }
 
     /*
-     * width/height в БД — ДИСПЛЕЙНЫЕ размеры. readImageMetadata уже учёл
-     * EXIF-ориентацию (5–8 переворачивают кадр набок), здесь остаётся только
-     * пользовательский поворот.
+     * FULL — слой полного разрешения для зума. Нужен, только когда превью
+     * 2048 реально теряет пиксели оригинала И сам оригинал в дело не годится:
+     * браузер его не декодирует (HEIC) либо кадр повёрнут — оригиналы
+     * неприкосновенны, угол можно запечь только в производную. Декодируемому
+     * неповёрнутому JPEG/PNG слой не печём: зум грузит оригинал как есть.
      */
-    if (meta.width && meta.height) {
-      let dispW = meta.width;
-      let dispH = meta.height;
+    const needsFull =
+      Math.max(srcW, srcH) > cloudConfig.PREVIEW_MAX &&
+      (!BROWSER_IMAGE_MIMES.has(file.mimeType) || userRotation !== 0);
+    if (needsFull) {
+      const rel = derivedRelPath(fileId, "full.webp");
+      try {
+        const res = await renderRendition(source, path.join(DERIVED_DIR, rel), cloudConfig.FULL_MAX, 84, userRotation);
+        await upsertVariant(fileId, "FULL", {
+          storagePath: rel,
+          mimeType: res.mime,
+          size: res.size,
+          width: res.width,
+          height: res.height,
+          status: "READY",
+          rotation: userRotation,
+        });
+      } catch (err) {
+        // FULL — глазурь поверх готового превью: его провал файл не портит,
+        // зум просто останется на превью.
+        logger.warn({ err, fileId }, "cloud: full rendition failed");
+        await upsertVariant(fileId, "FULL", { status: "FAILED", error: String(err).slice(0, 300) });
+      }
+    } else {
+      // Повернули и вернули обратно — потерявший смысл слой убираем, иначе с
+      // диска отдавались бы пиксели под чужим углом.
+      const stale = await prisma.cloudFileVariant.findUnique({ where: { fileId_kind: { fileId, kind: "FULL" } } });
+      if (stale) {
+        await prisma.cloudFileVariant.delete({ where: { id: stale.id } }).catch(() => undefined);
+        if (stale.storagePath) await rmQuiet(path.join(DERIVED_DIR, stale.storagePath));
+      }
+    }
+
+    /*
+     * width/height в БД — ДИСПЛЕЙНЫЕ размеры: размеры декода (EXIF-ориентация
+     * уже учтена) плюс пользовательский поворот.
+     */
+    if (srcW && srcH) {
+      let dispW = srcW;
+      let dispH = srcH;
       if (userRotation === 90 || userRotation === 270) [dispW, dispH] = [dispH, dispW];
       await prisma.cloudFile.update({ where: { id: fileId }, data: { width: dispW, height: dispH } });
     }

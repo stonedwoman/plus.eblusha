@@ -308,6 +308,14 @@ export function Viewer({
     }
     const k = Math.min(boxW / w, boxH / h)
     fitRef.current = { w: w * k, h: h * k }
+    /*
+     * Процент считаем прямо здесь: сотня «по умолчанию» была ложью — кадр
+     * 4284px, вписанный в 600px, показан на 14%, а не на 100%. По этой цифре
+     * решается загрузка слоя полного разрешения, и заглушка заставляла качать
+     * его сразу при открытии, до всякого зума.
+     */
+    const pct = Math.round((w * k * 100 * view.current.zoom) / w)
+    setZoomPct((prev) => (Math.abs(prev - pct) >= 1 ? pct : prev))
   }, [file])
 
   const setZoom = useCallback(
@@ -417,8 +425,9 @@ export function Viewer({
     (delta: number) => {
       const next = index + delta
       if (next >= 0 && next < files.length) {
+        // Процент пересчитает measureFit в эффекте на смену кадра: здесь
+        // размеры ещё от прошлого снимка.
         view.current = { zoom: 1, x: 0, y: 0 }
-        setZoomPct(100)
         onIndexChange(next)
         // Подтягиваем следующую страницу заранее, за пару кадров до конца:
         // иначе на последнем снимке стрелка «вперёд» упиралась в пустоту.
@@ -499,7 +508,6 @@ export function Viewer({
 
   useEffect(() => {
     view.current = { zoom: 1, x: 0, y: 0 }
-    setZoomPct(100)
     measureFit()
     applyView()
   }, [index, measureFit, applyView])
@@ -1114,6 +1122,12 @@ function CurrentMedia({
   const [previewOn, setPreviewOn] = useState(false)
   const [fullOn, setFullOn] = useState(false)
   /*
+   * Ширина показанного превью в пикселях. Именно она решает, когда включать
+   * слой полного разрешения: как только кадр растянут шире, чем превью может
+   * дать пикселей, дальше идёт интерполяция — «увеличиваем мыло».
+   */
+  const [previewPx, setPreviewPx] = useState(0)
+  /*
    * Показанное превью «заморожено» вместе со своей запечённостью. Когда после
    * поворота приезжает перепечка, сервер меняет URL и previewRotation
    * ОДНОВРЕМЕННО, но новый битмап ещё не скачан — если снять CSS-доворот сразу,
@@ -1152,21 +1166,34 @@ function CurrentMedia({
    * миниатюра: «все фото мутные». Колбэк-реф срабатывает после вставки узла в
    * документ, и complete у кэшированной картинки там уже true.
    */
-  const settle = (on: () => void) => (el: HTMLImageElement | null) => {
-    if (el?.complete && el.naturalWidth > 0) on()
+  const settle = (on: (el: HTMLImageElement) => void) => (el: HTMLImageElement | null) => {
+    if (el?.complete && el.naturalWidth > 0) on(el)
   }
 
   if (file.kind === 'IMAGE') {
     /*
-     * Слой полного разрешения — всегда НЕповёрнутый оригинал (оригиналы не
-     * перепекаются никогда), поэтому у повёрнутого кадра его не монтируем:
-     * иначе при зуме поверх правильного превью проявлялся бы кадр в старой
-     * ориентации. Зум остаётся на превью 2048px — этого достаточно.
+     * Слой полного разрешения — urls.full: сервер сам решает, оригинал это
+     * (декодируемый неповёрнутый JPEG/PNG) или испечённый FULL-вариант
+     * (HEIC, повёрнутые кадры). Монтируем его только когда углы устоялись:
+     * контейнер не докручивает CSS-ом ни оптимистичный spin, ни разницу
+     * поколений превью, а показанное превью испечено под ТЕКУЩИЙ угол — FULL
+     * испечён под него же (сервер иначе не отдаст ссылку), значит слои
+     * совпадут пиксель в пиксель. Пока крутится/перепекается — зум честно
+     * живёт на превью.
      */
-    const wantFull =
-      zoomPct > 160 && Boolean(file.urls.content) && ((file.rotation % 360) + 360) % 360 === 0
     const total = spin + file.previewRotation - shown.baked
     const turning = ((total % 360) + 360) % 360 !== 0
+    const settled = !turning && shown.baked === ((file.rotation % 360) + 360) % 360
+    /*
+     * Порог — исчерпанность ПРЕВЬЮ, а не доля от оригинала. Раньше слой ждал
+     * «зум > 160% оригинала», но зум ограничен 8× от вписанного кадра: у
+     * снимка 4284px восемь крат дают лишь ~110%, порог не достигался никогда,
+     * и увеличивали всегда превью. Теперь считаем прямо: сколько пикселей
+     * экрана занимает кадр (с учётом плотности дисплея) против того, сколько
+     * пикселей есть у превью. Запас в 2% гасит дребезг на границе.
+     */
+    const shownPx = ((zoomPct / 100) * (file.width || 0) * (window.devicePixelRatio || 1))
+    const wantFull = Boolean(file.urls.full) && settled && previewPx > 0 && shownPx > previewPx * 1.02
     return (
       <div
         className={`cl-shot-layers${turning ? ' is-turning' : ''}`}
@@ -1178,15 +1205,21 @@ function CurrentMedia({
             className={`cl-layer${previewOn ? ' is-on' : ''}`}
             src={shown.url}
             alt={file.name}
-            ref={settle(() => setPreviewOn(true))}
-            onLoad={() => setPreviewOn(true)}
+            ref={settle((el) => {
+              setPreviewOn(true)
+              setPreviewPx(el.naturalWidth)
+            })}
+            onLoad={(e) => {
+              setPreviewOn(true)
+              setPreviewPx(e.currentTarget.naturalWidth)
+            }}
             draggable={false}
           />
         ) : null}
         {wantFull ? (
           <img
             className={`cl-layer${fullOn ? ' is-on' : ''}`}
-            src={file.urls.content ?? ''}
+            src={file.urls.full ?? ''}
             alt=""
             ref={settle(() => setFullOn(true))}
             onLoad={() => setFullOn(true)}

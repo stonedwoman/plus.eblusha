@@ -51,6 +51,8 @@ export type CloudFile = {
   urls: {
     thumb: string | null
     preview: string | null
+    /** Слой полного разрешения для зума: оригинал или испечённый FULL. */
+    full: string | null
     poster: string | null
     content: string | null
     playback: string | null

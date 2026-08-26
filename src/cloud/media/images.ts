@@ -14,6 +14,19 @@ sharp.concurrency(1);
 // Защита от «pixel bomb»: картинка 60000x60000 в PNG весит килобайты, а в памяти — гигабайты.
 const MAX_PIXELS = 300_000_000;
 
+/**
+ * Форматы, которые актуальные браузеры декодируют сами: их оригинал годится
+ * как слой полного разрешения при зуме. Всё остальное (HEIC/TIFF/RAW) браузер
+ * молча не покажет — таким нужен испечённый FULL-вариант.
+ */
+export const BROWSER_IMAGE_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+]);
+
 export type ImageMetadata = {
   width: number | null;
   height: number | null;
@@ -113,7 +126,20 @@ export async function readImageMetadata(absolute: string): Promise<ImageMetadata
   return out;
 }
 
-export type RenditionResult = { path: string; width: number; height: number; size: number; mime: string };
+export type RenditionResult = {
+  path: string;
+  width: number;
+  height: number;
+  size: number;
+  mime: string;
+  /**
+   * Размеры ДЕКОДИРОВАННОГО оригинала (с учётом EXIF-ориентации, без
+   * пользовательского поворота). Единственный надёжный источник истины о
+   * размере кадра: у HEIC sharp.metadata() пуст, а EXIF врёт после кропов.
+   */
+  srcWidth: number;
+  srcHeight: number;
+};
 
 /**
  * Превью в WebP: поддерживается всеми актуальными браузерами, весит заметно
@@ -146,6 +172,10 @@ export async function renderRendition(
      * каждое повёрнутое превью собирало бы лишнее поколение lossy-артефактов.
      * Буфер уже ограничен maxSide, память копеечная.
      */
+    const probe = await sharp(input, { limitInputPixels: MAX_PIXELS, failOn: "error" }).metadata();
+    let srcW = probe.width ?? 0;
+    let srcH = probe.height ?? 0;
+    if ((probe.orientation ?? 0) >= 5) [srcW, srcH] = [srcH, srcW];
     const scaled = sharp(input, { limitInputPixels: MAX_PIXELS, failOn: "error" })
       .rotate() // применяет EXIF-ориентацию
       .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true });
@@ -160,7 +190,7 @@ export async function renderRendition(
       info = await scaled.webp({ quality, effort: 4 }).toFile(tmpTarget);
     }
     await fsp.rename(tmpTarget, targetAbs);
-    return { path: targetAbs, width: info.width, height: info.height, size: info.size, mime: "image/webp" };
+    return { path: targetAbs, width: info.width, height: info.height, size: info.size, mime: "image/webp", srcWidth: srcW, srcHeight: srcH };
   } catch (err) {
     await fsp.rm(tmpTarget, { force: true }).catch(() => undefined);
     logger.debug({ err }, "cloud: sharp decode failed, falling back to external decoders");
@@ -202,13 +232,24 @@ export async function renderRendition(
   }
   input = tempDecoded;
   try {
+    // heif-convert уже применил --auto-correct, так что PNG лежит в правильной
+    // ориентации: его размеры и есть размеры кадра.
+    const decoded = await sharp(input, { limitInputPixels: MAX_PIXELS }).metadata();
     const info = await sharp(input, { limitInputPixels: MAX_PIXELS })
       .rotate(rotation || 0)
       .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
       .webp({ quality, effort: 4 })
       .toFile(tmpTarget);
     await fsp.rename(tmpTarget, targetAbs);
-    return { path: targetAbs, width: info.width, height: info.height, size: info.size, mime: "image/webp" };
+    return {
+      path: targetAbs,
+      width: info.width,
+      height: info.height,
+      size: info.size,
+      mime: "image/webp",
+      srcWidth: decoded.width ?? 0,
+      srcHeight: decoded.height ?? 0,
+    };
   } finally {
     if (tempDecoded) await fsp.rm(tempDecoded, { force: true }).catch(() => undefined);
   }

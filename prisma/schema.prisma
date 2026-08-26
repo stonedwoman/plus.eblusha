@@ -552,6 +552,7 @@ enum CloudVariantKind {
   PREVIEW
   POSTER
   PLAYBACK
+  FULL
 }
 
 enum CloudVariantStatus {

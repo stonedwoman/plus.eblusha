@@ -1,4 +1,5 @@
 import type { CloudComment, CloudFile, CloudFileVariant, CloudFolder, CloudSpace } from "@prisma/client";
+import { BROWSER_IMAGE_MIMES } from "./media/images";
 
 /**
  * DTO для API. Наружу не уходит ничего физического: ни storagePath, ни sha256,
@@ -35,6 +36,14 @@ export function fileDto(
    */
   const bakedRotation = thumbVar?.rotation ?? 0;
   const previewRotation = previewVar?.rotation ?? 0;
+  const userRotation = ((file.rotation % 360) + 360) % 360;
+  /*
+   * Слой полного разрешения для зума. Испечённый FULL отдаём, только если его
+   * угол совпадает с текущим: после поворота, пока идёт перепечка, лучше
+   * остаться на превью, чем показать резкий слой с чужим углом. Без FULL
+   * годится сам оригинал — когда браузер его декодирует и кадр не повёрнут.
+   */
+  const fullVar = variants.find((v) => v.kind === "FULL");
   const rev = (kind: string) => {
     const v = variants.find((x) => x.kind === kind);
     return v && v.rotation ? `?v=${v.rotation}` : "";
@@ -81,6 +90,14 @@ export function fileDto(
       preview: has("PREVIEW") ? `${base}/${file.id}/preview${rev("PREVIEW")}` : null,
       poster: has("POSTER") ? `${base}/${file.id}/poster` : null,
       content: `${base}/${file.id}/content`,
+      full:
+        file.kind !== "IMAGE"
+          ? null
+          : fullVar && fullVar.status === "READY" && fullVar.rotation === userRotation
+            ? `${base}/${file.id}/full${rev("FULL")}`
+            : BROWSER_IMAGE_MIMES.has(file.mimeType) && userRotation === 0
+              ? `${base}/${file.id}/content`
+              : null,
       // Оригинал играбелен напрямую → отдаём его, экономя гигабайты на web-версии.
       playback: file.kind === "VIDEO" ? (playbackReady ? `${base}/${file.id}/playback` : file.directPlayable ? `${base}/${file.id}/content` : null) : null,
       download: `${base}/${file.id}/content?download=1`,

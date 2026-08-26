@@ -771,7 +771,7 @@ async function shareAllowedFileIds(shareId: string): Promise<Set<string>> {
 
 // ── Содержимое ───────────────────────────────────────────────────────────────
 
-async function serveVariant(req: Request, res: Response, kind: "THUMB" | "PREVIEW" | "POSTER" | "PLAYBACK") {
+async function serveVariant(req: Request, res: Response, kind: "THUMB" | "PREVIEW" | "POSTER" | "PLAYBACK" | "FULL") {
   const { file } = await requireFileAccess(req, String(req.params.id), "file:download", { includeDeleted: true });
   await sendVariant(req, res, file.id, file.originalName, kind);
 }
@@ -781,7 +781,7 @@ export async function sendVariant(
   res: Response,
   fileId: string,
   originalName: string,
-  kind: "THUMB" | "PREVIEW" | "POSTER" | "PLAYBACK"
+  kind: "THUMB" | "PREVIEW" | "POSTER" | "PLAYBACK" | "FULL"
 ) {
   const variant = await prisma.cloudFileVariant.findUnique({ where: { fileId_kind: { fileId, kind } } });
   if (!variant || variant.status !== "READY" || !variant.storagePath) throw notFound("Превью ещё не готово");
@@ -797,6 +797,7 @@ export async function sendVariant(
 
 router.get("/:id/thumb", ah(async (req, res) => serveVariant(req, res, "THUMB")));
 router.get("/:id/preview", ah(async (req, res) => serveVariant(req, res, "PREVIEW")));
+router.get("/:id/full", ah(async (req, res) => serveVariant(req, res, "FULL")));
 router.get("/:id/poster", ah(async (req, res) => serveVariant(req, res, "POSTER")));
 router.get("/:id/playback", ah(async (req, res) => serveVariant(req, res, "PLAYBACK")));
 
