@@ -3,6 +3,18 @@
  * --brand, Inter), та же тёмная база. Ничего «бутстраповского».
  */
 
+/*
+ * Регистрация делает переменную АНИМИРУЕМОЙ: на мобильном верхняя навигация
+ * прячется при прокрутке вниз, и все липкие слои (шапка хуяпки, заголовок
+ * дня, рельсы), чей top считается от --cl-header-h, съезжают вверх плавно,
+ * одной кривой с самой навигацией, а не скачком.
+ */
+@property --cl-header-h {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 60px;
+}
+
 .cl-root {
   --cl-gap: 16px;
   --cl-radius: 14px;
@@ -578,9 +590,10 @@
 .cl-tiles.dense { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
 @media (max-width: 480px) {
   /* На узком телефоне (320-375px) 164px-колонка не влезает вдвоём — сетка
-     схлопывалась в одну гигантскую плитку почти во весь экран. Тот же
-     порог, что уже даёт класс .dense у вида «Файлы». */
-  .cl-tiles:not(.dense) { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 6px; }
+     схлопывалась в одну гигантскую плитку почти во весь экран. 104px, а не
+     112 из .dense: рядом живут ДВЕ мини-рельсы, и на 360px-андроидах двум
+     колонкам по 112 уже не хватало семи пикселей. */
+  .cl-tiles:not(.dense) { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; }
 }
 
 .cl-tile {
@@ -869,26 +882,6 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
 .cl-row-thumb { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: var(--surface-300); display: grid; place-items: center; color: var(--text-muted); }
 .cl-row-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cl-row-sub { font-size: 12px; color: var(--text-muted); }
-
-/* Плавающая кнопка «наверх» — мобильная замена пропавшей рельсе дат/мест. */
-.cl-jump-top {
-  position: fixed;
-  right: max(14px, var(--safe-right));
-  bottom: calc(70px + var(--safe-bottom)); /* с запасом над зоной .cl-selbar/.cl-toasts снизу экрана */
-  z-index: 55;
-  width: 42px; height: 42px; border-radius: 50%;
-  display: grid; place-items: center;
-  border: 1px solid var(--surface-border-strong);
-  background: var(--surface-100);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-soft);
-  cursor: pointer;
-  animation: clRise .25s var(--cl-ease) both;
-}
-.cl-jump-top svg { width: 20px; height: 20px; }
-@media (min-width: 861px) {
-  .cl-jump-top { display: none; }
-}
 
 /* ── Панель загрузок ───────────────────────────────────────────────────── */
 
@@ -1234,8 +1227,10 @@ body.cl-dragging-select .cl-tile { cursor: cell; }
 }
 .cl-geonav .cl-tn-node.is-labeled .cl-tn-cap { opacity: 1; }
 /* Тач-планшет/ноутбук в landscape: рельса видна (ширина есть), а :hover — нет.
-   Уже подписанные (is-labeled) не трогаем — это только недостающие. */
-@media (hover: none) {
+   Уже подписанные (is-labeled) не трогаем — это только недостающие. На узкой
+   мобильной мини-рельсе НЕ включаем: там непомещающиеся подписи легли бы
+   друг на друга. */
+@media (hover: none) and (min-width: 861px) {
   .cl-geonav .cl-tn-node:not(.is-labeled) .cl-tn-cap { opacity: .82; }
 }
 .cl-geonav .cl-tn-node:hover { z-index: 2; }
@@ -2195,45 +2190,63 @@ section[data-day],
    * Компенсация margin-у шапки, которая была нужна ИМЕННО для отсутствующей
    * колонки, здесь больше не место — колонка снова есть, просто узкая.
    */
+  /*
+   * Мини-рельсы: тот же вид, что на десктопе — кружок-миниатюра на оси и
+   * мелкая подпись, — только колонка узкая, а подпись встаёт ПОД кружком,
+   * а не сбоку (сбоку она не помещается). Первый заход «полоска из точек»
+   * забракован владельцем: без подписей и миниатюр рельса нечитаема.
+   */
+  .cl-tl-layout { gap: 6px; }
   .cl-timenav {
-    flex: 0 0 22px;
-    width: 22px;
+    flex: 0 0 52px;
+    width: 52px;
     /* Тач-протяжка листает станции, а не страницу под пальцем. */
     touch-action: none;
   }
-  /* Подпись и миниатюра уходят — узел становится точкой на оси, тач-полоса
-     листается протяжкой (см. touch-обработчик в TimelineRail/GeoRail). */
-  .cl-timenav .cl-tn-cap { display: none; }
-  .cl-timenav .cl-tn-ava,
-  .cl-timenav .cl-tn-ava:empty {
-    width: 7px; height: 7px; margin: 0;
-    transform: none !important;
-    box-shadow: none !important;
-    background: var(--surface-border-strong) !important;
+  .cl-geonav { flex-basis: 56px; width: 56px; }
+  /* Узел — колонкой: кружок на оси, подпись под ним. У левой рельсы в DOM
+     подпись стоит ПЕРЕД кружком (на десктопе она слева) — разворачиваем. */
+  .cl-timenav .cl-tn-node {
+    flex-direction: column-reverse;
+    justify-content: flex-end;
+    gap: 3px;
+    padding: 0;
+    height: auto;
   }
-  .cl-timenav .cl-tn-ava img { display: none; }
-  .cl-timenav .cl-tn-node.is-active .cl-tn-ava,
-  .cl-timenav .cl-tn-node.is-passed .cl-tn-ava {
-    background: var(--brand) !important;
-  }
-  /* Ось пересчитана под точку у внутреннего края узкой полосы (было — под
-     центр 38px-миниатюры на 118/152px рельсе, для 22px это уезжало за край). */
-  .cl-timenav .cl-tn-axis { left: calc(100% - 10px); }
-  .cl-geonav { flex-basis: 22px; width: 22px; }
-  .cl-geonav .cl-tn-axis { left: 9px; }
+  .cl-geonav .cl-tn-node { flex-direction: column; }
+  .cl-timenav .cl-tn-ava { width: 26px; height: 26px; }
+  .cl-timenav .cl-tn-ava:empty { width: 10px; height: 10px; margin: 8px; }
+  .cl-geonav .cl-tn-ava:empty { margin: 8px; }
+  .cl-timenav .cl-tn-cap { align-items: center; text-align: center; }
+  .cl-timenav .cl-tn-cap b { font-size: 9.5px; font-weight: 620; max-width: 50px; overflow: hidden; text-overflow: ellipsis; }
+  .cl-geonav .cl-tn-cap b { max-width: 54px; }
+  /* Счётчики в подписи на узкой колонке не помещаются — только имя/дата. */
+  .cl-timenav .cl-tn-cap i { display: none; }
+  /* Ось — по центру колонки, через середину кружков. */
+  .cl-timenav .cl-tn-axis, .cl-geonav .cl-tn-axis { left: calc(50% - 1px); }
+  /* «N без геометки» на узкой колонке не помещается. */
+  .cl-geonav-rest { display: none; }
   /*
    * Верхняя панель на узком экране переносится в две строки: раньше при
    * фиксированной высоте из шести вкладок была видна одна, а остальные уезжали
    * в горизонтальную прокрутку, о которой невозможно догадаться.
    */
-  .cl-root { --cl-header-h: 108px; }
+  .cl-root { --cl-header-h: 108px; transition: --cl-header-h .42s var(--cl-ease); }
   .cl-topbar {
     height: auto;
     flex-wrap: wrap;
     row-gap: 6px;
     padding-top: max(8px, var(--safe-top));
     padding-bottom: 8px;
+    transition: transform .42s var(--cl-ease);
   }
+  /*
+   * Листаешь фотографии — бренд и разделы облака не нужны: навигация уезжает
+   * за верхнюю кромку тем же жестом, что складывает шапку хуяпки (класс
+   * ставит SpacePage по headHidden). Обратный скролл возвращает всё сразу.
+   */
+  .cl-root.cl-chrome-hidden { --cl-header-h: 0px; }
+  .cl-root.cl-chrome-hidden .cl-topbar { transform: translateY(-100%); pointer-events: none; }
   .cl-brand-suffix { display: none; }
   .cl-topnav { order: 3; flex: 0 0 100%; flex-wrap: wrap; overflow-x: visible; margin-left: 0; }
   .cl-topnav a { padding: 6px 10px; font-size: 13px; }

@@ -133,6 +133,19 @@ export default function SpacePage() {
   }, [view, loadPeopleChips])
   // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
   const headHidden = useHideOnScrollDown()
+  /*
+   * На мобильном тем же жестом прячется и ВЕРХНЯЯ навигация облака (бренд +
+   * разделы): при листании фотографий она мертвый груз. Класс на .cl-root —
+   * навигация живёт в CloudLayout, выше этого компонента; CSS уводит её за
+   * кромку и плавно обнуляет --cl-header-h, за которой следуют все липкие
+   * слои. См. cl-chrome-hidden в cloud.css.
+   */
+  useEffect(() => {
+    const root = document.querySelector<HTMLElement>('.cl-root')
+    if (!root) return
+    root.classList.toggle('cl-chrome-hidden', headHidden)
+    return () => root.classList.remove('cl-chrome-hidden')
+  }, [headHidden])
   /** Отрезки поездки для правой рельсы: где человек был, в порядке ленты. */
   const [segments, setSegments] = useState<GeoSegment[]>([])
   const [withoutPlace, setWithoutPlace] = useState(0)
@@ -1563,13 +1576,6 @@ export default function SpacePage() {
         {showRail ? <GeoRail segments={segments} withoutPlace={withoutPlace} position={geoPos} onJump={jumpToRun} compact={!railWide} /> : null}
       </div>
 
-      {/* Рельса дат/мест на мобильном не рендерится вовсе (see !railWide) —
-          без неё пропадает быстрый способ вернуться к началу длинной ленты.
-          Лёгкая плавающая замена: кнопка «наверх», по той же логике, что уже
-          использует автопрокрутка jumpToDay/jumpToRun (.cl-root — скроллер
-          страницы). */}
-      {!railWide && view === 'timeline' ? <MobileJumpTop /> : null}
-
       {/* ── Панель выбора ───────────────────────────────────────────────── */}
       {selection.size > 0 ? (
         <div className="cl-selbar">
@@ -1847,37 +1853,6 @@ function insertByTakenAt(list: CloudFile[], file: CloudFile): CloudFile[] {
   })
   if (idx === -1) return [...list, file]
   return [...list.slice(0, idx), file, ...list.slice(idx)]
-}
-
-/**
- * Плавающая кнопка «наверх» — мобильная замена рельсе дат/мест, которая на
- * ≤860px не рендерится вовсе (см. !railWide в SpacePage). Появляется после
- * заметной прокрутки; тап возвращает к самому свежему дню одним движением,
- * не гоняя лентой из сотен плиток пальцем.
- */
-function MobileJumpTop() {
-  const [visible, setVisible] = useState(false)
-  useEffect(() => {
-    const root = document.querySelector<HTMLElement>('.cl-root')
-    if (!root) return
-    const onScroll = () => setVisible(root.scrollTop > 900)
-    root.addEventListener('scroll', onScroll, { passive: true })
-    onScroll()
-    return () => root.removeEventListener('scroll', onScroll)
-  }, [])
-  if (!visible) return null
-  return (
-    <button
-      className="cl-jump-top"
-      onClick={() => document.querySelector('.cl-root')?.scrollTo({ top: 0, behavior: 'smooth' })}
-      aria-label="К началу ленты"
-      title="К началу ленты"
-    >
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M6 15l6-6 6 6" />
-      </svg>
-    </button>
-  )
 }
 
 /**
