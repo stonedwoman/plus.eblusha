@@ -137,7 +137,8 @@ export function Viewer({
     }
     void loadFaces(file.id)
   }, [file?.id, file?.kind, loadFaces])
-  const unknownFaces = fileFaces ? fileFaces.filter((f) => !f.person).length : 0
+  // Бейдж зовёт только на повторяющихся: прохожие не зажигают тревогу.
+  const unknownFaces = fileFaces ? fileFaces.filter((f) => !f.person && f.recurring).length : 0
 
   const rotate = useCallback(
     async (dir: 'cw' | 'ccw') => {

@@ -14,6 +14,8 @@ import { Avatar, toast } from './ui'
  */
 export type PanelFace = FaceRef & {
   person: { id: string; name: string; user: CloudUserLite | null } | null
+  /** Похожее лицо встречается в разные дни: свой, а не прохожий с кадра. */
+  recurring: boolean
 }
 type Candidate = CloudUserLite & { linked: boolean }
 
@@ -61,8 +63,15 @@ export function FacesPanel({
   if (faces.length === 0) return <div className="cl-muted" style={{ fontSize: 13.5 }}>На этом кадре лиц не нашлось.</div>
 
   const unknown = faces.filter((f) => !f.person)
-  // Вопрос — про выбранное рамкой/кружком лицо, иначе про первое неопознанное.
-  const current = (selectedId && unknown.find((f) => f.id === selectedId)) || (canEdit ? unknown[0] : null) || null
+  /*
+   * Сам вопрос задаём только про ПОВТОРЯЮЩИХСЯ: прохожий с одного кадра не
+   * заслуживает допроса. Но клик по «?» спрашивает про кого угодно —
+   * назвать случайного гостя вручную по-прежнему можно.
+   */
+  const current =
+    (selectedId && unknown.find((f) => f.id === selectedId)) ||
+    (canEdit ? unknown.find((f) => f.recurring) : null) ||
+    null
 
   return (
     <div className="cl-vfaces-tab">
@@ -128,6 +137,11 @@ export function FacesPanel({
       ) : null}
       {canEdit && !current && unknown.length === 0 ? (
         <div className="cl-muted" style={{ fontSize: 12.5, marginTop: 10 }}>Все лица на кадре опознаны.</div>
+      ) : null}
+      {canEdit && !current && unknown.length > 0 ? (
+        <div className="cl-muted" style={{ fontSize: 12.5, marginTop: 10 }}>
+          Остальные лица встречаются редко — похоже, случайные. Нажмите «?», чтобы назвать.
+        </div>
       ) : null}
     </div>
   )

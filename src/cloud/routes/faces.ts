@@ -133,7 +133,7 @@ router.get(
       where: { personId: null, file: { spaceId, deletedAt: null } },
       orderBy: { score: "desc" },
       take: 400,
-      include: { file: { select: { width: true, height: true } } },
+      include: { file: { select: { width: true, height: true, takenAt: true } } },
     });
     const CLUSTER = 0.45;
     const groups: { rep: (typeof faces)[number]; members: typeof faces }[] = [];
@@ -143,14 +143,25 @@ router.get(
       else groups.push({ rep: f, members: [f] });
     }
     groups.sort((a, b) => b.members.length - a.members.length);
+    const dayOf = (d: Date) => d.toISOString().slice(0, 10);
     res.json({
-      groups: groups.slice(0, 40).map((g) => ({
-        faces: g.members.slice(0, 12).map(faceDto),
-        // ВСЕ id кластера: «назвать» обязано привязать пачку целиком, а не
-        // только показанную дюжину — иначе счётчик персоны врал в разы.
-        faceIds: g.members.map((f) => f.id),
-        total: g.members.length,
-      })),
+      groups: groups.slice(0, 40).map((g) => {
+        /*
+         * Значимость — по СОБЫТИЯМ, как у телефонов: десять кадров одной
+         * серии — это один день, а не десять появлений. Свой — тот, кто
+         * встречается в разные дни (или очень плотно в один: герой дня).
+         */
+        const days = new Set(g.members.map((m) => dayOf((m as { file: { takenAt: Date } }).file.takenAt))).size;
+        return {
+          faces: g.members.slice(0, 12).map(faceDto),
+          // ВСЕ id кластера: «назвать» обязано привязать пачку целиком, а не
+          // только показанную дюжину — иначе счётчик персоны врал в разы.
+          faceIds: g.members.map((f) => f.id),
+          total: g.members.length,
+          days,
+          significant: days >= 2 || g.members.length >= 5,
+        };
+      }),
     });
   })
 );
@@ -207,9 +218,39 @@ router.get(
         person: { include: { user: { select: { id: true, username: true, displayName: true, avatarUrl: true } } } },
       },
     });
+    /*
+     * «Повторяющийся» — встречается ли похожее лицо в другие дни (или очень
+     * плотно). Прохожий с одного кадра не должен зажигать бейдж и вопрос.
+     * Пул ограничен свежими двумя тысячами свободных лиц: этого хватает,
+     * чтобы отличить своего от случайного, не таская всю базу.
+     */
+    const unknowns = faces.filter((f) => !f.personId);
+    const recurringByFace = new Map<string, boolean>();
+    if (unknowns.length > 0) {
+      const pool = await prisma.cloudFace.findMany({
+        where: { personId: null },
+        select: { embedding: true, file: { select: { takenAt: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 2000,
+      });
+      const CLUSTER = 0.45;
+      const dayOf = (d: Date) => d.toISOString().slice(0, 10);
+      for (const u of unknowns) {
+        const days = new Set<string>();
+        let count = 0;
+        for (const p of pool) {
+          if (cos(u.embedding, p.embedding) >= CLUSTER) {
+            count++;
+            days.add(dayOf(p.file.takenAt));
+          }
+        }
+        recurringByFace.set(u.id, days.size >= 2 || count >= 5);
+      }
+    }
     res.json({
       faces: faces.map((f) => ({
         ...faceDto(f),
+        recurring: f.personId ? true : (recurringByFace.get(f.id) ?? false),
         person: f.person
           ? {
               id: f.person.id,
