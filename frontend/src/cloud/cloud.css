@@ -592,7 +592,7 @@
   /* Размеры известны заранее — плитки не «прыгают» при подгрузке превью. */
   aspect-ratio: 1;
 }
-.cl-tile img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .35s var(--cl-ease); }
+.cl-tile > img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .35s var(--cl-ease); }
 .cl-tile.selected { border-color: var(--brand); }
 .cl-tile img { animation: clFade .3s ease; }
 /*
@@ -2404,14 +2404,17 @@ section[data-day],
 }
 .cl-tab-extra-q { font-size: 12.5px; font-weight: 560; }
 
-/* Аватар загрузившего — в правом нижнем углу плитки, симметрично галочке. */
+/* Аватар загрузившего — МАЛЕНЬКИЙ, в правом нижнем углу. Появляется у ВСЕХ
+   плиток разом при наведении на сетку: видно, кто что залил, одним взглядом. */
 .cl-tile-who {
-  position: absolute; right: 7px; bottom: 7px; z-index: 3;
+  position: absolute; right: 6px; bottom: 6px; z-index: 3;
+  width: 20px; height: 20px;
   opacity: 0; transform: translateY(3px) scale(.9); transform-origin: bottom right;
   transition: opacity .18s ease, transform .22s var(--cl-ease);
   pointer-events: none;
-  border-radius: 50%;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, .45), 0 0 0 2px rgba(10, 12, 16, .55);
+  border-radius: 50%; overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .5), 0 0 0 1.5px rgba(10, 12, 16, .6);
 }
-.cl-tile:hover .cl-tile-who { opacity: 1; transform: none; }
+.cl-tile-who .cl-ava, .cl-tile-who img { width: 20px; height: 20px; font-size: 9px; }
+.cl-page:hover .cl-tile-who { opacity: 1; transform: none; }
 body.cl-dragging-select .cl-tile-who { opacity: 0 !important; }
