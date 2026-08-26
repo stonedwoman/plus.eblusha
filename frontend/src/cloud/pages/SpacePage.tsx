@@ -445,11 +445,16 @@ export default function SpacePage() {
         const base = tile.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
         const goingUp = base - HEADER_OFFSET < root.scrollTop
         const land = goingUp ? metricsRef.current.h : Math.max(0, metricsRef.current.h - shiftRef.current)
+        /*
+         * Плюс высота липкого заголовка дня: прыжок по дате целится в СЕКЦИЮ
+         * (её заголовок и должен встать под панель), а прыжок по месту — в
+         * ПЛИТКУ, и без поправки её верхний ряд вставал ровно под липкую
+         * «шапку с датой» — подсветка приезжала накрытой. Щуп бегунка
+         * промахом не страдает: он сканирует до 150px вглубь.
+         */
+        const dayHead = document.querySelector<HTMLElement>('.cl-tl-main .cl-day-head')?.offsetHeight ?? 44
         // Подсветка — по приезде, см. jumpToDay.
-        // Без добавочного сдвига: цель должна вставать ровно туда же, куда её
-        // ставит прыжок по дате, иначе она уезжает ниже линии отсчёта и
-        // бегунок показывает предыдущее место.
-        smoothScrollTo(root, base - HEADER_OFFSET - land, (finished) => {
+        smoothScrollTo(root, base - HEADER_OFFSET - land - dayHead - 6, (finished) => {
           if (finished && !expired()) {
             flashGroup(`.cl-tl-main [data-run="${CSS.escape(String(run))}"][data-geo="1"]`)
           }
