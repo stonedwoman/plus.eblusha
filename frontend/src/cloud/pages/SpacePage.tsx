@@ -89,7 +89,7 @@ export default function SpacePage() {
    * фильтры, Поделиться/Скачать всё — в шторках по требованию. Триггерится
    * тем же railWide, что и компактность рельс: одна и та же граница экрана.
    */
-  const [mobileSheet, setMobileSheet] = useState<null | 'info' | 'filters' | 'more'>(null)
+  const [mobileSheet, setMobileSheet] = useState<null | 'info' | 'filters'>(null)
   const [linkCandidates, setLinkCandidates] = useState<Candidate[]>([])
   useEffect(() => {
     if (namingChip !== null && linkCandidates.length === 0) void loadCandidates().then(setLinkCandidates)
@@ -1359,42 +1359,42 @@ export default function SpacePage() {
             </>
           ) : (
             /*
-              Мобайл: прижатый справа кластер — фильтр (если таймлайн),
-              загрузка (всегда на виду — это САМОЕ частое действие), «Ещё»
-              для Поделиться/Скачать всё. Тело вкладки и «?»-форма живут
-              внутри шторки «Фильтры», а не здесь.
+              Мобайл: рядом с вкладками — ТОЛЬКО фильтр. Загрузка живёт в
+              строке имени (см. фолд выше), Поделиться/Скачать всё — в шторке
+              «Инфо»: между рельсами ~230px, и вкладки с полным доком в одной
+              строке физически не уживались — текст обрубался кнопками.
             */
-            <div className="cl-mobile-dock">
-              {view === 'timeline' ? (
-                <button
-                  type="button"
-                  className={`cl-icon-btn${mobileFilterCount ? ' is-active' : ''}`}
-                  aria-label="Фильтры"
-                  aria-expanded={mobileSheet === 'filters'}
-                  onClick={() => setMobileSheet((s) => (s === 'filters' ? null : 'filters'))}
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M4 6h16M7 12h10M10 18h4" />
-                  </svg>
-                  {mobileFilterCount > 0 ? <i className="cl-dot" /> : null}
-                </button>
+            <>
+              {view === 'timeline' || canEdit ? (
+                <div className="cl-mobile-dock">
+                  {view === 'timeline' ? (
+                    <button
+                      type="button"
+                      className={`cl-icon-btn${mobileFilterCount ? ' is-active' : ''}`}
+                      aria-label="Фильтры"
+                      aria-expanded={mobileSheet === 'filters'}
+                      onClick={() => setMobileSheet((s) => (s === 'filters' ? null : 'filters'))}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 6h16M7 12h10M10 18h4" />
+                      </svg>
+                      {mobileFilterCount > 0 ? <i className="cl-dot" /> : null}
+                    </button>
+                  ) : null}
+                  {/* «Загрузить» — иконкой: подпись не помещалась и обрубала
+                      вкладки; оранжевая заливка сама говорит, что это главное. */}
+                  {canEdit ? (
+                    <button type="button" className="cl-icon-btn cl-mini-up" aria-label="Загрузить файлы" onClick={openFilePicker}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 17V5m0 0 5 5m-5-5-5 5" />
+                        <path d="M5 20h14" />
+                      </svg>
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
-              {uploadSplitButton}
-              <button
-                type="button"
-                className="cl-icon-btn"
-                aria-label="Ещё"
-                aria-expanded={mobileSheet === 'more'}
-                onClick={() => setMobileSheet((s) => (s === 'more' ? null : 'more'))}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="5" cy="12" r="1.6" />
-                  <circle cx="12" cy="12" r="1.6" />
-                  <circle cx="19" cy="12" r="1.6" />
-                </svg>
-              </button>
               {uploads.length > 0 ? <i className="cl-tab-progress" aria-hidden /> : null}
-            </div>
+            </>
           )}
         </div>
       </div>
@@ -1424,6 +1424,30 @@ export default function SpacePage() {
             </div>
           ) : null}
           {uploads.length > 0 ? <SpaceUploadBar /> : <SpaceByline space={space} onlineIds={onlineIds} />}
+          <div className="cl-sheet-acts">
+            {isOwner ? (
+              <button
+                className="cl-btn ghost sm cl-act-quiet"
+                onClick={() => {
+                  setShareOpen(true)
+                  setMobileSheet(null)
+                }}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.1" />
+                  <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.1" />
+                </svg>
+                Поделиться
+              </button>
+            ) : null}
+            <button className="cl-btn ghost sm cl-act-quiet" onClick={downloadAllZip}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 4v10m0 0 4-4m-4 4-4-4" />
+                <path d="M5 19h14" />
+              </svg>
+              Скачать всё
+            </button>
+          </div>
         </div>
       ) : null}
       {!railWide && mobileSheet === 'filters' && view === 'timeline' ? (
@@ -1444,33 +1468,6 @@ export default function SpacePage() {
           {namingChip !== null && unknownChips[namingChip] ? namingRow : null}
           <button className="cl-btn ghost sm" onClick={() => setMobileSheet(null)}>
             Готово
-          </button>
-        </div>
-      ) : null}
-      {!railWide && mobileSheet === 'more' ? (
-        <div className="cl-sheet cl-more-sheet" role="dialog" aria-label="Действия">
-          <div className="cl-sheet-grip" />
-          {isOwner ? (
-            <button
-              className="cl-btn ghost sm cl-act-quiet"
-              onClick={() => {
-                setShareOpen(true)
-                setMobileSheet(null)
-              }}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.1" />
-                <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.1" />
-              </svg>
-              Поделиться
-            </button>
-          ) : null}
-          <button className="cl-btn ghost sm cl-act-quiet" onClick={downloadAllZip}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 4v10m0 0 4-4m-4 4-4-4" />
-              <path d="M5 19h14" />
-            </svg>
-            Скачать всё
           </button>
         </div>
       ) : null}

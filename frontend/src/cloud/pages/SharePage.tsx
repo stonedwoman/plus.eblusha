@@ -83,6 +83,10 @@ export default function SharePage() {
   )
 
   useEffect(() => {
+    document.title = 'Еблуша — Cloud'
+  }, [])
+
+  useEffect(() => {
     const fragment = window.location.hash.startsWith('#t=') ? decodeURIComponent(window.location.hash.slice(3)) : ''
     setSecret(fragment || null)
     void fetchCloudMe()

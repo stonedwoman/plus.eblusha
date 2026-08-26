@@ -20,6 +20,15 @@ export type CloudContext = { me: CloudMe }
 let sharedMe: CloudMe | null = null
 
 export default function CloudLayout() {
+  /*
+   * Заголовок сайта: index.html общий с мессенджером и несёт «Еблуша — Plus»,
+   * а облако — отдельный продукт со своим именем. Ставим здесь, а не в
+   * index.html: менять общий title значило бы переименовать и мессенджер.
+   */
+  useEffect(() => {
+    document.title = 'Еблуша — Cloud'
+  }, [])
+
   const [me, setMe] = useState<CloudMe | null>(sharedMe)
   const [error, setError] = useState<string | null>(null)
   const [online, setOnline] = useState(true)
@@ -168,9 +177,6 @@ export default function CloudLayout() {
         </nav>
         <div className="cl-spacer" />
         {!online ? <span className="cl-muted" style={{ fontSize: 12.5 }}>нет связи</span> : null}
-        <a className="cl-btn ghost sm" href="/" title="Вернуться в мессенджер">
-          ← Еблуша
-        </a>
       </header>
 
       <Outlet context={outletContext} />

@@ -2357,14 +2357,19 @@ section[data-day],
   .cl-mini-figs i { font-style: normal; opacity: .5; }
   .cl-mini-chev { flex: none; width: 16px; height: 16px; color: var(--text-muted); }
 
+
   /* ── Вкладки-папки + прижатый кластер действий в одной строке ── */
   .cl-head-band { position: relative; padding: 0 0 8px; }
   .cl-tabs {
     display: flex; align-items: stretch; gap: 2px; height: 40px;
     overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
-    padding-right: 130px; /* место под .cl-mobile-dock — иначе последний таб под ним не дотянуть */
-    /* Тот же намёк на переполнение, что и раньше: правый край гаснет. */
-    mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+    padding-right: 102px; /* ширина дока (фильтр + загрузка) — последний таб выкручивается из-под него */
+    /*
+     * Гасим вкладки ДО кнопок дока, а не у правого края контейнера: док лежит
+     * ПОВЕРХ вкладок, и с затуханием у края текст просто жёстко обрубался
+     * кромкой кнопки.
+     */
+    mask-image: linear-gradient(to right, #000 calc(100% - 142px), transparent calc(100% - 100px));
   }
   .cl-tabs::-webkit-scrollbar { display: none; }
   .cl-tab { flex: none; margin: 0; padding: 0 11px; border-radius: 9px; border-bottom: none; display: inline-flex; align-items: center; font-size: 11.5px; }
@@ -2382,14 +2387,15 @@ section[data-day],
   }
   .cl-icon-btn svg { width: 18px; height: 18px; }
   .cl-icon-btn.is-active { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 45%, var(--surface-border)); }
+  /* Загрузка — оранжевым: главное действие видно сразу. Селектор с доком —
+     иначе фон .cl-icon-btn, объявленный ниже, перебивал заливку. */
+  .cl-mobile-dock .cl-mini-up { background: var(--brand); border-color: transparent; color: #14100a; }
+  .cl-mobile-dock .cl-mini-up svg { width: 19px; height: 19px; }
   .cl-icon-btn .cl-dot {
     position: absolute; top: -2px; right: -2px; width: 7px; height: 7px;
     border-radius: 50%; background: var(--brand); border: 1.5px solid var(--paper);
   }
-  .cl-mobile-dock .cl-split { height: 40px; flex: none; }
-  .cl-mobile-dock .cl-split-main { padding: 0 10px; }
-  .cl-mobile-dock .cl-split-label { display: none; } /* сегмент «файл» на мобиле — только иконка */
-  .cl-mobile-dock .cl-split-alt { padding: 0 10px; font-size: 11px; gap: 4px; }
+
   .cl-tab-progress { bottom: 0; } /* без добавления высоты — по нижнему краю Row 2 */
 
   /* ── Шторки: Инфо / Фильтры / Ещё ── */
@@ -2409,7 +2415,9 @@ section[data-day],
   .cl-sheet .cl-ed-eyebrow { display: flex; }
   .cl-sheet .cl-ed-figs { display: flex; flex-wrap: wrap; justify-content: space-between; width: 100%; }
   .cl-sheet .cl-ed-filters, .cl-sheet .cl-person-chips { display: flex; flex-wrap: wrap; margin-top: 10px; }
-  .cl-more-sheet .cl-act-quiet { width: 100%; height: 44px; padding: 0 4px; justify-content: flex-start; gap: 10px; }
+  /* Поделиться/Скачать всё живут в шторке «Инфо» — рядами во всю ширину. */
+  .cl-sheet-acts { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; border-top: 1px solid var(--surface-border); padding-top: 8px; }
+  .cl-sheet .cl-act-quiet { width: 100%; height: 44px; padding: 0 4px; justify-content: flex-start; gap: 10px; }
   .cl-filter-sheet > .cl-btn { margin-top: 12px; width: 100%; height: 40px; }
 
   /* Панель выбора помещается целиком: «Удалить» и «Снять» уезжали за край. */

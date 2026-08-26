@@ -26,6 +26,10 @@ export default function JoinPage() {
   const [secret, setSecret] = useState('')
 
   useEffect(() => {
+    document.title = 'Еблуша — Cloud'
+  }, [])
+
+  useEffect(() => {
     const fragment = window.location.hash.startsWith('#t=') ? decodeURIComponent(window.location.hash.slice(3)) : ''
     if (!fragment) {
       setError('Ссылка неполная: секретная часть после «#» потерялась при копировании.')
