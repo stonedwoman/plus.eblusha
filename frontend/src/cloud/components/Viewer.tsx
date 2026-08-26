@@ -707,6 +707,14 @@ export function Viewer({
   /* Над снимком курсор — лупа, вне — ‹›-листалка: жест колеса виден заранее. */
   const [overMedia, setOverMedia] = useState(false)
   const lastPointerType = useRef('mouse')
+  /*
+   * Была ли протяжка в ТОЛЬКО ЧТО завершённом жесте. Отдельная память нужна
+   * потому, что endDrag обнуляет drag.current раньше, чем браузер разошлёт
+   * click: обработчик клика видел «просто щелчок» и делал своё — сбрасывал
+   * зум, а если палец/курсор уехал за край кадра, то и вовсе закрывал
+   * просмотр. Сбрасывается на следующем нажатии.
+   */
+  const dragMoved = useRef(false)
   const lastMouse = useRef<{ x: number; y: number } | null>(null)
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -720,6 +728,7 @@ export function Viewer({
      */
     if (target?.tagName === 'VIDEO' || target?.tagName === 'AUDIO') return
     if (target?.closest('button, a, input, textarea, video, audio, .cl-viewer-panel, .cl-strip')) return
+    dragMoved.current = false
     drag.current = {
       x: e.clientX,
       y: e.clientY,
@@ -741,7 +750,10 @@ export function Viewer({
     if (!d) return
     const dx = e.clientX - d.x
     const dy = e.clientY - d.y
-    if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true
+    if (Math.abs(dx) + Math.abs(dy) > 4) {
+      d.moved = true
+      dragMoved.current = true
+    }
     if (d.mode === 'pan') {
       view.current.x = d.ox + dx
       view.current.y = d.oy + dy
@@ -824,7 +836,7 @@ export function Viewer({
     const target = e.target as HTMLElement | null
     if (target?.tagName === 'VIDEO' || target?.tagName === 'AUDIO') return
     if (target?.closest('button, a, video, audio, .cl-viewer-panel, .cl-strip, .cl-viewer-top')) return
-    if (drag.current?.moved) return
+    if (drag.current?.moved || dragMoved.current) return
     if (!file) return
     if (!isOverMedia(e.clientX, e.clientY)) {
       requestClose()
