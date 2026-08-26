@@ -44,6 +44,12 @@ export default function SpacePage() {
   const [cursor, setCursor] = useState<string | null>(null)
   /** Зеркало курсора для async-цикла прыжка по рельсе. */
   const cursorRef = useRef<string | null>(null)
+  /*
+   * Пустой cursorRef двусмыслен: «первая страница ещё летит» и «страниц
+   * больше нет» выглядят одинаково. Клик по нижней станции рельсы СРАЗУ после
+   * открытия попадал в первое состояние и молча игнорировался — различаем.
+   */
+  const sliceReadyRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [selection, setSelection] = useState<Set<string>>(new Set())
   /*
@@ -239,6 +245,7 @@ export default function SpacePage() {
         if (mode !== 'merge') {
           setCursor(data.nextCursor)
           cursorRef.current = data.nextCursor
+          sliceReadyRef.current = true
         }
         return { files: data.files, nextCursor: data.nextCursor }
       } catch (err) {
@@ -272,6 +279,7 @@ export default function SpacePage() {
     // среза и приклеивал к списку страницу чужого фильтра из середины альбома.
     setCursor(null)
     cursorRef.current = null
+    sliceReadyRef.current = false
   }, [sliceKey])
 
   useEffect(() => {
@@ -462,9 +470,16 @@ export default function SpacePage() {
         return true
       }
       if (go()) return
-      if (!cursorRef.current || jumpingRef.current) return
+      if (jumpingRef.current) return
       jumpingRef.current = true
       try {
+        // Клик «сразу»: первая страница могла ещё лететь — дождёмся её,
+        // а не проигнорируем нажатие.
+        for (let i = 0; i < 80 && !sliceReadyRef.current && !expired(); i++) {
+          await new Promise((r) => setTimeout(r, 100))
+        }
+        if (expired()) return
+        if (go()) return
         let c: string | null = cursorRef.current
         for (let i = 0; c && i < 200; i++) {
           const batch = await loadFiles(c, 'append')
@@ -616,10 +631,16 @@ export default function SpacePage() {
       // Точная группа уже на месте — едем сразу. Приблизительную (следующий
       // день) принимаем только когда догружать больше нечего.
       if (scrollToSection(Boolean(cursorRef.current), flash)) return
-      if (!cursorRef.current || jumpingRef.current) return
+      if (jumpingRef.current) return
 
       jumpingRef.current = true
       try {
+        // Клик «сразу»: дождаться первой страницы среза (см. jumpToRun).
+        for (let i = 0; i < 80 && !sliceReadyRef.current && !expired(); i++) {
+          await new Promise((r) => setTimeout(r, 100))
+        }
+        if (expired()) return
+        if (scrollToSection(Boolean(cursorRef.current), flash)) return
         let c: string | null = cursorRef.current
         // Грузим, пока не увидим день ПОЗЖЕ целевого (или конец альбома).
         // Остановка на первом же файле нужного дня коварна: последующая
