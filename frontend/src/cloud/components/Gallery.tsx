@@ -3,6 +3,7 @@ import { memo, useMemo } from 'react'
 import { formatBytes, formatDuration } from '../api'
 import { UploadTile } from './UploadTile'
 import type { CloudFile } from '../types'
+import { LOCAL_UPLOAD_PREVIEW_LIMIT } from '../uploads/manager'
 
 /**
  * Плиточная галерея. Плитки квадратные и с известным aspect-ratio, поэтому при
@@ -214,8 +215,15 @@ export function TimelineView({
     const entries: TimelineEntry[] = [
       ...files.map((f) => ({ kind: 'file' as const, at: new Date(f.takenAt).getTime(), id: f.id, file: f })),
       // Локальные превью — только у первых плиток: держать сотни objectURL и
-      // декодировать столько же полноразмерных JPEG браузер не обязан.
-      ...uploads.map((u, i) => ({ kind: 'upload' as const, at: u.at, id: u.id, withPreview: i < 40 })),
+      // декодировать столько же полноразмерных JPEG браузер не обязан. На
+      // телефонах лимит ниже: Photos + Safari и без того держат пачку через
+      // file-provider, а декодированные кадры быстро съедают лимит вкладки.
+      ...uploads.map((u, i) => ({
+        kind: 'upload' as const,
+        at: u.at,
+        id: u.id,
+        withPreview: i < LOCAL_UPLOAD_PREVIEW_LIMIT,
+      })),
     ]
     // Хронология вперёд: 26 марта, потом 27-е. Так листают фотоальбом поездки,
     // а не ленту новостей. Порядок совпадает с серверным (takenAt asc).

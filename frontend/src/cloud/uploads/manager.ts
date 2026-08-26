@@ -69,8 +69,21 @@ type UploadInternal = {
   lastUiAt?: number
 }
 
-const MAX_PARALLEL = 3
-const CHUNK_SIZE = 16 * 1024 * 1024
+/*
+ * iOS держит выбранные из Photos файлы через временные file-provider handles,
+ * а каждый активный XHR ещё буферизует текущий chunk. Три передачи по 16 MiB
+ * плюс декодирование локальных миниатюр легко выбивают вкладку из памяти при
+ * выборе 100+ фото. На телефонах делаем chunks меньше и оставляем два потока;
+ * десктопный быстрый путь не меняется.
+ */
+const CONSTRAINED_MOBILE =
+  typeof navigator !== 'undefined' &&
+  (navigator.maxTouchPoints > 1 || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent))
+
+const MAX_PARALLEL = CONSTRAINED_MOBILE ? 2 : 3
+const CHUNK_SIZE = (CONSTRAINED_MOBILE ? 4 : 16) * 1024 * 1024
+/** Сколько выбранных оригиналов разрешено одновременно декодировать в сетке. */
+export const LOCAL_UPLOAD_PREVIEW_LIMIT = CONSTRAINED_MOBILE ? 8 : 40
 const SPEED_SMOOTHING = 0.25
 /**
  * Как часто прогресс попадает в стор. tus вызывает onProgress десятки раз в

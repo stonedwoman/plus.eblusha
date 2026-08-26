@@ -163,19 +163,42 @@ export async function renderRendition(
     return { path: targetAbs, width: info.width, height: info.height, size: info.size, mime: "image/webp" };
   } catch (err) {
     await fsp.rm(tmpTarget, { force: true }).catch(() => undefined);
-    logger.debug({ err }, "cloud: sharp decode failed, falling back to ffmpeg");
+    logger.debug({ err }, "cloud: sharp decode failed, falling back to external decoders");
   }
 
-  // Второй эшелон: HEIC/HEIF и прочее, что libvips без libheif не открывает.
-  // ffmpeg 8 в образе умеет hevc, поэтому HEIC с iPhone проходит здесь.
+  // Второй эшелон: HEIC/HEIF и AVIF через libheif. HEIC с современных
+  // iPhone часто хранит основной кадр как grid из десятков HEVC-плиток и рядом
+  // кладёт auxiliary images (depth/gain maps). ffmpeg 6/7 видит плитки как
+  // отдельные video streams и при обычном `-frames:v 1` отдаёт одну плитку или
+  // карту глубины. heif-convert понимает связи контейнера и собирает именно
+  // primary image целиком; auxiliary-слои без --with-aux он не выбирает.
   tempDecoded = path.join(TMP_DIR, `dec-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
   await fsp.mkdir(TMP_DIR, { recursive: true });
-  const res = await run("ffmpeg", ["-nostdin", "-v", "error", "-y", "-i", sourceAbs, "-frames:v", "1", "-f", "image2", tempDecoded], {
-    timeoutMs: cloudConfig.CLOUD_IMAGE_TIMEOUT_MS,
-  });
-  if (res.code !== 0) {
+  const heif = await run(
+    "heif-convert",
+    ["--quiet", "--auto-correct", "--codec-threads", "1", "--tile-threads", "1", sourceAbs, tempDecoded],
+    { timeoutMs: cloudConfig.CLOUD_IMAGE_TIMEOUT_MS }
+  );
+  const heifWroteImage =
+    heif.code === 0 &&
+    (await fsp
+      .stat(tempDecoded)
+      .then((stat) => stat.isFile() && stat.size > 0)
+      .catch(() => false));
+
+  if (!heifWroteImage) {
     await fsp.rm(tempDecoded, { force: true }).catch(() => undefined);
-    throw new Error(`ffmpeg decode failed: ${res.stderr.slice(-300)}`);
+    logger.debug({ stderr: heif.stderr.slice(-300) }, "cloud: libheif decode failed, falling back to ffmpeg");
+    // Третий эшелон для форматов, которые sharp не открыл, но ffmpeg умеет.
+    const res = await run(
+      "ffmpeg",
+      ["-nostdin", "-v", "error", "-y", "-i", sourceAbs, "-frames:v", "1", "-f", "image2", tempDecoded],
+      { timeoutMs: cloudConfig.CLOUD_IMAGE_TIMEOUT_MS }
+    );
+    if (res.code !== 0) {
+      await fsp.rm(tempDecoded, { force: true }).catch(() => undefined);
+      throw new Error(`image decode failed: ${res.stderr.slice(-300) || heif.stderr.slice(-300)}`);
+    }
   }
   input = tempDecoded;
   try {

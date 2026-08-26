@@ -23,7 +23,7 @@ RUN npm prune --omit=dev
 FROM node:22-alpine
 
 # ffmpeg: серверные превью картинок (аплоад) + постеры видео. Без него оба тихо падают.
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg libheif-tools
 
 WORKDIR /app
 
