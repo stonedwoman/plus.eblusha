@@ -36,6 +36,8 @@ const listQuery = z.object({
   q: z.string().max(120).optional(),
   uploaderId: z.string().optional(),
   personId: z.string().optional(),
+  /** Несколько персон через запятую — совместные кадры (И). */
+  personIds: z.string().max(400).optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
   cursor: z.string().max(500).optional(),
@@ -60,6 +62,7 @@ router.get(
       ...(p.q ? { q: p.q } : {}),
       ...(p.uploaderId ? { uploaderId: p.uploaderId } : {}),
       ...(p.personId ? { personId: p.personId } : {}),
+      ...(p.personIds ? { personIds: parsePersonIds(p.personIds) } : {}),
       ...(p.from ? { from: p.from } : {}),
       ...(p.to ? { to: p.to } : {}),
       ...(p.cursor ? { cursor: p.cursor } : {}),
@@ -92,6 +95,8 @@ router.get(
       ...(p.kind ? { kind: p.kind } : {}),
       ...(p.q ? { q: p.q } : {}),
       ...(p.uploaderId ? { uploaderId: p.uploaderId } : {}),
+      ...(p.personId ? { personId: p.personId } : {}),
+      ...(p.personIds ? { personIds: parsePersonIds(p.personIds) } : {}),
       ...(p.from ? { from: p.from } : {}),
       ...(p.to ? { to: p.to } : {}),
     });
@@ -104,10 +109,18 @@ const timelineQuery = z.object({
   view: z.literal("timeline").default("timeline"),
   kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
   personId: z.string().optional(),
+  personIds: z.string().max(400).optional(),
   q: z.string().max(120).optional(),
   /** Смещение локального времени клиента в минутах к востоку от UTC. */
   tz: z.coerce.number().int().min(-840).max(840).default(0),
 });
+
+
+/** «a,b,c» → массив id; пустые и дубли выбрасываются, потолок — десять. */
+function parsePersonIds(raw?: string): string[] {
+  if (!raw) return [];
+  return [...new Set(raw.split(",").map((v) => v.trim()).filter(Boolean))].slice(0, 10);
+}
 
 /** % и _ в ILIKE — метасимволы; имя файла ими быть управляемым не должно. */
 function escapeLike(v: string): string {
@@ -137,7 +150,8 @@ router.get(
       Prisma.sql`f."purgedAt" IS NULL`,
     ];
     if (p.kind) conds.push(Prisma.sql`f."kind"::text = ${p.kind}`);
-    if (p.personId) conds.push(Prisma.sql`EXISTS (SELECT 1 FROM "CloudFace" cf WHERE cf."fileId" = f."id" AND cf."personId" = ${p.personId})`);
+    for (const pid of [...(p.personId ? [p.personId] : []), ...parsePersonIds(p.personIds)])
+      conds.push(Prisma.sql`EXISTS (SELECT 1 FROM "CloudFace" cf WHERE cf."fileId" = f."id" AND cf."personId" = ${pid})`);
     if (p.q?.trim()) conds.push(Prisma.sql`f."originalName" ILIKE ${"%" + escapeLike(p.q.trim()) + "%"}`);
 
     // Помимо счётчика — представитель дня: его миниатюра становится узлом на
@@ -174,6 +188,7 @@ router.get(
         view: z.literal("places").default("places"),
         kind: z.enum(["IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "OTHER"]).optional(),
         personId: z.string().optional(),
+        personIds: z.string().max(400).optional(),
       })
       .safeParse(req.query);
     if (!parsed.success) throw invalid("Некорректные параметры выборки");
@@ -186,7 +201,8 @@ router.get(
       Prisma.sql`f."purgedAt" IS NULL`,
     ];
     if (p.kind) conds.push(Prisma.sql`f."kind"::text = ${p.kind}`);
-    if (p.personId) conds.push(Prisma.sql`EXISTS (SELECT 1 FROM "CloudFace" cf WHERE cf."fileId" = f."id" AND cf."personId" = ${p.personId})`);
+    for (const pid of [...(p.personId ? [p.personId] : []), ...parsePersonIds(p.personIds)])
+      conds.push(Prisma.sql`EXISTS (SELECT 1 FROM "CloudFace" cf WHERE cf."fileId" = f."id" AND cf."personId" = ${pid})`);
 
     /*
      * Отрезки поездки в порядке ХРОНОЛОГИИ, а не по алфавиту: правая рельса

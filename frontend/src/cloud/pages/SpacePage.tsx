@@ -65,20 +65,58 @@ export default function SpacePage() {
   const [dragging, setDragging] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [kindFilter, setKindFilter] = useState<'' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'>('')
-  /** Фильтр по персоне: таймлайн со всеми рельсами, но только её снимки. */
-  const [personFilter, setPersonFilter] = useState<{ id: string; name: string; cover: unknown } | null>(null)
+  /**
+   * Фильтр по людям. Несколько выбранных — СОВМЕСТНЫЕ кадры (каждый в кадре).
+   */
+  const [personFilter, setPersonFilter] = useState<Set<string>>(new Set())
+  const togglePerson = (id: string) =>
+    setPersonFilter((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  /** Значимые группы неопознанных — «?»-чипы фильтра, назначение на месте. */
+  const [unknownChips, setUnknownChips] = useState<{ faces: FaceRef[]; faceIds: string[]; total: number }[]>([])
+  const [namingChip, setNamingChip] = useState<number | null>(null)
+  const [chipName, setChipName] = useState('')
   const [spacePeople, setSpacePeople] = useState<SpacePerson[]>([])
   useEffect(() => {
-    setPersonFilter(null)
+    setPersonFilter(new Set())
     setSpacePeople([])
+    setUnknownChips([])
+    setNamingChip(null)
+  }, [spaceId])
+  const nameUnknownChip = async (g: { faceIds: string[] }, opts: { userId?: string; name?: string }) => {
+    try {
+      const { data } = await cloudApi.post<{ propagated: number }>('/faces/name', { ...opts, faceIds: g.faceIds })
+      toast.success(data.propagated > 0 ? `Готово — и узнал ещё на ${data.propagated} лицах` : 'Готово')
+      setNamingChip(null)
+      await loadPeopleChips()
+    } catch (err) {
+      toast.error(toCloudError(err).message)
+    }
+  }
+
+  const loadPeopleChips = useCallback(async () => {
+    try {
+      const [p, u] = await Promise.all([
+        cloudApi.get<{ people: SpacePerson[] }>('/faces/people', { params: { spaceId } }),
+        cloudApi.get<{ groups: { faces: FaceRef[]; faceIds: string[]; total: number; significant: boolean }[] }>(
+          '/faces/unnamed',
+          { params: { spaceId } }
+        ),
+      ])
+      setSpacePeople(p.data.people.filter((x) => x.countInSpace > 0))
+      setUnknownChips(u.data.groups.filter((g) => g.significant).slice(0, 4))
+    } catch {
+      /* фильтр-персоны не критичен */
+    }
   }, [spaceId])
   useEffect(() => {
     if (view !== 'timeline' && view !== 'people') return
-    void cloudApi
-      .get<{ people: SpacePerson[] }>('/faces/people', { params: { spaceId } })
-      .then(({ data }) => setSpacePeople(data.people.filter((p) => p.countInSpace > 0)))
-      .catch(() => undefined)
-  }, [spaceId, view])
+    void loadPeopleChips()
+  }, [view, loadPeopleChips])
   // Прячем шапку только при движении вниз — см. useHideOnScrollDown.
   const headHidden = useHideOnScrollDown()
   /** Отрезки поездки для правой рельсы: где человек был, в порядке ленты. */
@@ -156,7 +194,7 @@ export default function SpacePage() {
       view: view === 'files' ? ('files' as const) : ('timeline' as const),
       ...(view === 'files' ? { folderId: folderId ?? 'root' } : {}),
       ...(kindFilter ? { kind: kindFilter } : {}),
-      ...(personFilter ? { personId: personFilter.id } : {}),
+      ...(personFilter.size ? { personIds: [...personFilter].sort().join(',') } : {}),
     }),
     [spaceId, view, folderId, kindFilter, personFilter]
   )
@@ -318,7 +356,7 @@ export default function SpacePage() {
           spaceId,
           view: 'timeline',
           ...(kindFilter ? { kind: kindFilter } : {}),
-          ...(personFilter ? { personId: personFilter.id } : {}),
+          ...(personFilter.size ? { personIds: [...personFilter].sort().join(',') } : {}),
           tz: -new Date().getTimezoneOffset(),
         },
       })
@@ -341,7 +379,7 @@ export default function SpacePage() {
           spaceId,
           view: 'places',
           ...(kindFilter ? { kind: kindFilter } : {}),
-          ...(personFilter ? { personId: personFilter.id } : {}),
+          ...(personFilter.size ? { personIds: [...personFilter].sort().join(',') } : {}),
         },
       })
       setSegments(data.places)
@@ -1087,18 +1125,33 @@ export default function SpacePage() {
                     : 'Журнал действий участников'}
               </span>
             )}
-            {/* Люди — тоже фильтр таймлайна: кружок-лицо вместо слова. */}
-            {view === 'timeline' && spacePeople.length > 0 ? (
+            {/* Люди — тоже фильтр таймлайна: кружки-лица. Несколько выбранных
+                — совместные кадры. «?» — неопознанные, назначаются на месте. */}
+            {view === 'timeline' && (spacePeople.length > 0 || unknownChips.length > 0) ? (
               <div className="cl-person-chips">
                 {spacePeople.map((p) => (
                   <button
                     key={p.id}
-                    className={`cl-person-chip${personFilter?.id === p.id ? ' is-active' : ''}`}
-                    title={`${p.name} · ${p.countInSpace}`}
-                    onClick={() => setPersonFilter(personFilter?.id === p.id ? null : { id: p.id, name: p.name, cover: null })}
+                    className={`cl-person-chip${personFilter.has(p.id) ? ' is-active' : ''}`}
+                    title={`${p.name} · ${p.countInSpace}${personFilter.size ? ' — совместные кадры' : ''}`}
+                    onClick={() => togglePerson(p.id)}
                   >
                     {p.cover ? <FaceCrop face={p.cover} size={28} /> : <span className="cl-face cl-face-empty" style={{ width: 28, height: 28, fontSize: 14 }}>🙂</span>}
-                    {personFilter?.id === p.id ? <b>{p.name}</b> : null}
+                    {personFilter.has(p.id) ? <b>{p.name}</b> : null}
+                  </button>
+                ))}
+                {unknownChips.map((g, i) => (
+                  <button
+                    key={`u${i}`}
+                    className={`cl-person-chip is-unknown${namingChip === i ? ' is-active' : ''}`}
+                    title={`Неопознанный · ${g.total} — назначить`}
+                    onClick={() => {
+                      setNamingChip(namingChip === i ? null : i)
+                      setChipName('')
+                    }}
+                  >
+                    {g.faces[0] ? <FaceCrop face={g.faces[0]} size={28} /> : null}
+                    <i>?</i>
                   </button>
                 ))}
               </div>
@@ -1152,6 +1205,42 @@ export default function SpacePage() {
           </div>
             {uploads.length > 0 ? <i className="cl-tab-progress" aria-hidden /> : null}
           </div>
+
+          {/* Назначение «?»-чипа: кто это — не уходя из таймлайна. */}
+          {namingChip !== null && unknownChips[namingChip] ? (
+            <div className="cl-tab-extra">
+              {unknownChips[namingChip]!.faces.slice(0, 5).map((f) => (
+                <FaceCrop key={f.id} face={f} size={36} />
+              ))}
+              <span className="cl-tab-extra-q">Кто это? · {unknownChips[namingChip]!.total} лиц</span>
+              {canEdit
+                ? space.members.map((m) => (
+                    <button
+                      key={m.id}
+                      className="cl-face-member"
+                      onClick={() => void nameUnknownChip(unknownChips[namingChip]!, { userId: m.id })}
+                    >
+                      <Avatar user={m} />
+                      <span>{m.displayName || m.username}</span>
+                    </button>
+                  ))
+                : null}
+              {canEdit ? (
+                <form
+                  className="cl-face-nameform"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    if (chipName.trim()) void nameUnknownChip(unknownChips[namingChip]!, { name: chipName.trim() })
+                  }}
+                >
+                  <input className="cl-input" placeholder="Или имя…" value={chipName} onChange={(e) => setChipName(e.target.value)} />
+                  <button className="cl-btn primary sm" type="submit" disabled={!chipName.trim()}>
+                    Назвать
+                  </button>
+                </form>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1162,7 +1251,7 @@ export default function SpacePage() {
           canEdit={canEdit}
           members={space.members}
           onOpenPerson={(p) => {
-            setPersonFilter({ id: p.id, name: p.name, cover: null })
+            setPersonFilter(new Set([p.id]))
             setView('timeline')
           }}
         />

@@ -1,3 +1,4 @@
+import { Avatar } from './ui'
 import { memo, useMemo } from 'react'
 import { formatBytes, formatDuration } from '../api'
 import { UploadTile } from './UploadTile'
@@ -117,6 +118,13 @@ const Tile = memo(function Tile({
       )}
 
       {failed ? <div className="cl-tile-failed" title={file.processingError ?? 'Обработка не удалась'}>⚠</div> : null}
+
+      {/* Кто загрузил — по наведению, симметрично кружку выделения. */}
+      {file.uploader ? (
+        <span className="cl-tile-who" title={file.uploader.displayName || file.uploader.username}>
+          <Avatar user={file.uploader} />
+        </span>
+      ) : null}
 
       <button
         className="cl-tile-check"

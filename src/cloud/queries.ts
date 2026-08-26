@@ -23,6 +23,7 @@ export type FileListParams = {
   to?: Date | undefined;
   fileIds?: string[] | undefined;
   personId?: string | undefined;
+  personIds?: string[] | undefined;
   cursor?: string | undefined;
   limit: number;
 };
@@ -78,8 +79,14 @@ export function buildFileWhere(params: FileSliceParams): Prisma.CloudFileWhereIn
   // ничего не рассказывает о поездке, а её счётчик отдаётся отдельно.
   if (view === "places") where.geoPath = { not: null };
   if (params.kind) where.kind = params.kind;
-  // Вкладка «Лица»: снимки, где есть лицо выбранной персоны.
-  if (params.personId) where.faces = { some: { personId: params.personId } };
+  // Фильтр по людям. Несколько выбранных — СОВМЕСТНЫЕ кадры: каждый из
+  // выбранных должен быть в кадре (И, как у Google Photos), иначе выбор
+  // двоих просто сваливал бы их снимки в кучу.
+  const persons = params.personIds?.length ? params.personIds : params.personId ? [params.personId] : [];
+  if (persons.length) {
+    const conds = persons.map((id) => ({ faces: { some: { personId: id } } }));
+    where.AND = [...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []), ...conds];
+  }
   if (params.uploaderId) where.uploaderId = params.uploaderId;
   if (params.fileIds?.length) where.id = { in: params.fileIds };
   if (params.from || params.to) {
