@@ -65,9 +65,18 @@ export interface ConversationMemberRemovedPayload {
 
 // ========== Контакты и профили ==========
 
+/** С какого устройства человек в сети. null — устройство неизвестно (или офлайн). */
+export type PresenceDevice = 'mobile' | 'desktop' | 'web'
+
 export interface PresenceUpdatePayload {
   userId: string
   status: 'ONLINE' | 'OFFLINE' | 'AWAY' | 'BACKGROUND' | 'IN_CALL'
+  device?: PresenceDevice | null
+}
+
+/** Снапшот устройств по всем, кто уже в сети; приходит один раз на коннект сокета. */
+export interface PresenceDeviceSnapshotBatchPayload {
+  items: { userId: string; device: PresenceDevice }[]
 }
 
 export interface ContactRequestPayload {

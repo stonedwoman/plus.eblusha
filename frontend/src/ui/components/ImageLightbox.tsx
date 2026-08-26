@@ -32,6 +32,9 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
     w: typeof window !== 'undefined' ? window.innerWidth : 0,
     h: typeof window !== 'undefined' ? window.innerHeight : 0,
   }))
+  // Контекстное меню на картинке (правый клик): координаты или null.
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null)
+  const [copied, setCopied] = useState(false)
 
   // zoom is relative to "fit"
   const [zoom, setZoom] = useState(1)
@@ -53,6 +56,8 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
   const lastTapRef = useRef<{ ts: number; x: number; y: number } | null>(null)
   const pinchEndTsRef = useRef(-Infinity) // когда сняли второй палец с пинча — короткий кулдаун против ложного свайпа (−∞ = «давно», чтобы не блочить первый жест)
   const prevFocusRef = useRef<HTMLElement | null>(null) // куда вернуть фокус при закрытии
+  const ctxMenuRef = useRef<{ x: number; y: number } | null>(null)
+  ctxMenuRef.current = ctxMenu
 
   const total = items.length
   const canNav = total > 1
@@ -117,6 +122,7 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
     setZoom(1)
     setTx(0)
     setTy(0)
+    setCtxMenu(null) // закрываем контекстное меню при смене фото/сбросе
   }
 
   // lock scroll
@@ -197,7 +203,7 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
   useEffect(() => {
     if (!open) return
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') { if (ctxMenuRef.current) { setCtxMenu(null); return } onClose() }
       if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev() }
       if (e.key === 'ArrowRight') { e.preventDefault(); goNext() }
       if (e.key === '+' || e.key === '=') setZoom((z) => clamp(z * 1.15, 1, 6))
@@ -399,6 +405,83 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
     setZoom((z) => clamp(z * factor, 1, 6))
   }
 
+  // Правый клик по картинке → своё меню (не нативное: в десктоп-обёртке его может не быть).
+  const onImgContextMenu: React.MouseEventHandler = (e) => {
+    if (!url || isFailed) return
+    e.preventDefault()
+    const MW = 190
+    const MH = 96
+    setCtxMenu({
+      x: Math.min(e.clientX, Math.max(8, viewport.w - MW)),
+      y: Math.min(e.clientY, Math.max(8, viewport.h - MH)),
+    })
+  }
+
+  const saveImage = async () => {
+    setCtxMenu(null)
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      // Многие картинки отдаются как application/octet-stream → не берём из type мусорное
+      // расширение, а падаем на jpg; для честного image/* берём подтип (jpeg/png/webp/…).
+      const t = blob.type
+      const ext = t.startsWith('image/') ? (t.slice(6).split('+')[0].split(';')[0] || 'jpg') : 'jpg'
+      const objUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = objUrl
+      a.download = `image-${safeIndex + 1}.${ext}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(objUrl), 10000)
+    } catch {
+      // запасной путь: прямая ссылка (тот же origin — скачается)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `image-${safeIndex + 1}`
+      a.click()
+    }
+  }
+
+  const copyImage = async () => {
+    setCtxMenu(null)
+    try {
+      if (!navigator.clipboard || typeof ClipboardItem === 'undefined') throw new Error('unsupported')
+      // Буфер обмена принимает ограниченный набор типов (надёжно — PNG). Готовим PNG асинхронно
+      // ВНУТРИ ClipboardItem (Promise) — так это работает и в Safari (требует запись в рамках жеста).
+      const makePng = async (): Promise<Blob> => {
+        const res = await fetch(url)
+        const blob = await res.blob()
+        if (blob.type === 'image/png') return blob
+        const tmpUrl = URL.createObjectURL(blob)
+        try {
+          const img = new Image()
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve()
+            img.onerror = () => reject(new Error('decode'))
+            img.src = tmpUrl
+          })
+          const canvas = document.createElement('canvas')
+          canvas.width = img.naturalWidth || 1
+          canvas.height = img.naturalHeight || 1
+          const c = canvas.getContext('2d')
+          if (!c) throw new Error('no-ctx')
+          c.drawImage(img, 0, 0)
+          const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+          if (!png) throw new Error('encode')
+          return png
+        } finally {
+          URL.revokeObjectURL(tmpUrl)
+        }
+      }
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': makePng() })])
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1400)
+    } catch {
+      // копирование не поддержано/запрещено — тихо (пользователь может «Сохранить»)
+    }
+  }
+
   if (!open) return null
 
   const thumbs = (() => {
@@ -439,7 +522,8 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
         <div className="imglb-spacer" aria-hidden="true" />
         <div className="imglb-title">
           {safeIndex + 1} / {total}
-          {zoom > 1.01 && <span className="imglb-zoom">{Math.round(zoom * 100)}%</span>}
+          {/* Реальный масштаб относительно ОРИГИНАЛА (fit.scale = вписывание × зум), а не «вписано=100%». */}
+          {zoom > 1.01 && dims && <span className="imglb-zoom">{Math.round(fit.scale * 100)}%</span>}
         </div>
         <button className="imglb-btn" onClick={onClose} aria-label="Закрыть">
           <X size={18} />
@@ -462,7 +546,7 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
           </button>
         )}
 
-        <div className="imglb-media" onClick={(e) => e.stopPropagation()}>
+        <div className="imglb-media" onClick={(e) => e.stopPropagation()} onContextMenu={onImgContextMenu}>
           {/* Blur-up подложка: тот же прямоугольник, что и полное фото (usable + contain) → без скачка.
               Держим смонтированной и гасим по opacity при загрузке → кроссфейд в резкое фото (без «дырки»). */}
           {!isFailed && placeholderSrc && usable.w > 0 && (
@@ -546,6 +630,24 @@ export function ImageLightbox({ open, items, index, onClose, onIndexChange }: Pr
           </div>
         </div>
       )}
+
+      {ctxMenu && (
+        <>
+          {/* Прозрачный слой перехватывает клик/скролл/правый-клик вне меню → закрыть. */}
+          <div
+            className="imglb-ctx-scrim"
+            onClick={() => setCtxMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null) }}
+            onWheel={() => setCtxMenu(null)}
+          />
+          <div className="imglb-ctx" style={{ left: ctxMenu.x, top: ctxMenu.y }} role="menu">
+            <button className="imglb-ctx-item" role="menuitem" onClick={copyImage}>Копировать</button>
+            <button className="imglb-ctx-item" role="menuitem" onClick={saveImage}>Сохранить</button>
+          </div>
+        </>
+      )}
+
+      {copied && <div className="imglb-toast" role="status">Скопировано</div>}
     </div>
   )
 

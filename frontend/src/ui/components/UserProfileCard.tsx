@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Copy, KeyRound, Trash2, X } from 'lucide-react'
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Copy, Globe, KeyRound, Monitor, Smartphone, Trash2, X } from 'lucide-react'
+import {
+  presenceDeviceTitleRu,
+  presenceStatusColor,
+  usePresenceDevice,
+} from '../../domain/store/presenceDeviceStore'
 import { Avatar } from './Avatar'
 import { convertToProxyUrl } from '../../utils/media'
 
@@ -280,6 +285,8 @@ export function UserProfileHero(props: {
 }) {
   const { user, statusText, presence, inCall, eblid, avatars, canManageAvatars, onDeleteAvatar, onClose, compact, hideStatusDot } = props
   const heroSrc = useMemo(() => resolveAvatarSrc(user.avatarUrl), [user.avatarUrl])
+  // Устройство собеседника: вместо цветной точки рисуем иконку телефона/ПК/браузера.
+  const presenceDevice = usePresenceDevice(user.id)
   const palette = useAvatarPalette(heroSrc)
   // Banner colours: from the avatar if we could sample it, else the stable identity hue.
   const hue = palette ? palette.h : hashHue(String(user.id ?? 'u'))
@@ -382,9 +389,32 @@ export function UserProfileHero(props: {
           {name}
         </div>
         <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--text-muted)' }}>
-          {!hideStatusDot && (
-            <span style={{ width: 8, height: 8, borderRadius: 999, background: statusDotColor(user.status), boxShadow: `0 0 10px ${statusDotColor(user.status)}66`, flex: '0 0 auto' }} />
-          )}
+          {!hideStatusDot && (() => {
+            // Играет → устройство не показываем (геймпад уже висит на аватаре сверху).
+            // Устройство известно и человек не офлайн → иконка устройства в цвет статуса.
+            // Иначе — историческая цветная точка, ничего не меняем.
+            const playing = presence === 'PLAYING'
+            const effectiveStatus = inCall
+              ? 'IN_CALL'
+              : (presence && presence !== 'PLAYING' ? presence : (user.status ?? 'OFFLINE'))
+            const online = String(effectiveStatus).toUpperCase() !== 'OFFLINE'
+            if (!playing && presenceDevice && online) {
+              const DeviceIcon =
+                presenceDevice === 'mobile' ? Smartphone : presenceDevice === 'desktop' ? Monitor : Globe
+              const fg = presenceStatusColor(effectiveStatus)
+              return (
+                <span
+                  title={presenceDeviceTitleRu(effectiveStatus, presenceDevice) ?? undefined}
+                  style={{ display: 'inline-flex', alignItems: 'center', flex: '0 0 auto', filter: `drop-shadow(0 0 6px ${fg}66)` }}
+                >
+                  <DeviceIcon width={14} height={14} color={fg} strokeWidth={2.25} />
+                </span>
+              )
+            }
+            return (
+              <span style={{ width: 8, height: 8, borderRadius: 999, background: statusDotColor(user.status), boxShadow: `0 0 10px ${statusDotColor(user.status)}66`, flex: '0 0 auto' }} />
+            )
+          })()}
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{statusText}</span>
         </div>
         {bio && (

@@ -5,6 +5,7 @@ import { socket, connectSocket } from '../../core/realtime'
 import { ensureDeviceBootstrap, forcePublishPrekeys } from '../device/deviceManager'
 import { exportSecretThreadKeys, getSecretThreadKey, importSecretThreadKeys, setSecretThreadKey } from './secretThreadKeyStore'
 import { decryptSecretThreadText } from './secretThreadCrypto'
+import { transformSecretHistoryItemToMessage } from './secretThreadMessaging'
 import { tryDecryptIncomingKeyPackage } from './secretKeyPackages'
 import { isSecretControlHeader, sendSecretControl } from './secretControl'
 import { markKeyReceipt, markKeyShareSent } from './secretKeyShareState'
@@ -12,6 +13,7 @@ import { createEncryptedKeyPackageToDevice } from './secretKeyPackages'
 import { clientLog } from './secretClientLog'
 import { createAndShareSecretThreadKey } from './secretThreadSetup'
 import { getDefaultStorageAdapter } from '../../core/storage'
+import { getDeviceLinkInvite, clearDeviceLinkInvite, inviteMatches } from '../device/deviceLinkInvite'
 
 type InboxItem = {
   msgId: string
@@ -215,6 +217,46 @@ export function SecretInboxPump() {
 
           if (isLinkDeviceJoin) {
             const requesterDeviceId = String((header as any).requesterDeviceId ?? '').trim()
+            // ДВЕ ПРОВЕРКИ, без которых запрос — это удалённая выгрузка всех ключей секреток:
+            // 1) устройство обязано быть НАШИМ (deviceId любого пользователя виден всем через
+            //    /e2ee/prekeys/bundles, так что чужой запрос отправить тривиально);
+            // 2) запрос обязан предъявить token/код ЖИВОГО приглашения, показанного на этом
+            //    устройстве (карточка «Добавить устройство»), — иначе ключи не отдаются.
+            const invite = getDeviceLinkInvite()
+            const joinToken = String((header as any).token ?? '').trim()
+            const joinCode = String((header as any).code ?? '').trim()
+            const inviteOk = !!invite && (inviteMatches(invite, joinToken) || inviteMatches(invite, joinCode))
+            let ownDeviceOk = false
+            if (requesterDeviceId && inviteOk) {
+              try {
+                const resp = await api.get('/devices')
+                ownDeviceOk = ((resp.data?.devices ?? []) as any[]).some(
+                  (d) => String(d?.id ?? '').trim() === requesterDeviceId && !d?.revokedAt,
+                )
+              } catch {
+                ownDeviceOk = false // не смогли проверить — НЕ отдаём ключи
+              }
+            }
+            if (requesterDeviceId && (!inviteOk || !ownDeviceOk)) {
+              clientLog('SecretInboxPump', 'warn', 'link_device_join rejected', {
+                data: { requesterDeviceId, inviteOk, ownDeviceOk },
+              })
+              // Запрос от СВОЕГО устройства, но карточка «Добавить устройство» ещё не открыта —
+              // не сжигаем конверт: он доживёт свой TTL и сработает, как только код покажут.
+              // Чужой запрос (или неизвестное устройство) — ack, чтобы не копился в инбоксе.
+              const ownDeviceKnown = !inviteOk && requesterDeviceId ? await (async () => {
+                try {
+                  const resp = await api.get('/devices')
+                  return ((resp.data?.devices ?? []) as any[]).some(
+                    (d) => String(d?.id ?? '').trim() === requesterDeviceId && !d?.revokedAt,
+                  )
+                } catch {
+                  return false
+                }
+              })() : false
+              if (!ownDeviceKnown) ackIds.push(item.msgId)
+              continue
+            }
             if (requesterDeviceId) {
               const now = Date.now()
               const last = lastLinkDeviceJoinSentAt.get(requesterDeviceId) ?? 0
@@ -239,6 +281,25 @@ export function SecretInboxPump() {
                   clientLog('SecretInboxPump', 'info', 'link_device_join: sent device_link_keys', {
                     data: { toDeviceId: requesterDeviceId, msgId: env.msgId },
                   })
+                  try { clearDeviceLinkInvite() } catch {} // приглашение одноразовое
+                  // Отдающая сторона показывает «устройство подключено» с ИМЕНЕМ устройства:
+                  // имя знает только сервер, поэтому резолвим его по списку своих устройств.
+                  try {
+                    const threadCount = Object.keys(payload?.threadKeys?.keys ?? {}).length
+                    let deviceName = ''
+                    try {
+                      const resp = await api.get('/devices')
+                      const found = ((resp.data?.devices ?? []) as any[]).find(
+                        (d) => String(d?.id ?? '').trim() === requesterDeviceId,
+                      )
+                      deviceName = String(found?.name ?? '').trim()
+                    } catch {}
+                    window.dispatchEvent(
+                      new CustomEvent('eb:deviceLinkedOut', {
+                        detail: { deviceId: requesterDeviceId, name: deviceName, threadCount },
+                      }),
+                    )
+                  } catch {}
                   const token = String((header as any).token ?? '').trim()
                   if (token) {
                     try {
@@ -434,6 +495,27 @@ export function SecretInboxPump() {
               continue
             }
             if (attempt.kind === 'device_link_keys') {
+              // Связку принимаем ТОЛЬКО от своего же устройства: пакет расшифровался, но
+              // отправить его мог кто угодно (он шифруется на НАШ публичный prekey, который
+              // отдаётся всем через /e2ee/prekeys/bundles). Чужая связка подсунула бы
+              // подставные ключи для тредов, которых у нас ещё нет.
+              const senderDeviceId = String((item.headerJson as any)?.initiatorDeviceId ?? '').trim()
+              let senderIsOurs = false
+              try {
+                const resp = await api.get('/devices')
+                senderIsOurs = ((resp.data?.devices ?? []) as any[]).some(
+                  (d) => String(d?.id ?? '').trim() === senderDeviceId,
+                )
+              } catch {
+                senderIsOurs = false
+              }
+              if (!senderIsOurs) {
+                clientLog('SecretInboxPump', 'warn', 'device_link_keys from foreign device — dropped', {
+                  data: { msgId: item.msgId, senderDeviceId },
+                })
+                ackIds.push(item.msgId)
+                continue
+              }
               let importOk = false
               try {
                 importSecretThreadKeys(attempt.payload?.threadKeys, { merge: true })
@@ -576,13 +658,18 @@ export function SecretInboxPump() {
           if (!threadId) continue
           ackIds.push(item.msgId)
 
-          const keyRec = getSecretThreadKey(threadId)
-          const nonce = typeof header?.nonce === 'string' ? header.nonce : null
-
-          const decrypted =
-            keyRec && nonce ? decryptSecretThreadText(keyRec.key, item.ciphertext, nonce) : null
-
-          const msgObj = toMessageObject(threadId, item, decrypted)
+          // ЕДИНЫЙ трансформ с историей: он знает про contentType='attachment'
+          // (иначе получатель видел сырой JSON-дескриптор, а эхо отправителя
+          // перетиралось текстовой строкой — ревью).
+          const msgObj = transformSecretHistoryItemToMessage(threadId, {
+            msgId: item.msgId,
+            createdAt: item.createdAt,
+            senderUserId: item.senderUserId,
+            headerJson: header,
+            ciphertext: item.ciphertext,
+            contentType: (item as any).contentType ?? 'text',
+            schemaVersion: (item as any).schemaVersion ?? 1,
+          })
 
           client.setQueryData(['messages', threadId], (old: any) => {
             const existing = Array.isArray(old) ? old : []

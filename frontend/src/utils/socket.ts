@@ -2,6 +2,12 @@ import { io } from 'socket.io-client'
 import { useAppStore } from '../domain/store/appStore'
 import { Capacitor } from '@capacitor/core'
 import { wipeLocalDeviceData } from '../domain/device/deviceWipe'
+import {
+  applyPresenceDeviceSnapshot,
+  normalizePresenceDevice,
+  setPresenceDevice,
+  type PresenceDevice,
+} from '../domain/store/presenceDeviceStore'
 
 function isTruthyEnv(v: unknown): boolean {
   const s = String(v ?? '').trim().toLowerCase()
@@ -270,9 +276,25 @@ export function onSessionNew(cb: (payload: { userId: string; deviceId: string; d
   }
 }
 
+export type PresenceDeviceSnapshotBatchPayload = { items: { userId: string; device: PresenceDevice }[] }
+
 // Helpful to confirm we actually receive realtime status events in the browser
 socket.on('presence:update', (p) => {
   dbg('presence:update', p)
+  // Устройство пишем в стор ПРЯМО ЗДЕСЬ (на уровне модуля), а не только в ChatsPage:
+  // сокет коннектится из entry-app раньше, чем монтируется ChatsPage, и снапшот
+  // устройств иначе можно проспать.
+  try {
+    setPresenceDevice((p as any)?.userId, normalizePresenceDevice((p as any)?.device))
+  } catch {}
+})
+
+// Снапшот «кто с какого устройства» — приходит один раз на коннект сокета.
+socket.on('presence:device:snapshot:batch', (p) => {
+  dbg('presence:device:snapshot:batch', p)
+  try {
+    applyPresenceDeviceSnapshot((p as any)?.items)
+  } catch {}
 })
 
 export type PresenceGame = {
@@ -360,8 +382,12 @@ export function onMessageNotify(cb: (payload: { conversationId: string; messageI
   })
 }
 
-export function onPresenceUpdate(cb: (payload: { userId: string; status: string }) => void) {
+export function onPresenceUpdate(cb: (payload: { userId: string; status: string; device?: PresenceDevice | null }) => void) {
   socket.on('presence:update', cb)
+}
+
+export function onPresenceDeviceSnapshotBatch(cb: (payload: PresenceDeviceSnapshotBatchPayload) => void) {
+  socket.on('presence:device:snapshot:batch', cb)
 }
 
 export function onPresenceGame(cb: (payload: PresenceGamePayload) => void) {

@@ -1,11 +1,26 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, PenSquare, RotateCcw, Undo2, X } from 'lucide-react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import { Check, Crop as CropIcon, Eraser, Pencil, RotateCw, Undo2, X } from 'lucide-react'
 
-type DrawingPoint = { x: number; y: number }
-type DrawingPath = { color: string; size: number; points: DrawingPoint[] }
-type CropRect = { x: number; y: number; width: number; height: number }
+/**
+ * Редактор фото перед отправкой: обрезка + рисование.
+ *
+ * Две вещи, ради которых он переписан целиком:
+ *  1. РАСКЛАДКА. Раньше размер сцены считался руками из window.innerHeight минус захардкоженные
+ *     «toolbarHeight = 200 / headerHeight = 60». На мобильном вебе это не работает в принципе:
+ *     панель выше константы, а высота окна пляшет вместе с адресной строкой — низ картинки
+ *     уезжал под панель рисования. Теперь это обычная flex-колонка (шапка / сцена flex:1 /
+ *     панель) на 100dvh: сцена сама получает ровно ту высоту, что осталась, а картинка
+ *     вписывается в неё целиком. Никаких вычислений высот в JS.
+ *  2. КООРДИНАТЫ. Мазки и рамка обрезки хранятся в ДОЛЯХ рабочего изображения (0..1), а не в
+ *     пикселях экрана. Поэтому поворот экрана, смена размера окна, обрезка и поворот картинки
+ *     больше не «уносят» рисунок — пересчитывать при ресайзе нечего.
+ */
+
+type Point = { x: number; y: number } // доли рабочего изображения, 0..1
+type Stroke = { color: string; size: number; erase: boolean; points: Point[] }
+/** Рамка обрезки в долях рабочего изображения. */
+type CropRect = { x: number; y: number; w: number; h: number }
 
 export type EditableImage = {
   id: string
@@ -22,1387 +37,1073 @@ type Props = {
   onApply: (payload: { file: File; previewUrl: string }) => void
 }
 
-const BRUSH_COLORS = ['#ff4d4f', '#ff9f0a', '#ffd60a', '#34c759', '#0a84ff', '#a855f7']
-const BRUSH_SIZES = [4, 8, 14]
-const CROP_HANDLE_SIZE = 24
-const MIN_CROP_SIZE = 80
+const COLORS = ['#ff3b30', '#ff9f0a', '#ffd60a', '#34c759', '#0a84ff', '#bf5af2', '#ffffff', '#111111']
+/** Толщина кисти в долях меньшей стороны картинки — не зависит от размера экрана. */
+const SIZES = [0.006, 0.012, 0.024]
+const ASPECTS: Array<{ label: string; value: number | null }> = [
+  { label: 'Свободно', value: null },
+  { label: '1:1', value: 1 },
+  { label: '4:5', value: 4 / 5 },
+  { label: '3:4', value: 3 / 4 },
+  { label: '16:9', value: 16 / 9 },
+]
+const HANDLES = ['nw', 'ne', 'sw', 'se', 'n', 's', 'w', 'e'] as const
+type Handle = (typeof HANDLES)[number]
+const FULL_CROP: CropRect = { x: 0, y: 0, w: 1, h: 1 }
+/** Минимальная сторона рамки, в долях. */
+const MIN_CROP = 0.08
+
+type WorkState = { canvas: HTMLCanvasElement; strokes: Stroke[] }
+/** Шаг истории: вместе с картинкой запоминаем рамку и соотношение, иначе «Отменить» их теряет. */
+type HistoryStep = { work: WorkState; crop: CropRect; aspect: number | null }
+
+/**
+ * Потолок рабочего разрешения. Телефонная камера даёт 12+ Мп; canvas такого размера — это
+ * ~48 МБ на КАЖДЫЙ шаг истории, а Safari на iOS вообще отказывается растеризовать холсты
+ * больше ~16.7 Мп и молча отдаёт пустой кадр. Мессенджеры и так ужимают отправляемое фото.
+ */
+const MAX_WORK_PIXELS = 12_000_000
+const MAX_HISTORY = 6
 
 export function ImageEditorModal({ open, image, onClose, onApply }: Props) {
-  const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null)
-  const [viewport, setViewport] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
-  const [imageScale, setImageScale] = useState(1)
-  const [imageTranslate, setImageTranslate] = useState({ x: 0, y: 0 })
-  const [displayedImageSize, setDisplayedImageSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
-  const [cropRect, setCropRect] = useState<CropRect>({ x: 0, y: 0, width: 0, height: 0 })
   const [mode, setMode] = useState<'crop' | 'draw'>('crop')
-  const [brushColor, setBrushColor] = useState(BRUSH_COLORS[0])
-  const [brushSize, setBrushSize] = useState(BRUSH_SIZES[1])
-  const [paths, setPaths] = useState<DrawingPath[]>([])
-  const [currentPath, setCurrentPath] = useState<DrawingPath | null>(null)
-  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 768)
-  const [isAnimating, setIsAnimating] = useState(false)
-  const viewportRef = useRef<HTMLDivElement | null>(null)
+  const [work, setWork] = useState<WorkState | null>(null)
+  const [history, setHistory] = useState<HistoryStep[]>([])
+  const [loadError, setLoadError] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [crop, setCrop] = useState<CropRect>(FULL_CROP)
+  const [aspect, setAspect] = useState<number | null>(null)
+  const [color, setColor] = useState(COLORS[0])
+  const [sizeIdx, setSizeIdx] = useState(1)
+  const [erase, setErase] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [sceneBox, setSceneBox] = useState({ w: 0, h: 0 })
+
+  const sceneRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const cropCanvasRef = useRef<HTMLCanvasElement | null>(null)
-  const cropDragRef = useRef<{ type: 'move' | 'resize' | null; handle?: 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w'; startX: number; startY: number; initial: CropRect }>({
-    type: null,
-    startX: 0,
-    startY: 0,
-    initial: { x: 0, y: 0, width: 0, height: 0 },
-  })
-  const drawingPointerRef = useRef<number | null>(null)
-  const cleanupImg = useRef<(() => void) | null>(null)
-  const animationRef = useRef<number | null>(null)
+  const drawingRef = useRef<{ pointerId: number; stroke: Stroke } | null>(null)
+  /** Переиспользуемый холст-слой для мазков: создавать новый на каждый кадр — заметный мусор. */
+  const layerRef = useRef<HTMLCanvasElement | null>(null)
+  /** Размер исходника — чтобы понять, трогали ли фото вообще (см. isUntouched). */
+  const naturalRef = useRef({ w: 0, h: 0 })
+  const closedRef = useRef(false)
+  const cropDragRef = useRef<
+    { pointerId: number; kind: 'move' | Handle; start: { x: number; y: number }; initial: CropRect } | null
+  >(null)
 
-  const isReady = open && !!image && !!imgEl && viewport.width > 0 && viewport.height > 0
-
-  useEffect(() => {
-    const checkMobile = () => setIsMobile(window.innerWidth <= 768)
-    window.addEventListener('resize', checkMobile)
-    return () => window.removeEventListener('resize', checkMobile)
-  }, [])
-
-  const applyCrop = async () => {
-    if (!imgEl || !cropCanvasRef.current || isAnimating) return
-    
-    setIsAnimating(true)
-    
-    // Use the cropRect aspect ratio directly - this is what user selected
-    const selectedCropAspect = cropRect.width / cropRect.height
-    
-    // Calculate actual visible crop area in viewport coordinates (clamped to image bounds)
-    const viewportCropX = Math.max(cropRect.x, imageTranslate.x)
-    const viewportCropY = Math.max(cropRect.y, imageTranslate.y)
-    const viewportCropRight = Math.min(cropRect.x + cropRect.width, imageTranslate.x + displayedImageSize.width)
-    const viewportCropBottom = Math.min(cropRect.y + cropRect.height, imageTranslate.y + displayedImageSize.height)
-    const viewportCropWidth = viewportCropRight - viewportCropX
-    const viewportCropHeight = viewportCropBottom - viewportCropY
-    
-    // Calculate crop area in image coordinates (natural image size)
-    const scaleX = imgEl.naturalWidth / displayedImageSize.width
-    const scaleY = imgEl.naturalHeight / displayedImageSize.height
-    
-    let cropX = (viewportCropX - imageTranslate.x) * scaleX
-    let cropY = (viewportCropY - imageTranslate.y) * scaleY
-    let cropW = viewportCropWidth * scaleX
-    let cropH = viewportCropHeight * scaleY
-    
-    // Preserve the selected aspect ratio - adjust dimensions to match cropRect aspect ratio
-    const currentAspect = cropW / cropH
-    if (currentAspect > selectedCropAspect) {
-      // Current is wider than selected - reduce width
-      cropW = cropH * selectedCropAspect
-    } else {
-      // Current is taller than selected - reduce height
-      cropH = cropW / selectedCropAspect
-    }
-    
-    // Clamp crop coordinates to image boundaries
-    const imgNaturalWidth = imgEl.naturalWidth
-    const imgNaturalHeight = imgEl.naturalHeight
-    
-    let finalCropX = Math.max(0, cropX)
-    let finalCropY = Math.max(0, cropY)
-    let finalCropW = Math.max(1, Math.min(cropW, imgNaturalWidth - finalCropX))
-    let finalCropH = Math.max(1, Math.min(cropH, imgNaturalHeight - finalCropY))
-    
-    // If we had to adjust due to boundaries, recalculate to preserve aspect
-    const actualAspect = finalCropW / finalCropH
-    if (Math.abs(actualAspect - selectedCropAspect) > 0.01) {
-      if (actualAspect > selectedCropAspect) {
-        finalCropW = finalCropH * selectedCropAspect
-      } else {
-        finalCropH = finalCropW / selectedCropAspect
-      }
-      // Re-clamp
-      finalCropW = Math.max(1, Math.min(finalCropW, imgNaturalWidth - finalCropX))
-      finalCropH = Math.max(1, Math.min(finalCropH, imgNaturalHeight - finalCropY))
-    }
-    
-    // Create output canvas with actual crop dimensions (preserving selected aspect ratio)
-    const outputCanvas = document.createElement('canvas')
-    const outputWidth = Math.max(1, Math.round(finalCropW))
-    const outputHeight = Math.max(1, Math.round(finalCropH))
-    outputCanvas.width = outputWidth
-    outputCanvas.height = outputHeight
-    const outputCtx = outputCanvas.getContext('2d')
-    if (!outputCtx) {
-      setIsAnimating(false)
-      return
-    }
-    
-    // Draw cropped image at actual size - preserve aspect ratio of selected crop area
-    outputCtx.drawImage(imgEl, finalCropX, finalCropY, finalCropW, finalCropH, 0, 0, outputWidth, outputHeight)
-    
-    // Draw paths scaled to crop area - transform from viewport to canvas coordinates
-    const pathScaleX = outputWidth / viewportCropWidth
-    const pathScaleY = outputHeight / viewportCropHeight
-    outputCtx.lineCap = 'round'
-    outputCtx.lineJoin = 'round'
-    const drawList = [...paths, ...(currentPath ? [currentPath] : [])]
-    for (const path of drawList) {
-      if (!path.points.length) continue
-      outputCtx.strokeStyle = path.color
-      outputCtx.lineWidth = path.size * ((pathScaleX + pathScaleY) / 2)
-      outputCtx.beginPath()
-      const firstPoint = path.points[0]
-      // Transform from viewport coordinates to canvas coordinates
-      const cropPointX = (firstPoint.x - viewportCropX) * pathScaleX
-      const cropPointY = (firstPoint.y - viewportCropY) * pathScaleY
-      outputCtx.moveTo(cropPointX, cropPointY)
-      for (let i = 1; i < path.points.length; i++) {
-        const p = path.points[i]
-        outputCtx.lineTo((p.x - viewportCropX) * pathScaleX, (p.y - viewportCropY) * pathScaleY)
-      }
-      outputCtx.stroke()
-    }
-    
-    // Create new image from cropped canvas
-    const newImg = new Image()
-    newImg.src = outputCanvas.toDataURL()
-    
-    await new Promise<void>((resolve) => {
-      newImg.onload = () => {
-        // Update image element
-        setImgEl(newImg)
-        
-        // Adapt viewport to match cropped image aspect ratio
-        const imageAspect = newImg.naturalWidth / newImg.naturalHeight
-        
-        let newViewportWidth: number
-        let newViewportHeight: number
-        
-        if (isMobile) {
-          // On mobile: adapt viewport to image proportions within available space
-          const vw = window.innerWidth
-          const vh = window.innerHeight
-          const toolbarHeight = 200
-          const headerHeight = 60
-          const maxAvailableHeight = vh - toolbarHeight - headerHeight
-          const maxAvailableWidth = vw
-          
-          // Calculate viewport size based on image aspect ratio
-          if (imageAspect > maxAvailableWidth / maxAvailableHeight) {
-            // Image is wider - use full width
-            newViewportWidth = maxAvailableWidth
-            newViewportHeight = maxAvailableWidth / imageAspect
-          } else {
-            // Image is taller - use full height
-            newViewportHeight = maxAvailableHeight
-            newViewportWidth = maxAvailableHeight * imageAspect
-          }
-        } else {
-          // On desktop: adapt viewport to image proportions within max dimensions
-          const maxWidth = Math.min(window.innerWidth - 64, 720)
-          const maxHeight = Math.min(window.innerHeight - 200, 520)
-          
-          if (imageAspect > maxWidth / maxHeight) {
-            // Image is wider - use max width
-            newViewportWidth = Math.max(280, maxWidth)
-            newViewportHeight = newViewportWidth / imageAspect
-          } else {
-            // Image is taller - use max height
-            newViewportHeight = Math.max(220, maxHeight)
-            newViewportWidth = newViewportHeight * imageAspect
-          }
-        }
-        
-        // Update viewport to match image proportions
-        setViewport({ width: newViewportWidth, height: newViewportHeight })
-        
-        // Calculate scale - image should fill viewport exactly (1:1)
-        const newScale = newViewportWidth / newImg.naturalWidth
-        setImageScale(newScale)
-        setDisplayedImageSize({ width: newViewportWidth, height: newViewportHeight })
-        
-        // Image fills viewport exactly, no translation needed
-        setImageTranslate({ x: 0, y: 0 })
-        
-        // Set crop rect to cover full viewport with padding
-        const padding = 2
-        const cropWidth = Math.max(MIN_CROP_SIZE, newViewportWidth - padding * 2)
-        const cropHeight = Math.max(MIN_CROP_SIZE, newViewportHeight - padding * 2)
-        setCropRect({
-          x: padding,
-          y: padding,
-          width: cropWidth,
-          height: cropHeight,
-        })
-        
-        // Transform paths to new coordinate system
-        // From old viewport -> canvas -> new viewport
-        const viewportScaleX = newViewportWidth / outputWidth
-        const viewportScaleY = newViewportHeight / outputHeight
-        const translatedPaths = drawList.map(path => ({
-          ...path,
-          points: path.points.map(p => {
-            // Transform: old viewport -> canvas -> new viewport
-            const canvasX = (p.x - viewportCropX) * pathScaleX
-            const canvasY = (p.y - viewportCropY) * pathScaleY
-            // newImageTranslate is {x: 0, y: 0} since image fills viewport exactly
-            const newViewportX = canvasX * viewportScaleX
-            const newViewportY = canvasY * viewportScaleY
-            return {
-              x: newViewportX,
-              y: newViewportY,
-            }
-          }),
-        }))
-        setPaths(translatedPaths.filter(p => 
-          p.points.every(pt => pt.x >= 0 && pt.x <= newViewportWidth && pt.y >= 0 && pt.y <= newViewportHeight)
-        ))
-        setCurrentPath(null)
-        
-        // Force canvas redraw after state updates
-        setTimeout(() => {
-          redrawCanvas()
-        }, 0)
-        
-        // Animate transition
-        const startTime = performance.now()
-        const duration = 300
-        
-        const animate = (currentTime: number) => {
-          const elapsed = currentTime - startTime
-          const progress = Math.min(elapsed / duration, 1)
-          const easeProgress = 1 - Math.pow(1 - progress, 3) // ease-out cubic
-          
-          if (progress < 1) {
-            animationRef.current = requestAnimationFrame(animate)
-          } else {
-            setIsAnimating(false)
-            animationRef.current = null
-            // Redraw canvas after animation completes
-            setTimeout(() => {
-              redrawCanvas()
-            }, 0)
-          }
-        }
-        
-        animationRef.current = requestAnimationFrame(animate)
-        resolve()
-      }
-    })
-  }
-
-  useEffect(() => {
-    return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
-      }
-    }
-  }, [])
-
+  // --- загрузка исходника в рабочий холст ---
   useEffect(() => {
     if (!open || !image) {
-      setImgEl(null)
-      setPaths([])
-      setCurrentPath(null)
-      setIsAnimating(false)
+      setWork(null)
+      setHistory([])
+      setCrop(FULL_CROP)
+      setAspect(null)
+      setMode('crop')
+      setErase(false)
       return
     }
+    let cancelled = false
+    setLoadError(false)
+    setNotice(null)
+    closedRef.current = false
     const img = new Image()
     img.crossOrigin = 'anonymous'
     img.onload = () => {
-      setImgEl(img)
-      if (isMobile) {
-        const vw = window.innerWidth
-        const vh = window.innerHeight
-        const toolbarHeight = 200
-        const headerHeight = 60
-        const availableHeight = vh - toolbarHeight - headerHeight
-        const availableWidth = vw
-        
-        let width = img.naturalWidth
-        let height = img.naturalHeight
-        
-        const scaleX = availableWidth / width
-        const scaleY = availableHeight / height
-        const fittedScale = Math.min(scaleX, scaleY)
-        
-        width = img.naturalWidth * fittedScale
-        height = img.naturalHeight * fittedScale
-        
-        setViewport({ width: availableWidth, height: availableHeight })
-        setImageScale(fittedScale)
-        setDisplayedImageSize({ width, height })
-        const centered = {
-          x: (availableWidth - width) / 2,
-          y: (availableHeight - height) / 2,
-        }
-        setImageTranslate(centered)
-        
-        // Initialize crop rect to full viewport with padding for border visibility
-        const padding = 2
-        setCropRect({ x: padding, y: padding, width: availableWidth - padding * 2, height: availableHeight - padding * 2 })
-      } else {
-        const maxWidth = Math.min(window.innerWidth - 64, 720)
-        const maxHeight = Math.min(window.innerHeight - 200, 520)
-        let width = img.naturalWidth
-        let height = img.naturalHeight
-        if (width > maxWidth) {
-          const ratio = maxWidth / width
-          width *= ratio
-          height *= ratio
-        }
-        if (height > maxHeight) {
-          const ratio = maxHeight / height
-          width *= ratio
-          height *= ratio
-        }
-        width = Math.max(280, width)
-        height = Math.max(220, height)
-        setViewport({ width, height })
-        const fittedScale = Math.max(width / img.naturalWidth, height / img.naturalHeight)
-        setImageScale(fittedScale)
-        const displayedWidth = img.naturalWidth * fittedScale
-        const displayedHeight = img.naturalHeight * fittedScale
-        setDisplayedImageSize({ width: displayedWidth, height: displayedHeight })
-        const centered = {
-          x: (width - displayedWidth) / 2,
-          y: (height - displayedHeight) / 2,
-        }
-          setImageTranslate(centered)
-          
-          // Initialize crop rect to full viewport with padding for border visibility
-          const padding = 2
-          setCropRect({ x: padding, y: padding, width: width - padding * 2, height: height - padding * 2 })
+      if (cancelled) return
+      const iw = img.naturalWidth
+      const ih = img.naturalHeight
+      if (!iw || !ih) {
+        setLoadError(true)
+        return
       }
-      setPaths([])
-      setCurrentPath(null)
-      setMode('crop')
-      setIsAnimating(false)
+      // Ужимаем ДО работы, а не при экспорте: холст натурального размера кладёт вкладку на
+      // телефоне, а Safari отдаёт пустой кадр на снимках больше ~16 Мп.
+      const scale = Math.min(1, Math.sqrt(MAX_WORK_PIXELS / (iw * ih)))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(iw * scale))
+      canvas.height = Math.max(1, Math.round(ih * scale))
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        setLoadError(true)
+        return
+      }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      naturalRef.current = { w: canvas.width, h: canvas.height }
+      setWork({ canvas, strokes: [] })
+      setCrop(FULL_CROP)
+    }
+    // Без onerror редактор навсегда оставался бы пустым чёрным экраном: HEIC с айфона,
+    // битый файл, отозванный objectURL — всё это молча не вызывает onload.
+    img.onerror = () => {
+      if (!cancelled) setLoadError(true)
     }
     img.src = image.previewUrl
-    cleanupImg.current = () => {
-      img.src = ''
-    }
     return () => {
-      cleanupImg.current?.()
-      cleanupImg.current = null
+      cancelled = true
     }
-  }, [open, image?.id, image?.previewUrl, isMobile])
+  }, [open, image])
 
-  useEffect(() => {
-    if (!open) {
-      setPaths([])
-      setCurrentPath(null)
-      setIsAnimating(false)
+  // --- размер сцены: меряем DOM, ничего не вычисляя из window ---
+  useLayoutEffect(() => {
+    const el = sceneRef.current
+    if (!el || !open) return
+    const measure = () => {
+      const rect = el.getBoundingClientRect()
+      setSceneBox({ w: rect.width, h: rect.height })
     }
-  }, [open])
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    // Страховка к ResizeObserver: он не везде срабатывает на смену вьюпорта (поворот
+    // телефона, съезжающая адресная строка, эмуляция устройства). Без этих слушателей
+    // картинка сохраняла старый размер и вылезала под панель — ровно та жалоба, ради
+    // которой всё переписывалось.
+    window.addEventListener('resize', measure)
+    window.addEventListener('orientationchange', measure)
+    const vv = (window as any).visualViewport as VisualViewport | undefined
+    vv?.addEventListener('resize', measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+      window.removeEventListener('orientationchange', measure)
+      vv?.removeEventListener('resize', measure)
+    }
+  }, [open, work])
 
-  const redrawCanvas = () => {
+  /** Прямоугольник картинки внутри сцены (contain) — единственный мост экран↔доли. */
+  const fit = useMemo(() => {
+    if (!work || !sceneBox.w || !sceneBox.h) return null
+    const iw = work.canvas.width
+    const ih = work.canvas.height
+    // Поля по краям: ручки рамки висят на -14px от границы картинки, и без запаса их
+    // срезал бы overflow:hidden сцены — на узком фото за них было не ухватиться.
+    const pad = 18
+    const availW = Math.max(40, sceneBox.w - pad * 2)
+    const availH = Math.max(40, sceneBox.h - pad * 2)
+    const scale = Math.min(availW / iw, availH / ih)
+    const w = iw * scale
+    const h = ih * scale
+    return { x: (sceneBox.w - w) / 2, y: (sceneBox.h - h) / 2, w, h }
+  }, [work, sceneBox])
+
+  const toNorm = useCallback(
+    (clientX: number, clientY: number): Point | null => {
+      const el = sceneRef.current
+      if (!el || !fit) return null
+      const rect = el.getBoundingClientRect()
+      return {
+        x: (clientX - rect.left - fit.x) / fit.w,
+        y: (clientY - rect.top - fit.y) / fit.h,
+      }
+    },
+    [fit],
+  )
+
+  // --- отрисовка предпросмотра ---
+  const redraw = useCallback(() => {
     const canvas = canvasRef.current
-    if (!canvas || viewport.width === 0 || viewport.height === 0) return
+    if (!canvas || !work || !fit) return
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    const w = Math.max(1, Math.round(fit.w))
+    const h = Math.max(1, Math.round(fit.h))
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr
+      canvas.height = h * dpr
+    }
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    const ratio = window.devicePixelRatio || 1
-    if (canvas.width !== viewport.width * ratio || canvas.height !== viewport.height * ratio) {
-      canvas.width = viewport.width * ratio
-      canvas.height = viewport.height * ratio
-      canvas.style.width = `${viewport.width}px`
-      canvas.style.height = `${viewport.height}px`
-    }
-    ctx.save()
-    ctx.scale(ratio, ratio)
-    ctx.clearRect(0, 0, viewport.width, viewport.height)
-    const drawList = currentPath ? [...paths, currentPath] : paths
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-    for (const path of drawList) {
-      if (path.points.length === 0) continue
-      ctx.strokeStyle = path.color
-      ctx.lineWidth = path.size
-      ctx.beginPath()
-      ctx.moveTo(path.points[0].x, path.points[0].y)
-      for (let i = 1; i < path.points.length; i++) {
-        ctx.lineTo(path.points[i].x, path.points[i].y)
-      }
-      ctx.stroke()
-    }
-    ctx.restore()
-  }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, w, h)
+    ctx.drawImage(work.canvas, 0, 0, w, h)
+    // dpr передаём в слой мазков — иначе линии рисовались бы в CSS-пикселях и растягивались
+    // на ретине, выглядя мыльными рядом с резким фото.
+    paintStrokes(ctx, work.strokes, w, h, drawingRef.current?.stroke, dpr, layerRef)
+  }, [work, fit])
+
+  // Перерисовку схлопываем до кадра: события указателя приходят до 1000 раз в секунду, и
+  // синхронная полная перерисовка фото на каждом из них ощущается как рывки при рисовании.
+  const rafRef = useRef(0)
+  const scheduleRedraw = useCallback(() => {
+    if (rafRef.current) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0
+      redraw()
+    })
+  }, [redraw])
 
   useEffect(() => {
-    redrawCanvas()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paths, currentPath, viewport.width, viewport.height])
+    redraw()
+  }, [redraw])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!open) return
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  useEffect(
+    () => () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    },
+    [],
+  )
 
-  const getHandleAtPoint = (x: number, y: number, rect: CropRect): 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w' | 'move' | null => {
-    const handleSize = CROP_HANDLE_SIZE
-    const halfHandle = handleSize / 2
-    
-    // Check corners first
-    if (Math.abs(x - rect.x) < halfHandle && Math.abs(y - rect.y) < halfHandle) return 'nw'
-    if (Math.abs(x - (rect.x + rect.width)) < halfHandle && Math.abs(y - rect.y) < halfHandle) return 'ne'
-    if (Math.abs(x - rect.x) < halfHandle && Math.abs(y - (rect.y + rect.height)) < halfHandle) return 'sw'
-    if (Math.abs(x - (rect.x + rect.width)) < halfHandle && Math.abs(y - (rect.y + rect.height)) < halfHandle) return 'se'
-    
-    // Check edges
-    if (Math.abs(x - rect.x) < halfHandle && y >= rect.y && y <= rect.y + rect.height) return 'w'
-    if (Math.abs(x - (rect.x + rect.width)) < halfHandle && y >= rect.y && y <= rect.y + rect.height) return 'e'
-    if (Math.abs(y - rect.y) < halfHandle && x >= rect.x && x <= rect.x + rect.width) return 'n'
-    if (Math.abs(y - (rect.y + rect.height)) < halfHandle && x >= rect.x && x <= rect.x + rect.width) return 's'
-    
-    // Check if inside rect (for moving)
-    if (x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height) return 'move'
-    
-    return null
-  }
+  // --- рисование ---
+  const brushSize = SIZES[sizeIdx]
 
-  const clampCropRect = (rect: CropRect): CropRect => {
-    const BORDER_WIDTH = 2
-    const padding = BORDER_WIDTH
-    const minX = padding
-    const minY = padding
-    const maxX = viewport.width - padding
-    const maxY = viewport.height - padding
-    const clampedX = Math.max(minX, Math.min(maxX - rect.width, rect.x))
-    const clampedY = Math.max(minY, Math.min(maxY - rect.height, rect.y))
-    const clampedWidth = Math.max(MIN_CROP_SIZE, Math.min(maxX - clampedX, rect.width))
-    const clampedHeight = Math.max(MIN_CROP_SIZE, Math.min(maxY - clampedY, rect.height))
-    return { x: clampedX, y: clampedY, width: clampedWidth, height: clampedHeight }
-  }
-
-  const handleCropPointerDown = (e: ReactPointerEvent) => {
-    if (mode !== 'crop' || isAnimating || !viewportRef.current) return
+  const onScenePointerDown = (e: React.PointerEvent) => {
+    if (mode !== 'draw' || !fit) return
+    // Второй палец (или случайное касание ладонью) не должен перехватывать уже идущий штрих:
+    // раньше он молча обнулял начатую линию, и мазок пропадал целиком.
+    if (drawingRef.current) return
+    const p = toNorm(e.clientX, e.clientY)
+    if (!p) return
+    // Мимо картинки не рисуем: такой «невидимый» мазок всё равно попадал в стек отмены,
+    // и «Отменить» потом срабатывало вхолостую.
+    if (p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) return
     e.preventDefault()
-    const rect = viewportRef.current.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    const handle = getHandleAtPoint(x, y, cropRect)
-    if (!handle) return
-    
-    viewportRef.current.setPointerCapture(e.pointerId)
-    cropDragRef.current = {
-      type: handle === 'move' ? 'move' : 'resize',
-      handle: handle !== 'move' ? handle : undefined,
-      startX: e.clientX,
-      startY: e.clientY,
-      initial: { ...cropRect },
+    // setPointerCapture может бросить (указателя с таким id уже нет — например, жест перехватила
+    // система). Без try исключение обрывало бы обработчик ДО начала штриха, и мазок терялся.
+    try {
+      ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+    } catch {
+      // ignore
     }
+    drawingRef.current = {
+      pointerId: e.pointerId,
+      stroke: { color, size: brushSize, erase, points: [p] },
+    }
+    scheduleRedraw()
   }
 
-  const handleCropPointerMove = (e: ReactPointerEvent) => {
-    if (mode !== 'crop' || !cropDragRef.current.type || isAnimating) return
+  const onScenePointerMove = (e: React.PointerEvent) => {
+    const drawing = drawingRef.current
+    if (!drawing || drawing.pointerId !== e.pointerId) return
+    const p = toNorm(e.clientX, e.clientY)
+    if (!p) return
     e.preventDefault()
-    const rect = viewportRef.current?.getBoundingClientRect()
-    if (!rect) return
-    
-    const deltaX = e.clientX - cropDragRef.current.startX
-    const deltaY = e.clientY - cropDragRef.current.startY
-    const localDeltaX = deltaX
-    const localDeltaY = deltaY
-    
-    if (cropDragRef.current.type === 'move') {
-      const newRect = {
-        x: cropDragRef.current.initial.x + localDeltaX,
-        y: cropDragRef.current.initial.y + localDeltaY,
-        width: cropDragRef.current.initial.width,
-        height: cropDragRef.current.initial.height,
-      }
-      setCropRect(clampCropRect(newRect))
-    } else if (cropDragRef.current.type === 'resize' && cropDragRef.current.handle) {
-      const handle = cropDragRef.current.handle
-      let newRect = { ...cropDragRef.current.initial }
-      
-      if (handle === 'nw') {
-        newRect.x = cropDragRef.current.initial.x + localDeltaX
-        newRect.y = cropDragRef.current.initial.y + localDeltaY
-        newRect.width = cropDragRef.current.initial.width - localDeltaX
-        newRect.height = cropDragRef.current.initial.height - localDeltaY
-      } else if (handle === 'ne') {
-        newRect.y = cropDragRef.current.initial.y + localDeltaY
-        newRect.width = cropDragRef.current.initial.width + localDeltaX
-        newRect.height = cropDragRef.current.initial.height - localDeltaY
-      } else if (handle === 'sw') {
-        newRect.x = cropDragRef.current.initial.x + localDeltaX
-        newRect.width = cropDragRef.current.initial.width - localDeltaX
-        newRect.height = cropDragRef.current.initial.height + localDeltaY
-      } else if (handle === 'se') {
-        newRect.width = cropDragRef.current.initial.width + localDeltaX
-        newRect.height = cropDragRef.current.initial.height + localDeltaY
-      } else if (handle === 'n') {
-        newRect.y = cropDragRef.current.initial.y + localDeltaY
-        newRect.height = cropDragRef.current.initial.height - localDeltaY
-      } else if (handle === 's') {
-        newRect.height = cropDragRef.current.initial.height + localDeltaY
-      } else if (handle === 'w') {
-        newRect.x = cropDragRef.current.initial.x + localDeltaX
-        newRect.width = cropDragRef.current.initial.width - localDeltaX
-      } else if (handle === 'e') {
-        newRect.width = cropDragRef.current.initial.width + localDeltaX
-      }
-      
-      // Ensure minimum size
-      if (newRect.width < MIN_CROP_SIZE) {
-        if (handle === 'nw' || handle === 'w' || handle === 'sw') {
-          newRect.x = cropDragRef.current.initial.x + cropDragRef.current.initial.width - MIN_CROP_SIZE
-        }
-        newRect.width = MIN_CROP_SIZE
-      }
-      if (newRect.height < MIN_CROP_SIZE) {
-        if (handle === 'nw' || handle === 'n' || handle === 'ne') {
-          newRect.y = cropDragRef.current.initial.y + cropDragRef.current.initial.height - MIN_CROP_SIZE
-        }
-        newRect.height = MIN_CROP_SIZE
-      }
-      
-      setCropRect(clampCropRect(newRect))
-    }
+    drawing.stroke.points.push(p)
+    scheduleRedraw()
   }
 
-  const handleCropPointerUp = async (e: ReactPointerEvent) => {
-    const wasDragging = cropDragRef.current.type !== null
-    if (cropDragRef.current.type && viewportRef.current?.hasPointerCapture(e.pointerId)) {
-      viewportRef.current.releasePointerCapture(e.pointerId)
-    }
-    cropDragRef.current.type = null
-    
-    // Auto-apply crop after drag ends
-    if (wasDragging && mode === 'crop' && !isAnimating) {
-      await applyCrop()
-    }
-  }
-
-  const handleStartDrawing = (e: ReactPointerEvent) => {
-    if (mode !== 'draw' || !canvasRef.current || isAnimating) return
-    e.preventDefault()
-    const rect = canvasRef.current.getBoundingClientRect()
-    const point = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-    const newPath: DrawingPath = { color: brushColor, size: brushSize, points: [point] }
-    drawingPointerRef.current = e.pointerId
-    canvasRef.current.setPointerCapture(e.pointerId)
-    setCurrentPath(newPath)
-  }
-
-  const handleDrawMove = (e: ReactPointerEvent) => {
-    if (mode !== 'draw' || drawingPointerRef.current !== e.pointerId) return
-    if (!canvasRef.current) return
-    e.preventDefault()
-    const rect = canvasRef.current.getBoundingClientRect()
-    const point = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-    setCurrentPath((prev) => {
-      if (!prev) return prev
-      if (prev.points.length && prev.points[prev.points.length - 1].x === point.x && prev.points[prev.points.length - 1].y === point.y) {
-        return prev
-      }
-      return { ...prev, points: [...prev.points, point] }
-    })
-  }
-
-  const handleFinishDrawing = (e: ReactPointerEvent) => {
-    if (mode !== 'draw' || drawingPointerRef.current !== e.pointerId) return
-    drawingPointerRef.current = null
-    if (canvasRef.current?.hasPointerCapture(e.pointerId)) {
-      canvasRef.current.releasePointerCapture(e.pointerId)
-    }
-    setCurrentPath((prev) => {
-      if (!prev) return null
-      if (prev.points.length < 2) {
-        const copy = { ...prev, points: [...prev.points, prev.points[0]] }
-        setPaths((existing) => [...existing, copy])
-      } else {
-        setPaths((existing) => [...existing, prev])
-      }
-      return null
-    })
-  }
-
-  const handleUndo = () => {
-    setPaths((prev) => prev.slice(0, -1))
-  }
-
-  const handleClear = () => {
-    setPaths([])
-    setCurrentPath(null)
-  }
-
-  const resetCrop = async () => {
-    if (!imgEl || isAnimating) return
-    // Reload original image
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    await new Promise<void>((resolve) => {
-      img.onload = () => {
-        setImgEl(img)
-        if (isMobile) {
-          const vw = window.innerWidth
-          const vh = window.innerHeight
-          const toolbarHeight = 200
-          const headerHeight = 60
-          const availableHeight = vh - toolbarHeight - headerHeight
-          const availableWidth = vw
-          
-          let width = img.naturalWidth
-          let height = img.naturalHeight
-          
-          const scaleX = availableWidth / width
-          const scaleY = availableHeight / height
-          const fittedScale = Math.min(scaleX, scaleY)
-          
-          const displayedWidth = width * fittedScale
-          const displayedHeight = height * fittedScale
-          
-          setViewport({ width: availableWidth, height: availableHeight })
-          setImageScale(fittedScale)
-          setDisplayedImageSize({ width: displayedWidth, height: displayedHeight })
-          const centered = {
-            x: (availableWidth - displayedWidth) / 2,
-            y: (availableHeight - displayedHeight) / 2,
-          }
-          setImageTranslate(centered)
-          const padding = 2
-          setCropRect({ x: padding, y: padding, width: availableWidth - padding * 2, height: availableHeight - padding * 2 })
-        } else {
-          const maxWidth = Math.min(window.innerWidth - 64, 720)
-          const maxHeight = Math.min(window.innerHeight - 200, 520)
-          let width = img.naturalWidth
-          let height = img.naturalHeight
-          if (width > maxWidth) {
-            const ratio = maxWidth / width
-            width *= ratio
-            height *= ratio
-          }
-          if (height > maxHeight) {
-            const ratio = maxHeight / height
-            width *= ratio
-            height *= ratio
-          }
-          width = Math.max(280, width)
-          height = Math.max(220, height)
-          setViewport({ width, height })
-          const fittedScale = Math.max(width / img.naturalWidth, height / img.naturalHeight)
-          setImageScale(fittedScale)
-          const displayedWidth = img.naturalWidth * fittedScale
-          const displayedHeight = img.naturalHeight * fittedScale
-          setDisplayedImageSize({ width: displayedWidth, height: displayedHeight })
-          const centered = {
-            x: (width - displayedWidth) / 2,
-            y: (height - displayedHeight) / 2,
-          }
-          setImageTranslate(centered)
-          const padding = 2
-          setCropRect({ x: padding, y: padding, width: width - padding * 2, height: height - padding * 2 })
-        }
-        setPaths([])
-        setCurrentPath(null)
-        resolve()
-      }
-      img.src = image!.previewUrl
-    })
-  }
-
-  const exportEdited = async () => {
-    if (!image || !imgEl) return
-    
-    // Use the cropRect aspect ratio directly - this is what user selected
-    const cropAspect = cropRect.width / cropRect.height
-    
-    // Calculate actual visible crop area in viewport coordinates (clamped to image bounds)
-    const viewportCropX = Math.max(cropRect.x, imageTranslate.x)
-    const viewportCropY = Math.max(cropRect.y, imageTranslate.y)
-    const viewportCropRight = Math.min(cropRect.x + cropRect.width, imageTranslate.x + displayedImageSize.width)
-    const viewportCropBottom = Math.min(cropRect.y + cropRect.height, imageTranslate.y + displayedImageSize.height)
-    const viewportCropWidth = viewportCropRight - viewportCropX
-    const viewportCropHeight = viewportCropBottom - viewportCropY
-    
-    // Calculate crop area in image coordinates (natural image size)
-    const scaleX = imgEl.naturalWidth / displayedImageSize.width
-    const scaleY = imgEl.naturalHeight / displayedImageSize.height
-    
-    // Calculate the crop area in image coordinates
-    const cropX = (viewportCropX - imageTranslate.x) * scaleX
-    const cropY = (viewportCropY - imageTranslate.y) * scaleY
-    let cropW = viewportCropWidth * scaleX
-    let cropH = viewportCropHeight * scaleY
-    
-    // Preserve the selected aspect ratio - adjust dimensions to match cropRect aspect ratio
-    const currentAspect = cropW / cropH
-    if (currentAspect > cropAspect) {
-      // Current is wider than selected - reduce width
-      cropW = cropH * cropAspect
+  const endStroke = (e: React.PointerEvent) => {
+    const drawing = drawingRef.current
+    if (!drawing || drawing.pointerId !== e.pointerId) return
+    drawingRef.current = null
+    const stroke = drawing.stroke
+    if (stroke.points.length && work) {
+      setWork({ canvas: work.canvas, strokes: [...work.strokes, stroke] })
     } else {
-      // Current is taller than selected - reduce height
-      cropH = cropW / cropAspect
+      redraw()
     }
-    
-    // Clamp crop coordinates to image boundaries
-    const imgNaturalWidth = imgEl.naturalWidth
-    const imgNaturalHeight = imgEl.naturalHeight
-    
-    let finalCropX = Math.max(0, cropX)
-    let finalCropY = Math.max(0, cropY)
-    let finalCropW = Math.max(1, Math.min(cropW, imgNaturalWidth - finalCropX))
-    let finalCropH = Math.max(1, Math.min(cropH, imgNaturalHeight - finalCropY))
-    
-    // If we had to adjust due to boundaries, recalculate to preserve aspect
-    const actualAspect = finalCropW / finalCropH
-    if (Math.abs(actualAspect - cropAspect) > 0.01) {
-      if (actualAspect > cropAspect) {
-        finalCropW = finalCropH * cropAspect
-      } else {
-        finalCropH = finalCropW / cropAspect
-      }
-      // Re-clamp
-      finalCropW = Math.max(1, Math.min(finalCropW, imgNaturalWidth - finalCropX))
-      finalCropH = Math.max(1, Math.min(finalCropH, imgNaturalHeight - finalCropY))
-    }
-    
-    // Calculate output dimensions - use the selected aspect ratio
-    const outputWidth = Math.max(1, Math.round(finalCropW))
-    const outputHeight = Math.max(1, Math.round(finalCropH))
-    
-    const canvas = document.createElement('canvas')
-    canvas.width = outputWidth
-    canvas.height = outputHeight
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    
-    // Draw cropped image - preserve aspect ratio of selected crop area
-    ctx.drawImage(imgEl, finalCropX, finalCropY, finalCropW, finalCropH, 0, 0, outputWidth, outputHeight)
-    
-    // Draw paths scaled to crop area - transform from viewport to canvas coordinates
-    const pathScaleX = outputWidth / viewportCropWidth
-    const pathScaleY = outputHeight / viewportCropHeight
-    const drawList = [...paths, ...(currentPath ? [currentPath] : [])]
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-    for (const path of drawList) {
-      if (!path.points.length) continue
-      ctx.strokeStyle = path.color
-      ctx.lineWidth = path.size * ((pathScaleX + pathScaleY) / 2)
-      ctx.beginPath()
-      const firstPoint = path.points[0]
-      // Transform from viewport coordinates to canvas coordinates
-      const cropPointX = (firstPoint.x - viewportCropX) * pathScaleX
-      const cropPointY = (firstPoint.y - viewportCropY) * pathScaleY
-      ctx.moveTo(cropPointX, cropPointY)
-      for (let i = 1; i < path.points.length; i++) {
-        const p = path.points[i]
-        ctx.lineTo((p.x - viewportCropX) * pathScaleX, (p.y - viewportCropY) * pathScaleY)
-      }
-      ctx.stroke()
-    }
-    
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), 'image/png', 0.96))
-    if (!blob) return
-    const baseName = image.fileName?.replace(/\.[^.]+$/, '') || image.file.name.replace(/\.[^.]+$/, '') || 'image'
-    const finalFile = new File([blob], `${baseName}-edited.png`, { type: 'image/png' })
-    const previewUrl = URL.createObjectURL(blob)
-    onApply({ file: finalFile, previewUrl })
   }
 
-  const renderCropHandles = () => {
-    if (mode !== 'crop' || isAnimating) return null
-    const { x, y, width, height } = cropRect
-    const handleStyle: React.CSSProperties = {
-      position: 'absolute',
-      width: CROP_HANDLE_SIZE,
-      height: CROP_HANDLE_SIZE,
-      background: '#fff',
-      border: '2px solid rgba(0,0,0,0.3)',
-      borderRadius: '2px',
-      cursor: 'pointer',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+  const undoStroke = () => {
+    if (!work) return
+    if (work.strokes.length) {
+      setWork({ canvas: work.canvas, strokes: work.strokes.slice(0, -1) })
+      return
     }
-    
-    return (
-      <>
-        <div style={{ ...handleStyle, left: x - CROP_HANDLE_SIZE / 2, top: y - CROP_HANDLE_SIZE / 2, cursor: 'nwse-resize' }} />
-        <div style={{ ...handleStyle, left: x + width - CROP_HANDLE_SIZE / 2, top: y - CROP_HANDLE_SIZE / 2, cursor: 'nesw-resize' }} />
-        <div style={{ ...handleStyle, left: x - CROP_HANDLE_SIZE / 2, top: y + height - CROP_HANDLE_SIZE / 2, cursor: 'nesw-resize' }} />
-        <div style={{ ...handleStyle, left: x + width - CROP_HANDLE_SIZE / 2, top: y + height - CROP_HANDLE_SIZE / 2, cursor: 'nwse-resize' }} />
-      </>
-    )
+    // Мазков не осталось — откатываем предыдущую обрезку/поворот вместе с рамкой и
+    // соотношением: без них после отмены поворота оставалось «перевёрнутое» 9:16,
+    // которого нет ни в одном чипе.
+    const prev = history[history.length - 1]
+    if (!prev) return
+    setHistory(history.slice(0, -1))
+    setWork(prev.work)
+    setCrop(prev.crop)
+    setAspect(prev.aspect)
+    aspectAppliedRef.current = { aspect: prev.aspect, work: prev.work }
   }
+
+  const canUndo = !!work && (work.strokes.length > 0 || history.length > 0)
+
+  // --- обрезка ---
+  const applyAspect = useCallback(
+    (rect: CropRect, ratio: number | null, iw: number, ih: number): CropRect => {
+      if (!ratio) return rect
+      // Соотношение задаётся в ПИКСЕЛЯХ картинки, поэтому переводим доли в пиксели и обратно.
+      const cx = rect.x + rect.w / 2
+      const cy = rect.y + rect.h / 2
+      let wPx = rect.w * iw
+      let hPx = rect.h * ih
+      if (wPx / hPx > ratio) wPx = hPx * ratio
+      else hPx = wPx / ratio
+      // Ужимаем пропорционально, если сторона вышла за картинку: делить каждую сторону
+      // по отдельности нельзя — пропорция бы поехала.
+      const shrink = Math.min(1, iw / wPx, ih / hPx)
+      wPx *= shrink
+      hPx *= shrink
+      const w = wPx / iw
+      const h = hPx / ih
+      const x = Math.min(Math.max(cx - w / 2, 0), 1 - w)
+      const y = Math.min(Math.max(cy - h / 2, 0), 1 - h)
+      return clampAspectRect({ x, y, w, h }, ratio, iw, ih)
+    },
+    [],
+  )
+
+  const onAspectPick = (ratio: number | null) => setAspect(ratio)
+
+  // Подгоняем рамку под выбранное соотношение ЗДЕСЬ, а не в обработчике кнопки: иначе выбор,
+  // сделанный до того, как картинка догрузилась (work ещё null), молча терялся — соотношение
+  // подсвечено, а рамка осталась прежней.
+  const aspectAppliedRef = useRef<{ aspect: number | null; work: WorkState | null }>({ aspect: null, work: null })
+  useEffect(() => {
+    if (!work) return
+    const prev = aspectAppliedRef.current
+    if (prev.aspect === aspect && prev.work === work) return
+    aspectAppliedRef.current = { aspect, work }
+    if (!aspect) return
+    setCrop((c) => applyAspect(c, aspect, work.canvas.width, work.canvas.height))
+  }, [aspect, work, applyAspect])
+
+  const onCropPointerDown = (kind: 'move' | Handle) => (e: React.PointerEvent) => {
+    if (mode !== 'crop') return
+    e.preventDefault()
+    e.stopPropagation()
+    try {
+      ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+    } catch {
+      // ignore
+    }
+    cropDragRef.current = { pointerId: e.pointerId, kind, start: { x: e.clientX, y: e.clientY }, initial: crop }
+  }
+
+  const onCropPointerMove = (e: React.PointerEvent) => {
+    const drag = cropDragRef.current
+    if (!drag || drag.pointerId !== e.pointerId || !fit || !work) return
+    e.preventDefault()
+    const dx = (e.clientX - drag.start.x) / fit.w
+    const dy = (e.clientY - drag.start.y) / fit.h
+    const init = drag.initial
+    let next: CropRect = { ...init }
+
+    if (drag.kind === 'move') {
+      next.x = clamp(init.x + dx, 0, 1 - init.w)
+      next.y = clamp(init.y + dy, 0, 1 - init.h)
+      cropDragRef.current = { ...drag }
+      setCrop(next)
+      return
+    }
+
+    const k = drag.kind
+    let left = init.x
+    let top = init.y
+    let right = init.x + init.w
+    let bottom = init.y + init.h
+    if (k.includes('w')) left = clamp(init.x + dx, 0, right - MIN_CROP)
+    if (k.includes('e')) right = clamp(init.x + init.w + dx, left + MIN_CROP, 1)
+    if (k.includes('n')) top = clamp(init.y + dy, 0, bottom - MIN_CROP)
+    if (k.includes('s')) bottom = clamp(init.y + init.h + dy, top + MIN_CROP, 1)
+    next = { x: left, y: top, w: right - left, h: bottom - top }
+
+    if (aspect) {
+      // Держим пропорцию, отталкиваясь от «якорной» стороны, противоположной хвату.
+      const iw = work.canvas.width
+      const ih = work.canvas.height
+      const anchorX = k.includes('w') ? right : left
+      const anchorY = k.includes('n') ? bottom : top
+      let wPx = next.w * iw
+      let hPx = next.h * ih
+      if (k === 'n' || k === 's') wPx = hPx * aspect
+      else if (k === 'e' || k === 'w') hPx = wPx / aspect
+      else if (wPx / hPx > aspect) wPx = hPx * aspect
+      else hPx = wPx / aspect
+      let w = wPx / iw
+      let h = hPx / ih
+      let x = k.includes('w') ? anchorX - w : anchorX
+      let y = k.includes('n') ? anchorY - h : anchorY
+      // Упираемся в края, не ломая пропорцию.
+      if (x < 0) {
+        w += x
+        h = (w * iw) / aspect / ih
+        x = 0
+      }
+      if (y < 0) {
+        h += y
+        w = ((h * ih) * aspect) / iw
+        y = 0
+      }
+      if (x + w > 1) {
+        w = 1 - x
+        h = (w * iw) / aspect / ih
+      }
+      if (y + h > 1) {
+        h = 1 - y
+        w = ((h * ih) * aspect) / iw
+      }
+      next = clampAspectRect({ x, y, w, h }, aspect, iw, ih)
+    }
+    setCrop(next)
+  }
+
+  const onCropPointerUp = (e: React.PointerEvent) => {
+    if (cropDragRef.current?.pointerId === e.pointerId) cropDragRef.current = null
+  }
+
+  /** Снимок состояния для «Отменить». Длину ограничиваем — иначе десяток полноразмерных
+   *  холстов в памяти телефона заканчивается вылетом вкладки. */
+  const pushHistory = () => {
+    if (!work) return
+    setHistory((h) => [...h, { work, crop, aspect }].slice(-MAX_HISTORY))
+  }
+
+  /** Вырезает выбранное и делает результат новым рабочим изображением. */
+  const commitCrop = () => {
+    if (!work) return
+    const iw = work.canvas.width
+    const ih = work.canvas.height
+    const safe = sanitizeCrop(crop)
+    const sx = Math.round(safe.x * iw)
+    const sy = Math.round(safe.y * ih)
+    const sw = Math.max(1, Math.min(Math.round(safe.w * iw), iw - sx))
+    const sh = Math.max(1, Math.min(Math.round(safe.h * ih), ih - sy))
+    if (sw === iw && sh === ih) return
+    const canvas = document.createElement('canvas')
+    canvas.width = sw
+    canvas.height = sh
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(work.canvas, sx, sy, sw, sh, 0, 0, sw, sh)
+    // Мазки живут в долях, поэтому пересчитываем их в систему новой картинки.
+    const strokes = work.strokes
+      .map((s) => ({
+        ...s,
+        // Толщина задана долей меньшей стороны — при вырезке доля меняется.
+        size: (s.size * Math.min(iw, ih)) / Math.min(sw, sh),
+        points: s.points.map((p) => ({ x: (p.x * iw - sx) / sw, y: (p.y * ih - sy) / sh })),
+      }))
+      .filter((s) => s.points.some((p) => p.x > -0.2 && p.x < 1.2 && p.y > -0.2 && p.y < 1.2))
+    pushHistory()
+    setWork({ canvas, strokes })
+    setCrop(FULL_CROP)
+  }
+
+  const rotate = () => {
+    if (!work) return
+    const iw = work.canvas.width
+    const ih = work.canvas.height
+    const canvas = document.createElement('canvas')
+    canvas.width = ih
+    canvas.height = iw
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.translate(ih, 0)
+    ctx.rotate(Math.PI / 2)
+    ctx.drawImage(work.canvas, 0, 0)
+    const strokes = work.strokes.map((s) => ({
+      ...s,
+      points: s.points.map((p) => ({ x: 1 - p.y, y: p.x })),
+    }))
+    pushHistory()
+    setWork({ canvas, strokes })
+    setCrop((prev) => ({ x: 1 - prev.y - prev.h, y: prev.x, w: prev.h, h: prev.w }))
+    // Соотношение переворачиваем вместе с картинкой, но только если перевёрнутое есть в
+    // списке: иначе чип гаснет, а рамка живёт по значению, которого пользователь не выбирал.
+    setAspect((a) => {
+      if (!a) return a
+      const inverted = 1 / a
+      return ASPECTS.some((opt) => opt.value !== null && Math.abs(opt.value - inverted) < 0.001) ? inverted : null
+    })
+  }
+
+  // --- сохранение ---
+  /** Ничего не трогали — не пережимаем: каждый прогон toBlob портит JPEG заново. */
+  const isUntouched = () =>
+    !!work &&
+    !history.length &&
+    !work.strokes.length &&
+    Math.abs(crop.x) < 0.001 &&
+    Math.abs(crop.y) < 0.001 &&
+    Math.abs(crop.w - 1) < 0.001 &&
+    Math.abs(crop.h - 1) < 0.001 &&
+    work.canvas.width === naturalRef.current.w &&
+    work.canvas.height === naturalRef.current.h
+
+  const apply = async () => {
+    if (!work || !image || busy) return
+    if (isUntouched()) {
+      onClose()
+      return
+    }
+    setBusy(true)
+    try {
+      const iw = work.canvas.width
+      const ih = work.canvas.height
+      const safe = sanitizeCrop(crop)
+      const sx = Math.round(safe.x * iw)
+      const sy = Math.round(safe.y * ih)
+      const sw = Math.max(1, Math.min(Math.round(safe.w * iw), iw - sx))
+      const sh = Math.max(1, Math.min(Math.round(safe.h * ih), ih - sy))
+      const out = document.createElement('canvas')
+      out.width = sw
+      out.height = sh
+      const ctx = out.getContext('2d')
+      if (!ctx) throw new Error('canvas')
+      ctx.drawImage(work.canvas, sx, sy, sw, sh, 0, 0, sw, sh)
+      const strokes = work.strokes.map((s) => ({
+        ...s,
+        size: (s.size * Math.min(iw, ih)) / Math.min(sw, sh),
+        points: s.points.map((p) => ({ x: (p.x * iw - sx) / sw, y: (p.y * ih - sy) / sh })),
+      }))
+      paintStrokes(ctx, strokes, sw, sh)
+
+      // Форматы с прозрачностью сохраняем в PNG: jpeg залил бы прозрачные места чёрным.
+      const src = `${image.file.type || ''} ${image.file.name || ''} ${image.fileName || ''}`.toLowerCase()
+      const keepAlpha = /(png|webp|gif|svg)/.test(src)
+      const type = keepAlpha ? 'image/png' : 'image/jpeg'
+      const blob = await new Promise<Blob | null>((resolve) => out.toBlob(resolve, type, keepAlpha ? undefined : 0.92))
+      if (!blob) throw new Error('blob')
+      const baseName = (image.fileName || image.file.name || 'photo').replace(/\.[^.]+$/, '')
+      const file = new File([blob], `${baseName}${keepAlpha ? '.png' : '.jpg'}`, { type })
+      const url = URL.createObjectURL(blob)
+      if (closedRef.current) {
+        // Пока кодировали, редактор закрыли — результат никому не нужен, освобождаем ссылку.
+        URL.revokeObjectURL(url)
+        return
+      }
+      onApply({ file, previewUrl: url })
+    } catch {
+      // Молчаливый провал выглядел как «кнопка не работает»: говорим вслух.
+      setNotice('Не удалось сохранить фото. Попробуйте ещё раз.')
+      setBusy(false)
+      return
+    }
+    setBusy(false)
+  }
+
+  const requestClose = useCallback(() => {
+    if (busy) return // идёт кодирование — не бросаем работу на полпути
+    closedRef.current = true
+    onClose()
+  }, [busy, onClose])
+
+  // Аппаратная «Назад» на Android закрывает РЕДАКТОР, а не чат. Раньше это было только
+  // обещано комментарием: обработчика popstate не существовало, и «назад» выкидывала из
+  // переписки, теряя правки.
+  useEffect(() => {
+    if (!open) return
+    const marker = { ebImageEditor: true }
+    try {
+      window.history.pushState(marker, '')
+    } catch {
+      // ignore
+    }
+    const onPop = () => {
+      closedRef.current = true
+      onClose()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') requestClose()
+    }
+    window.addEventListener('popstate', onPop)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      window.removeEventListener('keydown', onKey)
+      // Свою запись из истории убираем, только если она ещё наверху — иначе съели бы
+      // чужой переход.
+      try {
+        if ((window.history.state as any)?.ebImageEditor) window.history.back()
+      } catch {
+        // ignore
+      }
+    }
+  }, [open, onClose, requestClose])
 
   if (!open || !image) return null
 
-  if (isMobile) {
-    return createPortal(
-      <div
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: '#000',
-          zIndex: 1300,
-          display: 'flex',
-          flexDirection: 'column',
-          touchAction: 'none',
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '12px 16px',
-            background: 'rgba(0,0,0,0.8)',
-            backdropFilter: 'blur(10px)',
-            borderBottom: '1px solid rgba(255,255,255,0.1)',
-            zIndex: 10,
-          }}
-        >
+  const cropStyle = fit
+    ? {
+        left: `${fit.x + crop.x * fit.w}px`,
+        top: `${fit.y + crop.y * fit.h}px`,
+        width: `${crop.w * fit.w}px`,
+        height: `${crop.h * fit.h}px`,
+      }
+    : undefined
+
+  return createPortal(
+    <div style={S.root}>
+      <div style={S.header}>
+        <button type="button" onClick={requestClose} style={S.iconBtn} aria-label="Отмена">
+          <X size={22} />
+        </button>
+        <div style={S.tabs}>
           <button
-            onClick={onClose}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: '#fff',
-              fontSize: 16,
-              padding: '8px 0',
-              cursor: 'pointer',
-            }}
+            type="button"
+            onClick={() => setMode('crop')}
+            style={{ ...S.tab, ...(mode === 'crop' ? S.tabActive : null) }}
           >
-            Отмена
+            <CropIcon size={16} /> Обрезка
           </button>
-          <div style={{ fontSize: 16, fontWeight: 600, color: '#fff' }}>Редактирование</div>
           <button
-            onClick={exportEdited}
-            disabled={!isReady || isAnimating}
-            style={{
-              background: !isReady || isAnimating ? 'rgba(255,255,255,0.2)' : '#ff9f0a',
-              border: 'none',
-              color: '#fff',
-              fontSize: 16,
-              fontWeight: 600,
-              padding: '8px 16px',
-              borderRadius: 8,
-              cursor: isReady && !isAnimating ? 'pointer' : 'not-allowed',
+            type="button"
+            onClick={() => {
+              // Применяем рамку СРАЗУ: в режиме рисования её не видно, а «Готово» всё равно
+              // резало по ней — люди рисовали по краям и получали обрезанное фото без
+              // всякого предупреждения.
+              commitCrop()
+              setMode('draw')
             }}
+            style={{ ...S.tab, ...(mode === 'draw' ? S.tabActive : null) }}
           >
-            Сохранить
+            <Pencil size={16} /> Рисование
           </button>
         </div>
-
-        {/* Image Viewport */}
-        <div
-          ref={viewportRef}
-          onPointerDown={handleCropPointerDown}
-          onPointerMove={handleCropPointerMove}
-          onPointerUp={handleCropPointerUp}
-          onPointerLeave={handleCropPointerUp}
-          style={{
-            position: 'relative',
-            flex: 1,
-            background: '#000',
-            overflow: 'hidden',
-            touchAction: 'none',
-          }}
-        >
-          {imgEl && (
-            <img
-              src={imgEl.src}
-              draggable={false}
-              alt="Редактируемое изображение"
-              style={{
-                position: 'absolute',
-                left: imageTranslate.x,
-                top: imageTranslate.y,
-                width: displayedImageSize.width,
-                height: displayedImageSize.height,
-                userSelect: 'none',
-                pointerEvents: 'none',
-                transition: isAnimating ? 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1), height 0.3s cubic-bezier(0.4, 0, 0.2, 1), left 0.3s cubic-bezier(0.4, 0, 0.2, 1), top 0.3s cubic-bezier(0.4, 0, 0.2, 1)' : 'none',
-              }}
-            />
-          )}
-          <canvas
-            ref={canvasRef}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              pointerEvents: mode === 'draw' ? 'auto' : 'none',
-            }}
-            onPointerDown={handleStartDrawing}
-            onPointerMove={handleDrawMove}
-            onPointerUp={handleFinishDrawing}
-            onPointerLeave={handleFinishDrawing}
-          />
-          <canvas
-            ref={cropCanvasRef}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              pointerEvents: 'none',
-              opacity: 0,
-            }}
-          />
-          
-          {/* Crop overlay */}
-          {mode === 'crop' && !isAnimating && (
-            <>
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  background: 'rgba(0,0,0,0.5)',
-                  clipPath: `polygon(
-                    0% 0%, 0% 100%,
-                    ${cropRect.x}px 100%,
-                    ${cropRect.x}px ${cropRect.y}px,
-                    ${cropRect.x + cropRect.width}px ${cropRect.y}px,
-                    ${cropRect.x + cropRect.width}px ${cropRect.y + cropRect.height}px,
-                    ${cropRect.x}px ${cropRect.y + cropRect.height}px,
-                    ${cropRect.x}px 100%,
-                    100% 100%, 100% 0%
-                  )`,
-                  pointerEvents: 'none',
-                }}
-              />
-              <div
-                style={{
-                  position: 'absolute',
-                  left: cropRect.x,
-                  top: cropRect.y,
-                  width: cropRect.width,
-                  height: cropRect.height,
-                  border: '2px solid #fff',
-                  pointerEvents: 'none',
-                }}
-              />
-              {renderCropHandles()}
-            </>
-          )}
-        </div>
-
-        {/* Toolbar */}
-        <div
-          style={{
-            background: 'rgba(0,0,0,0.95)',
-            backdropFilter: 'blur(10px)',
-            borderTop: '1px solid rgba(255,255,255,0.1)',
-            padding: '16px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 16,
-            maxHeight: '40vh',
-            overflowY: 'auto',
-          }}
-        >
-          {/* Mode Toggle */}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              onClick={() => setMode('crop')}
-              style={{
-                flex: 1,
-                padding: '12px',
-                borderRadius: 12,
-                border: 'none',
-                background: mode === 'crop' ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.05)',
-                color: '#fff',
-                fontSize: 14,
-                fontWeight: 500,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-                cursor: 'pointer',
-              }}
-            >
-              Обрезать
-            </button>
-            <button
-              onClick={() => setMode('draw')}
-              style={{
-                flex: 1,
-                padding: '12px',
-                borderRadius: 12,
-                border: 'none',
-                background: mode === 'draw' ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.05)',
-                color: '#fff',
-                fontSize: 14,
-                fontWeight: 500,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-                cursor: 'pointer',
-              }}
-            >
-              <PenSquare size={18} />
-              Рисовать
-            </button>
-          </div>
-
-          <button
-            onClick={resetCrop}
-            disabled={isAnimating}
-            style={{
-              padding: '10px',
-              borderRadius: 10,
-              border: 'none',
-              background: isAnimating ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.1)',
-              color: isAnimating ? 'rgba(255,255,255,0.4)' : '#fff',
-              fontSize: 14,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 8,
-              cursor: isAnimating ? 'not-allowed' : 'pointer',
-            }}
-          >
-            <RotateCcw size={16} />
-            Сбросить
-          </button>
-
-          {mode === 'draw' && (
-            <>
-              {/* Colors */}
-              <div>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginBottom: 8 }}>Цвет кисти</div>
-                <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-                  {BRUSH_COLORS.map((color) => (
-                    <button
-                      key={color}
-                      onClick={() => setBrushColor(color)}
-                      style={{
-                        width: 40,
-                        height: 40,
-                        borderRadius: '50%',
-                        border: brushColor === color ? '3px solid #fff' : '2px solid rgba(255,255,255,0.3)',
-                        background: color,
-                        cursor: 'pointer',
-                        flexShrink: 0,
-                      }}
-                      aria-label={`Выбрать цвет ${color}`}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Brush Size */}
-              <div>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginBottom: 8 }}>Толщина</div>
-                <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-                  {BRUSH_SIZES.map((size) => (
-                    <button
-                      key={size}
-                      onClick={() => setBrushSize(size)}
-                      style={{
-                        width: 48,
-                        height: 48,
-                        borderRadius: 12,
-                        border: brushSize === size ? '2px solid #fff' : '1px solid rgba(255,255,255,0.2)',
-                        background: brushSize === size ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.05)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: size,
-                          height: size,
-                          borderRadius: '50%',
-                          background: brushColor,
-                          display: 'inline-block',
-                        }}
-                      />
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Undo/Clear */}
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  onClick={handleUndo}
-                  disabled={paths.length === 0}
-                  style={{
-                    flex: 1,
-                    padding: '10px',
-                    borderRadius: 10,
-                    border: 'none',
-                    background: paths.length === 0 ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.1)',
-                    color: paths.length === 0 ? 'rgba(255,255,255,0.4)' : '#fff',
-                    fontSize: 14,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 6,
-                    cursor: paths.length === 0 ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  <Undo2 size={16} />
-                  Отменить
-                </button>
-                <button
-                  onClick={handleClear}
-                  disabled={paths.length === 0 && !currentPath}
-                  style={{
-                    flex: 1,
-                    padding: '10px',
-                    borderRadius: 10,
-                    border: 'none',
-                    background: paths.length === 0 && !currentPath ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.1)',
-                    color: paths.length === 0 && !currentPath ? 'rgba(255,255,255,0.4)' : '#fff',
-                    fontSize: 14,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 6,
-                    cursor: paths.length === 0 && !currentPath ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  Очистить
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </div>,
-      document.body
-    )
-  }
-
-  // Desktop version
-  const modalBody = (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(2,4,10,0.75)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1300,
-        padding: 16,
-      }}
-    >
-      <div
-        style={{
-          background: 'var(--surface-200)',
-          border: '1px solid var(--surface-border)',
-          borderRadius: 16,
-          width: 'min(960px, 100%)',
-          maxHeight: '90vh',
-          display: 'flex',
-          flexDirection: 'column',
-          padding: 20,
-          gap: 16,
-          color: 'var(--text-primary)',
-          boxShadow: 'var(--shadow-lg)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <div style={{ fontWeight: 600, fontSize: 16 }}>
-            Редактирование изображения
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{image.fileName || image.file.name}</div>
-          </div>
-          <button className="btn btn-icon btn-ghost" onClick={onClose} aria-label="Закрыть редактор">
-            <X size={18} />
-          </button>
-        </div>
-        <div
-          ref={viewportRef}
-          onPointerDown={handleCropPointerDown}
-          onPointerMove={handleCropPointerMove}
-          onPointerUp={handleCropPointerUp}
-          onPointerLeave={handleCropPointerUp}
-          style={{
-            position: 'relative',
-            width: viewport.width,
-            height: viewport.height,
-            background: '#05070e',
-            overflow: 'hidden',
-            margin: '0 auto',
-            touchAction: 'none',
-            border: '1px solid rgba(255,255,255,0.08)',
-            cursor: mode === 'crop' ? 'default' : 'crosshair',
-          }}
-        >
-          {imgEl && (
-            <img
-              src={imgEl.src}
-              draggable={false}
-              alt="Редактируемое изображение"
-              style={{
-                position: 'absolute',
-                left: imageTranslate.x,
-                top: imageTranslate.y,
-                width: displayedImageSize.width,
-                height: displayedImageSize.height,
-                userSelect: 'none',
-                pointerEvents: 'none',
-                transition: isAnimating ? 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1), height 0.3s cubic-bezier(0.4, 0, 0.2, 1), left 0.3s cubic-bezier(0.4, 0, 0.2, 1), top 0.3s cubic-bezier(0.4, 0, 0.2, 1)' : 'none',
-              }}
-            />
-          )}
-          <canvas
-            ref={canvasRef}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              pointerEvents: mode === 'draw' ? 'auto' : 'none',
-            }}
-            onPointerDown={handleStartDrawing}
-            onPointerMove={handleDrawMove}
-            onPointerUp={handleFinishDrawing}
-            onPointerLeave={handleFinishDrawing}
-          />
-          <canvas
-            ref={cropCanvasRef}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              pointerEvents: 'none',
-              opacity: 0,
-            }}
-          />
-          
-          {/* Crop overlay */}
-          {mode === 'crop' && !isAnimating && (
-            <>
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  background: 'rgba(0,0,0,0.5)',
-                  clipPath: `polygon(
-                    0% 0%, 0% 100%,
-                    ${cropRect.x}px 100%,
-                    ${cropRect.x}px ${cropRect.y}px,
-                    ${cropRect.x + cropRect.width}px ${cropRect.y}px,
-                    ${cropRect.x + cropRect.width}px ${cropRect.y + cropRect.height}px,
-                    ${cropRect.x}px ${cropRect.y + cropRect.height}px,
-                    ${cropRect.x}px 100%,
-                    100% 100%, 100% 0%
-                  )`,
-                  pointerEvents: 'none',
-                }}
-              />
-              <div
-                style={{
-                  position: 'absolute',
-                  left: cropRect.x,
-                  top: cropRect.y,
-                  width: cropRect.width,
-                  height: cropRect.height,
-                  border: '2px solid #fff',
-                  pointerEvents: 'none',
-                }}
-              />
-              {renderCropHandles()}
-            </>
-          )}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              className={mode === 'crop' ? 'btn btn-secondary' : 'btn btn-ghost'}
-              onClick={() => setMode('crop')}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            >
-              Обрезать
-            </button>
-            <button
-              className={mode === 'draw' ? 'btn btn-secondary' : 'btn btn-ghost'}
-              onClick={() => setMode('draw')}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            >
-              <PenSquare size={16} />
-              Рисовать
-            </button>
-            <button className="btn btn-ghost" onClick={resetCrop} disabled={isAnimating} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <RotateCcw size={16} />
-              Сбросить
-            </button>
-            {mode === 'draw' && (
-              <>
-                <button
-                  className="btn btn-ghost"
-                  onClick={handleUndo}
-                  disabled={paths.length === 0}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                >
-                  <Undo2 size={16} />
-                  Отменить штрих
-                </button>
-                <button
-                  className="btn btn-ghost"
-                  onClick={handleClear}
-                  disabled={paths.length === 0 && !currentPath}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                >
-                  Очистить рисунок
-                </button>
-              </>
-            )}
-          </div>
-          {mode === 'draw' && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, alignItems: 'center' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Цвет кисти</div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {BRUSH_COLORS.map((color) => (
-                    <button
-                      key={color}
-                      onClick={() => setBrushColor(color)}
-                      style={{
-                        width: 28,
-                        height: 28,
-                        borderRadius: '50%',
-                        border: brushColor === color ? '2px solid #fff' : '2px solid transparent',
-                        background: color,
-                        cursor: 'pointer',
-                      }}
-                      aria-label={`Выбрать цвет ${color}`}
-                    />
-                  ))}
-                </div>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Толщина</div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {BRUSH_SIZES.map((size) => (
-                    <button
-                      key={size}
-                      onClick={() => setBrushSize(size)}
-                      className={brushSize === size ? 'btn btn-secondary' : 'btn btn-ghost'}
-                      style={{ width: 44, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                    >
-                      <span
-                        style={{
-                          width: size,
-                          height: size,
-                          borderRadius: '50%',
-                          background: brushColor,
-                          display: 'inline-block',
-                        }}
-                      />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-          <button className="btn btn-ghost" onClick={onClose}>Отмена</button>
-          <button className="btn btn-primary" onClick={exportEdited} disabled={!isReady || isAnimating} style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-            <Check size={16} />
-            Сохранить
-          </button>
-        </div>
+        <button type="button" onClick={apply} disabled={busy} style={{ ...S.iconBtn, ...S.doneBtn }} aria-label="Готово">
+          <Check size={22} />
+        </button>
       </div>
-    </div>
-  )
 
-  return createPortal(modalBody, document.body)
+      {loadError && (
+        <div style={S.errorBox}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Не удалось открыть фото</div>
+          <div style={{ color: '#9aa0a8', fontSize: 13, textAlign: 'center' }}>
+            Браузер не смог его прочитать — например, формат HEIC с айфона. Отправьте файл как есть.
+          </div>
+          <button type="button" onClick={requestClose} style={{ ...S.actionBtn, marginTop: 14 }}>
+            Закрыть
+          </button>
+        </div>
+      )}
+      {notice && !loadError && <div style={S.notice}>{notice}</div>}
+      <div
+        ref={sceneRef}
+        style={{ ...S.scene, cursor: mode === 'draw' ? 'crosshair' : 'default', ...(loadError ? { display: 'none' } : null) }}
+        onPointerDown={onScenePointerDown}
+        onPointerMove={(e) => {
+          onScenePointerMove(e)
+          onCropPointerMove(e)
+        }}
+        onPointerUp={(e) => {
+          endStroke(e)
+          onCropPointerUp(e)
+        }}
+        onPointerCancel={(e) => {
+          endStroke(e)
+          onCropPointerUp(e)
+        }}
+      >
+        {fit && (
+          <canvas
+            ref={canvasRef}
+            style={{
+              position: 'absolute',
+              left: `${fit.x}px`,
+              top: `${fit.y}px`,
+              width: `${fit.w}px`,
+              height: `${fit.h}px`,
+              touchAction: 'none',
+              borderRadius: 6,
+            }}
+          />
+        )}
+
+        {mode === 'crop' && fit && cropStyle && (
+          <>
+            {/* Затемнение снаружи рамки — четырьмя полосами, чтобы не ловить клики. */}
+            <div style={{ ...S.shade, left: fit.x, top: fit.y, width: fit.w, height: crop.y * fit.h }} />
+            <div
+              style={{
+                ...S.shade,
+                left: fit.x,
+                top: fit.y + (crop.y + crop.h) * fit.h,
+                width: fit.w,
+                height: (1 - crop.y - crop.h) * fit.h,
+              }}
+            />
+            <div
+              style={{
+                ...S.shade,
+                left: fit.x,
+                top: fit.y + crop.y * fit.h,
+                width: crop.x * fit.w,
+                height: crop.h * fit.h,
+              }}
+            />
+            <div
+              style={{
+                ...S.shade,
+                left: fit.x + (crop.x + crop.w) * fit.w,
+                top: fit.y + crop.y * fit.h,
+                width: (1 - crop.x - crop.w) * fit.w,
+                height: crop.h * fit.h,
+              }}
+            />
+            <div style={{ ...S.cropBox, ...cropStyle }} onPointerDown={onCropPointerDown('move')}>
+              <div style={S.gridV} />
+              <div style={{ ...S.gridV, left: '66.66%' }} />
+              <div style={S.gridH} />
+              <div style={{ ...S.gridH, top: '66.66%' }} />
+              {HANDLES.map((h) => (
+                <div key={h} style={{ ...S.handle, ...handlePos(h) }} onPointerDown={onCropPointerDown(h)}>
+                  <div style={{ ...S.handleDot, ...(h.length === 2 ? S.handleCorner : S.handleEdge) }} />
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{ ...S.panel, ...(loadError ? { display: 'none' } : null) }}>
+        {mode === 'crop' ? (
+          <>
+            <div style={S.row}>
+              {ASPECTS.map((a) => (
+                <button
+                  key={a.label}
+                  type="button"
+                  onClick={() => onAspectPick(a.value)}
+                  style={{ ...S.chip, ...(aspect === a.value ? S.chipActive : null) }}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
+            <div style={S.row}>
+              <button type="button" onClick={rotate} style={S.actionBtn}>
+                <RotateCw size={16} /> Повернуть
+              </button>
+              <button type="button" onClick={commitCrop} style={S.actionBtn}>
+                <CropIcon size={16} /> Обрезать
+              </button>
+              <button type="button" onClick={undoStroke} disabled={!canUndo} style={S.actionBtn}>
+                <Undo2 size={16} /> Отменить
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={S.row}>
+              {COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => {
+                    setColor(c)
+                    setErase(false)
+                  }}
+                  aria-label={`Цвет ${c}`}
+                  style={{
+                    ...S.swatch,
+                    background: c,
+                    outline: !erase && color === c ? '2px solid #fff' : '1px solid rgba(255,255,255,0.25)',
+                    outlineOffset: 2,
+                  }}
+                />
+              ))}
+            </div>
+            <div style={S.row}>
+              {SIZES.map((s, i) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setSizeIdx(i)}
+                  aria-label={`Толщина ${i + 1}`}
+                  style={{ ...S.sizeBtn, ...(sizeIdx === i ? S.chipActive : null) }}
+                >
+                  <span style={{ width: 6 + i * 7, height: 6 + i * 7, borderRadius: '50%', background: '#fff' }} />
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setErase((v) => !v)}
+                style={{ ...S.actionBtn, ...(erase ? S.chipActive : null) }}
+              >
+                <Eraser size={16} /> Ластик
+              </button>
+              <button type="button" onClick={undoStroke} disabled={!canUndo} style={S.actionBtn}>
+                <Undo2 size={16} /> Отменить
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function clamp(v: number, min: number, max: number) {
+  return Math.min(Math.max(v, min), max)
+}
+
+/**
+ * Приводит рамку к допустимому виду, НЕ ломая пропорцию: сначала растягивает её до
+ * минимального размера (обе стороны сразу — иначе Math.max по каждой отдельно превращал
+ * выбранное 1:1 в 16:9), потом ужимает, если не влезла, и только затем двигает внутрь картинки.
+ * Раньше зажим стоял последним, поэтому рамка могла остаться за краем — и в отправленный
+ * файл попадала чёрная (для PNG — прозрачная) полоса.
+ */
+function clampAspectRect(rect: CropRect, ratio: number, iw: number, ih: number): CropRect {
+  let wPx = rect.w * iw
+  let hPx = rect.h * ih
+  const minW = MIN_CROP * iw
+  const minH = MIN_CROP * ih
+  const grow = Math.max(1, minW / wPx, minH / hPx)
+  wPx *= grow
+  hPx *= grow
+  const shrink = Math.min(1, iw / wPx, ih / hPx)
+  wPx *= shrink
+  hPx *= shrink
+  const w = Math.min(1, wPx / iw)
+  const h = Math.min(1, hPx / ih)
+  return {
+    x: clamp(rect.x, 0, Math.max(0, 1 - w)),
+    y: clamp(rect.y, 0, Math.max(0, 1 - h)),
+    w,
+    h,
+  }
+}
+
+/** Страховка перед вырезкой: рамка обязана лежать внутри картинки. */
+function sanitizeCrop(rect: CropRect): CropRect {
+  const w = clamp(rect.w, 0.01, 1)
+  const h = clamp(rect.h, 0.01, 1)
+  return { x: clamp(rect.x, 0, 1 - w), y: clamp(rect.y, 0, 1 - h), w, h }
+}
+
+/**
+ * Рисует мазки поверх картинки (координаты мазков — доли).
+ *
+ * Мазки собираются в ОТДЕЛЬНОМ слое и только потом накладываются. Иначе ластик
+ * (`destination-out`) выедал бы дыру насквозь — вместе с самой фотографией, — а не стирал
+ * бы только нарисованное.
+ */
+function paintStrokes(
+  ctx: CanvasRenderingContext2D,
+  strokes: Stroke[],
+  w: number,
+  h: number,
+  extra?: Stroke | null,
+  dpr = 1,
+  layerRef?: { current: HTMLCanvasElement | null },
+) {
+  const list = extra ? [...strokes, extra] : strokes
+  if (!list.length) return
+  const base = Math.min(w, h)
+  const lw = Math.max(1, Math.round(w * dpr))
+  const lh = Math.max(1, Math.round(h * dpr))
+  const layer = layerRef?.current ?? document.createElement('canvas')
+  if (layerRef) layerRef.current = layer
+  if (layer.width !== lw || layer.height !== lh) {
+    layer.width = lw
+    layer.height = lh
+  }
+  const lc = layer.getContext('2d')
+  if (!lc) return
+  lc.setTransform(1, 0, 0, 1, 0, 0)
+  lc.clearRect(0, 0, lw, lh)
+  // Слой держим в пикселях устройства: иначе линии рисовались бы в CSS-пикселях и на
+  // ретине растягивались — рядом с резким фото это выглядело мылом.
+  lc.setTransform(dpr, 0, 0, dpr, 0, 0)
+  lc.lineCap = 'round'
+  lc.lineJoin = 'round'
+  for (const s of list) {
+    if (!s.points.length) continue
+    lc.globalCompositeOperation = s.erase ? 'destination-out' : 'source-over'
+    lc.strokeStyle = s.color
+    lc.lineWidth = Math.max(1, s.size * base)
+    lc.beginPath()
+    lc.moveTo(s.points[0].x * w, s.points[0].y * h)
+    if (s.points.length === 1) {
+      // Одиночный тап — точка, а не пустой путь.
+      lc.lineTo(s.points[0].x * w + 0.01, s.points[0].y * h)
+    } else {
+      for (let i = 1; i < s.points.length; i++) lc.lineTo(s.points[i].x * w, s.points[i].y * h)
+    }
+    lc.stroke()
+  }
+  ctx.save()
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.drawImage(layer, 0, 0, w, h)
+  ctx.restore()
+}
+
+function handlePos(h: Handle): React.CSSProperties {
+  const edge = -14
+  switch (h) {
+    case 'nw':
+      return { left: edge, top: edge, cursor: 'nwse-resize' }
+    case 'ne':
+      return { right: edge, top: edge, cursor: 'nesw-resize' }
+    case 'sw':
+      return { left: edge, bottom: edge, cursor: 'nesw-resize' }
+    case 'se':
+      return { right: edge, bottom: edge, cursor: 'nwse-resize' }
+    case 'n':
+      return { left: '50%', top: edge, transform: 'translateX(-50%)', cursor: 'ns-resize' }
+    case 's':
+      return { left: '50%', bottom: edge, transform: 'translateX(-50%)', cursor: 'ns-resize' }
+    case 'w':
+      return { left: edge, top: '50%', transform: 'translateY(-50%)', cursor: 'ew-resize' }
+    case 'e':
+    default:
+      return { right: edge, top: '50%', transform: 'translateY(-50%)', cursor: 'ew-resize' }
+  }
+}
+
+const S: Record<string, React.CSSProperties> = {
+  root: {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 4000,
+    background: '#0b0d11',
+    display: 'flex',
+    flexDirection: 'column',
+    // dvh, а не vh: на мобильном вебе адресная строка съезжает и vh «врёт» —
+    // именно из-за этого низ картинки уходил под панель.
+    height: '100dvh',
+    maxHeight: '100dvh',
+    overscrollBehavior: 'contain',
+    touchAction: 'none',
+    userSelect: 'none',
+  },
+  header: {
+    flex: '0 0 auto',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    padding: '8px 10px',
+    paddingTop: 'max(8px, env(safe-area-inset-top))',
+  },
+  tabs: { display: 'flex', gap: 6, background: 'rgba(255,255,255,0.06)', padding: 4, borderRadius: 12 },
+  tab: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '7px 12px',
+    borderRadius: 9,
+    border: 'none',
+    background: 'transparent',
+    color: '#e8eaee',
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  tabActive: { background: 'rgba(255,255,255,0.14)' },
+  iconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    border: 'none',
+    background: 'rgba(255,255,255,0.08)',
+    color: '#fff',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    flex: '0 0 auto',
+  },
+  doneBtn: { background: '#d97706' },
+  // Сцена забирает ВСЁ оставшееся место; min-height: 0 обязателен, иначе flex-элемент
+  // раздувается по содержимому и панель уезжает за экран.
+  scene: { position: 'relative', flex: '1 1 auto', minHeight: 0, overflow: 'hidden', touchAction: 'none' },
+  shade: { position: 'absolute', background: 'rgba(0,0,0,0.55)', pointerEvents: 'none' },
+  cropBox: {
+    position: 'absolute',
+    boxSizing: 'border-box',
+    border: '1.5px solid rgba(255,255,255,0.95)',
+    boxShadow: '0 0 0 1px rgba(0,0,0,0.35)',
+    cursor: 'move',
+    touchAction: 'none',
+  },
+  gridV: {
+    position: 'absolute',
+    left: '33.33%',
+    top: 0,
+    bottom: 0,
+    width: 1,
+    background: 'rgba(255,255,255,0.35)',
+    pointerEvents: 'none',
+  },
+  gridH: {
+    position: 'absolute',
+    top: '33.33%',
+    left: 0,
+    right: 0,
+    height: 1,
+    background: 'rgba(255,255,255,0.35)',
+    pointerEvents: 'none',
+  },
+  // Зона захвата заметно больше видимой точки — иначе пальцем в неё не попасть.
+  handle: {
+    position: 'absolute',
+    width: 28,
+    height: 28,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    touchAction: 'none',
+  },
+  handleDot: { background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.5)' },
+  handleCorner: { width: 14, height: 14, borderRadius: 4 },
+  handleEdge: { width: 22, height: 5, borderRadius: 3 },
+  panel: {
+    // 0 1 auto + потолок высоты: в ландшафте на телефоне панель раньше забирала весь экран,
+    // и сцена схлопывалась в ноль — фото просто исчезало.
+    flex: '0 1 auto',
+    maxHeight: '45dvh',
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: '10px 12px',
+    paddingBottom: 'max(12px, env(safe-area-inset-bottom))',
+    background: '#12151b',
+    borderTop: '1px solid rgba(255,255,255,0.08)',
+  },
+  row: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'center' },
+  errorBox: {
+    flex: '1 1 auto',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+    color: '#e8eaee',
+  },
+  notice: {
+    flex: '0 0 auto',
+    margin: '0 12px',
+    padding: '8px 12px',
+    borderRadius: 10,
+    background: 'rgba(248,113,113,0.15)',
+    border: '1px solid rgba(248,113,113,0.35)',
+    color: '#fca5a5',
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  chip: {
+    padding: '7px 12px',
+    borderRadius: 10,
+    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'rgba(255,255,255,0.05)',
+    color: '#e8eaee',
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  chipActive: { background: 'rgba(217,119,6,0.9)', borderColor: 'transparent', color: '#fff' },
+  actionBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '9px 14px',
+    borderRadius: 12,
+    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'rgba(255,255,255,0.05)',
+    color: '#e8eaee',
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  swatch: { width: 30, height: 30, borderRadius: '50%', border: 'none', cursor: 'pointer', padding: 0 },
+  sizeBtn: {
+    width: 40,
+    height: 36,
+    borderRadius: 10,
+    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'rgba(255,255,255,0.05)',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+  },
 }

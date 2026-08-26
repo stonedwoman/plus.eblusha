@@ -1,6 +1,6 @@
 import { Fragment } from 'react'
 import { detectLinks } from '../../../js/link-detect'
-import { renderChatMarkdownToHtml } from '../../lib/chatMarkdown'
+import { renderChatMarkdownToHtml, looksLikeMarkdown } from '../../lib/chatMarkdown'
 
 export function decodeUrlForDisplay(raw: string) {
   // decodeURI keeps reserved characters (/, ?, #, &) intact while decoding %XX sequences.
@@ -70,19 +70,12 @@ export function renderLinkifiedText(value: unknown) {
   return <>{out}</>
 }
 
+// Проверка живёт в chatMarkdown.ts, чтобы «что считается разметкой» было одно и то же
+// и при показе сообщения, и при вставке из буфера. Здесь она раньше не знала про
+// заголовки, списки и таблицы — и сообщение с ними уезжало мимо markdown-рендера,
+// показываясь сырым текстом с решётками и палками.
 export function isMarkdownLike(text: string): boolean {
-  const s = text || ''
-  if (!s) return false
-  // Keep this intentionally small: we only switch renderer when user clearly uses markers.
-  return (
-    s.includes('```') ||
-    s.includes('`') ||
-    s.includes('**') ||
-    // italic marker is ambiguous; require space+* or *_ to avoid false positives
-    /(^|\s)\*(\S)/.test(s) ||
-    /(^|\n)>\s/.test(s) ||
-    /\[[^\]]+\]\((https?:\/\/[^\s)]+)\)/.test(s)
-  )
+  return looksLikeMarkdown(text || '')
 }
 
 export function renderMessageText(value: unknown) {

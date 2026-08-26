@@ -72,3 +72,87 @@
   margin-top: 4px;
 }
 
+/* Заголовки. В чат часто присылают готовые куски с «## Раздел» — раньше решётки
+   приезжали как обычный текст. Размеры сдержанные: пузырь маленький, крупный шрифт
+   в нём выглядит криком. */
+.chat-md h1,
+.chat-md h2,
+.chat-md h3,
+.chat-md h4,
+.chat-md h5,
+.chat-md h6 {
+  margin: 12px 0 4px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.chat-md h1:first-child,
+.chat-md h2:first-child,
+.chat-md h3:first-child,
+.chat-md h4:first-child,
+.chat-md h5:first-child,
+.chat-md h6:first-child {
+  margin-top: 0;
+}
+
+.chat-md h1 {
+  font-size: 1.28em;
+}
+
+.chat-md h2 {
+  font-size: 1.16em;
+}
+
+.chat-md h3 {
+  font-size: 1.06em;
+}
+
+.chat-md h4,
+.chat-md h5,
+.chat-md h6 {
+  font-size: 1em;
+  opacity: 0.92;
+}
+
+.chat-md hr {
+  margin: 10px 0;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+/* Таблицы. Пузырь узкий, а таблица может быть широкой — поэтому прокручивается
+   она сама (display:block + width:max-content), а ширина сообщения не растягивается
+   и не ломает ленту. */
+.chat-md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 8px 0 0;
+  border-collapse: collapse;
+  font-size: 0.95em;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chat-md th,
+.chat-md td {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 5px 9px;
+  text-align: left;
+  vertical-align: top;
+  /* В самом .chat-md слова рвутся где угодно (иначе длинная ссылка распирает пузырь),
+     но в ячейках это превращает идентификаторы в лапшу из огрызков. Здесь переносим
+     только по пробелам, а неразрывно длинное содержимое пусть уезжает в прокрутку. */
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.chat-md thead th {
+  background: rgba(0, 0, 0, 0.22);
+  font-weight: 700;
+}
+
+.chat-md tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.03);
+}
+

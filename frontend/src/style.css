@@ -29,8 +29,37 @@
   margin-right: 5px;
 }
 
+/*
+ * Inter едет С САЙТОМ (public/fonts, вариативный — все веса одним файлом).
+ * Раньше здесь было только имя: сайт не грузил ни одного файла шрифта, и Inter
+ * рисовался лишь у тех, у кого он УСТАНОВЛЕН В СИСТЕМУ (у автора). Все остальные
+ * видели системный (Segoe UI / SF / Roboto) — другие пропорции, другие переносы.
+ * @font-face с тем же именем перекрывает установленный шрифт: у всех, включая
+ * автора, теперь одна и та же версия гарнитуры.
+ */
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/InterVariable-Italic.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
 :root {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  /* Вариативный Inter на крупных кеглях сам включает «дисплейное» начертание —
+     плотнее, чем классический Inter, который стоял у автора и задал эталонный вид
+     (замер 48px: 1172 против 1266 у локального). Выключаем: webfont с none
+     совпадает с эталоном на всех кеглях (1262 против 1266, на теле — один в один). */
+  font-optical-sizing: none;
   color: #f1f3f6;
   background-color: #0f1217;
   --brand: #d97706;
@@ -1703,6 +1732,26 @@ a {
   border-left-color: #1c1917;
   color: #0a0a0a;
 }
+
+/* Выделенный пузырь светлый — линии таблицы и полоски строк на нём должны быть
+   тёмными, иначе таблица «растворяется». */
+.msg-bubble.msg-bubble--selected .chat-md th,
+.msg-bubble.msg-bubble--selected .chat-md td {
+  border-color: rgba(41, 37, 36, 0.32);
+  color: #0a0a0a;
+}
+
+.msg-bubble.msg-bubble--selected .chat-md thead th {
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.msg-bubble.msg-bubble--selected .chat-md tbody tr:nth-child(even) td {
+  background: rgba(41, 37, 36, 0.06);
+}
+
+.msg-bubble.msg-bubble--selected .chat-md hr {
+  border-top-color: rgba(41, 37, 36, 0.32);
+}
 .msg-multi-checkbox {
   flex: 0 0 28px;
   width: 28px;
@@ -2037,6 +2086,47 @@ a {
 }
 .imglb-root:focus { outline: none; }
 .imglb-root:focus-visible { outline: none; }
+/* Контекстное меню картинки (правый клик) */
+.imglb-ctx-scrim { position: fixed; inset: 0; z-index: 8; }
+.imglb-ctx {
+  position: fixed;
+  z-index: 9;
+  min-width: 172px;
+  padding: 6px;
+  border-radius: 12px;
+  background: rgba(24,28,34,0.98);
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.imglb-ctx-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #f1f3f6;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer;
+}
+.imglb-ctx-item:hover { background: rgba(255,255,255,0.09); }
+.imglb-ctx-item:active { background: rgba(255,255,255,0.14); }
+.imglb-toast {
+  position: fixed;
+  left: 50%; bottom: calc(var(--imglb-thumbs-h, 82px) + 24px);
+  transform: translateX(-50%);
+  z-index: 9;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.62);
+  border: 1px solid rgba(255,255,255,0.16);
+  color: #fff; font-size: 13px; font-weight: 700;
+  pointer-events: none;
+}
 /* Индикатор масштаба при зуме */
 .imglb-zoom {
   margin-left: 8px;
@@ -2451,7 +2541,10 @@ a {
 }
 
 .logo {
-  font-family: "Golos Text", "Manrope", "Inter", system-ui, sans-serif;
+  /* Golos Text и Manrope сайт никогда не грузил — эти имена срабатывали только у
+     тех, у кого шрифты случайно установлены, и логотип у них выглядел иначе.
+     Эталонный вид логотипа — Inter 800 (как у автора), фиксируем его для всех. */
+  font-family: "Inter", system-ui, sans-serif;
   font-weight: 800;
   font-size: 35pt;
   line-height: 1;

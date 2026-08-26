@@ -16,6 +16,32 @@ export function encryptSecretThreadText(keyBase64: string, plaintext: string): {
   }
 }
 
+/**
+ * Байтовые варианты для вложений: файл шифруется ТЕМ ЖЕ ключом треда со СВОИМ nonce
+ * (nonce файла едет внутри зашифрованного дескриптора сообщения, сервер его не видит).
+ */
+export function encryptSecretThreadBytes(keyBase64: string, data: Uint8Array): {
+  cipher: Uint8Array
+  nonceBase64: string
+} {
+  const key = base64ToBytes(keyBase64)
+  if (key.length !== 32) throw new Error('Invalid secret thread key')
+  const nonce = nacl.randomBytes(24)
+  const cipher = nacl.secretbox(data, nonce, key)
+  return { cipher, nonceBase64: bytesToBase64(nonce) }
+}
+
+export function decryptSecretThreadBytes(
+  keyBase64: string,
+  cipher: Uint8Array,
+  nonceBase64: string,
+): Uint8Array | null {
+  const key = base64ToBytes(keyBase64)
+  if (key.length !== 32) return null
+  const nonce = base64ToBytes(String(nonceBase64 ?? ''))
+  return nacl.secretbox.open(cipher, nonce, key)
+}
+
 export function decryptSecretThreadText(
   keyBase64: string,
   ciphertextBase64: string,

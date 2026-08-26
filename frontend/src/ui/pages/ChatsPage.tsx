@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, getUploadUrl } from '../../utils/api'
 import type { AxiosError } from 'axios'
-import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, onSecretChatAccepted, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, onCallGlare, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload } from '../../core/realtime'
+import { socket, connectSocket, onConversationNew, onConversationDeleted, onConversationUpdated, onConversationMemberRemoved, onSecretChatAccepted, onIncomingCall, onCallAccepted, onCallDeclined, onCallEnded, onCallGlare, acceptCall, declineCall, endCall, onReceiptsUpdate, onPresenceUpdate, onPresenceGame, onPresenceGameSnapshot, onPresenceGameSnapshotBatch, onPresenceDeviceSnapshotBatch, subscribePresenceGame, helloPresenceGame, onContactRequest, onContactAccepted, onContactRejected, onContactRemoved, onProfileUpdate, onCallStatus, onCallStatusBulk, requestCallStatuses, joinConversation, leaveCallRoom, type PresenceGamePayload, type PresenceGameSnapshotBatchPayload, type PresenceDeviceSnapshotBatchPayload } from '../../core/realtime'
 import { Users, Send, ChevronUp } from 'lucide-react'
 import { AvailabilityButton } from '../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../features/availability/AvailabilityOverlay'
@@ -12,6 +12,11 @@ import { AvailabilityOverlay } from '../../features/availability/AvailabilityOve
 const CallOverlay = lazy(() => import('../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
 const preloadCallOverlay = () => import('../components/CallOverlay')
 import { useAppStore } from '../../domain/store/appStore'
+import {
+  applyPresenceDeviceSnapshot,
+  normalizePresenceDevice,
+  setPresenceDevice,
+} from '../../domain/store/presenceDeviceStore'
 import { Avatar } from '../components/Avatar'
 import { UserProfileCard } from '../components/UserProfileCard'
 import { ImageEditorModal } from '../components/ImageEditorModal'
@@ -28,14 +33,16 @@ import { ensureDeviceBootstrap, getStoredDeviceInfo, isElectron } from '../../do
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
 import { shareSecretThreadKeyToDevice } from '../../domain/secret/secretThreadSetup'
-import { fetchSecretHistory, sendSecretThreadText, transformSecretHistoryItemToMessage } from '../../domain/secret/secretThreadMessaging'
+import { fetchSecretHistory, sendSecretThreadText, sendSecretThreadAttachments, transformSecretHistoryItemToMessage } from '../../domain/secret/secretThreadMessaging'
+import { getSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
+import { decryptSecretThreadBytes, encryptSecretThreadBytes } from '../../domain/secret/secretThreadCrypto'
 import { getLastPendingShareAt, getPendingDeviceIds, getReceiptDeviceIds } from '../../domain/secret/secretKeyShareState'
 import { isSecretEngineV2Enabled } from '../../domain/secretV2/featureFlag'
 import { ensureReady as ensureSecretEngineReady, getThreadView as getSecretEngineThreadView, refreshKeysAndRetry, subscribeSecretThreadState } from '../../domain/secretV2'
 import { ensureMediaPermissions, convertToProxyUrl } from '../../utils/media'
 import { VoiceRecorder } from '../../utils/voiceRecorder'
 import { extractFirstPreviewableUrl } from '../../js/link-detect'
-import { renderChatMarkdownToHtml, htmlToMarkdown } from '../lib/chatMarkdown'
+import { renderChatMarkdownToHtml, htmlToMarkdown, hasRichMarkdown, markdownToComposerHtml } from '../lib/chatMarkdown'
 
 import { LinkPreviewCard } from './chats/components/LinkPreviewCard'
 import { MessageReactionRail } from './chats/components/MessageReactionRail'
@@ -2619,13 +2626,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const decryptAttachment = useCallback(
     (att: any) => {
       if (!activeConversation?.id) return
-      // Secret chat v2 does not support legacy attachment E2EE sessions.
-      if (String((activeConversation as any)?.type ?? '').toUpperCase() === 'SECRET') return
       const meta = att?.metadata?.e2ee
       if (!meta || meta.kind !== 'ciphertext' || !meta.nonce) return
-      
-      // Проверяем, что сессия готова
-      if (!e2eeManager.hasSession(activeConversation.id)) return
+
+      // V2-секретка: файл шифрован КЛЮЧОМ ТРЕДА (nacl.secretbox), legacy — сессионным
+      // ключом e2eeManager. Обе ветки требуют готового ключа, иначе ждём молча.
+      const isSecretV2Thread = String((activeConversation as any)?.type ?? '').toUpperCase() === 'SECRET'
+      const v2ThreadKey = isSecretV2Thread ? (getSecretThreadKey(activeConversation.id)?.key ?? null) : null
+      if (isSecretV2Thread) {
+        if (!v2ThreadKey) return
+      } else if (!e2eeManager.hasSession(activeConversation.id)) return
       
       // Проверяем, не запущен ли уже процесс расшифровки
       if (attachmentDecryptInProgressRef.current.has(att.url)) return
@@ -2651,7 +2661,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           }
           const cipher = new Uint8Array(await response.arrayBuffer())
           
-          const plain = e2eeManager.decryptBinary(activeConversation.id, cipher, meta.nonce)
+          const plain = isSecretV2Thread && v2ThreadKey
+            ? decryptSecretThreadBytes(v2ThreadKey, cipher, meta.nonce)
+            : e2eeManager.decryptBinary(activeConversation.id, cipher, meta.nonce)
           if (!plain) {
             throw new Error('Failed to decrypt attachment: decryptBinary returned null')
           }
@@ -2696,10 +2708,6 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       const baseUrl = convertToProxyUrl(att.url)
       
       if (!activeConversation?.isSecret) return baseUrl
-      // Secret chat v2: do not apply legacy encrypted-attachment gating here.
-      if (String((activeConversation as any)?.type ?? '').toUpperCase() === 'SECRET') {
-        return baseUrl
-      }
       
       const meta = att.metadata?.e2ee
       if (!meta || meta.kind !== 'ciphertext') {
@@ -3032,6 +3040,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [])
 
+  // Снапшот «кто с какого устройства» — прилетает один раз на коннект сокета.
+  // Без него иконки у уже подключённых собеседников появились бы только после
+  // их следующей смены статуса.
+  useEffect(() => {
+    const handleDeviceBatch = (payload: PresenceDeviceSnapshotBatchPayload) => {
+      applyPresenceDeviceSnapshot(payload?.items)
+    }
+    const off = onPresenceDeviceSnapshotBatch(handleDeviceBatch)
+    return () => { try { off?.() } catch {} }
+  }, [])
+
   // Request game presence snapshots for "relevant" peers (last dialogs) once conversations list is available.
   const helloPeersRef = useRef<string[]>([])
   useEffect(() => {
@@ -3085,7 +3104,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
 
   // Realtime presence updates into conversations list
   useEffect(() => {
-    const handler = (p: { userId: string; status: string }) => {
+    const handler = (p: { userId: string; status: string; device?: string | null }) => {
+      // С какого устройства человек в сети: отдельная карта вне React-состояния,
+      // чтобы бейдж устройства не перерисовывал весь список бесед (см. коммент про перф ниже).
+      setPresenceDevice(p.userId, normalizePresenceDevice(p.device))
       // Keep an in-memory override map so polling doesn't revert "IN_CALL" back to "ONLINE".
       setPresenceOverridesByUserId((prev) => {
         const nextStatus = (p.status || '').toString().toUpperCase()
@@ -4450,6 +4472,52 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }, [])
 
+  /**
+   * Вставка размеченного текста из буфера. Поле ввода у нас «как в Ворде», и раньше
+   * вставленное клалось туда простым текстом: при отправке turndown экранировал
+   * звёздочки, и собеседник получал «\*\*Заголовок\*\*» вместо жирного. Здесь мы
+   * разбираем разметку сразу и кладём в поле готовое форматирование — что человек
+   * видит перед отправкой, то и уйдёт.
+   *
+   * Вставляем через execCommand: он, в отличие от ручной работы с Range, попадает
+   * в историю браузера, поэтому Ctrl+Z возвращает как было.
+   */
+  const insertMarkdownIntoComposer = useCallback((plain: string) => {
+    const editor = composerEditorRef.current
+    if (!editor || !plain) return false
+    if (!hasRichMarkdown(plain)) return false
+    const html = markdownToComposerHtml(plain)
+    if (!html) return false
+    try {
+      editor.focus()
+      const sel = window.getSelection()
+      if (!sel) return false
+      if (!(sel.rangeCount > 0 && sel.anchorNode && editor.contains(sel.anchorNode))) {
+        const range = document.createRange()
+        range.selectNodeContents(editor)
+        range.collapse(false)
+        sel.removeAllRanges()
+        sel.addRange(range)
+      }
+      if (document.execCommand('insertHTML', false, html)) return true
+      // Запасной путь: если insertHTML недоступен, вставляем узлами вручную.
+      const range = sel.getRangeAt(0)
+      range.deleteContents()
+      const fragment = range.createContextualFragment(html)
+      const last = fragment.lastChild
+      range.insertNode(fragment)
+      if (last) {
+        range.setStartAfter(last)
+        range.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(range)
+      }
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
   const resizeComposer = useCallback(() => {
     const el = composerEditorRef.current
     if (!el) return
@@ -4928,11 +4996,12 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
     const isLegacySecretConversation = !!activeConversation?.isSecret && !isSecretV2
-    if (isSecretV2) {
-      systemToast.error('Вложения в секретных чатах пока не поддерживаются на этом устройстве. Обновление уже в пути.')
+    if (isSecretV2 && !getSecretThreadKey(activeId)) {
+      systemToast.error('Секретный чат ещё не готов: ключ шифрования не доставлен на это устройство.')
       return
     }
-    const isSecretConversation = isLegacySecretConversation
+    // V2 и legacy шифруют файл ПЕРЕД загрузкой — общий флаг ведёт .enc-путь ниже.
+    const isSecretConversation = isLegacySecretConversation || isSecretV2
     if (isLegacySecretConversation) {
       if (conversationSecretInactive) {
         systemToast.error('Секретный чат больше не активен, отправка вложений отключена.')
@@ -5025,24 +5094,25 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       try {
         if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('uploadDebug') === '1') uploadDebug = true
       } catch {}
-      const uploadChunkPart = (uploadId: string, partNumber: number, chunk: Blob, onProgress: (loaded: number) => void) => new Promise<void>((resolve, reject) => {
+      const uploadChunkPart = (uploadId: string, partNumber: number, chunk: Blob | ArrayBuffer, onProgress: (loaded: number) => void) => new Promise<void>((resolve, reject) => {
+        const chunkByteSize = chunk instanceof Blob ? chunk.size : chunk.byteLength
         const xhr = new XMLHttpRequest()
         activeAttachXhrRef.current = xhr
         xhr.open('PUT', `${uploadBaseUrl}/${uploadId}/part/${partNumber}`)
         xhr.setRequestHeader('Content-Type', 'application/octet-stream')
         if (authToken) xhr.setRequestHeader('Authorization', `Bearer ${authToken}`)
         xhr.upload.onprogress = (e) => {
-          const loaded = e.lengthComputable ? e.loaded : chunk.size
+          const loaded = e.lengthComputable ? e.loaded : chunkByteSize
           if (uploadDebug) {
-            console.log('[upload-chunk] onprogress', { uploadId, partNumber, loaded, chunkSize: chunk.size, lengthComputable: e.lengthComputable })
+            console.log('[upload-chunk] onprogress', { uploadId, partNumber, loaded, chunkSize: chunkByteSize, lengthComputable: e.lengthComputable })
           }
-          onProgress(Math.min(chunk.size, loaded))
+          onProgress(Math.min(chunkByteSize, loaded))
         }
         xhr.onreadystatechange = () => {
           if (xhr.readyState !== 4) return
           if (activeAttachXhrRef.current === xhr) activeAttachXhrRef.current = null
           if (xhr.status >= 200 && xhr.status < 300) {
-            onProgress(chunk.size)
+            onProgress(chunkByteSize)
             resolve()
             return
           }
@@ -5057,7 +5127,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           reject(new Error('chunk upload aborted'))
         }
         if (uploadDebug) {
-          console.log('[upload-chunk] send', { uploadId, partNumber, chunkSize: chunk.size })
+          console.log('[upload-chunk] send', { uploadId, partNumber, chunkSize: chunkByteSize })
         }
         xhr.send(chunk)
       })
@@ -5091,7 +5161,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           for (let partNumber = 0; partNumber < totalParts; partNumber += 1) {
             const start = partNumber * chunkSize
             const end = Math.min(totalBytes, start + chunkSize)
-            const chunk = uploadBlob.slice(start, end)
+            const slice = uploadBlob.slice(start, end)
+            // ЧИТАЕМ КУСОК В ПАМЯТЬ ПЕРЕД ОТПРАВКОЙ. slice() файла из галереи — ленивый:
+            // байты читаются только в момент send, и iOS (WebKit) на видео из галереи
+            // молча отправляет ПУСТОЕ тело (файл в iCloud, доступ отозван) — сервер
+            // отвечал 400 на первый же кусок, и загрузка «висела вечно». Для мелких
+            // файлов эта же материализация уже стояла выше; куски она обходила.
+            // Кусок — 5 МБ, памяти это стоит копейки.
+            let chunk: ArrayBuffer
+            try {
+              chunk = await slice.arrayBuffer()
+            } catch {
+              throw new Error('file_unreadable')
+            }
+            if (chunk.byteLength !== slice.size) throw new Error('file_unreadable')
             let attempt = 0
             for (;;) {
               try {
@@ -5108,7 +5191,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
                 }
               }
             }
-            uploadedBytes += chunk.size
+            uploadedBytes += chunk.byteLength
             const uploadFrac = totalBytes > 0 ? Math.min(1, uploadedBytes / totalBytes) : 1
             reportProgress(uploadFrac)
           }
@@ -5116,7 +5199,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           setAttachUploadSpeed('0 B/s')
           const controller = new AbortController()
           activeAttachAbortControllerRef.current = controller
-          const completeResp = await api.post(`/upload/${uploadId}/complete`, undefined, { signal: controller.signal })
+          // Без клиентского таймаута: complete включает сборку частей и (для картинок)
+          // ffmpeg-превью — 15с-дефолт axios обрубал успешную загрузку (ревью).
+          const completeResp = await api.post(`/upload/${uploadId}/complete`, undefined, { signal: controller.signal, timeout: 0 })
           activeAttachAbortControllerRef.current = null
           activeAttachUploadIdRef.current = null
           return { url: completeResp.data.url, path: completeResp.data.path }
@@ -5172,19 +5257,54 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             offset += c.length
           }
           // encryption (no simulated progress)
-          const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
-          uploadBlob = new Blob([encrypted.cipher as BlobPart], { type: 'application/octet-stream' })
+          // V2: ключ ТРЕДА; legacy: сессионный ключ e2eeManager. Шифр одинаковый
+          // (XSalsa20-Poly1305), поэтому метаданные и рендер общие.
+          let cipherBytes: Uint8Array
+          let cipherNonce: string
+          if (isSecretV2) {
+            const keyRec = getSecretThreadKey(activeId)
+            if (!keyRec) throw new Error('SECRET_THREAD_KEY_MISSING')
+            const enc = encryptSecretThreadBytes(keyRec.key, buffer)
+            cipherBytes = enc.cipher
+            cipherNonce = enc.nonceBase64
+          } else {
+            const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
+            cipherBytes = encrypted.cipher
+            cipherNonce = encrypted.nonce
+          }
+          uploadBlob = new Blob([cipherBytes as BlobPart], { type: 'application/octet-stream' })
           encryptedMeta = {
             kind: 'ciphertext',
             version: 1,
             algorithm: 'xsalsa20_poly1305',
-            nonce: encrypted.nonce,
+            nonce: cipherNonce,
             originalName: f.name,
             originalType: f.type,
             originalSize: f.size,
           }
         }
-        const uploadName = isSecretConversation ? `${f.name || 'file'}.enc` : (f.name || 'file')
+        // iOS (галерея, особенно HEIC) отдаёт File лениво: XHR отправляет пустое тело
+        // (Content-Length: 0), сервер отвечает ошибкой разбора, а прогресс висит на 0%.
+        // Материализуем содержимое в память заранее — тогда тело точно уедет.
+        // Крупные файлы не трогаем: они идут кусками и там эта проблема не проявляется.
+        if (!isSecretConversation && uploadBlob.size > 0 && uploadBlob.size <= CHUNK_UPLOAD_THRESHOLD) {
+          try {
+            const buf = await (uploadBlob as Blob).arrayBuffer()
+            if (buf.byteLength === uploadBlob.size) {
+              uploadBlob = new Blob([buf], { type: uploadBlob.type || f.type || 'application/octet-stream' })
+            }
+          } catch (e) {
+            console.warn('[upload] не удалось прочитать файл заранее, отправляем как есть', e)
+          }
+        }
+        if (uploadBlob.size === 0) {
+          systemToast.error(`Не удалось прочитать файл «${f.name || 'без имени'}». Попробуйте выбрать его ещё раз.`)
+          continue
+        }
+        // Секретки: серверу — только опак-имя; настоящее имя едет E2EE в дескрипторе (ревью).
+        const uploadName = isSecretConversation
+          ? `${crypto.randomUUID ? crypto.randomUUID() : Date.now()}.enc`
+          : (f.name || 'file')
         const uploadContentType = uploadBlob.type || f.type || 'application/octet-stream'
         const reportProgress = (uploadFrac: number) => {
           const uploadedBytes = done + f.size * uploadFrac
@@ -5200,7 +5320,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           : await new Promise<{ url: string; path?: string }>((resolve, reject) => {
             const form = new FormData()
             form.append('file', uploadBlob, uploadName)
-            if (f.name) form.append('originalFileName', f.name)
+            if (f.name && !isSecretConversation) form.append('originalFileName', f.name)
             try { form.append('conversationId', activeId) } catch {}
             const xhr = new XMLHttpRequest()
             activeAttachXhrRef.current = xhr
@@ -5289,22 +5409,54 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         : uploaded.every((u) => u.type === 'VIDEO') ? 'VIDEO'
         : uploaded.every((u) => u.type === 'AUDIO') ? 'AUDIO'
         : 'FILE'
-      const sendController = new AbortController()
-      activeAttachAbortControllerRef.current = sendController
-      const replyQuoteMeta = buildReplyQuoteMetadataForSend(replyDraft)
-      await api.post(
-        '/conversations/send',
-        {
-          conversationId: activeId,
-          type: msgType,
-          content: textContent,
-          attachments: uploaded,
-          replyToId: replyDraft?.replyToId,
-          ...(replyQuoteMeta ? { metadata: replyQuoteMeta } : {}),
-        },
-        { signal: sendController.signal },
-      )
-      activeAttachAbortControllerRef.current = null
+      if (isSecretV2) {
+        // V2-секретка: единый push с зашифрованным дескриптором (сервер видит только
+        // objectKey/size для GC). Ответы/цитаты в секретках пока не поддерживаются.
+        const peerUserId = ((activeConversation?.participants || []) as any[])
+          .map((p: any) => String(p?.user?.id ?? ''))
+          .find((id: string) => id && id !== String(currentUserId ?? ''))
+        if (!peerUserId) throw new Error('SECRET_PEER_NOT_FOUND')
+        const descriptorItems = uploaded.map((u) => ({
+          objectKey: String(u.metadata?.objectKey ?? u.url.replace(/^\/api\/files\//, '')),
+          url: u.url,
+          nonce: String(u.metadata?.e2ee?.nonce ?? ''),
+          name: u.metadata?.originalName,
+          mime: u.metadata?.mime,
+          size: u.size,
+          attType: u.type,
+          ...(u.metadata?.width && u.metadata?.height
+            ? { width: u.metadata.width, height: u.metadata.height }
+            : {}),
+        }))
+        const { localMessage } = await sendSecretThreadAttachments({
+          threadId: activeId,
+          peerUserId,
+          text: textContent,
+          attachments: descriptorItems,
+        })
+        appendMessageToCache(activeId, {
+          ...localMessage,
+          senderId: currentUserId,
+          sender: { id: currentUserId },
+        })
+      } else {
+        const sendController = new AbortController()
+        activeAttachAbortControllerRef.current = sendController
+        const replyQuoteMeta = buildReplyQuoteMetadataForSend(replyDraft)
+        await api.post(
+          '/conversations/send',
+          {
+            conversationId: activeId,
+            type: msgType,
+            content: textContent,
+            attachments: uploaded,
+            replyToId: replyDraft?.replyToId,
+            ...(replyQuoteMeta ? { metadata: replyQuoteMeta } : {}),
+          },
+          { signal: sendController.signal },
+        )
+        activeAttachAbortControllerRef.current = null
+      }
       // Remove pending message after successful send
       removePendingUploadMessage(activeId, pid)
       client.invalidateQueries({ queryKey: ['messages', activeId] })
@@ -5313,6 +5465,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         removePendingUploadMessage(activeId, pid)
       } else {
         console.error('Failed to upload attachments', error)
+        // Раньше при ошибке призрак сообщения с крутилкой оставался в ленте НАВСЕГДА,
+        // а сама ошибка уходила только в консоль — для человека это выглядело как
+        // «бесконечная загрузка». Убираем призрак и говорим словами, что случилось.
+        removePendingUploadMessage(activeId, pid)
+        const isUnreadable = error instanceof Error && error.message === 'file_unreadable'
+        systemToast.error(
+          isUnreadable
+            ? 'Не удалось прочитать файл. Если видео хранится в iCloud — откройте его в галерее, чтобы оно скачалось, и попробуйте ещё раз.'
+            : 'Не удалось отправить вложение. Проверьте связь и попробуйте ещё раз.',
+        )
       }
     } finally {
       setAttachUploadState('done')
@@ -5452,10 +5614,10 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
     const isLegacySecretConversation = !!activeConversation?.isSecret && !isSecretV2
-    const isSecretConversation = isLegacySecretConversation
+    const isSecretConversation = isLegacySecretConversation || isSecretV2
 
-    if (isSecretV2) {
-      systemToast.error('Голосовые в секретных чатах пока не поддерживаются на этом устройстве.')
+    if (isSecretV2 && !getSecretThreadKey(activeId)) {
+      systemToast.error('Секретный чат ещё не готов: ключ шифрования не доставлен на это устройство.')
       return
     }
 
@@ -5506,13 +5668,25 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           buffer.set(c, offset)
           offset += c.length
         }
-        const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
-        uploadBlob = new Blob([encrypted.cipher as BlobPart], { type: 'application/octet-stream' })
+        let cipherBytes: Uint8Array
+        let cipherNonce: string
+        if (isSecretV2) {
+          const keyRec = getSecretThreadKey(activeId)
+          if (!keyRec) throw new Error('SECRET_THREAD_KEY_MISSING')
+          const enc = encryptSecretThreadBytes(keyRec.key, buffer)
+          cipherBytes = enc.cipher
+          cipherNonce = enc.nonceBase64
+        } else {
+          const encrypted = await e2eeManager.encryptBinary(activeConversation, buffer)
+          cipherBytes = encrypted.cipher
+          cipherNonce = encrypted.nonce
+        }
+        uploadBlob = new Blob([cipherBytes as BlobPart], { type: 'application/octet-stream' })
         encryptedMeta = {
           kind: 'ciphertext',
           version: 1,
           algorithm: 'xsalsa20_poly1305',
-          nonce: encrypted.nonce,
+          nonce: cipherNonce,
           originalName: audioFile.name,
           originalType: audioFile.type,
           originalSize: audioFile.size,
@@ -5520,11 +5694,15 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       }
 
       const form = new FormData()
-      form.append('file', uploadBlob, isSecretConversation ? `${audioFile.name}.enc` : audioFile.name)
-      if (audioFile.name) form.append('originalFileName', audioFile.name)
+      form.append(
+        'file',
+        uploadBlob,
+        isSecretConversation ? `${crypto.randomUUID ? crypto.randomUUID() : Date.now()}.enc` : audioFile.name,
+      )
+      if (audioFile.name && !isSecretConversation) form.append('originalFileName', audioFile.name)
       try { form.append('conversationId', activeId) } catch {}
 
-      const url = await new Promise<string>((resolve, reject) => {
+      const { url, path: voiceObjectKey } = await new Promise<{ url: string; path?: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
         activeAttachXhrRef.current = xhr
         xhr.open('POST', getUploadUrl())
@@ -5546,7 +5724,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
             if (xhr.status >= 200 && xhr.status < 300) {
               try {
                 const resp = JSON.parse(xhr.responseText)
-                resolve(resp.url)
+                resolve({ url: resp.url, path: resp.path })
               } catch (err) {
                 reject(err)
               }
@@ -5582,18 +5760,45 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
         metadata: audioAttachmentMeta,
       }
 
-      // Send directly (like uploadAndSendAttachments does for attachments)
-      const sendController = new AbortController()
-      activeAttachAbortControllerRef.current = sendController
-      const replyVoiceMeta = buildReplyQuoteMetadataForSend(replyTo)
-      await api.post('/conversations/send', {
-        conversationId: activeId,
-        type: 'AUDIO',
-        metadata: replyVoiceMeta ? { duration, ...replyVoiceMeta } : { duration },
-        attachments: [attachment],
-        replyToId: replyTo?.replyToId,
-      }, { signal: sendController.signal })
-      activeAttachAbortControllerRef.current = null
+      if (isSecretV2) {
+        const peerUserId = ((activeConversation?.participants || []) as any[])
+          .map((p: any) => String(p?.user?.id ?? ''))
+          .find((id: string) => id && id !== String(currentUserId ?? ''))
+        if (!peerUserId) throw new Error('SECRET_PEER_NOT_FOUND')
+        const { localMessage } = await sendSecretThreadAttachments({
+          threadId: activeId,
+          peerUserId,
+          attachments: [{
+            objectKey: String(voiceObjectKey ?? url.replace(/^\/api\/files\//, '')),
+            url,
+            nonce: String(encryptedMeta?.nonce ?? ''),
+            name: audioFile.name,
+            mime: audioFile.type || 'audio/webm',
+            size: audioFile.size,
+            attType: 'AUDIO',
+            duration,
+            ...(voiceWaveform.length ? { waveform: voiceWaveform } : {}),
+          }],
+        })
+        appendMessageToCache(activeId, {
+          ...localMessage,
+          senderId: currentUserId,
+          sender: { id: currentUserId },
+        })
+      } else {
+        // Send directly (like uploadAndSendAttachments does for attachments)
+        const sendController = new AbortController()
+        activeAttachAbortControllerRef.current = sendController
+        const replyVoiceMeta = buildReplyQuoteMetadataForSend(replyTo)
+        await api.post('/conversations/send', {
+          conversationId: activeId,
+          type: 'AUDIO',
+          metadata: replyVoiceMeta ? { duration, ...replyVoiceMeta } : { duration },
+          attachments: [attachment],
+          replyToId: replyTo?.replyToId,
+        }, { signal: sendController.signal })
+        activeAttachAbortControllerRef.current = null
+      }
 
       setReplyTo(null)
       client.invalidateQueries({ queryKey: ['messages', activeId] })
@@ -5895,7 +6100,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   // Контекст для вынесенных рендер-функций: пробрасываем нужные значения компонента.
   const convListCtx = { activeCalls, activeId, avatarPresenceForUser, callConvId, callStore, contactsQuery, convHasBottomFade, convHasTopFade, convScrollRef, conversationsQuery, currentUserId, effectiveUserStatus, formatDuration, formatPresence, incomingContactsQuery, isSocketOnline, me, meInfoQuery, minimizedCallConvId, myPresence, openContactsOverlay, openUserCard, outgoingCall, presenceGameByUserId, selectConversation, setConvMenu, setMePopupOpen, setNewGroupOpen, typingByConversationId }
   const chatModalsCtx = { activeConversation, activeId, activePendingMessages, addParticipantsEblDigits, addParticipantsEblRefs, addParticipantsFoundUser, addParticipantsFoundUserStatus, addParticipantsLoading, addParticipantsModal, addParticipantsMode, addParticipantsSearchError, addParticipantsSearching, addParticipantsSelectedIds, applyEblidPaste, availabilityContext, avatarPresenceForUser, avatarPresenceForUserIdAndStatus, avatarPreviewUrl, clearEblidSearch, clearMessageMultiSelect, client, closeAddParticipantsModal, closeNewGroupModal, composerEditorRef, contactsInviteCode, contactsInviteCopied, contactsInviteRefreshing, contactsInviteRemainingLabel, contactsOpen, contactsQuery, contextMenu, convMenu, convMenuRef, conversationsQuery, copyContactsInviteCode, copyMyEblid, creatingGroup, crop, cropCanvasRef, currentUserId, devicesQuery, displayOutgoingWithRejected, displayedMessages, eblDigits, eblRefs, editorRef, effectiveUserStatus, eligibleContactsForAdd, fileInputRef, formatPresence, formattedContactsInviteCode, forwardModal, foundUser, getSelectedMessagesOrdered, groupAvatarEditor, groupAvatarPreviewUrl, groupCrop, groupCropCanvasRef, groupEditorRef, groupFileInputRef, groupImageRef, groupSelectedAvatarFile, groupTitle, groupTitleEditValue, handleAddParticipantByEbl, handleAddParticipants, headerMenu, headerMenuRef, identityBottomRowStyle, identityBubbleStyle, identityDividerStyle, identityHelperTextStyle, identityIconButtonStyle, identityInputsRowStyle, identitySectionHeaderStyle, identitySectionTitleStyle, imageRef, incomingContactsQuery, initiateSecretChat, isMobile, lightbox, linkDeviceModalOpen, localDeviceIdForLinking, me, meInfoQuery, mePopupOpen, menuRef, multiSelectMode, myEblid, myEblidCopied, myEblidMiniCardStyle, myPresence, newGroupAvatarBlob, newGroupAvatarEditorOpen, newGroupAvatarFile, newGroupAvatarHover, newGroupAvatarPreviewUrl, newGroupAvatarSourceUrl, newGroupCrop, newGroupCropCanvasRef, newGroupDragOver, newGroupEditorRef, newGroupFileInputRef, newGroupImageRef, newGroupOpen, onChangeAddParticipantsDigit, onChangeDigit, onKeyDownAddParticipantsDigit, onKeyDownDigit, openUserCard, outgoingContactsQuery, presenceGameByUserId, refreshContactsInviteCode, registrationInviteCodeQuery, registrationMiniCardStyle, resolveFirstImageAttachmentUrl, savingGroupTitle, secretHistoryGate, secretRequestLoading, selectConversation, selectedAvatarFile, selectedIds, selectedMessageIds, sendInvite, sendMessageToConversation, sendingInvite, setActiveId, setAddParticipantsEblDigits, setAddParticipantsFoundUser, setAddParticipantsModal, setAddParticipantsMode, setAddParticipantsSearchError, setAddParticipantsSearching, setAddParticipantsSelectedIds, setAvailabilityContext, setAvatarPreviewUrl, setContactsOpen, setContextMenu, setConvMenu, setCreatingGroup, setCrop, setEndSecretModalOpen, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setGroupAvatarPreviewUrl, setGroupCrop, setGroupSelectedAvatarFile, setGroupTitle, setGroupTitleEditValue, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setMePopupOpen, setMobileView, setMultiSelectMode, setNewGroupAvatarBlob, setNewGroupAvatarEditorOpen, setNewGroupAvatarFile, setNewGroupAvatarHover, setNewGroupAvatarPreviewUrl, setNewGroupAvatarSourceUrl, setNewGroupCrop, setNewGroupDragOver, setRejectedOutgoing, setReplyTo, setSavingGroupTitle, setSecretHistoryGate, setSelectedAvatarFile, setSelectedIds, setSelectedMessageIds, setUploadMessage, setUploadProgress, setUploadingAvatar, setUserCardUser, setVideoViewer, sortedAcceptedContacts, startEdit, uploadMessage, uploadProgress, uploadingAvatar, userCardUser, usersById, videoViewer }
-  const messagesPaneCtx = { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, insertPlainTextIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, loadOlderMessages, me, messagesContentRef, messagesRef, virtuosoRef, virtuosoBaseRef, virtuosoRowsRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars }
+  const messagesPaneCtx = { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, insertPlainTextIntoComposer, insertMarkdownIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, loadOlderMessages, me, messagesContentRef, messagesRef, virtuosoRef, virtuosoBaseRef, virtuosoRowsRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars }
   return (
     <>
     {renderActiveCallOverlay({ callConvId, minimizedCallConvId, conversationsQuery, activeConversation, currentUserId, me, meInfoQuery, setMinimizedCallConvId, getConversationFromCache, callStore, setCallConvId, callConvIdRef, setActiveCalls, stopRingtone, scheduleAfterMinCallDuration, clearMinCallDurationGuard, isOneToOneConversation })}

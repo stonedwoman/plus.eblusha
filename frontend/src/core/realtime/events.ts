@@ -22,10 +22,14 @@ import type {
   MessageNewPayload,
   MessageNotifyPayload,
   MessageReactionPayload,
+  PresenceDevice,
+  PresenceDeviceSnapshotBatchPayload,
   PresenceUpdatePayload,
   ProfileUpdatePayload,
   ReceiptsUpdatePayload,
 } from '../../capacitor/types/socket-events'
+
+export type { PresenceDevice, PresenceDeviceSnapshotBatchPayload, PresenceUpdatePayload }
 
 export type PresenceGame = {
   discordAppId: string
@@ -121,6 +125,7 @@ export type RealtimeInboundEventMap = {
   'presence:game': PresenceGamePayload
   'presence:game:snapshot': PresenceGamePayload
   'presence:game:snapshot:batch': PresenceGameSnapshotBatchPayload
+  'presence:device:snapshot:batch': PresenceDeviceSnapshotBatchPayload
   'call:incoming': CallIncomingPayload
   'call:accepted': CallAcceptedPayload
   'call:declined': CallDeclinedPayload

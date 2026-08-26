@@ -168,6 +168,12 @@ export function onPresenceGameSnapshotBatch(
   return getRealtimeClient().on('presence:game:snapshot:batch', cb)
 }
 
+export function onPresenceDeviceSnapshotBatch(
+  cb: (payload: RealtimeInboundEventMap['presence:device:snapshot:batch']) => void,
+) {
+  return getRealtimeClient().on('presence:device:snapshot:batch', cb)
+}
+
 export function subscribePresenceGame(peerUserId: string) {
   if (!peerUserId || typeof peerUserId !== 'string') return
   getRealtimeClient().emit('presence:game:subscribe', { peerUserId })
@@ -265,8 +271,11 @@ export function leaveCallRoom(conversationId: string) {
 }
 
 export type {
+  PresenceDevice,
+  PresenceDeviceSnapshotBatchPayload,
   PresenceGamePayload,
   PresenceGameSnapshotBatchPayload,
+  PresenceUpdatePayload,
   RealtimeInboundEventMap,
   RealtimeOutboundEventMap,
   SessionNewPayload,

@@ -267,6 +267,11 @@ function ParticipantVolumeUpdater() {
   // which causes double playback unless we mute the attached elements manually.
   const webAudioStateRef = useRef<WeakMap<RemoteAudioTrack, { ctx: AudioContext; enabled: boolean }>>(new WeakMap())
   const wheelAccByKeyRef = useRef<Map<string, number>>(new Map())
+  // Отложенное отключение приёма дорожки (см. setTransportEnabled): таймер на публикацию.
+  const transportTimersRef = useRef<Map<any, number>>(new Map())
+  // Порядковый номер применения на ключ: асинхронный applyToKey не должен «откатывать»
+  // громкость более старым значением, если два вызова наложились.
+  const applySeqRef = useRef<Map<string, number>>(new Map())
 
   const isLocalTile = (tile: HTMLElement): boolean => {
     const v = tile.getAttribute('data-lk-local-participant')
@@ -347,6 +352,15 @@ function ParticipantVolumeUpdater() {
       // Create only from a user gesture; keep default audio path untouched otherwise.
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
       audioCtxRef.current = ctx
+      // Наследуем уже выбранное в настройках звонка устройство вывода (Chrome 110+).
+      try {
+        const active = (room as any)?.getActiveDevice?.('audiooutput')
+        if (active && typeof (ctx as any).setSinkId === 'function') {
+          void (ctx as any).setSinkId(String(active))
+        }
+      } catch {
+        // ignore
+      }
       try {
         if (ctx.state !== 'running') await ctx.resume()
       } catch {
@@ -362,7 +376,23 @@ function ParticipantVolumeUpdater() {
   // AudioContext per CallOverlay mount; browsers cap live contexts (~6 in Chrome), after
   // which amplification silently stops working for the rest of the session.
   useEffect(() => {
+    // Вкладка вернулась из фона — контекст мог оказаться suspended (мобильные Safari/Chrome),
+    // и тогда участники, переведённые на WebAudio, замолчали бы навсегда.
+    const onVisible = () => {
+      const ctx = audioCtxRef.current
+      if (!ctx || ctx.state === 'running') return
+      try {
+        void ctx.resume()
+      } catch {
+        // ignore
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      const timers = transportTimersRef.current
+      timers.forEach((t) => window.clearTimeout(t))
+      timers.clear()
       const ctx = audioCtxRef.current
       audioCtxRef.current = null
       if (ctx) {
@@ -421,6 +451,80 @@ function ParticipantVolumeUpdater() {
     return null
   }
 
+  /**
+   * Плавно ведёт усиление дорожки к [target] вместо мгновенного скачка.
+   *
+   * ПОЧЕМУ НЕ track.setVolume(): в livekit-client 2.19 он делает
+   * `gain.setTargetAtTime(volume, 0, 0.1)` — стартовое время 0 лежит далеко в ПРОШЛОМ
+   * (context.currentTime уже сотни секунд), поэтому экспонента к текущему моменту полностью
+   * отработала и значение меняется МГНОВЕННО. Десятки таких скачков в секунду при
+   * перетаскивании кольца и дают тот самый треск («зиппер-шум»). Ramp-им сами, а поле
+   * elementVolume дописываем напрямую — LiveKit берёт его при повторном attach.
+   */
+  const RAMP_SEC = 0.05
+  /** Неслышимый, но НЕнулевой уровень — см. комментарий в rampTrackGain. */
+  const SILENT_EPSILON = 1e-4
+
+  const rampTrackGain = (tr: RemoteAudioTrack, ctx: AudioContext, target: number) => {
+    const gain = (tr as any).gainNode as GainNode | undefined
+    if (gain) {
+      try {
+        const now = ctx.currentTime
+        const current = typeof gain.gain.value === 'number' ? gain.gain.value : target
+        gain.gain.cancelScheduledValues(now)
+        gain.gain.setValueAtTime(current, now)
+        gain.gain.linearRampToValueAtTime(target, now + RAMP_SEC)
+      } catch {
+        try {
+          gain.gain.value = target
+        } catch {
+          // ignore
+        }
+      }
+    }
+    try {
+      // НИКОГДА не пишем сюда ноль. LiveKit восстанавливает уровень на re-attach и при сборке
+      // графа через `if (this.elementVolume)` — ноль этой проверки НЕ проходит, и новый GainNode
+      // остаётся на дефолтной ЕДИНИЦЕ: заглушённый участник вернулся бы на полную громкость.
+      // Эпсилон неслышим (-80 дБ), но «истинен», поэтому уровень восстанавливается верно.
+      ;(tr as any).elementVolume = Math.max(target, SILENT_EPSILON)
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Включение/выключение ПРИЁМА дорожки. Выключение — только с задержкой: провод ползунка
+   * через 0% во время перетаскивания не должен отписывать дорожку у SFU (это разрыв потока,
+   * а на возобновлении — щелчок). Включение — немедленно, иначе после «Вернуть» пауза.
+   */
+  const setTransportEnabled = (pub: any, enabled: boolean) => {
+    if (typeof pub?.setEnabled !== 'function') return
+    const timers = transportTimersRef.current
+    const pending = timers.get(pub)
+    if (pending !== undefined) {
+      window.clearTimeout(pending)
+      timers.delete(pub)
+    }
+    if (enabled) {
+      try {
+        pub.setEnabled(true)
+      } catch {
+        // ignore
+      }
+      return
+    }
+    const timer = window.setTimeout(() => {
+      timers.delete(pub)
+      try {
+        pub.setEnabled(false)
+      } catch {
+        // ignore
+      }
+    }, 700)
+    timers.set(pub, timer)
+  }
+
   const applyToKey = async (
     keyInfo: { key: string; userId: string | null; name: string | null },
     fromGesture: boolean,
@@ -433,9 +537,16 @@ function ParticipantVolumeUpdater() {
     const settings = getSettings(key)
     const effective = settings.muted ? 0 : settings.volume
 
-    // Only create/use AudioContext when amplification > 1 is needed, and only from a user gesture.
-    const needsAmp = effective > 1
-    const ctx = audioCtxRef.current || (needsAmp && fromGesture ? await ensureAudioContextFromGesture() : null)
+    // Контекст создаётся синхронно (async только resume), поэтому уже со второго события
+    // перетаскивания он готов и путь воспроизведения дальше НЕ меняется.
+    const seq = (applySeqRef.current.get(key) ?? 0) + 1
+    applySeqRef.current.set(key, seq)
+    let ctx = audioCtxRef.current
+    if (!ctx && fromGesture) {
+      ctx = await ensureAudioContextFromGesture()
+      // За время ожидания могло прийти более свежее значение — не откатываем его назад.
+      if (applySeqRef.current.get(key) !== seq) return
+    }
 
     // Iterate all audio publications (mic + screen share audio).
     const pubs: any[] = []
@@ -450,25 +561,35 @@ function ParticipantVolumeUpdater() {
 
     for (const pub of pubs) {
       if (pub?.kind !== Track.Kind.Audio) continue
-      // Mute should be "direct": disable receiving this publication for this client.
-      if (typeof pub?.setEnabled === 'function') {
-        try {
-          pub.setEnabled(!settings.muted && effective > 0)
-        } catch {
-          // ignore
-        }
-      }
+      setTransportEnabled(pub, !settings.muted && effective > 0)
+
       const tr = pub?.track
       if (!(tr instanceof RemoteAudioTrack)) continue
 
       const prev = webAudioStateRef.current.get(tr)
-      if (needsAmp && ctx) {
-        // Enable WebAudio routing once per track (so >100% works) but don't keep re-wiring.
-        if (!prev || prev.ctx !== ctx || !prev.enabled) {
-          tr.setAudioContext(ctx)
+      const alreadyWebAudio = !!prev?.enabled && prev.ctx === ctx
+      // На WebAudio переводим дорожку ОДИН раз — когда её громкость впервые отличается от
+      // штатных 100%. Пере-подключение графа (createMediaStreamSource + GainNode) само по себе
+      // даёт щелчок, а прежний код дёргал его на КАЖДОМ переходе через 100% — отсюда треск при
+      // езде ползунком вокруг сотни. Обратно на элемент не возвращаемся: смысла нет, а щелчок был бы.
+      const wantsWebAudio = !!ctx && (alreadyWebAudio || Math.abs(effective - 1) > 0.001)
+
+      if (ctx && wantsWebAudio) {
+        if (!alreadyWebAudio) {
+          try {
+            tr.setAudioContext(ctx)
+          } catch {
+            // ignore
+          }
+          // Усиление НЕ обнуляем: LiveKit поднимает граф с gain = 1.0 — ровно тот уровень, на
+          // котором сейчас играет <audio>. Значит глушение элемента ниже и включение графа дают
+          // непрерывную амплитуду. Если же стартовать с нуля (первая версия этой правки), живой
+          // сигнал обрывается ступенькой на полную амплитуду — то есть ровно щелчок, который мы
+          // и убираем. Дальше rampTrackGain плавно ведёт 1.0 → нужное значение.
           webAudioStateRef.current.set(tr, { ctx, enabled: true })
         }
-        // If AudioContext was set after attach, mute attached elements to avoid double playback.
+        // Элементы глушим всегда: при переподключении дорожки LiveKit создаёт новый <audio>,
+        // и без этого он играл бы параллельно с WebAudio (двойной звук).
         try {
           tr.attachedElements.forEach((el) => {
             try {
@@ -481,17 +602,10 @@ function ParticipantVolumeUpdater() {
         } catch {
           // ignore
         }
+        rampTrackGain(tr, ctx, Math.max(0, Math.min(1.5, effective)))
       } else {
-        // No amplification needed: restore default element path if WebAudio was enabled.
-        if (prev?.enabled) {
-          try {
-            tr.setAudioContext(undefined)
-          } catch {
-            // ignore
-          }
-          webAudioStateRef.current.set(tr, { ctx: prev.ctx, enabled: false })
-        }
-        // Ensure element playback is unmuted unless explicitly muted.
+        // Штатный путь (громкость ровно 100% и WebAudio ещё не включали) — ничего не трогаем,
+        // кроме самого элемента: так сохраняется дефолтное поведение браузера.
         try {
           const shouldMuteEl = settings.muted || effective <= 0
           tr.attachedElements.forEach((el) => {
@@ -504,12 +618,12 @@ function ParticipantVolumeUpdater() {
         } catch {
           // ignore
         }
+        try {
+          tr.setVolume(Math.max(0, Math.min(1, effective)))
+        } catch {
+          // ignore
+        }
       }
-
-      // Clamp for safety.
-      // Element path expects 0..1; WebAudio gain can go >1.
-      const vol = settings.muted ? 0 : Math.max(0, Math.min(needsAmp ? 1.5 : 1, effective))
-      tr.setVolume(vol)
     }
   }
 
@@ -524,15 +638,51 @@ function ParticipantVolumeUpdater() {
         if (!key) return
         if ((participant as any)?.isLocal) return
         if (settingsByKeyRef.current.has(key) && track?.kind === Track.Kind.Audio) {
+          const s = settingsByKeyRef.current.get(key)
+          const nonDefault = !!s && (s.muted || Math.abs(s.volume - 1) > 0.001)
+          const ctx = audioCtxRef.current
+          // Дорожка переподписалась (реконнект, смена устройства собеседником), а уровень для
+          // неё уже задан. Ставим AudioContext ДО того, как LiveKit прикрепит <audio>: тогда он
+          // сам соберёт граф и заглушит элемент в attach() — то есть переход происходит ещё до
+          // начала воспроизведения, без единого щелчка и без всплеска на 100%.
+          if (nonDefault && ctx && track instanceof RemoteAudioTrack) {
+            try {
+              ;(track as any).elementVolume = Math.max(s!.muted ? 0 : s!.volume, SILENT_EPSILON)
+            } catch {
+              // ignore
+            }
+            try {
+              track.setAudioContext(ctx)
+            } catch {
+              // ignore
+            }
+            webAudioStateRef.current.set(track, { ctx, enabled: true })
+          }
           void applyToKey({ key, userId: id || null, name: name || null }, false)
         }
       } catch {
         // ignore
       }
     }
+    // Выбор колонок/наушников в настройках звонка (MediaDeviceSelect kind="audiooutput") задаёт
+    // sinkId у <audio>-элементов. Дорожка, уведённая на WebAudio, играет мимо них — через
+    // ctx.destination, поэтому переводим и сам AudioContext (Chrome 110+). Без этого участник с
+    // изменённой громкостью продолжал бы звучать в прежнем устройстве.
+    const onActiveDeviceChanged = (kind: any, deviceId: any) => {
+      if (String(kind) !== 'audiooutput') return
+      const ctx = audioCtxRef.current as any
+      if (!ctx || typeof ctx.setSinkId !== 'function') return
+      try {
+        void ctx.setSinkId(String(deviceId || ''))
+      } catch {
+        // ignore
+      }
+    }
+    room.on(RoomEvent.ActiveDeviceChanged as any, onActiveDeviceChanged as any)
     room.on(RoomEvent.TrackSubscribed as any, onTrackSubscribed as any)
     return () => {
       room.off(RoomEvent.TrackSubscribed as any, onTrackSubscribed as any)
+      room.off(RoomEvent.ActiveDeviceChanged as any, onActiveDeviceChanged as any)
     }
   }, [room])
 
@@ -563,6 +713,16 @@ function ParticipantVolumeUpdater() {
     if (!safeCircle || !overCircle) return
 
     const volume = clampPct(pct)
+    // Пишем в DOM только при РЕАЛЬНОМ изменении. Иначе получается петля: MutationObserver ниже
+    // слушает весь document.body, каждая перерисовка кольца порождает мутации, те снова
+    // запускают applyDom → renderRing… и так 60 раз в секунду весь звонок. Для WebAudio это
+    // не мелочь: звук рендерится блоками по несколько миллисекунд и занятый главный поток
+    // слышен как подхрипывание.
+    const prevRendered = (ring as any).__ebRendered as string | undefined
+    const signature = `${volume}|${muted ? 1 : 0}`
+    if (prevRendered === signature) return
+    ;(ring as any).__ebRendered = signature
+
     const safeRatio = Math.min(volume, NORMAL) / MAX
     const overRatio = Math.max(volume - NORMAL, 0) / MAX
     const safeLen = C * safeRatio
@@ -589,17 +749,30 @@ function ParticipantVolumeUpdater() {
     ring.setAttribute('data-eb-muted', muted || volume === 0 ? 'true' : 'false')
   }
 
-  const pctFromPointer = (e: PointerEvent, svg: SVGSVGElement) => {
+  /** Угол указателя относительно центра кольца: 0° сверху, дальше по часовой (0..360). */
+  const angleFromPointer = (e: PointerEvent, svg: SVGSVGElement) => {
     const rect = svg.getBoundingClientRect()
     const cx = rect.left + rect.width / 2
     const cy = rect.top + rect.height / 2
     const dx = e.clientX - cx
     const dy = e.clientY - cy
-    let deg = (Math.atan2(dy, dx) * 180) / Math.PI // -180..180, 0 at +x
-    // User expectation: 0% at top; our SVG is rotated -90deg, so keep 0% at top in screen space.
-    deg = (deg + 90 + 360) % 360 // 0 at top
-    const ratio = deg / 360
-    return clampPct(ratio * MAX)
+    const deg = (Math.atan2(dy, dx) * 180) / Math.PI // -180..180, 0 at +x
+    // SVG повёрнут на -90°, поэтому в экранных координатах 0% — сверху.
+    return (deg + 90 + 360) % 360
+  }
+
+  /**
+   * Кратчайшая разница двух углов в градусах (-180..180]. На ней держится ОТНОСИТЕЛЬНОЕ
+   * перетаскивание кольца: 0% и 150% находятся в одной точке (сверху), поэтому абсолютный
+   * пересчёт «угол → проценты» на этом шве прыгал с тишины на максимум и обратно, а защита
+   * «не больше половины шкалы за событие» лишь залипала на краю. С накоплением дельты шва
+   * не существует: значение просто упирается в 0 или 150.
+   */
+  const angleDelta = (from: number, to: number) => {
+    let d = to - from
+    if (d > 180) d -= 360
+    if (d < -180) d += 360
+    return d
   }
 
   // Inject volume ring UI into participant tiles (around injected avatars).
@@ -637,11 +810,18 @@ function ParticipantVolumeUpdater() {
           const hasActiveVideo = !!(!isVideoMuted && videoEl && videoEl.offsetWidth > 0 && videoEl.offsetHeight > 0)
           if (hasActiveVideo) {
             tile.querySelectorAll('.eb-vol-ring').forEach((el) => el.remove())
+            // Кольца на видео-плитке нет, но ГРОМКОСТЬ переприменить обязаны: иначе участник,
+            // включивший камеру, терял заданный уровень (а заглушённый мог вернуться на 100%,
+            // если его дорожка успела переподписаться).
+            void applyToKey(stableInfo, false)
             return
           }
 
           const placeholder = tile.querySelector('.lk-participant-placeholder') as HTMLElement | null
-          if (!placeholder) return
+          if (!placeholder) {
+            void applyToKey(stableInfo, false)
+            return
+          }
 
           // Ensure positioning context
           if (!tile.style.position) tile.style.position = 'relative'
@@ -760,19 +940,9 @@ function ParticipantVolumeUpdater() {
           }
 
           const setPct = (nextPct: number, fromGesture: boolean) => {
-            let pct = clampPct(nextPct)
+            const pct = clampPct(nextPct)
             const keyNow = String(ring?.getAttribute('data-eb-vol-key') || stableKey).trim()
             if (!keyNow) return
-
-            // Prevent wrap-around: when dragging near the seam, don't jump 150->0 or 0->150.
-            const last = typeof (ring as any).__ebLastPct === 'number' ? (ring as any).__ebLastPct : pct
-            if ((ring as any).__ebDragging) {
-              const diff = pct - last
-              if (Math.abs(diff) > MAX / 2) {
-                pct = last > MAX / 2 ? MAX : 0
-              }
-            }
-            ;(ring as any).__ebLastPct = pct
 
             const s = getSettings(keyNow)
             if (pct === 0) {
@@ -800,32 +970,77 @@ function ParticipantVolumeUpdater() {
                 e.stopPropagation()
                 lastUserGestureAtRef.current = Date.now()
                 ;(ring as any).__ebDragging = true
+                // Кольцо крутим ОТ ТЕКУЩЕГО значения: нажатие само по себе громкость не меняет.
+                // Раньше клик задавал громкость по углу, и промах на пиксель выше центра
+                // (шов 0/150 находится ровно сверху) означал мгновенные 150% в наушниках.
                 try {
                   const keyNow = String(ring?.getAttribute('data-eb-vol-key') || '').trim()
-                  if (keyNow) {
-                    ;(ring as any).__ebLastPct = pctFromSettings(getSettings(keyNow))
-                  }
+                  ;(ring as any).__ebDragPct = keyNow ? pctFromSettings(getSettings(keyNow)) : 0
                 } catch {
-                  // ignore
+                  ;(ring as any).__ebDragPct = 0
                 }
+                const downAngle = angleFromPointer(e as PointerEvent, svg)
+                ;(ring as any).__ebDragAngle = downAngle
+                // Контекст создаём сразу по нажатию, чтобы первое же движение шло уже по
+                // плавному WebAudio-пути, а не по ступенчатому element.volume.
+                void ensureAudioContextFromGesture()
                 try {
                   ;(hit as any).setPointerCapture?.(e.pointerId)
                 } catch {
                   // ignore
                 }
-                const pct = pctFromPointer(e as PointerEvent, svg)
-                setPct(pct, true)
+                // Нажатие задаёт значение по углу — КРОМЕ узкой зоны у шва (сверху 0% и 150%
+                // сходятся в одной точке): там промах в пару пикселей означал бы либо тишину,
+                // либо мгновенные 150% в наушниках. В этой зоне просто крутим от текущего.
+                const SEAM_DEG = 10
+                const nearSeam = downAngle <= SEAM_DEG || downAngle >= 360 - SEAM_DEG
+                if (!nearSeam) {
+                  const pct = clampPct((downAngle / 360) * MAX)
+                  ;(ring as any).__ebDragPct = pct
+                  setPct(pct, true)
+                }
               })
               hit.addEventListener('pointermove', (e: any) => {
                 if (!(ring as any).__ebDragging) return
                 e.preventDefault()
                 e.stopPropagation()
-                const pct = pctFromPointer(e as PointerEvent, svg)
-                setPct(pct, true)
+                const angle = angleFromPointer(e as PointerEvent, svg)
+                const prevAngle =
+                  typeof (ring as any).__ebDragAngle === 'number' ? (ring as any).__ebDragAngle : angle
+                const prevPct = typeof (ring as any).__ebDragPct === 'number' ? (ring as any).__ebDragPct : 0
+                // Дробный аккумулятор: округление до целых процентов на каждом шаге
+                // «съедало» бы медленные движения.
+                const next = Math.max(0, Math.min(MAX, prevPct + (angleDelta(prevAngle, angle) / 360) * MAX))
+                ;(ring as any).__ebDragAngle = angle
+                ;(ring as any).__ebDragPct = next
+                // Схлопываем поток pointermove (у мышей 125-1000 Гц) до одного применения на
+                // кадр. Дело не в экономии как таковой: WebAudio рендерит звук маленькими
+                // блоками и чувствителен к занятости главного потока — лишние сотни пересчётов
+                // стилей и параметров в секунду сами по себе дают подхрипывания.
+                ;(ring as any).__ebPendingPct = next
+                if (!(ring as any).__ebRaf) {
+                  ;(ring as any).__ebRaf = requestAnimationFrame(() => {
+                    ;(ring as any).__ebRaf = 0
+                    const pending = (ring as any).__ebPendingPct
+                    if (typeof pending === 'number') setPct(pending, true)
+                  })
+                }
               })
               const endDrag = (e: any) => {
                 if ((ring as any).__ebDragging) {
                   ;(ring as any).__ebDragging = false
+                }
+                // Досылаем последнее значение: кадр мог не успеть выполниться до отпускания,
+                // иначе громкость осталась бы на предпоследней позиции кольца.
+                const raf = (ring as any).__ebRaf
+                if (raf) {
+                  cancelAnimationFrame(raf)
+                  ;(ring as any).__ebRaf = 0
+                }
+                const pending = (ring as any).__ebPendingPct
+                if (typeof pending === 'number') {
+                  ;(ring as any).__ebPendingPct = undefined
+                  setPct(pending, true)
                 }
                 try {
                   ;(hit as any).releasePointerCapture?.(e.pointerId)
@@ -857,7 +1072,9 @@ function ParticipantVolumeUpdater() {
                 s.volume = 0
               }
               const pct = pctFromSettings(s)
-              ;(ring as any).__ebLastPct = pct
+              // Кнопки задают значение напрямую — аккумулятор перетаскивания синхронизируем,
+              // иначе следующее вращение стартовало бы со старой позиции.
+              ;(ring as any).__ebDragPct = pct
               renderRing(ring!, pct, !!s.muted)
               void applyToKey({ key: keyNow, userId: keyNow, name: null }, true)
             }
@@ -871,7 +1088,9 @@ function ParticipantVolumeUpdater() {
               s.lastNonZeroPct = 100
               s.volume = 1
               const pct = pctFromSettings(s)
-              ;(ring as any).__ebLastPct = pct
+              // Кнопки задают значение напрямую — аккумулятор перетаскивания синхронизируем,
+              // иначе следующее вращение стартовало бы со старой позиции.
+              ;(ring as any).__ebDragPct = pct
               renderRing(ring!, pct, !!s.muted)
               void applyToKey({ key: keyNow, userId: keyNow, name: null }, true)
             }

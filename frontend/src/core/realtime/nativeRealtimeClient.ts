@@ -40,6 +40,7 @@ export class NativeRealtimeClient implements RealtimeClient {
       this.bindIncoming(service, 'presence:game'),
       this.bindIncoming(service, 'presence:game:snapshot'),
       this.bindIncoming(service, 'presence:game:snapshot:batch'),
+      this.bindIncoming(service, 'presence:device:snapshot:batch'),
       this.bindIncoming(service, 'call:incoming'),
       this.bindIncoming(service, 'call:accepted'),
       this.bindIncoming(service, 'call:declined'),

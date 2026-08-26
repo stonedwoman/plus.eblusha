@@ -1,6 +1,11 @@
 import { useMemo, useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { convertToProxyUrl } from '../../utils/media'
-import { Gamepad2 } from 'lucide-react'
+import { Gamepad2, Globe, Monitor, Smartphone } from 'lucide-react'
+import {
+  presenceDeviceTitleRu,
+  presenceStatusColor,
+  usePresenceDevice,
+} from '../../domain/store/presenceDeviceStore'
 
 type Props = {
   name: string
@@ -44,6 +49,8 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
   const isEmoji = !!avatarUrl?.startsWith('emoji:')
   const emoji = isEmoji ? avatarUrl!.slice('emoji:'.length) : null
   const [imageError, setImageError] = useState(false)
+  // С какого устройства человек в сети (телефон / ПК / браузер). null → показываем точку, как раньше.
+  const presenceDevice = usePresenceDevice(id)
   const [retryCount, setRetryCount] = useState(0)
   const [currentImageUrl, setCurrentImageUrl] = useState<string | null>(null)
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -222,6 +229,18 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
         const dotSize = Math.max(8, Math.floor(size * 0.28))
         if (!showPlaying && !showInCall && !presenceColor) return null
 
+        // Плашка значка растёт вместе с аватаром и сидит ВПЛОТНУЮ к нему: вынос наружу
+        // делал вид, будто значок отклеился, а фиксированные 17px терялись на больших
+        // аватарах. Угол квадрата, описанного вокруг круга, и так лежит на его кромке.
+        const badgeSize = Math.max(15, Math.min(24, Math.round(size * 0.41)))
+        // Значок ставим так, чтобы его юго-восточная точка легла ровно в угол квадрата,
+        // описанного вокруг аватара. Значок круглый, а «прижать к углу» его рамку мало:
+        // у круга до угла рамки не достаёт r*(1-1/√2) ≈ 0.146 диаметра — этот зазор и
+        // читался как «значок утоплен». Историческое -2 у точки 12px — ровно эта формула.
+        const cornerInset = (d: number) => -Math.round(d * 0.146)
+        const dotInset = cornerInset(dotSize)
+        const badgeInset = cornerInset(badgeSize)
+
         // If user is playing, render a gamepad badge.
         // If also in call, keep badge background as usual but make the gamepad red
         // (so we don't change the dot background logic and still signal both states).
@@ -234,10 +253,10 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
               title={title}
               style={{
                 position: 'absolute',
-                right: -2,
-                bottom: -2,
-                width: 17,
-                height: 17,
+                right: badgeInset,
+                bottom: badgeInset,
+                width: badgeSize,
+                height: badgeSize,
                 borderRadius: 999,
                 boxShadow: '0 0 0 2px var(--surface-200)',
                 background: bg,
@@ -246,7 +265,39 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
                 justifyContent: 'center',
               }}
             >
-              <Gamepad2 width={17} height={17} color={fg} />
+              <Gamepad2 width={badgeSize} height={badgeSize} color={fg} />
+            </span>
+          )
+        }
+
+        // Device badge: same 17x17 slot as the gamepad, glyph tinted with the status colour.
+        // Shown only when the device is known AND the user is not offline; otherwise we fall
+        // through to the historical coloured dot.
+        const deviceStatus = showInCall ? 'IN_CALL' : presence ?? null
+        const deviceKnownAndOnline = !!presenceDevice && !!deviceStatus && deviceStatus !== 'OFFLINE'
+        if (deviceKnownAndOnline) {
+          const DeviceIcon =
+            presenceDevice === 'mobile' ? Smartphone : presenceDevice === 'desktop' ? Monitor : Globe
+          const fg = presenceStatusColor(deviceStatus)
+          const title = presenceDeviceTitleRu(deviceStatus, presenceDevice) ?? undefined
+          return (
+            <span
+              title={title}
+              style={{
+                position: 'absolute',
+                right: badgeInset,
+                bottom: badgeInset,
+                width: badgeSize,
+                height: badgeSize,
+                borderRadius: 999,
+                boxShadow: '0 0 0 2px var(--surface-200)',
+                background: 'var(--surface-100)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <DeviceIcon width={badgeSize - 3} height={badgeSize - 3} color={fg} strokeWidth={1.9} />
             </span>
           )
         }
@@ -258,8 +309,8 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
               title="В звонке"
               style={{
                 position: 'absolute',
-                right: -2,
-                bottom: -2,
+                right: dotInset,
+                bottom: dotInset,
                 width: dotSize,
                 height: dotSize,
                 borderRadius: '50%',
@@ -274,8 +325,8 @@ export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl
           <span
             style={{
               position: 'absolute',
-              right: -2,
-              bottom: -2,
+              right: dotInset,
+              bottom: dotInset,
               width: dotSize,
               height: dotSize,
               borderRadius: '50%',

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Camera, Copy, Keyboard, RefreshCw, X } from 'lucide-react'
+import { Camera, Check, Copy, Keyboard, RefreshCw, Smartphone, X } from 'lucide-react'
 import { api } from '../../../../utils/api'
 import { formatRegistrationInviteCodeForDisplay } from '../../../../utils/formatRegistrationInviteCode'
 import { bytesToBase64, utf8ToBytes } from '../../../../utils/base64'
@@ -16,6 +16,9 @@ import {
 function now() {
   return Date.now()
 }
+
+/** Должно совпадать с TTL_MS в domain/device/deviceLinkInvite.ts — используется для полосы жизни кода. */
+const INVITE_TTL_MS = 5 * 60_000
 
 function controlCiphertextBase64(): string {
   return bytesToBase64(utf8ToBytes('ctrl'))
@@ -69,6 +72,22 @@ export function DeviceLinkInline(props: {
   }, [variant, inviteTs])
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [tick, setTick] = useState(() => now())
+  const [copied, setCopied] = useState(false)
+  // Ключи ушли новому устройству (событие от SecretInboxPump) — показываем его имя.
+  const [linked, setLinked] = useState<{ name: string; threadCount: number } | null>(null)
+
+  useEffect(() => {
+    if (variant !== 'invite') return
+    const handler = (e: any) => {
+      const name = String(e?.detail?.name ?? '').trim()
+      const threadCount = Number(e?.detail?.threadCount ?? 0) || 0
+      setLinked({ name, threadCount })
+      // Приглашение одноразовое: гасим его, чтобы код нельзя было переиспользовать.
+      try { clearDeviceLinkInvite() } catch {}
+    }
+    window.addEventListener('eb:deviceLinkedOut', handler as any)
+    return () => window.removeEventListener('eb:deviceLinkedOut', handler as any)
+  }, [variant])
 
   const expiresInMs = useMemo(() => {
     if (!invite?.expiresAt) return 0
@@ -99,6 +118,8 @@ export function DeviceLinkInline(props: {
   async function copyText(text: string) {
     try {
       await navigator.clipboard.writeText(text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
     } catch {}
   }
 
@@ -274,102 +295,193 @@ export function DeviceLinkInline(props: {
 
   if (variant === 'invite') {
     const expired = expiresInMs <= 0
-    const qrBoxSize: any = isNarrow ? 'min(86vw, 320px)' : 220
-    return (
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-          <div style={{ fontWeight: 900, fontSize: 16 }}>Добавить устройство</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={() => {
-                clearDeviceLinkInvite()
-                setQrDataUrl(null)
-                setInviteTs(Date.now())
-              }}
-              disabled={busy}
-            >
-              <RefreshCw size={16} /> Обновить
-            </button>
+    const qrBoxSize: any = isNarrow ? 'min(86vw, 300px)' : 216
+    const progress = linked ? 1 : Math.max(0, Math.min(1, expiresInMs / INVITE_TTL_MS))
+
+    // Ключи ушли: карточка превращается в подтверждение с именем устройства.
+    if (linked) {
+      return (
+        <div style={cardStyle}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             {props.onClose ? (
-              <button type="button" className="btn btn-ghost" onClick={props.onClose} disabled={busy}>
+              <button type="button" className="btn btn-ghost" onClick={props.onClose}>
                 <X size={16} />
               </button>
             ) : null}
           </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '10px 6px 18px' }}>
+            <div
+              style={{
+                width: 64,
+                height: 64,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(34,197,94,0.12)',
+                border: '1px solid rgba(34,197,94,0.35)',
+                color: '#86efac',
+              }}
+            >
+              <Check size={30} />
+            </div>
+            <div style={{ marginTop: 14, fontWeight: 900, fontSize: 18, textAlign: 'center' }}>
+              {linked.name ? `«${linked.name}» подключён` : 'Устройство подключено'}
+            </div>
+            <div style={{ marginTop: 6, color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', maxWidth: 380 }}>
+              {linked.threadCount > 0
+                ? `Устройство получило доступ к секретным чатам: ${linked.threadCount}.`
+                : 'Устройство получило доступ к секретным чатам.'}
+            </div>
+            <button
+              type="button"
+              className="btn"
+              onClick={props.onClose}
+              style={{ marginTop: 18, minWidth: 160, padding: '10px 18px', borderRadius: 14 }}
+            >
+              Готово
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 12,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(34,197,94,0.10)',
+                border: '1px solid rgba(34,197,94,0.22)',
+                color: '#86efac',
+                flexShrink: 0,
+              }}
+            >
+              <Smartphone size={20} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 900, fontSize: 17, lineHeight: 1.2 }}>Добавить устройство</div>
+              <div style={{ marginTop: 3, color: 'var(--text-muted)', fontSize: 12.5 }}>
+                Ключи уедут напрямую, сервер их не увидит
+              </div>
+            </div>
+          </div>
+          {props.onClose ? (
+            <button type="button" className="btn btn-ghost" onClick={props.onClose} disabled={busy} title="Закрыть">
+              <X size={16} />
+            </button>
+          ) : null}
         </div>
 
-        <div style={{ marginTop: 10, color: 'var(--text-muted)', fontSize: 13 }}>
-          Открой Eblusha на новом устройстве → «Добавить устройство» → введи код или отсканируй QR.
-        </div>
+        {/* Шаги: коротко и по делу, вместо одной длинной строки со стрелками. */}
+        <ol
+          style={{
+            margin: '14px 0 0',
+            padding: 0,
+            listStyle: 'none',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            color: 'var(--text-muted)',
+            fontSize: 13,
+          }}
+        >
+          {['Открой Eblusha на новом устройстве', 'Зайди в этот же секретный чат', 'Отсканируй QR или введи код'].map(
+            (step, i) => (
+              <li key={step} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                <span
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: '50%',
+                    background: 'rgba(255,255,255,0.06)',
+                    border: '1px solid var(--surface-border)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 11,
+                    fontWeight: 800,
+                    color: 'var(--text-primary)',
+                    flexShrink: 0,
+                  }}
+                >
+                  {i + 1}
+                </span>
+                {step}
+              </li>
+            ),
+          )}
+        </ol>
 
-        <div style={{ display: 'flex', gap: 14, marginTop: 14, flexWrap: 'wrap', alignItems: 'stretch' }}>
+        <div style={{ display: 'flex', gap: 16, marginTop: 16, flexWrap: 'wrap', alignItems: 'stretch' }}>
           <div
             style={{
               flex: isNarrow ? '1 1 100%' : '0 0 auto',
               display: 'flex',
               flexDirection: 'column',
-              alignItems: isNarrow ? 'center' : undefined,
+              alignItems: 'center',
             }}
           >
             <div
               style={{
                 width: qrBoxSize,
                 height: qrBoxSize,
-                borderRadius: 16,
-                border: '1px solid var(--surface-border)',
-                background: 'rgba(0,0,0,0.18)',
+                borderRadius: 18,
+                padding: 10,
+                background: '#fff',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 overflow: 'hidden',
+                opacity: expired ? 0.35 : 1,
+                transition: 'opacity 160ms ease',
+                boxShadow: '0 6px 20px rgba(0,0,0,0.25)',
               }}
             >
-              {qrDataUrl && !expired ? <img src={qrDataUrl} alt="QR" style={{ width: '100%', height: '100%' }} /> : <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>QR недоступен</div>}
-            </div>
-            <div
-              style={{
-                marginTop: 10,
-                fontSize: 12,
-                color: expired ? '#fca5a5' : 'var(--text-muted)',
-                textAlign: isNarrow ? 'center' : undefined,
-                width: isNarrow ? '100%' : undefined,
-              }}
-            >
-              {expired ? 'Код истёк — нажми «Обновить»' : `Истекает через ${formatMmSs(expiresInMs)}`}
+              {qrDataUrl && !expired ? (
+                <img src={qrDataUrl} alt="QR" style={{ width: '100%', height: '100%' }} />
+              ) : (
+                <div style={{ color: '#6b7280', fontSize: 13, textAlign: 'center', padding: 12 }}>
+                  {expired ? 'Код истёк' : 'QR недоступен'}
+                </div>
+              )}
             </div>
           </div>
 
-          <div style={{ flex: 1, minWidth: 240, display: 'flex', flexDirection: 'column', alignSelf: 'stretch' }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, fontWeight: 800, letterSpacing: 0.2, flexShrink: 0 }}>
-              Код
-            </div>
+          <div style={{ flex: 1, minWidth: 232, display: 'flex', flexDirection: 'column', alignSelf: 'stretch', gap: 10 }}>
             <div
               style={{
                 borderRadius: 16,
                 border: '1px solid var(--surface-border)',
                 background: 'rgba(0,0,0,0.16)',
-                padding: '18px 16px',
+                padding: '16px 14px',
                 display: 'flex',
                 flexDirection: 'column',
-                alignItems: 'stretch',
-                justifyContent: 'space-between',
-                gap: 12,
+                gap: 10,
                 flex: 1,
                 minHeight: 0,
               }}
             >
+              <div style={{ fontSize: 11.5, color: 'var(--text-muted)', fontWeight: 800, letterSpacing: 0.4 }}>
+                КОД ДЛЯ РУЧНОГО ВВОДА
+              </div>
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <div
                   style={{
                     fontFamily:
                       'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
                     fontWeight: 900,
-                    fontSize: 'clamp(28px, 4.2vw, 48px)',
+                    fontSize: 'clamp(26px, 3.6vw, 40px)',
                     letterSpacing: '0.08em',
                     lineHeight: 1.1,
-                    color: 'var(--text-primary)',
+                    color: expired ? 'var(--text-muted)' : 'var(--text-primary)',
                     textAlign: 'center',
                     userSelect: 'text',
                     fontVariantNumeric: 'tabular-nums',
@@ -380,29 +492,96 @@ export function DeviceLinkInline(props: {
                 </div>
               </div>
 
+              {/* Таймер жизни кода — полоской, а не отдельной строкой мелким текстом. */}
+              <div>
+                <div
+                  style={{
+                    height: 4,
+                    borderRadius: 999,
+                    background: 'rgba(255,255,255,0.08)',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${Math.round(progress * 100)}%`,
+                      height: '100%',
+                      borderRadius: 999,
+                      background: expired ? '#f87171' : progress < 0.25 ? '#f59e0b' : '#22c55e',
+                      transition: 'width 250ms linear, background 250ms ease',
+                    }}
+                  />
+                </div>
+                <div style={{ marginTop: 6, fontSize: 12, color: expired ? '#fca5a5' : 'var(--text-muted)' }}>
+                  {expired ? 'Код истёк — обнови его' : `Действует ещё ${formatMmSs(expiresInMs)}`}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
               <button
                 type="button"
                 className="btn btn-ghost"
                 onClick={() => copyText(invite?.code ?? '')}
                 disabled={busy || expired || !invite?.code}
                 style={{
-                  width: '100%',
+                  flex: 1,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: 8,
-                  padding: '12px 12px',
+                  padding: '11px 12px',
                   borderRadius: 14,
                   border: '1px solid rgba(255,255,255,0.10)',
                   background: 'rgba(255,255,255,0.04)',
                 }}
               >
-                <Copy size={16} /> Скопировать
+                <Copy size={16} /> {copied ? 'Скопировано' : 'Скопировать'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => {
+                  clearDeviceLinkInvite()
+                  setQrDataUrl(null)
+                  setInviteTs(Date.now())
+                }}
+                disabled={busy}
+                title="Обновить код"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  padding: '11px 14px',
+                  borderRadius: 14,
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  background: expired ? 'rgba(217,119,6,0.16)' : 'rgba(255,255,255,0.04)',
+                }}
+              >
+                <RefreshCw size={16} />
               </button>
             </div>
-            {error ? <div style={{ marginTop: 10, color: '#fca5a5', fontSize: 13 }}>{error}</div> : null}
+
+            {/* Пока ключи не ушли — показываем, что карточка ждёт новое устройство. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12.5 }}>
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  background: '#22c55e',
+                  boxShadow: '0 0 0 0 rgba(34,197,94,0.6)',
+                  animation: 'ebPulse 1.8s ease-out infinite',
+                  flexShrink: 0,
+                }}
+              />
+              Ждём новое устройство…
+            </div>
+            {error ? <div style={{ color: '#fca5a5', fontSize: 13 }}>{error}</div> : null}
           </div>
         </div>
+        <style>{'@keyframes ebPulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,0.55)}70%{box-shadow:0 0 0 8px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}'}</style>
       </div>
     )
   }

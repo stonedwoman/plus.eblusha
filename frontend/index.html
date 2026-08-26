@@ -6,6 +6,10 @@
     <link rel="icon" type="image/png" href="https://ru.eblusha.org/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <script src="/js/lock-viewport.js"></script>
+    <!-- Прелоад шрифта: без него первый кадр рисуется системным шрифтом и текст
+         «прыгает», когда доезжает Inter (у автора Inter установлен в систему, ему
+         не видно; всем остальным — видно). -->
+    <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
     <title>Еблуша — Plus</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#0b0b0f" />
