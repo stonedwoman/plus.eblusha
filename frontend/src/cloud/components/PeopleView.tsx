@@ -85,6 +85,7 @@ export function PeopleView({
   const [loading, setLoading] = useState(true)
   const [viewerIdx, setViewerIdx] = useState<number | null>(null)
   const [naming, setNaming] = useState<UnnamedGroup | null>(null)
+  const [showRare, setShowRare] = useState(false)
   const [nameInput, setNameInput] = useState('')
 
   const load = useCallback(async () => {
@@ -230,7 +231,12 @@ export function PeopleView({
             </div>
           ) : null}
           <div className="cl-face-groups">
-            {groups.map((g, i) => (
+            {/*
+             * Как у телефонов: в основном списке — только кластеры от трёх
+             * лиц. Прохожие и туристы с одного-двух случайных кадров прячутся
+             * за разворотом, чтобы не хоронить своих в шуме.
+             */}
+            {(showRare ? groups : groups.filter((g) => g.total >= 3)).map((g, i) => (
               <div className="cl-face-group" key={i}>
                 <div className="cl-face-row">
                   {g.faces.slice(0, 6).map((f) => (
@@ -288,6 +294,11 @@ export function PeopleView({
               </div>
             ))}
           </div>
+          {!showRare && groups.some((g) => g.total < 3) ? (
+            <button className="cl-btn ghost sm" style={{ marginTop: 10 }} onClick={() => setShowRare(true)}>
+              Показать редкие лица · {groups.filter((g) => g.total < 3).length} групп по 1–2 кадра
+            </button>
+          ) : null}
         </>
       )}
 
