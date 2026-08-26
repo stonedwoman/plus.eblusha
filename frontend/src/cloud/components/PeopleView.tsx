@@ -30,21 +30,32 @@ export type FaceRef = {
 type UnnamedGroup = { faces: FaceRef[]; faceIds: string[]; total: number; days: number; significant: boolean }
 
 /**
- * Кадрированное лицо: CSS-кроп превью по рамке. Вся арифметика — в ПИКСЕЛЯХ
- * кадра: доли по X и Y нормированы разными сторонами, и на неквадратных
- * превью долевая математика уводила кроп в небо над лицом.
+ * Кадрированное лицо: CSS-кроп превью по рамке.
+ *
+ * Размеры кадра меряем у САМОЙ картинки (naturalWidth/Height), а не берём из
+ * базы: у части старых файлов размеры в базе не совпадают с фактическими
+ * пропорциями превью (наследие EXIF-ориентаций), и жёсткое назначение обеих
+ * сторон растягивало лицо. Пока не загрузилось — кружок-заглушка.
  */
 export function FaceCrop({ face, size = 72 }: { face: FaceRef; size?: number }) {
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null)
   const b = face.box
-  const W = face.fileW || 1000
-  const H = face.fileH || 1000
-  const fw = b.w * W
-  const fh = b.h * H
-  // Квадрат вокруг рамки с полями: лицо в кружке не должно упираться лбом.
-  const sidePx = Math.max(fw, fh) * 1.6
-  const k = size / sidePx
-  const cx = (b.x + b.w / 2) * W
-  const cy = (b.y + b.h / 2) * H
+  let style: React.CSSProperties = { opacity: 0 }
+  if (nat) {
+    const fw = b.w * nat.w
+    const fh = b.h * nat.h
+    // Квадрат вокруг рамки с полями: лицо в кружке не должно упираться лбом.
+    const sidePx = Math.max(fw, fh) * 1.6
+    const k = size / sidePx
+    const cx = (b.x + b.w / 2) * nat.w
+    const cy = (b.y + b.h / 2) * nat.h
+    style = {
+      width: Math.round(nat.w * k),
+      height: Math.round(nat.h * k),
+      left: Math.round(size / 2 - cx * k),
+      top: Math.round(size / 2 - cy * k),
+    }
+  }
   return (
     <span className="cl-face" style={{ width: size, height: size }}>
       <img
@@ -52,12 +63,11 @@ export function FaceCrop({ face, size = 72 }: { face: FaceRef; size?: number }) 
         alt=""
         loading="lazy"
         draggable={false}
-        style={{
-          width: Math.round(W * k),
-          height: Math.round(H * k),
-          left: Math.round(size / 2 - cx * k),
-          top: Math.round(size / 2 - cy * k),
+        ref={(el) => {
+          if (el?.complete && el.naturalWidth > 0 && !nat) setNat({ w: el.naturalWidth, h: el.naturalHeight })
         }}
+        onLoad={(e) => setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+        style={style}
       />
     </span>
   )

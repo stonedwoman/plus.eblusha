@@ -525,6 +525,16 @@ router.post(
           width = height,
           height = width
       WHERE id = ${file.id}`;
+    /*
+     * Рамки лиц живут в долях кадра — при повороте кадра их надо довернуть
+     * той же матрицей, иначе кропы лиц и панель «Люди» целятся мимо.
+     * По часовой: (x,y,w,h) → (1−y−h, x, h, w); против — обратная.
+     */
+    if (parsed.data.dir === "cw") {
+      await prisma.$executeRaw`UPDATE "CloudFace" SET x = 1 - y - h, y = x, w = h, h = w WHERE "fileId" = ${file.id}`;
+    } else {
+      await prisma.$executeRaw`UPDATE "CloudFace" SET x = y, y = 1 - x - w, w = h, h = w WHERE "fileId" = ${file.id}`;
+    }
     const freshRot = await prisma.cloudFile.findUnique({ where: { id: file.id }, select: { rotation: true } });
     const rotation = freshRot?.rotation ?? 0;
     // reason уникален: jobId строится из него, и второй щелчок с тем же id

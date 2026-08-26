@@ -151,6 +151,23 @@ export function Viewer({
       try {
         const { data } = await cloudApi.post<{ file: CloudFile }>(`/files/${target.id}/rotate`, { dir })
         onFileChanged?.(data.file)
+        /*
+         * Фолбэк на молчащий realtime: перепечка занимает секунды, и если
+         * событие не дошло, кадр вечно жил бы растянутым из старого превью.
+         * Несколько опросов — и DTO с перепечёнными превью доедет сам.
+         */
+        if (target.kind === 'IMAGE') {
+          for (const ms of [1500, 3500, 7000]) {
+            setTimeout(async () => {
+              try {
+                const { data: fresh } = await cloudApi.get<{ file: CloudFile }>(`/files/${target.id}`)
+                if (fresh.file.previewRotation === fresh.file.rotation) onFileChanged?.(fresh.file)
+              } catch {
+                /* не критично — событие или следующий опрос */
+              }
+            }, ms)
+          }
+        }
       } catch (err) {
         // Откат строго своему кадру: человек мог уже перелистнуть.
         setVis((v) => (v && v.id === target.id ? { ...v, deg: v.deg - step } : v))
@@ -817,17 +834,21 @@ export function Viewer({
                     spin={spin}
                     spinScale={(() => {
                       /*
-                       * Пока фото довёрнуто CSS-ом (превью ещё старое), при
-                       * нечётном угле контейнер ужимается, чтобы повёрнутый
-                       * кадр не вылезал за сцену. Точность не нужна — через
-                       * секунду приедет перепечённое превью и transform уйдёт.
+                       * Довёрнутый CSS-ом кадр ВПИСЫВАЕТСЯ в новую коробку, а
+                       * не просто крутится на месте: отношение вписанных
+                       * масштабов k(новые размеры)/k(транспонированные) и
+                       * увеличивает горизонтальный кадр, ставший вертикальным,
+                       * до полной высоты. До перепечки картинка растянута из
+                       * старого превью — резкость вернёт подмена битмапа.
                        */
                       if (!(((spin % 360) + 360) % 360 % 180)) return 1
                       const st = stageRef.current
-                      if (!st) return 1
-                      const w = st.clientWidth
-                      const h = st.clientHeight - gutterRef.current
-                      return Math.min(w, h) / Math.max(w, h)
+                      if (!st || !f.width || !f.height) return 1
+                      const W = st.clientWidth
+                      const H = st.clientHeight - gutterRef.current
+                      const kNew = Math.min(W / f.width, H / f.height)
+                      const kOld = Math.min(W / f.height, H / f.width)
+                      return kOld > 0 ? kNew / kOld : 1
                     })()}
                   />
                 </div>
