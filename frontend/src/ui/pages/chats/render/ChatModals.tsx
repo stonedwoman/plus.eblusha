@@ -3,12 +3,12 @@
  * контакты, контекст-меню сообщения, лайтбокс, просмотр видео, пересылка и т.п.).
  * Вынесено из ChatsPage; обычная функция рендера, значения — через ctx.
  */
-import { lazy } from 'react'
+import { lazy, useState } from 'react'
 
 import { api, getUploadUrl } from '../../../../utils/api'
 import type { AxiosError } from 'axios'
 
-import { X, Users, UserPlus, Copy, UploadCloud, CheckCircle, Trash2, LogOut, Lock, Unlock, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, RefreshCw, Pencil } from 'lucide-react'
+import { X, Users, UserPlus, Copy, UploadCloud, CheckCircle, Trash2, LogOut, Lock, Unlock, Monitor, Smartphone, Tablet, ImagePlus, MessageCircle, Loader2, RefreshCw, Pencil, KeyRound } from 'lucide-react'
 import { AvailabilityButton } from '../../../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../../../features/availability/availability.time'
@@ -229,6 +229,83 @@ export interface ChatModalsCtx {
   userCardUser: any
   usersById: any
   videoViewer: any
+}
+
+/**
+ * Смена пароля в профиле. Отдельный компонент, а не кусок renderChatModals:
+ * renderChatModals — обычная функция рендера, hooks в ней нельзя.
+ */
+function ChangePasswordSection({ username }: { username?: string }) {
+  const [open, setOpen] = useState(false)
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [repeat, setRepeat] = useState('')
+  const [revokeOthers, setRevokeOthers] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const inputStyle = {
+    width: '100%',
+    padding: '10px 12px',
+    borderRadius: 10,
+    border: '1px solid var(--surface-border)',
+    background: 'var(--surface-200)',
+    color: 'var(--text-primary)',
+    fontSize: 14,
+    outline: 'none',
+  } as const
+
+  const submit = async () => {
+    if (busy) return
+    if (next.length < 6) { systemToast.error('Новый пароль — минимум 6 символов'); return }
+    if (next !== repeat) { systemToast.error('Пароли не совпадают'); return }
+    setBusy(true)
+    try {
+      const resp = await api.post('/auth/change-password', {
+        currentPassword: current,
+        newPassword: next,
+        revokeOtherSessions: revokeOthers,
+      })
+      const revoked = Number(resp?.data?.revokedSessions ?? 0)
+      systemToast.success(revoked > 0 ? 'Пароль изменён, остальные сеансы завершены' : 'Пароль изменён')
+      setCurrent(''); setNext(''); setRepeat(''); setRevokeOthers(false)
+      setOpen(false)
+    } catch (e: any) {
+      const status = e?.response?.status
+      if (status === 403) systemToast.error('Неверный текущий пароль')
+      else if (status === 429) systemToast.error('Слишком много попыток — подождите минуту')
+      else systemToast.error('Не удалось сменить пароль')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 18, border: '1px solid var(--surface-border)', borderRadius: 14, background: 'var(--surface-100)', padding: 12 }}>
+      <div
+        onClick={() => setOpen((v) => !v)}
+        style={{ cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--text-muted)', letterSpacing: 0.2, userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><KeyRound size={14} /> СМЕНА ПАРОЛЯ</span>
+        <span style={{ fontSize: 11 }}>{open ? '\u25b4' : '\u25be'}</span>
+      </div>
+      {open && (
+        <form onSubmit={(e) => { e.preventDefault(); submit() }} style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Скрытый логин — подсказка менеджеру паролей, к какой учётке относится смена. */}
+          <input type="text" name="username" autoComplete="username" value={username ?? ''} readOnly style={{ display: 'none' }} />
+          <input type="password" autoComplete="current-password" placeholder="Текущий пароль" value={current} onChange={(e) => setCurrent(e.target.value)} style={inputStyle} />
+          <input type="password" autoComplete="new-password" placeholder="Новый пароль (минимум 6 символов)" value={next} onChange={(e) => setNext(e.target.value)} style={inputStyle} />
+          <input type="password" autoComplete="new-password" placeholder="Новый пароль ещё раз" value={repeat} onChange={(e) => setRepeat(e.target.value)} style={inputStyle} />
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }}>
+            <input type="checkbox" checked={revokeOthers} onChange={(e) => setRevokeOthers(e.target.checked)} style={{ marginTop: 2 }} />
+            <span>Завершить остальные сеансы. Отметьте, если пароль мог попасть в чужие руки.</span>
+          </label>
+          <button type="submit" className="btn btn-primary" disabled={busy || !current || !next || !repeat} style={{ width: '100%' }}>
+            {busy ? 'Меняем…' : 'Сменить пароль'}
+          </button>
+        </form>
+      )}
+    </div>
+  )
 }
 
 export function renderChatModals(ctx: ChatModalsCtx) {
@@ -1097,6 +1174,8 @@ export function renderChatModals(ctx: ChatModalsCtx) {
               </div>
             </div>
           )}
+
+          <ChangePasswordSection username={(me as any)?.username} />
 
           <div style={{ borderTop: '1px solid var(--surface-border)', marginTop: 24, paddingTop: 20 }}>
             <button 

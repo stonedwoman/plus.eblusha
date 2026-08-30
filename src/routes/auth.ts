@@ -24,6 +24,8 @@ import {
   verifyRegistrationInviteGrant,
 } from "../lib/registrationInvites";
 import { authenticate } from "../middlewares/auth";
+import { destroyAllCloudSessions } from "../cloud/auth/session";
+import logger from "../config/logger";
 import { rateLimit } from "../middlewares/rateLimit";
 import { getIO } from "../realtime/socket";
 
@@ -338,6 +340,86 @@ router.post(
       }
       throw error;
     }
+  }
+);
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  // Те же требования, что и при регистрации.
+  newPassword: z.string().min(6).max(200),
+  revokeOtherSessions: z.boolean().optional(),
+});
+
+router.post(
+  "/change-password",
+  authenticate,
+  // Каждая попытка проверяет текущий пароль, поэтому лимит жёсткий — иначе это
+  // готовый оракул для перебора у того, кто украл живую сессию.
+  rateLimit({ name: "auth_change_password", windowMs: 60_000, max: 5 }),
+  async (req, res) => {
+    const userId = (req as any).user!.id as string;
+    const parsed = changePasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid data" });
+      return;
+    }
+    const { currentPassword, newPassword, revokeOtherSessions } = parsed.data;
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true },
+    });
+    if (!user) {
+      res.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+    const valid = await verifyPassword(currentPassword, user.passwordHash);
+    if (!valid) {
+      res.status(403).json({ message: "Wrong current password" });
+      return;
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: await hashPassword(newPassword) },
+    });
+
+    let revokedSessions = 0;
+    if (revokeOtherSessions) {
+      // Свой сеанс не трогаем: находим его по tokenId access-токена.
+      const currentTokenId = (req as any).accessTokenId as string | undefined;
+      let currentSessionId: string | null = null;
+      if (currentTokenId) {
+        const rec = await prisma.refreshToken.findUnique({
+          where: { token: currentTokenId },
+          select: { sessionId: true, userId: true },
+        });
+        if (rec && rec.userId === userId) currentSessionId = rec.sessionId;
+      }
+      const result = await prisma.refreshToken.updateMany({
+        where: {
+          userId,
+          revokedAt: null,
+          ...(currentSessionId
+            ? { NOT: { sessionId: currentSessionId } }
+            : currentTokenId
+              ? { NOT: { token: currentTokenId } }
+              : {}),
+        },
+        data: { revokedAt: new Date(), revocationReason: "password_change" },
+      });
+      revokedSessions = result.count;
+      // Cloud-сессии живут отдельно (Redis) и паролём не защищены. Режем все:
+      // живая вкладка Картотеки молча получит новую по SSO от этого же сеанса.
+      try {
+        await destroyAllCloudSessions(userId);
+      } catch (error) {
+        logger.warn({ error, userId }, "Failed to destroy cloud sessions on password change");
+      }
+    }
+
+    logger.info({ userId, revokedSessions }, "Password changed");
+    res.json({ success: true, revokedSessions });
   }
 );
 
