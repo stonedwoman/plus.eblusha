@@ -17,6 +17,16 @@ SDK — см. `src/push/apns.ts`. Один ключ обслуживает и о
 
 ## 2. Прописать env в `.env`
 
+Быстрый путь — скопировать `.p8` на сервер и выполнить:
+
+```
+scripts/apns-install-key.sh /путь/AuthKey_XXXXXXXXXX.p8 sandbox
+```
+
+Скрипт сам вытащит Key ID из имени файла, положит base64 в `.env`, перезапустит backend
+и worker и проверит, что ключ читается. Руками то же самое выглядит так:
+
+
 ```env
 APNS_KEY=<base64 от AuthKey_XXXXXXXXXX.p8>      # base64 -w0 AuthKey_XXXXXXXXXX.p8
 APNS_KEY_ID=XXXXXXXXXX
