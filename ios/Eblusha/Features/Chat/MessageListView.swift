@@ -29,11 +29,15 @@ struct MessageListView: View {
     let onEdit: (Message) -> Void
     /// Полный выбор эмодзи открывает экран беседы — лист должен жить над лентой.
     let onPickReaction: (Message) -> Void
+    /// Долгое нажатие по сообщению — меню действий (тоже листом над лентой).
+    let onLongPress: (Message) -> Void
     /// Четыре быстрых слота: читаются один раз на проход, а не в каждой строке.
     let quickSlots: [String]
 
-    /// Низ контента — отдельная точка привязки. Целиться в последнее СООБЩЕНИЕ нельзя:
-    /// под ним ещё паддинг стека, и прокрутка к нему оставляла пузырь под кромкой.
+    /// Низ контента. Прицел по id (в том числе по невидимому маркеру) промахивался:
+    /// в LazyVStack часть строк ещё не измерена, и прокрутка уезжала НИЖЕ контента —
+    /// чат открывался чёрным, пока не промотаешь вверх. Поэтому к низу ходим через
+    /// ScrollPosition.scrollTo(edge:), который упирается в реальный край содержимого.
     private static let bottomAnchor = "eb.chat.bottom"
     /// Порог «мы у низа»: примерно один пузырь. Веб использует rootMargin 40px, Android —
     /// «последний элемент виден».
@@ -48,10 +52,16 @@ struct MessageListView: View {
     /// наше собственное отправленное сообщение, его человек обязан увидеть.
     @State private var followNextMessage = false
     @State private var pinTask: Task<Void, Never>?
+    /// Позиция прокрутки: переход к краю нельзя промахнуть, в отличие от scrollTo(id:).
+    @State private var scrollPosition = ScrollPosition()
     /// Доводка отложена до конца жеста: дёргать ленту из-под пальца нельзя.
     @State private var pinPending = false
     /// Высота контента в прошлом замере — по её стабилизации понимаем, что вклеенная
     /// страница истории домерилась и якорь можно отпускать.
+    /// Есть ли вообще куда прокручивать. Короткую переписку (контент ниже экрана)
+    /// трогать НЕЛЬЗЯ: принудительный scrollTo к нижнему маркеру уводил её вверх за
+    /// кромку, и чат открывался пустым, пока не промотаешь обратно.
+    @State private var canScroll = false
     @State private var lastContentHeight: CGFloat = 0
     @State private var stableHeightTicks = 0
     /// Поколение перехода к цитате: отменённая задача не должна гасить состояние новой.
@@ -153,6 +163,7 @@ struct MessageListView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
             }
+            .scrollPosition($scrollPosition)
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(.bottom, for: .alignment)
@@ -174,6 +185,8 @@ struct MessageListView: View {
                 // мы здесь и избавляемся.
                 let nowAtBottom = value.distanceToBottom < Self.bottomThreshold
                 if nowAtBottom != atBottom { atBottom = nowAtBottom }
+                let scrollable = value.contentHeight > value.viewportHeight + 1
+                if scrollable != canScroll { canScroll = scrollable }
                 trackPrependSettling(contentHeight: value.contentHeight)
                 maybeLoadOlder(offsetFromTop: value.offsetFromTop, viewport: value.viewportHeight)
             }
@@ -262,6 +275,7 @@ struct MessageListView: View {
             onReply: { vm.setReply(message) },
             onReact: { vm.react(message, emoji: $0) },
             onPickReaction: { onPickReaction(message) },
+            onLongPress: { onLongPress(message) },
             quickSlots: quickSlots,
             onEdit: { onEdit(message) },
             onDelete: { vm.delete(messageId: message.id) }
@@ -277,7 +291,7 @@ struct MessageListView: View {
             jumpNotice = nil
             followNextMessage = false
             pinPending = false
-            pin(proxy: proxy, repeats: 8)
+            pin(proxy: proxy, repeats: 4)
         } label: {
             Image(systemName: "chevron.down")
                 .font(.system(size: 16, weight: .semibold))
@@ -289,33 +303,28 @@ struct MessageListView: View {
         .buttonStyle(.plain)
         .padding(.trailing, 14)
         .padding(.bottom, 12)
-        .opacity(atBottom ? 0 : 1)
+        .opacity(atBottom || !canScroll ? 0 : 1)
         .animation(.easeOut(duration: 0.15), value: atBottom)
         // Скрытую кнопку нельзя оставлять кликабельной — она ловила бы тапы по последнему
         // сообщению.
-        .allowsHitTesting(!atBottom)
+        .allowsHitTesting(!atBottom && canScroll)
     }
 
     // MARK: - Привязка к низу
 
-    /// Открытие чата: мгновенно ставим ленту на последнее сообщение и несколько раз
-    /// переспрашиваем — аватары и картинки дорисовываются позже и растят высоту.
-    /// Порт стартового блока ChatScreen.kt (scrollToItem + 12 повторов по 40 мс).
+    /// Открытие чата. Ставить позицию руками тут НЕ нужно: за стартовый кадр отвечает
+    /// `defaultScrollAnchor(.bottom, for: .initialOffset)`, а ручная доводка на ещё не
+    /// измеренном содержимом как раз и уводила ленту ниже контента.
     private func initialPin(proxy: ScrollViewProxy) async {
         didInitialPin = false
-        guard !vm.ui.messages.isEmpty else {
-            // Сообщений ещё нет: первая страница приедет и отработает onMessagesChanged.
-            return
-        }
-        pin(proxy: proxy, repeats: 12)
+        guard !vm.ui.messages.isEmpty else { return }
         didInitialPin = true
     }
 
     private func onMessagesChanged(empty: Bool, proxy: ScrollViewProxy) {
         guard !empty else { return }
         if !didInitialPin {
-            // Первая страница только что приехала — это и есть открытие чата.
-            pin(proxy: proxy, repeats: 12)
+            // Первая страница приехала — начальную позицию поставит сам скролл.
             didInitialPin = true
             return
         }
@@ -335,19 +344,23 @@ struct MessageListView: View {
     /// Без анимации намеренно — эталон на Android делает ровно так же: анимированный
     /// доезд не успевает за растущими ячейками и заканчивается недолётом, а следующий
     /// повтор всё равно оборвал бы анимацию рывком.
+    /// Доводка к низу. Ходит к КРАЮ содержимого, а не к маркеру по id: край
+    /// вычисляет сам скролл, промахнуться ниже контента невозможно.
     private func pin(proxy: ScrollViewProxy, repeats: Int) {
         pinTask?.cancel()
-        proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
         atBottom = true
+        guard canScroll else { return } // короткий чат и так прижат выравниванием якоря
+        scrollPosition.scrollTo(edge: .bottom)
         guard repeats > 0 else { return }
         pinTask = Task { @MainActor in
+            // Повторы нужны, пока домеряются картинки и аватары: одна попытка
+            // промахивается на растущем контенте.
             for _ in 0..<repeats {
                 try? await Task.sleep(for: .milliseconds(40))
                 if Task.isCancelled { return }
-                // Палец взял ленту — эту итерацию пропускаем, но доводку не бросаем:
-                // жест может кончиться раньше, чем домерятся картинки.
                 if userInteracting { continue }
-                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                guard canScroll else { continue }
+                scrollPosition.scrollTo(edge: .bottom)
             }
         }
     }

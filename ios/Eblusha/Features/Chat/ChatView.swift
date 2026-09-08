@@ -67,6 +67,8 @@ struct ChatView: View {
     @State private var sendToken = 0
     /// Сообщение, для которого открыт полный выбор эмодзи.
     @State private var reactionTarget: Message?
+    /// Сообщение, для которого открыто меню действий.
+    @State private var actionsTarget: Message?
     /// Быстрые слоты реакций: пересчитываются, когда пользователь выбрал новую.
     @State private var quickSlots = ReactionFavorites.defaults
     /// Высота композера в прошлом замере — по её приросту лента понимает, что её поджали.
@@ -119,6 +121,7 @@ struct ChatView: View {
                         editTarget = message
                     },
                     onPickReaction: { reactionTarget = $0 },
+                    onLongPress: { actionsTarget = $0 },
                     quickSlots: quickSlots
                 )
                     // Карточки секретного треда (приглашение / ожидание / привязка
@@ -243,6 +246,38 @@ struct ChatView: View {
                 }
             )
             .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $actionsTarget) { target in
+            MessageActionsSheet(
+                message: target,
+                quickSlots: quickSlots,
+                canForward: !vm.ui.isSecret,
+                onReact: { emoji in
+                    vm.react(target, emoji: emoji)
+                    if !(target.reactions.first { $0.emoji == emoji }?.mine ?? false) {
+                        ReactionFavorites.record(userId: vm.currentUserId, emoji: emoji)
+                        quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
+                    }
+                },
+                onPickReaction: {
+                    actionsTarget = nil
+                    // Лист поверх листа система не покажет — даём первому закрыться.
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(320))
+                        reactionTarget = target
+                    }
+                },
+                onReply: { vm.setReply(target) },
+                onCopy: { UIPasteboard.general.string = target.content },
+                onForward: { forwardSheet = ForwardRequest(messages: [target]) },
+                onEdit: {
+                    editText = target.content ?? ""
+                    editTarget = target
+                },
+                onDelete: { vm.delete(messageId: target.id) },
+                onSelect: { vm.startSelection(target.id) },
+                onDismiss: { actionsTarget = nil }
+            )
         }
         .sheet(item: $reactionTarget) { target in
             ReactionPickerSheet(
@@ -524,6 +559,8 @@ struct MessageRow: View {
     let onReact: (String) -> Void
     /// Открыть полный выбор эмодзи (лист живёт на экране беседы).
     let onPickReaction: () -> Void
+    /// Долгое нажатие — меню сообщения (реакции + действия).
+    let onLongPress: () -> Void
     /// Быстрые слоты — считает лента, чтобы не читать UserDefaults на каждую строку.
     var quickSlots: [String] = ReactionFavorites.defaults
     let onEdit: () -> Void
@@ -711,7 +748,9 @@ struct MessageRow: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.04))
         )
-        .contextMenu { contextMenu }
+        // Своё меню вместо системного contextMenu: системное умеет только вертикальный
+        // список, и четыре реакции вставали столбиком.
+        .onLongPressGesture(minimumDuration: 0.32) { onLongPress() }
     }
 
     @ViewBuilder
@@ -864,49 +903,7 @@ struct MessageRow: View {
         }
     }
 
-    @ViewBuilder
-    private var contextMenu: some View {
-        // Быстрые реакции первой секцией: четыре слота, недавно выбранные первыми
-        // (веб: getQuickReactionSlots).
-        ForEach(quickSlots, id: \.self) { emoji in
-            Button {
-                onReact(emoji)
-            } label: {
-                Text(emoji)
-            }
-        }
-        Button {
-            onPickReaction()
-        } label: {
-            Label("Другая реакция…", systemImage: "face.smiling")
-        }
-        Divider()
-        Button(action: onReply) {
-            Label("Ответить", systemImage: "arrowshape.turn.up.left")
-        }
-        Button {
-            UIPasteboard.general.string = m.content
-        } label: {
-            Label("Копировать", systemImage: "doc.on.doc")
-        }
-        Button(action: onForward) {
-            Label("Переслать", systemImage: "arrowshape.turn.up.right")
-        }
-        if m.isMine && !m.deleted && m.type == "TEXT" {
-            Button(action: onEdit) {
-                Label("Изменить", systemImage: "pencil")
-            }
-        }
-        if m.isMine && !m.deleted {
-            Button(role: .destructive, action: onDelete) {
-                Label("Удалить", systemImage: "trash")
-            }
-        }
-        Divider()
-        Button(action: onStartSelect) {
-            Label("Выбрать", systemImage: "checkmark.circle")
-        }
-    }
+
 
     private var receiptTicks: some View {
         // Галочки квитанций: одна — отправлено, две — доставлено, оранжевые — прочитано.
