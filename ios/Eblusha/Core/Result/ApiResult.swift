@@ -19,8 +19,11 @@ func safeApiCall<T>(_ block: () async throws -> T) async -> ApiResult<T> {
     } catch let error as HTTPError {
         return .failure(message: parseHTTPError(error), code: error.code)
     } catch let error as URLError {
-        _ = error
-        return .failure(message: "Нет соединения с сервером")
+        // Код нужен вызывающим: отменённый запрос (NSURLErrorCancelled) — это не сбой
+        // сети, и карантинить из-за него повторные попытки нельзя.
+        return .failure(message: "Нет соединения с сервером", code: error.errorCode)
+    } catch is CancellationError {
+        return .failure(message: "Отменено", code: NSURLErrorCancelled)
     } catch {
         return .failure(message: error.localizedDescription)
     }

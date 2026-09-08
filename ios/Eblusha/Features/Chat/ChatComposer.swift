@@ -1,0 +1,146 @@
+import SwiftUI
+
+/// Композер вынесен из ChatView отдельной вью НЕ ради красоты: пока текст жил в @State
+/// самого экрана, каждое нажатие клавиши перестраивало тело ChatView целиком — вместе с
+/// лентой на сотни сообщений. Ввод отставал от пальца, а лента под ним мигала. Теперь
+/// текст живёт здесь, и переписка о наборе не знает.
+///
+/// Порт нижней колонки `ChatScreen.kt`: прогресс/чипы вложений → панель ответа → строка
+/// ввода (или строка записи голосового).
+struct ChatComposer: View {
+
+    let conversationId: String
+    let staged: [OutgoingFile]
+    let uploadProgress: Float?
+    let replyingTo: [Message]
+    let sending: Bool
+    /// Текст, возвращённый вьюмоделью после неудачной отправки (или отменённой подписи).
+    let restoredDraft: String?
+
+    let onClearReply: () -> Void
+    let onRemoveStaged: (Int) -> Void
+    let onCancelUpload: () -> Void
+    let onStageFiles: ([OutgoingFile]) -> Void
+    let onError: (String) -> Void
+    let onDraftChanged: (String) -> Void
+    let onSend: (String) -> Void
+    let onSendStaged: (String?) -> Void
+    let onSendVoice: (Data, Int, [Int]) -> Void
+    let onConsumeRestoredDraft: () -> Void
+    /// Фокус ушёл в поле ввода — ленте пора подтянуть низ под клавиатуру.
+    let onFocusChanged: (Bool) -> Void
+    /// Панель выросла (цитата, чипы, вторая строка) — лента компенсирует высоту.
+    let onHeightChanged: (CGFloat) -> Void
+
+    @State private var draft = ""
+    @StateObject private var voiceRecorder = VoiceRecorder()
+    @FocusState private var focused: Bool
+
+    private var isEmpty: Bool { draft.trimmed().isEmpty && staged.isEmpty }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ComposerAttachmentsBar(
+                staged: staged,
+                uploadProgress: uploadProgress,
+                onRemoveStaged: onRemoveStaged,
+                onCancelUpload: onCancelUpload
+            )
+
+            if !replyingTo.isEmpty {
+                ReplyDraftPreview(messages: replyingTo, onClear: onClearReply)
+            }
+
+            if voiceRecorder.isRecording {
+                // Порт recording-ветки композера ChatScreen.kt: строка записи вместо ввода.
+                VoiceRecordBar(recorder: voiceRecorder, sending: sending) { data, duration, waveform in
+                    onSendVoice(data, duration, waveform)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+            } else {
+                inputRow
+            }
+        }
+        // Фон уходит под полосу home indicator — иначе внизу видна полоса другого цвета.
+        .background(Eb.surface200.ignoresSafeArea(edges: .bottom))
+        // Высота панели меняется от цитаты, чипов и второй строки — лента должна на это
+        // отвечать, иначе последнее сообщение уезжает под композер (порт
+        // KeepBottomVisibleOnComposerGrowth).
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeightChanged($0) }
+        .onAppear {
+            // Черновик переживает выход в список чатов и возврат (порт DraftStore.kt).
+            let saved = DraftStore.get(conversationId)
+            if !saved.isEmpty, draft.isEmpty { draft = saved }
+        }
+        .onDisappear {
+            DraftStore.set(conversationId, draft)
+            voiceRecorder.cancel()
+        }
+        .onChange(of: focused) { _, value in onFocusChanged(value) }
+        .onChange(of: restoredDraft) { _, restored in
+            guard let restored, !restored.isEmpty else { return }
+            // Возврат текста после сбоя отправки НЕ должен затирать то, что человек успел
+            // набрать заново, — дописываем к набранному.
+            draft = draft.trimmed().isEmpty ? restored : restored + " " + draft
+            onConsumeRestoredDraft()
+        }
+    }
+
+    private var inputRow: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            AttachmentPickerButton(
+                disabled: sending,
+                onPicked: onStageFiles,
+                onError: onError
+            )
+
+            TextField("Сообщение", text: $draft, axis: .vertical)
+                .lineLimit(1...5)
+                .focused($focused)
+                .foregroundStyle(Eb.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 20))
+                .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Eb.border))
+                .onChange(of: draft) { _, text in
+                    onDraftChanged(text)
+                    DraftStore.set(conversationId, text)
+                }
+
+            // Микрофон и «отправить» занимают ОДНО место: раньше микрофон исчезал на первом
+            // же символе, поле рывком расширялось на 38 pt и текст под курсором прыгал.
+            Group {
+                if isEmpty {
+                    VoiceRecordButton(recorder: voiceRecorder, sending: sending)
+                } else {
+                    sendButton
+                }
+            }
+            .frame(width: 38, height: 38)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    private var sendButton: some View {
+        Button {
+            let text = draft
+            draft = ""
+            DraftStore.set(conversationId, "")
+            // С очередью вложений текст уходит их подписью; иначе — обычное сообщение.
+            if !staged.isEmpty {
+                onSendStaged(text.trimmed().isEmpty ? nil : text)
+            } else {
+                onSend(text)
+            }
+        } label: {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 38, height: 38)
+                .background(sending ? Eb.surface300 : Eb.brand, in: Circle())
+        }
+        .disabled(sending)
+    }
+}

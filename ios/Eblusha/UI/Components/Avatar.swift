@@ -53,13 +53,10 @@ struct AvatarView: View {
     var body: some View {
         Group {
             if let resolved = resolveMediaUrl(avatarUrl), let url = URL(string: resolved) {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        placeholder
-                    }
-                }
+                // Через кэш, а не AsyncImage: в ленте один и тот же аватар встречается
+                // десятки раз, и без памяти он перекачивался бы на каждое появление
+                // ячейки, подмигивая заглушкой.
+                CachedImage(url: url, contentMode: .fill) { placeholder }
             } else {
                 placeholder
             }

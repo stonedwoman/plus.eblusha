@@ -54,6 +54,14 @@ struct MessageAttachment: Codable, Equatable {
     /// E2EE: nonce файла — url отдаёт шифртекст, расшифровать ключом треда secretThreadId.
     var secretNonce: String?
     var secretThreadId: String?
+
+    /// Соотношение сторон для места под картинку в ленте. Сервер отдаёт width/height —
+    /// значит слот можно занять ДО загрузки и не двигать соседние сообщения.
+    /// Пределы — чтобы панорама не превращалась в полоску, а скриншот во весь экран.
+    var displayAspect: CGFloat {
+        guard let width, let height, width > 0, height > 0 else { return 4.0 / 3.0 }
+        return min(max(CGFloat(width) / CGFloat(height), 0.62), 2.2)
+    }
 }
 
 struct ChatUser: Identifiable, Equatable {

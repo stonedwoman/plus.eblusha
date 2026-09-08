@@ -20,11 +20,43 @@ func millisToIso(_ millis: Int64) -> String {
     isoWithFraction.string(from: Date(timeIntervalSince1970: Double(millis) / 1000))
 }
 
+// Форматтеры создаются ОДИН раз: DateFormatter стоит дорого, а время стоит под каждым
+// сообщением — в ленте это был постоянный налог на плавность прокрутки.
+private let clockFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm"
+    return f
+}()
+private let fullDateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "dd.MM.yyyy 'в' HH:mm"
+    return f
+}()
+private let dayFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "d MMMM"
+    f.locale = Locale(identifier: "ru_RU")
+    return f
+}()
+
 /// «ЧЧ:ММ» по локальному времени (метки в пузырях, «Пропущенный звонок в …»).
 func formatClockTime(_ millis: Int64) -> String {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "HH:mm"
-    return formatter.string(from: Date(timeIntervalSince1970: Double(millis) / 1000))
+    clockFormatter.string(from: Date(timeIntervalSince1970: Double(millis) / 1000))
+}
+
+/// День сообщения для разделителя в ленте: «Сегодня» / «Вчера» / «7 сентября».
+func formatMessageDay(_ millis: Int64) -> String {
+    let date = Date(timeIntervalSince1970: Double(millis) / 1000)
+    let calendar = Calendar.current
+    if calendar.isDateInToday(date) { return "Сегодня" }
+    if calendar.isDateInYesterday(date) { return "Вчера" }
+    return dayFormatter.string(from: date)
+}
+
+/// Номер дня эпохи по местному времени — по нему лента решает, где ставить разделитель.
+func localDayIndex(_ millis: Int64) -> Int {
+    let date = Date(timeIntervalSince1970: Double(millis) / 1000)
+    return Calendar.current.ordinality(of: .day, in: .era, for: date) ?? 0
 }
 
 /// Веб-паритет: «только что» / «N мин назад» / «N ч назад», полная дата — после суток.
@@ -35,8 +67,6 @@ func formatLastSeen(_ millis: Int64) -> String {
     case ..<60: return "\(diffMin) мин назад"
     case ..<(24 * 60): return "\(diffMin / 60) ч назад"
     default:
-        let formatter = DateFormatter()
-        formatter.dateFormat = "dd.MM.yyyy 'в' HH:mm"
-        return formatter.string(from: Date(timeIntervalSince1970: Double(millis) / 1000))
+        return fullDateFormatter.string(from: Date(timeIntervalSince1970: Double(millis) / 1000))
     }
 }

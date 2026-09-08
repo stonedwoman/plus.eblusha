@@ -34,8 +34,20 @@ struct SwipeToReply: ViewModifier {
                     .padding(.horizontal, 10)
                     .opacity(min(abs(offsetX) / replyThresholdPx, 1))
             }
-            // .subviews выключает сам жест, не трогая жесты содержимого (тапы/меню).
-            .gesture(drag, including: enabled ? .all : .subviews)
+            // simultaneousGesture, а НЕ gesture: обычный жест на каждой строке конкурировал
+            // с прокруткой ленты — палец вёл вверх, а список стоял, пока жест не проиграет.
+            // Одновременный жест не отбирает панорамирование: вертикальные свайпы уходят
+            // ленте, а горизонтальные ловим мы (см. horizontalLock).
+            .simultaneousGesture(drag, including: enabled ? .all : .subviews)
+            .onChange(of: enabled) { _, value in if !value { reset() } }
+    }
+
+    /// Возврат пузыря на место. Отдельным методом, потому что жест может быть отменён
+    /// (ленту перехватила прокрутка) — тогда onEnded не придёт, и без сброса пузырь
+    /// залипал сдвинутым со стрелкой ответа.
+    private func reset() {
+        withAnimation(.spring(duration: 0.25)) { offsetX = 0 }
+        horizontalLock = nil
     }
 
     private var drag: some Gesture {
@@ -54,8 +66,7 @@ struct SwipeToReply: ViewModifier {
             }
             .onEnded { _ in
                 let trigger = abs(offsetX) >= replyThresholdPx
-                withAnimation(.spring(duration: 0.25)) { offsetX = 0 }
-                horizontalLock = nil
+                reset()
                 if trigger { onReply() }
             }
     }

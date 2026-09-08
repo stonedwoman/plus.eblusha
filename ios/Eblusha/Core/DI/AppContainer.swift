@@ -66,6 +66,7 @@ final class AppContainer {
 
     /// Порт container.clearLocalData(): при выходе стираем всё локальное.
     func clearLocalData() {
+        DraftStore.clear()
         chatRepository.clearLocalData()
         // Ключи тредов, prekeys, идентичность устройства и расшифрованные вложения.
         secretRepository.clearLocalData()

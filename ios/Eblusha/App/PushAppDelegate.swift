@@ -16,6 +16,9 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
         // сцены ещё нет, и warmup() из RootView не выполнится — без него у сетевого слоя
         // нет токена, сокет не подключится, и принятый звонок умрёт на пустом месте.
         AppContainer.shared.warmup()
+        // Дисковый кэш картинок: по умолчанию URLCache крошечный, и переписка с фото
+        // перекачивалась бы целиком после каждого запуска.
+        ImageLoader.configureDiskCache()
         // Порядок неслучаен и откладывать нельзя (порт комментария ensureFirebase):
         // когда процесс поднят ПО VoIP-ПУШУ, PKPushRegistry обязан существовать с
         // делегатом до конца didFinishLaunching — иначе пуш потерян, звонок не

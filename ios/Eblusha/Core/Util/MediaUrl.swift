@@ -9,8 +9,25 @@ private let ebStorageBlobSuffix = try! NSRegularExpression(
     options: [.caseInsensitive]
 )
 
+// Результат разбора кэшируется: функция гоняет регулярку и режет строку, а зовут её на
+// КАЖДЫЙ рендер аватара и картинки — в групповой ленте это десятки раз за кадр.
+private let resolvedUrlCache = Mutex<[String: String]>([:])
+private let resolvedUrlCacheLimit = 600
+
 func resolveMediaUrl(_ url: String?) -> String? {
     guard let url else { return nil }
+    if let hit = resolvedUrlCache.withLock({ $0[url] }) { return hit }
+    let value = resolveMediaUrlUncached(url)
+    if let value {
+        resolvedUrlCache.withLock { map in
+            if map.count >= resolvedUrlCacheLimit { map.removeAll() }
+            map[url] = value
+        }
+    }
+    return value
+}
+
+private func resolveMediaUrlUncached(_ url: String) -> String? {
     let raw = url.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !raw.isEmpty else { return nil }
     if raw.hasPrefix("blob:") || raw.hasPrefix("data:") { return raw }

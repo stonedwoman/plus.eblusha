@@ -12,6 +12,9 @@ final class ChatViewModel: ObservableObject {
     struct UiState {
         var loading = true
         var loadingOlder = false
+        /// Прямо сейчас в начало ленты вклеивается страница истории. Лента на это время
+        /// переключает якорь размера на низ, иначе вставка сверху сдвигает видимое.
+        var prepending = false
         var sending = false
         var isGroup = false
         var senderAvatars: [String: String?] = [:]
@@ -75,6 +78,13 @@ final class ChatViewModel: ObservableObject {
     let realtime: RealtimeClient
     let conversationId: String
 
+    /// Порядок ленты: по времени, а при совпадении — по id. Без тай-брейка сортировка
+    /// пачки одновременных сообщений (альбом, системные строки звонка) не воспроизводима,
+    /// и порядок на айфоне расходился с вебом, а иногда менялся после каждой реакции.
+    static func olderFirst(_ lhs: Message, _ rhs: Message) -> Bool {
+        lhs.createdAt == rhs.createdAt ? lhs.id < rhs.id : lhs.createdAt < rhs.createdAt
+    }
+
     private var typingSent = false
     /// true → аборт текущего аплоада между частями (кнопка «отмена» у прогресса).
     var uploadCancelled = false
@@ -82,6 +92,9 @@ final class ChatViewModel: ObservableObject {
     private var typingExpiry: Task<Void, Never>?
     private var lastInputMs: TimeInterval = 0
     private var lastReload: TimeInterval = 0
+    private var lastMarkReadMs: TimeInterval = 0
+    /// Отложенный тихий релоад: события в окне троттла больше не теряются.
+    private var pendingReload: Task<Void, Never>?
     private var requestedPreviews: Set<String> = []
     var cancellables: Set<AnyCancellable> = []
 
@@ -189,9 +202,17 @@ final class ChatViewModel: ObservableObject {
             guard cid == conversationId, !secretMode else { return }
             appendRealtime(message)
 
-        case .messageUpdate(let cid, _), .messageReaction(let cid, _),
-             .receipts(let cid, _, _, _):
+        case .messageUpdate(let cid, _), .messageReaction(let cid, _):
             guard cid == conversationId, !secretMode else { return }
+            scheduleReload()
+
+        case .receipts(let cid, _, let userId, _):
+            guard cid == conversationId, !secretMode else { return }
+            // Свои же квитанции игнорируем. Иначе получался самоподдерживающийся шторм:
+            // пришло сообщение → markRead → сервер шлёт нам наши receipts → полная
+            // перезагрузка страницы → лента перестраивается под пальцем. Чужие галочки
+            // приедут со следующим обновлением, ради них дёргать историю незачем.
+            guard userId != repo.currentUserId() else { return }
             scheduleReload()
 
         case .presence(let userId, let status, _):
@@ -235,7 +256,7 @@ final class ChatViewModel: ObservableObject {
         var seen = Set<String>()
         let merged = (page.messages + ui.messages)
             .filter { seen.insert($0.id).inserted }
-            .sorted { $0.createdAt < $1.createdAt }
+            .sorted(by: Self.olderFirst)
         ui.messages = merged
         if !pagedBack {
             ui.hasMore = page.hasMore
@@ -269,22 +290,47 @@ final class ChatViewModel: ObservableObject {
         case .success(let page):
             pagedBack = true
             var seen = Set<String>()
-            ui.messages = (page.messages + ui.messages)
+            let merged = (page.messages + ui.messages)
                 .filter { seen.insert($0.id).inserted }
-                .sorted { $0.createdAt < $1.createdAt }
+                .sorted(by: Self.olderFirst)
+            // Флаг выставляем В ТОМ ЖЕ обновлении, что и сами сообщения: лента читает его,
+            // выбирая якорь, а отдельным кадром он бы опоздал.
+            ui.prepending = true
+            ui.messages = merged
             ui.hasMore = page.hasMore
             ui.nextCursor = page.nextCursor
             fetchMissingPreviews()
+            // Снимаем через пару кадров — к этому времени вставка уже отрисована.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                self?.ui.prepending = false
+            }
             return true
-        case .failure:
-            lastOlderFailMs = Date().timeIntervalSince1970
+        case .failure(_, let code):
+            // Отменённый запрос — не сбой сети: карантин на 4 секунды после него означал,
+            // что история переставала догружаться, пока не уедешь вниз и не вернёшься.
+            if code != NSURLErrorCancelled {
+                lastOlderFailMs = Date().timeIntervalSince1970
+            }
             return false
         }
     }
 
     private func scheduleReload() {
-        if Date().timeIntervalSince1970 - lastReload < 0.4 { return }
-        reloadSilently()
+        let sinceLast = Date().timeIntervalSince1970 - lastReload
+        guard sinceLast < 0.4 else {
+            reloadSilently()
+            return
+        }
+        // Раньше событие внутри окна просто выбрасывалось: правка или реакция собеседника,
+        // пришедшая сразу за сообщением, не показывалась до следующего события. Теперь
+        // окно только откладывает обновление.
+        guard pendingReload == nil else { return }
+        pendingReload = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            self?.pendingReload = nil
+            if !Task.isCancelled { self?.reloadSilently() }
+        }
     }
 
     private func reloadSilently() {
@@ -317,9 +363,19 @@ final class ChatViewModel: ObservableObject {
         }
         let message = repo.mapMessage(dto)
         guard !ui.messages.contains(where: { $0.id == message.id }) else { return }
-        ui.messages.append(message)
+        // Вставляем по порядку, а не просто в конец: сообщение из сокета может обогнать
+        // соседа по времени, и следующий тихий релоад переставлял бы его на глазах —
+        // пузырь появлялся внизу и через полсекунды уезжал в середину ленты.
+        if let last = ui.messages.last, Self.olderFirst(message, last) {
+            let index = ui.messages.firstIndex { Self.olderFirst(message, $0) } ?? ui.messages.count
+            ui.messages.insert(message, at: index)
+        } else {
+            ui.messages.append(message)
+        }
         ui.typingName = nil
-        markRead()
+        // Своё же эхо квитировать не нужно — это был лишний запрос на каждое отправленное
+        // сообщение и лишний повод серверу прислать нам наши же квитанции.
+        if !message.isMine { markRead() }
         fetchMissingPreviews()
     }
 
@@ -376,6 +432,11 @@ final class ChatViewModel: ObservableObject {
     /// Проблема UI-уровня (например, сбой чтения пикера) — через тот же баннер ошибок.
     func setError(_ message: String) {
         ui.error = message
+    }
+
+    /// Баннер ошибки закрывается тапом — раньше он висел до конца жизни экрана.
+    func clearError() {
+        ui.error = nil
     }
 
     /// Шлёт все [files] ОДНИМ сообщением (фотоальбом). Веб-капы: 10 фото + 10 файлов.
@@ -536,13 +597,34 @@ final class ChatViewModel: ObservableObject {
     func react(_ message: Message, emoji: String) {
         guard !secretMode else { return }
         let mine = message.reactions.first { $0.emoji == emoji }?.mine ?? false
+        // Оптимистично: счётчик меняется под пальцем, а не через раундтрип. Сервер
+        // подтвердит тем же значением, ошибка — откатит.
+        applyLocalReaction(messageId: message.id, emoji: emoji, add: !mine)
         Task {
-            if case .success = await repo.toggleReaction(
+            if case .failure = await repo.toggleReaction(
                 messageId: message.id, emoji: emoji, currentlyMine: mine
             ) {
+                applyLocalReaction(messageId: message.id, emoji: emoji, add: mine)
+            } else {
                 reloadSilently()
             }
         }
+    }
+
+    private func applyLocalReaction(messageId: String, emoji: String, add: Bool) {
+        guard let index = ui.messages.firstIndex(where: { $0.id == messageId }) else { return }
+        var reactions = ui.messages[index].reactions
+        if let position = reactions.firstIndex(where: { $0.emoji == emoji }) {
+            let count = reactions[position].count + (add ? 1 : -1)
+            if count <= 0 {
+                reactions.remove(at: position)
+            } else {
+                reactions[position] = MessageReaction(emoji: emoji, count: count, mine: add)
+            }
+        } else if add {
+            reactions.append(MessageReaction(emoji: emoji, count: 1, mine: true))
+        }
+        ui.messages[index].reactions = reactions
     }
 
     func edit(messageId: String, content: String) {
@@ -556,17 +638,21 @@ final class ChatViewModel: ObservableObject {
 
     func delete(messageId: String) {
         guard !secretMode else { return }
+        // Помечаем СРАЗУ: лента удалённые не показывает, и пузырь исчезает по нажатию,
+        // а не через секунду-две, всё это время показывая исходный текст серым курсивом.
+        setDeletedLocally(messageId, deleted: true)
         Task {
-            if case .success = await repo.deleteMessage(messageId: messageId) {
-                // Помечаем локально: refetch страницы 1 не достаёт долистанные назад.
-                ui.messages = ui.messages.map {
-                    var m = $0
-                    if m.id == messageId { m.deleted = true }
-                    return m
-                }
+            if case .failure = await repo.deleteMessage(messageId: messageId) {
+                setDeletedLocally(messageId, deleted: false)
+            } else {
                 reloadSilently()
             }
         }
+    }
+
+    private func setDeletedLocally(_ messageId: String, deleted: Bool) {
+        guard let index = ui.messages.firstIndex(where: { $0.id == messageId }) else { return }
+        ui.messages[index].deleted = deleted
     }
 
     // MARK: - Ответ
@@ -673,6 +759,11 @@ final class ChatViewModel: ObservableObject {
         // Баннеры этой беседы снимаем и у секретных чатов — серверный markRead им не нужен.
         MessageNotifications.shared.clearDelivered(conversationId: conversationId)
         guard !secretMode else { return }
+        // В живом диалоге сообщения идут пачками; без троттла на каждое летел POST,
+        // а в ответ прилетали receipts — и всё это во время прокрутки.
+        let now = Date().timeIntervalSince1970
+        guard now - lastMarkReadMs > 1.5 else { return }
+        lastMarkReadMs = now
         Task { _ = await repo.markConversationRead(conversationId) }
     }
 

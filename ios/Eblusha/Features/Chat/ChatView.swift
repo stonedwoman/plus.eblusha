@@ -7,7 +7,8 @@ import SwiftUI
 private let runGapMs: Int64 = 5 * 60 * 1000
 
 /// Позднее сообщение продолжает ран раннего: тот же автор, оба не системные, в окне 5 мин.
-private func continuesRun(_ earlier: Message?, _ later: Message?) -> Bool {
+/// Не private: ранами занимается MessageListView, собирая их один раз за проход.
+func continuesRun(_ earlier: Message?, _ later: Message?) -> Bool {
     guard let earlier, let later else { return false }
     if earlier.isSystem || later.isSystem { return false }
     if earlier.senderId != later.senderId { return false }
@@ -52,25 +53,21 @@ struct ChatView: View {
     let onBack: () -> Void
 
     @StateObject private var vm: ChatViewModel
-    @State private var draft = ""
     @State private var editTarget: Message?
     @State private var editText = ""
     @State private var confirmDelete = false
     @State private var forwardSheet: ForwardRequest?
     @State private var viewer: ImageViewerState?
     @State private var userCard: UserCardSeed?
-    /// Подсветка строки после перехода к цитате (эталон highlightedId/jumpHighlight).
-    @State private var highlightedId: String?
-    /// Идёт переход: авто-подгрузка у верха молчит — вклейка страницы сдвинула бы прицел.
-    @State private var jumping = false
-    /// Лента у низа — только тогда новое сообщение утягивает экран за собой.
-    @State private var atBottom = true
     /// Открытое вложение (видео в плеере, документ в системном просмотре).
     @State private var preview: AttachmentPreview?
     /// Идёт скачивание/расшифровка перед открытием.
     @State private var preparingAttachment = false
-    @StateObject private var voiceRecorder = VoiceRecorder()
-    @FocusState private var composerFocused: Bool
+    /// Просьба к ленте вернуться к низу: выехала клавиатура, вырос композер, ушло своё
+    /// сообщение. Счётчик, а не Bool, — важен сам факт события, а не состояние.
+    @State private var pinToken = 0
+    /// Высота композера в прошлом замере — по её приросту лента понимает, что её поджали.
+    @State private var composerHeight: CGFloat = 0
 
     init(conversation: Conversation, onBack: @escaping () -> Void) {
         self.conversation = conversation
@@ -97,7 +94,27 @@ struct ChatView: View {
                 ProgressView()
                 Spacer()
             } else {
-                messageList
+                MessageListView(
+                    vm: vm,
+                    pinToken: pinToken,
+                    onForward: { forwardSheet = ForwardRequest(messages: [$0]) },
+                    onOpenImage: { images, index in
+                        viewer = ImageViewerState(images: images, startIndex: index)
+                    },
+                    onOpenSender: { message in
+                        // Тап по аватару отправителя в группе — карточка пользователя.
+                        userCard = UserCardSeed(
+                            userId: message.senderId,
+                            name: message.senderName,
+                            avatarUrl: message.senderAvatarUrl
+                        )
+                    },
+                    onOpenAttachment: { openAttachment($0) },
+                    onEdit: { message in
+                        editText = message.content ?? ""
+                        editTarget = message
+                    }
+                )
                     // Карточки секретного треда (приглашение / ожидание / привязка
                     // устройства) ложатся поверх ленты, как в вебе и Android.
                     .overlay {
@@ -113,15 +130,25 @@ struct ChatView: View {
                             onSubmitCode: { vm.submitLinkCode() }
                         )
                     }
+                    .overlay { emptyState }
             }
 
             if let error = vm.ui.error {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(Eb.error)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(Eb.error.opacity(0.12))
+                HStack(spacing: 8) {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(Eb.error)
+                    Spacer(minLength: 4)
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Eb.error.opacity(0.8))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
+                .background(Eb.error.opacity(0.12))
+                .contentShape(Rectangle())
+                .onTapGesture { vm.clearError() }
             }
 
             if vm.ui.selectionMode {
@@ -143,20 +170,53 @@ struct ChatView: View {
                 // Композер скрыт, пока приглашение не принято обеими сторонами.
                 EmptyView()
             } else {
-                composer
+                ChatComposer(
+                    conversationId: conversation.id,
+                    staged: vm.ui.staged,
+                    uploadProgress: vm.ui.uploadProgress,
+                    replyingTo: vm.ui.replyingTo,
+                    sending: vm.ui.sending,
+                    restoredDraft: vm.ui.restoredDraft,
+                    onClearReply: { vm.clearReply() },
+                    onRemoveStaged: { vm.removeStaged($0) },
+                    onCancelUpload: { vm.cancelUpload() },
+                    onStageFiles: { vm.stageFiles($0) },
+                    onError: { vm.setError($0) },
+                    onDraftChanged: { vm.onInputChanged($0) },
+                    onSend: { text in
+                        // Своё сообщение обязано оказаться на виду, даже если человек
+                        // читал историю: лента получает право утянуться к низу.
+                        pinToken += 1
+                        vm.send(text)
+                    },
+                    onSendStaged: { caption in
+                        pinToken += 1
+                        vm.sendStaged(caption)
+                    },
+                    onSendVoice: { data, duration, waveform in
+                        pinToken += 1
+                        vm.sendVoice(data, durationSec: duration, waveform: waveform)
+                    },
+                    onConsumeRestoredDraft: { vm.consumeRestoredDraft() },
+                    onFocusChanged: { focused in
+                        // Клавиатура поджимает ленту снизу — последнее сообщение уезжало
+                        // под неё (порт KeepBottomVisibleOnKeyboard).
+                        if focused { pinToken += 1 }
+                    },
+                    onHeightChanged: { height in
+                        // Цитата ответа, чипы вложений, вторая строка текста: панель
+                        // выросла — возвращаем низ на место.
+                        let grew = height > composerHeight + 1
+                        composerHeight = height
+                        if grew { pinToken += 1 }
+                    }
+                )
             }
         }
         .background(Eb.paper)
         .toolbar(.hidden, for: .navigationBar)
         .onDisappear {
             vm.onDisappear()
-            voiceRecorder.cancel()
-        }
-        .onChange(of: vm.ui.restoredDraft) { _, restored in
-            if let restored {
-                draft = restored
-                vm.consumeRestoredDraft()
-            }
         }
         .sheet(item: $editTarget) { target in
             editSheet(target)
@@ -259,7 +319,8 @@ struct ChatView: View {
                     .lineLimit(1)
                 // «Печатает…» вытесняет статусную строку (веб-паритет).
                 if let typing = vm.ui.typingName {
-                    Text("\(typing)…")
+                    // Раньше выводилось просто «Виктор…» — читалось как обрезанный текст.
+                    Text(vm.ui.isGroup ? "\(typing) печатает…" : "печатает…")
                         .font(.footnote)
                         .foregroundStyle(Eb.brand)
                         .lineLimit(1)
@@ -324,162 +385,40 @@ struct ChatView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(Eb.surface200)
+        // Фон уходит под Dynamic Island: иначе над шапкой видна полоса другого цвета.
+        .background(Eb.surface200.ignoresSafeArea(edges: .top))
     }
 
-    // MARK: - Лента
-
-    private var messageList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    if vm.ui.loadingOlder {
-                        ProgressView()
-                            .padding(.vertical, 8)
-                    } else if vm.ui.hasMore {
-                        // Триггер подгрузки назад: появление этой строки у верха экрана.
-                        Color.clear
-                            .frame(height: 1)
-                            .onAppear { if !jumping { vm.loadOlder() } }
+    /// Пустая беседа и несостоявшаяся загрузка: раньше и то и другое выглядело как
+    /// пустая серая область, в которой непонятно, сломалось что-то или нет.
+    @ViewBuilder
+    private var emptyState: some View {
+        if !vm.ui.loading, vm.ui.messages.isEmpty, !vm.ui.secretInvite, !vm.ui.secretWaiting {
+            VStack(spacing: 10) {
+                if vm.ui.error != nil {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.largeTitle)
+                        .foregroundStyle(Eb.textMuted)
+                    Text("Не удалось загрузить переписку")
+                        .font(.subheadline)
+                        .foregroundStyle(Eb.textMuted)
+                    Button("Повторить") {
+                        vm.clearError()
+                        vm.load()
                     }
-                    let messages = vm.ui.messages
-                    ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
-                        let earlier = index > 0 ? messages[index - 1] : nil
-                        let later = index + 1 < messages.count ? messages[index + 1] : nil
-                        MessageRow(
-                            m: message,
-                            isGroup: vm.ui.isGroup,
-                            senderAvatarUrl: vm.ui.senderAvatars[message.senderId] ?? nil,
-                            isFirstInRun: !continuesRun(earlier, message),
-                            isLastInRun: !continuesRun(message, later),
-                            selectionMode: vm.ui.selectionMode,
-                            selected: vm.ui.selectedIds.contains(message.id),
-                            highlighted: message.id == highlightedId,
-                            onQuoteTap: { targetId in jumpToQuote(targetId, proxy: proxy) },
-                            onTap: { if vm.ui.selectionMode { vm.toggleSelect(message.id) } },
-                            onStartSelect: { vm.startSelection(message.id) },
-                            onForward: { forwardSheet = ForwardRequest(messages: [message]) },
-                            onOpenImage: { imgs, idx in
-                                viewer = ImageViewerState(images: imgs, startIndex: idx)
-                            },
-                            onOpenSender: {
-                                // Тап по аватару отправителя в группе — карточка пользователя.
-                                userCard = UserCardSeed(
-                                    userId: message.senderId,
-                                    name: message.senderName,
-                                    avatarUrl: message.senderAvatarUrl
-                                )
-                            },
-                            decryptSecretAttachment: vm.ui.isSecret
-                                ? { await vm.decryptSecretAttachment($0) } : nil,
-                            onOpenAttachment: { att in openAttachment(att) },
-                            onReply: { vm.setReply(message) },
-                            onReact: { vm.react(message, emoji: $0) },
-                            onEdit: {
-                                editText = message.content ?? ""
-                                editTarget = message
-                            },
-                            onDelete: { vm.delete(messageId: message.id) }
-                        )
-                        .id(message.id)
-                    }
-                    // Кто у низа — тот едет за новым сообщением; кто читает историю —
-                    // остаётся на месте. Безусловный скролл выдёргивал человека из старой
-                    // переписки на каждое чужое сообщение. Видимость этого маркера и есть
-                    // «мы у низа» (onScrollGeometryChange появился только в iOS 18).
-                    Color.clear
-                        .frame(height: 1)
-                        .onAppear { atBottom = true }
-                        .onDisappear { atBottom = false }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom)
-            .onChange(of: vm.ui.messages.last?.id) { _, lastId in
-                guard let lastId, atBottom, !jumping else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(lastId, anchor: .bottom)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Eb.brand)
+                } else {
+                    Text("Сообщений пока нет")
+                        .font(.subheadline)
+                        .foregroundStyle(Eb.textMuted)
+                    Text("Напишите первым")
+                        .font(.footnote)
+                        .foregroundStyle(Eb.textMuted.opacity(0.7))
                 }
             }
+            .padding(24)
         }
-    }
-
-
-    // MARK: - Композер
-
-    private var composer: some View {
-        VStack(spacing: 0) {
-            // Порядок как в bottomBar-колонке ChatScreen.kt: прогресс → чипы → ответ → поле.
-            ComposerAttachmentsBar(
-                staged: vm.ui.staged,
-                uploadProgress: vm.ui.uploadProgress,
-                onRemoveStaged: { vm.removeStaged($0) },
-                onCancelUpload: { vm.cancelUpload() }
-            )
-
-            if !vm.ui.replyingTo.isEmpty {
-                ReplyDraftPreview(messages: vm.ui.replyingTo, onClear: { vm.clearReply() })
-            }
-
-            if voiceRecorder.isRecording {
-                // Порт recording-ветки композера ChatScreen.kt: строка записи вместо ввода.
-                VoiceRecordBar(recorder: voiceRecorder, sending: vm.ui.sending) { data, duration, waveform in
-                    vm.sendVoice(data, durationSec: duration, waveform: waveform)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-            } else {
-                HStack(alignment: .bottom, spacing: 8) {
-                    AttachmentPickerButton(
-                        disabled: vm.ui.sending,
-                        onPicked: { vm.stageFiles($0) },
-                        onError: { vm.setError($0) }
-                    )
-
-                    TextField("Сообщение", text: $draft, axis: .vertical)
-                        .lineLimit(1...5)
-                        .focused($composerFocused)
-                        .foregroundStyle(Eb.textPrimary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 20))
-                        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Eb.border))
-                        .onChange(of: draft) { _, text in vm.onInputChanged(text) }
-
-                    if draft.trimmed().isEmpty && vm.ui.staged.isEmpty {
-                        // Микрофон при пустом композере (порт кнопки записи).
-                        VoiceRecordButton(recorder: voiceRecorder, sending: vm.ui.sending)
-                    }
-
-                    Button {
-                        let text = draft
-                        draft = ""
-                        // С очередью вложений текст уходит их подписью; иначе — обычное сообщение.
-                        if !vm.ui.staged.isEmpty {
-                            vm.sendStaged(text.trimmed().isEmpty ? nil : text)
-                        } else {
-                            vm.send(text)
-                        }
-                    } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 17, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 38, height: 38)
-                            .background(
-                                (draft.trimmed().isEmpty && vm.ui.staged.isEmpty) || vm.ui.sending
-                                    ? Eb.surface300 : Eb.brand,
-                                in: Circle()
-                            )
-                    }
-                    .disabled((draft.trimmed().isEmpty && vm.ui.staged.isEmpty) || vm.ui.sending)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-            }
-        }
-        .background(Eb.surface200)
     }
 
     /// Тап по видео/файлу: секретное расшифровываем, обычное скачиваем и показываем
@@ -496,26 +435,6 @@ struct ChatView: View {
             } else {
                 vm.setError("Не удалось открыть вложение")
             }
-        }
-    }
-
-    /// Сервер умеет только «страницу назад по курсору» — оригинал старше загруженного
-    /// тянется страницами (vm.loadUntil), затем scrollTo к центру + подсветка 1.6 с.
-    private func jumpToQuote(_ targetId: String, proxy: ScrollViewProxy) {
-        guard !jumping else { return }
-        jumping = true
-        highlightedId = nil
-        Task { @MainActor in
-            defer { jumping = false }
-            var found = vm.ui.messages.contains { $0.id == targetId }
-            if !found { found = await vm.loadUntil(messageId: targetId) }
-            guard found else { return } // история кончилась/сеть — молча, как веб
-            // Кадр на вклейку страницы в LazyVStack, иначе scrollTo промахнётся.
-            try? await Task.sleep(for: .milliseconds(80))
-            withAnimation(.easeOut(duration: 0.35)) { proxy.scrollTo(targetId, anchor: .center) }
-            highlightedId = targetId
-            try? await Task.sleep(for: .seconds(1.6))
-            if highlightedId == targetId { highlightedId = nil }
         }
     }
 
@@ -552,10 +471,12 @@ struct ChatView: View {
 
 // MARK: - Строка сообщения
 
-private struct MessageRow: View {
+struct MessageRow: View {
     let m: Message
     let isGroup: Bool
     let senderAvatarUrl: String?
+    /// Имена по id отправителя — для подписи плитки цитаты («кому отвечают»).
+    var senderNames: [String: String] = [:]
     let isFirstInRun: Bool
     let isLastInRun: Bool
     let selectionMode: Bool
@@ -623,11 +544,40 @@ private struct MessageRow: View {
                         .padding(.trailing, 2)
                 }
             }
-            .background(selected ? Eb.brand.opacity(0.14) : Color.clear)
+            .background(
+                selected ? Eb.brand.opacity(0.14)
+                    : (highlighted ? Eb.brand.opacity(0.18) : Color.clear)
+            )
+            // Вспышка после перехода по цитате: быстро загорается, медленно гаснет —
+            // ровно как в системной ветке выше (порт jumpHighlight).
+            .animation(.easeOut(duration: highlighted ? 0.16 : 0.7), value: highlighted)
             .contentShape(Rectangle())
             .onTapGesture { if selectionMode { onTap() } }
             .padding(.top, isFirstInRun ? 8 : 2)
             .padding(.bottom, 1)
+        }
+    }
+
+    /// Автор цитаты: сначала имя из загруженной истории, потом — «вы» для своих.
+    private func replyAuthorName(_ reply: ReplyInfo) -> String? {
+        if let name = senderNames[reply.senderId], !name.isEmpty { return name }
+        return nil
+    }
+
+    /// Время, пометка «изм.» и галочки квитанций — одной строкой.
+    private var metaRow: some View {
+        HStack(spacing: 4) {
+            if m.edited {
+                Text("изм.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Eb.textMuted)
+            }
+            Text(formatClockTime(m.createdAt))
+                .font(.system(size: 11))
+                .foregroundStyle(Eb.textMuted)
+            if m.isMine {
+                receiptTicks
+            }
         }
     }
 
@@ -657,12 +607,22 @@ private struct MessageRow: View {
             ForEach(m.replyTo, id: \.id) { reply in
                 HStack(spacing: 6) {
                     Rectangle().fill(Eb.brand).frame(width: 2)
-                    Text(reply.content ?? "Вложение")
-                        .font(.caption)
-                        .foregroundStyle(Eb.textMuted)
-                        .lineLimit(2)
+                    VStack(alignment: .leading, spacing: 1) {
+                        // Имя автора цитаты: без него плитка была безымянной серой
+                        // полоской и было непонятно, кому вообще отвечают.
+                        if let author = replyAuthorName(reply) {
+                            Text(author)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(nameColorForUser(reply.senderId))
+                                .lineLimit(1)
+                        }
+                        Text(reply.content?.isEmpty == false ? reply.content! : "Вложение")
+                            .font(.caption)
+                            .foregroundStyle(Eb.textMuted)
+                            .lineLimit(2)
+                    }
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, 3)
                 .padding(.horizontal, 6)
                 .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
@@ -679,8 +639,8 @@ private struct MessageRow: View {
                 linkPreviewCard(preview)
             }
 
-            HStack(spacing: 4) {
-                if !m.reactions.isEmpty {
+            if !m.reactions.isEmpty {
+                HStack(spacing: 4) {
                     ForEach(m.reactions, id: \.emoji) { reaction in
                         Button {
                             onReact(reaction.emoji)
@@ -698,23 +658,21 @@ private struct MessageRow: View {
                         .buttonStyle(.plain)
                     }
                 }
-                Spacer(minLength: 8)
-                if m.edited {
-                    Text("изм.")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Eb.textMuted)
-                }
-                Text(formatClockTime(m.createdAt))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Eb.textMuted)
-                if m.isMine {
-                    receiptTicks
-                }
             }
+
+            // Невидимая копия метки времени держит ширину пузыря, а видимая лежит
+            // оверлеем в правом нижнем углу. Раньше в этой строке стоял Spacer, и он
+            // растягивал КАЖДЫЙ пузырь до предела: короткое «ок» рисовалось плитой в
+            // пол-экрана.
+            metaRow.hidden()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: 300, alignment: .leading)
+        .overlay(alignment: .bottomTrailing) {
+            metaRow
+                .padding(.trailing, 12)
+                .padding(.bottom, 8)
+        }
         .background(bubbleColor, in: RoundedRectangle(cornerRadius: 14))
         .overlay(
             RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.04))
@@ -734,7 +692,10 @@ private struct MessageRow: View {
                 : [GridItem(.flexible(), spacing: 3), GridItem(.flexible(), spacing: 3)]
             LazyVGrid(columns: columns, spacing: 3) {
                 ForEach(Array(images.enumerated()), id: \.offset) { idx, att in
-                    attachmentImage(att)
+                    // В альбоме ячейки квадратные (как в вебе и Android): иначе соседи
+                    // с разными пропорциями рвут сетку, а высота плитки скачет по мере
+                    // загрузки.
+                    attachmentImage(att, aspect: images.count == 1 ? att.displayAspect : 1)
                         .onTapGesture {
                             if selectionMode { onTap() } else { onOpenImage(images, idx) }
                         }
@@ -751,35 +712,31 @@ private struct MessageRow: View {
         }
     }
 
-    private func attachmentImage(_ att: MessageAttachment) -> some View {
+    /// Слот под картинку задаётся ДО загрузки и не меняется после неё. Раньше пузырь
+    /// начинался с 90 pt заглушки и вырастал до 220 pt, когда картинка приезжала, —
+    /// и всё, что ниже, уезжало под пальцем. Это и есть «нестабильное пролистывание».
+    private func attachmentImage(_ att: MessageAttachment, aspect: CGFloat) -> some View {
         // Секретное вложение по своему url отдаёт ШИФРТЕКСТ — его нельзя показывать
         // напрямую: сначала расшифровываем ключом треда в кэш-файл (порт rememberSecretDecrypted).
         if att.secretNonce != nil {
             return AnyView(
                 SecretImageView(att: att, decrypt: decryptSecretAttachment)
-                    .frame(minHeight: 90, maxHeight: 220)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(aspect, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             )
         }
-        return AnyView(plainAttachmentImage(att))
+        return AnyView(plainAttachmentImage(att, aspect: aspect))
     }
 
-    private func plainAttachmentImage(_ att: MessageAttachment) -> some View {
-        Group {
-            if let thumb = thumbMediaUrl(att.url), let url = URL(string: thumb) {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Rectangle().fill(Eb.surface300)
-                            .overlay(ProgressView())
-                    }
-                }
-            } else {
-                Rectangle().fill(Eb.surface300)
-            }
+    private func plainAttachmentImage(_ att: MessageAttachment, aspect: CGFloat) -> some View {
+        let url = thumbMediaUrl(att.url).flatMap { URL(string: $0) }
+        return CachedImage(url: url, contentMode: .fill) {
+            Rectangle().fill(Eb.surface300)
         }
-        .frame(minHeight: 90, maxHeight: 220)
+        .frame(maxWidth: .infinity)
+        .aspectRatio(aspect, contentMode: .fit)
+        .clipped()
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -840,19 +797,27 @@ private struct MessageRow: View {
                     .lineLimit(3)
             }
             if let imageUrl = resolveMediaUrl(preview.imageUrl), let url = URL(string: imageUrl) {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                            .frame(maxHeight: 140)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                }
+                CachedImage(url: url, contentMode: .fill)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(1.9, contentMode: .fit)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
             }
         }
         .padding(8)
         .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .leading) {
             Rectangle().fill(Eb.brand).frame(width: 2)
+        }
+        .contentShape(Rectangle())
+        // Карточка теперь кликабельна целиком: раньше открыть ссылку можно было, только
+        // попав пальцем в сам url в тексте выше.
+        .onTapGesture {
+            if selectionMode {
+                onTap()
+            } else if let url = URL(string: preview.url) {
+                UIApplication.shared.open(url)
+            }
         }
     }
 
