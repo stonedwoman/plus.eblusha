@@ -212,14 +212,14 @@ final class ChatViewModel: ObservableObject {
             guard cid == conversationId, !secretMode else { return }
             scheduleReload()
 
-        case .receipts(let cid, _, let userId, _):
+        case .receipts(let cid, let messageIds, let userId, let status):
             guard cid == conversationId, !secretMode else { return }
-            // Свои же квитанции игнорируем. Иначе получался самоподдерживающийся шторм:
-            // пришло сообщение → markRead → сервер шлёт нам наши receipts → полная
-            // перезагрузка страницы → лента перестраивается под пальцем. Чужие галочки
-            // приедут со следующим обновлением, ради них дёргать историю незачем.
+            // Свои же квитанции игнорируем: иначе markRead → receipts → перезагрузка.
             guard userId != repo.currentUserId() else { return }
-            scheduleReload()
+            // Чужие галочки правим ЛОКАЛЬНО. Полный refetch страницы ради двух галочек
+            // пересобирал всю ленту, и при открытии чата, где последнее сообщение своё,
+            // прокрутка успевала уехать ниже содержимого — чат выглядел пустым.
+            applyReceipts(messageIds: messageIds, status: status)
 
         case .presence(let userId, let status, _):
             // Живой статус в шапке открытого 1:1 (раньше замерзал на момент открытия).
@@ -649,6 +649,25 @@ final class ChatViewModel: ObservableObject {
             } else {
                 reloadSilently()
             }
+        }
+    }
+
+    /// Галочки доставки/прочтения по сообщениям — без похода в сеть.
+    private func applyReceipts(messageIds: [String], status: String?) {
+        let state: ReceiptState
+        switch (status ?? "").uppercased() {
+        case "READ", "SEEN": state = .read
+        case "DELIVERED": state = .delivered
+        default: return
+        }
+        let targets = Set(messageIds)
+        for index in ui.messages.indices where targets.contains(ui.messages[index].id) {
+            let message = ui.messages[index]
+            // Только свои: у входящих галочек нет, и «прочитано» их не касается.
+            guard message.isMine, !message.deleted else { continue }
+            // Назад не откатываем: доставлено не должно затирать прочитано.
+            if message.receipt == .read && state == .delivered { continue }
+            ui.messages[index].receipt = state
         }
     }
 

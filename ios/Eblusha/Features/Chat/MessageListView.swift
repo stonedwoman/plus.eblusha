@@ -187,6 +187,11 @@ struct MessageListView: View {
                 if nowAtBottom != atBottom { atBottom = nowAtBottom }
                 let scrollable = value.contentHeight > value.viewportHeight + 1
                 if scrollable != canScroll { canScroll = scrollable }
+                // Самолечение: содержимое кончилось выше нижней кромки, то есть лента
+                // висит в пустоте (так выглядел «чат открылся чёрным»). Возвращаемся к краю.
+                if scrollable, value.distanceToBottom < -8, !userInteracting {
+                    scrollPosition.scrollTo(edge: .bottom)
+                }
                 trackPrependSettling(contentHeight: value.contentHeight)
                 maybeLoadOlder(offsetFromTop: value.offsetFromTop, viewport: value.viewportHeight)
             }
