@@ -58,11 +58,13 @@ docker compose -f deploy/docker-compose.full.yml --env-file .env up -d backend w
 ## 3. production vs sandbox
 
 **Dev-сборки из Xcode (запуск на телефон по кабелю) получают SANDBOX-токены устройств.**
-Прод-кластер Apple такие токены отвергает (`400 BadDeviceToken`), и сервер снимет их с
-устройства как мёртвые. Поэтому для тестов с телефона ставим `APNS_ENV=sandbox`.
-TestFlight и App Store — это production-токены, там `APNS_ENV=production`.
+Прод-кластер Apple такие токены отвергает (`400 BadDeviceToken`). TestFlight и App Store —
+это production-токены.
 
-Среда одна на инстанс: смешанные dev/прод клиенты на одном сервере работать не будут.
+`APNS_ENV=auto` (по умолчанию) — сервер шлёт в прод, а на `BadDeviceToken` пробует sandbox
+и запоминает, в каком кластере токен «свой» (в памяти процесса; после рестарта переучится
+за одну лишнюю попытку). Так dev-сборка и TestFlight-сборка живут на одном сервере
+одновременно. `production`/`sandbox` — жёстко один кластер, если auto почему-то не нужен.
 
 ## 4. Если пуши не доходят
 
@@ -72,7 +74,7 @@ TestFlight и App Store — это production-токены, там `APNS_ENV=pro
   путь/файл, пуши выключены.
 - `APNs: send failed` с `status`/`reason` из ответа Apple:
   - `403 InvalidProviderToken` — не совпадают Key ID / Team ID / ключ;
-  - `400 BadDeviceToken` — чаще всего перепутаны production/sandbox (см. выше);
+  - `400 BadDeviceToken` — токен не из этого кластера (в режиме auto — ни из одного);
   - `400 TopicDisallowed` / `403 MissingTopic` — bundle id не совпадает с приложением,
     для VoIP проверить, что у App ID включён Push Notifications capability;
   - `410` — токен протух (переустановка приложения), сервер сам снимет его с устройства

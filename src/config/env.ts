@@ -115,7 +115,9 @@ const envSchema = z.object({
   APNS_BUNDLE_ID: z.string().default("org.eblusha.plus"),
   // sandbox — для dev-сборок из Xcode: они получают токены sandbox-кластера,
   // и прод-сервер APNs такие токены отвергает как BadDeviceToken.
-  APNS_ENV: z.enum(["production", "sandbox"]).default("production"),
+  // auto — прод, а при BadDeviceToken пробуем sandbox и запоминаем: dev-сборки из Xcode
+  // и TestFlight/App Store живут на одном сервере одновременно.
+  APNS_ENV: z.enum(["production", "sandbox", "auto"]).default("auto"),
 });
 
 const env = envSchema.parse(process.env);

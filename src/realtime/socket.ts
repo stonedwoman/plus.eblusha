@@ -2527,6 +2527,37 @@ export async function initSocket(
             senderId: st.inviterId,
             message: msg,
           });
+          // Звонящий сбросил до ответа: на выгруженном телефоне системный звонок просто
+          // исчез — без пуша о пропущенном человек о нём и не узнал бы. Заодно уходит и
+          // тому, кто ещё не успел увидеть входящий. Имя — звонившего (обычно это и есть
+          // отправитель call:end, но отбить мог и он же с другого устройства).
+          try {
+            const inviter =
+              st.inviterId === userId
+                ? { displayName: caller?.displayName, username: caller?.username }
+                : await prisma.user.findUnique({
+                    where: { id: st.inviterId },
+                    select: { displayName: true, username: true },
+                  });
+            const members = await prisma.conversationParticipant.findMany({
+              where: { conversationId },
+              select: { userId: true },
+            });
+            enqueuePush(
+              members.map((p) => p.userId).filter((id) => id !== st.inviterId),
+              {
+                kind: "message",
+                conversationId,
+                messageId: msg.id,
+                senderId: st.inviterId,
+                senderName: inviter?.displayName ?? inviter?.username ?? name,
+                preview: "Пропущенный звонок",
+              },
+              `msg-${msg.id}`,
+            );
+          } catch (error) {
+            logger.warn({ error, conversationId }, "Failed to enqueue missed-call push on call:end");
+          }
         } catch {}
       } else if (endClaimed && st && st.accepted) {
         // Завершенный активный звонок - создаем сообщение о завершении

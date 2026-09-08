@@ -25,9 +25,25 @@ type ApnsConfig = {
   keyId: string;
   teamId: string;
   bundleId: string;
-  /** Прод и sandbox — разные кластеры; токен устройства валиден только в «своём». */
-  host: string;
+  /**
+   * Прод и sandbox — разные кластеры; токен устройства валиден только в «своём».
+   * fallbackHost задан в режиме auto: dev-сборки из Xcode (sandbox) и TestFlight/App
+   * Store (production) живут на одном сервере одновременно — при BadDeviceToken пробуем
+   * второй кластер и запоминаем, где токен «свой».
+   */
+  primaryHost: string;
+  fallbackHost: string | null;
 };
+
+const PROD_HOST = "api.push.apple.com";
+const SANDBOX_HOST = "api.sandbox.push.apple.com";
+
+/**
+ * Токены, живущие во втором кластере (для auto — sandbox-токены dev-сборок). Только в
+ * памяти процесса: после рестарта первая отправка снова сходит в прод, получит
+ * BadDeviceToken и переучится — одна лишняя попытка на токен, не страшно.
+ */
+const fallbackHostTokens = new Set<string>();
 
 let cachedConfig: ApnsConfig | null | undefined;
 let cachedJwt: { value: string; expiresAt: number } | null = null;
@@ -64,7 +80,8 @@ function loadConfig(): ApnsConfig | null {
       keyId,
       teamId,
       bundleId: env.APNS_BUNDLE_ID,
-      host: env.APNS_ENV === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com",
+      primaryHost: env.APNS_ENV === "sandbox" ? SANDBOX_HOST : PROD_HOST,
+      fallbackHost: env.APNS_ENV === "auto" ? SANDBOX_HOST : null,
     };
     logger.info({ bundleId: cachedConfig.bundleId, env: env.APNS_ENV }, "APNs push configured");
     return cachedConfig;
@@ -225,39 +242,34 @@ function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPaylo
  * в него поток пушей: новое TLS+HTTP/2-рукопожатие на каждое уведомление она трактует как
  * DoS-паттерн и начинает резать. Пересоздаём только когда соединение действительно умерло.
  */
-let sharedSession: http2.ClientHttp2Session | null = null;
-let sharedSessionHost: string | null = null;
+const sessions = new Map<string, http2.ClientHttp2Session>(); // host → живая сессия
 /**
- * Идущее сейчас рукопожатие. Воркер обрабатывает до четырёх job'ов параллельно, и без
- * этого при холодном старте (или сразу после GOAWAY) каждый из них открывал бы своё
- * соединение — тот самый шторм рукопожатий; в sharedSession выживало последнее, остальные
- * висели брошенными. Теперь все ждут один и тот же промис.
+ * Идущие сейчас рукопожатия (host → промис). Воркер обрабатывает до четырёх job'ов
+ * параллельно, и без этого при холодном старте (или сразу после GOAWAY) каждый из них
+ * открывал бы своё соединение — тот самый шторм рукопожатий; выживало последнее,
+ * остальные висели брошенными. Теперь все ждут один и тот же промис.
  */
-let connecting: Promise<http2.ClientHttp2Session | null> | null = null;
+const connecting = new Map<string, Promise<http2.ClientHttp2Session | null>>();
 
 /** Как часто пинговать простаивающее соединение, чтобы NAT/балансировщик не убил его молча. */
 const SESSION_PING_INTERVAL_MS = 15 * 60_000;
 
 function getSession(host: string): Promise<http2.ClientHttp2Session | null> {
-  if (sharedSession && !sharedSession.closed && !sharedSession.destroyed && sharedSessionHost === host) {
-    return Promise.resolve(sharedSession);
-  }
-  if (connecting) return connecting;
-  connecting = openSession(host).finally(() => {
-    connecting = null;
+  const live = sessions.get(host);
+  if (live && !live.closed && !live.destroyed) return Promise.resolve(live);
+  const inFlight = connecting.get(host);
+  if (inFlight) return inFlight;
+  const attempt = openSession(host).finally(() => {
+    connecting.delete(host);
   });
-  return connecting;
+  connecting.set(host, attempt);
+  return attempt;
 }
 
 async function openSession(host: string): Promise<http2.ClientHttp2Session | null> {
-  // Хост сменился (sandbox↔prod через конфиг) — старое соединение больше не нужно.
-  if (sharedSession && sharedSessionHost !== host) {
-    sharedSession.close();
-  }
   const session = await connect(host);
   if (!session) {
-    sharedSession = null;
-    sharedSessionHost = null;
+    sessions.delete(host);
     return null;
   }
   // Полумёртвое соединение — худший случай: TCP молчит, а каждый запрос висит до таймаута
@@ -287,18 +299,14 @@ async function openSession(host: string): Promise<http2.ClientHttp2Session | nul
   // GOAWAY прилетает штатно: Apple периодически просит переехать на новое соединение.
   const forget = () => {
     clearInterval(pingTimer);
-    if (sharedSession === session) {
-      sharedSession = null;
-      sharedSessionHost = null;
-    }
+    if (sessions.get(host) === session) sessions.delete(host);
   };
   session.once("close", forget);
   session.once("goaway", forget);
   session.once("error", forget);
   // Простаивающее соединение не должно держать процесс живым при остановке воркера.
   session.unref();
-  sharedSession = session;
-  sharedSessionHost = host;
+  sessions.set(host, session);
   return session;
 }
 
@@ -420,24 +428,62 @@ export async function sendApns(targets: PushTarget[], payload: PushPayload): Pro
   const jwt = getJwt(config);
   if (!jwt) return { sent: 0, dead: [] };
 
-  const session = await getSession(config.host);
-  // Соединение не открылось (таймаут рукопожатия, обрыв) — это сеть, пусть BullMQ повторит.
-  if (!session) return { sent: 0, dead: [], retryable: true };
-
   const dead: string[] = [];
   let sent = 0;
   let retryable = false;
   // Запросы по очереди: устройств у пользователя единицы, мультиплексирование тут
-  // ничего не выиграет (ср. цикл в fcm.ts). Само соединение переиспользуется — см. getSession.
+  // ничего не выиграет (ср. цикл в fcm.ts). Соединения переиспользуются — см. getSession.
   for (const target of targets) {
     const prepared = buildRequest(config, target, payload);
     if (!prepared) continue; // например, message на voip-токен — туда нельзя
-    const res = await requestOnce(
-      session,
-      `/3/device/${target.token}`,
-      { authorization: `bearer ${jwt}`, ...prepared.headers },
-      prepared.body,
-    );
+    // Порядок кластеров: сначала тот, где токен уже отвечал; в режиме auto при
+    // BadDeviceToken пробуем второй — токен другой среды выглядит именно так.
+    const hosts = config.fallbackHost
+      ? fallbackHostTokens.has(target.token)
+        ? [config.fallbackHost, config.primaryHost]
+        : [config.primaryHost, config.fallbackHost]
+      : [config.primaryHost];
+    let res: ApnsResponse | null = null;
+    let usedHost = hosts[0];
+    let noSession = false;
+    for (const host of hosts) {
+      const session = await getSession(host);
+      if (!session) {
+        // Соединение не открылось (таймаут рукопожатия, обрыв) — это сеть, пусть BullMQ повторит.
+        noSession = true;
+        break;
+      }
+      usedHost = host;
+      res = await requestOnce(
+        session,
+        `/3/device/${target.token}`,
+        { authorization: `bearer ${jwt}`, ...prepared.headers },
+        prepared.body,
+      );
+      // BadDeviceToken — токен из другого кластера; BadEnvironmentKeyInToken — сам ключ
+      // выпущен только для sandbox (в developer.apple.com у ключа APNs есть выбор среды).
+      // В обоих случаях смысл один: этому кластеру нечего ловить, идём во второй.
+      const reason = res === null ? "" : parseReason(res.body);
+      const wrongEnv =
+        res !== null &&
+        ((res.status === 400 && reason === "BadDeviceToken") ||
+          (res.status === 403 && reason === "BadEnvironmentKeyInToken"));
+      if (!wrongEnv) break;
+    }
+    if (noSession) {
+      retryable = true;
+      continue;
+    }
+    if (config.fallbackHost && res && res.status === 200) {
+      // Запоминаем, где токен «свой», чтобы следующий раз не ходить в чужой кластер.
+      const remembered = fallbackHostTokens.has(target.token);
+      if (usedHost === config.fallbackHost && !remembered) {
+        fallbackHostTokens.add(target.token);
+        logger.info({ deviceId: target.deviceId, host: usedHost }, "APNs: token lives in the fallback cluster");
+      } else if (usedHost === config.primaryHost && remembered) {
+        fallbackHostTokens.delete(target.token);
+      }
+    }
     if (!res) {
       // Таймаут или обрыв стрима: ответа Apple нет, судьба пуша неизвестна — повторяем.
       // Токен в лог не пишем намеренно.
@@ -451,20 +497,28 @@ export async function sendApns(targets: PushTarget[], payload: PushPayload): Pro
     if (res.status === 200) {
       sent += 1;
       logger.info(
-        { deviceId: target.deviceId, provider: target.provider, kind: payload.kind, apnsId: res.apnsId },
+        { deviceId: target.deviceId, provider: target.provider, kind: payload.kind, apnsId: res.apnsId, host: usedHost },
         "APNs: sent",
       );
       continue;
     }
     const reason = parseReason(res.body);
     // 410 Gone — токен снят; BadDeviceToken прилетает и когда prod-токен ушёл в sandbox
-    // (или наоборот) — в обоих случаях хранить его дальше бессмысленно.
+    // (или наоборот) — в режиме auto мы уже спросили оба кластера, так что хранить его
+    // дальше бессмысленно в любом случае.
     if (res.status === 410 || (res.status === 400 && (reason === "BadDeviceToken" || reason === "Unregistered"))) {
       dead.push(target.token);
       logger.info({ deviceId: target.deviceId, reason }, "APNs: token is dead, dropping");
       continue;
     }
-    if (res.status === 403 && reason === "ExpiredProviderToken") {
+    if (res.status === 403 && reason === "BadEnvironmentKeyInToken") {
+      // Ключ не для этого кластера, а второго нет (или и там отказ): не ретраим, а
+      // громко просим ключ «Sandbox & Production» — иначе TestFlight/App Store глухи.
+      logger.error(
+        { deviceId: target.deviceId, host: usedHost },
+        "APNs: key is not valid for this environment — выпустите ключ APNs с «Sandbox & Production»",
+      );
+    } else if (res.status === 403 && reason === "ExpiredProviderToken") {
       // Часы разъехались или кэш пережил своё — повтор подпишет свежий JWT.
       cachedJwt = null;
       retryable = true;
