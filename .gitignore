@@ -43,3 +43,6 @@ ssh-key-*.zip
 /frontend/public/s/*.json
 /frontend/public/v/*.json
 /frontend/public/w/*.json
+
+# Секреты (ключи пушей и т.п.) — только на сервере
+secrets/

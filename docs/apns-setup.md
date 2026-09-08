@@ -18,15 +18,25 @@ SDK — см. `src/push/apns.ts`. Один ключ обслуживает и о
 ## 2. Прописать env в `.env`
 
 ```env
-APNS_KEY_FILE=/path/to/AuthKey_XXXXXXXXXX.p8   # путь внутри контейнера — пробросить томом
+APNS_KEY=<base64 от AuthKey_XXXXXXXXXX.p8>      # base64 -w0 AuthKey_XXXXXXXXXX.p8
 APNS_KEY_ID=XXXXXXXXXX
 APNS_TEAM_ID=YYYYYYYYYY
 APNS_BUNDLE_ID=org.eblusha.plus                # default, можно не указывать
 APNS_ENV=production                            # или sandbox — см. ниже
 ```
 
-Ключ в git не коммитить (как и всё из «Never commit secrets»). Без любого из трёх первых
-значений APNs просто выключен — сервер работает как раньше.
+Ключ кладём в `.env` в base64 — так же, как `FCM_SERVICE_ACCOUNT`: тома для секретов у
+worker'а нет, а многострочный PEM `env_file` docker-compose не переваривает. Альтернатива —
+`APNS_KEY_FILE=/путь/внутри/контейнера` (тогда файл надо пробросить томом); `APNS_KEY`
+принимает и голый PEM. Наш Team ID — `4748P9MT6D` (тот же, что в `ios/project.yml`).
+
+Ключ в git не коммитить (как и всё из «Never commit secrets»; каталог `secrets/`
+гитигнорится). Без любого из трёх значений (ключ, Key ID, Team ID) APNs просто выключен —
+сервер работает как раньше.
+
+**Ключ App Store Connect API (`AuthKey_N433G64327.p8` на маке) для APNs НЕ подходит** —
+проверено 2026-09-08: Apple отвечает `403 InvalidProviderToken`. Нужен именно ключ из
+раздела Keys с галочкой APNs; через API его не создать, только руками в браузере.
 
 После правки `.env` перезапустить backend и worker (пуши шлёт worker).
 

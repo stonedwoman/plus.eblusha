@@ -32,18 +32,30 @@ type ApnsConfig = {
 let cachedConfig: ApnsConfig | null | undefined;
 let cachedJwt: { value: string; expiresAt: number } | null = null;
 
+/**
+ * Ключ .p8 принимаем в трёх видах — как FCM_SERVICE_ACCOUNT: путь к файлу (APNS_KEY_FILE),
+ * сам PEM-текст или его base64 (APNS_KEY). base64 — основной вариант: секреты у нас живут
+ * в .env, а многострочный PEM env_file docker-compose не переваривает.
+ */
+function resolveKey(raw: string): string {
+  const text = raw.trim();
+  if (text.startsWith("-----BEGIN")) return text;
+  if (fs.existsSync(text)) return fs.readFileSync(text, "utf8");
+  return Buffer.from(text, "base64").toString("utf8");
+}
+
 function loadConfig(): ApnsConfig | null {
   if (cachedConfig !== undefined) return cachedConfig;
-  const keyFile = env.APNS_KEY_FILE;
+  const keyRaw = env.APNS_KEY || env.APNS_KEY_FILE;
   const keyId = env.APNS_KEY_ID;
   const teamId = env.APNS_TEAM_ID;
-  if (!keyFile || !keyId || !teamId) {
+  if (!keyRaw || !keyId || !teamId) {
     // Не настроено — это норма (инстанс без iOS-клиентов), молча выключаемся.
     cachedConfig = null;
     return null;
   }
   try {
-    const key = fs.readFileSync(keyFile, "utf8");
+    const key = resolveKey(keyRaw);
     // Проверяем ключ сразу при загрузке, а не на первой отправке: кривой файл должен
     // быть виден в логах при старте, а не теряться среди ошибок доставки.
     crypto.createPrivateKey(key);
@@ -58,7 +70,7 @@ function loadConfig(): ApnsConfig | null {
     return cachedConfig;
   } catch (error) {
     // Мягкая деградация, как у FCM: без ключа пуши выключены, но сервер живёт.
-    logger.error({ error, keyFile }, "APNs key is unusable — APNs push disabled");
+    logger.error({ error, keyFile: env.APNS_KEY_FILE ?? "(inline APNS_KEY)" }, "APNs key is unusable — APNs push disabled");
     cachedConfig = null;
     return null;
   }

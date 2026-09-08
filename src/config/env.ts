@@ -106,9 +106,10 @@ const envSchema = z.object({
   // Необязателен — без него пуши просто выключены, сервер работает как раньше.
   FCM_SERVICE_ACCOUNT: z.string().optional(),
   // APNs (iOS): token-based авторизация ключом .p8 из Apple Developer (Keys → APNs).
-  // KEY_FILE/KEY_ID/TEAM_ID нужны все три — без любого из них APNs просто выключен,
+  // (KEY или KEY_FILE)/KEY_ID/TEAM_ID нужны все три — без любого из них APNs просто выключен,
   // сервер работает как раньше (см. src/push/apns.ts).
   APNS_KEY_FILE: z.string().optional(), // путь к .p8-файлу (пробрасывается в контейнер томом)
+  APNS_KEY: z.string().optional(), // либо сам ключ: PEM или base64 от .p8 (приоритетнее KEY_FILE)
   APNS_KEY_ID: z.string().optional(), // 10-символьный Key ID ключа
   APNS_TEAM_ID: z.string().optional(), // Team ID аккаунта разработчика
   APNS_BUNDLE_ID: z.string().default("org.eblusha.plus"),
