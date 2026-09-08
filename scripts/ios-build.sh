@@ -63,6 +63,33 @@ if [ "$SIGNING" = NO ]; then
   extra=CODE_SIGNING_ALLOWED=NO
 fi
 
+# Подпись под устройство. login-связка на macOS 26 для ssh-сессии заперта наглухо
+# (codesign → errSecInternalComponent, security → «User interaction is not allowed»),
+# и разблокировка в GUI это не лечит. Поэтому берём build.keychain — отдельную связку
+# с ключом, выпущенным через ASC API: её пароль лежит на маке файлом, и она открывается
+# без участия человека. Схема подсмотрена в ~/builds/huila-apple/build-signed.sh,
+# где тем же способом собирается и уезжает в TestFlight «Еблуша VPN».
+BK="$HOME/Library/Keychains/build.keychain-db"
+LK="$HOME/Library/Keychains/login.keychain-db"
+restore_keychains() {
+  security list-keychains -d user -s "$LK" "$BK" >/dev/null 2>&1 || true
+  security default-keychain -d user -s "$LK" >/dev/null 2>&1 || true
+}
+if [ "$SIGNING" = YES ] && [ -f "$HOME/.keys/build-keychain-pass" ]; then
+  PW=$(cat "$HOME/.keys/build-keychain-pass")
+  trap restore_keychains EXIT
+  security unlock-keychain -p "$PW" "$BK"
+  security list-keychains -d user -s "$BK"
+  security default-keychain -d user -s "$BK"
+  security set-key-partition-list -S apple-tool:,apple: -s -k "$PW" "$BK" >/dev/null 2>&1 || true
+  # Профили создаются и обновляются по ключу ASC — без входа в Xcode под Apple ID.
+  auth="-authenticationKeyPath $HOME/.appstoreconnect/private_keys/AuthKey_N433G64327.p8 \
+        -authenticationKeyID N433G64327 \
+        -authenticationKeyIssuerID 16defce3-2569-44b9-ab9f-e22fcfb630e2"
+else
+  auth=
+fi
+
 set -o pipefail
 xcodebuild build \
   -project Eblusha.xcodeproj \
@@ -71,6 +98,8 @@ xcodebuild build \
   -destination "$DESTINATION" \
   -derivedDataPath build \
   -allowProvisioningUpdates \
+  -allowProvisioningDeviceRegistration \
+  $auth \
   $extra 2>&1 | tail -40
 REMOTE
 
