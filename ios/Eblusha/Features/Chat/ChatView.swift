@@ -66,6 +66,8 @@ struct ChatView: View {
     /// Просьба к ленте вернуться к низу: выехала клавиатура, вырос композер, ушло своё
     /// сообщение. Счётчик, а не Bool, — важен сам факт события, а не состояние.
     @State private var pinToken = 0
+    /// Счётчик своих отправок — по нему лента утягивается к низу даже из истории.
+    @State private var sendToken = 0
     /// Высота композера в прошлом замере — по её приросту лента понимает, что её поджали.
     @State private var composerHeight: CGFloat = 0
 
@@ -97,6 +99,7 @@ struct ChatView: View {
                 MessageListView(
                     vm: vm,
                     pinToken: pinToken,
+                    sendToken: sendToken,
                     onForward: { forwardSheet = ForwardRequest(messages: [$0]) },
                     onOpenImage: { images, index in
                         viewer = ImageViewerState(images: images, startIndex: index)
@@ -186,15 +189,15 @@ struct ChatView: View {
                     onSend: { text in
                         // Своё сообщение обязано оказаться на виду, даже если человек
                         // читал историю: лента получает право утянуться к низу.
-                        pinToken += 1
+                        sendToken += 1
                         vm.send(text)
                     },
                     onSendStaged: { caption in
-                        pinToken += 1
+                        sendToken += 1
                         vm.sendStaged(caption)
                     },
                     onSendVoice: { data, duration, waveform in
-                        pinToken += 1
+                        sendToken += 1
                         vm.sendVoice(data, durationSec: duration, waveform: waveform)
                     },
                     onConsumeRestoredDraft: { vm.consumeRestoredDraft() },

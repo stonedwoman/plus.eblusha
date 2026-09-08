@@ -243,7 +243,11 @@ extension ChatViewModel {
         case .success(let page):
             pagedBack = true
             let older = page.messages.map { secretToMessage($0) }
+            // Тот же якорь вклейки, что и в обычных чатах: без него подгрузка истории
+            // в секретке по-прежнему дёргала бы ленту.
+            ui.prepending = true
             ui.messages = dedupSortedSecret(older + ui.messages)
+            releasePrependingSoon()
             ui.hasMore = page.hasMore
             ui.nextCursor = page.nextCursor
             return true
@@ -312,7 +316,9 @@ extension ChatViewModel {
     /// Дедуп по id (первая копия побеждает) + сортировка по времени — общий мерж ленты.
     private func dedupSortedSecret(_ list: [Message]) -> [Message] {
         var seen = Set<String>()
-        return list.filter { seen.insert($0.id).inserted }.sorted { $0.createdAt < $1.createdAt }
+        // Тай-брейк по id: без него порядок пачки сообщений с одинаковым временем
+        // не воспроизводим и меняется после каждого мержа.
+        return list.filter { seen.insert($0.id).inserted }.sorted(by: ChatViewModel.olderFirst)
     }
 
     // MARK: - Отправка

@@ -18,6 +18,10 @@ struct MessageListView: View {
     /// Растёт, когда ленте нужно вернуться к низу не из-за нового сообщения: выехала
     /// клавиатура, вырос композер, человек нажал «отправить».
     let pinToken: Int
+    /// Растёт при КАЖДОЙ своей отправке. Отдельно от pinToken: своё сообщение утягивает
+    /// ленту вниз даже из середины истории, а клавиатура и рост композера — только если
+    /// человек и так был у низа.
+    let sendToken: Int
     let onForward: (Message) -> Void
     let onOpenImage: ([MessageAttachment], Int) -> Void
     let onOpenSender: (Message) -> Void
@@ -40,6 +44,14 @@ struct MessageListView: View {
     /// наше собственное отправленное сообщение, его человек обязан увидеть.
     @State private var followNextMessage = false
     @State private var pinTask: Task<Void, Never>?
+    /// Доводка отложена до конца жеста: дёргать ленту из-под пальца нельзя.
+    @State private var pinPending = false
+    /// Высота контента в прошлом замере — по её стабилизации понимаем, что вклеенная
+    /// страница истории домерилась и якорь можно отпускать.
+    @State private var lastContentHeight: CGFloat = 0
+    @State private var stableHeightTicks = 0
+    /// Поколение перехода к цитате: отменённая задача не должна гасить состояние новой.
+    @State private var jumpGeneration = 0
 
     // Переход к цитате.
     @State private var jumpTask: Task<Void, Never>?
@@ -51,6 +63,7 @@ struct MessageListView: View {
         var distanceToBottom: CGFloat = 0
         var offsetFromTop: CGFloat = 0
         var viewportHeight: CGFloat = 1
+        var contentHeight: CGFloat = 0
     }
 
     /// Ключ, по которому лента решает «приехало новое» — count И последний id: подмена
@@ -86,9 +99,13 @@ struct MessageListView: View {
         // Удалённые в ленте не показываем — как в вебе и на Android: надгробия
         // «Сообщение удалено» копились и засоряли историю.
         let messages = vm.ui.messages.filter { !$0.deleted }
+        // Смещение зоны берём ОДИН раз на сборку: Calendar.ordinality на каждое сообщение
+        // стоил заметно дороже всего остального в этом проходе.
+        let tzOffset = Int64(TimeZone.current.secondsFromGMT())
+        func dayIndex(_ millis: Int64) -> Int64 { (millis / 1000 + tzOffset) / 86_400 }
         return messages.enumerated().map { index, message in
             let earlier = index > 0 ? messages[index - 1] : nil
-            let newDay = earlier.map { localDayIndex($0.createdAt) != localDayIndex(message.createdAt) } ?? true
+            let newDay = earlier.map { dayIndex($0.createdAt) != dayIndex(message.createdAt) } ?? true
             return RowSpec(
                 message: message,
                 isFirstInRun: !continuesRun(earlier, message),
@@ -107,10 +124,11 @@ struct MessageListView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
+            let specs = rows
             ScrollView {
                 let names = senderNames
                 LazyVStack(spacing: 0) {
-                    ForEach(rows) { spec in
+                    ForEach(specs) { spec in
                         if let day = spec.dayHeader {
                             // Разделитель дней: без него вся история читается как «сегодня».
                             Text(day)
@@ -142,7 +160,8 @@ struct MessageListView: View {
                         - geometry.containerSize.height
                         + geometry.contentInsets.bottom,
                     offsetFromTop: geometry.contentOffset.y + geometry.contentInsets.top,
-                    viewportHeight: max(geometry.containerSize.height, 1)
+                    viewportHeight: max(geometry.containerSize.height, 1),
+                    contentHeight: geometry.contentSize.height
                 )
             } action: { _, value in
                 // В @State кладём ТОЛЬКО факт «мы у низа» и только когда он поменялся:
@@ -151,12 +170,18 @@ struct MessageListView: View {
                 // мы здесь и избавляемся.
                 let nowAtBottom = value.distanceToBottom < Self.bottomThreshold
                 if nowAtBottom != atBottom { atBottom = nowAtBottom }
+                trackPrependSettling(contentHeight: value.contentHeight)
                 maybeLoadOlder(offsetFromTop: value.offsetFromTop, viewport: value.viewportHeight)
             }
             .onScrollPhaseChange { _, phase in
                 // Пока палец ведёт ленту, никакие наши доводки в неё не лезут.
                 let active = phase == .tracking || phase == .interacting || phase == .decelerating
                 if active != userInteracting { userInteracting = active }
+                // Жест кончился — доигрываем отложенную доводку.
+                if !active, pinPending {
+                    pinPending = false
+                    pin(proxy: proxy, repeats: 8)
+                }
             }
             // Верхняя плашка: загрузка истории и ход перехода к цитате. В потоке ленты
             // индикатору не место — появляясь и исчезая, он дважды дёргал высоту контента.
@@ -170,26 +195,41 @@ struct MessageListView: View {
                         .background(Eb.surface200.opacity(0.95), in: Capsule())
                         .padding(.top, 6)
                         .transition(.opacity)
+                        .animation(.easeOut(duration: 0.15), value: vm.ui.loadingOlder)
                 }
             }
             .overlay(alignment: .bottomTrailing) {
                 scrollDownButton(proxy: proxy)
             }
-            .animation(.easeOut(duration: 0.15), value: atBottom)
-            .animation(.easeOut(duration: 0.15), value: vm.ui.loadingOlder)
             .task(id: vm.conversationId) {
                 await initialPin(proxy: proxy)
             }
-            .onChange(of: BottomKey(count: rows.count, lastId: rows.last?.id)) { _, _ in
-                onMessagesChanged(proxy: proxy)
+            .onChange(of: BottomKey(count: specs.count, lastId: specs.last?.id)) { _, _ in
+                onMessagesChanged(empty: specs.isEmpty, proxy: proxy)
             }
             .onChange(of: pinToken) { _, _ in
-                // Клавиатура, рост композера, своя отправка: возвращаемся к низу, только
-                // если человек там и был, — читающего историю дёргать нельзя.
-                guard atBottom || followNextMessage else { return }
-                pin(proxy: proxy, repeats: 6)
+                // Клавиатура и рост композера: возвращаемся к низу, только если человек
+                // там и был, — читающего историю дёргать нельзя. Повторов столько же,
+                // сколько при открытии: клавиатура выезжает ~300 мс, и всё это время
+                // высота вьюпорта меняется.
+                guard atBottom else { return }
+                pin(proxy: proxy, repeats: 12)
+            }
+            .onChange(of: sendToken) { _, _ in
+                // Своё сообщение обязано оказаться на виду, даже если читали историю.
+                // Само сообщение приедет ответом сервера — до тех пор помним намерение.
+                followNextMessage = true
+                jumpTask?.cancel()
+                pin(proxy: proxy, repeats: 8)
             }
             .onDisappear { pinTask?.cancel(); jumpTask?.cancel() }
+            .onChange(of: vm.conversationId) { _, _ in
+                // Переключились на другую беседу — состояние ленты не должно перетекать.
+                didInitialPin = false
+                followNextMessage = false
+                pinPending = false
+                highlightedId = nil
+            }
         }
     }
 
@@ -225,11 +265,13 @@ struct MessageListView: View {
 
     private func scrollDownButton(proxy: ScrollViewProxy) -> some View {
         Button {
+            // Отменяем идущий переход к цитате: иначе он через секунду утащит обратно.
+            jumpTask?.cancel()
+            jumping = false
+            jumpNotice = nil
             followNextMessage = false
-            withAnimation(.easeOut(duration: 0.22)) {
-                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-            }
-            atBottom = true
+            pinPending = false
+            pin(proxy: proxy, repeats: 8)
         } label: {
             Image(systemName: "chevron.down")
                 .font(.system(size: 16, weight: .semibold))
@@ -242,6 +284,7 @@ struct MessageListView: View {
         .padding(.trailing, 14)
         .padding(.bottom, 12)
         .opacity(atBottom ? 0 : 1)
+        .animation(.easeOut(duration: 0.15), value: atBottom)
         // Скрытую кнопку нельзя оставлять кликабельной — она ловила бы тапы по последнему
         // сообщению.
         .allowsHitTesting(!atBottom)
@@ -258,52 +301,77 @@ struct MessageListView: View {
             // Сообщений ещё нет: первая страница приедет и отработает onMessagesChanged.
             return
         }
-        pin(proxy: proxy, repeats: 12, animated: false)
+        pin(proxy: proxy, repeats: 12)
         didInitialPin = true
     }
 
-    private func onMessagesChanged(proxy: ScrollViewProxy) {
-        guard !rows.isEmpty else { return }
+    private func onMessagesChanged(empty: Bool, proxy: ScrollViewProxy) {
+        guard !empty else { return }
         if !didInitialPin {
             // Первая страница только что приехала — это и есть открытие чата.
-            pin(proxy: proxy, repeats: 12, animated: false)
+            pin(proxy: proxy, repeats: 12)
             didInitialPin = true
             return
         }
         guard !jumping else { return }
-        if followNextMessage {
-            followNextMessage = false
-            pin(proxy: proxy, repeats: 6, animated: false)
+        let follow = followNextMessage
+        followNextMessage = false
+        guard follow || atBottom else { return }
+        // Под пальцем ленту не двигаем — доводка подождёт конца жеста (см. onScrollPhaseChange).
+        if userInteracting {
+            pinPending = true
             return
         }
-        guard atBottom else { return }
-        pin(proxy: proxy, repeats: 6)
+        pin(proxy: proxy, repeats: 8)
     }
 
     /// Доводка к низу с повторами: одна попытка промахивается, пока ячейки ещё меряются.
-    private func pin(proxy: ScrollViewProxy, repeats: Int, animated: Bool = true) {
+    /// Без анимации намеренно — эталон на Android делает ровно так же: анимированный
+    /// доезд не успевает за растущими ячейками и заканчивается недолётом, а следующий
+    /// повтор всё равно оборвал бы анимацию рывком.
+    private func pin(proxy: ScrollViewProxy, repeats: Int) {
         pinTask?.cancel()
+        proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
         atBottom = true
-        let scroll = {
-            proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-        }
-        if animated {
-            withAnimation(.easeOut(duration: 0.18), scroll)
-        } else {
-            scroll()
-        }
         guard repeats > 0 else { return }
         pinTask = Task { @MainActor in
             for _ in 0..<repeats {
                 try? await Task.sleep(for: .milliseconds(40))
-                if Task.isCancelled || userInteracting { return }
-                scroll()
+                if Task.isCancelled { return }
+                // Палец взял ленту — эту итерацию пропускаем, но доводку не бросаем:
+                // жест может кончиться раньше, чем домерятся картинки.
+                if userInteracting { continue }
+                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             }
         }
     }
 
+    /// Вклеенная сверху страница домерилась (высота контента не менялась два замера
+    /// подряд) — отпускаем якорь. По таймеру это делать нельзя: строки над экраном
+    /// меряются лениво, а картинки в них дорисовываются позже.
+    private func trackPrependSettling(contentHeight: CGFloat) {
+        guard vm.ui.prepending else {
+            lastContentHeight = contentHeight
+            stableHeightTicks = 0
+            return
+        }
+        if abs(contentHeight - lastContentHeight) < 0.5 {
+            stableHeightTicks += 1
+            if stableHeightTicks >= 2 {
+                stableHeightTicks = 0
+                vm.releasePrepending()
+            }
+        } else {
+            lastContentHeight = contentHeight
+            stableHeightTicks = 0
+        }
+    }
+
     private func maybeLoadOlder(offsetFromTop: CGFloat, viewport: CGFloat) {
-        guard didInitialPin, !jumping, vm.ui.hasMore, !vm.ui.loadingOlder else { return }
+        // !prepending обязателен: loadingOlder снимается в том же обновлении, где страница
+        // уже вклеена, но высота ещё не домерена, — и лента успевала запросить следующую
+        // страницу, и следующую, пока не кончится история.
+        guard didInitialPin, !jumping, !vm.ui.prepending, vm.ui.hasMore, !vm.ui.loadingOlder else { return }
         // Тянем следующую страницу за полтора экрана до верха, а не в упор к нему: иначе
         // лента упирается в пустоту и ждёт сеть у человека на глазах.
         guard offsetFromTop < viewport * 1.5 else { return }
@@ -317,12 +385,18 @@ struct MessageListView: View {
     private func jumpToQuote(_ targetId: String, proxy: ScrollViewProxy) {
         // Повторный тап отменяет предыдущий переход, а не игнорируется молча.
         jumpTask?.cancel()
+        jumpGeneration += 1
+        let generation = jumpGeneration
         jumpTask = Task { @MainActor in
             jumping = true
             highlightedId = nil
             defer {
-                jumping = false
-                jumpNotice = nil
+                // Только своё поколение: отменённая задача не должна гасить состояние
+                // уже начавшегося следующего перехода.
+                if generation == jumpGeneration {
+                    jumping = false
+                    jumpNotice = nil
+                }
             }
             var found = vm.ui.messages.contains { $0.id == targetId }
             if !found {

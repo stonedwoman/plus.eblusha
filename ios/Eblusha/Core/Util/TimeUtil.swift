@@ -22,13 +22,20 @@ func millisToIso(_ millis: Int64) -> String {
 
 // Форматтеры создаются ОДИН раз: DateFormatter стоит дорого, а время стоит под каждым
 // сообщением — в ленте это был постоянный налог на плавность прокрутки.
+// timeZone — autoupdatingCurrent: иначе после перелёта время под сообщениями осталось бы
+// в старом поясе до перезапуска. Локаль POSIX — чтобы «HH:mm» не превращалось в AM/PM
+// при 12-часовых региональных настройках.
 private let clockFormatter: DateFormatter = {
     let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = TimeZone.autoupdatingCurrent
     f.dateFormat = "HH:mm"
     return f
 }()
 private let fullDateFormatter: DateFormatter = {
     let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = TimeZone.autoupdatingCurrent
     f.dateFormat = "dd.MM.yyyy 'в' HH:mm"
     return f
 }()
@@ -36,6 +43,7 @@ private let dayFormatter: DateFormatter = {
     let f = DateFormatter()
     f.dateFormat = "d MMMM"
     f.locale = Locale(identifier: "ru_RU")
+    f.timeZone = TimeZone.autoupdatingCurrent
     return f
 }()
 

@@ -95,6 +95,9 @@ final class ChatViewModel: ObservableObject {
     private var lastMarkReadMs: TimeInterval = 0
     /// Отложенный тихий релоад: события в окне троттла больше не теряются.
     private var pendingReload: Task<Void, Never>?
+    /// Хвостовой markRead: последняя пачка сообщений не должна остаться непрочитанной.
+    private var markReadTrailing: Task<Void, Never>?
+    private var prependingReset: Task<Void, Never>?
     private var requestedPreviews: Set<String> = []
     var cancellables: Set<AnyCancellable> = []
 
@@ -300,11 +303,7 @@ final class ChatViewModel: ObservableObject {
             ui.hasMore = page.hasMore
             ui.nextCursor = page.nextCursor
             fetchMissingPreviews()
-            // Снимаем через пару кадров — к этому времени вставка уже отрисована.
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(250))
-                self?.ui.prepending = false
-            }
+            releasePrependingSoon()
             return true
         case .failure(_, let code):
             // Отменённый запрос — не сбой сети: карантин на 4 секунды после него означал,
@@ -316,9 +315,49 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// Снимает флаг вклейки через пару кадров. Задача отменяемая: страницы могут идти
+    /// подряд (быстрый флик, переход к цитате), и таймер предыдущей страницы гасил бы
+    /// якорь посреди вставки следующей — как раз в тот момент, когда высота ещё растёт.
+    func releasePrependingSoon() { // internal: зовётся и из секретной ветки
+        prependingReset?.cancel()
+        prependingReset = Task { @MainActor [weak self] in
+            // Страховка на случай, если лента не доложит об устаканивании (экран закрыт,
+            // геометрия не меняется). Основной путь — releasePrepending() из ленты.
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            self?.ui.prepending = false
+        }
+    }
+
+    /// Лента сообщает: высота контента после вклейки перестала меняться — якорь можно
+    /// отпускать. По таймеру это делать нельзя: строки над экраном домеряются лениво,
+    /// а картинки в них дорисовываются позже, и снятый раньше времени якорь давал рывок.
+    func releasePrepending() {
+        guard ui.prepending else { return }
+        prependingReset?.cancel()
+        ui.prepending = false
+    }
+
+    /// Вставка сообщения с сохранением порядка ленты. Просто append нарушал бы
+    /// инвариант сортировки: пока летел POST, по сокету могло прийти чужое сообщение
+    /// с более поздним временем, и наше вставало бы под ним.
+    func insertOrdered(_ message: Message) { // internal: используют ветки отправки
+        guard !ui.messages.contains(where: { $0.id == message.id }) else { return }
+        if let last = ui.messages.last, Self.olderFirst(message, last) {
+            let index = ui.messages.firstIndex { Self.olderFirst(message, $0) } ?? ui.messages.count
+            ui.messages.insert(message, at: index)
+        } else {
+            ui.messages.append(message)
+        }
+    }
+
     private func scheduleReload() {
         let sinceLast = Date().timeIntervalSince1970 - lastReload
         guard sinceLast < 0.4 else {
+            // Отложенная задача больше не нужна — иначе следом уйдёт второй такой же GET,
+            // и более старый ответ мог бы перетереть более свежий.
+            pendingReload?.cancel()
+            pendingReload = nil
             reloadSilently()
             return
         }
@@ -363,15 +402,9 @@ final class ChatViewModel: ObservableObject {
         }
         let message = repo.mapMessage(dto)
         guard !ui.messages.contains(where: { $0.id == message.id }) else { return }
-        // Вставляем по порядку, а не просто в конец: сообщение из сокета может обогнать
-        // соседа по времени, и следующий тихий релоад переставлял бы его на глазах —
-        // пузырь появлялся внизу и через полсекунды уезжал в середину ленты.
-        if let last = ui.messages.last, Self.olderFirst(message, last) {
-            let index = ui.messages.firstIndex { Self.olderFirst(message, $0) } ?? ui.messages.count
-            ui.messages.insert(message, at: index)
-        } else {
-            ui.messages.append(message)
-        }
+        // По порядку, а не просто в конец: сообщение из сокета может обогнать соседа по
+        // времени, и следующий тихий релоад переставлял бы его на глазах.
+        insertOrdered(message)
         ui.typingName = nil
         // Своё же эхо квитировать не нужно — это был лишний запрос на каждое отправленное
         // сообщение и лишний повод серверу прислать нам наши же квитанции.
@@ -405,7 +438,7 @@ final class ChatViewModel: ObservableObject {
             case .success(let message):
                 ui.sending = false
                 if !ui.messages.contains(where: { $0.id == message.id }) {
-                    ui.messages.append(message)
+                    insertOrdered(message)
                 }
             case .failure(let message, _):
                 // Сбой сети НЕ съедает написанное.
@@ -489,7 +522,7 @@ final class ChatViewModel: ObservableObject {
                 ui.sending = false
                 ui.uploadProgress = nil
                 if !ui.messages.contains(where: { $0.id == message.id }) {
-                    ui.messages.append(message)
+                    insertOrdered(message)
                 }
             case .failure(let message, _):
                 ui.sending = false
@@ -558,7 +591,7 @@ final class ChatViewModel: ObservableObject {
             case .success(let message):
                 ui.sending = false
                 if !ui.messages.contains(where: { $0.id == message.id }) {
-                    ui.messages.append(message)
+                    insertOrdered(message)
                 }
             case .failure(let message, _):
                 ui.sending = false
@@ -598,13 +631,18 @@ final class ChatViewModel: ObservableObject {
         guard !secretMode else { return }
         let mine = message.reactions.first { $0.emoji == emoji }?.mine ?? false
         // Оптимистично: счётчик меняется под пальцем, а не через раундтрип. Сервер
-        // подтвердит тем же значением, ошибка — откатит.
+        // подтвердит тем же значением, ошибка — вернёт снимок.
+        let snapshot = ui.messages.first { $0.id == message.id }?.reactions
         applyLocalReaction(messageId: message.id, emoji: emoji, add: !mine)
         Task {
             if case .failure = await repo.toggleReaction(
                 messageId: message.id, emoji: emoji, currentlyMine: mine
             ) {
-                applyLocalReaction(messageId: message.id, emoji: emoji, add: mine)
+                // Именно снимок, а не обратная дельта: пока летел запрос, ленту мог
+                // перезалить тихий релоад, и вычитание единицы испортило бы чужие реакции.
+                if let snapshot, let index = ui.messages.firstIndex(where: { $0.id == message.id }) {
+                    ui.messages[index].reactions = snapshot
+                }
             } else {
                 reloadSilently()
             }
@@ -762,7 +800,18 @@ final class ChatViewModel: ObservableObject {
         // В живом диалоге сообщения идут пачками; без троттла на каждое летел POST,
         // а в ответ прилетали receipts — и всё это во время прокрутки.
         let now = Date().timeIntervalSince1970
-        guard now - lastMarkReadMs > 1.5 else { return }
+        let sinceLast = now - lastMarkReadMs
+        guard sinceLast > 1.5 else {
+            // Хвост обязателен: сервер квитирует только то, что существует на момент
+            // запроса, и без повтора последние сообщения пачки остались бы непрочитанными.
+            guard markReadTrailing == nil else { return }
+            markReadTrailing = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(1.5 - sinceLast))
+                self?.markReadTrailing = nil
+                if !Task.isCancelled { self?.markRead() }
+            }
+            return
+        }
         lastMarkReadMs = now
         Task { _ = await repo.markConversationRead(conversationId) }
     }
@@ -802,6 +851,9 @@ final class ChatViewModel: ObservableObject {
 
     /// Уход с экрана: погасить typing. Комнату НЕ покидаем (веб-паритет).
     func onDisappear() {
+        markReadTrailing?.cancel()
+        pendingReload?.cancel()
+        prependingReset?.cancel()
         setTyping(false)
     }
 }

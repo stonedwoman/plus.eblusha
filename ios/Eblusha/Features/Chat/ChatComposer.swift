@@ -33,6 +33,8 @@ struct ChatComposer: View {
     let onHeightChanged: (CGFloat) -> Void
 
     @State private var draft = ""
+    /// Ближайшее изменение текста — не набор пользователя (восстановление черновика).
+    @State private var suppressTypingOnce = false
     @StateObject private var voiceRecorder = VoiceRecorder()
     @FocusState private var focused: Bool
 
@@ -69,22 +71,40 @@ struct ChatComposer: View {
         // KeepBottomVisibleOnComposerGrowth).
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeightChanged($0) }
         .onAppear {
-            // Черновик переживает выход в список чатов и возврат (порт DraftStore.kt).
-            let saved = DraftStore.get(conversationId)
-            if !saved.isEmpty, draft.isEmpty { draft = saved }
+            restoreDraft()
+            applyRestoredDraft()
+        }
+        .onChange(of: conversationId) { previous, current in
+            // Экран умеет переезжать на другую беседу без пересоздания (тап по пушу из
+            // другого чата) — иначе набранное сохранилось бы под чужим id.
+            DraftStore.set(previous, draft)
+            draft = DraftStore.get(current)
+            suppressTypingOnce = true
         }
         .onDisappear {
             DraftStore.set(conversationId, draft)
             voiceRecorder.cancel()
         }
         .onChange(of: focused) { _, value in onFocusChanged(value) }
-        .onChange(of: restoredDraft) { _, restored in
-            guard let restored, !restored.isEmpty else { return }
-            // Возврат текста после сбоя отправки НЕ должен затирать то, что человек успел
-            // набрать заново, — дописываем к набранному.
-            draft = draft.trimmed().isEmpty ? restored : restored + " " + draft
-            onConsumeRestoredDraft()
-        }
+        // .task(id:), а не onChange: композер могло не быть на экране в момент сбоя
+        // отправки (режим выбора, секретное приглашение), и текст пропадал бы совсем.
+        .task(id: restoredDraft) { applyRestoredDraft() }
+    }
+
+    private func restoreDraft() {
+        let saved = DraftStore.get(conversationId)
+        guard !saved.isEmpty, draft.isEmpty else { return }
+        suppressTypingOnce = true
+        draft = saved
+    }
+
+    /// Текст, вернувшийся после неудачной отправки, дописывается к набранному, а не
+    /// затирает его.
+    private func applyRestoredDraft() {
+        guard let restored = restoredDraft, !restored.isEmpty else { return }
+        draft = draft.trimmed().isEmpty ? restored : restored + " " + draft
+        suppressTypingOnce = true
+        onConsumeRestoredDraft()
     }
 
     private var inputRow: some View {
@@ -104,7 +124,13 @@ struct ChatComposer: View {
                 .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 20))
                 .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Eb.border))
                 .onChange(of: draft) { _, text in
-                    onDraftChanged(text)
+                    // Восстановленный черновик — не набор текста: без этого собеседник
+                    // видел «печатает…» просто оттого, что человек открыл чат.
+                    if suppressTypingOnce {
+                        suppressTypingOnce = false
+                    } else {
+                        onDraftChanged(text)
+                    }
                     DraftStore.set(conversationId, text)
                 }
 

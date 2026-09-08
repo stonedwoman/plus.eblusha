@@ -26,19 +26,38 @@ actor ImageLoader {
     /// Синхронный «горячий» доступ — единственный способ отрисовать вернувшуюся ячейку
     /// сразу с картинкой, без кадра с заглушкой и без скачка высоты.
     nonisolated func cached(_ url: URL) -> UIImage? {
-        Self.hot.withLock { $0[url] }
+        Self.hot.withLock { $0.images[url] }
     }
 
     /// Зеркало memory для синхронного чтения из main-потока (актор синхронно не спросить).
     /// Держим здесь только то, что реально показано на экране, — словарь ограничен.
-    private nonisolated static let hot = Mutex<[URL: UIImage]>([:])
+    private nonisolated static let hot = Mutex<HotCache>(HotCache())
     private nonisolated static let hotLimit = 120
 
+    /// Словарь + очередь порядка: вытесняем САМЫЙ СТАРЫЙ, а не произвольный по хэшу —
+    /// иначе легко выбросить ровно ту картинку, что сейчас на экране.
+    private struct HotCache {
+        var images: [URL: UIImage] = [:]
+        var order: [URL] = []
+    }
+
     private nonisolated static func putHot(_ url: URL, _ image: UIImage) {
-        hot.withLock { map in
-            if map.count >= hotLimit, let victim = map.keys.first { map.removeValue(forKey: victim) }
-            map[url] = image
+        hot.withLock { cache in
+            if cache.images[url] == nil {
+                cache.order.append(url)
+                if cache.order.count > hotLimit {
+                    let victim = cache.order.removeFirst()
+                    cache.images.removeValue(forKey: victim)
+                }
+            }
+            cache.images[url] = image
         }
+    }
+
+    /// Предупреждение памяти: NSCache чистится сам, а этот словарь держит сильные
+    /// ссылки — отпускаем всё.
+    nonisolated static func purgeHot() {
+        hot.withLock { $0 = HotCache() }
     }
 
     func load(_ url: URL) async -> UIImage? {
@@ -77,6 +96,11 @@ actor ImageLoader {
             diskCapacity: 512 * 1024 * 1024,
             diskPath: "eblusha-images"
         )
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: nil
+        ) { _ in purgeHot() }
     }
 }
 
@@ -112,6 +136,10 @@ struct CachedImage<Placeholder: View>: View {
     @State private var image: UIImage?
     /// Загрузка уже провалилась — не долбим сеть на каждом появлении ячейки.
     @State private var failed = false
+    /// Какой url сейчас показан. Вью переиспользуется под другой адрес (сменился аватар,
+    /// строка списка уехала под другое сообщение) — тогда состояние надо сбросить,
+    /// иначе показывалась бы прошлая картинка или намертво держался прошлый провал.
+    @State private var loadedURL: URL?
 
     var body: some View {
         content
@@ -131,7 +159,17 @@ struct CachedImage<Placeholder: View>: View {
     }
 
     private func loadIfNeeded() async {
-        guard let url else { return }
+        guard let url else {
+            image = nil
+            loadedURL = nil
+            failed = false
+            return
+        }
+        if loadedURL != url {
+            loadedURL = url
+            failed = false
+            image = ImageLoader.shared.cached(url)
+        }
         // Синхронный кэш-хит: если картинка уже в памяти, первый же кадр рисуется с ней.
         if let hot = ImageLoader.shared.cached(url) {
             if image !== hot { image = hot }

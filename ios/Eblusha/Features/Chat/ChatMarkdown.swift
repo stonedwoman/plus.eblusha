@@ -35,6 +35,8 @@ enum ChatMarkdown {
 
         func flushCode() {
             guard !codeBuffer.isEmpty else { return }
+            // Разделитель перед блоком: без него «Смотри:» и код слипались в одну строку.
+            if !out.characters.isEmpty { out += AttributedString("\n") }
             var block = AttributedString(codeBuffer.joined(separator: "\n"))
             block.font = .system(.footnote, design: .monospaced)
             block.foregroundColor = Eb.textPrimary
@@ -55,7 +57,7 @@ enum ChatMarkdown {
                 codeBuffer.append(line)
                 continue
             }
-            if index > 0, !out.characters.isEmpty {
+            if index > 0 {
                 out += AttributedString("\n")
             }
             out += renderBlockLine(trimmed, raw: line)
@@ -129,6 +131,16 @@ enum ChatMarkdown {
                 else { continue }
                 let body = String(text[afterOpen..<closeRange.lowerBound])
                 guard !body.isEmpty else { continue }
+                // Одинарные «*» и «_» — только на границе слова (порт validStart из
+                // ChatMarkdown.kt): иначе курсив съедал бы подчёркивания в ссылках
+                // (?ld_src=2) и в snake_case-именах.
+                if marker.token.count == 1 {
+                    let previous = index == text.startIndex
+                        ? " "
+                        : text[text.index(before: index)]
+                    let opensWord = previous.isWhitespace || "([{«\"'—-".contains(previous)
+                    guard opensWord, !text[afterOpen].isWhitespace else { continue }
+                }
                 flushPlain()
                 out += marker.apply(body)
                 index = closeRange.upperBound
@@ -147,14 +159,10 @@ enum ChatMarkdown {
     /// Парные маркеры в порядке проверки: двойные раньше одинарных, иначе «**» съест «*».
     private static let markers: [InlineMarker] = [
         InlineMarker(token: "**") { body in
-            var piece = ChatMarkdown.styled(body)
-            piece.inlinePresentationIntent = .stronglyEmphasized
-            return piece
+            ChatMarkdown.merging(.stronglyEmphasized, into: ChatMarkdown.styled(body))
         },
         InlineMarker(token: "__") { body in
-            var piece = ChatMarkdown.styled(body)
-            piece.inlinePresentationIntent = .stronglyEmphasized
-            return piece
+            ChatMarkdown.merging(.stronglyEmphasized, into: ChatMarkdown.styled(body))
         },
         InlineMarker(token: "~~") { body in
             var piece = ChatMarkdown.styled(body)
@@ -168,14 +176,10 @@ enum ChatMarkdown {
             return piece
         },
         InlineMarker(token: "*") { body in
-            var piece = ChatMarkdown.styled(body)
-            piece.inlinePresentationIntent = .emphasized
-            return piece
+            ChatMarkdown.merging(.emphasized, into: ChatMarkdown.styled(body))
         },
         InlineMarker(token: "_") { body in
-            var piece = ChatMarkdown.styled(body)
-            piece.inlinePresentationIntent = .emphasized
-            return piece
+            ChatMarkdown.merging(.emphasized, into: ChatMarkdown.styled(body))
         },
     ]
 
@@ -184,9 +188,22 @@ enum ChatMarkdown {
         let apply: (String) -> AttributedString
     }
 
-    /// Вложенная разметка внутри маркера (жирный курсив и т.п.) плюс ссылки.
+    /// Вложенная разметка внутри маркера: «**жирный *курсив* внутри**» разбирается до
+    /// конца. Рекурсия конечна — тело строго короче исходной строки.
     fileprivate static func styled(_ body: String) -> AttributedString {
-        linkify(body)
+        inline(body)
+    }
+
+    /// Добавляет интент, не затирая уже проставленный вложенной разметкой.
+    fileprivate static func merging(
+        _ intent: InlinePresentationIntent, into string: AttributedString
+    ) -> AttributedString {
+        var copy = string
+        let ranges = copy.runs.map { $0.range }
+        for range in ranges {
+            copy[range].inlinePresentationIntent = (copy[range].inlinePresentationIntent ?? []).union(intent)
+        }
+        return copy
     }
 
     /// Голые url превращаются в ссылки — порт appendLink из ChatMarkdown.kt.
@@ -224,6 +241,10 @@ enum ChatMarkdown {
         let label = String(rest[rest.index(after: rest.startIndex)..<labelEnd])
         let url = String(rest[rest.index(after: afterLabel)..<urlEnd])
         guard !label.isEmpty, !url.isEmpty else { return nil }
+        // Только http(s), как в эталонном MD_LINK_REGEX: иначе [Открой](tel:+7…) или
+        // диплинк выглядели бы обычной ссылкой и делали не то, чего ждёт человек.
+        let lower = url.lowercased()
+        guard lower.hasPrefix("http://") || lower.hasPrefix("https://") else { return nil }
         return (label, url, rest.distance(from: rest.startIndex, to: urlEnd) + 1)
     }
 }

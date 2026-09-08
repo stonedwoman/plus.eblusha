@@ -55,8 +55,14 @@ struct SwipeToReply: ViewModifier {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
                 if horizontalLock == nil {
-                    horizontalLock =
-                        abs(value.translation.width) > abs(value.translation.height)
+                    let dx = abs(value.translation.width)
+                    let dy = abs(value.translation.height)
+                    // Решаем не на первой же выборке и с запасом: жест одновременный с
+                    // прокруткой, и без запаса «дуговой» свайп большим пальцем читался бы
+                    // как горизонтальный — лента листалась, а на отпускании выскакивал
+                    // ответ на случайное сообщение.
+                    guard max(dx, dy) >= 16 else { return }
+                    horizontalLock = dx > dy * 2
                 }
                 guard horizontalLock == true else { return }
                 // Свои: -max..0 (влево), входящие: 0..max (вправо) — как в эталоне.
@@ -65,7 +71,7 @@ struct SwipeToReply: ViewModifier {
                 offsetX = min(max(value.translation.width, swipeMin), swipeMax)
             }
             .onEnded { _ in
-                let trigger = abs(offsetX) >= replyThresholdPx
+                let trigger = horizontalLock == true && abs(offsetX) >= replyThresholdPx
                 reset()
                 if trigger { onReply() }
             }
