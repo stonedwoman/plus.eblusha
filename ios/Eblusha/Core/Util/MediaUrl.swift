@@ -14,6 +14,11 @@ private let ebStorageBlobSuffix = try! NSRegularExpression(
 private let resolvedUrlCache = Mutex<[String: String]>([:])
 private let resolvedUrlCacheLimit = 600
 
+/// Сброс при смене источника (AppConfig.server): в ключах кэша лежит прежний origin.
+func resetMediaUrlCache() {
+    resolvedUrlCache.withLock { $0.removeAll() }
+}
+
 func resolveMediaUrl(_ url: String?) -> String? {
     guard let url else { return nil }
     if let hit = resolvedUrlCache.withLock({ $0[url] }) { return hit }

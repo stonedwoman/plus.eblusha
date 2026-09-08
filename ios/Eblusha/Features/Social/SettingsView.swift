@@ -29,6 +29,8 @@ struct SettingsView: View {
 
     @StateObject private var vm: SettingsViewModel
     @State private var avatarItem: PhotosPickerItem?
+    /// Выбранный, но ещё не подтверждённый источник (нужен выход из аккаунта).
+    @State private var pendingServer: AppConfig.Server?
 
     init(onBack: (() -> Void)? = nil, onLogout: @escaping () -> Void) {
         self.onBack = onBack
@@ -52,6 +54,7 @@ struct SettingsView: View {
         }
         .background(Eb.paper)
         .toolbar(.hidden, for: .navigationBar)
+        .enableSwipeBack()
         .sheet(item: pairingBinding) { pairing in
             PairingDialog(pairing: pairing, onDismiss: vm.dismissPairing)
         }
@@ -163,6 +166,9 @@ struct SettingsView: View {
                 .disabled(vm.ui.pairingLoading)
                 .padding(.top, 28)
 
+                serverSection
+                    .padding(.top, 28)
+
                 sessionsSection
                     .padding(.top, 24)
             }
@@ -233,6 +239,63 @@ struct SettingsView: View {
 
     private var bioBinding: Binding<String> {
         Binding(get: { vm.ui.bio }, set: { vm.onBioChange($0) })
+    }
+
+    // MARK: - Источник (основной сервер или зеркало)
+
+    /// Выбор сервера прямо в приложении: одна сборка ходит и на eblusha.org, и на
+    /// ru.eblusha.org. Смена — только через выход: токены, идентификатор устройства и
+    /// ключи секретных чатов принадлежат конкретному серверу.
+    private var serverSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Источник")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Eb.textPrimary)
+
+            ForEach(AppConfig.Server.allCases) { option in
+                Button {
+                    if option != AppConfig.server { pendingServer = option }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: option == AppConfig.server
+                            ? "largecircle.fill.circle" : "circle")
+                            .foregroundStyle(option == AppConfig.server ? Eb.brand : Eb.textMuted)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(option.title)
+                                .foregroundStyle(Eb.textPrimary)
+                            Text(option.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(Eb.textMuted)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Eb.border))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text("Смена источника выполняет выход из аккаунта: учётные записи на серверах разные.")
+                .font(.caption2)
+                .foregroundStyle(Eb.textMuted)
+        }
+        .confirmationDialog(
+            "Переключиться на \(pendingServer?.title ?? "")?",
+            isPresented: Binding(get: { pendingServer != nil }, set: { if !$0 { pendingServer = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Переключиться и выйти", role: .destructive) {
+                guard let target = pendingServer else { return }
+                pendingServer = nil
+                AppConfig.server = target
+                onLogout()
+            }
+            Button("Отмена", role: .cancel) { pendingServer = nil }
+        } message: {
+            Text("Приложение выйдет из аккаунта и подключится к другому серверу.")
+        }
     }
 
     // MARK: - Активные сеансы (порт ActiveSessionsSection)

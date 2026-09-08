@@ -45,9 +45,6 @@ private func groupIncomingBubbleBg(_ userId: String?) -> Color {
     groupBubblePalette[Int(hashStringToUint(userId)) % groupBubblePalette.count]
 }
 
-/// Быстрые реакции контекстного меню (веб-паритет ReactionPicker quick row).
-private let quickReactions = ["👍", "❤️", "😂", "🔥", "😮", "😢"]
-
 struct ChatView: View {
     let conversation: Conversation
     let onBack: () -> Void
@@ -68,6 +65,10 @@ struct ChatView: View {
     @State private var pinToken = 0
     /// Счётчик своих отправок — по нему лента утягивается к низу даже из истории.
     @State private var sendToken = 0
+    /// Сообщение, для которого открыт полный выбор эмодзи.
+    @State private var reactionTarget: Message?
+    /// Быстрые слоты реакций: пересчитываются, когда пользователь выбрал новую.
+    @State private var quickSlots = ReactionFavorites.defaults
     /// Высота композера в прошлом замере — по её приросту лента понимает, что её поджали.
     @State private var composerHeight: CGFloat = 0
 
@@ -116,7 +117,9 @@ struct ChatView: View {
                     onEdit: { message in
                         editText = message.content ?? ""
                         editTarget = message
-                    }
+                    },
+                    onPickReaction: { reactionTarget = $0 },
+                    quickSlots: quickSlots
                 )
                     // Карточки секретного треда (приглашение / ожидание / привязка
                     // устройства) ложатся поверх ленты, как в вебе и Android.
@@ -218,6 +221,12 @@ struct ChatView: View {
         }
         .background(Eb.paper)
         .toolbar(.hidden, for: .navigationBar)
+        // Возврат в список чатов свайпом от левого края — системная панель скрыта,
+        // и без этого жест был выключен.
+        .enableSwipeBack()
+        .onAppear {
+            quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
+        }
         .onDisappear {
             vm.onDisappear()
         }
@@ -234,6 +243,20 @@ struct ChatView: View {
                 }
             )
             .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $reactionTarget) { target in
+            ReactionPickerSheet(
+                onPick: { emoji in
+                    vm.react(target, emoji: emoji)
+                    // Запоминаем только постановку — как в вебе (recordReactionChoice).
+                    if !(target.reactions.first { $0.emoji == emoji }?.mine ?? false) {
+                        ReactionFavorites.record(userId: vm.currentUserId, emoji: emoji)
+                        quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
+                    }
+                    reactionTarget = nil
+                },
+                onDismiss: { reactionTarget = nil }
+            )
         }
         .sheet(item: $userCard) { seed in
             UserCardSheet(
@@ -483,6 +506,8 @@ struct MessageRow: View {
     let isFirstInRun: Bool
     let isLastInRun: Bool
     let selectionMode: Bool
+    /// Размер экрана — из него считается плитка картинки (веб делает то же от vw/vh).
+    var screenSize: CGSize = UIScreen.main.bounds.size
     let selected: Bool
     /// Строка вспыхивает после перехода по цитате — чтобы глаз её нашёл.
     let highlighted: Bool
@@ -497,6 +522,10 @@ struct MessageRow: View {
     let onOpenAttachment: (MessageAttachment) -> Void
     let onReply: () -> Void
     let onReact: (String) -> Void
+    /// Открыть полный выбор эмодзи (лист живёт на экране беседы).
+    let onPickReaction: () -> Void
+    /// Быстрые слоты — считает лента, чтобы не читать UserDefaults на каждую строку.
+    var quickSlots: [String] = ReactionFavorites.defaults
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -540,7 +569,9 @@ struct MessageRow: View {
                     bubble
                     if !m.isMine { Spacer(minLength: 40) }
                 }
-                .swipeToReply(isMine: m.isMine, enabled: !selectionMode, onReply: onReply)
+                // Свайпа-ответа здесь НЕТ намеренно: жест на каждой строке дрался с
+                // прокруткой ленты (палец на сообщении — список стоит), а в вебе такого
+                // жеста и не было. Ответ живёт в контекстном меню по долгому нажатию.
                 if selectionMode && m.isMine {
                     SelectionCheck(selected: selected)
                         .padding(.leading, 6)
@@ -693,15 +724,24 @@ struct MessageRow: View {
             let columns = images.count == 1
                 ? [GridItem(.flexible())]
                 : [GridItem(.flexible(), spacing: 3), GridItem(.flexible(), spacing: 3)]
-            LazyVGrid(columns: columns, spacing: 3) {
-                ForEach(Array(images.enumerated()), id: \.offset) { idx, att in
-                    // В альбоме ячейки квадратные (как в вебе и Android): иначе соседи
-                    // с разными пропорциями рвут сетку, а высота плитки скачет по мере
-                    // загрузки.
-                    attachmentImage(att, aspect: images.count == 1 ? att.displayAspect : 1)
-                        .onTapGesture {
-                            if selectionMode { onTap() } else { onOpenImage(images, idx) }
-                        }
+            if images.count == 1, let att = images.first {
+                // Одиночная картинка — точный размер из метаданных, как в вебе.
+                let size = att.displaySize(screen: screenSize)
+                attachmentImage(att, width: size.width, height: size.height)
+                    .onTapGesture {
+                        if selectionMode { onTap() } else { onOpenImage(images, 0) }
+                    }
+            } else {
+                // Альбом: квадратные плитки в две колонки — соседи с разными пропорциями
+                // иначе рвут сетку.
+                let side = min(screenSize.width - 120, 320) / 2 - 2
+                LazyVGrid(columns: columns, spacing: 3) {
+                    ForEach(Array(images.enumerated()), id: \.offset) { idx, att in
+                        attachmentImage(att, width: side, height: side)
+                            .onTapGesture {
+                                if selectionMode { onTap() } else { onOpenImage(images, idx) }
+                            }
+                    }
                 }
             }
         }
@@ -715,32 +755,32 @@ struct MessageRow: View {
         }
     }
 
-    /// Слот под картинку задаётся ДО загрузки и не меняется после неё. Раньше пузырь
-    /// начинался с 90 pt заглушки и вырастал до 220 pt, когда картинка приезжала, —
-    /// и всё, что ниже, уезжало под пальцем. Это и есть «нестабильное пролистывание».
-    private func attachmentImage(_ att: MessageAttachment, aspect: CGFloat) -> some View {
+    /// Слот под картинку задаётся ДО загрузки и не меняется после неё: размер считается
+    /// из метаданных вложения ровно как в вебе, поэтому лента не прыгает, а портретные
+    /// кадры показываются целиком, а не обрезанными по центру.
+    private func attachmentImage(_ att: MessageAttachment, width: CGFloat, height: CGFloat) -> some View {
         // Секретное вложение по своему url отдаёт ШИФРТЕКСТ — его нельзя показывать
         // напрямую: сначала расшифровываем ключом треда в кэш-файл (порт rememberSecretDecrypted).
         if att.secretNonce != nil {
             return AnyView(
                 SecretImageView(att: att, decrypt: decryptSecretAttachment)
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(aspect, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(width: width, height: height)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
             )
         }
-        return AnyView(plainAttachmentImage(att, aspect: aspect))
+        return AnyView(plainAttachmentImage(att, width: width, height: height))
     }
 
-    private func plainAttachmentImage(_ att: MessageAttachment, aspect: CGFloat) -> some View {
+    private func plainAttachmentImage(_ att: MessageAttachment, width: CGFloat, height: CGFloat) -> some View {
         let url = thumbMediaUrl(att.url).flatMap { URL(string: $0) }
-        return CachedImage(url: url, contentMode: .fill) {
-            Rectangle().fill(Eb.surface300)
+        // contentMode .fit, как objectFit: contain в вебе: у людей перестают отрезаться
+        // головы, а у скриншотов — верх и низ.
+        return CachedImage(url: url, contentMode: .fit) {
+            Rectangle().fill(Eb.surface100)
         }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(aspect, contentMode: .fit)
-        .clipped()
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .frame(width: width, height: height)
+        .background(Eb.surface100)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private func fileRow(_ att: MessageAttachment) -> some View {
@@ -826,13 +866,19 @@ struct MessageRow: View {
 
     @ViewBuilder
     private var contextMenu: some View {
-        // Быстрые реакции первой секцией.
-        ForEach(quickReactions, id: \.self) { emoji in
+        // Быстрые реакции первой секцией: четыре слота, недавно выбранные первыми
+        // (веб: getQuickReactionSlots).
+        ForEach(quickSlots, id: \.self) { emoji in
             Button {
                 onReact(emoji)
             } label: {
                 Text(emoji)
             }
+        }
+        Button {
+            onPickReaction()
+        } label: {
+            Label("Другая реакция…", systemImage: "face.smiling")
         }
         Divider()
         Button(action: onReply) {

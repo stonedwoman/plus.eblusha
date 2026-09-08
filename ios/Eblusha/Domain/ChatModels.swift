@@ -55,12 +55,42 @@ struct MessageAttachment: Codable, Equatable {
     var secretNonce: String?
     var secretThreadId: String?
 
-    /// Соотношение сторон для места под картинку в ленте. Сервер отдаёт width/height —
-    /// значит слот можно занять ДО загрузки и не двигать соседние сообщения.
-    /// Пределы — чтобы панорама не превращалась в полоску, а скриншот во весь экран.
-    var displayAspect: CGFloat {
-        guard let width, let height, width > 0, height > 0 else { return 4.0 / 3.0 }
-        return min(max(CGFloat(width) / CGFloat(height), 0.62), 2.2)
+    /// Размер плитки под картинку — порт расчёта из веба (`ChatMessageRow.tsx`):
+    /// бокс с точными пропорциями резервируется ДО загрузки, поэтому лента не прыгает,
+    /// а картинка вписывается целиком (contain), а не обрезается.
+    func displaySize(screen: CGSize) -> CGSize {
+        // Веб: maxScreen = max(320, vw/2), heightBudget = min(420, vh*0.55) на мобильном.
+        let maxScreen = max(320, screen.width / 2)
+        let heightBudget = min(420, screen.height * 0.55)
+
+        let baseW = CGFloat(width ?? 0) > 0 ? CGFloat(width!) : maxScreen
+        let baseH = CGFloat(height ?? 0) > 0 ? CGFloat(height!) : baseW * 0.75
+        let ratio = baseH / baseW
+
+        let maxWidth = maxScreen
+        var maxHeight = heightBudget
+        // Широкие кадры не должны занимать весь бюджет высоты (веб: те же пороги).
+        if ratio < 0.5 {
+            maxHeight = max(maxScreen * 0.6, 200)
+        } else if ratio < 0.7 {
+            maxHeight = max(maxScreen * 0.75, 200)
+        }
+        maxHeight = min(maxHeight, heightBudget)
+
+        let scale = min(baseW > maxWidth ? maxWidth / baseW : 1, baseH > maxHeight ? maxHeight / baseH : 1, 1)
+        var targetW = baseW * scale
+        var targetH = baseH * scale
+        if targetW > maxWidth {
+            targetW = maxWidth
+            targetH = targetW * ratio
+        }
+        if targetH > maxHeight {
+            targetH = maxHeight
+            targetW = targetH / ratio
+        }
+        // Ширина пузыря ограничена экраном минус аватар и отступы (веб: vw - 100).
+        targetW = min(targetW, screen.width - 100)
+        return CGSize(width: targetW.rounded(), height: (targetW * ratio).rounded())
     }
 }
 

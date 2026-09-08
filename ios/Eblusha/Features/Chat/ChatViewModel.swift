@@ -78,6 +78,9 @@ final class ChatViewModel: ObservableObject {
     let realtime: RealtimeClient
     let conversationId: String
 
+    /// Кто мы — нужно вью для запоминания выбранных реакций.
+    var currentUserId: String? { repo.currentUserId() }
+
     /// Порядок ленты: по времени, а при совпадении — по id. Без тай-брейка сортировка
     /// пачки одновременных сообщений (альбом, системные строки звонка) не воспроизводима,
     /// и порядок на айфоне расходился с вебом, а иногда менялся после каждой реакции.

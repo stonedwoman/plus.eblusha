@@ -27,6 +27,10 @@ struct MessageListView: View {
     let onOpenSender: (Message) -> Void
     let onOpenAttachment: (MessageAttachment) -> Void
     let onEdit: (Message) -> Void
+    /// Полный выбор эмодзи открывает экран беседы — лист должен жить над лентой.
+    let onPickReaction: (Message) -> Void
+    /// Четыре быстрых слота: читаются один раз на проход, а не в каждой строке.
+    let quickSlots: [String]
 
     /// Низ контента — отдельная точка привязки. Целиться в последнее СООБЩЕНИЕ нельзя:
     /// под ним ещё паддинг стека, и прокрутка к нему оставляла пузырь под кромкой.
@@ -257,6 +261,8 @@ struct MessageListView: View {
             onOpenAttachment: onOpenAttachment,
             onReply: { vm.setReply(message) },
             onReact: { vm.react(message, emoji: $0) },
+            onPickReaction: { onPickReaction(message) },
+            quickSlots: quickSlots,
             onEdit: { onEdit(message) },
             onDelete: { vm.delete(messageId: message.id) }
         )
