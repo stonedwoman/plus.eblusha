@@ -14,11 +14,17 @@ import {
 } from "../lib/secretInbox";
 import { getIO } from "../realtime/socket";
 import { deleteS3ObjectsByKeys } from "../lib/storageDeletion";
+import { resolveCurrentDeviceId } from "../lib/currentDevice";
+import { enqueuePush } from "../jobs/queue";
+import logger from "../config/logger";
 
 const router = Router();
 router.use(authenticate);
 
-type AuthedRequest = Request & { user?: { id: string }; deviceId?: string };
+type AuthedRequest = Request & {
+  user?: { id: string; username?: string; displayName?: string | null };
+  deviceId?: string;
+};
 
 function bufferFromBase64(b64: string): Buffer {
   // Buffer.from does not throw on invalid input; do a basic sanity check.
@@ -60,35 +66,6 @@ const sendSchema = z.object({
     .min(1)
     .max(500),
 });
-
-async function resolveCurrentDeviceId(req: Request): Promise<string | null> {
-  const r = req as AuthedRequest;
-  // Кандидаты по убыванию доверия. Раньше брался ТОЛЬКО первый непустой (обычно did-claim
-  // токена), и это намертво ломало устройство, зарегистрированное позже логина или сменившее
-  // id: did указывал на чужую/отозванную запись → 400 на каждый inbox pull, то есть realtime
-  // секреток не работал вовсе (сообщения доезжали лишь реконсиляцией истории). Теперь
-  // перебираем кандидатов, пока один не окажется НАШИМ живым устройством — did остаётся
-  // приоритетным, но перестал быть тупиком. Проверка владения (userId + revokedAt) не ослаблена.
-  const candidates = [
-    r.deviceId,
-    typeof req.headers["x-device-id"] === "string" ? String(req.headers["x-device-id"]) : "",
-    typeof (req.query as any)?.deviceId === "string" ? String((req.query as any).deviceId) : "",
-    typeof (req.body as any)?.deviceId === "string" ? String((req.body as any).deviceId) : "",
-  ]
-    .map((c) => (typeof c === "string" ? c.trim() : ""))
-    .filter(Boolean);
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    if (seen.has(candidate)) continue;
-    seen.add(candidate);
-    const device = await prisma.userDevice.findUnique({
-      where: { id: candidate },
-      select: { id: true, userId: true, revokedAt: true },
-    });
-    if (device && device.userId === r.user?.id && !device.revokedAt) return device.id;
-  }
-  return null;
-}
 
 router.post("/send", rateLimit({ name: "secret_send", windowMs: 60_000, max: 300 }), async (req, res) => {
   const parsed = sendSchema.safeParse(req.body);
@@ -471,6 +448,35 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
   // message only from the recipient's slow history poll. No ciphertext in the payload.
   for (const uid of participantUserIds) {
     io?.to(`user:${uid}`).emit("secret:notify", { msgId: parsed.data.msgId, threadId } as any);
+  }
+  // Alert-пуш на выгруженные телефоны: secret:notify выше доходит только до живого сокета.
+  // Ни текста, ни шифртекста в пуше нет — лишь «кто» и «в какой беседе»; за содержимым
+  // клиент сходит сам (secret: true). POST /send (конверты ключей) пуша не ставит.
+  try {
+    const me = (req as AuthedRequest).user;
+    let senderName = me?.displayName ?? me?.username ?? "";
+    if (!senderName) {
+      const sender = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { displayName: true, username: true },
+      });
+      senderName = sender?.displayName ?? sender?.username ?? "пользователь";
+    }
+    enqueuePush(
+      participantUserIds.filter((uid) => uid !== userId),
+      {
+        kind: "message",
+        conversationId: threadId,
+        messageId: parsed.data.msgId,
+        senderId: userId,
+        senderName,
+        preview: "",
+        secret: true,
+      },
+      `secret-${parsed.data.msgId}`,
+    );
+  } catch (error) {
+    logger.warn({ error, threadId, msgId: parsed.data.msgId }, "secret: failed to enqueue push");
   }
 
   // Best-effort: if message is an attachment reference, persist metadata-only ref for GC/delete workflows.

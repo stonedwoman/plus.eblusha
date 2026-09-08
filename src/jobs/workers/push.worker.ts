@@ -18,10 +18,18 @@ export function startPushWorker(): Worker<PushJob> {
   const worker = new Worker<PushJob>(
     "push",
     async (job) => {
-      const { userIds, payload } = job.data;
-      const sent = await sendPushToUsers(userIds, payload);
-      if (sent > 0) {
-        logger.debug({ kind: payload.kind, sent }, "push delivered");
+      const { userIds, payload, excludeDeviceIds } = job.data;
+      const { sent, retryable } = await sendPushToUsers(userIds, payload, { excludeDeviceIds });
+      // Лог безусловный: sent===0 — самый ценный для диагностики случай (нет токенов?
+      // все отфильтрованы? провайдер молчит?), и раньше он как раз проходил молча.
+      logger.info(
+        { jobId: job.id, kind: payload.kind, recipients: userIds.length, sent, retryable, attempt: job.attemptsMade + 1 },
+        "push processed",
+      );
+      if (retryable) {
+        // Бросаем намеренно: только так BullMQ повторит job по attempts/backoff из очереди
+        // (1с, 2с — укладывается в 60-секундный ring-timeout звонка).
+        throw new Error("push: transient delivery failure");
       }
       return sent;
     },

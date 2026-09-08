@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma";
+import { resolveCurrentDeviceId } from "../lib/currentDevice";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 
@@ -19,22 +20,6 @@ const conversationInclude = {
   },
 } as const;
 
-// Resolve the caller's device (did token claim / x-device-id / query / body), verifying ownership.
-async function resolveCurrentDeviceId(req: Request): Promise<string | null> {
-  const r = req as AuthedRequest;
-  const candidate =
-    (r.deviceId?.trim() ||
-      (typeof (req.headers["x-device-id"] as any) === "string" ? String(req.headers["x-device-id"]).trim() : "") ||
-      (typeof (req.query as any)?.deviceId === "string" ? String((req.query as any).deviceId).trim() : "") ||
-      (typeof (req.body as any)?.deviceId === "string" ? String((req.body as any).deviceId).trim() : "")) || "";
-  if (!candidate) return null;
-  const device = await prisma.userDevice.findUnique({
-    where: { id: candidate },
-    select: { id: true, userId: true, revokedAt: true },
-  });
-  if (!device || device.userId !== r.user?.id || device.revokedAt) return null;
-  return device.id;
-}
 
 const createSecretThreadSchema = z.object({
   peerUserId: z.string().min(1),

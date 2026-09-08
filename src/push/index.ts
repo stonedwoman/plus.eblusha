@@ -23,6 +23,7 @@ export async function pushEnabled(): Promise<boolean> {
  * система выдаёт их независимо, и живут они одновременно. У Android VoIP-слот пуст.
  */
 type DeviceTargets = {
+  deviceId: string;
   alert?: PushTarget;
   voip?: PushTarget;
 };
@@ -44,7 +45,7 @@ async function loadTargets(userIds: string[]): Promise<DeviceTargets[]> {
     },
   });
   return devices.map((d) => {
-    const entry: DeviceTargets = {};
+    const entry: DeviceTargets = { deviceId: d.id };
     if (d.pushToken) {
       entry.alert = {
         userId: d.userId,
@@ -82,10 +83,26 @@ async function dropDeadTokens(tokens: string[]): Promise<void> {
   }
 }
 
-export async function sendPushToUsers(userIds: string[], payload: PushPayload): Promise<number> {
+export type SendPushOptions = {
+  /** Устройства, которым этот пуш не нужен — например, то, что само приняло звонок. */
+  excludeDeviceIds?: string[] | undefined;
+};
+
+export type SendPushResult = {
+  sent: number;
+  /** Никому не доставили и хотя бы один транспорт споткнулся о временное — воркеру стоит повторить. */
+  retryable: boolean;
+};
+
+export async function sendPushToUsers(
+  userIds: string[],
+  payload: PushPayload,
+  opts?: SendPushOptions,
+): Promise<SendPushResult> {
   const unique = Array.from(new Set(userIds.filter(Boolean)));
-  const devices = await loadTargets(unique);
-  if (devices.length === 0) return 0;
+  const excluded = new Set(opts?.excludeDeviceIds ?? []);
+  const devices = (await loadTargets(unique)).filter((d) => !excluded.has(d.deviceId));
+  if (devices.length === 0) return { sent: 0, retryable: false };
 
   // Выбор канала — ПОУСТРОЙСТВЕННО, не по провайдеру в куче: звонок должен прийти на
   // телефон ОДИН раз. Есть VoIP-токен — будим им (только он поднимает убитое приложение
@@ -108,5 +125,10 @@ export async function sendPushToUsers(userIds: string[], payload: PushPayload): 
     sendApns(apnsTargets, payload),
   ]);
   await dropDeadTokens([...fcmResult.dead, ...apnsResult.dead]);
-  return fcmResult.sent + apnsResult.sent;
+  const sent = fcmResult.sent + apnsResult.sent;
+  // Повторяем только если НИКОМУ не ушло: повтор job'а шлёт всем заново, и тот, кому уже
+  // доставили, получил бы дубль. (Для call/call-cancel дубли и так схлопывает
+  // apns-collapse-id, но сообщений это не касается.)
+  const retryable = (fcmResult.retryable === true || apnsResult.retryable === true) && sent === 0;
+  return { sent, retryable };
 }

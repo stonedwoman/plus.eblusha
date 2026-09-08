@@ -95,6 +95,20 @@ final class CallManager: NSObject, ObservableObject {
     private var peerAvatarUrl: String?
 
     private let ringer = CallRinger()
+    /// Рингер заглушён: звонок доложен CallKit, рингтоном звонит система.
+    private var ringerSuppressed = false
+    /// Причина последнего завершения — читает CallKitController при переходе в .idle.
+    private(set) var lastEndCause: CallEndCause = .remote
+    /// Локальный отбой по беседе. Наш call:decline может лежать в очереди RealtimeClient,
+    /// пока сокет поднимается, а сервер СРАЗУ ПОСЛЕ подключения заново шлёт call:incoming
+    /// по всё ещё «звонящему» звонку — без этой метки отклонённый звонок воскресал бы.
+    /// Эхо приходит только в первые ~100 мс после connect, поэтому игнорируем входящий
+    /// по той же беседе лишь в короткое окно после реконнекта: настоящий повторный
+    /// звонок (собеседник тут же перезвонил) должен пройти.
+    private var lastLocalDecline: (conversationId: String, at: Date)?
+    private var socketConnectedAt: Date?
+    private static let declineMemorySeconds: TimeInterval = 60
+    private static let reconnectEchoSeconds: TimeInterval = 2
     private var proximityObserver: NSObjectProtocol?
     private var speakerBeforeEar: Bool?
 
@@ -139,6 +153,7 @@ final class CallManager: NSObject, ObservableObject {
         case .callEnded(let cid, _):
             if conversationId == cid { endLocally() }
         case .socketReconnected:
+            socketConnectedAt = Date()
             // Реконнект чат-сокета посреди звонка: сервер уже выкинул наш старый
             // сокет из комнаты звонка и через 15 секунд завершит её, если не
             // заявиться заново. Из-за отсутствия этого re-join живой звонок
@@ -177,6 +192,8 @@ final class CallManager: NSObject, ObservableObject {
 
     func startOutgoing(conversationId: String, title: String, video: Bool) {
         guard phase == .idle else { return }
+        lastEndCause = .remote
+        ringerSuppressed = false
         self.conversationId = conversationId
         self.isVideoCall = video
         self.hadRemote = false
@@ -215,11 +232,52 @@ final class CallManager: NSObject, ObservableObject {
 
     func declineIncoming() {
         guard phase == .incoming, let cid = conversationId else { return }
+        lastLocalDecline = (cid, Date())
+        lastEndCause = .localHangUp
         realtime.declineCall(conversationId: cid)
         reset()
     }
 
+    /// Погасить входящий БЕЗ сигнала серверу: локальный таймаут дозвона CallKit —
+    /// сервер к этому моменту звонок уже снял сам.
+    func dismissIncoming() {
+        guard phase == .incoming else { return }
+        lastEndCause = .unanswered
+        reset()
+    }
+
+    /// Звонок доложен CallKit — рингтоном звонит система, свой глушим. Флаг переживает
+    /// асинхронный старт рингера в onIncoming (чтение кеша аватара).
+    func suppressRinger() {
+        ringerSuppressed = true
+        ringer.stop()
+    }
+
+    /// CallKit отказался показать звонок (например, «Не беспокоить») — звоним сами.
+    func resumeRinger() {
+        ringerSuppressed = false
+        if phase == .incoming { ringer.start() }
+    }
+
+    /// Аудиосессию активировала система (CXProviderDelegate.didActivate) — маршрут
+    /// динамика мог сброситься, перепроверяем.
+    func systemAudioActivated() {
+        syncSpeakerState()
+    }
+
+    /// CXStartCallAction отклонён системой: didActivate не придёт — поднимаем сессию сами.
+    func activateAudioWithoutSystemCall() {
+        guard phase != .idle else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            try AudioManager.shared.setEngineAvailability(.default)
+        } catch {
+            NSLog("CallManager: не удалось активировать аудиосессию: %@", String(describing: error))
+        }
+    }
+
     func hangUp() {
+        lastEndCause = .localHangUp
         if let cid = conversationId {
             realtime.endCall(conversationId: cid)
             realtime.leaveCallRoom(conversationId: cid)
@@ -422,6 +480,10 @@ final class CallManager: NSObject, ObservableObject {
     /// безопасен, onIncoming отсеивает не-idle.
     func onPushIncoming(conversationId: String, callerName: String, video: Bool, avatarUrl: String?) {
         guard phase == .idle else { return }
+        realtime.dropPendingCallEmits(conversationId: conversationId)
+        lastEndCause = .remote
+        // Звонок уже показан CallKit (reportIncomingCall) — свой рингер не нужен.
+        ringerSuppressed = true
         self.conversationId = conversationId
         peerAvatarUrl = avatarUrl
         title = callerName
@@ -432,6 +494,15 @@ final class CallManager: NSObject, ObservableObject {
 
     private func onIncoming(conversationId cid: String, fromName: String, video: Bool) {
         guard phase == .idle else { return }
+        if let declined = lastLocalDecline, declined.conversationId == cid,
+           Date().timeIntervalSince(declined.at) < Self.declineMemorySeconds,
+           let connectedAt = socketConnectedAt,
+           Date().timeIntervalSince(connectedAt) < Self.reconnectEchoSeconds {
+            return // см. lastLocalDecline: это эхо только что отклонённого звонка
+        }
+        realtime.dropPendingCallEmits(conversationId: cid)
+        lastEndCause = .remote
+        ringerSuppressed = false
         // БЕЗ этого события конца звонка игнорировались: их обработчики сверяют
         // conversationId, а он выставлялся только при исходящем/принятии. Отменённый
         // звонящим (call:ended) или принятый на другом моём устройстве звонок
@@ -456,7 +527,7 @@ final class CallManager: NSObject, ObservableObject {
             // пачкой после реконнекта: incoming и сразу ended/accepted). Запускать
             // рингер по погашенному звонку нельзя — он остался бы звонить навсегда:
             // endLocally уже отработал, и стирать его больше некому.
-            guard self.phase == .incoming, self.conversationId == cid else { return }
+            guard self.phase == .incoming, self.conversationId == cid, !self.ringerSuppressed else { return }
             self.ringer.start() // роль IncomingCallService: рингтон + вибрация
         }
     }
@@ -466,7 +537,7 @@ final class CallManager: NSObject, ObservableObject {
         // остальным устройствам принявшего) — этот рингер обязан замолчать.
         if phase == .incoming {
             if conversationId == cid && byUserId == session.currentUserId() {
-                endLocally()
+                endLocally(cause: .answeredElsewhere)
             }
             return
         }
@@ -485,7 +556,7 @@ final class CallManager: NSObject, ObservableObject {
             // Я САМ на другом своём устройстве. Чужой decline (участник
             // группы отказался) моего рингера не касается.
             if conversationId == cid && byUserId == session.currentUserId() {
-                endLocally()
+                endLocally(cause: .declinedElsewhere)
             }
         } else if conversationId == cid || phase == .outgoing {
             // Исходящий/активный: в 1:1 decline собеседника честно завершает
@@ -814,8 +885,9 @@ final class CallManager: NSObject, ObservableObject {
 
     /// Завершает звонок локально (собеседник завершил/отклонил, сбой подключения
     /// или отвал комнаты).
-    private func endLocally() {
+    private func endLocally(cause: CallEndCause = .remote) {
         if phase == .idle { return }
+        lastEndCause = cause
         if let cid = conversationId { realtime.leaveCallRoom(conversationId: cid) }
         disconnectRoom()
         reset()
@@ -858,8 +930,13 @@ final class CallManager: NSObject, ObservableObject {
         avatarUrl = nil
         phase = .idle
         // Роль OngoingCallService.stop: разговор кончился — отпускаем аудиосессию,
-        // возвращая звук другим приложениям.
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // возвращая звук другим приложениям. При системном звонке этого НЕ делаем:
+        // деактивирует CallKit (didDeactivate), а самовольный setActive(false) поверх
+        // живого CXCall ломает аудио следующего звонка.
+        if !CallKitController.shared.hasSystemCall {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            try? AudioManager.shared.setEngineAvailability(.none)
+        }
     }
 
     // MARK: - Аудиосессия и маршрут звука
@@ -874,7 +951,13 @@ final class CallManager: NSObject, ObservableObject {
                 mode: .voiceChat,
                 options: [.allowBluetooth, .allowBluetoothA2DP]
             )
-            try audioSession.setActive(true)
+            // При системном звонке активирует CallKit (didActivate → движок LiveKit);
+            // .outgoing — CXStartCallAction ещё в пути, его отказ обработает
+            // activateAudioWithoutSystemCall. Самим активировать нельзя: конфликт с системой.
+            if !CallKitController.shared.hasSystemCall && phase != .outgoing {
+                try audioSession.setActive(true)
+                try AudioManager.shared.setEngineAvailability(.default)
+            }
         } catch {
             NSLog("CallManager: не удалось настроить аудиосессию: %@", String(describing: error))
         }

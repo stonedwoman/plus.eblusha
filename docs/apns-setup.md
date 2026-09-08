@@ -48,7 +48,12 @@ worker'а нет, а многострочный PEM `env_file` docker-compose н
 проверено 2026-09-08: Apple отвечает `403 InvalidProviderToken`. Нужен именно ключ из
 раздела Keys с галочкой APNs; через API его не создать, только руками в браузере.
 
-После правки `.env` перезапустить backend и worker (пуши шлёт worker).
+После правки `.env` пересоздать backend и worker (пуши шлёт worker). Именно `up -d`,
+а не `restart`: `restart` не перечитывает `env_file`:
+
+```
+docker compose -f deploy/docker-compose.full.yml --env-file .env up -d backend worker
+```
 
 ## 3. production vs sandbox
 

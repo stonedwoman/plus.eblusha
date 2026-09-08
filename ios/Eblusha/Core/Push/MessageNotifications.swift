@@ -44,6 +44,24 @@ final class MessageNotifications: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// Снять доставленные уведомления беседы — при её прочтении в приложении. Сервер
+    /// группирует пуши по thread-id = conversationId; без этого после чтения чата
+    /// баннеры висели бы в Центре уведомлений, пока их не смахнут руками.
+    func clearDelivered(conversationId: String) {
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { list in
+            let ids = list
+                .filter {
+                    $0.request.content.threadIdentifier == conversationId
+                        || ($0.request.content.userInfo["conversationId"] as? String) == conversationId
+                }
+                .map { $0.request.identifier }
+            if !ids.isEmpty {
+                center.removeDeliveredNotifications(withIdentifiers: ids)
+            }
+        }
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
 
     /// Пуш пришёл, когда приложение НА ЭКРАНЕ. Порт смысла MessageNotifier: внутри
@@ -85,6 +103,14 @@ final class MessageNotifications: NSObject, UNUserNotificationCenterDelegate {
             let title = (userInfo["senderName"] as? String)
                 ?? (userInfo["callerName"] as? String)
                 ?? ""
+            // Секретное сообщение: содержимого в пуше нет, оно лежит в per-device инбоксе —
+            // тянем его сразу, чтобы чат открылся уже с текстом.
+            let secret = (userInfo["secret"] as? Bool) == true
+                || (userInfo["secret"] as? NSNumber)?.boolValue == true
+                || (userInfo["secret"] as? String) == "true"
+            if secret {
+                Task { await AppContainer.shared.secretRepository.syncInbox() }
+            }
             AppLifecycle.shared.requestOpenConversation(conversationId: conversationId, title: title)
         }
         completionHandler()

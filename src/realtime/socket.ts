@@ -1147,19 +1147,28 @@ export async function initSocket(
   // Кому ушёл пуш о входящем — чтобы точно тем же адресатам отправить отмену.
   const callRingRecipients = new Map<string, string[]>();
 
-  const clearCallRingTimer = (conversationId: string) => {
+  // Дозвон закончился (ответили, отказались, отбились, вышло время) — гасим уведомление
+  // о звонке на выгруженных устройствах, иначе телефон звонил бы уже после смерти звонка.
+  // excludeDeviceId — устройство, которое само приняло или отклонило звонок: ему отмена
+  // не нужна, а на iOS VoIP-пуш «отмена» поверх только что принятого звонка рисует
+  // фантомный CallKit-вызов. Остальные устройства того же человека отмену получают.
+  const cancelRingPush = (conversationId: string, excludeDeviceId?: string) => {
+    const ringing = callRingRecipients.get(conversationId);
+    callRingRecipients.delete(conversationId);
+    if (ringing && ringing.length > 0) {
+      enqueuePush(ringing, { kind: "call-cancel", conversationId }, undefined, {
+        excludeDeviceIds: excludeDeviceId ? [excludeDeviceId] : undefined,
+      });
+    }
+  };
+
+  const clearCallRingTimer = (conversationId: string, excludeDeviceId?: string) => {
     const t = callRingTimers.get(conversationId);
     if (t) {
       clearTimeout(t);
       callRingTimers.delete(conversationId);
-      // Дозвон закончился (ответили, отказались, отбились, вышло время) — гасим уведомление
-      // о звонке на выгруженных устройствах, иначе телефон звонил бы уже после смерти звонка.
       // Точка одна намеренно: отменяющих веток много и разбросаны они по всему файлу.
-      const ringing = callRingRecipients.get(conversationId);
-      if (ringing && ringing.length > 0) {
-        enqueuePush(ringing, { kind: "call-cancel", conversationId });
-      }
-      callRingRecipients.delete(conversationId);
+      cancelRingPush(conversationId, excludeDeviceId);
     }
   };
 
@@ -1259,7 +1268,14 @@ export async function initSocket(
         const st = callState.get(conversationId);
         // Only act on a still-pending invite from the same call. If it was accepted,
         // ended, declined, or replaced, another path already handled it.
-        if (!st || st.accepted) return;
+        if (!st) {
+          // Состояние снято путём без clearCallRingTimer (например, call:room:leave
+          // инициатора): отмену на разбуженные пушем телефоны отправить всё равно надо,
+          // иначе они звонят полный локальный таймаут.
+          cancelRingPush(conversationId);
+          return;
+        }
+        if (st.accepted) return;
         // Safety: never destroy a call that is actually live. A 1:1 can become active via
         // call:room:join (the "join active call" button) WITHOUT a call:accept, leaving
         // st.accepted=false. If both sides are present in the room, treat it as accepted
@@ -1273,6 +1289,10 @@ export async function initSocket(
           callState.set(conversationId, { ...st, accepted: true });
           return;
         }
+        // Отмену на выгруженные телефоны — ДО чистки состояния и ДО походов в БД: раньше
+        // таймаут лишь удалял таймер, и телефон, разбуженный пушем, звонил ещё долго после
+        // того, как сервер звонок похоронил. Упадёт prisma ниже — пуш всё равно уже ушёл.
+        cancelRingPush(conversationId);
         callState.delete(conversationId);
         activeDirectCalls.delete(conversationId);
         clearDirectCallGraceTimer(conversationId);
@@ -1305,6 +1325,29 @@ export async function initSocket(
               senderId: inviterId,
               message: msg,
             });
+            // Выгруженному телефону от несостоявшегося разговора остаётся только это: пуш
+            // «входящий» уже отменён выше, и без alert-пуша о пропущенном человек узнал бы
+            // о звонке, лишь открыв приложение.
+            try {
+              const inviter = await prisma.user.findUnique({
+                where: { id: inviterId },
+                select: { displayName: true, username: true },
+              });
+              enqueuePush(
+                conv.participants.map((p) => p.userId).filter((id) => id !== inviterId),
+                {
+                  kind: "message",
+                  conversationId,
+                  messageId: msg.id,
+                  senderId: inviterId,
+                  senderName: inviter?.displayName ?? inviter?.username ?? "пользователь",
+                  preview: "Пропущенный звонок",
+                },
+                `msg-${msg.id}`,
+              );
+            } catch (error) {
+              logger.warn({ error, conversationId }, "Failed to enqueue missed-call push on ring timeout");
+            }
           } catch (error) {
             logger.warn({ error, conversationId }, "Failed to record missed-call on ring timeout");
           }
@@ -2215,6 +2258,21 @@ export async function initSocket(
               message: msg,
             });
           }
+          // Выгруженные телефоны: call:incoming для групп не шлём, и без пуша они узнали бы
+          // о звонке, лишь открыв приложение. Обычный alert-пуш о сообщении — его все
+          // клиенты уже умеют показывать; ключ тот же, что у пуша о сообщении в REST.
+          enqueuePush(
+            recipients,
+            {
+              kind: "message",
+              conversationId,
+              messageId: msg.id,
+              senderId: userId,
+              senderName: name,
+              preview: video ? "Групповой видеозвонок" : "Групповой звонок",
+            },
+            `msg-${msg.id}`,
+          );
           logger.info(
             { conversationId, userId, video, messageId: msg.id, isGroup, participantsCount: conv.participants.length },
             "Call started message created in call:invite",
@@ -2271,7 +2329,8 @@ export async function initSocket(
         }
         callState.set(conversationId, { ...st, accepted: true });
         // Call is answered — cancel the no-answer backstop and any disconnect grace.
-        clearCallRingTimer(conversationId);
+        // Само принявшее устройство отмену не получает (см. cancelRingPush).
+        clearCallRingTimer(conversationId, socket.data.deviceId);
         clearDirectCallGraceTimer(conversationId);
       } else if (st) {
         callState.set(conversationId, { ...st, accepted: true });
@@ -2352,7 +2411,8 @@ export async function initSocket(
 
       // Direct (1:1): clear any active-direct-call state and recompute presence for both sides.
       activeDirectCalls.delete(conversationId);
-      clearCallRingTimer(conversationId);
+      // Отклонившее устройство уже само убрало входящий — отмена ему не нужна.
+      clearCallRingTimer(conversationId, socket.data.deviceId);
       clearDirectCallGraceTimer(conversationId);
       // E2EE key intentionally NOT deleted here: it persists via its TTL so caller and
       // callee never desync on a delete+recreate race (see getOrCreateCallE2eeKey).
@@ -2535,7 +2595,8 @@ export async function initSocket(
       const st = callState.get(conversationId);
       if (st && !st.accepted && userId !== st.inviterId) {
         callState.set(conversationId, { ...st, accepted: true });
-        clearCallRingTimer(conversationId);
+        // Вошедшее в комнату устройство звонок приняло — отмену шлём только остальным.
+        clearCallRingTimer(conversationId, socket.data.deviceId);
       }
       
       let callInfo = targetMap.get(conversationId);
@@ -2628,6 +2689,9 @@ export async function initSocket(
         // Отказаться от чужого звонка — это call:decline, а не выход из комнаты.
         if (st && (st.accepted || st.inviterId === userId)) {
           clearGroupAloneTimer(conversationId);
+          // Инициатор ушёл из непринятого звонка — это отмена дозвона: снимаем таймер и
+          // гасим пуш «входящий» на выгруженных телефонах.
+          clearCallRingTimer(conversationId);
           callState.delete(conversationId);
           broadcastCallStatus(conversationId);
         }

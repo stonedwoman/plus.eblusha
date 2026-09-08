@@ -26,6 +26,19 @@ final class RealtimeClient: ObservableObject {
     private var authRetries = 0
     private let maxAuthRetries = 3
 
+    /// Сигналинг звонков, отправленный до подключения. socket.io-client-swift, в отличие
+    /// от socket.io-client-java на Android, исходящие НЕ буферизует, а выбрасывает
+    /// («Tried emitting when not connected») — так терялись call:accept/call:decline из
+    /// CallKit на холодном старте по пушу: звонящий минуту слушал гудки.
+    private var pendingEmits: [(event: String, payload: [String: Any], at: Date)] = []
+    /// Дольше ring-timeout сервера (60 с) отложенный сигнал уже бессмысленен и даже
+    /// вреден: старый decline мог бы отклонить НОВЫЙ звонок в той же беседе.
+    private static let pendingEmitTtl: TimeInterval = 60
+    /// Идёт openSocket/рукопожатие: повторный connect() (VoIPPushHandler и
+    /// CallKitController зовут его друг за другом) не должен пересобирать сокет.
+    private var opening = false
+    private var connectAttemptAt: Date?
+
     /// Комнаты живут на СОЕДИНЕНИИ: после реконнекта их надо переприсоединить, иначе
     /// typing/receipts молча умирают. Как веб, комнаты НЕ покидаем при закрытии экрана.
     private var joinedConversations = Set<String>()
@@ -41,7 +54,14 @@ final class RealtimeClient: ObservableObject {
     func connect() {
         guard session.currentRefreshToken() != nil else { return }
         if socket?.status == .connected { return }
-        Task { await openSocket(proactiveRefresh: true) }
+        let inFlight = opening || socket?.status == .connecting
+        if inFlight, let at = connectAttemptAt, Date().timeIntervalSince(at) < 15 { return }
+        connectAttemptAt = Date()
+        opening = true
+        Task {
+            await openSocket(proactiveRefresh: true)
+            await MainActor.run { self.opening = false }
+        }
     }
 
     /// Пересобирает сокет с ТЕКУЩИМ device-id. Нужен после ротации id (409 на регистрации
@@ -94,6 +114,9 @@ final class RealtimeClient: ObservableObject {
             for id in self.joinedConversations {
                 socket.emit("conversation:join", id)
             }
+            // Отложенный сигналинг звонков — ДО socketReconnected, чтобы call:accept
+            // ушёл раньше повторного call:room:join и звонящий получил call:accepted штатно.
+            self.flushPendingEmits(socket)
             // И говорим слушателям (CallManager): членство в комнате звонка тоже забыто —
             // повторный call:room:join в 15-секундном грейсе отменяет снос звонка.
             self.events.send(.socketReconnected)
@@ -298,6 +321,7 @@ final class RealtimeClient: ObservableObject {
             self.teardownSocket()
             self.socketToken = nil
             self.connected = false
+            self.pendingEmits.removeAll() // выход из аккаунта: чужой сессии сигналы не нужны
         }
     }
 
@@ -312,7 +336,29 @@ final class RealtimeClient: ObservableObject {
     }
 
     private func emitObject(_ event: String, _ payload: [String: Any]) {
-        socket?.emit(event, payload)
+        if let socket, socket.status == .connected {
+            socket.emit(event, payload)
+            return
+        }
+        // Буферизуем только сигналинг звонков: typing/presence по опоздании бессмысленны.
+        guard event.hasPrefix("call:") else { return }
+        pendingEmits.append((event, payload, Date()))
+    }
+
+    /// Новый звонок в беседе: отложенные сигналы по ней (decline/end прошлого звонка,
+    /// не успевшие уйти) относятся к уже мёртвому звонку и отклонили бы новый.
+    func dropPendingCallEmits(conversationId: String) {
+        pendingEmits.removeAll { ($0.payload["conversationId"] as? String) == conversationId }
+    }
+
+    private func flushPendingEmits(_ socket: SocketIOClient) {
+        guard !pendingEmits.isEmpty else { return }
+        let now = Date()
+        let queued = pendingEmits
+        pendingEmits.removeAll()
+        for item in queued where now.timeIntervalSince(item.at) < Self.pendingEmitTtl {
+            socket.emit(item.event, item.payload)
+        }
     }
 
     /// Подписка с декодированием первого аргумента события в Codable-структуру.

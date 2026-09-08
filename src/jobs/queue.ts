@@ -8,6 +8,12 @@ import type { PushPayload } from "../push/types";
 export type PushJob = {
   userIds: string[];
   payload: PushPayload;
+  /** Устройства, которым пуш не нужен — например, то, что само приняло или отклонило звонок. */
+  excludeDeviceIds?: string[];
+};
+
+export type EnqueuePushOptions = {
+  excludeDeviceIds?: string[] | undefined;
 };
 
 export type LinkPreviewJob = {
@@ -70,9 +76,15 @@ export function getPushQueue(): Queue<PushJob> {
  * dedupeKey защищает от повторов — клиент имеет право переслать тот же запрос (см. ретраи
  * секретных сообщений), и без него человек получил бы два одинаковых уведомления.
  */
-export function enqueuePush(userIds: string[], payload: PushJob["payload"], dedupeKey?: string): void {
+export function enqueuePush(
+  userIds: string[],
+  payload: PushJob["payload"],
+  dedupeKey?: string,
+  opts?: EnqueuePushOptions,
+): void {
   const recipients = Array.from(new Set(userIds.filter(Boolean)));
   if (recipients.length === 0) return;
+  const excludeDeviceIds = (opts?.excludeDeviceIds ?? []).filter(Boolean);
   // BullMQ запрещает двоеточие в своём jobId («Custom Id cannot contain :»), делая
   // исключение только для трёх частей — старый формат repeatable-задач. Из-за этого
   // `msg:<id>` (две части) отвергался, а `call:<чат>:<время>` (три) проходил — и пуши
@@ -81,7 +93,11 @@ export function enqueuePush(userIds: string[], payload: PushJob["payload"], dedu
   const jobId = dedupeKey ? dedupeKey.replace(/:/g, "-") : undefined;
   try {
     void getPushQueue()
-      .add("push", { userIds: recipients, payload }, jobId ? { jobId } : undefined)
+      .add(
+        "push",
+        { userIds: recipients, payload, ...(excludeDeviceIds.length ? { excludeDeviceIds } : {}) },
+        jobId ? { jobId } : undefined,
+      )
       .catch((error) => {
         // Пуш — ускоритель поверх живого сокета, отправку сообщения он ронять не должен.
         // Но и молчать нельзя: именно так эта функция год глотала ошибку BullMQ выше.

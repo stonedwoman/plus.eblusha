@@ -59,3 +59,20 @@ enum CallPhase: Equatable {
     /// Аналог `state is CallState.Active` из Kotlin.
     var isActive: Bool { self == .connecting || self == .inCall }
 }
+
+/// Почему звонок кончился — нужно CallKit'у: для неотвеченного входящего
+/// `.remoteEnded` пишется в Недавние как «пропущенный», а отклонённый здесь или
+/// принятый на другом устройстве пропущенным не является. Android-эталону это не
+/// требовалось (там нет системного журнала звонков).
+enum CallEndCause {
+    /// Завершил собеседник/сервер (call:ended), обрыв комнаты, ошибка.
+    case remote
+    /// Отклонил или положил трубку сам, кнопкой в приложении.
+    case localHangUp
+    /// Принят на другом моём устройстве.
+    case answeredElsewhere
+    /// Отклонён на другом моём устройстве.
+    case declinedElsewhere
+    /// Истёк локальный таймаут дозвона.
+    case unanswered
+}

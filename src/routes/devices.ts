@@ -7,6 +7,7 @@ import crypto from "crypto";
 import { revokeRefreshTokensForDevice, revokeRefreshTokensForDevices } from "../lib/authSessions";
 import { kickDevice } from "../realtime/socket";
 import { buildIpLocation } from "../lib/ipLocation";
+import { resolveCurrentDeviceId } from "../lib/currentDevice";
 
 const router = Router();
 
@@ -14,22 +15,6 @@ router.use(authenticate);
 
 type AuthedRequest = Request & { user?: { id: string }; deviceId?: string };
 const MAX_UNCONSUMED_PREKEYS_PER_DEVICE = 250;
-
-async function resolveCurrentDeviceId(req: Request): Promise<string | null> {
-  const r = req as AuthedRequest;
-  const candidate =
-    (r.deviceId?.trim() ||
-      (typeof (req.headers["x-device-id"] as any) === "string" ? String(req.headers["x-device-id"]).trim() : "") ||
-      (typeof (req.query as any)?.deviceId === "string" ? String((req.query as any).deviceId).trim() : "") ||
-      (typeof (req.body as any)?.deviceId === "string" ? String((req.body as any).deviceId).trim() : "")) || "";
-  if (!candidate) return null;
-  const device = await prisma.userDevice.findUnique({
-    where: { id: candidate },
-    select: { id: true, userId: true, revokedAt: true },
-  });
-  if (!device || device.userId !== r.user?.id || device.revokedAt) return null;
-  return device.id;
-}
 
 async function getCappedUnconsumedPrekeyCount(deviceId: string): Promise<number> {
   const rows = await prisma.$queryRaw<Array<{ count: number | bigint }>>`

@@ -28,6 +28,7 @@ import { destroyAllCloudSessions } from "../cloud/auth/session";
 import logger from "../config/logger";
 import { rateLimit } from "../middlewares/rateLimit";
 import { getIO } from "../realtime/socket";
+import { verifyRefreshToken } from "../utils/jwt";
 
 const router = Router();
 const userRoom = (userId: string) => `user:${userId}`;
@@ -424,7 +425,34 @@ router.post(
 );
 
 router.post("/logout", async (req, res) => {
-  await revokeRefreshSession(getRefreshTokenFromRequest(req), "logout");
+  const rawRefreshToken = getRefreshTokenFromRequest(req);
+  await revokeRefreshSession(rawRefreshToken, "logout");
+  // Push-токены устройства снимаем и здесь, а не только в DELETE /devices/:id/push: тот
+  // запрос клиент шлёт до logout, и если он упал без сети, а logout дошёл, разлогиненный
+  // iPhone продолжал бы получать VoIP-звонки чужого аккаунта. did подписан в самом
+  // refresh-токене, userId в условии — чтобы чужое устройство задеть было нельзя.
+  // Для веба безвредно: он токенов не регистрирует.
+  if (rawRefreshToken) {
+    let did = "";
+    let userId = "";
+    try {
+      const payload = verifyRefreshToken<{ sub?: string; did?: string }>(rawRefreshToken);
+      did = typeof payload.did === "string" ? payload.did.trim() : "";
+      userId = typeof payload.sub === "string" ? payload.sub : "";
+    } catch {
+      // Просроченный или чужой токен: сессии по нему уже нет, снимать нечего.
+    }
+    if (did && userId) {
+      try {
+        await prisma.userDevice.updateMany({
+          where: { id: did, userId },
+          data: { pushToken: null, pushProvider: null, pushVoipToken: null },
+        });
+      } catch (error) {
+        logger.warn({ error, userId, deviceId: did }, "Failed to clear push tokens on logout");
+      }
+    }
+  }
   clearRefreshCookie(res);
   res.status(204).send();
 });

@@ -63,6 +63,11 @@ struct RootView: View {
                 startAfterLogin()
             } else {
                 container.realtimeClient.disconnect()
+                // Выход по 401 (сеанс отозван) сессию чистит, а флаг «устройство
+                // зарегистрировано» — нет; следующий вход тогда пропускал бы
+                // /devices/register, и push-токены упирались бы в 404. Регистрация
+                // идемпотентна — сбрасываем всегда.
+                container.secretKeyStore.clearBootstrapped()
             }
         }
         .onAppear {
@@ -95,8 +100,16 @@ struct RootView: View {
         .onChange(of: lifecycle.isForeground) { _, foreground in
             guard loggedIn else { return }
             container.realtimeClient.setForeground(foreground)
-            if foreground && session.isAccessTokenExpired() {
-                Task { await container.authRepository.tryBootstrap() }
+            if foreground {
+                Task {
+                    if session.isAccessTokenExpired() {
+                        await container.authRepository.tryBootstrap()
+                    }
+                    // Сервер снимает токен после 410/BadDeviceToken, а система новый
+                    // колбэк без причины не шлёт — без пересинхронизации при возврате
+                    // на экран телефон молчал бы до переустановки. Upsert идемпотентен.
+                    await PushRepository.shared.syncTokens()
+                }
             }
         }
         .preferredColorScheme(.dark)

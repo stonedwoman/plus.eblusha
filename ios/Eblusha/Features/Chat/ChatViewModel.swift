@@ -670,6 +670,8 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func markRead() {
+        // Баннеры этой беседы снимаем и у секретных чатов — серверный markRead им не нужен.
+        MessageNotifications.shared.clearDelivered(conversationId: conversationId)
         guard !secretMode else { return }
         Task { _ = await repo.markConversationRead(conversationId) }
     }

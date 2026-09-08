@@ -154,8 +154,11 @@ function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPaylo
       headers: {
         "apns-topic": config.bundleId,
         "apns-push-type": "alert",
-        // Как и в FCM: обычное сообщение может подождать, иначе Apple урежет лимиты.
-        "apns-priority": "5",
+        // Приоритет 10 и для сообщений: «5» у Apple означает «можно сгруппировать,
+        // задержать или не доставить вовсе» — баннеры о сообщениях так и терялись.
+        // Довод «как в FCM, иначе урежут лимиты» относится к Android и к background-пушам
+        // (там 5 обязателен, см. call-cancel ниже); на alert-пуши лимиты не распространяются.
+        "apns-priority": "10",
         "apns-expiration": String(now + 86400),
       },
       body: JSON.stringify({
@@ -163,7 +166,11 @@ function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPaylo
           // Текста сообщения тут нет намеренно (см. PushPayload): заголовок — имя отправителя,
           // тело — либо короткая пометка («Фото»), либо заглушка. mutable-content даёт
           // Notification Service Extension шанс подменить заглушку расшифрованным текстом.
-          alert: { title: payload.senderName, body: payload.preview || "Новое сообщение" },
+          // Секретку подписываем так же, как Android делает по data.secret — паритет платформ.
+          alert: {
+            title: payload.senderName,
+            body: payload.preview || (payload.secret ? "Секретное сообщение" : "Новое сообщение"),
+          },
           sound: "default",
           "mutable-content": 1,
           "thread-id": payload.conversationId,
@@ -176,6 +183,8 @@ function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPaylo
   if (payload.kind === "call") {
     // Fallback для устройств без VoIP-токена: обычный баннер «входящий звонок».
     // Поднять CallKit из убитого приложения он не сможет, но хотя бы позовёт человека.
+    // interruption-level=time-sensitive тут НЕ ставим: без entitlement
+    // com.apple.developer.usernotifications.time-sensitive Apple его молча игнорирует.
     return {
       headers: {
         "apns-topic": config.bundleId,
@@ -191,7 +200,6 @@ function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPaylo
             body: payload.video ? "Входящий видеозвонок" : "Входящий звонок",
           },
           sound: "default",
-          "interruption-level": "time-sensitive",
         },
         ...data,
       }),
@@ -219,11 +227,29 @@ function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPaylo
  */
 let sharedSession: http2.ClientHttp2Session | null = null;
 let sharedSessionHost: string | null = null;
+/**
+ * Идущее сейчас рукопожатие. Воркер обрабатывает до четырёх job'ов параллельно, и без
+ * этого при холодном старте (или сразу после GOAWAY) каждый из них открывал бы своё
+ * соединение — тот самый шторм рукопожатий; в sharedSession выживало последнее, остальные
+ * висели брошенными. Теперь все ждут один и тот же промис.
+ */
+let connecting: Promise<http2.ClientHttp2Session | null> | null = null;
 
-async function getSession(host: string): Promise<http2.ClientHttp2Session | null> {
+/** Как часто пинговать простаивающее соединение, чтобы NAT/балансировщик не убил его молча. */
+const SESSION_PING_INTERVAL_MS = 15 * 60_000;
+
+function getSession(host: string): Promise<http2.ClientHttp2Session | null> {
   if (sharedSession && !sharedSession.closed && !sharedSession.destroyed && sharedSessionHost === host) {
-    return sharedSession;
+    return Promise.resolve(sharedSession);
   }
+  if (connecting) return connecting;
+  connecting = openSession(host).finally(() => {
+    connecting = null;
+  });
+  return connecting;
+}
+
+async function openSession(host: string): Promise<http2.ClientHttp2Session | null> {
   // Хост сменился (sandbox↔prod через конфиг) — старое соединение больше не нужно.
   if (sharedSession && sharedSessionHost !== host) {
     sharedSession.close();
@@ -234,8 +260,33 @@ async function getSession(host: string): Promise<http2.ClientHttp2Session | null
     sharedSessionHost = null;
     return null;
   }
+  // Полумёртвое соединение — худший случай: TCP молчит, а каждый запрос висит до таймаута
+  // стрима. TCP keep-alive (включён на сыром сокете в connect(): session.socket — прокси,
+  // который на setKeepAlive бросает ERR_HTTP2_NO_SOCKET_MANIPULATION) ловит обрыв на
+  // уровне сокета, HTTP/2 PING — на уровне сессии (Apple на PING отвечает; по его ошибке
+  // соединение выбрасываем сразу, не дожидаясь первого зависшего пуша).
+  const pingTimer = setInterval(() => {
+    if (session.closed || session.destroyed) {
+      clearInterval(pingTimer);
+      return;
+    }
+    try {
+      session.ping((error) => {
+        if (!error) return;
+        logger.warn({ error, host }, "APNs: ping failed, dropping session");
+        session.destroy(error);
+      });
+    } catch (error) {
+      // ping() бросает на уже уничтоженной сессии — гонка с close, просто добиваем.
+      logger.warn({ error, host }, "APNs: ping failed, dropping session");
+      session.destroy();
+    }
+  }, SESSION_PING_INTERVAL_MS);
+  // Как и сама сессия ниже: таймер не должен держать процесс живым при остановке воркера.
+  pingTimer.unref();
   // GOAWAY прилетает штатно: Apple периодически просит переехать на новое соединение.
   const forget = () => {
+    clearInterval(pingTimer);
     if (sharedSession === session) {
       sharedSession = null;
       sharedSessionHost = null;
@@ -265,8 +316,14 @@ function connect(host: string): Promise<http2.ClientHttp2Session | null> {
       session.destroy();
       done(null);
     }, 10_000);
-    session.once("connect", () => {
+    session.once("connect", (_session, socket) => {
       clearTimeout(timer);
+      // Единственное место, где до TCP-сокета можно дотянуться без прокси http2.
+      try {
+        socket.setKeepAlive(true, 60_000);
+      } catch (error) {
+        logger.warn({ error, host }, "APNs: keep-alive not set");
+      }
       done(session);
     });
     // Обработчик нужен и ПОСЛЕ connect: без него обрыв сокета уронит процесс.
@@ -278,7 +335,16 @@ function connect(host: string): Promise<http2.ClientHttp2Session | null> {
   });
 }
 
-type ApnsResponse = { status: number; body: string };
+type ApnsResponse = {
+  status: number;
+  body: string;
+  /** apns-id из ответа — единственное, по чему поддержка Apple находит конкретный пуш в своих логах. */
+  apnsId: string;
+};
+
+function headerValue(value: string | string[] | undefined): string {
+  return typeof value === "string" ? value : Array.isArray(value) ? (value[0] ?? "") : "";
+}
 
 function requestOnce(
   session: http2.ClientHttp2Session,
@@ -307,21 +373,31 @@ function requestOnce(
       return;
     }
     let status = 0;
+    let apnsId = "";
     let data = "";
     stream.setEncoding("utf8");
     stream.on("response", (resHeaders) => {
       status = Number(resHeaders[":status"] ?? 0);
+      apnsId = headerValue(resHeaders["apns-id"]);
     });
     stream.on("data", (chunk: string) => {
       data += chunk;
     });
-    stream.on("end", () => done({ status, body: data }));
+    // Обрыв соединения посреди запроса (FIN/RST, GOAWAY, destroy сессии) — стрим
+    // закрывается «штатно», без 'error' и без заголовков ответа: status остаётся 0.
+    // Это отсутствие ответа, а не ошибка Apple — отдаём null, чтобы job повторился.
+    stream.on("end", () => done(status === 0 ? null : { status, body: data, apnsId }));
     stream.on("error", (error) => {
       logger.warn({ error }, "APNs: stream error");
       done(null);
     });
     stream.setTimeout(10_000, () => {
       stream.close(http2.constants.NGHTTP2_CANCEL);
+      // Молчащий стрим — почти всегда полумёртвое соединение (TCP убит по дороге, а нам
+      // не сказали). Одной отменой стрима не обойтись: следующие пуши повисли бы в той же
+      // сессии. Сносим её целиком — close/error снимут её из sharedSession (см. forget),
+      // и следующий job откроет свежую.
+      session.destroy(new Error("APNs stream timeout"));
       done(null);
     });
     stream.end(body);
@@ -339,49 +415,69 @@ function parseReason(body: string): string {
 
 export async function sendApns(targets: PushTarget[], payload: PushPayload): Promise<PushSendResult> {
   const config = loadConfig();
+  // Не настроено или ключ не подписывает JWT — повтор job'а ничего не изменит, retryable не ставим.
   if (!config || targets.length === 0) return { sent: 0, dead: [] };
   const jwt = getJwt(config);
   if (!jwt) return { sent: 0, dead: [] };
 
   const session = await getSession(config.host);
-  if (!session) return { sent: 0, dead: [] };
+  // Соединение не открылось (таймаут рукопожатия, обрыв) — это сеть, пусть BullMQ повторит.
+  if (!session) return { sent: 0, dead: [], retryable: true };
 
   const dead: string[] = [];
   let sent = 0;
-  {
-    // Запросы по очереди: устройств у пользователя единицы, мультиплексирование тут
-    // ничего не выиграет (ср. цикл в fcm.ts). Само соединение переиспользуется — см. getSession.
-    for (const target of targets) {
-      const prepared = buildRequest(config, target, payload);
-      if (!prepared) continue; // например, message на voip-токен — туда нельзя
-      const res = await requestOnce(
-        session,
-        `/3/device/${target.token}`,
-        { authorization: `bearer ${jwt}`, ...prepared.headers },
-        prepared.body,
-      );
-      if (!res) continue;
-      if (res.status === 200) {
-        sent += 1;
-        continue;
-      }
-      const reason = parseReason(res.body);
-      // 410 Gone — токен снят; BadDeviceToken прилетает и когда prod-токен ушёл в sandbox
-      // (или наоборот) — в обоих случаях хранить его дальше бессмысленно.
-      if (res.status === 410 || (res.status === 400 && (reason === "BadDeviceToken" || reason === "Unregistered"))) {
-        dead.push(target.token);
-        logger.info({ deviceId: target.deviceId, reason }, "APNs: token is dead, dropping");
-        continue;
-      }
-      if (res.status === 403 && reason === "ExpiredProviderToken") {
-        // Часы разъехались или кэш пережил своё — следующая отправка подпишет свежий JWT.
-        cachedJwt = null;
-      }
+  let retryable = false;
+  // Запросы по очереди: устройств у пользователя единицы, мультиплексирование тут
+  // ничего не выиграет (ср. цикл в fcm.ts). Само соединение переиспользуется — см. getSession.
+  for (const target of targets) {
+    const prepared = buildRequest(config, target, payload);
+    if (!prepared) continue; // например, message на voip-токен — туда нельзя
+    const res = await requestOnce(
+      session,
+      `/3/device/${target.token}`,
+      { authorization: `bearer ${jwt}`, ...prepared.headers },
+      prepared.body,
+    );
+    if (!res) {
+      // Таймаут или обрыв стрима: ответа Apple нет, судьба пуша неизвестна — повторяем.
+      // Токен в лог не пишем намеренно.
       logger.warn(
-        { status: res.status, reason, deviceId: target.deviceId, provider: target.provider },
-        "APNs: send failed",
+        { deviceId: target.deviceId, provider: target.provider, kind: payload.kind },
+        "APNs: no response (timeout/stream error)",
       );
+      retryable = true;
+      continue;
     }
+    if (res.status === 200) {
+      sent += 1;
+      logger.info(
+        { deviceId: target.deviceId, provider: target.provider, kind: payload.kind, apnsId: res.apnsId },
+        "APNs: sent",
+      );
+      continue;
+    }
+    const reason = parseReason(res.body);
+    // 410 Gone — токен снят; BadDeviceToken прилетает и когда prod-токен ушёл в sandbox
+    // (или наоборот) — в обоих случаях хранить его дальше бессмысленно.
+    if (res.status === 410 || (res.status === 400 && (reason === "BadDeviceToken" || reason === "Unregistered"))) {
+      dead.push(target.token);
+      logger.info({ deviceId: target.deviceId, reason }, "APNs: token is dead, dropping");
+      continue;
+    }
+    if (res.status === 403 && reason === "ExpiredProviderToken") {
+      // Часы разъехались или кэш пережил своё — повтор подпишет свежий JWT.
+      cachedJwt = null;
+      retryable = true;
+    } else if (res.status === 429 || res.status === 500 || res.status === 502 || res.status === 503) {
+      // Перегруз или сбой на стороне Apple — временное, повтор с backoff'ом уместен.
+      // Остальное (400 с любым reason, прочие 403 — ключ/topic, 404, 413) — наша ошибка,
+      // и тот же запрос упадёт снова.
+      retryable = true;
+    }
+    logger.warn(
+      { status: res.status, reason, deviceId: target.deviceId, provider: target.provider, kind: payload.kind },
+      "APNs: send failed",
+    );
   }
-  return { sent, dead };
+  return { sent, dead, retryable };
 }

@@ -68,17 +68,47 @@ final class VoIPPushHandler: NSObject, PKPushRegistryDelegate {
             // Сессия могла не подняться: процесс мог стартовать этим самым пушем.
             AppContainer.shared.warmup()
 
-            // Звонок уже идёт или уже показан приложением по сокету — второй экран не
-            // нужен: два UI одновременно, и системная «отклонить» положила бы трубку
-            // живому разговору. Перед PushKit всё равно обязаны отчитаться — гасим фантом.
+            // Вышли из аккаунта, а DELETE токена не дошёл (не было сети): у APNs, в отличие
+            // от FCM, нет deleteToken, и сервер продолжает будить телефон звонками ЧУЖОГО
+            // аккаунта. Показывать их нельзя, но перед PushKit отчитаться обязаны.
+            guard AppContainer.shared.sessionStore.currentRefreshToken() != nil else {
+                CallKitController.shared.reportPhantomAndEnd(completion: completion)
+                return
+            }
+
             let manager = AppContainer.shared.callManager
             if manager.phase != .idle {
-                CallKitController.shared.reportPhantomAndEnd(completion: completion)
+                if manager.phase == .incoming, manager.conversationId == conversationId {
+                    // Сокет опередил пуш: тот же звонок уже показан приложением и доложен
+                    // CallKit из onPhaseChange — докладываем тем же UUID, без фантома.
+                    CallKitController.shared.reportIncomingCall(
+                        conversationId: conversationId,
+                        callerName: callerName,
+                        video: video,
+                        completion: completion
+                    )
+                } else {
+                    // Другой звонок уже идёт — второй экран не нужен, а системная «отклонить»
+                    // положила бы трубку живому разговору. Отчитываемся фантомом.
+                    CallKitController.shared.reportPhantomAndEnd(completion: completion)
+                }
                 DispatchQueue.main.async { AppContainer.shared.realtimeClient.connect() }
                 return
             }
 
-            // 1) ОБЯЗАТЕЛЬНЫЙ немедленный CallKit-репорт (см. шапку файла).
+            // 1) Посеять состояние CallManager — синхронно, мы на main: кнопка «Принять»
+            //    (CXAnswerCallAction) уходит в acceptIncoming, а тот молча выходит, если
+            //    фаза не incoming; completion репорта ниже сверяется с этой фазой.
+            //    Наблюдатель фазы в CallKitController сработает уже после репорта (async)
+            //    и увидит выставленный callUUID — второго репорта не будет.
+            manager.onPushIncoming(
+                conversationId: conversationId,
+                callerName: callerName,
+                video: video,
+                avatarUrl: nil
+            )
+            // 2) ОБЯЗАТЕЛЬНЫЙ немедленный CallKit-репорт (см. шапку файла) — в том же
+            //    проходе run loop, что и этот делегат.
             CallKitController.shared.reportIncomingCall(
                 conversationId: conversationId,
                 callerName: callerName,
@@ -86,15 +116,6 @@ final class VoIPPushHandler: NSObject, PKPushRegistryDelegate {
                 completion: completion
             )
             DispatchQueue.main.async {
-                // 2) Посеять состояние CallManager: кнопка «Принять» (CXAnswerCallAction)
-                //    уходит в acceptIncoming, а тот молча выходит, если фаза не incoming.
-                //    Повтор безопасен: настоящий call:incoming из сокета отсеется по не-idle.
-                AppContainer.shared.callManager.onPushIncoming(
-                    conversationId: conversationId,
-                    callerName: callerName,
-                    video: video,
-                    avatarUrl: nil
-                )
                 // 3) Догнать сигналинг: приложение могло быть выгружено, и только живой
                 //    сокет принесёт call:ended/accepted и повезёт наш call:accept.
                 AppContainer.shared.realtimeClient.connect()
@@ -108,13 +129,14 @@ final class VoIPPushHandler: NSObject, PKPushRegistryDelegate {
             CallKitController.shared.handleCancelPush(conversationId: conversationId, completion: completion)
             DispatchQueue.main.async {
                 // Экран входящего внутри приложения гасим тоже: сокет мог ещё не
-                // подняться, а честного call:ended без него не будет. declineIncoming
-                // эмитит decline в уже завершённый звонок — на сервере это no-op,
-                // зато рингер/экран умирают гарантированно.
+                // подняться, а честного call:ended без него не будет. Гасим БЕЗ сигнала
+                // серверу (dismissIncoming): звонок он уже снял сам, потому и прислал
+                // отбой. Отложенный call:decline в очереди RealtimeClient был бы отправлен
+                // при подключении — и убил бы НОВЫЙ звонок, если звонящий успел перезвонить.
                 let manager = AppContainer.shared.callManager
                 if manager.phase == .incoming,
                    conversationId == nil || manager.conversationId == conversationId {
-                    manager.declineIncoming()
+                    manager.dismissIncoming()
                 }
                 AppContainer.shared.realtimeClient.connect()
             }

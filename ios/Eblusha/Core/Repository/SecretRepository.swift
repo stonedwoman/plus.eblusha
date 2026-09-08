@@ -30,6 +30,8 @@ final class SecretRepository {
     /// deviceId: без переподключения сервер держал бы нас в комнате старого устройства
     /// и «secret:notify» не доходил бы.
     var onDeviceIdRotated: (() -> Void)?
+    /// Устройство (пере)зарегистрировано на сервере — можно привязывать push-токены.
+    var onDeviceBootstrapped: (() -> Void)?
 
     /// Расшифрованные сообщения тредов, пришедшие через инбокс (realtime-путь).
     let incoming = PassthroughSubject<DecryptedSecretMessage, Never>()
@@ -152,6 +154,7 @@ final class SecretRepository {
             }
             keyStore.setBootstrapped()
             NSLog("SecretE2EE: device E2EE bootstrap complete")
+            onDeviceBootstrapped?()
             return true
         } catch {
             NSLog("SecretE2EE: device bootstrap failed: %@", String(describing: error))

@@ -4,6 +4,7 @@ import { z } from "zod";
 import env from "../config/env";
 import { authenticate } from "../middlewares/auth";
 import prisma from "../lib/prisma";
+import { resolveCurrentDeviceId } from "../lib/currentDevice";
 import {
   encryptBuffer,
   decryptBuffer,
@@ -18,21 +19,6 @@ router.use(authenticate);
 
 type AuthedRequest = Request & { user?: { id: string }; deviceId?: string };
 
-async function resolveCurrentDeviceId(req: Request): Promise<string | null> {
-  const r = req as AuthedRequest;
-  const candidate =
-    (r.deviceId?.trim() ||
-      (typeof (req.headers["x-device-id"] as any) === "string" ? String(req.headers["x-device-id"]).trim() : "") ||
-      (typeof (req.query as any)?.deviceId === "string" ? String((req.query as any).deviceId).trim() : "") ||
-      (typeof (req.body as any)?.deviceId === "string" ? String((req.body as any).deviceId).trim() : "")) || "";
-  if (!candidate) return null;
-  const device = await prisma.userDevice.findUnique({
-    where: { id: candidate },
-    select: { id: true, userId: true, revokedAt: true },
-  });
-  if (!device || device.userId !== r.user?.id || device.revokedAt) return null;
-  return device.id;
-}
 
 const eventSchema = z.object({
   ts: z.number().int().nonnegative(),

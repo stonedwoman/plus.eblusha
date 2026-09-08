@@ -54,6 +54,12 @@ final class AppContainer {
         secretRepository.onDeviceIdRotated = { [weak realtimeClient] in
             realtimeClient?.reconnectForDeviceChange()
         }
+        // Повторная регистрация устройства (ре-бутстрап после 400/403 инбокса, ротация
+        // id) создаёт новую запись без push-токенов — переносим их сразу, не дожидаясь
+        // следующего логина или холодного старта.
+        secretRepository.onDeviceBootstrapped = {
+            Task { await PushRepository.shared.syncTokens() }
+        }
         // Секретный чат из карточки контакта заводится через ContactsRepository.
         contactsRepository.secretRepository = secretRepository
     }

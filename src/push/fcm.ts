@@ -116,13 +116,16 @@ export async function sendFcm(targets: PushTarget[], payload: PushPayload): Prom
   const account = loadServiceAccount();
   if (!account || targets.length === 0) return { sent: 0, dead: [] };
   const accessToken = await getAccessToken(account);
-  if (!accessToken) return { sent: 0, dead: [] };
+  // Обмен токена не удался — почти всегда сеть или 5xx у Google, то же временное, что
+  // и сбой самой отправки; повтор уместен.
+  if (!accessToken) return { sent: 0, dead: [], retryable: true };
 
   const url = `https://fcm.googleapis.com/v1/projects/${account.project_id}/messages:send`;
   const data = toDataPayload(payload);
   const urgent = isUrgent(payload);
   const dead: string[] = [];
   let sent = 0;
+  let retryable = false;
 
   // FCM v1 шлёт по одному адресату за запрос. Устройств у пользователя единицы,
   // поэтому простой цикл дешевле любой батч-механики.
@@ -158,11 +161,21 @@ export async function sendFcm(targets: PushTarget[], payload: PushPayload): Prom
         dead.push(target.token);
         logger.info({ deviceId: target.deviceId }, "FCM: token is dead, dropping");
       } else {
+        // 429 и 5xx — перегруз или сбой у Google, повтор с backoff'ом уместен. 401 —
+        // access-токен отозван раньше expires_in: сбрасываем кэш, повтор подпишет новый.
+        // 400 — наша ошибка (кривой payload), повторять тот же запрос бессмысленно.
+        if (res.status === 429 || res.status >= 500) retryable = true;
+        if (res.status === 401) {
+          cachedToken = null;
+          retryable = true;
+        }
         logger.warn({ status: res.status, body, deviceId: target.deviceId }, "FCM: send failed");
       }
     } catch (error) {
+      // Исключение fetch — сеть (DNS, TLS, обрыв): ответа нет, судьба пуша неизвестна.
+      retryable = true;
       logger.warn({ error, deviceId: target.deviceId }, "FCM: send error");
     }
   }
-  return { sent, dead };
+  return { sent, dead, retryable };
 }
