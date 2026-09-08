@@ -44,8 +44,12 @@ rsync -az --delete \
   --exclude 'build/' --exclude '*.xcodeproj' --exclude '.DS_Store' \
   "$HERE/ios/" "$MAC:$REMOTE_DIR/"
 
+# Метка сборки — короткий хеш коммита: по пилюле в списке чатов сразу видно, что стоит
+# на телефоне (у сборки из TestFlight там номер сборки).
+BUILD_TAG=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo dev)
+
 ssh "$MAC" \
-  "REMOTE_DIR='$REMOTE_DIR' DESTINATION='$destination' SIGNING='$signing' CLEAN='$clean' bash -s" <<'REMOTE'
+  "REMOTE_DIR='$REMOTE_DIR' DESTINATION='$destination' SIGNING='$signing' CLEAN='$clean' BUILD_TAG='$BUILD_TAG' bash -s" <<'REMOTE'
 set -euo pipefail
 cd "$HOME/$REMOTE_DIR"
 
@@ -100,6 +104,7 @@ xcodebuild build \
   -allowProvisioningUpdates \
   -allowProvisioningDeviceRegistration \
   $auth \
+  EBLUSHA_BUILD_TAG="$BUILD_TAG" \
   $extra 2>&1 | tail -40
 REMOTE
 

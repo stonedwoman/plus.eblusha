@@ -59,6 +59,8 @@ targets:
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
         # Номер сборки (CURRENT_PROJECT_VERSION) для TestFlight подставляет
         # scripts/ios-release.sh — из числа коммитов, чтобы рос монотонно.
+        # Перекрывается из scripts/ios-build.sh и ios-release.sh.
+        EBLUSHA_BUILD_TAG: dev
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
       configs:

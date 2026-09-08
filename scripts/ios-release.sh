@@ -76,7 +76,8 @@ if [ "$ARCHIVE" = 1 ]; then
     -derivedDataPath build/release \
     -allowProvisioningUpdates \
     $auth \
-    CURRENT_PROJECT_VERSION="$BUILD_NUMBER" 2>&1 | grep -E 'error:|warning: .*(entitlement|provision)|ARCHIVE (SUCCEEDED|FAILED)|\*\* ' | tail -20
+    CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+    EBLUSHA_BUILD_TAG="$BUILD_NUMBER" 2>&1 | grep -E 'error:|warning: .*(entitlement|provision)|ARCHIVE (SUCCEEDED|FAILED)|\*\* ' | tail -20
 else
   [ -d build/archive/Eblusha.xcarchive ] || { echo "архива нет — сначала без --upload-only" >&2; exit 1; }
   rm -rf build/export

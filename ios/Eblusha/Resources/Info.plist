@@ -27,6 +27,10 @@
 	<string>$(EBLUSHA_API_BASE_URL)</string>
 	<key>EblushaWsBaseURL</key>
 	<string>$(EBLUSHA_WS_BASE_URL)</string>
+	<!-- Метка сборки: короткий хеш коммита для отладочных, номер сборки для TestFlight.
+	     Нужна, чтобы на глаз отличать, что именно сейчас стоит на телефоне. -->
+	<key>EblushaBuildTag</key>
+	<string>$(EBLUSHA_BUILD_TAG)</string>
 
 	<key>UILaunchScreen</key>
 	<dict>

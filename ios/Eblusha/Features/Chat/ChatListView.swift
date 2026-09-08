@@ -138,6 +138,10 @@ struct ChatListView: View {
         let myName = me?.displayName?.isEmpty == false ? me!.displayName! : (me?.username ?? "Профиль")
         let (statusLabel, statusColor) = selfPresenceLabel(vm.ui.selfPresence)
         let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?"
+        // Метка сборки рядом с версией: у отладочной — хеш коммита, у TestFlight — номер
+        // сборки. Иначе на телефоне их не отличить, обе показывают «1.0».
+        let buildTag = (Bundle.main.infoDictionary?["EblushaBuildTag"] as? String)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
 
         return VStack(spacing: 8) {
             HStack(spacing: 10) {
@@ -169,7 +173,7 @@ struct ChatListView: View {
                         .foregroundStyle(statusColor)
                 }
                 Spacer()
-                Text("v \(version)")
+                Text(buildTag.isEmpty ? "v \(version)" : "v \(version) · \(buildTag)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Eb.textMuted)
                     .padding(.horizontal, 12)
