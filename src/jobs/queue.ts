@@ -1,6 +1,7 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import env from "../config/env";
+import logger from "../config/logger";
 
 import type { PushPayload } from "../push/types";
 
@@ -72,14 +73,22 @@ export function getPushQueue(): Queue<PushJob> {
 export function enqueuePush(userIds: string[], payload: PushJob["payload"], dedupeKey?: string): void {
   const recipients = Array.from(new Set(userIds.filter(Boolean)));
   if (recipients.length === 0) return;
+  // BullMQ запрещает двоеточие в своём jobId («Custom Id cannot contain :»), делая
+  // исключение только для трёх частей — старый формат repeatable-задач. Из-за этого
+  // `msg:<id>` (две части) отвергался, а `call:<чат>:<время>` (три) проходил — и пуши
+  // о сообщениях молча не ставились в очередь вовсе, на всех платформах. Поэтому
+  // разделитель меняем на дефис и в jobId двоеточий не оставляем никогда.
+  const jobId = dedupeKey ? dedupeKey.replace(/:/g, "-") : undefined;
   try {
     void getPushQueue()
-      .add("push", { userIds: recipients, payload }, dedupeKey ? { jobId: dedupeKey } : undefined)
-      .catch(() => {
-        // Молча: пуш — это ускоритель поверх живого сокета, а не критический путь.
+      .add("push", { userIds: recipients, payload }, jobId ? { jobId } : undefined)
+      .catch((error) => {
+        // Пуш — ускоритель поверх живого сокета, отправку сообщения он ронять не должен.
+        // Но и молчать нельзя: именно так эта функция год глотала ошибку BullMQ выше.
+        logger.warn({ error, kind: payload.kind, jobId }, "push: failed to enqueue");
       });
-  } catch {
-    // см. выше
+  } catch (error) {
+    logger.warn({ error, kind: payload.kind, jobId }, "push: failed to enqueue");
   }
 }
 
