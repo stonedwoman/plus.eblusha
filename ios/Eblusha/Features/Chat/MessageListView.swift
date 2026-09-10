@@ -305,6 +305,21 @@ final class MessageListController: UIViewController {
     private var wasAtBottomBeforeLayout = true
     /// Базовый верхний отступ ленты.
     private static let basePadding: CGFloat = 8
+    /// Свайп-ответ: порог срабатывания и предел протяжки (как в прежней версии).
+    private static let replyThreshold: CGFloat = 56
+    private static let replyMaxDrag: CGFloat = 84
+
+    /// Строка, которую сейчас тянут вбок.
+    private var swipingIndexPath: IndexPath?
+    /// Стрелка ответа, проявляющаяся за пузырём по мере протяжки.
+    private lazy var replyIndicator: UIImageView = {
+        let image = UIImage(systemName: "arrowshape.turn.up.left.fill")
+        let view = UIImageView(image: image)
+        view.tintColor = UIColor(Eb.brand)
+        view.alpha = 0
+        view.isUserInteractionEnabled = false
+        return view
+    }()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -320,6 +335,9 @@ final class MessageListController: UIViewController {
 
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
+        // До первой установки позиции лента невидима: иначе на долю секунды виден кадр,
+        // где она стоит наверху, а следом рывок к последнему сообщению.
+        collectionView.alpha = 0
         collectionView.delegate = self
         collectionView.alwaysBounceVertical = true
         collectionView.keyboardDismissMode = .interactive
@@ -329,6 +347,14 @@ final class MessageListController: UIViewController {
         collectionView.contentInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(collectionView)
+        collectionView.addSubview(replyIndicator)
+
+        // Свайп-ответ живёт на самой коллекции, а не на каждой ячейке: начинается только
+        // при явно горизонтальном движении и идёт одновременно с прокруткой, поэтому
+        // палец на сообщении по-прежнему листает ленту.
+        let replyPan = UIPanGestureRecognizer(target: self, action: #selector(handleReplyPan(_:)))
+        replyPan.delegate = self
+        collectionView.addGestureRecognizer(replyPan)
         NSLayoutConstraint.activate([
             collectionView.topAnchor.constraint(equalTo: view.topAnchor),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -342,6 +368,8 @@ final class MessageListController: UIViewController {
             [weak self] cell, _, id in
             guard let self, let model = self.rowsById[id] else { return }
             cell.backgroundConfiguration = .clear()
+            // Ячейка могла приехать из переиспользования со сдвигом от свайпа.
+            cell.contentView.transform = .identity
             cell.contentConfiguration = UIHostingConfiguration {
                 MessageCell(model: model, actions: self.actions)
             }
@@ -362,6 +390,8 @@ final class MessageListController: UIViewController {
         guard previous != newRows else { return }
         rows = newRows
         rowsById = Dictionary(uniqueKeysWithValues: newRows.map { ($0.id, $0) })
+        // Пустая переписка: показывать нечего, но и прятать ленту незачем.
+        if newRows.isEmpty { reveal() }
 
         let wasAtBottom = isAtBottom
         let follow = proxy?.followNextMessage ?? false
@@ -399,7 +429,12 @@ final class MessageListController: UIViewController {
                 self.didInitialLayout = true
                 self.scrollToBottom(animated: false)
                 // Повторная доводка: ячейки досчитывают высоту после первой раскладки.
-                DispatchQueue.main.async { [weak self] in self?.scrollToBottom(animated: false) }
+                // Показываем ленту только после неё — тогда открытие выглядит как сразу
+                // готовый экран, без промежуточных кадров.
+                DispatchQueue.main.async { [weak self] in
+                    self?.scrollToBottom(animated: false)
+                    self?.reveal()
+                }
             } else if follow {
                 self.proxy?.followNextMessage = false
                 self.scrollToBottom(animated: true)
@@ -467,6 +502,78 @@ final class MessageListController: UIViewController {
         )
     }
 
+    // MARK: - Свайп-ответ
+
+    @objc private func handleReplyPan(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            let point = recognizer.location(in: collectionView)
+            guard let indexPath = collectionView.indexPathForItem(at: point),
+                  indexPath.item < rows.count,
+                  !rows[indexPath.item].message.isSystem,
+                  !rows[indexPath.item].selectionMode
+            else {
+                swipingIndexPath = nil
+                return
+            }
+            swipingIndexPath = indexPath
+            layoutReplyIndicator(for: indexPath)
+
+        case .changed:
+            guard let indexPath = swipingIndexPath,
+                  let cell = collectionView.cellForItem(at: indexPath),
+                  indexPath.item < rows.count
+            else { return }
+            // Входящие тянутся вправо, свои — влево (свои пузыри прижаты к правому краю).
+            let isMine = rows[indexPath.item].message.isMine
+            let raw = recognizer.translation(in: collectionView).x
+            let dx = isMine
+                ? min(max(raw, -Self.replyMaxDrag), 0)
+                : min(max(raw, 0), Self.replyMaxDrag)
+            cell.contentView.transform = CGAffineTransform(translationX: dx, y: 0)
+            replyIndicator.alpha = min(abs(dx) / Self.replyThreshold, 1)
+
+        case .ended, .cancelled, .failed:
+            guard let indexPath = swipingIndexPath else { return }
+            swipingIndexPath = nil
+            let cell = collectionView.cellForItem(at: indexPath)
+            let dx = cell?.contentView.transform.tx ?? 0
+            let triggered = recognizer.state == .ended && abs(dx) >= Self.replyThreshold
+            UIView.animate(withDuration: 0.22) {
+                cell?.contentView.transform = .identity
+                self.replyIndicator.alpha = 0
+            }
+            if triggered, indexPath.item < rows.count {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                actions?.onReply(rows[indexPath.item].message)
+            }
+
+        default:
+            break
+        }
+    }
+
+    /// Стрелка встаёт у того края строки, к которому она поедет.
+    private func layoutReplyIndicator(for indexPath: IndexPath) {
+        guard indexPath.item < rows.count,
+              let attributes = collectionView.layoutAttributesForItem(at: indexPath)
+        else { return }
+        let isMine = rows[indexPath.item].message.isMine
+        let size: CGFloat = 22
+        let x = isMine ? attributes.frame.maxX - size - 14 : attributes.frame.minX + 14
+        replyIndicator.frame = CGRect(
+            x: x, y: attributes.frame.midY - size / 2, width: size, height: size
+        )
+        replyIndicator.alpha = 0
+        collectionView.bringSubviewToFront(replyIndicator)
+    }
+
+    /// Показать ленту после того, как позиция выставлена.
+    private func reveal() {
+        guard collectionView.alpha < 1 else { return }
+        UIView.animate(withDuration: 0.12) { self.collectionView.alpha = 1 }
+    }
+
     private func updatePosition() {
         guard let proxy, collectionView != nil else { return }
         let atBottom = isAtBottom
@@ -482,6 +589,12 @@ final class MessageListController: UIViewController {
         if view.bounds.height == lastBoundsHeight { wasAtBottomBeforeLayout = isAtBottom }
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // Страховка: что бы ни случилось со снимком, невидимой лента не останется.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.reveal() }
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         updateTopInsetForShortContent()
@@ -491,6 +604,28 @@ final class MessageListController: UIViewController {
         // Высота изменилась — выехала клавиатура или вырос композер. Были внизу — там и
         // остаёмся, иначе последнее сообщение уезжает под панель ввода.
         if wasAtBottomBeforeLayout { scrollToBottom(animated: false) }
+    }
+}
+
+extension MessageListController: UIGestureRecognizerDelegate {
+
+    /// Жест берётся за дело ТОЛЬКО при явно горизонтальном движении. Иначе прокрутка
+    /// ленты снова оказалась бы заложником свайпа — ровно та беда, из-за которой жест
+    /// пришлось временно убрать.
+    func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = recognizer as? UIPanGestureRecognizer,
+              pan.view === collectionView, pan !== collectionView.panGestureRecognizer
+        else { return true }
+        let velocity = pan.velocity(in: collectionView)
+        return abs(velocity.x) > abs(velocity.y) * 1.5
+    }
+
+    /// Идём рядом с прокруткой, а не вместо неё.
+    func gestureRecognizer(
+        _ recognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        true
     }
 }
 
