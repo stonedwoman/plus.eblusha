@@ -311,15 +311,16 @@ final class MessageListController: UIViewController {
 
     /// Строка, которую сейчас тянут вбок.
     private var swipingIndexPath: IndexPath?
-    /// Стрелка ответа, проявляющаяся за пузырём по мере протяжки.
-    private lazy var replyIndicator: UIImageView = {
-        let image = UIImage(systemName: "arrowshape.turn.up.left.fill")
-        let view = UIImageView(image: image)
-        view.tintColor = UIColor(Eb.brand)
-        view.alpha = 0
-        view.isUserInteractionEnabled = false
-        return view
-    }()
+    /// Сдвиги пузырей по id сообщения: во время жеста меняется только один объект,
+    /// и перерисовывается только один пузырь.
+    private var swipeStates: [String: MessageSwipeState] = [:]
+
+    private func swipeState(for id: String) -> MessageSwipeState {
+        if let existing = swipeStates[id] { return existing }
+        let state = MessageSwipeState()
+        swipeStates[id] = state
+        return state
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -347,7 +348,6 @@ final class MessageListController: UIViewController {
         collectionView.contentInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(collectionView)
-        collectionView.addSubview(replyIndicator)
 
         // Свайп-ответ живёт на самой коллекции, а не на каждой ячейке: начинается только
         // при явно горизонтальном движении и идёт одновременно с прокруткой, поэтому
@@ -368,10 +368,8 @@ final class MessageListController: UIViewController {
             [weak self] cell, _, id in
             guard let self, let model = self.rowsById[id] else { return }
             cell.backgroundConfiguration = .clear()
-            // Ячейка могла приехать из переиспользования со сдвигом от свайпа.
-            cell.contentView.transform = .identity
             cell.contentConfiguration = UIHostingConfiguration {
-                MessageCell(model: model, actions: self.actions)
+                MessageCell(model: model, actions: self.actions, swipe: self.swipeState(for: id))
             }
             // Отступы задаёт сам пузырь — системные поля списка тут лишние.
             .margins(.all, 0)
@@ -390,6 +388,8 @@ final class MessageListController: UIViewController {
         guard previous != newRows else { return }
         rows = newRows
         rowsById = Dictionary(uniqueKeysWithValues: newRows.map { ($0.id, $0) })
+        // Состояния свайпа держим только для живых строк.
+        swipeStates = swipeStates.filter { rowsById[$0.key] != nil }
         // Пустая переписка: показывать нечего, но и прятать ленту незачем.
         if newRows.isEmpty { reveal() }
 
@@ -517,55 +517,34 @@ final class MessageListController: UIViewController {
                 return
             }
             swipingIndexPath = indexPath
-            layoutReplyIndicator(for: indexPath)
 
         case .changed:
-            guard let indexPath = swipingIndexPath,
-                  let cell = collectionView.cellForItem(at: indexPath),
-                  indexPath.item < rows.count
-            else { return }
+            guard let indexPath = swipingIndexPath, indexPath.item < rows.count else { return }
+            let message = rows[indexPath.item].message
             // Входящие тянутся вправо, свои — влево (свои пузыри прижаты к правому краю).
-            let isMine = rows[indexPath.item].message.isMine
             let raw = recognizer.translation(in: collectionView).x
-            let dx = isMine
+            let dx = message.isMine
                 ? min(max(raw, -Self.replyMaxDrag), 0)
                 : min(max(raw, 0), Self.replyMaxDrag)
-            cell.contentView.transform = CGAffineTransform(translationX: dx, y: 0)
-            replyIndicator.alpha = min(abs(dx) / Self.replyThreshold, 1)
+            // Двигается САМ пузырь внутри SwiftUI-содержимого (SwipeableBubble), а не
+            // ячейка: сдвиг контейнера хостинг-конфигурация не показывала.
+            swipeState(for: message.id).offset = dx
 
         case .ended, .cancelled, .failed:
-            guard let indexPath = swipingIndexPath else { return }
+            guard let indexPath = swipingIndexPath, indexPath.item < rows.count else { return }
             swipingIndexPath = nil
-            let cell = collectionView.cellForItem(at: indexPath)
-            let dx = cell?.contentView.transform.tx ?? 0
-            let triggered = recognizer.state == .ended && abs(dx) >= Self.replyThreshold
-            UIView.animate(withDuration: 0.22) {
-                cell?.contentView.transform = .identity
-                self.replyIndicator.alpha = 0
-            }
-            if triggered, indexPath.item < rows.count {
+            let message = rows[indexPath.item].message
+            let state = swipeState(for: message.id)
+            let triggered = recognizer.state == .ended && abs(state.offset) >= Self.replyThreshold
+            withAnimation(.spring(duration: 0.25)) { state.offset = 0 }
+            if triggered {
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                actions?.onReply(rows[indexPath.item].message)
+                actions?.onReply(message)
             }
 
         default:
             break
         }
-    }
-
-    /// Стрелка встаёт у того края строки, к которому она поедет.
-    private func layoutReplyIndicator(for indexPath: IndexPath) {
-        guard indexPath.item < rows.count,
-              let attributes = collectionView.layoutAttributesForItem(at: indexPath)
-        else { return }
-        let isMine = rows[indexPath.item].message.isMine
-        let size: CGFloat = 22
-        let x = isMine ? attributes.frame.maxX - size - 14 : attributes.frame.minX + 14
-        replyIndicator.frame = CGRect(
-            x: x, y: attributes.frame.midY - size / 2, width: size, height: size
-        )
-        replyIndicator.alpha = 0
-        collectionView.bringSubviewToFront(replyIndicator)
     }
 
     /// Показать ленту после того, как позиция выставлена.
@@ -646,6 +625,7 @@ private struct MessageCell: View {
 
     let model: MessageRowModel
     let actions: MessageRowActions?
+    let swipe: MessageSwipeState
 
     var body: some View {
         VStack(spacing: 0) {
@@ -680,6 +660,7 @@ private struct MessageCell: View {
                 onReact: { actions?.onReact(model.message, $0) },
                 onPickReaction: { actions?.onPickReaction(model.message) },
                 onLongPress: { actions?.onLongPress(model.message) },
+                swipe: swipe,
                 quickSlots: model.quickSlots,
                 onEdit: { actions?.onEdit(model.message) },
                 onDelete: { actions?.onDelete(model.message) }

@@ -6,6 +6,34 @@ import SwiftUI
 
 private let runGapMs: Int64 = 5 * 60 * 1000
 
+/// Сдвиг пузыря при свайпе-ответе. Отдельный объект на строку: во время жеста
+/// перерисовывается только сам пузырь, а не вся ячейка и не вся лента.
+final class MessageSwipeState: ObservableObject {
+    @Published var offset: CGFloat = 0
+}
+
+/// Пузырь, который умеет уезжать вбок: как на Android — сдвигается сам пузырь, аватар и
+/// галочки выбора стоят на месте, а за пузырём проявляется стрелка ответа.
+struct SwipeableBubble<Content: View>: View {
+    @ObservedObject var state: MessageSwipeState
+    let isMine: Bool
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+            .offset(x: state.offset)
+            // Фон выравнивается по РАСКЛАДОЧНОЙ рамке, а offset — чисто визуальный сдвиг,
+            // поэтому стрелка остаётся там, откуда уехал пузырь.
+            .background(alignment: isMine ? .trailing : .leading) {
+                Image(systemName: "arrowshape.turn.up.left.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(Eb.brand)
+                    .padding(.horizontal, 10)
+                    .opacity(min(abs(state.offset) / 56, 1))
+            }
+    }
+}
+
 /// Позднее сообщение продолжает ран раннего: тот же автор, оба не системные, в окне 5 мин.
 /// Не private: ранами занимается MessageListView, собирая их один раз за проход.
 func continuesRun(_ earlier: Message?, _ later: Message?) -> Bool {
@@ -561,6 +589,8 @@ struct MessageRow: View {
     let onPickReaction: () -> Void
     /// Долгое нажатие — меню сообщения (реакции + действия).
     let onLongPress: () -> Void
+    /// Сдвиг пузыря при свайпе-ответе; объект живёт в контроллере ленты.
+    var swipe = MessageSwipeState()
     /// Быстрые слоты — считает лента, чтобы не читать UserDefaults на каждую строку.
     var quickSlots: [String] = ReactionFavorites.defaults
     let onEdit: () -> Void
@@ -603,12 +633,11 @@ struct MessageRow: View {
                             }
                         }
                     }
-                    bubble
+                    // Свайп-ответ: сам жест живёт на коллекции (MessageListView), а здесь
+                    // только визуальная часть — едет пузырь, стрелка проявляется за ним.
+                    SwipeableBubble(state: swipe, isMine: m.isMine) { bubble }
                     if !m.isMine { Spacer(minLength: 40) }
                 }
-                // Свайпа-ответа здесь НЕТ намеренно: жест на каждой строке дрался с
-                // прокруткой ленты (палец на сообщении — список стоит), а в вебе такого
-                // жеста и не было. Ответ живёт в контекстном меню по долгому нажатию.
                 if selectionMode && m.isMine {
                     SelectionCheck(selected: selected)
                         .padding(.leading, 6)
