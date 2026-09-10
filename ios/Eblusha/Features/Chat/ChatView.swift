@@ -10,11 +10,14 @@ private let runGapMs: Int64 = 5 * 60 * 1000
 /// перерисовывается только сам пузырь, а не вся ячейка и не вся лента.
 final class MessageSwipeState: ObservableObject {
     @Published var offset: CGFloat = 0
+    /// Рамка пузыря в координатах ячейки — по ней жесты понимают, куда лёг палец:
+    /// свайп по входящему пузырю вправо — это ответ, а вправо мимо пузыря — «назад».
+    var bubbleFrame: CGRect = .zero
 }
 
-/// Пузырь, который умеет уезжать влево: сдвигается сам пузырь, аватар и галочки выбора
-/// стоят на месте, а справа проявляется стрелка ответа. Влево для всех — как в
-/// Telegram: движение вправо отдано жесту «назад».
+/// Пузырь, который умеет уезжать вбок: как на Android — сдвигается сам пузырь, аватар и
+/// галочки выбора стоят на месте, а за пузырём проявляется стрелка ответа. Входящие
+/// едут вправо, свои — влево.
 struct SwipeableBubble<Content: View>: View {
     @ObservedObject var state: MessageSwipeState
     let isMine: Bool
@@ -25,12 +28,15 @@ struct SwipeableBubble<Content: View>: View {
             .offset(x: state.offset)
             // Фон выравнивается по РАСКЛАДОЧНОЙ рамке, а offset — чисто визуальный сдвиг,
             // поэтому стрелка остаётся там, откуда уехал пузырь.
-            .background(alignment: .trailing) {
+            .background(alignment: isMine ? .trailing : .leading) {
                 Image(systemName: "arrowshape.turn.up.left.fill")
                     .font(.system(size: 20))
                     .foregroundStyle(Eb.brand)
                     .padding(.horizontal, 10)
                     .opacity(min(abs(state.offset) / 56, 1))
+            }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
+                state.bubbleFrame = $0
             }
     }
 }
@@ -94,6 +100,8 @@ struct ChatView: View {
     @State private var pinToken = 0
     /// Счётчик своих отправок — по нему лента утягивается к низу даже из истории.
     @State private var sendToken = 0
+    /// Мост к ленте: команды прокрутки и вопрос «палец на входящем пузыре?» для жеста назад.
+    @StateObject private var listProxy = MessageListProxy()
     /// Сообщение, для которого открыт полный выбор эмодзи.
     @State private var reactionTarget: Message?
     /// Сообщение, для которого открыто меню действий.
@@ -127,6 +135,7 @@ struct ChatView: View {
             // со спиннером и кадр с пустой лентой перед готовым экраном.
             MessageListView(
                     vm: vm,
+                    proxy: listProxy,
                     isLoading: vm.ui.loading,
                     pinToken: pinToken,
                     sendToken: sendToken,
@@ -255,9 +264,9 @@ struct ChatView: View {
         }
         .background(Eb.paper)
         .toolbar(.hidden, for: .navigationBar)
-        // Возврат в список чатов свайпом от любого края: системная панель скрыта,
-        // и штатный жест «назад» вместе с ней выключен.
-        .edgeSwipeBack { onBack() }
+        // Возврат в список чатов свайпом вправо из любой точки. Кроме входящих пузырей:
+        // там свайп вправо — ответ на сообщение, лента об этом знает.
+        .edgeSwipeBack(shouldBegin: { listProxy.backSwipeAllowed?($0) ?? true }) { onBack() }
         .onAppear {
             quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
         }

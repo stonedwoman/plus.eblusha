@@ -21,6 +21,8 @@ import UIKit
 struct MessageListView: View {
 
     @ObservedObject var vm: ChatViewModel
+    /// Мост создаёт экран беседы: ему нужен ответ ленты для жеста «назад».
+    @ObservedObject var proxy: MessageListProxy
     /// История ещё грузится: пустой снимок в это время — не «пустой чат», показывать нечего.
     let isLoading: Bool
     let pinToken: Int
@@ -34,7 +36,6 @@ struct MessageListView: View {
     let onLongPress: (Message) -> Void
     let quickSlots: [String]
 
-    @StateObject private var proxy = MessageListProxy()
     @State private var jumpTask: Task<Void, Never>?
     @State private var jumpNotice: String?
 
@@ -241,6 +242,9 @@ final class MessageListProxy: ObservableObject {
 
     var scrollToBottomAction: ((Bool) -> Void)?
     var scrollToMessageAction: ((String) -> Void)?
+    /// Можно ли начать жест «назад» из этой точки экрана (в координатах окна). Лента
+    /// отвечает «нет», если палец лёг на входящий пузырь — там свайп вправо значит ответ.
+    var backSwipeAllowed: ((CGPoint) -> Bool)?
 
     func scrollToBottom(animated: Bool) { scrollToBottomAction?(animated) }
     func scrollToMessage(_ id: String) { scrollToMessageAction?(id) }
@@ -268,6 +272,9 @@ private struct MessageListRepresentable: UIViewControllerRepresentable {
         }
         proxy.scrollToMessageAction = { [weak controller] id in
             controller?.scroll(to: id)
+        }
+        proxy.backSwipeAllowed = { [weak controller] point in
+            controller?.allowsBackSwipe(atWindowPoint: point) ?? true
         }
         return controller
     }
@@ -538,10 +545,11 @@ final class MessageListController: UIViewController {
         case .changed:
             guard let indexPath = swipingIndexPath, indexPath.item < rows.count else { return }
             let message = rows[indexPath.item].message
-            // Влево для ВСЕХ сообщений, как в Telegram: движение вправо отдано жесту
-            // «назад», и на входящих они иначе столкнулись бы.
+            // Входящие тянутся вправо, свои — влево (свои пузыри прижаты к правому краю).
             let raw = recognizer.translation(in: collectionView).x
-            let dx = min(max(raw, -Self.replyMaxDrag), 0)
+            let dx = message.isMine
+                ? min(max(raw, -Self.replyMaxDrag), 0)
+                : min(max(raw, 0), Self.replyMaxDrag)
             // Двигается САМ пузырь внутри SwiftUI-содержимого (SwipeableBubble), а не
             // ячейка: сдвиг контейнера хостинг-конфигурация не показывала.
             swipeState(for: message.id).offset = dx
@@ -605,16 +613,43 @@ final class MessageListController: UIViewController {
 
 extension MessageListController: UIGestureRecognizerDelegate {
 
-    /// Жест берётся за дело ТОЛЬКО при явно горизонтальном движении. Иначе прокрутка
-    /// ленты снова оказалась бы заложником свайпа — ровно та беда, из-за которой жест
-    /// пришлось временно убрать.
+    /// Жест ответа берётся за дело только если палец лёг НА ПУЗЫРЬ и движется явно
+    /// горизонтально в его сторону ответа: входящий — вправо, свой — влево. Всё
+    /// остальное остаётся прокрутке и жесту «назад».
     func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
         guard let pan = recognizer as? UIPanGestureRecognizer,
               pan.view === collectionView, pan !== collectionView.panGestureRecognizer
         else { return true }
         let velocity = pan.velocity(in: collectionView)
-        // Только влево: вправо — это «назад».
-        return velocity.x < 0 && abs(velocity.x) > abs(velocity.y) * 1.5
+        guard abs(velocity.x) > abs(velocity.y) * 1.5 else { return false }
+        guard let row = row(atCollectionPoint: pan.location(in: collectionView)) else { return false }
+        guard bubbleContains(row: row, collectionPoint: pan.location(in: collectionView)) else { return false }
+        return row.message.isMine ? velocity.x < 0 : velocity.x > 0
+    }
+
+    /// Строка под точкой коллекции.
+    private func row(atCollectionPoint point: CGPoint) -> MessageRowModel? {
+        guard let indexPath = collectionView.indexPathForItem(at: point),
+              indexPath.item < rows.count else { return nil }
+        return rows[indexPath.item]
+    }
+
+    /// Лежит ли точка на пузыре строки. Рамку пузыря сообщает сам SwiftUI-пузырь.
+    private func bubbleContains(row: MessageRowModel, collectionPoint: CGPoint) -> Bool {
+        guard let indexPath = collectionView.indexPathForItem(at: collectionPoint),
+              let cell = collectionView.cellForItem(at: indexPath),
+              let state = swipeStates[row.id] else { return false }
+        let local = collectionView.convert(collectionPoint, to: cell.contentView)
+        return state.bubbleFrame.insetBy(dx: -8, dy: -4).contains(local)
+    }
+
+    /// Жест «назад» спрашивает: можно ли стартовать здесь. Нельзя — только если палец
+    /// на входящем пузыре: там движение вправо означает ответ.
+    func allowsBackSwipe(atWindowPoint point: CGPoint) -> Bool {
+        guard let window = collectionView.window else { return true }
+        let inCollection = window.convert(point, to: collectionView)
+        guard let row = row(atCollectionPoint: inCollection), !row.message.isMine else { return true }
+        return !bubbleContains(row: row, collectionPoint: inCollection)
     }
 
     /// Идём рядом с прокруткой, а не вместо неё.
@@ -685,5 +720,7 @@ private struct MessageCell: View {
             )
         }
         .padding(.horizontal, 10)
+        // Система координат ячейки: в ней пузырь сообщает свою рамку для жестов.
+        .coordinateSpace(name: "messageCell")
     }
 }

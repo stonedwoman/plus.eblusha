@@ -12,8 +12,11 @@ import UIKit
 private struct EdgeSwipeBack: UIViewRepresentable {
 
     let onBack: () -> Void
+    /// Можно ли начинать жест из этой точки окна. Чат отвечает «нет» на входящих
+    /// пузырях: там свайп вправо — ответ на сообщение.
+    let shouldBegin: ((CGPoint) -> Bool)?
 
-    func makeCoordinator() -> Coordinator { Coordinator(onBack: onBack) }
+    func makeCoordinator() -> Coordinator { Coordinator(onBack: onBack, shouldBegin: shouldBegin) }
 
     func makeUIView(context: Context) -> UIView {
         let view = AttachView()
@@ -26,17 +29,20 @@ private struct EdgeSwipeBack: UIViewRepresentable {
 
     func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.onBack = onBack
+        context.coordinator.shouldBegin = shouldBegin
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
 
         var onBack: () -> Void
+        var shouldBegin: ((CGPoint) -> Bool)?
         /// Жест уже сработал в этом проходе — второй раз не закрываем.
         private var fired = false
         private weak var attached: UIView?
 
-        init(onBack: @escaping () -> Void) {
+        init(onBack: @escaping () -> Void, shouldBegin: ((CGPoint) -> Bool)?) {
             self.onBack = onBack
+            self.shouldBegin = shouldBegin
         }
 
         private static let marker = "eb.edge-back"
@@ -79,7 +85,11 @@ private struct EdgeSwipeBack: UIViewRepresentable {
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
             guard let pan = recognizer as? UIPanGestureRecognizer else { return true }
             let velocity = pan.velocity(in: pan.view)
-            return velocity.x > 0 && velocity.x > abs(velocity.y) * 1.5
+            guard velocity.x > 0, velocity.x > abs(velocity.y) * 1.5 else { return false }
+            if let shouldBegin, let window = pan.view?.window {
+                return shouldBegin(pan.location(in: window))
+            }
+            return true
         }
 
         /// Живём рядом с прокруткой и жестами внутри, а не вместо них.
@@ -121,8 +131,10 @@ private struct EdgeSwipeBack: UIViewRepresentable {
 extension View {
     /// Возврат назад свайпом вправо из любой точки экрана. Имя оставлено прежним, чтобы
     /// не править вызовы.
-    func edgeSwipeBack(_ onBack: @escaping () -> Void) -> some View {
-        background(EdgeSwipeBack(onBack: onBack).frame(width: 0, height: 0))
+    func edgeSwipeBack(
+        shouldBegin: ((CGPoint) -> Bool)? = nil, _ onBack: @escaping () -> Void
+    ) -> some View {
+        background(EdgeSwipeBack(onBack: onBack, shouldBegin: shouldBegin).frame(width: 0, height: 0))
     }
 
     /// Прежнее имя оставлено, чтобы не править вызовы: системный жест возвращать
