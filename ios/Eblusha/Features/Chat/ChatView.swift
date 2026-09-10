@@ -124,12 +124,8 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if vm.ui.selectionMode {
-                SelectionTopBar(count: vm.ui.selectedIds.count, onClose: { vm.clearSelection() })
-            } else {
-                header
-            }
-            Divider().overlay(Eb.border)
+            // Шапки в теле больше нет: её роль играет системная панель навигации
+            // (см. headerToolbar ниже), разделитель под ней тоже рисует система.
 
             // Лента смонтирована всегда: пересоздание её на смене loading давало кадр
             // со спиннером и кадр с пустой лентой перед готовым экраном.
@@ -264,7 +260,12 @@ struct ChatView: View {
             }
         }
         .background(Eb.paper)
-        .toolbar(.hidden, for: .navigationBar)
+        // Родная панель навигации вместо своей шапки: штатная кнопка «назад», по центру —
+        // собеседник, справа — звонки и меню. Материал панели рисует система, свой фон
+        // не подкладываем — иначе на iOS 26 пропадает стекло.
+        .navigationTitle(conversation.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { headerToolbar }
         // Возврат в список чатов свайпом вправо из любой точки. Кроме входящих пузырей:
         // там свайп вправо — ответ на сообщение, лента об этом знает.
         .edgeSwipeBack(shouldBegin: { listProxy.backSwipeAllowed?($0) ?? true }) { onBack() }
@@ -391,104 +392,116 @@ struct ChatView: View {
         }
     }
 
-    // MARK: - Шапка
+    // MARK: - Шапка (системная панель навигации)
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            Button(action: onBack) {
-                Image(systemName: "chevron.backward")
-                    .font(.title3)
-                    .foregroundStyle(Eb.textPrimary)
-                    .frame(width: 40, height: 40)
+    /// Содержимое панели навигации. Обычный режим: по центру аватар с названием и строкой
+    /// статуса, справа — QR (секретный чат), видео, аудио и меню «…». Режим выбора: по центру
+    /// счётчик, справа «Отмена»; SelectionActionBar снизу остаётся. Кнопка «назад» — штатная,
+    /// её даёт NavigationStack, поэтому своей здесь нет.
+    @ToolbarContentBuilder
+    private var headerToolbar: some ToolbarContent {
+        if vm.ui.selectionMode {
+            ToolbarItem(placement: .principal) {
+                // Тот же текст, что был в SelectionTopBar, — поведение экрана не меняется.
+                Text(vm.ui.selectedIds.isEmpty ? "Выберите сообщения" : "Выбрано: \(vm.ui.selectedIds.count)")
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Отмена") { vm.clearSelection() }
+            }
+        } else {
+            ToolbarItem(placement: .principal) {
+                headerTitle
+            }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                // «Добавить устройство» в секретном чате (веб-паритет): раздать ключи по QR.
+                // Зелёный — цвет секретных чатов, как замок в списке; остальное — системный тинт.
+                if vm.ui.isSecret && vm.ui.secretReady {
+                    Button {
+                        vm.createLinkInvite()
+                    } label: {
+                        Label("Добавить устройство", systemImage: "qrcode")
+                            .foregroundStyle(Color(hex: 0x86EFAC))
+                    }
+                }
+                // Порт кнопок звонка из шапки ChatScreen.kt: сначала видео, потом аудио.
+                // Разрешения CallManager добирает сам перед публикацией треков.
+                Button {
+                    AppContainer.shared.callManager.startOutgoing(
+                        conversationId: conversation.id, title: conversation.title, video: true)
+                } label: {
+                    Label("Видеозвонок", systemImage: "video")
+                }
+                Button {
+                    AppContainer.shared.callManager.startOutgoing(
+                        conversationId: conversation.id, title: conversation.title, video: false)
+                } label: {
+                    Label("Позвонить", systemImage: "phone")
+                }
+                Menu {
+                    if !vm.ui.isSecret {
+                        Button {
+                            vm.markAllRead()
+                        } label: {
+                            Label("Отметить прочитанным", systemImage: "checkmark.circle")
+                        }
+                    }
+                    Button(role: .destructive) {
+                        confirmDelete = true
+                    } label: {
+                        Label(
+                            vm.ui.isSecret ? "Закрыть секретный чат"
+                                : vm.ui.isGroup ? "Выйти из беседы" : "Удалить чат",
+                            systemImage: "trash"
+                        )
+                    }
+                } label: {
+                    Label("Ещё", systemImage: "ellipsis")
+                }
+            }
+        }
+    }
+
+    /// Центр панели: аватар 34 + название + «печатает…»/статус. Шрифты чуть мельче, чем
+    /// были в своей шапке, — две строки должны уместиться в 44 pt системной панели.
+    /// В 1:1 тап по всей связке открывает карточку собеседника (веб-паритет), в группе — нет.
+    private var headerTitle: some View {
+        HStack(spacing: 8) {
             AvatarView(
                 name: conversation.title,
                 avatarUrl: vm.ui.headerAvatarUrl ?? conversation.avatarUrl,
-                size: 38
+                size: 34
             )
-            // Тап по шапке 1:1 открывает карточку собеседника (веб-паритет).
-            .onTapGesture {
-                if !vm.ui.isGroup, let peerId = vm.ui.peerUserId {
-                    userCard = UserCardSeed(
-                        userId: peerId, name: conversation.title, avatarUrl: conversation.avatarUrl
-                    )
-                }
-            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(conversation.title)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Eb.textPrimary)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                 // «Печатает…» вытесняет статусную строку (веб-паритет).
                 if let typing = vm.ui.typingName {
                     // Раньше выводилось просто «Виктор…» — читалось как обрезанный текст.
                     Text(vm.ui.isGroup ? "\(typing) печатает…" : "печатает…")
-                        .font(.footnote)
+                        .font(.caption)
                         .foregroundStyle(Eb.brand)
                         .lineLimit(1)
                 } else if let subtitle = vm.ui.headerSubtitle {
                     Text(subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(Eb.textMuted)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
-            Spacer()
-            // «Добавить устройство» в секретном чате (веб-паритет): раздать ключи по QR.
-            if vm.ui.isSecret && vm.ui.secretReady {
-                Button {
-                    vm.createLinkInvite()
-                } label: {
-                    Image(systemName: "qrcode")
-                        .foregroundStyle(Color(hex: 0x86EFAC))
-                        .frame(width: 40, height: 40)
-                }
-            }
-            // Порт кнопок звонка из шапки ChatScreen.kt: сначала видео, потом аудио.
-            // Разрешения CallManager добирает сам перед публикацией треков.
-            Button {
-                AppContainer.shared.callManager.startOutgoing(
-                    conversationId: conversation.id, title: conversation.title, video: true)
-            } label: {
-                Image(systemName: "video")
-                    .foregroundStyle(Eb.textPrimary)
-                    .frame(width: 40, height: 40)
-            }
-            Button {
-                AppContainer.shared.callManager.startOutgoing(
-                    conversationId: conversation.id, title: conversation.title, video: false)
-            } label: {
-                Image(systemName: "phone")
-                    .foregroundStyle(Eb.textPrimary)
-                    .frame(width: 40, height: 40)
-            }
-            Menu {
-                if !vm.ui.isSecret {
-                    Button {
-                        vm.markAllRead()
-                    } label: {
-                        Label("Отметить прочитанным", systemImage: "checkmark.circle")
-                    }
-                }
-                Button(role: .destructive) {
-                    confirmDelete = true
-                } label: {
-                    Label(
-                        vm.ui.isSecret ? "Закрыть секретный чат"
-                            : vm.ui.isGroup ? "Выйти из беседы" : "Удалить чат",
-                        systemImage: "trash"
-                    )
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .foregroundStyle(Eb.textMuted)
-                    .frame(width: 40, height: 40)
+        }
+        // Цель нажатия — вся связка, а не только аватар: в панели он мелкий.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !vm.ui.isGroup, let peerId = vm.ui.peerUserId {
+                userCard = UserCardSeed(
+                    userId: peerId, name: conversation.title, avatarUrl: conversation.avatarUrl
+                )
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        // Фон уходит под Dynamic Island: иначе над шапкой видна полоса другого цвета.
-        .background(Eb.surface200.ignoresSafeArea(edges: .top))
     }
 
     /// Пустая беседа и несостоявшаяся загрузка: раньше и то и другое выглядело как

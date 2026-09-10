@@ -3,12 +3,12 @@ import UIKit
 
 /// Возврат назад свайпом вправо из ЛЮБОЙ точки экрана — как в Telegram.
 ///
-/// Экраны приложения прячут системную панель навигации ради собственных шапок, а вместе
-/// с ней iOS отключает штатный жест «назад». Краевой жест оказался неинтуитивным:
-/// его надо знать и целиться в кромку. Поэтому жест берётся за дело при явно
-/// горизонтальном движении вправо где угодно, а вертикальную прокрутку не трогает.
-/// Свайп-ответ на сообщениях из-за этого сделан влево для всех — иначе жесты
-/// столкнулись бы на входящих.
+/// Штатный жест iOS живёт только у левой кромки, и его надо знать и целиться. Поэтому
+/// свой жест берётся за дело при явно горизонтальном движении вправо где угодно, а
+/// вертикальную прокрутку не трогает. Кромку он уступает системе: с родной панелью
+/// навигации там работает интерактивный возврат, и два жеста разом дёргали бы стек.
+/// На входящих пузырях чата свайп вправо — ответ на сообщение, туда жест не лезет
+/// (см. `shouldBegin`).
 private struct EdgeSwipeBack: UIViewRepresentable {
 
     let onBack: () -> Void
@@ -86,10 +86,11 @@ private struct EdgeSwipeBack: UIViewRepresentable {
             guard let pan = recognizer as? UIPanGestureRecognizer else { return true }
             let velocity = pan.velocity(in: pan.view)
             guard velocity.x > 0, velocity.x > abs(velocity.y) * 1.5 else { return false }
-            if let shouldBegin, let window = pan.view?.window {
-                return shouldBegin(pan.location(in: window))
-            }
-            return true
+            guard let window = pan.view?.window else { return true }
+            let point = pan.location(in: window)
+            // Полоса у кромки — территория системного интерактивного «назад».
+            if point.x < 24 { return false }
+            return shouldBegin?(point) ?? true
         }
 
         /// Живём рядом с прокруткой и жестами внутри, а не вместо них.

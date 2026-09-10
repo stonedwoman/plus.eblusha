@@ -2,6 +2,11 @@ import SwiftUI
 
 // Порт `ui/social/CreateGroupScreen.kt` + `feature/social/CreateGroupViewModel.kt`.
 // Данные — через общий ContactsRepository (listAccepted / createGroup), как в Kotlin.
+//
+// Оболочка экрана — родная iOS: системная панель с заголовком «Новая беседа», кнопка
+// «Создать» в панели, `List` с системным поиском и отметками выбора. ViewModel и все
+// вызовы (load / onNameChange / toggle / create) остались ровно теми же — менялась
+// только сборка вью.
 
 @MainActor
 final class CreateGroupViewModel: ObservableObject {
@@ -68,10 +73,15 @@ final class CreateGroupViewModel: ObservableObject {
 }
 
 struct CreateGroupView: View {
+    /// В сигнатуре остаётся ради совместимости с RootView. Свою кнопку «назад» не рисуем:
+    /// экран живёт в NavigationStack вкладки «Чаты», и штатная кнопка снимает его со стека.
     let onBack: () -> Void
     let onCreated: (ConversationRef) -> Void
 
     @StateObject private var vm: CreateGroupViewModel
+    /// Строка поиска по участникам. Фильтр чисто локальный — по уже загруженным
+    /// vm.ui.contacts, поэтому во ViewModel её не заводим.
+    @State private var query = ""
 
     init(onBack: @escaping () -> Void, onCreated: @escaping (ConversationRef) -> Void) {
         self.onBack = onBack
@@ -82,189 +92,211 @@ struct CreateGroupView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(Eb.border)
-
-            nameRow
-
-            Text("Участники")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(Eb.textMuted)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 16)
-                .padding(.top, 4)
-                .padding(.bottom, 8)
-
-            if vm.ui.loading {
-                Spacer()
-                ProgressView()
-                Spacer()
-            } else {
-                participantsGrid
-            }
-
-            bottomBar
+        List {
+            nameSection
+            errorSection
+            participantsSection
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
         .background(Eb.paper)
-        .toolbar(.hidden, for: .navigationBar)
-    }
-
-    // MARK: - Шапка (порт TopAppBar: назад + заголовок с подзаголовком)
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Button(action: onBack) {
-                Image(systemName: "chevron.backward")
-                    .font(.title3)
-                    .foregroundStyle(Eb.textPrimary)
-                    .frame(width: 40, height: 40)
+        .scrollDismissesKeyboard(.interactively)
+        .navigationTitle("Новая беседа")
+        .navigationBarTitleDisplayMode(.inline)
+        // Поле поиска всегда на виду: это экран-выборщик, прятать его до прокрутки нет смысла.
+        .searchable(
+            text: $query,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: Text("Имя участника")
+        )
+        .toolbar {
+            // Порт кнопки «Создать (N)» из bottomBar: то же условие блокировки, тот же вызов.
+            ToolbarItem(placement: .confirmationAction) {
+                Button {
+                    vm.create(onCreated: onCreated)
+                } label: {
+                    if vm.ui.creating {
+                        ProgressView()
+                    } else {
+                        Text("Создать")
+                    }
+                }
+                .disabled(vm.ui.selected.isEmpty || vm.ui.creating)
             }
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Создать групповой чат")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Eb.textPrimary)
-                Text("Добавьте участников и название")
-                    .font(.footnote)
-                    .foregroundStyle(Eb.textMuted)
-            }
-            Spacer()
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(Eb.surface200)
     }
 
-    // MARK: - Название группы
-
-    private var nameRow: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle().fill(Eb.brand)
-                Image(systemName: "person.3.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 56, height: 56)
-
-            // В эталоне label «Название группы» + placeholder «Например: Семья, Коллеги…»;
-            // в SwiftUI плавающего label нет — placeholder несёт обе роли.
-            TextField(
-                "", text: nameBinding,
-                prompt: Text("Название группы — например: Семья, Коллеги…")
-                    .foregroundStyle(Eb.textMuted)
-            )
-            .foregroundStyle(Eb.textPrimary)
-            .padding(12)
-            .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Eb.border))
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
+    // MARK: - Производные данные
 
     private var nameBinding: Binding<String> {
         Binding(get: { vm.ui.name }, set: { vm.onNameChange($0) })
     }
 
-    // MARK: - Сетка участников (порт LazyVerticalGrid 3 колонки)
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
-    private var participantsGrid: some View {
-        ScrollView {
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3),
-                spacing: 10
-            ) {
-                ForEach(vm.ui.contacts) { contact in
-                    ParticipantTile(
-                        contact: contact,
-                        selected: vm.ui.selected.contains(contact.user.id),
-                        onTap: { vm.toggle(contact.user.id) }
-                    )
+    /// Контакты, подходящие под строку поиска. Только по имени: логин — секрет входа.
+    private var filtered: [Contact] {
+        let q = trimmedQuery
+        guard !q.isEmpty else { return vm.ui.contacts }
+        return vm.ui.contacts.filter { $0.user.name.localizedCaseInsensitiveContains(q) }
+    }
+
+    /// Подпись под списком дублирует счётчик, который раньше жил в тексте кнопки «Создать (N)».
+    private var participantsFooter: String {
+        vm.ui.selected.isEmpty
+            ? "Отметьте хотя бы одного участника."
+            : "Выбрано: \(vm.ui.selected.count)"
+    }
+
+    // MARK: - Название группы
+
+    private var nameSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                // Аватар группы — тот же оранжевый круг с «тремя людьми», что и раньше.
+                ZStack {
+                    Circle().fill(Eb.brand)
+                    Image(systemName: "person.3.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.white)
                 }
+                .frame(width: 48, height: 48)
+
+                // В эталоне label «Название группы» + placeholder с примерами; плавающего
+                // label в SwiftUI нет — placeholder несёт имя поля, примеры ушли в footer.
+                TextField(
+                    "", text: nameBinding,
+                    prompt: Text("Название группы").foregroundStyle(Eb.textMuted)
+                )
+                .foregroundStyle(Eb.textPrimary)
+                .submitLabel(.done)
             }
-            .padding(.horizontal, 12)
             .padding(.vertical, 4)
+            .listRowBackground(Eb.surface100)
+            .listRowSeparatorTint(Eb.border)
+        } footer: {
+            Text("Например: Семья, Коллеги…")
         }
     }
 
-    // MARK: - Низ (порт bottomBar: ошибка + кнопка «Создать (N)»)
+    // MARK: - Ошибка (порт текста ошибки из bottomBar)
 
-    private var bottomBar: some View {
-        VStack(spacing: 8) {
-            if let error = vm.ui.error {
-                Text(error)
+    @ViewBuilder
+    private var errorSection: some View {
+        if let error = vm.ui.error {
+            Section {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
                     .foregroundStyle(Eb.error)
-                    .multilineTextAlignment(.center)
-            }
-            Button {
-                vm.create(onCreated: onCreated)
-            } label: {
-                Group {
-                    if vm.ui.creating {
-                        ProgressView().tint(.white)
-                    } else {
-                        Text(
-                            vm.ui.selected.isEmpty
-                                ? "Выберите участников"
-                                : "Создать (\(vm.ui.selected.count))"
-                        )
-                        .fontWeight(.semibold)
-                    }
+                    .listRowBackground(Eb.surface100)
+                    .listRowSeparatorTint(Eb.border)
+                // Ошибка при пустом списке — значит, не загрузились контакты; даём повторить,
+                // не уходя с экрана (раньше выхода не было — только «назад»).
+                if !vm.ui.loading && vm.ui.contacts.isEmpty {
+                    Button("Повторить") { vm.load() }
+                        .foregroundStyle(Eb.brand)
+                        .listRowBackground(Eb.surface100)
+                        .listRowSeparatorTint(Eb.border)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 38)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Eb.brand)
-            .disabled(vm.ui.selected.isEmpty || vm.ui.creating)
         }
-        .padding(16)
-        .background(Eb.surface200)
+    }
+
+    // MARK: - Участники (порт сетки ParticipantTile, теперь строками с отметками)
+
+    private var participantsSection: some View {
+        Section {
+            if vm.ui.loading {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                }
+                .padding(.vertical, 8)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } else if vm.ui.contacts.isEmpty {
+                // При ошибке загрузки список тоже пуст, но тогда объяснение уже дала
+                // секция ошибки — не путаем человека «нет контактов».
+                if vm.ui.error == nil {
+                    ContentUnavailableView(
+                        "Контактов пока нет",
+                        systemImage: "person.2",
+                        description: Text("Добавьте друзей во вкладке «Контакты» — их можно будет позвать в беседу.")
+                    )
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
+            } else if filtered.isEmpty {
+                ContentUnavailableView(
+                    "Никого не найдено",
+                    systemImage: "magnifyingglass",
+                    description: Text("Среди контактов нет никого с именем «\(trimmedQuery)».")
+                )
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } else {
+                ForEach(filtered) { contact in
+                    ParticipantRow(
+                        contact: contact,
+                        selected: vm.ui.selected.contains(contact.user.id),
+                        onTap: {
+                            withAnimation(.snappy) { vm.toggle(contact.user.id) }
+                        }
+                    )
+                    .listRowBackground(Eb.surface100)
+                    .listRowSeparatorTint(Eb.border)
+                }
+            }
+        } header: {
+            Text("Участники")
+        } footer: {
+            Text(participantsFooter)
+        }
     }
 }
 
-// MARK: - Плитка участника (порт ParticipantTile)
+// MARK: - Строка участника (порт ParticipantTile: аватар, имя, отметка выбора)
 
-private struct ParticipantTile: View {
+private struct ParticipantRow: View {
     let contact: Contact
     let selected: Bool
     let onTap: () -> Void
 
     var body: some View {
-        VStack(spacing: 6) {
+        HStack(spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
-                AvatarView(name: contact.user.name, avatarUrl: contact.user.avatarUrl, size: 48)
-                if selected {
-                    ZStack {
-                        Circle().fill(Eb.surface100)
-                        Circle().fill(Eb.brand).frame(width: 15, height: 15)
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 18, height: 18)
-                }
+                AvatarView(name: contact.user.name, avatarUrl: contact.user.avatarUrl, size: 40)
+                // Кольцо под цвет строки, чтобы значок не «висел» на подложке другого тона.
+                PresenceBadge(
+                    userId: contact.user.id,
+                    status: contact.user.online ? "ONLINE" : "OFFLINE",
+                    onlineFallback: contact.user.online,
+                    ringSize: 14,
+                    dotSize: 9,
+                    ringColor: Eb.surface100
+                )
             }
             Text(contact.user.name)
-                .font(.footnote.weight(.semibold))
+                .fontWeight(.semibold)
                 .foregroundStyle(Eb.textPrimary)
                 .lineLimit(1)
-                .multilineTextAlignment(.center)
+            Spacer(minLength: 8)
+            // Отметка выбора в духе системных выборщиков: галочка акцентом, пустой круг — нет.
+            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                .font(.title3)
+                .foregroundStyle(selected ? Eb.brand : Eb.textMuted)
+                .contentTransition(.symbolEffect(.replace))
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .padding(.horizontal, 6)
-        .background(Eb.surface200, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(
-                    selected ? Eb.brand : Eb.borderStrong,
-                    lineWidth: selected ? 2 : 1
-                )
-        )
+        .padding(.vertical, 2)
+        // Тап по всей строке, а не только по тексту: иначе пустое место между именем
+        // и отметкой не реагировало бы.
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityValue(Text(verbatim: selected ? "выбран" : "не выбран"))
     }
 }

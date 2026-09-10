@@ -2,8 +2,12 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers // UTType.preferredMIMEType для mime выбранного фото
 
-// Порт `ui/social/SettingsScreen.kt`: профиль (аватар, имя, био), селектор статуса,
-// «ID: EBLID», привязка нового устройства (QR + код), активные сеансы, выход.
+// Порт `ui/social/SettingsScreen.kt` в родной оболочке iOS: системная панель с крупным
+// заголовком «Профиль» и `Form` на секциях — аватар с «ID: EBLID», профиль (имя, о себе),
+// статус, источник (сервер), устройства (привязка + активные сеансы), выход. Своя шапка
+// ушла: заголовок и кнопку «назад» даёт NavigationStack. Логика та же — SettingsViewModel,
+// PhotosPicker для аватара, PairingDialog в sheet, подтверждение смены сервера через
+// confirmationDialog. Сюда же переехала пилюля версии из списка чатов.
 
 /// Для sheet(item:): пара короткоживущая, токен уникален на показ.
 extension DevicePairing: Identifiable {
@@ -23,6 +27,12 @@ private let presenceStatuses: [PresenceOption] = [
     PresenceOption(value: "OFFLINE", label: "Невидимка"),
 ]
 
+/// Цвет точки у выбранного статуса. «Не беспокоить» в общей шкале присутствия нет —
+/// красный, как у веба; остальное совпадает с индикатором на аватарах.
+private func manualStatusColor(_ status: String) -> Color {
+    status == "DND" ? Eb.error : presenceColor(status)
+}
+
 struct SettingsView: View {
     var onBack: (() -> Void)?
     let onLogout: () -> Void
@@ -41,22 +51,33 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(Eb.border)
-            if vm.ui.loading {
-                Spacer()
-                ProgressView()
-                Spacer()
-            } else {
-                content
+        screen
+            .navigationTitle("Профиль")
+            .navigationBarTitleDisplayMode(.large)
+            .sheet(item: pairingBinding) { pairing in
+                PairingDialog(pairing: pairing, onDismiss: vm.dismissPairing)
             }
+    }
+
+    /// Свайп «назад» из любой точки — только когда экран пущен в стек. У корня вкладки
+    /// возвращаться некуда, а глухой жест лишь перехватывал бы горизонтальные движения.
+    @ViewBuilder
+    private var screen: some View {
+        if let onBack {
+            content.edgeSwipeBack(onBack)
+        } else {
+            content
         }
-        .background(Eb.paper)
-        .toolbar(.hidden, for: .navigationBar)
-        .edgeSwipeBack { onBack?() }
-        .sheet(item: pairingBinding) { pairing in
-            PairingDialog(pairing: pairing, onDismiss: vm.dismissPairing)
+    }
+
+    private var content: some View {
+        ZStack {
+            Eb.paper.ignoresSafeArea()
+            if vm.ui.loading {
+                ProgressView()
+            } else {
+                form
+            }
         }
     }
 
@@ -68,219 +89,23 @@ struct SettingsView: View {
         )
     }
 
-    // MARK: - Шапка (порт TopAppBar: назад / «Профиль» / выйти)
+    // MARK: - Форма
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            if let onBack {
-                Button(action: onBack) {
-                    Image(systemName: "chevron.backward")
-                        .font(.title3)
-                        .foregroundStyle(Eb.textPrimary)
-                        .frame(width: 40, height: 40)
-                }
-            }
-            Text("Профиль")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(Eb.textPrimary)
-            Spacer()
-            Button(action: onLogout) {
-                Image(systemName: "rectangle.portrait.and.arrow.right")
-                    .foregroundStyle(Eb.error)
-                    .frame(width: 40, height: 40)
-            }
+    private var form: some View {
+        Form {
+            avatarSection
+            profileSection
+            statusSection
+            serverSection
+            devicesSection
+            sessionsSection
+            logoutSection
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(Eb.surface200)
-    }
-
-    // MARK: - Содержимое
-
-    private var content: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                avatarBlock
-                Text("Нажмите на фото, чтобы изменить")
-                    .font(.caption2)
-                    .foregroundStyle(Eb.textMuted)
-                    .padding(.top, 6)
-                if let eblid = vm.ui.profile?.eblid {
-                    Text("ID: \(eblid)")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Eb.brand)
-                        .padding(.top, 4)
-                }
-
-                statusRow
-                    .padding(.top, 14)
-
-                TextField(
-                    "", text: displayNameBinding,
-                    prompt: Text("Отображаемое имя").foregroundStyle(Eb.textMuted)
-                )
-                .foregroundStyle(Eb.textPrimary)
-                .padding(12)
-                .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Eb.border))
-                .padding(.top, 20)
-
-                TextField(
-                    "", text: bioBinding,
-                    prompt: Text("О себе").foregroundStyle(Eb.textMuted),
-                    axis: .vertical
-                )
-                .lineLimit(3)
-                .foregroundStyle(Eb.textPrimary)
-                .padding(12)
-                .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Eb.border))
-                .padding(.top, 12)
-
-                Button(action: vm.save) {
-                    Text(vm.ui.saved ? "Сохранено ✓" : "Сохранить")
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Eb.brand)
-                .disabled(vm.ui.saving)
-                .padding(.top, 16)
-
-                if let error = vm.ui.error {
-                    Text(error)
-                        .foregroundStyle(Eb.error)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 8)
-                }
-
-                Button(action: vm.startPairing) {
-                    Text(vm.ui.pairingLoading ? "Создаём код…" : "Привязать новое устройство")
-                        .fontWeight(.medium)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.bordered)
-                .tint(Eb.brand)
-                .disabled(vm.ui.pairingLoading)
-                .padding(.top, 28)
-
-                serverSection
-                    .padding(.top, 28)
-
-                sessionsSection
-                    .padding(.top, 24)
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 16)
-            .padding(.bottom, 32)
-        }
+        .scrollContentBackground(.hidden)
+        .background(Eb.paper)
         .scrollDismissesKeyboard(.interactively)
-    }
-
-    /// Аватар — он же пикер новой фотографии (порт pickAvatar.launch("image/*")).
-    private var avatarBlock: some View {
-        PhotosPicker(selection: $avatarItem, matching: .images) {
-            ZStack {
-                AvatarView(
-                    name: vm.ui.profile?.name ?? "?",
-                    avatarUrl: vm.ui.profile?.avatarUrl,
-                    size: 110
-                )
-                if vm.ui.saving { ProgressView() }
-            }
-        }
-        .buttonStyle(.plain)
-        .onChange(of: avatarItem) { _, item in
-            guard let item else { return }
-            avatarItem = nil
-            Task {
-                // Порт readImageBytes: байты + mime выбранной картинки; тип неизвестен —
-                // считаем JPEG (как `resolver.getType(uri) ?: "image/jpeg"` в эталоне).
-                guard let bytes = try? await item.loadTransferable(type: Data.self) else { return }
-                let mime = item.supportedContentTypes
-                    .compactMap(\.preferredMIMEType)
-                    .first { $0.hasPrefix("image/") } ?? "image/jpeg"
-                vm.uploadAvatar(bytes: bytes, mime: mime)
-            }
-        }
-    }
-
-    private var statusRow: some View {
-        let current = vm.ui.profile?.status?.uppercased() ?? "ONLINE"
-        return HStack(spacing: 6) {
-            ForEach(presenceStatuses, id: \.value) { status in
-                let selected = current == status.value
-                Text(status.label)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .foregroundStyle(selected ? .white : Eb.textPrimary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(
-                        selected ? Eb.brand : Eb.surface200,
-                        in: RoundedRectangle(cornerRadius: 10)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(selected ? Eb.brand : Eb.borderStrong)
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture { vm.setStatus(status.value) }
-            }
-        }
-    }
-
-    private var displayNameBinding: Binding<String> {
-        Binding(get: { vm.ui.displayName }, set: { vm.onDisplayNameChange($0) })
-    }
-
-    private var bioBinding: Binding<String> {
-        Binding(get: { vm.ui.bio }, set: { vm.onBioChange($0) })
-    }
-
-    // MARK: - Источник (основной сервер или зеркало)
-
-    /// Выбор сервера прямо в приложении: одна сборка ходит и на eblusha.org, и на
-    /// ru.eblusha.org. Смена — только через выход: токены, идентификатор устройства и
-    /// ключи секретных чатов принадлежат конкретному серверу.
-    private var serverSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Источник")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Eb.textPrimary)
-
-            ForEach(AppConfig.Server.allCases) { option in
-                Button {
-                    if option != AppConfig.server { pendingServer = option }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: option == AppConfig.server
-                            ? "largecircle.fill.circle" : "circle")
-                            .foregroundStyle(option == AppConfig.server ? Eb.brand : Eb.textMuted)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(option.title)
-                                .foregroundStyle(Eb.textPrimary)
-                            Text(option.subtitle)
-                                .font(.caption)
-                                .foregroundStyle(Eb.textMuted)
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 12)
-                    .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Eb.border))
-                }
-                .buttonStyle(.plain)
-            }
-
-            Text("Смена источника выполняет выход из аккаунта: учётные записи на серверах разные.")
-                .font(.caption2)
-                .foregroundStyle(Eb.textMuted)
-        }
+        // Смена источника — смена мира (токены, устройство, ключи секреток), поэтому
+        // только через явное подтверждение с выходом из аккаунта.
         .confirmationDialog(
             "Переключиться на \(pendingServer?.title ?? "")?",
             isPresented: Binding(get: { pendingServer != nil }, set: { if !$0 { pendingServer = nil } }),
@@ -298,38 +123,229 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Активные сеансы (порт ActiveSessionsSection)
+    // MARK: - Аватар и ID
 
-    private var sessionsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Активные сеансы")
-                    .font(.headline)
-                    .foregroundStyle(Eb.textPrimary)
-                Spacer()
-                if vm.ui.sessions.contains(where: { !$0.isCurrent }) {
-                    Button(action: vm.revokeOtherSessions) {
-                        Text("Отключить все")
-                            .font(.subheadline)
-                            .foregroundStyle(Eb.error)
+    private var avatarSection: some View {
+        Section {
+            VStack(spacing: 6) {
+                avatarBlock
+                Text("Нажмите на фото, чтобы изменить")
+                    .font(.caption2)
+                    .foregroundStyle(Eb.textMuted)
+                if let eblid = vm.ui.profile?.eblid {
+                    Text("ID: \(eblid)")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(Eb.brand)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            // Аватар живёт прямо на фоне, без карточки — как шапка профиля в Настройках iOS.
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    /// Аватар — он же пикер новой фотографии (порт pickAvatar.launch("image/*")).
+    private var avatarBlock: some View {
+        PhotosPicker(selection: $avatarItem, matching: .images) {
+            ZStack {
+                AvatarView(
+                    name: vm.ui.profile?.name ?? "?",
+                    avatarUrl: vm.ui.profile?.avatarUrl,
+                    size: 110
+                )
+                if vm.ui.saving { ProgressView() }
+            }
+        }
+        // .plain — иначе List растянул бы зону нажатия на всю строку.
+        .buttonStyle(.plain)
+        .onChange(of: avatarItem) { _, item in
+            guard let item else { return }
+            avatarItem = nil
+            Task {
+                // Порт readImageBytes: байты + mime выбранной картинки; тип неизвестен —
+                // считаем JPEG (как `resolver.getType(uri) ?: "image/jpeg"` в эталоне).
+                guard let bytes = try? await item.loadTransferable(type: Data.self) else { return }
+                let mime = item.supportedContentTypes
+                    .compactMap(\.preferredMIMEType)
+                    .first { $0.hasPrefix("image/") } ?? "image/jpeg"
+                vm.uploadAvatar(bytes: bytes, mime: mime)
+            }
+        }
+    }
+
+    // MARK: - Профиль (имя, о себе, сохранить)
+
+    private var profileSection: some View {
+        Section {
+            TextField(
+                "", text: displayNameBinding,
+                prompt: Text("Отображаемое имя").foregroundStyle(Eb.textMuted)
+            )
+            .foregroundStyle(Eb.textPrimary)
+
+            TextField(
+                "", text: bioBinding,
+                prompt: Text("О себе").foregroundStyle(Eb.textMuted),
+                axis: .vertical
+            )
+            .lineLimit(3)
+            .foregroundStyle(Eb.textPrimary)
+
+            Button(action: vm.save) {
+                Text(vm.ui.saved ? "Сохранено ✓" : "Сохранить")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(vm.ui.saving)
+        } header: {
+            Text("Профиль")
+        } footer: {
+            // ui.error общий на все действия экрана (загрузка, сохранение, статус,
+            // привязка) — показываем под профилем, где его чаще всего и ждут.
+            if let error = vm.ui.error {
+                Text(error)
+                    .foregroundStyle(Eb.error)
+            }
+        }
+        .ebRow()
+    }
+
+    private var displayNameBinding: Binding<String> {
+        Binding(get: { vm.ui.displayName }, set: { vm.onDisplayNameChange($0) })
+    }
+
+    private var bioBinding: Binding<String> {
+        Binding(get: { vm.ui.bio }, set: { vm.onBioChange($0) })
+    }
+
+    // MARK: - Статус
+
+    private var statusSection: some View {
+        Section("Статус") {
+            Picker(selection: statusBinding) {
+                ForEach(presenceStatuses, id: \.value) { option in
+                    Text(option.label).tag(option.value)
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(manualStatusColor(currentStatus))
+                        .frame(width: 10, height: 10)
+                    Text("Показывать меня")
+                        .foregroundStyle(Eb.textPrimary)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+        .ebRow()
+    }
+
+    /// Текущий ручной статус для пикера. Неизвестное значение сервера сводим к «В сети»,
+    /// иначе Picker остался бы без выбранного пункта и ругался в консоль.
+    private var currentStatus: String {
+        let raw = vm.ui.profile?.status?.uppercased() ?? "ONLINE"
+        return presenceStatuses.contains { $0.value == raw } ? raw : "ONLINE"
+    }
+
+    /// Выбор применяется сразу, без «Сохранить» (порт setStatus).
+    private var statusBinding: Binding<String> {
+        Binding(get: { currentStatus }, set: { vm.setStatus($0) })
+    }
+
+    // MARK: - Источник (основной сервер или зеркало)
+
+    /// Выбор сервера прямо в приложении: одна сборка ходит и на eblusha.org, и на
+    /// ru.eblusha.org. Смена — только через выход: токены, идентификатор устройства и
+    /// ключи секретных чатов принадлежат конкретному серверу.
+    private var serverSection: some View {
+        Section {
+            ForEach(AppConfig.Server.allCases) { option in
+                Button {
+                    if option != AppConfig.server { pendingServer = option }
+                } label: {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(option.title)
+                                .foregroundStyle(Eb.textPrimary)
+                            Text(option.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(Eb.textMuted)
+                        }
+                        Spacer()
+                        if option == AppConfig.server {
+                            Image(systemName: "checkmark")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(Eb.brand)
+                        }
                     }
                 }
             }
+        } header: {
+            Text("Источник")
+        } footer: {
+            Text("Смена источника выполняет выход из аккаунта: учётные записи на серверах разные.")
+        }
+        .ebRow()
+    }
+
+    // MARK: - Устройства (привязка нового)
+
+    private var devicesSection: some View {
+        Section("Устройства") {
+            Button(action: vm.startPairing) {
+                Label {
+                    Text(vm.ui.pairingLoading ? "Создаём код…" : "Привязать новое устройство")
+                } icon: {
+                    Image(systemName: "qrcode")
+                }
+            }
+            .disabled(vm.ui.pairingLoading)
+        }
+        .ebRow()
+    }
+
+    // MARK: - Активные сеансы (порт ActiveSessionsSection)
+
+    private var sessionsSection: some View {
+        Section("Активные сеансы") {
             if vm.ui.sessionsLoading && vm.ui.sessions.isEmpty {
-                ProgressView()
-                    .controlSize(.small)
+                HStack {
+                    Spacer()
+                    ProgressView()
+                        .controlSize(.small)
+                    Spacer()
+                }
             }
             ForEach(vm.ui.sessions) { session in
                 sessionRow(session)
+                    // Свайп дублирует крестик: на iOS так отключают строку привычнее.
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if !session.isCurrent {
+                            Button(role: .destructive) {
+                                vm.revokeSession(session)
+                            } label: {
+                                Label("Отключить", systemImage: "xmark.circle")
+                            }
+                        }
+                    }
+            }
+            if vm.ui.sessions.contains(where: { !$0.isCurrent }) {
+                Button(role: .destructive, action: vm.revokeOtherSessions) {
+                    Text("Отключить все")
+                        .frame(maxWidth: .infinity)
+                }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .ebRow()
     }
 
     private func sessionRow(_ session: DeviceSession) -> some View {
         HStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 10).fill(Eb.surface100)
+                RoundedRectangle(cornerRadius: 10).fill(Eb.surface200)
                 Image(systemName: "desktopcomputer")
                     .font(.system(size: 16))
                     .foregroundStyle(Eb.textMuted)
@@ -386,11 +402,53 @@ struct SettingsView: View {
                         .foregroundStyle(Eb.error)
                         .frame(width: 32, height: 32)
                 }
+                // .borderless — иначе List сделал бы кнопкой всю строку сеанса.
+                .buttonStyle(.borderless)
             }
         }
-        .padding(12)
-        .background(Eb.surface200, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Eb.borderStrong))
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Выход и версия
+
+    private var logoutSection: some View {
+        Section {
+            Button(role: .destructive, action: onLogout) {
+                Text("Выйти из аккаунта")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+            }
+        } footer: {
+            // Пилюля версии — бывшая соседка строки профиля в списке чатов.
+            Text(versionLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Eb.textMuted)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Eb.surface300, in: Capsule())
+                .overlay(Capsule().strokeBorder(Eb.borderStrong))
+                .frame(maxWidth: .infinity)
+                .padding(.top, 12)
+        }
+        .ebRow()
+    }
+
+    /// «v 1.0 · метка». Метка сборки рядом с версией: у отладочной — хеш коммита, у
+    /// TestFlight — номер сборки. Иначе на телефоне их не отличить, обе показывают «1.0».
+    private var versionLabel: String {
+        let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?"
+        let buildTag = (Bundle.main.infoDictionary?["EblushaBuildTag"] as? String)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        return buildTag.isEmpty ? "v \(version)" : "v \(version) · \(buildTag)"
+    }
+}
+
+private extension View {
+    /// Строки секций на фирменной поверхности `Eb.surface100` с разделителями `Eb.border`:
+    /// форма остаётся системной, а цвета — наши, а не серые по умолчанию.
+    func ebRow() -> some View {
+        listRowBackground(Eb.surface100)
+            .listRowSeparatorTint(Eb.border)
     }
 }
 
@@ -464,5 +522,6 @@ private struct PairingDialog: View {
         .frame(maxWidth: .infinity)
         .background(Eb.surface200)
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
