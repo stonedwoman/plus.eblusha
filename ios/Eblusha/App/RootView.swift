@@ -157,19 +157,17 @@ private struct AuthFlowView: View {
     }
 }
 
-/// Корень залогиненного приложения: три вкладки, у каждой свой стек навигации.
+/// Корень залогиненного приложения: один стек навигации над списком чатов.
 ///
-/// Раньше был один стек со своими шапками на каждом экране и плитками «Беседа/Контакты»
-/// над списком. Теперь — родная структура iOS: вкладки внизу, системные панели с крупными
-/// заголовками и поиском, штатная кнопка «назад». Идентичность остаётся в палитре
-/// (акцент `Eb.brand`, тёмные поверхности), пузырях и логотипе, а не в самодельных шапках.
+/// Список чатов — наш собственный экран: брендовая шапка сверху и панель плиток
+/// «Беседа/Контакты» со строкой профиля снизу. Системные вкладки и карандаш в панели
+/// пробовали и убрали — стеклянные «пузыри» iOS 26 не вязались с интерфейсом. Остальные
+/// экраны пушатся в этот стек и живут с родными панелями навигации и штатной кнопкой «назад».
 private struct HomeNavView: View {
     let onLogout: () -> Void
 
     @StateObject private var listVM: ChatListViewModel
-    @State private var tab: HomeTab = .chats
-    /// Стек вкладки «Чаты»: беседа и создание группы живут здесь.
-    @State private var chatPath: [ChatRoute] = []
+    @State private var path: [HomeRoute] = []
 
     init(container: AppContainer, onLogout: @escaping () -> Void) {
         self.onLogout = onLogout
@@ -182,22 +180,31 @@ private struct HomeNavView: View {
     }
 
     var body: some View {
-        TabView(selection: $tab) {
-            Tab("Чаты", systemImage: "bubble.left.and.bubble.right.fill", value: HomeTab.chats) {
-                chatsTab
-            }
-            // Сумма непрочитанных на бейдже вкладки; ноль бейдж прячет сам.
-            .badge(listVM.ui.conversations.reduce(0) { $0 + $1.unreadCount })
-
-            Tab("Контакты", systemImage: "person.2.fill", value: HomeTab.contacts) {
-                NavigationStack {
-                    ContactsView(onBack: nil, onOpenConversation: open(ref:))
-                }
-            }
-
-            Tab("Профиль", systemImage: "person.crop.circle.fill", value: HomeTab.profile) {
-                NavigationStack {
-                    SettingsView(onBack: nil, onLogout: onLogout)
+        NavigationStack(path: $path) {
+            ChatListView(
+                vm: listVM,
+                onOpenChat: { path = [.conversation($0)] },
+                onOpenContacts: { path.append(.contacts) },
+                onOpenSettings: { path.append(.settings) },
+                onNewGroup: { path.append(.newGroup) }
+            )
+            .navigationDestination(for: HomeRoute.self) { route in
+                switch route {
+                case .conversation(let conversation):
+                    ChatView(conversation: conversation) { path.removeAll() }
+                case .newGroup:
+                    CreateGroupView(
+                        onBack: { path.removeAll() },
+                        onCreated: { ref in
+                            // Открыть свежесозданную группу сразу после создания.
+                            listVM.refresh()
+                            open(ref: ref)
+                        }
+                    )
+                case .contacts:
+                    ContactsView(onBack: { path.removeAll() }, onOpenConversation: open(ref:))
+                case .settings:
+                    SettingsView(onBack: { path.removeAll() }, onLogout: onLogout)
                 }
             }
         }
@@ -210,53 +217,21 @@ private struct HomeNavView: View {
         }
     }
 
-    private var chatsTab: some View {
-        NavigationStack(path: $chatPath) {
-            ChatListView(
-                vm: listVM,
-                onOpenChat: { chatPath = [.conversation($0)] },
-                onNewGroup: { chatPath.append(.newGroup) }
-            )
-            .navigationDestination(for: ChatRoute.self) { route in
-                Group {
-                    switch route {
-                    case .conversation(let conversation):
-                        ChatView(conversation: conversation) { chatPath.removeAll() }
-                    case .newGroup:
-                        CreateGroupView(
-                            onBack: { chatPath.removeAll() },
-                            onCreated: { ref in
-                                // Открыть свежесозданную группу сразу после создания.
-                                listVM.refresh()
-                                open(ref: ref)
-                            }
-                        )
-                    }
-                }
-                // Внутри беседы панель вкладок мешает композеру — как в Сообщениях и Telegram.
-                .toolbar(.hidden, for: .tabBar)
-            }
-        }
-    }
-
-    /// Открыть беседу по ссылке из любой вкладки: переключаемся на «Чаты» и кладём её в стек.
+    /// Открыть беседу поверх списка, сбросив всё, что лежало в стеке (контакты, группа).
     private func open(ref: ConversationRef) {
         Task { @MainActor in
             let conversation = await AppContainer.shared.chatRepository.resolveRef(ref)
-            tab = .chats
-            chatPath = [.conversation(conversation)]
+            path = [.conversation(conversation)]
         }
     }
 }
 
-private enum HomeTab: Hashable {
-    case chats, contacts, profile
-}
-
-/// Маршруты стека вкладки «Чаты».
-enum ChatRoute: Hashable {
+/// Маршруты стека над списком чатов.
+enum HomeRoute: Hashable {
     case conversation(Conversation)
     case newGroup
+    case contacts
+    case settings
 }
 
 #Preview {

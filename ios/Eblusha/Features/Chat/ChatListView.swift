@@ -1,17 +1,22 @@
 import SwiftUI
 
-// Порт `ui/chat/ChatListScreen.kt` в родной оболочке iOS: системная панель с крупным
-// заголовком «Чаты», `.searchable`, `List` со свайпами и pull-to-refresh. Свои шапка,
-// плитки «Беседа/Контакты» и строка профиля ушли — их заменили вкладки (см. HomeNavView),
-// а пилюля версии переехала в SettingsView. Обновления в диалоге не портированы
-// (iOS обновляется через TestFlight/App Store).
+// Порт `ui/chat/ChatListScreen.kt`: наша брендовая шапка сверху, `List` со свайпами и
+// pull-to-refresh посередине, внизу — панель плиток «Беседа/Контакты» и строка профиля
+// с пилюлей версии. Системные вкладки и карандаш в панели навигации пробовали и убрали:
+// стеклянные «пузыри» iOS 26 не вязались с интерфейсом. Обновления в диалоге не
+// портированы (iOS обновляется через TestFlight/App Store).
 
+private let offlineDot = Color(hex: 0x6B7280)
+private let groupGreen = Color(hex: 0x22C55E)
+private let contactsPurple = Color(hex: 0x8B5CF6)
 /// Веб-зелёный секретных чатов (#22c55e) — замок и кант.
 private let secretGreen = Color(hex: 0x22C55E)
 
 struct ChatListView: View {
     @ObservedObject var vm: ChatListViewModel
     let onOpenChat: (Conversation) -> Void
+    let onOpenContacts: () -> Void
+    let onOpenSettings: () -> Void
     let onNewGroup: () -> Void
 
     @State private var confirmDelete: Conversation?
@@ -19,40 +24,40 @@ struct ChatListView: View {
     /// родитель, см. UserCardSheet). Из списка сейчас не вызывается — тап по аватару, как и по
     /// строке, открывает чат, а карточка доступна из шапки самого чата; точка входа сохранена.
     @State private var userCard: UserCardSeed?
-    /// Строка системного поиска. Фильтр локальный: по названию и последнему сообщению.
-    @State private var query = ""
-
     var body: some View {
-        ZStack {
-            Eb.paper.ignoresSafeArea()
-            if vm.ui.loading {
-                ProgressView()
-            } else if let error = vm.ui.error, vm.ui.conversations.isEmpty {
-                centeredMessage(error, retry: vm.refresh)
-            } else if vm.ui.conversations.isEmpty {
-                ContentUnavailableView(
-                    "Чатов пока нет",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Напишите кому-нибудь из контактов или соберите беседу кнопкой справа сверху.")
-                )
-            } else if filtered.isEmpty {
-                // Список есть, но под запрос ничего не подошло — системная заглушка поиска.
-                ContentUnavailableView.search(text: query)
-            } else {
-                conversationList
+        VStack(spacing: 0) {
+            // Брендовая шапка вместо системной панели — как панель списка веба.
+            VStack(spacing: 0) {
+                AnimatedWordmark()
+                Text("Здесь мы общаемся")
+                    .font(.caption)
+                    .foregroundStyle(Eb.textMuted)
             }
-        }
-        .navigationTitle("Чаты")
-        .navigationBarTitleDisplayMode(.large)
-        .searchable(text: $query, prompt: "Поиск по чатам")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(action: onNewGroup) {
-                    Image(systemName: "square.and.pencil")
+            .padding(.top, 10)
+            .padding(.bottom, 12)
+
+            ZStack {
+                if vm.ui.loading {
+                    ProgressView()
+                } else if let error = vm.ui.error, vm.ui.conversations.isEmpty {
+                    centeredMessage(error, retry: vm.refresh)
+                } else if vm.ui.conversations.isEmpty {
+                    ContentUnavailableView(
+                        "Чатов пока нет",
+                        systemImage: "bubble.left.and.bubble.right",
+                        description: Text("Напишите кому-нибудь из контактов или соберите беседу плиткой внизу.")
+                    )
+                } else {
+                    conversationList
                 }
-                .accessibilityLabel("Новая беседа")
             }
+            .frame(maxHeight: .infinity)
+
+            bottomPanel
         }
+        .background(Eb.paper.ignoresSafeArea())
+        // Своя шапка и своя нижняя панель — системную панель навигации здесь не показываем.
+        .toolbar(.hidden, for: .navigationBar)
         .alert(item: $confirmDelete) { target in
             deleteAlert(target)
         }
@@ -72,16 +77,6 @@ struct ChatListView: View {
 
     // MARK: - Список
 
-    /// Беседы под текущий запрос поиска; пустой запрос — весь список как есть.
-    private var filtered: [Conversation] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return vm.ui.conversations }
-        return vm.ui.conversations.filter { c in
-            c.title.localizedCaseInsensitiveContains(q)
-                || (c.lastMessageText?.localizedCaseInsensitiveContains(q) ?? false)
-        }
-    }
-
     private var conversationList: some View {
         // Секретка рисуется отступной строкой «СЕКРЕТНЫЙ ЧАТ» под облачной 1:1 того же
         // собеседника (репозиторий уже упорядочил) — имя пишем только сироте без родителя.
@@ -91,7 +86,7 @@ struct ChatListView: View {
                 .compactMap { $0.otherUserId }
         )
         return List {
-            ForEach(filtered) { conversation in
+            ForEach(vm.ui.conversations) { conversation in
                 let hasCloudSibling = conversation.isSecretV2 &&
                     conversation.otherUserId.map { cloudPeerIds.contains($0) } == true
                 // У секреток нет квитанций — «Прочитано» только облачным с непрочитанными.
@@ -207,6 +202,99 @@ struct ChatListView: View {
         )
     }
 
+    // MARK: - Нижняя панель: плитки и профиль
+
+    /// Плитки «Беседа»/«Контакты» и строка профиля — наш вариант «вкладок», как в панели
+    /// списка веба. Строка профиля целиком ведёт в настройки; справа — версия и метка сборки
+    /// (у отладочной — хеш коммита), иначе на телефоне сборки не отличить.
+    private var bottomPanel: some View {
+        let me = AppContainer.shared.sessionStore.currentUser()
+        let myName = me?.displayName?.isEmpty == false ? me!.displayName! : (me?.username ?? "Профиль")
+        let (statusLabel, statusColor) = selfPresenceLabel(vm.ui.selfPresence)
+        let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?"
+        let buildTag = (Bundle.main.infoDictionary?["EblushaBuildTag"] as? String)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+
+        return VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                actionTile(
+                    iconBackground: groupGreen, icon: "plus",
+                    title: "Беседа", subtitle: "Групповой чат", action: onNewGroup
+                )
+                actionTile(
+                    iconBackground: contactsPurple, icon: "person.2.fill",
+                    title: "Контакты", subtitle: "Список контактов", action: onOpenContacts
+                )
+            }
+            HStack(spacing: 10) {
+                ZStack(alignment: .bottomTrailing) {
+                    AvatarView(name: myName, avatarUrl: me?.avatarUrl, size: 40)
+                    // Своё присутствие: та же иконка устройства, что видят собеседники.
+                    PresenceBadge(
+                        userId: me?.id, status: vm.ui.selfPresence,
+                        ringSize: 14, dotSize: 9
+                    )
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(myName)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Eb.textPrimary)
+                        .lineLimit(1)
+                    Text(statusLabel)
+                        .font(.footnote)
+                        .foregroundStyle(statusColor)
+                }
+                Spacer()
+                Text(buildTag.isEmpty ? "v \(version)" : "v \(version) · \(buildTag)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Eb.textMuted)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Eb.surface300, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Eb.borderStrong))
+            }
+            .padding(10)
+            .background(Eb.surface200, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Eb.borderStrong))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onOpenSettings)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private func actionTile(
+        iconBackground: Color, icon: String, title: String, subtitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle().fill(iconBackground)
+                    Image(systemName: icon)
+                        .foregroundStyle(.white)
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .frame(width: 40, height: 40)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Eb.textPrimary)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(Eb.textMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .background(Eb.surface200, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Eb.borderStrong))
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: - Ошибка / повтор
 
     private func centeredMessage(_ text: String, retry: (() -> Void)?) -> some View {
@@ -221,6 +309,48 @@ struct ChatListView: View {
             }
         }
         .padding(24)
+    }
+}
+
+/// Своё присутствие → (метка, цвет) для своей строки, зеркало веб-точки статуса.
+private func selfPresenceLabel(_ status: String) -> (String, Color) {
+    switch status.uppercased() {
+    case "ONLINE": return ("в сети", Eb.online)
+    case "BACKGROUND": return ("в фоне", Eb.presenceBg)
+    case "AWAY": return ("не активен", Eb.away)
+    case "IN_CALL": return ("в звонке", Eb.online)
+    default: return ("не в сети", offlineDot)
+    }
+}
+
+/// Логотип с периодическим переворотом «Б» — зеркало веб-`.logo .b { animation: flipY 5s }`.
+struct AnimatedWordmark: View {
+    @State private var flip = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text("Е").foregroundStyle(Eb.logoCream)
+            Text("Б")
+                .foregroundStyle(Eb.logoB)
+                .rotation3DEffect(
+                    .degrees(flip ? 360 : 0),
+                    axis: (x: 0, y: 1, z: 0),
+                    perspective: 0.5
+                )
+            Text("луша").foregroundStyle(Eb.logoCream)
+        }
+        .font(.system(size: 34, weight: .heavy))
+        .task {
+            // Цикл 5 с: 85% покоя, затем полный оборот (как keyframes в оригинале).
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4.25))
+                withAnimation(.easeInOut(duration: 0.75)) { flip = true }
+                try? await Task.sleep(for: .seconds(0.75))
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) { flip = false }
+            }
+        }
     }
 }
 
