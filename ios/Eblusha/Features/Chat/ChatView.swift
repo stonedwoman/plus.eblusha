@@ -122,13 +122,11 @@ struct ChatView: View {
             }
             Divider().overlay(Eb.border)
 
-            if vm.ui.loading {
-                Spacer()
-                ProgressView()
-                Spacer()
-            } else {
-                MessageListView(
+            // Лента смонтирована всегда: пересоздание её на смене loading давало кадр
+            // со спиннером и кадр с пустой лентой перед готовым экраном.
+            MessageListView(
                     vm: vm,
+                    isLoading: vm.ui.loading,
                     pinToken: pinToken,
                     sendToken: sendToken,
                     onForward: { forwardSheet = ForwardRequest(messages: [$0]) },
@@ -168,7 +166,11 @@ struct ChatView: View {
                         )
                     }
                     .overlay { emptyState }
-            }
+                    .overlay {
+                        if vm.ui.loading, vm.ui.messages.isEmpty {
+                            ProgressView()
+                        }
+                    }
 
             if let error = vm.ui.error {
                 HStack(spacing: 8) {

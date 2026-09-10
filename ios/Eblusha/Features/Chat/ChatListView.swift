@@ -321,7 +321,9 @@ private struct ConversationTile: View {
                         )
                     }
                 }
-                .onTapGesture { (onOpenUser ?? onTap)() }
+                // Тап по аватару открывает чат, как и тап по строке: карточка профиля
+                // отсюда не нужна — она есть в шапке самого чата.
+                .onTapGesture(perform: onTap)
             }
 
             VStack(alignment: .leading, spacing: 2) {

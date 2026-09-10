@@ -21,6 +21,8 @@ import UIKit
 struct MessageListView: View {
 
     @ObservedObject var vm: ChatViewModel
+    /// История ещё грузится: пустой снимок в это время — не «пустой чат», показывать нечего.
+    let isLoading: Bool
     let pinToken: Int
     let sendToken: Int
     let onForward: (Message) -> Void
@@ -39,6 +41,7 @@ struct MessageListView: View {
     var body: some View {
         MessageListRepresentable(
             rows: rows,
+            isLoading: isLoading,
             proxy: proxy,
             actions: MessageRowActions(
                 onQuoteTap: { jumpToQuote($0) },
@@ -248,6 +251,7 @@ final class MessageListProxy: ObservableObject {
 private struct MessageListRepresentable: UIViewControllerRepresentable {
 
     let rows: [MessageRowModel]
+    let isLoading: Bool
     let proxy: MessageListProxy
     let actions: MessageRowActions
     let onReachedTop: () -> Void
@@ -269,6 +273,7 @@ private struct MessageListRepresentable: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: MessageListController, context: Context) {
+        controller.isLoading = isLoading
         controller.actions = actions
         controller.onReachedTop = onReachedTop
         controller.onPrependHandled = onPrependHandled
@@ -282,6 +287,7 @@ final class MessageListController: UIViewController {
 
     var actions: MessageRowActions?
     var proxy: MessageListProxy?
+    var isLoading = true
     var onReachedTop: (() -> Void)?
     var onPrependHandled: (() -> Void)?
 
@@ -390,8 +396,19 @@ final class MessageListController: UIViewController {
         rowsById = Dictionary(uniqueKeysWithValues: newRows.map { ($0.id, $0) })
         // Состояния свайпа держим только для живых строк.
         swipeStates = swipeStates.filter { rowsById[$0.key] != nil }
-        // Пустая переписка: показывать нечего, но и прятать ленту незачем.
-        if newRows.isEmpty { reveal() }
+        // Действительно пустая переписка (загрузка кончилась) — показывать нечего, но и
+        // прятать ленту незачем. Пока история грузится, пустой снимок — не повод
+        // показываться: иначе первая страница приезжала бы в уже видимую ленту, и был
+        // виден кадр «сверху» и рывок к низу.
+        if newRows.isEmpty {
+            // Снимок всё равно применяем: иначе после удаления последних сообщений в
+            // коллекции остались бы старые ячейки.
+            var empty = NSDiffableDataSourceSnapshot<Int, String>()
+            empty.appendSections([0])
+            dataSource.apply(empty, animatingDifferences: false)
+            if !isLoading { reveal() }
+            return
+        }
 
         let wasAtBottom = isAtBottom
         let follow = proxy?.followNextMessage ?? false
@@ -571,7 +588,8 @@ final class MessageListController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         // Страховка: что бы ни случилось со снимком, невидимой лента не останется.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.reveal() }
+        // Полторы секунды — дольше любой нормальной загрузки первой страницы.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.reveal() }
     }
 
     override func viewDidLayoutSubviews() {
