@@ -613,8 +613,6 @@ struct MessageRow: View {
     let onReact: (String) -> Void
     /// Открыть полный выбор эмодзи (лист живёт на экране беседы).
     let onPickReaction: () -> Void
-    /// Долгое нажатие — меню сообщения (реакции + действия).
-    let onLongPress: () -> Void
     /// Сдвиг пузыря при свайпе-ответе; объект живёт в контроллере ленты.
     var swipe = MessageSwipeState()
     /// Быстрые слоты — считает лента, чтобы не читать UserDefaults на каждую строку.
@@ -803,9 +801,8 @@ struct MessageRow: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.04))
         )
-        // Своё меню вместо системного contextMenu: системное умеет только вертикальный
-        // список, и четыре реакции вставали столбиком.
-        .onLongPressGesture(minimumDuration: 0.32) { onLongPress() }
+        // Долгое нажатие (своё меню вместо системного contextMenu) живёт на коллекции
+        // ленты как UIKit-жест: SwiftUI-модификатор здесь перехватывал касание у прокрутки.
     }
 
     @ViewBuilder

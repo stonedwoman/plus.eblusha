@@ -368,6 +368,13 @@ final class MessageListController: UIViewController {
         let replyPan = UIPanGestureRecognizer(target: self, action: #selector(handleReplyPan(_:)))
         replyPan.delegate = self
         collectionView.addGestureRecognizer(replyPan)
+        // Долгое нажатие — тоже на коллекции, а не SwiftUI-модификатором в ячейке.
+        // SwiftUI-жесты внутри UIKit-прокрутки перехватывали касание: палец на фото
+        // (там ещё и тап на плитке) не листал ленту и не тянул ни ответ, ни «назад».
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.32
+        longPress.delegate = self
+        collectionView.addGestureRecognizer(longPress)
         NSLayoutConstraint.activate([
             collectionView.topAnchor.constraint(equalTo: view.topAnchor),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -528,6 +535,15 @@ final class MessageListController: UIViewController {
 
     // MARK: - Свайп-ответ
 
+    /// Меню сообщения по долгому нажатию на пузырь (см. `gestureRecognizerShouldBegin`).
+    @objc private func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        let point = recognizer.location(in: collectionView)
+        guard let row = row(atCollectionPoint: point) else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        actions?.onLongPress(row.message)
+    }
+
     @objc private func handleReplyPan(_ recognizer: UIPanGestureRecognizer) {
         switch recognizer.state {
         case .began:
@@ -617,6 +633,12 @@ extension MessageListController: UIGestureRecognizerDelegate {
     /// горизонтально в его сторону ответа: входящий — вправо, свой — влево. Всё
     /// остальное остаётся прокрутке и жесту «назад».
     func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+        if recognizer is UILongPressGestureRecognizer {
+            // Меню — только с пузыря: пустое поле строки и системные сообщения не в счёт.
+            let point = recognizer.location(in: collectionView)
+            guard let row = row(atCollectionPoint: point) else { return false }
+            return bubbleContains(row: row, collectionPoint: point)
+        }
         guard let pan = recognizer as? UIPanGestureRecognizer,
               pan.view === collectionView, pan !== collectionView.panGestureRecognizer
         else { return true }
@@ -652,12 +674,17 @@ extension MessageListController: UIGestureRecognizerDelegate {
         return !bubbleContains(row: row, collectionPoint: inCollection)
     }
 
-    /// Идём рядом с прокруткой, а не вместо неё.
+    /// Идём рядом с прокруткой, а не вместо неё. Исключение — долгое нажатие и прокрутка:
+    /// кто первый начался, тот и победил, иначе меню всплывало бы посреди медленного
+    /// листания, а лента уезжала бы из-под открытого меню.
     func gestureRecognizer(
         _ recognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool {
-        true
+        if recognizer is UILongPressGestureRecognizer, other === collectionView.panGestureRecognizer {
+            return false
+        }
+        return true
     }
 }
 
@@ -712,7 +739,6 @@ private struct MessageCell: View {
                 onReply: { actions?.onReply(model.message) },
                 onReact: { actions?.onReact(model.message, $0) },
                 onPickReaction: { actions?.onPickReaction(model.message) },
-                onLongPress: { actions?.onLongPress(model.message) },
                 swipe: swipe,
                 quickSlots: model.quickSlots,
                 onEdit: { actions?.onEdit(model.message) },
