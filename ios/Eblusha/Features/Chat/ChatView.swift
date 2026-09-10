@@ -12,8 +12,9 @@ final class MessageSwipeState: ObservableObject {
     @Published var offset: CGFloat = 0
 }
 
-/// Пузырь, который умеет уезжать вбок: как на Android — сдвигается сам пузырь, аватар и
-/// галочки выбора стоят на месте, а за пузырём проявляется стрелка ответа.
+/// Пузырь, который умеет уезжать влево: сдвигается сам пузырь, аватар и галочки выбора
+/// стоят на месте, а справа проявляется стрелка ответа. Влево для всех — как в
+/// Telegram: движение вправо отдано жесту «назад».
 struct SwipeableBubble<Content: View>: View {
     @ObservedObject var state: MessageSwipeState
     let isMine: Bool
@@ -24,7 +25,7 @@ struct SwipeableBubble<Content: View>: View {
             .offset(x: state.offset)
             // Фон выравнивается по РАСКЛАДОЧНОЙ рамке, а offset — чисто визуальный сдвиг,
             // поэтому стрелка остаётся там, откуда уехал пузырь.
-            .background(alignment: isMine ? .trailing : .leading) {
+            .background(alignment: .trailing) {
                 Image(systemName: "arrowshape.turn.up.left.fill")
                     .font(.system(size: 20))
                     .foregroundStyle(Eb.brand)

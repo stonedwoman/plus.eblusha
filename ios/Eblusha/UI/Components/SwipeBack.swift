@@ -1,16 +1,14 @@
 import SwiftUI
 import UIKit
 
-/// Возврат назад свайпом от края экрана — от левого и от правого.
+/// Возврат назад свайпом вправо из ЛЮБОЙ точки экрана — как в Telegram.
 ///
 /// Экраны приложения прячут системную панель навигации ради собственных шапок, а вместе
-/// с ней iOS отключает штатный жест «назад»: выйти из чата можно было только попав
-/// пальцем в маленький шеврон в углу. Полагаться на возврат системного распознавателя
-/// оказалось ненадёжно, поэтому вешаем свои краевые жесты — они срабатывают только у
-/// самой кромки и прокрутке ленты не мешают.
-///
-/// Правый край добавлен намеренно: на большом телефоне дотянуться до левого края одной
-/// рукой неудобно.
+/// с ней iOS отключает штатный жест «назад». Краевой жест оказался неинтуитивным:
+/// его надо знать и целиться в кромку. Поэтому жест берётся за дело при явно
+/// горизонтальном движении вправо где угодно, а вертикальную прокрутку не трогает.
+/// Свайп-ответ на сообщениях из-за этого сделан влево для всех — иначе жесты
+/// столкнулись бы на входящих.
 private struct EdgeSwipeBack: UIViewRepresentable {
 
     let onBack: () -> Void
@@ -51,28 +49,24 @@ private struct EdgeSwipeBack: UIViewRepresentable {
             for existing in host.gestureRecognizers ?? [] where existing.name == Self.marker {
                 host.removeGestureRecognizer(existing)
             }
-            for edge in [UIRectEdge.left, UIRectEdge.right] {
-                let recognizer = UIScreenEdgePanGestureRecognizer(
-                    target: self, action: #selector(handle(_:))
-                )
-                recognizer.edges = edge
-                recognizer.delegate = self
-                recognizer.name = Self.marker
-                host.addGestureRecognizer(recognizer)
-            }
+            let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
+            recognizer.delegate = self
+            recognizer.name = Self.marker
+            host.addGestureRecognizer(recognizer)
         }
 
-        @objc private func handle(_ recognizer: UIScreenEdgePanGestureRecognizer) {
+        @objc private func handle(_ recognizer: UIPanGestureRecognizer) {
             switch recognizer.state {
             case .began:
                 fired = false
             case .changed:
                 guard !fired else { return }
-                let dx = recognizer.translation(in: recognizer.view).x
-                // Порог как у системного «назад»: короткое касание края не считается.
-                let pulled = recognizer.edges == .left ? dx : -dx
-                if pulled > 60 {
+                let translation = recognizer.translation(in: recognizer.view)
+                // Порог заметно больше случайного дрожания пальца: короткий сдвиг при
+                // прокрутке или при свайпе-ответе назад не уводит.
+                if translation.x > 90, abs(translation.y) < translation.x {
                     fired = true
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     onBack()
                 }
             default:
@@ -80,7 +74,15 @@ private struct EdgeSwipeBack: UIViewRepresentable {
             }
         }
 
-        /// Жест живёт рядом с прокруткой: у кромки выигрывает он, дальше — лента.
+        /// Берёмся за дело только при движении ВПРАВО и явно горизонтальном. Вертикальное
+        /// движение целиком остаётся прокрутке, движение влево — свайпу-ответу.
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = recognizer as? UIPanGestureRecognizer else { return true }
+            let velocity = pan.velocity(in: pan.view)
+            return velocity.x > 0 && velocity.x > abs(velocity.y) * 1.5
+        }
+
+        /// Живём рядом с прокруткой и жестами внутри, а не вместо них.
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
@@ -117,7 +119,8 @@ private struct EdgeSwipeBack: UIViewRepresentable {
 }
 
 extension View {
-    /// Возврат назад свайпом от левого или правого края экрана.
+    /// Возврат назад свайпом вправо из любой точки экрана. Имя оставлено прежним, чтобы
+    /// не править вызовы.
     func edgeSwipeBack(_ onBack: @escaping () -> Void) -> some View {
         background(EdgeSwipeBack(onBack: onBack).frame(width: 0, height: 0))
     }

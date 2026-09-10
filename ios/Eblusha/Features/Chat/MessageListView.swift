@@ -538,11 +538,10 @@ final class MessageListController: UIViewController {
         case .changed:
             guard let indexPath = swipingIndexPath, indexPath.item < rows.count else { return }
             let message = rows[indexPath.item].message
-            // Входящие тянутся вправо, свои — влево (свои пузыри прижаты к правому краю).
+            // Влево для ВСЕХ сообщений, как в Telegram: движение вправо отдано жесту
+            // «назад», и на входящих они иначе столкнулись бы.
             let raw = recognizer.translation(in: collectionView).x
-            let dx = message.isMine
-                ? min(max(raw, -Self.replyMaxDrag), 0)
-                : min(max(raw, 0), Self.replyMaxDrag)
+            let dx = min(max(raw, -Self.replyMaxDrag), 0)
             // Двигается САМ пузырь внутри SwiftUI-содержимого (SwipeableBubble), а не
             // ячейка: сдвиг контейнера хостинг-конфигурация не показывала.
             swipeState(for: message.id).offset = dx
@@ -614,7 +613,8 @@ extension MessageListController: UIGestureRecognizerDelegate {
               pan.view === collectionView, pan !== collectionView.panGestureRecognizer
         else { return true }
         let velocity = pan.velocity(in: collectionView)
-        return abs(velocity.x) > abs(velocity.y) * 1.5
+        // Только влево: вправо — это «назад».
+        return velocity.x < 0 && abs(velocity.x) > abs(velocity.y) * 1.5
     }
 
     /// Идём рядом с прокруткой, а не вместо неё.
