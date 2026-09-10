@@ -54,7 +54,7 @@ struct SettingsView: View {
         }
         .background(Eb.paper)
         .toolbar(.hidden, for: .navigationBar)
-        .enableSwipeBack()
+        .edgeSwipeBack { onBack?() }
         .sheet(item: pairingBinding) { pairing in
             PairingDialog(pairing: pairing, onDismiss: vm.dismissPairing)
         }

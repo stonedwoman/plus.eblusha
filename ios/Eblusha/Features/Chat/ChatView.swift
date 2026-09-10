@@ -224,9 +224,9 @@ struct ChatView: View {
         }
         .background(Eb.paper)
         .toolbar(.hidden, for: .navigationBar)
-        // Возврат в список чатов свайпом от левого края — системная панель скрыта,
-        // и без этого жест был выключен.
-        .enableSwipeBack()
+        // Возврат в список чатов свайпом от любого края: системная панель скрыта,
+        // и штатный жест «назад» вместе с ней выключен.
+        .edgeSwipeBack { onBack() }
         .onAppear {
             quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
         }
