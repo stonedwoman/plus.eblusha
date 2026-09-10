@@ -75,23 +75,9 @@ struct PhotoEditorView: View {
             }
             Spacer()
             if let item = current {
-                Button { item.undo() } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .frame(width: 40, height: 44)
-                }
-                .disabled(!item.canUndo)
-                Button { item.redo() } label: {
-                    Image(systemName: "arrow.uturn.forward")
-                        .frame(width: 40, height: 44)
-                }
-                .disabled(!item.canRedo)
-                Button { item.reset() } label: {
-                    Text("Сброс")
-                        .font(.subheadline)
-                        .frame(height: 44)
-                        .padding(.horizontal, 8)
-                }
-                .disabled(item.document.isPristine)
+                // Отдельная вью с @ObservedObject: иначе кнопки не узнавали бы о pushUndo
+                // из жестов, пока экран не перерисуется по другой причине.
+                EditorUndoControls(item: item)
             }
         }
         .foregroundStyle(.white)
@@ -247,6 +233,33 @@ struct PhotoEditorView: View {
                 exporting = false
                 onDone(all, text)
             }
+        }
+    }
+}
+
+/// Отмена, повтор и сброс — наблюдают кадр напрямую.
+private struct EditorUndoControls: View {
+    @ObservedObject var item: PhotoEditItem
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button { item.undo() } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .frame(width: 40, height: 44)
+            }
+            .disabled(!item.canUndo)
+            Button { item.redo() } label: {
+                Image(systemName: "arrow.uturn.forward")
+                    .frame(width: 40, height: 44)
+            }
+            .disabled(!item.canRedo)
+            Button { item.reset() } label: {
+                Text("Сброс")
+                    .font(.subheadline)
+                    .frame(height: 44)
+                    .padding(.horizontal, 8)
+            }
+            .disabled(item.document.isPristine)
         }
     }
 }

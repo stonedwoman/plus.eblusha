@@ -24,12 +24,17 @@ struct CropOverlayView: View {
     /// между событиями: накопление дельт с клампами за сотню событий уводит рамку от пальца,
     /// и при отпускании она «доезжает» рывком.
     @State private var session: DragSession?
-    /// Палец лёг мимо рамки — этот жест игнорируем до конца, не пересчитывая попадание.
-    @State private var touchOutside = false
+    /// startLocation жеста, начатого мимо рамки: его игнорируем до конца, не пересчитывая
+    /// попадание на каждое событие.
+    @State private var ignoredStart: CGPoint?
 
     private struct DragSession {
         let handle: CropHandle
         let startBox: CGRect
+        /// startLocation жеста — признак «тот же жест»: если onEnded прошлого не пришёл
+        /// (системная отмена), новое касание не должно продолжать старую сессию с чужим
+        /// стартовым положением рамки — иначе рамка прыгнет.
+        let startLocation: CGPoint
         /// Шаг отмены кладём при ПЕРВОМ реальном изменении, а не на касании: тап по рамке без
         /// движения не должен тратить «Отменить» впустую.
         var undoPushed = false
@@ -46,7 +51,9 @@ struct CropOverlayView: View {
         Canvas { context, _ in
             draw(in: &context, box: box)
         }
-        .contentShape(Rectangle())
+        // Ловим палец только у кадра (плюс зона касания ручек за его краем): касание по
+        // чёрному полю вокруг уходит ниже — снимает фокус с подписи, а не глотается.
+        .contentShape(Rectangle().path(in: frameRect.insetBy(dx: -handleTouchRadius, dy: -handleTouchRadius)))
         .gesture(dragGesture)
         .onChange(of: item.document.crop) { _, crop in
             dropAspectIfBroken(by: crop)
@@ -60,14 +67,17 @@ struct CropOverlayView: View {
         // точки движения теряются и рамка стартует с запозданием.
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in
-                if touchOutside { return }
-                if session == nil {
+                if ignoredStart == value.startLocation { return }
+                // nil-сессия или другой startLocation — новое касание: попадание считаем заново.
+                if session?.startLocation != value.startLocation {
+                    ignoredStart = nil
                     let box = CropMath.box(item.document.crop, in: frameRect)
                     guard let handle = CropMath.hitTest(value.startLocation, box: box, touchRadius: handleTouchRadius) else {
-                        touchOutside = true
+                        session = nil
+                        ignoredStart = value.startLocation
                         return
                     }
-                    session = DragSession(handle: handle, startBox: box)
+                    session = DragSession(handle: handle, startBox: box, startLocation: value.startLocation)
                 }
                 guard var current = session else { return }
                 let next = CropMath.dragged(
@@ -86,7 +96,7 @@ struct CropOverlayView: View {
             .onEnded { _ in
                 // На отпускании рамку не трогаем: она уже там, куда её довели, — ничего не прыгает.
                 session = nil
-                touchOutside = false
+                ignoredStart = nil
             }
     }
 
