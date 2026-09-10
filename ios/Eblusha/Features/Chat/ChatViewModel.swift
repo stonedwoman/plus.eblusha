@@ -549,6 +549,12 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Стейджинг вложений (веб-паритет: выбранное НЕ отправляется сразу)
 
     /// Пикер вернул файлы: кладём в очередь чипов; лимиты как у альбома (10 фото + 10 файлов).
+    /// Кадр из очереди отредактирован — подменяем на месте, порядок альбома сохраняется.
+    func replaceStaged(at index: Int, with file: OutgoingFile) {
+        guard ui.staged.indices.contains(index) else { return }
+        ui.staged[index] = file
+    }
+
     func stageFiles(_ files: [OutgoingFile]) {
         guard !files.isEmpty else { return }
         let merged = ui.staged + files

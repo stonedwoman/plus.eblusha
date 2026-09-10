@@ -246,6 +246,7 @@ struct ChatView: View {
                         sendToken += 1
                         vm.sendVoice(data, durationSec: duration, waveform: waveform)
                     },
+                    onReplaceStaged: { index, file in vm.replaceStaged(at: index, with: file) },
                     onConsumeRestoredDraft: { vm.consumeRestoredDraft() },
                     onFocusChanged: { focused in
                         // Клавиатура поджимает ленту снизу — последнее сообщение уезжало

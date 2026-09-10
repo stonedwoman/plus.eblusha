@@ -215,6 +215,8 @@ struct ComposerAttachmentsBar: View {
     let uploadProgress: Float?
     let onRemoveStaged: (Int) -> Void
     let onCancelUpload: () -> Void
+    /// Тап по чипу картинки — открыть её в редакторе.
+    var onEditStaged: ((Int) -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -255,12 +257,21 @@ struct ComposerAttachmentsBar: View {
         }
     }
 
-    // Чип: картинка — миниатюрой 64×64, прочее — иконка + имя 96×64. Кнопка-карандаш
-    // фоторедактора появится вместе с портом PhotoEditor (vm.replaceStaged уже готов).
+    // Чип: картинка — миниатюрой 64×64 (тап — в редактор), прочее — иконка + имя 96×64.
     private func stagedChip(_ f: OutgoingFile, index: Int) -> some View {
         ZStack(alignment: .topTrailing) {
             if f.mime.hasPrefix("image/") {
                 StagedThumb(data: f.bytes)
+                    .overlay(alignment: .bottomLeading) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 18, height: 18)
+                            .background(Color.black.opacity(0.6), in: Circle())
+                            .padding(2)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture { onEditStaged?(index) }
             } else {
                 VStack(alignment: .leading, spacing: 3) {
                     Image(systemName: f.mime.hasPrefix("video/") ? "play.circle.fill" : "doc.fill")

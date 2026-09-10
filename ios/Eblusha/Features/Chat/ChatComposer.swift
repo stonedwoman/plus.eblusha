@@ -26,6 +26,8 @@ struct ChatComposer: View {
     let onSend: (String) -> Void
     let onSendStaged: (String?) -> Void
     let onSendVoice: (Data, Int, [Int]) -> Void
+    /// Кадр из очереди отредактирован — подменить на месте.
+    let onReplaceStaged: (Int, OutgoingFile) -> Void
     let onConsumeRestoredDraft: () -> Void
     /// Фокус ушёл в поле ввода — ленте пора подтянуть низ под клавиатуру.
     let onFocusChanged: (Bool) -> Void
@@ -35,6 +37,9 @@ struct ChatComposer: View {
     @State private var draft = ""
     /// Ближайшее изменение текста — не набор пользователя (восстановление черновика).
     @State private var suppressTypingOnce = false
+    /// Открытый редактор фото: свежий выбор (кнопка в редакторе сразу отправляет) или
+    /// правка кадра, уже стоящего в очереди.
+    @State private var editorSession: PhotoEditorSession?
     @StateObject private var voiceRecorder = VoiceRecorder()
     @FocusState private var focused: Bool
 
@@ -46,7 +51,12 @@ struct ChatComposer: View {
                 staged: staged,
                 uploadProgress: uploadProgress,
                 onRemoveStaged: onRemoveStaged,
-                onCancelUpload: onCancelUpload
+                onCancelUpload: onCancelUpload,
+                onEditStaged: { index in
+                    guard staged.indices.contains(index),
+                          let item = PhotoEditItem(source: staged[index]) else { return }
+                    editorSession = PhotoEditorSession(items: [item], passthrough: [], replacingIndex: index)
+                }
             )
 
             if !replyingTo.isEmpty {
@@ -86,6 +96,27 @@ struct ChatComposer: View {
             voiceRecorder.cancel()
         }
         .onChange(of: focused) { _, value in onFocusChanged(value) }
+        .fullScreenCover(item: $editorSession) { session in
+            PhotoEditorView(
+                items: session.items,
+                passthrough: session.passthrough,
+                initialCaption: session.replacingIndex == nil ? draft : "",
+                onDone: { files, caption in
+                    editorSession = nil
+                    if let index = session.replacingIndex {
+                        // Правка кадра из очереди: подменяем, подпись остаётся в поле.
+                        if let file = files.first { onReplaceStaged(index, file) }
+                        return
+                    }
+                    // Свежий выбор: кнопка редактора — это «отправить», как в Telegram.
+                    onStageFiles(files)
+                    draft = ""
+                    DraftStore.set(conversationId, "")
+                    onSendStaged(caption.trimmed().isEmpty ? nil : caption)
+                },
+                onCancel: { editorSession = nil }
+            )
+        }
         // .task(id:), а не onChange: композер могло не быть на экране в момент сбоя
         // отправки (режим выбора, секретное приглашение), и текст пропадал бы совсем.
         .task(id: restoredDraft) { applyRestoredDraft() }
@@ -111,7 +142,18 @@ struct ChatComposer: View {
         HStack(alignment: .bottom, spacing: 8) {
             AttachmentPickerButton(
                 disabled: sending,
-                onPicked: onStageFiles,
+                onPicked: { files in
+                    // Фото идут через редактор; всё остальное (видео, документы) — в
+                    // очередь как есть.
+                    let images = files.filter { $0.mime.hasPrefix("image/") }
+                    let rest = files.filter { !$0.mime.hasPrefix("image/") }
+                    let items = images.compactMap { PhotoEditItem(source: $0) }
+                    guard !items.isEmpty else {
+                        onStageFiles(files)
+                        return
+                    }
+                    editorSession = PhotoEditorSession(items: items, passthrough: rest, replacingIndex: nil)
+                },
                 onError: onError
             )
 
@@ -169,4 +211,13 @@ struct ChatComposer: View {
         }
         .disabled(sending)
     }
+}
+
+/// Что открыто в редакторе фото.
+struct PhotoEditorSession: Identifiable {
+    let id = UUID()
+    let items: [PhotoEditItem]
+    let passthrough: [OutgoingFile]
+    /// nil — свежий выбор; иначе индекс кадра в очереди, который правим.
+    let replacingIndex: Int?
 }
