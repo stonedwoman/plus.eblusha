@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Композер вынесен из ChatView отдельной вью НЕ ради красоты: пока текст жил в @State
 /// самого экрана, каждое нажатие клавиши перестраивало тело ChatView целиком — вместе с
@@ -45,6 +46,17 @@ struct ChatComposer: View {
 
     private var isEmpty: Bool { draft.trimmed().isEmpty && staged.isEmpty }
 
+    /// На сколько панель без клавиатуры опускается в зону home indicator: чуть больше
+    /// трети системного отступа (на Face ID-телефонах — 12 pt), на кнопочных — ноль.
+    private static let bottomLift: CGFloat = {
+        let inset = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }?
+            .safeAreaInsets.bottom ?? 0
+        return min(12, (inset * 0.4).rounded())
+    }()
+
     var body: some View {
         VStack(spacing: 0) {
             ComposerAttachmentsBar(
@@ -74,6 +86,11 @@ struct ChatComposer: View {
                 inputRow
             }
         }
+        // Без клавиатуры панель сидит ниже, чем велит safe area: полный отступ под полем
+        // читался как пустая полоса. С клавиатурой отступ снимаем — иначе поле уехало бы
+        // под неё. На телефонах без home indicator сдвиг нулевой (см. `bottomLift`).
+        .padding(.bottom, focused ? 0 : -Self.bottomLift)
+        .animation(.easeOut(duration: 0.2), value: focused)
         // Фон уходит под полосу home indicator — иначе внизу видна полоса другого цвета.
         .background(Eb.surface200.ignoresSafeArea(edges: .bottom))
         // Высота панели меняется от цитаты, чипов и второй строки — лента должна на это
