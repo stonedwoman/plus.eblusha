@@ -57,6 +57,9 @@ struct ChatListView: View {
         }
         .background(Eb.paper.ignoresSafeArea())
         // Своя шапка и своя нижняя панель — системную панель навигации здесь не показываем.
+        // Заголовок при скрытой панели не рисуется, но питает подпись кнопки «назад»
+        // на пушащихся экранах: «Чаты» вместо безликого «Назад».
+        .navigationTitle("Чаты")
         .toolbar(.hidden, for: .navigationBar)
         .alert(item: $confirmDelete) { target in
             deleteAlert(target)

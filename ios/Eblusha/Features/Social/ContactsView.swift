@@ -9,8 +9,8 @@ import UIKit
 // ContactsViewModel и те же вызовы, здесь только сборка вью.
 
 struct ContactsView: View {
-    /// В сигнатуре остаётся ради совместимости с вызовами. Свою кнопку «назад» не рисуем:
-    /// когда экран вложен в стек, её даёт NavigationStack; в корне вкладки она не нужна.
+    /// Свою кнопку «назад» не рисуем — её даёт NavigationStack. onBack нужен свайпу
+    /// «назад» из любой точки (см. `edgeSwipeBack`); nil — если экран показан не в стеке.
     let onBack: (() -> Void)?
     let onOpenConversation: (ConversationRef) -> Void
 
@@ -46,6 +46,8 @@ struct ContactsView: View {
         .scrollContentBackground(.hidden)
         .background(Eb.paper)
         .navigationTitle("Контакты")
+        // Возврат свайпом вправо из любой точки — как в остальных экранах стека.
+        .edgeSwipeBack { onBack?() }
         .navigationBarTitleDisplayMode(.large)
         // Поиск — системный. Строка уходит в ту же vm.onQueryChange: друзей фильтруем
         // локально по имени, а от двух символов ViewModel сама ищет по серверу (имя/EBLID).

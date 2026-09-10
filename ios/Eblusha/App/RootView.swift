@@ -219,6 +219,9 @@ private struct HomeNavView: View {
 
     /// Открыть беседу поверх списка, сбросив всё, что лежало в стеке (контакты, группа).
     private func open(ref: ConversationRef) {
+        // Уведомление о беседе, которая уже открыта: не пересоздавать экран — иначе
+        // теряются позиция ленты и черновик, а Conversation хешируется по всем полям.
+        if case .conversation(let current)? = path.last, current.id == ref.id { return }
         Task { @MainActor in
             let conversation = await AppContainer.shared.chatRepository.resolveRef(ref)
             path = [.conversation(conversation)]

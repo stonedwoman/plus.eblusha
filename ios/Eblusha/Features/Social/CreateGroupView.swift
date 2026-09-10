@@ -73,8 +73,8 @@ final class CreateGroupViewModel: ObservableObject {
 }
 
 struct CreateGroupView: View {
-    /// В сигнатуре остаётся ради совместимости с RootView. Свою кнопку «назад» не рисуем:
-    /// экран живёт в NavigationStack вкладки «Чаты», и штатная кнопка снимает его со стека.
+    /// Свою кнопку «назад» не рисуем — штатная кнопка NavigationStack снимает экран со
+    /// стека. onBack нужен свайпу «назад» из любой точки (см. `edgeSwipeBack`).
     let onBack: () -> Void
     let onCreated: (ConversationRef) -> Void
 
@@ -102,6 +102,8 @@ struct CreateGroupView: View {
         .background(Eb.paper)
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle("Новая беседа")
+        // Возврат свайпом вправо из любой точки — как в остальных экранах стека.
+        .edgeSwipeBack(onBack)
         .navigationBarTitleDisplayMode(.inline)
         // Поле поиска всегда на виду: это экран-выборщик, прятать его до прокрутки нет смысла.
         .searchable(
