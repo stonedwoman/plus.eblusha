@@ -244,8 +244,9 @@ struct ChatView: View {
                     onReply: { vm.replyToSelected() },
                     onForward: { forwardSheet = ForwardRequest(messages: vm.selectedMessages()) },
                     onCopy: {
-                        let msgs = vm.selectedMessages().filter { !$0.isSystem }
-                        UIPasteboard.general.string = msgs.map { $0.content ?? "" }.joined(separator: "\n")
+                        // Не голый content: буфер получает «Переслано от …», цитаты и
+                        // имена файлов — тот же текст, что кладёт веб.
+                        copyMessagesToClipboard(vm.selectedMessages())
                         vm.clearSelection()
                     },
                     onDelete: { vm.deleteSelected() },
@@ -384,7 +385,7 @@ struct ChatView: View {
                     }
                 },
                 onReply: { vm.setReply(target) },
-                onCopy: { UIPasteboard.general.string = target.content },
+                onCopy: { copyMessageToClipboard(target) },
                 onForward: { forwardSheet = ForwardRequest(messages: [target]) },
                 onEdit: {
                     editText = target.content ?? ""
@@ -980,25 +981,15 @@ struct MessageRow: View {
                 payloadView
             }
 
+            // Рельса реакций: вид, порядок и правило «счётчик только при count > 1» —
+            // в ReactionChips (порт MessageReactionRail). Пустоту отсекаем здесь, чтобы
+            // VStack не оставлял под сообщением без реакций лишний зазор.
             if !m.reactions.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(m.reactions, id: \.emoji) { reaction in
-                        Button {
-                            onReact(reaction.emoji)
-                        } label: {
-                            Text("\(reaction.emoji) \(reaction.count)")
-                                .font(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(
-                                    reaction.mine ? Eb.brand.opacity(0.28) : Color.white.opacity(0.07),
-                                    in: Capsule()
-                                )
-                                .foregroundStyle(Eb.textPrimary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                ReactionChips(
+                    reactions: m.reactions,
+                    isSelectedInMulti: selected,
+                    onTap: { onReact($0) }
+                )
             }
 
             // Невидимая копия метки времени держит ширину пузыря, а видимая лежит

@@ -24,7 +24,17 @@ struct MessageActionsSheet: View {
 
     private var canEdit: Bool { message.isMine && !message.deleted && message.type == "TEXT" }
     private var canDelete: Bool { message.isMine && !message.deleted }
-    private var hasText: Bool { !(message.content ?? "").isEmpty }
+
+    /// «Копировать» есть почти всегда — как в вебе (ChatModals.tsx:2632-2645), где пункт
+    /// стоит безусловно: у сообщения без подписи в буфер уходит описание вложений
+    /// («Файл: смета.pdf»), а у одной картинки — сама картинка. Прячем только там, где
+    /// положить в буфер честно нечего: удалённое сообщение и секретная картинка без
+    /// подписи (расшифровать её вне вьюмодели нечем).
+    private var canCopy: Bool {
+        if message.deleted { return false }
+        if !buildMessageCopyText(message).isEmpty { return true }
+        return message.attachments.contains { $0.type == "IMAGE" && $0.secretNonce == nil }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,7 +49,8 @@ struct MessageActionsSheet: View {
     }
 
     private var detentHeight: CGFloat {
-        var rows = 3 // ответить, копировать, выбрать
+        var rows = 2 // ответить, выбрать
+        if canCopy { rows += 1 }
         if canForward { rows += 1 }
         if canEdit { rows += 1 }
         if canDelete { rows += 1 }
@@ -87,7 +98,7 @@ struct MessageActionsSheet: View {
     private var actions: some View {
         VStack(spacing: 0) {
             row("Ответить", icon: "arrowshape.turn.up.left", action: onReply)
-            if hasText {
+            if canCopy {
                 row("Копировать", icon: "doc.on.doc", action: onCopy)
             }
             if canForward {

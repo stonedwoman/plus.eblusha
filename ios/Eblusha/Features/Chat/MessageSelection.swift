@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // Порт компонентов мультивыбора и пересылки из `ui/chat/ChatScreen.kt`:
 // SelectionCheck (~1768) / SelectionTopBar (~2097) / SelectionActionBar (~2109) /
@@ -254,4 +255,174 @@ struct ForwardPickerSheet: View {
             loaded = true
         }
     }
+}
+
+// MARK: - Копирование в буфер
+
+// Порт buildMessageCopyText (frontend/src/ui/pages/chats/chatsMessages.ts:58-110) и
+// describeCopyableAttachment (chatsAttachments.ts:383-392).
+//
+// iOS клал в буфер только `content`, поэтому у пересланного сообщения терялось
+// «Переслано от …», у ответа — цитата, а у файла — его имя; у сообщения без подписи пункта
+// «Копировать» не было вовсе. Веб собирает текст по строгому порядку блоков, а при пустом
+// тексте кладёт саму картинку — здесь ровно то же.
+
+/// Текст сообщения для буфера: шапка мультиответа с цитатами, «Переслано от …», цитата
+/// одиночного ответа, текст, строки вложений. Пусто — копировать нечего (сообщение
+/// состоит из одних картинок; их кладёт `copyMessageToClipboard`).
+func buildMessageCopyText(_ message: Message) -> String {
+    var parts: [String] = []
+
+    // Мультиответ (≥2 цитаты) — как metadata.replyQuoteBundle в вебе: заголовок со
+    // счётчиком и по строке на цитату.
+    let quotes = message.replyTo
+    let isQuoteBundle = quotes.count >= 2
+    if isQuoteBundle {
+        parts.append("Ответ на \(quotes.count) \(pluralMessages(quotes.count))")
+        for quote in quotes {
+            parts.append("— \(copyQuotePreview(quote))")
+        }
+    }
+
+    if let forward = message.forwardFrom {
+        let who = forward.authorName.trimmed()
+        if !who.isEmpty {
+            let groupTitle = (forward.sourceChatTitle ?? "").trimmed()
+            let peer = (forward.directChatPeerName ?? "").trimmed()
+            if forward.isGroupSource, !groupTitle.isEmpty {
+                parts.append("Переслано от \(who), из «\(groupTitle)»")
+            } else if !peer.isEmpty {
+                parts.append("Переслано от \(who), из переписки с \(peer)")
+            } else {
+                parts.append("Переслано от \(who)")
+            }
+        }
+    }
+
+    // Одиночная цитата — тот же заголовок «Ответ на 1 сообщение», что и у пачки.
+    if !isQuoteBundle {
+        let single = (quotes.first?.content ?? "").trimmed()
+        if !single.isEmpty {
+            parts.append("Ответ на 1 \(pluralMessages(1))")
+            parts.append("— \(single)")
+        }
+    }
+
+    let content = (message.content ?? "").trimmed()
+    if !content.isEmpty {
+        parts.append(content)
+    }
+
+    parts.append(contentsOf: message.attachments.compactMap(copyableAttachmentLine))
+
+    return parts.joined(separator: "\n").trimmed()
+}
+
+/// Описание вложения строкой — «Видео: clip.mp4» / «Аудио: …» / «Файл: …», а без имени
+/// просто «Видео»/«Аудио»/«Файл». Картинка словами НЕ описывается (веб возвращает null):
+/// её копируют как изображение.
+func copyableAttachmentLine(_ att: MessageAttachment) -> String? {
+    let name = copyAttachmentFileName(att)
+    switch copyAttachmentRenderType(att) {
+    case "IMAGE": return nil
+    case "VIDEO": return name == "Файл" ? "Видео" : "Видео: \(name)"
+    case "AUDIO": return name == "Файл" ? "Аудио" : "Аудио: \(name)"
+    default: return name == "Файл" ? "Файл" : "Файл: \(name)"
+    }
+}
+
+/// Тип вложения для подписи — порт inferAttachmentRenderType: серверному типу верим, а
+/// «FILE» доопределяем по mime и расширению (видео проверяется раньше аудио, как в вебе).
+private func copyAttachmentRenderType(_ att: MessageAttachment) -> String {
+    let declared = att.type.uppercased()
+    if declared == "IMAGE" || declared == "VIDEO" || declared == "AUDIO" { return declared }
+
+    let mime = (att.mime ?? "").trimmed().lowercased()
+    let ext = copyAttachmentExtension(att)
+    if mime.hasPrefix("video/") || ["mp4", "webm", "mov", "m4v"].contains(ext) { return "VIDEO" }
+    if mime.hasPrefix("audio/") || ["mp3", "m4a", "ogg", "wav"].contains(ext) { return "AUDIO" }
+    return "FILE"
+}
+
+/// Расширение из имени или url. У выгруженных файлов сверху лежит «.eblusha» (шифрованный
+/// блоб) — настоящее расширение под ним, поэтому его снимаем.
+private func copyAttachmentExtension(_ att: MessageAttachment) -> String {
+    let candidate = (att.name ?? "").trimmed().isEmpty ? att.url : (att.name ?? "").trimmed()
+    var ext = (candidate.split(separator: ".").last.map { String($0) } ?? "").lowercased()
+    if ext == "eblusha" {
+        let withoutBlobSuffix = String(candidate.dropLast(".eblusha".count))
+        ext = (withoutBlobSuffix.split(separator: ".").last.map { String($0) } ?? ext).lowercased()
+    }
+    return ext
+}
+
+/// Имя файла — порт resolveAttachmentFileName: сперва метаданные, затем последний сегмент
+/// url, и «Файл» как признак «имени нет» (веб по этому же слову решает, писать ли двоеточие).
+private func copyAttachmentFileName(_ att: MessageAttachment) -> String {
+    let fromMeta = (att.name ?? "").trimmed()
+    if !fromMeta.isEmpty { return fromMeta }
+    if let fromUrl = copyFileNameFromUrl(att.url), !fromUrl.lowercased().hasSuffix(".eblusha") {
+        return fromUrl
+    }
+    return "Файл"
+}
+
+private func copyFileNameFromUrl(_ rawUrl: String) -> String? {
+    let clean = rawUrl.components(separatedBy: "?")[0].components(separatedBy: "#")[0]
+    guard let last = clean.split(separator: "/").last, !last.isEmpty else { return nil }
+    let name = String(last)
+    return name.removingPercentEncoding ?? name
+}
+
+/// Обрезка цитаты как в вебе (parseReplyQuoteBundleEntries): длинные превью режутся на 240
+/// символов, пустое превью становится словом «Сообщение».
+private func copyQuotePreview(_ quote: ReplyInfo) -> String {
+    var preview = (quote.content ?? "").trimmed()
+    if preview.count > 240 { preview = "\(preview.prefix(237))…" }
+    return preview.isEmpty ? "Сообщение" : preview
+}
+
+/// «Копировать» одного сообщения: есть текст — в буфер уходит он, нет — сама картинка
+/// (веб: ChatModals.tsx:2632-2645). Картинку берём из кэша ленты, а при промахе догружаем:
+/// молчаливое «ничего не скопировалось» хуже, чем копирование через полсекунды.
+///
+/// `@MainActor` — потому что UIPasteboard в новых SDK изолирован в главный актор (ровно
+/// поэтому @MainActor висит и на PhotoViewerActions); все вызовы и так идут из обработчиков
+/// SwiftUI, так что ограничение ничего не стоит.
+@MainActor
+func copyMessageToClipboard(_ message: Message) {
+    let text = buildMessageCopyText(message)
+    if !text.isEmpty {
+        UIPasteboard.general.string = text
+        return
+    }
+    // Секретное вложение по своему url отдаёт шифртекст, а ключ треда живёт во вьюмодели —
+    // из буфера его не достать, поэтому такие картинки не копируем.
+    guard let image = message.attachments.first(where: { $0.type == "IMAGE" && $0.secretNonce == nil }),
+          let url = resolveMediaUrl(image.url).flatMap({ URL(string: $0) })
+    else { return }
+    if let hot = ImageLoader.shared.cached(url) {
+        UIPasteboard.general.image = hot
+        return
+    }
+    Task {
+        if let loaded = await ImageLoader.shared.load(url) {
+            UIPasteboard.general.image = loaded
+        }
+    }
+}
+
+/// «Копировать» в мультивыборе: каждое сообщение — своим блоком, в порядке ленты. Одно
+/// выбранное сообщение обрабатывается как в меню (включая картинку без подписи).
+@MainActor
+func copyMessagesToClipboard(_ messages: [Message]) {
+    let usable = messages.filter { !$0.isSystem }
+    if usable.count == 1, let single = usable.first {
+        copyMessageToClipboard(single)
+        return
+    }
+    let text = usable.map(buildMessageCopyText).filter { !$0.isEmpty }.joined(separator: "\n")
+    // Пустой буфер не затираем: раньше выбор одних картинок очищал ранее скопированное.
+    guard !text.isEmpty else { return }
+    UIPasteboard.general.string = text
 }
