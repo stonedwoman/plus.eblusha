@@ -315,10 +315,18 @@ final class MessageListProxy: ObservableObject {
     /// Актуальная рамка плитки фото (сообщение, индекс среди его фото) в координатах окна;
     /// nil — ячейки нет на экране. Просмотрщик улетает по ней обратно в чат.
     var tileFrameAction: ((String, Int) -> CGRect?)?
+    /// Близнец `tileFrameAction`, но для пузыря целиком: его рамка в координатах окна,
+    /// nil — ячейки нет на экране. По ней меню сообщения возвращает поднятую копию пузыря
+    /// на место, даже если лента под меню успела сдвинуться пришедшими сообщениями.
+    var bubbleFrameAction: ((String) -> CGRect?)?
+    /// Снимок пузыря (растр плюс та же оконная рамка) на момент открытия меню.
+    var bubbleCopyAction: ((String) -> MessageBubbleCopy?)?
 
     func scrollToBottom(animated: Bool) { scrollToBottomAction?(animated) }
     func scrollToMessage(_ id: String) { scrollToMessageAction?(id) }
     func tileFrameInWindow(messageId: String, index: Int) -> CGRect? { tileFrameAction?(messageId, index) }
+    func bubbleFrameInWindow(messageId: String) -> CGRect? { bubbleFrameAction?(messageId) }
+    func bubbleCopy(messageId: String) -> MessageBubbleCopy? { bubbleCopyAction?(messageId) }
 }
 
 // MARK: - UIKit-лента
@@ -349,6 +357,12 @@ private struct MessageListRepresentable: UIViewControllerRepresentable {
         }
         proxy.tileFrameAction = { [weak controller] id, index in
             controller?.tileFrameInWindow(messageId: id, index: index)
+        }
+        proxy.bubbleFrameAction = { [weak controller] id in
+            controller?.bubbleFrameInWindow(messageId: id)
+        }
+        proxy.bubbleCopyAction = { [weak controller] id in
+            controller?.bubbleCopy(messageId: id)
         }
         return controller
     }
@@ -785,6 +799,35 @@ extension MessageListController: UIGestureRecognizerDelegate {
         let visible = collectionView.convert(collectionView.bounds, to: nil)
         guard cellFrame.intersects(visible) else { return nil }
         return cell.contentView.convert(local, to: nil)
+    }
+
+    /// Рамка пузыря в координатах окна — близнец `tileFrameInWindow` для меню сообщения.
+    /// Условие видимости то же: если ячейки на экране нет, лететь копии некуда и меню
+    /// обходится затуханием.
+    func bubbleFrameInWindow(messageId: String) -> CGRect? {
+        guard let dataSource,
+              let indexPath = dataSource.indexPath(for: messageId),
+              let cell = collectionView.cellForItem(at: indexPath),
+              let local = swipeStates[messageId]?.bubbleFrame,
+              local.width > 1, local.height > 1 else { return nil }
+        let cellFrame = collectionView.convert(cell.frame, to: nil)
+        let visible = collectionView.convert(collectionView.bounds, to: nil)
+        guard cellFrame.intersects(visible) else { return nil }
+        return cell.contentView.convert(local, to: nil)
+    }
+
+    /// Растр пузыря плюс его оконная рамка: это и поднимает меню над размытым фоном.
+    /// Снимаем в момент долгого нажатия — потом ячейка может переехать или переиспользоваться.
+    func bubbleCopy(messageId: String) -> MessageBubbleCopy? {
+        // Рамку берём тем же методом, что и при возврате копии: если он говорит «нет»
+        // (ячейки нет на экране), то и снимать нечего.
+        guard let frame = bubbleFrameInWindow(messageId: messageId),
+              let indexPath = dataSource?.indexPath(for: messageId),
+              let cell = collectionView.cellForItem(at: indexPath),
+              let local = swipeStates[messageId]?.bubbleFrame,
+              let image = MessageActionsCapture.crop(of: cell.contentView, rect: local)
+        else { return nil }
+        return MessageBubbleCopy(image: image, frame: frame)
     }
 
     /// Жест «назад» спрашивает: можно ли стартовать здесь. Теперь всегда можно: ответ

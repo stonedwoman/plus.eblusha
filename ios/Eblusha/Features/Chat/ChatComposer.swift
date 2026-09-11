@@ -73,6 +73,9 @@ struct ChatComposer: View {
     /// обновляем при получении фокуса: проверка типа буфера содержимое не читает.
     @State private var clipboardHasImage = false
     @StateObject private var voiceRecorder = VoiceRecorder()
+    /// Голосовая ветка композера: удержание микрофона, зафиксированная запись и черновик
+    /// на прослушивание. Рекордер знает про микрофон и файл, это — про пальцы и панели.
+    @StateObject private var voiceState = VoiceComposerState()
     /// Мост к полю ввода: выделение для панели форматирования и вставка стиля.
     @StateObject private var textController = ComposerTextController()
     /// Фокус поля — обычный @State, а не @FocusState: поле теперь UITextView, о своём
@@ -133,11 +136,16 @@ struct ChatComposer: View {
                 ReplyDraftPreview(messages: replyingTo, onClear: onClearReply)
             }
 
-            if voiceRecorder.isRecording {
-                // Порт recording-ветки композера ChatScreen.kt: строка записи вместо ввода.
-                VoiceRecordBar(recorder: voiceRecorder, sending: sending) { data, duration, waveform in
-                    onSendVoice(data, duration, waveform)
-                }
+            if voiceState.showsBar {
+                // Палец больше не нужен: идёт зафиксированная запись или готов черновик —
+                // и та и другая ветка занимают место строки ввода. Во время удержания
+                // строку НЕ подменяем: кнопка микрофона несёт жест и обязана остаться.
+                VoiceComposerBar(
+                    recorder: voiceRecorder,
+                    state: voiceState,
+                    sending: sending,
+                    onSend: onSendVoice
+                )
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
             } else {
@@ -169,10 +177,13 @@ struct ChatComposer: View {
             DraftStore.set(previous, draft)
             draft = DraftStore.get(current)
             suppressTypingOnce = true
+            // Начатая запись и записанный черновик принадлежат ПРЕЖНЕЙ беседе — иначе
+            // голосовое ушло бы в чужую переписку.
+            voiceState.cancelAll(recorder: voiceRecorder)
         }
         .onDisappear {
             DraftStore.set(conversationId, draft)
-            voiceRecorder.cancel()
+            voiceState.cancelAll(recorder: voiceRecorder)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -290,7 +301,12 @@ struct ChatComposer: View {
             // же символе, поле рывком расширялось на 38 pt и текст под курсором прыгал.
             Group {
                 if isEmpty {
-                    VoiceRecordButton(recorder: voiceRecorder, sending: sending)
+                    VoiceRecordButton(
+                        recorder: voiceRecorder,
+                        state: voiceState,
+                        sending: sending,
+                        onSend: onSendVoice
+                    )
                 } else {
                     sendButton
                 }

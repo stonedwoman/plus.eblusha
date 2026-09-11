@@ -134,8 +134,9 @@ struct ChatView: View {
     @StateObject private var listProxy = MessageListProxy()
     /// Сообщение, для которого открыт полный выбор эмодзи.
     @State private var reactionTarget: Message?
-    /// Сообщение, для которого открыто меню действий.
-    @State private var actionsTarget: Message?
+    /// Открытое меню действий: сообщение, снимок его пузыря и замороженный фон. Снимки
+    /// делаются в момент долгого нажатия, поэтому здесь лежит готовая цель, а не сообщение.
+    @State private var actionsTarget: MessageActionsTarget?
     /// Быстрые слоты реакций: пересчитываются, когда пользователь выбрал новую.
     @State private var quickSlots = ReactionFavorites.defaults
     /// Высота композера в прошлом замере — по её приросту лента понимает, что её поджали.
@@ -192,7 +193,7 @@ struct ChatView: View {
                         editTarget = message
                     },
                     onPickReaction: { reactionTarget = $0 },
-                    onLongPress: { actionsTarget = $0 },
+                    onLongPress: { openActionsMenu(for: $0) },
                     quickSlots: quickSlots
                 )
                     // Карточки секретного треда (приглашение / ожидание / привязка
@@ -355,7 +356,12 @@ struct ChatView: View {
         .toolbar { headerToolbar }
         // Возврат в список чатов свайпом вправо из любой точки. Кроме входящих пузырей:
         // там свайп вправо — ответ на сообщение, лента об этом знает.
-        .edgeSwipeBack(shouldBegin: { listProxy.backSwipeAllowed?($0) ?? true }) { onBack() }
+        .edgeSwipeBack(shouldBegin: { point in
+            // Палец держит запись голосового — уход с экрана стёр бы её (композер зовёт
+            // cancelAll в onDisappear). Пока держат, «назад» не начинается.
+            guard !VoiceHoldGuard.isActive else { return false }
+            return listProxy.backSwipeAllowed?(point) ?? true
+        }) { onBack() }
         .onAppear {
             quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
         }
@@ -385,47 +391,37 @@ struct ChatView: View {
             )
             .presentationDetents([.medium, .large])
         }
-        .sheet(item: $actionsTarget) { target in
-            MessageActionsSheet(
-                message: target,
+        // Меню сообщения — не шторка, а оверлей: он сам поднимает пузырь над размытым
+        // фоном и сам же рисует появление и уход, поэтому системную анимацию показа
+        // глушим (см. openActionsMenu / closeActionsMenu).
+        .fullScreenCover(item: $actionsTarget) { target in
+            MessageActionsOverlay(
+                target: target,
                 quickSlots: quickSlots,
                 canForward: !vm.ui.isSecret,
-                onReact: { emoji in
-                    vm.react(target, emoji: emoji)
-                    if !(target.reactions.first { $0.emoji == emoji }?.mine ?? false) {
-                        ReactionFavorites.record(userId: vm.currentUserId, emoji: emoji)
-                        quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
-                    }
-                },
-                onPickReaction: {
-                    actionsTarget = nil
-                    // Лист поверх листа система не покажет — даём первому закрыться.
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(320))
-                        reactionTarget = target
-                    }
-                },
-                onReply: { vm.setReply(target) },
-                onCopy: { copyMessageToClipboard(target) },
-                onForward: { forwardSheet = ForwardRequest(messages: [target]) },
+                // Пока меню открыто, лента могла сдвинуться пришедшими сообщениями —
+                // копия возвращается в АКТУАЛЬНУЮ рамку строки, а не в снятую при открытии.
+                bubbleFrameProvider: { id in listProxy.bubbleFrameInWindow(messageId: id) },
+                onReact: { emoji in applyReaction(emoji, to: target.message) },
+                onReply: { vm.setReply(target.message) },
+                onCopy: { copyMessageToClipboard(target.message) },
+                onForward: { forwardSheet = ForwardRequest(messages: [target.message]) },
                 onEdit: {
-                    editText = target.content ?? ""
-                    editTarget = target
+                    editText = target.message.content ?? ""
+                    editTarget = target.message
                 },
-                onDelete: { vm.delete(messageId: target.id) },
-                onSelect: { vm.startSelection(target.id) },
-                onDismiss: { actionsTarget = nil }
+                onDelete: { vm.delete(messageId: target.message.id) },
+                onSelect: { vm.startSelection(target.message.id) },
+                onClose: { closeActionsMenu() }
             )
         }
+        // Полный выбор эмодзи с плашки реакций под пузырём. Из меню он теперь
+        // раскрывается сам (оверлею есть откуда показать лист), и ожидание закрытия
+        // шторки перед показом пикера больше не нужно.
         .sheet(item: $reactionTarget) { target in
             ReactionPickerSheet(
                 onPick: { emoji in
-                    vm.react(target, emoji: emoji)
-                    // Запоминаем только постановку — как в вебе (recordReactionChoice).
-                    if !(target.reactions.first { $0.emoji == emoji }?.mine ?? false) {
-                        ReactionFavorites.record(userId: vm.currentUserId, emoji: emoji)
-                        quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
-                    }
+                    applyReaction(emoji, to: target)
                     reactionTarget = nil
                 },
                 onDismiss: { reactionTarget = nil }
@@ -529,6 +525,38 @@ struct ChatView: View {
             // из двух слов — без пояснения, которое в списке чатов есть.
             Text(removalPrompt.message)
         }
+    }
+
+    // MARK: - Меню сообщения
+
+    /// Долгое нажатие по пузырю. Снимки (копия пузыря и замороженный экран) делаются
+    /// ЗДЕСЬ, до показа: секундой позже на снимок попал бы уже затемнённый экран, а
+    /// ячейка могла бы уехать. Системную анимацию показа глушим — подачу рисует оверлей.
+    private func openActionsMenu(for message: Message) {
+        let target = MessageActionsCapture.target(
+            for: message, bubble: listProxy.bubbleCopy(messageId: message.id)
+        )
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { actionsTarget = target }
+    }
+
+    /// Оверлей зовёт это ПОСЛЕ своей анимации ухода — гасить его ещё и системной шторкой
+    /// значило бы показать два движения подряд.
+    private func closeActionsMenu() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { actionsTarget = nil }
+    }
+
+    /// Реакция из меню и из полного выбора: ставим и запоминаем ТОЛЬКО постановку —
+    /// как в вебе (recordReactionChoice), где снятие в быстрые слоты не попадает.
+    private func applyReaction(_ emoji: String, to message: Message) {
+        let alreadyMine = message.reactions.first { $0.emoji == emoji }?.mine ?? false
+        vm.react(message, emoji: emoji)
+        guard !alreadyMine else { return }
+        ReactionFavorites.record(userId: vm.currentUserId, emoji: emoji)
+        quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
     }
 
     // MARK: - Просмотр фото
