@@ -539,10 +539,14 @@ final class ChatRepository {
         func str(_ key: String) -> String? {
             lp?[key]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
         }
+        func int(_ key: String) -> Int? {
+            lp?[key]?.numberValue.map(Int.init).flatMap { $0 > 0 ? $0 : nil }
+        }
         guard let url = str("url") else { return nil }
         return LinkPreview(
             url: url, title: str("title"), description: str("description"),
-            imageUrl: str("imageUrl"), siteName: str("siteName")
+            imageUrl: str("imageUrl"), siteName: str("siteName"),
+            imageWidth: int("imageWidth"), imageHeight: int("imageHeight")
         )
     }
 

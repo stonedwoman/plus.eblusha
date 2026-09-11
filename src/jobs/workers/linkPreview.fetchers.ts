@@ -689,6 +689,25 @@ async function fetchLinkPreviewFast(
     readLinkHref(html, ["image_src"]);
   let imageUrl = normalizeMaybeRelativeUrl(rawImage, finalUrl);
 
+  // Размеры картинки из той же разметки. Клиенты резервируют место под карточку ДО
+  // загрузки (web LinkPreviewCard.tsx, iOS linkPreviewCard): без размеров оба берут
+  // 16:9, и вертикальный кадр висит в серых полях. Отдаём только пару целиком —
+  // одна сторона без второй пропорции не даёт.
+  const readPositiveInt = (v: string | null): number | null => {
+    const n = v ? Number(v) : NaN;
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  };
+  let imageWidth: number | null = null;
+  let imageHeight: number | null = null;
+  if (imageUrl) {
+    const w = readPositiveInt(readMetaAny(html, ["og:image:width", "twitter:image:width"]));
+    const h = readPositiveInt(readMetaAny(html, ["og:image:height", "twitter:image:height"]));
+    if (w && h) {
+      imageWidth = w;
+      imageHeight = h;
+    }
+  }
+
   // Если картинки нет — берём иконку сайта: превью с иконкой лучше, чем голый текст.
   if (!imageUrl) {
     const icon =
@@ -726,8 +745,8 @@ async function fetchLinkPreviewFast(
     title: safeTitle,
     description,
     imageUrl,
-    imageWidth: null,
-    imageHeight: null,
+    imageWidth,
+    imageHeight,
     siteName,
     fetchedAtISO: new Date().toISOString(),
   };

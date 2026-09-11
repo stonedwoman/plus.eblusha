@@ -1369,12 +1369,10 @@ struct MessageRow: View {
                     .foregroundStyle(Eb.textMuted)
                     .lineLimit(3)
             }
-            if let imageUrl = resolveMediaUrl(preview.imageUrl), let url = URL(string: imageUrl) {
-                CachedImage(url: url, contentMode: .fill)
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(1.9, contentMode: .fit)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            if let imageUrl = linkPreviewImageUrl(preview.imageUrl), let url = URL(string: imageUrl) {
+                // Пропорции берём у самой картинки, когда сервер их узнал, иначе 16:9.
+                // Вписываем целиком (contain), как веб: обрезка съедала головы и текст.
+                LinkPreviewImage(url: url, width: preview.imageWidth, height: preview.imageHeight)
             }
         }
         .padding(8)
@@ -1402,5 +1400,55 @@ struct MessageRow: View {
         }
         .font(.system(size: 10, weight: .bold))
         .foregroundStyle(m.receipt == .read ? Eb.brand : Eb.textMuted)
+    }
+}
+
+/// Картинка превью ссылки. Отдельная вью ради ОДНОГО состояния — провала загрузки.
+/// Кадр тут с ЧУЖОГО сервера (og:image сайта, i.ytimg.com), и он вправе ответить 404,
+/// отдать не картинку или не ответить вовсе. Пока картинка едет, место под неё занято по
+/// известным пропорциям (лента — UICollectionView с самосчётной высотой ячейки: поехавшая
+/// после загрузки высота двигала бы соседние сообщения), а если загрузка провалилась —
+/// бокс убирается целиком. Пустая серая дыра в карточке читается как поломка приложения,
+/// карточка без картинки — нет.
+private struct LinkPreviewImage: View {
+
+    let url: URL
+    /// Размеры кадра, если сервер их узнал (og:image:width/height).
+    var width: Int?
+    var height: Int?
+
+    /// Провалившийся АДРЕС, а не голый флаг: ячейку ленты переиспользуют под другое
+    /// сообщение вместе с состоянием, и флаг погасил бы чужую живую картинку.
+    @State private var failedURL: URL?
+
+    private var ratio: CGFloat {
+        if let width, let height, width > 0, height > 0 {
+            return CGFloat(width) / CGFloat(height)
+        }
+        return 16.0 / 9.0
+    }
+
+    var body: some View {
+        if failedURL != url {
+            // Высоту держит ПУСТОЙ бокс с известной пропорцией, а картинка лежит поверх:
+            // так место не зависит от того, совпали ли настоящие пропорции кадра с
+            // обещанными, и не меняется в тот момент, когда картинка приехала.
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .aspectRatio(ratio, contentMode: .fit)
+                .overlay {
+                    CachedImage(
+                        url: url,
+                        contentMode: .fit,
+                        // Не растягиваем мелочь: когда og:image у страницы нет, сервер
+                        // подставляет favicon (16×16), и во всю карточку это мыло.
+                        upscales: false,
+                        onFailure: { failedURL = $0 }
+                    ) {
+                        Rectangle().fill(Eb.surface100)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
     }
 }

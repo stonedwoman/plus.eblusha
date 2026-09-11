@@ -39,6 +39,10 @@ struct LinkPreview: Equatable {
     var description: String?
     var imageUrl: String?
     var siteName: String?
+    /// Размеры картинки, если сервер их узнал: по ним бокс резервируется под настоящие
+    /// пропорции, а не под усреднённые 1.9 — иначе высокий кадр обрезался бы.
+    var imageWidth: Int?
+    var imageHeight: Int?
 }
 
 struct MessageAttachment: Codable, Equatable {

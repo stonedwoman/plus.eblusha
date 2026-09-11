@@ -78,3 +78,43 @@ func thumbMediaUrl(_ url: String?) -> String? {
     guard resolved.hasPrefix("http") else { return resolved }
     return resolved + (resolved.contains("?") ? "&thumb=1" : "?thumb=1")
 }
+
+/// Картинка превью ссылки лежит на ЧУЖОМ сервере (i.ytimg.com, og:image сайта), и гнать её
+/// через наш `/api/files/` нельзя: прокси ищет объект в своём хранилище, отвечает 404, и
+/// карточка остаётся с пустым местом под картинку. Веб грузит такой адрес напрямую
+/// (LinkPreviewCard.tsx: `src={imageUrl}`), здесь то же самое. Через прокси идут только
+/// свои файлы: относительные пути, прокси-адреса и шифрованные блобы хранилища.
+func linkPreviewImageUrl(_ url: String?) -> String? {
+    guard let raw = url?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+        return nil
+    }
+    guard raw.hasPrefix("http://") || raw.hasPrefix("https://"),
+          let parsed = URLComponents(string: raw), parsed.host?.isEmpty == false
+    else {
+        return resolveMediaUrl(raw)
+    }
+    // Свой прокси — прежним путём (там расшифровка и подпись).
+    if parsed.path.hasPrefix("/api/files/") {
+        return resolveMediaUrl(raw)
+    }
+    // Шифрованный блоб хранилища, отданный сырым S3-адресом, — тоже наш.
+    let lastSegment = parsed.path.components(separatedBy: "/").last ?? ""
+    if !lastSegment.isEmpty,
+       ebStorageBlobSuffix.firstMatch(
+           in: lastSegment, range: NSRange(lastSegment.startIndex..., in: lastSegment)
+       ) != nil {
+        return resolveMediaUrl(raw)
+    }
+    // Дальше — обычный веб-адрес, в том числе НА НАШЕМ домене: og:image страницы
+    // eblusha.org и её favicon лежат у веб-сервера, а не в хранилище, и через
+    // /api/files/ отвечают 404 (ровно пустое место вместо картинки). Такие грузим
+    // напрямую, как и чужие.
+    // Простой http iOS не пропустит (App Transport Security), а картинка почти всегда
+    // отдаётся и по https — поднимаем схему, иначе кадра не будет вовсе.
+    if raw.hasPrefix("http://") {
+        var upgraded = parsed
+        upgraded.scheme = "https"
+        return upgraded.string ?? raw
+    }
+    return raw
+}

@@ -81,6 +81,14 @@ actor ImageLoader {
             var request = URLRequest(url: url)
             // Картинки неизменяемы (url содержит ключ объекта), поэтому диск важнее сети.
             request.cachePolicy = .returnCacheDataElseLoad
+            // Картинка превью ссылки лежит на ЧУЖОМ хосте (i.ytimg.com, og:image сайта).
+            // Банка кук у URLSession.shared общая на всё приложение: чужой сервер не
+            // должен ни получать из неё что-либо, ни класть туда своё — по такой куке
+            // нас потом узнают на любой следующей картинке. Своему origin куки оставляем
+            // (там их и ставят), хотя /api/files и обходится без них.
+            if url.host != AppConfig.socketBaseURL.host {
+                request.httpShouldHandleCookies = false
+            }
             guard let (data, response) = try? await URLSession.shared.data(for: request),
                   let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                   let image = UIImage(data: data)
@@ -142,6 +150,14 @@ struct CachedImage<Placeholder: View>: View {
     /// (аватары: у них уже есть .frame снаружи, и своя высота тут всё бы поломала).
     var fallbackHeight: CGFloat?
     var contentMode: ContentMode = .fill
+    /// Разрешено ли растягивать картинку крупнее её натурального размера. false нужен
+    /// превью ссылок: сервер часто отдаёт вместо og:image крошечный favicon, и растянутый
+    /// во всю карточку он превращается в мыло.
+    var upscales: Bool = true
+    /// Загрузка провалилась (чужой хост ответил 404, отдал не картинку, не ответил вовсе).
+    /// Зовущему это нужно, чтобы УБРАТЬ зарезервированное место: серая дыра на месте
+    /// картинки читается как поломка.
+    var onFailure: ((URL) -> Void)?
     @ViewBuilder var placeholder: () -> Placeholder
 
     @State private var image: UIImage?
@@ -163,6 +179,7 @@ struct CachedImage<Placeholder: View>: View {
             Image(uiImage: image)
                 .resizable()
                 .aspectRatio(contentMode: contentMode)
+                .modifier(NaturalSizeCap(size: upscales ? nil : image.size))
         } else {
             placeholder()
                 .modifier(ReservedSpace(aspectRatio: aspectRatio, height: fallbackHeight))
@@ -188,10 +205,30 @@ struct CachedImage<Placeholder: View>: View {
         }
         guard !failed else { return }
         let loaded = await ImageLoader.shared.load(url)
+        // Пока качали, вью могли переиспользовать под другой адрес: `.task(id:)` отменяет
+        // ожидание, но тело продолжает выполняться, и чужой результат присвоился бы поверх
+        // уже начатой новой загрузки — в ячейке мелькала бы картинка прошлого сообщения.
+        guard loadedURL == url else { return }
         if let loaded {
             image = loaded
         } else {
             failed = true
+            onFailure?(url)
+        }
+    }
+}
+
+/// «Не крупнее натурального размера» (nil — без ограничения). Ограничивает САМУ картинку
+/// внутри уже занятого места, поэтому высоту вокруг не двигает.
+private struct NaturalSizeCap: ViewModifier {
+    let size: CGSize?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let size, size.width > 0, size.height > 0 {
+            content.frame(maxWidth: size.width, maxHeight: size.height)
+        } else {
+            content
         }
     }
 }
