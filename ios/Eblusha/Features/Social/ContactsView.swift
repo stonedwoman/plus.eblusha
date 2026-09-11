@@ -703,10 +703,21 @@ private struct LoadingRow: View {
 }
 
 private extension View {
-    /// Строка плоского списка: фон экрана (без карточек) и разделитель палитры.
+    /// Строка списка — карточка на сером, как беседы в списке чатов и плитки внизу:
+    /// плоские строки с волосками выбивались из остального интерфейса.
     func plainRow() -> some View {
-        listRowBackground(Eb.paper)
-            .listRowSeparatorTint(Eb.border)
+        listRowBackground(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Eb.surface200)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14).strokeBorder(Eb.borderStrong, lineWidth: 1.5)
+                }
+                // Подложка занимает всю высоту строки, поэтому карточки разводит этот
+                // отступ, а не отступ списка — иначе канты соседей слипаются.
+                .padding(.vertical, 3)
+        )
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
     }
 }
 

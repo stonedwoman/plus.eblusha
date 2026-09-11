@@ -106,14 +106,16 @@ struct ChatListView: View {
                     onTap: { onOpenChat(conversation) },
                     onJoinCall: { vm.joinCall(conversation) }
                 )
-                .listRowBackground(callRowBackground(call))
-                .listRowSeparatorTint(Eb.border)
+                // Беседа — карточка на сером, как плитки внизу и как было до перехода на
+                // системный список: плоские строки с волосками рассыпали экран на две
+                // разные половины. Кант цветной: секретка зелёная, непрочитанные ярче
+                // онлайна — тот же порядок, что в вебе.
+                .listRowBackground(conversationCard(conversation, call: call))
+                .listRowSeparator(.hidden)
                 // Секретка с отступом под родителем — веб-паритет вложенности.
                 .listRowInsets(EdgeInsets(
-                    top: 8, leading: hasCloudSibling ? 32 : 16, bottom: 8, trailing: 16
+                    top: 4, leading: hasCloudSibling ? 26 : 12, bottom: 4, trailing: 12
                 ))
-                // Разделитель начинается под текстом, а не под аватаром — как в Сообщениях.
-                .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] + 64 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     // Первая кнопка — у края экрана и на полном свайпе; удаление всё равно
                     // идёт через подтверждение (confirmDelete), случайный свайп безопасен.
@@ -168,12 +170,34 @@ struct ChatListView: View {
     /// Плитка беседы со звонком заливается оранжевым — порт веб-градиента
     /// (ConversationListPane.tsx:224-240); свой звонок заметно теплее чужого.
     @ViewBuilder
-    private func callRowBackground(_ call: CallTile?) -> some View {
-        if let call, call.kind != .ended {
-            Eb.brand.opacity(call.mine || call.participating ? 0.16 : 0.10)
-        } else {
-            Color.clear
-        }
+    /// Подложка строки: карточка беседы. Во время звонка она подсвечивается брендовым
+    /// цветом — заливка поверх серого, чтобы карточка осталась карточкой.
+    private func conversationCard(_ c: Conversation, call: CallTile?) -> some View {
+        RoundedRectangle(cornerRadius: 14)
+            .fill(Eb.surface200)
+            .overlay {
+                if let call, call.kind != .ended {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(Eb.brand.opacity(call.mine || call.participating ? 0.16 : 0.10))
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(cardBorderColor(c, call: call), lineWidth: 1.5)
+            }
+            // Подложка строки занимает всю её высоту, поэтому карточки разделяет
+            // не отступ списка, а этот: иначе канты соседних строк слипались бы.
+            .padding(.vertical, 3)
+    }
+
+    /// Цвет канта карточки: звонок → бренд, секретка → зелёный, непрочитанные ярче
+    /// онлайна (порядок из веба), иначе обычный кант.
+    private func cardBorderColor(_ c: Conversation, call: CallTile?) -> Color {
+        if let call, call.kind != .ended { return Eb.brand }
+        if c.isSecretV2 { return secretGreen.opacity(0.45) }
+        if c.unreadCount > 0 { return Eb.brand600 }
+        if c.online && !c.isGroup { return Eb.brand }
+        return Eb.borderStrong
     }
 
     // MARK: - Удаление
