@@ -57,6 +57,11 @@ final class ChatViewModel: ObservableObject {
         /// Когда собеседника видели последний раз (мс эпохи) — «был(а) онлайн …».
         var peerLastSeen: Int64?
         var messages: [Message] = []
+        /// id первого непрочитанного сообщения — над ним лента рисует разделитель
+        /// «Непрочитанные сообщения» и на нём же открывается чат. Ставится РОВНО один раз
+        /// за визит (см. resolveUnreadAnchorIfNeeded) и дальше не двигается: markRead
+        /// уходит сразу после первой страницы, и любой пересчёт стёр бы разделитель.
+        var unreadAnchorId: String?
         var hasMore = false
         var nextCursor: String?
         var typingName: String?
@@ -172,6 +177,11 @@ final class ChatViewModel: ObservableObject {
     private var lastInputMs: TimeInterval = 0
     private var lastReload: TimeInterval = 0
     private var lastMarkReadMs: TimeInterval = 0
+    /// Якорь непрочитанных за этот визит уже посчитан (пусть даже и не нашёлся).
+    private var unreadAnchorResolved = false
+    /// Серверный счётчик непрочитанных этой беседы, снятый в bootstrap — то есть ДО
+    /// первого markRead. Нужен только первому входу, когда своей метки чтения ещё нет.
+    private var visitUnreadCount = 0
     /// Отложенный тихий релоад: события в окне троттла больше не теряются.
     private var pendingReload: Task<Void, Never>?
     /// Хвостовой markRead: последняя пачка сообщений не должна остаться непрочитанной.
@@ -272,6 +282,8 @@ final class ChatViewModel: ObservableObject {
             await initSecret()
             return
         }
+        // Счётчик снимаем ДО load(): дальше пойдёт markRead и серверный unread обнулится.
+        visitUnreadCount = meta?.unreadCount ?? 0
         let group = meta?.isGroup ?? false
         ui.isGroup = group
         if group {
@@ -370,11 +382,69 @@ final class ChatViewModel: ObservableObject {
         let merged = (page.messages + ui.messages)
             .filter { seen.insert($0.id).inserted }
             .sorted(by: Self.olderFirst)
+        // Якорь считаем по ЭТОМУ списку и до присваивания: лента должна увидеть разделитель
+        // уже в первом снимке, иначе он появится вторым кадром и дёрнет позицию.
+        resolveUnreadAnchorIfNeeded(in: merged)
         ui.messages = merged
         if !pagedBack {
             ui.hasMore = page.hasMore
             ui.nextCursor = page.nextCursor
         }
+    }
+
+    /// Граница «отсюда я не читал», замороженная на весь визит (поведение Telegram:
+    /// fixedCombinedReadStates снимается с первого окна и переиспользуется).
+    ///
+    /// Считается РОВНО один раз и только на первой пришедшей странице: markRead() уходит
+    /// сразу за ней (load(): applyPageOne → markRead), так что пересчёт позже показал бы
+    /// «всё прочитано» и разделитель исчез бы через секунду. Поэтому флаг ставится до всех
+    /// проверок — даже когда якоря нет, второй попытки не будет.
+    private func resolveUnreadAnchorIfNeeded(in messages: [Message]) {
+        guard !unreadAnchorResolved, !secretMode else { return }
+        unreadAnchorResolved = true
+        // Удалённые лента не показывает — и якорем они быть не могут. Служебные строки
+        // («добавил в группу») исключаем тоже: непрочитанными их не считает ни сервер,
+        // ни Telegram, а разделитель над такой строкой выглядел бы промахом.
+        let visible = messages.filter { !$0.deleted && !$0.isSystem }
+        // Меньше двух строк — делить нечего.
+        guard visible.count > 1, let newest = visible.last, !newest.isMine else { return }
+
+        let incoming = visible.filter { !$0.isMine }
+        var candidate: Message?
+        if let mark = Self.readMark(conversationId) {
+            // Своя метка точнее серверного счётчика: её ставит markRead() этого устройства,
+            // и она не зависит от свежести кеша списка бесед.
+            candidate = incoming.first { $0.createdAt > mark }
+        } else if visitUnreadCount > 0, visitUnreadCount < incoming.count {
+            // Первый вход, метки ещё нет: отсчитываем N чужих сообщений от конца. Если N не
+            // меньше числа загруженных чужих — граница старше страницы, якоря не ставим.
+            candidate = incoming[incoming.count - visitUnreadCount]
+        }
+        // Условие Telegram `i != 0`: разделитель на самой первой загруженной строке врёт —
+        // непрочитанное началось выше страницы. Тогда вход остаётся обычным, в низ.
+        guard let candidate, candidate.id != visible.first?.id else { return }
+        ui.unreadAnchorId = candidate.id
+    }
+
+    /// Время последнего сообщения, которое это устройство уже квитировало в беседе.
+    /// Ключ на беседу, а не общий словарь: пишется из markRead() (то есть часто), и
+    /// перезаписывать целиком словарь всех бесед на каждое входящее незачем.
+    private static func readMarkKey(_ conversationId: String) -> String {
+        "chat.readMark.\(conversationId)"
+    }
+
+    private static func readMark(_ conversationId: String) -> Int64? {
+        let key = readMarkKey(conversationId)
+        guard UserDefaults.standard.object(forKey: key) != nil else { return nil }
+        return Int64(UserDefaults.standard.double(forKey: key))
+    }
+
+    private static func rememberReadMark(_ conversationId: String, upTo millis: Int64) {
+        let key = readMarkKey(conversationId)
+        // Метка только растёт: markRead() уходит и когда экран лежит в бэкстеке, а ленту
+        // в это время мог подрезать refetch — откат метки вернул бы ложный разделитель.
+        if let known = readMark(conversationId), known >= millis { return }
+        UserDefaults.standard.set(Double(millis), forKey: key)
     }
 
     /// Следующая СТАРШАЯ страница, приклеивается сверху.
@@ -1426,6 +1496,13 @@ final class ChatViewModel: ObservableObject {
         // Баннеры этой беседы снимаем и у секретных чатов — серверный markRead им не нужен.
         MessageNotifications.shared.clearDelivered(conversationId: conversationId)
         guard !secretMode else { return }
+        // Метка «досюда дочитано» — для разделителя непрочитанных на СЛЕДУЮЩЕМ входе.
+        // Пишем на каждый вызов, включая троттлированные: серверный markRead всё равно
+        // квитирует беседу целиком. Оптимистичные пузыри пропускаем — их createdAt идёт
+        // с локальных часов и, если те спешат, метка съела бы чужие непрочитанные.
+        if let newest = ui.messages.last(where: { !Self.isOutgoingId($0.id) })?.createdAt {
+            Self.rememberReadMark(conversationId, upTo: newest)
+        }
         // В живом диалоге сообщения идут пачками; без троттла на каждое летел POST,
         // а в ответ прилетали receipts — и всё это во время прокрутки.
         let now = Date().timeIntervalSince1970

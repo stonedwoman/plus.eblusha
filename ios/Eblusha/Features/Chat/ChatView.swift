@@ -11,9 +11,16 @@ final class MessageSwipeState: ObservableObject {
     /// Рамка пузыря в координатах ячейки — по ней жесты понимают, куда лёг палец:
     /// свайп по входящему пузырю вправо — это ответ, а вправо мимо пузыря — «назад».
     var bubbleFrame: CGRect = .zero
-    /// Рамки плиток фото (индекс среди фото сообщения → рамка в координатах ячейки):
+    /// Рамки плиток медиа (индекс среди медиа сообщения → рамка в координатах ячейки):
     /// просмотрщик открывается из своей плитки и улетает обратно в актуальную.
+    /// Нумерация — Message.galleryMedia: сперва фото, затем видео.
     var tileFrames: [Int: CGRect] = [:]
+    /// Индекс плитки, которую сейчас показывает открытый просмотрщик: её пузырь не рисует
+    /// (гасит непрозрачностью, место оставляя за ней). Под летящей копией кадра не должно
+    /// быть той же картинки — в альбоме кадр иначе приземляется на самого себя.
+    /// @Published, потому что перерисовку строки запускает подписанный на этот объект
+    /// SwipeToReplyRow: его body пересобирает content(), а тот уже читает свежее значение.
+    @Published var hiddenTileIndex: Int?
 }
 
 /// Пузырь, который умеет уезжать вбок: как на Android — сдвигается сам пузырь, аватар и
@@ -177,7 +184,7 @@ struct ChatView: View {
                     sendToken: sendToken,
                     onForward: { forwardSheet = ForwardRequest(messages: [$0]) },
                     onOpenImage: { message, index, sourceFrame in
-                        openGallery(from: message, imageIndex: index, sourceFrame: sourceFrame)
+                        openGallery(from: message, mediaIndex: index, sourceFrame: sourceFrame)
                     },
                     onOpenSender: { message in
                         // Тап по аватару отправителя в группе — карточка пользователя.
@@ -455,6 +462,10 @@ struct ChatView: View {
             )
         }
         .fullScreenCover(item: $gallery, onDismiss: {
+            // Страховка от залипшей дыры в ленте: обычно плитку возвращает сам просмотрщик
+            // (по концу полёта и в finishDismiss), но если обёртку сняли мимо него —
+            // например, экран ушёл из иерархии — вернуть её больше некому.
+            listProxy.hideTile(messageId: nil, index: 0)
             let pending = pendingAfterGallery
             pendingAfterGallery = nil
             pending?()
@@ -561,17 +572,17 @@ struct ChatView: View {
 
     // MARK: - Просмотр фото
 
-    /// Галерея — все фото загруженной истории в хронологическом порядке, как в Telegram,
-    /// а не только фото тапнутого сообщения (так было в старом просмотрщике и в вебе).
-    private func openGallery(from message: Message, imageIndex: Int, sourceFrame: CGRect?) {
+    /// Галерея — всё медиа загруженной истории в хронологическом порядке, как в Telegram,
+    /// а не только вложения тапнутого сообщения (так было в старом просмотрщике и в вебе).
+    /// Фото и видео идут одним списком: в пейджере они равноправные страницы.
+    private func openGallery(from message: Message, mediaIndex: Int, sourceFrame: CGRect?) {
         var items: [PhotoViewerItem] = []
         let source = vm.ui.messages.contains { $0.id == message.id } ? vm.ui.messages : [message]
         for m in source where !m.deleted && !m.isSystem {
             let trimmed = m.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let images = m.attachments.filter { $0.type == "IMAGE" }
             // В секретных чатах у чужих сообщений имя пустое — берём название беседы.
             let sender = m.senderName.isEmpty ? (m.isMine ? "Вы" : conversation.title) : m.senderName
-            for (i, att) in images.enumerated() {
+            for (i, att) in m.galleryMedia.enumerated() {
                 items.append(PhotoViewerItem(
                     id: "\(m.id)#\(i)",
                     attachment: att,
@@ -584,7 +595,7 @@ struct ChatView: View {
             }
         }
         guard !items.isEmpty else { return }
-        let start = items.firstIndex { $0.id == "\(message.id)#\(imageIndex)" } ?? 0
+        let start = items.firstIndex { $0.id == "\(message.id)#\(mediaIndex)" } ?? 0
         // Просмотрщик показывается поверх (overFullScreen) и клавиатуру сам не прячет —
         // иначе она осталась бы торчать над кадром.
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
@@ -599,11 +610,27 @@ struct ChatView: View {
                 sourceFrame: sourceFrame,
                 // Куда улетать при закрытии: лента могла проскроллиться, а кадр — смениться.
                 sourceFrameProvider: { item in
-                    let index = Int(item.id.split(separator: "#").last ?? "") ?? 0
-                    return listProxy.tileFrameInWindow(messageId: item.messageId, index: index)
+                    listProxy.tileFrameInWindow(
+                        messageId: item.messageId, index: galleryTileIndex(item)
+                    )
+                },
+                // Плитку текущего кадра лента не рисует: под открытым кадром и под летящей
+                // копией не должно быть той же картинки. Снимается по концу полёта и на
+                // всякий случай ещё раз в finishDismiss просмотрщика.
+                setHiddenTile: { item in
+                    listProxy.hideTile(
+                        messageId: item?.messageId,
+                        index: item.map { galleryTileIndex($0) } ?? 0
+                    )
                 }
             )
         }
+    }
+
+    /// Индекс кадра внутри сообщения, зашитый в id («<messageId>#<n>»): по нему лента
+    /// находит плитку-источник. Нумерация — Message.galleryMedia (фото, затем видео).
+    private func galleryTileIndex(_ item: PhotoViewerItem) -> Int {
+        Int(item.id.split(separator: "#").last ?? "") ?? 0
     }
 
     private func closeGallery() {
@@ -632,6 +659,13 @@ struct ChatView: View {
             onShowInChat: { item in
                 listProxy.scrollToMessage(item.messageId)
                 listProxy.highlightedId = item.messageId
+            },
+            // Пролистали галерею — чат под ней подводит плитку нового кадра в видимую
+            // область, иначе закрытие уходит не в плитку, а в затухание. Лента двигается
+            // ТОЛЬКО когда строки не видно (revealIfNeeded), поэтому листание соседних
+            // кадров одного сообщения её не трогает вовсе.
+            onCurrentItemChanged: { item in
+                listProxy.revealMessage(item.messageId)
             },
             // В секретных чатах нет ни пересылки, ни удаления у всех — кнопки прячем.
             canForward: !vm.ui.isSecret,
@@ -890,7 +924,8 @@ struct MessageRow: View {
     let onTap: () -> Void
     let onStartSelect: () -> Void
     let onForward: () -> Void
-    /// Индекс среди фото сообщения и рамка плитки в координатах ячейки («messageCell»).
+    /// Индекс среди медиа сообщения (Message.galleryMedia: фото, затем видео) и рамка
+    /// плитки в координатах ячейки («messageCell»).
     let onOpenImage: (Int, CGRect?) -> Void
     var onOpenSender: (() -> Void)?
     /// Расшифровка секретного вложения в локальный файл (в обычном чате не зовётся).
@@ -1141,6 +1176,10 @@ struct MessageRow: View {
 
     @ViewBuilder
     private var attachmentsView: some View {
+        // Нумерация плиток — Message.galleryMedia: сперва фото, затем видео. Тот же индекс
+        // означает тот же кадр и в swipe.tileFrames, и в id кадра галереи («<id>#<n>»),
+        // поэтому просмотрщик открывает именно то, по чему ткнули, и улетает обратно в его
+        // плитку. Фильтры здесь и в galleryMedia обязаны совпадать.
         let images = m.attachments.filter { $0.type == "IMAGE" }
         let videos = m.attachments.filter { $0.type == "VIDEO" }
         // Всё остальное (голосовые и документы) — строками под медиа, как в вебе.
@@ -1151,6 +1190,9 @@ struct MessageRow: View {
             // как в вебе: мозаика начинается только с двух кадров.
             let size = att.displaySize(screen: screenSize, extraInset: forwardContentInset)
             attachmentImage(att, width: size.width, height: size.height)
+                // Плитка под открытым просмотрщиком невидима, но место держит: иначе
+                // высота пузыря изменилась бы и лента сдвинулась под галереей.
+                .opacity(swipe.hiddenTileIndex == 0 ? 0 : 1)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
                     swipe.tileFrames[0] = $0
                 }
@@ -1168,9 +1210,7 @@ struct MessageRow: View {
                 maxWidth: budget.maxWidth,
                 maxHeight: budget.maxHeight,
                 decryptSecretAttachment: decryptSecretAttachment,
-                // Индекс плитки = индекс фото в сообщении (тот же фильтр IMAGE, что у
-                // галереи в openGallery), поэтому просмотрщик открывает именно тот кадр,
-                // по которому ткнули, и улетает обратно в его рамку.
+                hiddenTileIndex: swipe.hiddenTileIndex,
                 onTileFrame: { index, frame in swipe.tileFrames[index] = frame },
                 onOpenImage: { index in
                     if selectionMode { onTap() } else { onOpenImage(index, swipe.tileFrames[index]) }
@@ -1178,18 +1218,23 @@ struct MessageRow: View {
             )
         }
 
-        // Видео — плитка с кадром-постером и кнопкой Play вместо строки «movie.mp4 · 12 МБ».
-        // Рамки плиток видео в swipe.tileFrames НЕ пишем: там нумерация галереи фото, а
-        // видео в неё не попадает — чужой индекс увёл бы просмотрщик не в тот кадр.
-        ForEach(Array(videos.enumerated()), id: \.offset) { _, att in
+        // Видео — плитка с кадром-постером и кнопкой Play. Тап открывает ТОТ ЖЕ
+        // просмотрщик, что и фото (страница с плеером, VideoPage.swift): видео стоит в
+        // одном пейджере с кадрами беседы, поэтому его индекс продолжает нумерацию фото.
+        ForEach(Array(videos.enumerated()), id: \.offset) { offset, att in
+            let index = images.count + offset
             VideoAttachmentTile(
                 att: att,
                 size: att.videoDisplaySize(screen: screenSize, extraInset: forwardContentInset),
                 durationSec: att.durationSec,
-                // Плеер тот же, что у файловой строки: секретное видео расшифровывается
-                // ключом треда, обычное скачивается и уходит в VideoPlayerSheet.
-                onPlay: { if selectionMode { onTap() } else { onOpenAttachment(att) } }
+                onPlay: {
+                    if selectionMode { onTap() } else { onOpenImage(index, swipe.tileFrames[index]) }
+                }
             )
+            .opacity(swipe.hiddenTileIndex == index ? 0 : 1)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
+                swipe.tileFrames[index] = $0
+            }
         }
 
         ForEach(Array(files.enumerated()), id: \.offset) { _, att in

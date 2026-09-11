@@ -57,6 +57,11 @@ extension PhotoViewerItem {
 
     /// E2EE-вложение: по url лежит шифртекст, картинка есть только после decrypt.
     var isSecret: Bool { attachment.secretNonce != nil }
+
+    /// Видео-кадр галереи: страница с плеером (VideoPage.swift) вместо ZoomableImageView.
+    /// Вид медиа не отдельным полем: тип уже лежит во вложении, а второй источник правды
+    /// разошёлся бы с фильтрами ленты (там тот же `type == "VIDEO"`).
+    var isVideo: Bool { attachment.type == "VIDEO" }
 }
 
 /// Что открыто: все фото беседы в хронологическом порядке + стартовый кадр. Identifiable
@@ -71,6 +76,11 @@ struct PhotoViewerGallery: Identifiable {
     /// проскроллиться, пока просмотрщик открыт, а после листания закрывается уже другой
     /// кадр. nil — плитки на экране нет, закрываемся уменьшением с затуханием.
     var sourceFrameProvider: ((PhotoViewerItem) -> CGRect?)? = nil
+    /// Спрятать плитку-источник в ленте (nil — вернуть все плитки на место). Под летящей
+    /// копией кадра не должно быть той же картинки: последние миллисекунды возврата зритель
+    /// иначе видит её дважды, а в альбоме кадр приземляется на самого себя. Зовёт
+    /// просмотрщик: на открытии, на каждой смене центрального кадра и по концу полёта.
+    var setHiddenTile: ((PhotoViewerItem?) -> Void)? = nil
 }
 
 /// Что делает хром по кнопкам; всё исполняет координатор (ChatView) — у него есть
@@ -81,6 +91,11 @@ struct PhotoViewerCallbacks {
     var onForward: (PhotoViewerItem) -> Void
     var onDelete: (PhotoViewerItem) -> Void          // только для isMine
     var onShowInChat: (PhotoViewerItem) -> Void      // закрыть и промотать к сообщению
+    /// Центральный кадр сменился (пролистали галерею или прыгнули по ленте миниатюр):
+    /// чат под просмотрщиком подводит плитку этого кадра в видимую область, чтобы закрытие
+    /// всегда попадало в плитку, а не гасло уменьшением. Прокрутка не видна — сверху
+    /// непрозрачный фон просмотрщика.
+    var onCurrentItemChanged: ((PhotoViewerItem) -> Void)? = nil
     /// В секретных чатах пересылки и удаления нет — кнопки прячутся, а не молчат.
     var canForward: Bool = true
     var canDelete: Bool = true
@@ -132,6 +147,9 @@ enum PhotoViewerLoadState { case idle, loading, loaded, failed }
     private var generation: [String: Int] = [:]
     /// Расшифрованные файлы секретных вложений (лежат в кэше SecretRepository).
     private var secretFiles: [String: URL] = [:]
+    /// Готовые к проигрыванию файлы секретных видео: ссылка на расшифрованный файл с
+    /// расширением (у file:// нет Content-Type, и контейнер AVPlayer узнаёт только по нему).
+    private var videoFiles: [String: URL] = [:]
     /// Готовые файлы для «Поделиться»/«Сохранить» — с человеческим именем и расширением.
     private var shareFiles: [String: URL] = [:]
     /// Центр последнего prefetch — по нему решаем, что оставить при нехватке памяти.
@@ -227,6 +245,14 @@ enum PhotoViewerLoadState { case idle, loading, loaded, failed }
     /// (для явного повтора есть retry(_:)).
     func ensureLoaded(_ item: PhotoViewerItem) {
         let id = item.id
+        // Видео полноразмером не грузим вовсе: его страница стримит байты плеером (прокси
+        // /api/files отдаёт Range), а для геометрии, полёта кадра и ленты миниатюр хватает
+        // серверного постера — он приходит обычным путём миниатюры.
+        if item.isVideo {
+            _ = thumb(for: item)
+            if states[id] != .loaded { publish { states[id] = .loaded } }
+            return
+        }
         switch states[id] ?? .idle {
         case .loading, .loaded, .failed: return
         case .idle: break
@@ -282,6 +308,10 @@ enum PhotoViewerLoadState { case idle, loading, loaded, failed }
     /// расширения, а Фото и шаринг определяют тип по расширению), обычный — скачивается
     /// во временный каталог (URLCache отдаст с диска, если кадр уже смотрели).
     func localFile(for item: PhotoViewerItem) async -> URL? {
+        // Видео здесь не готовим: Self.download тянет файл целиком в память (десятки
+        // мегабайт), а в Фото такой файл всё равно уходит не картинкой. Поэтому у видео
+        // хром прячет «Сохранить», «Копировать» и «Поделиться» — см. PhotoViewerView.
+        guard !item.isVideo else { return nil }
         let id = item.id
         if let ready = shareFiles[id], FileManager.default.fileExists(atPath: ready.path) {
             return ready
@@ -314,6 +344,32 @@ enum PhotoViewerLoadState { case idle, loading, loaded, failed }
         guard written else { return nil }
         shareFiles[id] = target
         return target
+    }
+
+    /// Откуда играть видео. Обычное — потоковый URL прокси: /api/files отвечает
+    /// Accept-Ranges и 206, поэтому AVPlayer тянет байты по мере воспроизведения (так же
+    /// давно играет VoiceMessagePlayer). Секретное стримить нельзя в принципе — по url
+    /// лежит ШИФРТЕКСТ, поэтому оно расшифровывается в файл ключом треда, ровно как
+    /// секретное голосовое (SecretVoiceMessagePlayer).
+    func videoSource(for item: PhotoViewerItem) async -> URL? {
+        guard item.isVideo else { return nil }
+        let id = item.id
+        if let ready = videoFiles[id], FileManager.default.fileExists(atPath: ready.path) {
+            return ready
+        }
+        guard item.isSecret else { return Self.fullURL(item) }
+
+        var source = secretFiles[id]
+        if source == nil, let decrypt { source = await decrypt(item.attachment) }
+        guard let source else { return nil }
+        secretFiles[id] = source
+        let mime = item.attachment.mime
+        // Ссылку создаём вне главного потока: это обращение к файловой системе.
+        let playable = await Task.detached(priority: .userInitiated) {
+            Self.playableVideoFile(source, mime: mime)
+        }.value
+        videoFiles[id] = playable
+        return playable
     }
 
     // MARK: Внутреннее состояние
@@ -366,6 +422,9 @@ enum PhotoViewerLoadState { case idle, loading, loaded, failed }
         let keep = (index - 2)...(index + 2)
         var toDrop: [String] = []
         for (offset, item) in items.enumerated() where !keep.contains(offset) {
+            // У видео в fulls ничего нет (постер — это миниатюра, она копеечная), а сброс
+            // состояния только гонял бы .loaded → .idle → .loaded на каждом листании.
+            guard !item.isVideo else { continue }
             let state = states[item.id] ?? .idle
             if state == .loaded || state == .loading { toDrop.append(item.id) }
         }
@@ -399,8 +458,13 @@ enum PhotoViewerLoadState { case idle, loading, loaded, failed }
 
     // MARK: URL и файлы
 
+    /// Миниатюра кадра: у фото — серверное превью самого файла, у видео — кадр-постер
+    /// (metadata.posterKey): по url видео лежат его байты, и превью из них не делается.
+    /// Тот же адрес берёт плитка в ленте (VideoAttachmentTile), поэтому постер к моменту
+    /// открытия уже в кэше ImageLoader — копия для полёта получает картинку сразу.
     private func thumbURL(_ item: PhotoViewerItem) -> URL? {
-        thumbMediaUrl(item.attachment.url).flatMap { URL(string: $0) }
+        let source = item.isVideo ? item.attachment.posterUrl : item.attachment.url
+        return thumbMediaUrl(source).flatMap { URL(string: $0) }
     }
 
     nonisolated private static func fullURL(_ item: PhotoViewerItem) -> URL? {
@@ -451,6 +515,42 @@ enum PhotoViewerLoadState { case idle, loading, loaded, failed }
         } catch {
             NSLog("PhotoViewer: не удалось подготовить файл для шаринга: %@", String(describing: error))
             return false
+        }
+    }
+
+    /// Расширение локального видеофайла по mime — без него AVPlayer не определит
+    /// контейнер file://-ресурса и молча уйдёт в .failed (та же грабля, что у аудио).
+    nonisolated private static func videoFileExtension(for mime: String?) -> String {
+        let m = (mime ?? "").lowercased()
+        if m.contains("quicktime") || m.contains("mov") { return "mov" }
+        if m.contains("m4v") { return "m4v" }
+        // webm/mkv AVPlayer всё равно не проиграет, так что mp4 — лучшая догадка для всего
+        // остального: и камеры телефонов, и веб-загрузки пишут именно его.
+        return "mp4"
+    }
+
+    /// Готовит расшифрованный секретный файл к проигрыванию: кэш SecretRepository кладёт
+    /// его под хеш БЕЗ расширения, поэтому рядом создаётся жёсткая ссылка с расширением.
+    /// Именно рядом, а не в своём tmp: ссылка лежит в том же каталоге с тем же префиксом
+    /// треда, и purgeThreadLocal стирает её вместе с кэшем — расшифровка не переживает
+    /// закрытие секретки (так же сделано для секретных голосовых).
+    nonisolated private static func playableVideoFile(_ file: URL, mime: String?) -> URL {
+        guard file.pathExtension.isEmpty else { return file }
+        let fm = FileManager.default
+        let alias = file.appendingPathExtension(videoFileExtension(for: mime))
+        if fm.fileExists(atPath: alias.path) { return alias }
+        do {
+            try fm.linkItem(at: file, to: alias)
+            return alias
+        } catch {
+            // Гонка соседней страницы (ссылку уже создали) или ФС без жёстких ссылок.
+            if fm.fileExists(atPath: alias.path) { return alias }
+            do {
+                try fm.copyItem(at: file, to: alias)
+                return alias
+            } catch {
+                return file
+            }
         }
     }
 

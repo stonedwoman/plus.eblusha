@@ -249,6 +249,11 @@ struct AttachmentAlbumView: View {
     var decryptSecretAttachment: ((MessageAttachment) async -> URL?)?
     /// Система координат, в которой сообщаем рамки (у ленты это «messageCell»).
     var coordinateSpaceName: String = "messageCell"
+    /// Плитка, которую сейчас показывает открытый просмотрщик (nil — все на месте): её не
+    /// видно, но место она держит — иначе мозаика пересобралась бы, а высота ячейки
+    /// прыгнула. Под летящей копией кадра не должно быть той же картинки: при возврате она
+    /// приземлялась бы на саму себя.
+    var hiddenTileIndex: Int?
     /// Рамка плитки: индекс фото → рамка. Хранит её координатор ленты.
     var onTileFrame: (Int, CGRect) -> Void
     /// Тап по плитке: индекс фото (на «+N» — индекс последней видимой).
@@ -330,11 +335,23 @@ struct AttachmentAlbumView: View {
                 }
             }
         }
+        .opacity(hiddenTileIndex == index ? 0 : 1)
         .contentShape(Rectangle())
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpaceName)) } action: {
             onTileFrame(index, $0)
         }
         .onTapGesture { onOpenImage(index) }
+    }
+}
+
+extension Message {
+    /// Медиа сообщения в том порядке, в каком их рисует пузырь: сперва фото (одиночное
+    /// или мозаика), затем плитки видео. Этот порядок — единственная нумерация кадров:
+    /// по нему считаются и рамки плиток (MessageSwipeState.tileFrames), и id кадров
+    /// галереи («<messageId>#<n>»). Разойдись они — просмотрщик открывал бы не тот кадр
+    /// и улетал бы не в ту плитку.
+    var galleryMedia: [MessageAttachment] {
+        attachments.filter { $0.type == "IMAGE" } + attachments.filter { $0.type == "VIDEO" }
     }
 }
 

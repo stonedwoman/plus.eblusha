@@ -28,7 +28,8 @@ struct MessageListView: View {
     let pinToken: Int
     let sendToken: Int
     let onForward: (Message) -> Void
-    /// Сообщение, индекс среди его фото и рамка плитки в координатах окна (для анимации).
+    /// Сообщение, индекс среди его медиа (фото, затем видео — Message.galleryMedia) и
+    /// рамка плитки в координатах окна (для анимации открытия).
     let onOpenImage: (Message, Int, CGRect?) -> Void
     let onOpenSender: (Message) -> Void
     let onOpenAttachment: (MessageAttachment) -> Void
@@ -44,6 +45,9 @@ struct MessageListView: View {
         MessageListRepresentable(
             rows: rows,
             isLoading: isLoading,
+            // Плавающая дата и эта плашка стоят в одном месте сверху — лента гасит пилюлю,
+            // пока плашка на экране, иначе они наезжают друг на друга.
+            noticeVisible: noticeText != nil,
             proxy: proxy,
             actions: MessageRowActions(
                 onQuoteTap: { jumpToQuote($0) },
@@ -65,7 +69,7 @@ struct MessageListView: View {
             onPrependHandled: { vm.releasePrepending() }
         )
         .overlay(alignment: .top) {
-            if let notice = jumpNotice ?? (vm.ui.loadingOlder ? "Загружаем…" : nil) {
+            if let notice = noticeText {
                 Text(notice)
                     .font(.footnote)
                     .foregroundStyle(Eb.textMuted)
@@ -89,6 +93,11 @@ struct MessageListView: View {
             proxy.scrollToBottom(animated: true)
         }
         .onDisappear { jumpTask?.cancel() }
+    }
+
+    /// Плашка сверху: поиск сообщения по цитате или подгрузка истории.
+    private var noticeText: String? {
+        jumpNotice ?? (vm.ui.loadingOlder ? "Загружаем…" : nil)
     }
 
     // MARK: - Модель строк
@@ -147,6 +156,10 @@ struct MessageListView: View {
         // Строк столько же, сколько сообщений; конверт рисует каждая, а общую шапку
         // источника — только первая в пачке (slot.isFirst), и визуально это тот же конверт.
         let forwardSlots = computeForwardBundleSlots(messages)
+        // Граница «непрочитанные» — ФЛАГ строки, а не отдельный элемент снимка: id строк —
+        // это id сообщений, на них держатся вклейка истории (isPrepend), прыжок к цитате
+        // (scroll(to:)) и рамки плиток. Синтетическая строка сдвинула бы всё это.
+        let unreadAnchorId = vm.ui.unreadAnchorId
 
         return messages.enumerated().map { index, message in
             let earlier = index > 0 ? messages[index - 1] : nil
@@ -167,6 +180,7 @@ struct MessageListView: View {
                 isFirstInRun: !sameRun(earlier, message),
                 isLastInRun: !sameRun(message, later),
                 dayHeader: newDay ? formatMessageDay(message.createdAt) : nil,
+                unreadHeader: unreadAnchorId != nil && message.id == unreadAnchorId,
                 selectionMode: vm.ui.selectionMode,
                 selected: vm.ui.selectedIds.contains(message.id),
                 highlighted: message.id == proxy.highlightedId,
@@ -188,13 +202,40 @@ struct MessageListView: View {
                 .frame(width: 40, height: 40)
                 .background(Eb.brand, in: Circle())
                 .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+                // Бейдж наезжает на верх кружка (сдвиг −6, как у Telegram), поэтому он
+                // накладка, а не часть стопки: иначе кнопка подросла бы и уехала от угла.
+                .overlay(alignment: .top) { scrollDownBadge }
         }
         .buttonStyle(.plain)
         .padding(.trailing, 14)
         .padding(.bottom, 12)
         .opacity(proxy.showScrollDown ? 1 : 0)
-        .animation(.easeOut(duration: 0.15), value: proxy.showScrollDown)
+        // Пружина 0.3 с с scale 0.2↔1 (числа Telegram): кнопка «прилетает», а не проявляется.
+        // Это чистая SwiftUI-накладка над лентой — ни contentOffset, ни жестов не касается.
+        .scaleEffect(proxy.showScrollDown ? 1 : 0.2)
+        .animation(.spring(duration: 0.3), value: proxy.showScrollDown)
+        // Тем же движением и бейдж: появление/смена числа не должны быть кадром-подменой.
+        .animation(.spring(duration: 0.3), value: proxy.newBelow)
         .allowsHitTesting(proxy.showScrollDown)
+    }
+
+    /// Сколько ЧУЖИХ сообщений прилетело, пока лента была не внизу. Серверный unread тут
+    /// не годится: markRead квитирует беседу на каждое входящее, и он всегда 0.
+    @ViewBuilder
+    private var scrollDownBadge: some View {
+        if proxy.newBelow > 0 {
+            Text(proxy.newBelow > 99 ? "99+" : "\(proxy.newBelow)")
+                .font(.system(size: 13))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                // 18×18 — минимум Telegram; шире становится только от самого текста.
+                .frame(minWidth: 18, minHeight: 18)
+                .background(Eb.brand700, in: Capsule())
+                .overlay(Capsule().strokeBorder(Eb.paper, lineWidth: 1.5))
+                .offset(y: -6)
+                .allowsHitTesting(false)
+                .transition(.scale.combined(with: .opacity))
+        }
     }
 
     // MARK: - Подгрузка истории и переход к цитате
@@ -259,6 +300,10 @@ struct MessageRowModel: Identifiable, Equatable {
     let isFirstInRun: Bool
     let isLastInRun: Bool
     let dayHeader: String?
+    /// Над этой строкой рисуется полоса «Непрочитанные сообщения». Ставится один раз на
+    /// вход в чат (ChatViewModel.resolveUnreadAnchorIfNeeded) и за визит не меняется —
+    /// поэтому строка не переконфигурируется, когда сообщения дочитаны.
+    let unreadHeader: Bool
     let selectionMode: Bool
     let selected: Bool
     let highlighted: Bool
@@ -278,7 +323,7 @@ struct MessageRowActions {
     let onTap: (Message) -> Void
     let onLongPress: (Message) -> Void
     let onForward: (Message) -> Void
-    /// Сообщение, индекс среди его фото и рамка плитки в координатах окна (для анимации).
+    /// Сообщение, индекс среди его медиа (фото, затем видео) и рамка плитки в окне.
     let onOpenImage: (Message, Int, CGRect?) -> Void
     let onOpenSender: (Message) -> Void
     let onOpenAttachment: (MessageAttachment) -> Void
@@ -300,6 +345,9 @@ final class MessageListProxy: ObservableObject {
     @Published var atBottom = true
     /// Кнопку «вниз» показываем, только когда есть куда листать И мы не внизу.
     @Published var showScrollDown = false
+    /// Сколько чужих сообщений пришло, пока лента не внизу — бейдж на кнопке «вниз».
+    /// Считает контроллер по снимкам, обнуляет — попадание в низ.
+    @Published var newBelow = 0
     /// Подсветка после перехода по цитате.
     @Published var highlightedId: String?
     /// Идёт переход к цитате: подгрузка истории на это время молчит.
@@ -312,8 +360,8 @@ final class MessageListProxy: ObservableObject {
     /// Можно ли начать жест «назад» из этой точки экрана (в координатах окна). Лента
     /// отвечает «нет», если палец лёг на входящий пузырь — там свайп вправо значит ответ.
     var backSwipeAllowed: ((CGPoint) -> Bool)?
-    /// Актуальная рамка плитки фото (сообщение, индекс среди его фото) в координатах окна;
-    /// nil — ячейки нет на экране. Просмотрщик улетает по ней обратно в чат.
+    /// Актуальная рамка плитки медиа (сообщение, индекс среди его медиа) в координатах
+    /// окна; nil — ячейки нет на экране. Просмотрщик улетает по ней обратно в чат.
     var tileFrameAction: ((String, Int) -> CGRect?)?
     /// Близнец `tileFrameAction`, но для пузыря целиком: его рамка в координатах окна,
     /// nil — ячейки нет на экране. По ней меню сообщения возвращает поднятую копию пузыря
@@ -321,12 +369,19 @@ final class MessageListProxy: ObservableObject {
     var bubbleFrameAction: ((String) -> CGRect?)?
     /// Снимок пузыря (растр плюс та же оконная рамка) на момент открытия меню.
     var bubbleCopyAction: ((String) -> MessageBubbleCopy?)?
+    /// Спрятать плитку-источник открытого просмотрщика (сообщение и индекс медиа) либо
+    /// вернуть все плитки на место (messageId = nil).
+    var hideTileAction: ((String?, Int) -> Void)?
+    /// Подвести сообщение в видимую область, если его плитки может не быть на экране.
+    var revealMessageAction: ((String) -> Void)?
 
     func scrollToBottom(animated: Bool) { scrollToBottomAction?(animated) }
     func scrollToMessage(_ id: String) { scrollToMessageAction?(id) }
     func tileFrameInWindow(messageId: String, index: Int) -> CGRect? { tileFrameAction?(messageId, index) }
     func bubbleFrameInWindow(messageId: String) -> CGRect? { bubbleFrameAction?(messageId) }
     func bubbleCopy(messageId: String) -> MessageBubbleCopy? { bubbleCopyAction?(messageId) }
+    func hideTile(messageId: String?, index: Int) { hideTileAction?(messageId, index) }
+    func revealMessage(_ id: String) { revealMessageAction?(id) }
 }
 
 // MARK: - UIKit-лента
@@ -335,6 +390,7 @@ private struct MessageListRepresentable: UIViewControllerRepresentable {
 
     let rows: [MessageRowModel]
     let isLoading: Bool
+    let noticeVisible: Bool
     let proxy: MessageListProxy
     let actions: MessageRowActions
     let onReachedTop: () -> Void
@@ -364,11 +420,18 @@ private struct MessageListRepresentable: UIViewControllerRepresentable {
         proxy.bubbleCopyAction = { [weak controller] id in
             controller?.bubbleCopy(messageId: id)
         }
+        proxy.hideTileAction = { [weak controller] id, index in
+            controller?.setHiddenTile(messageId: id, index: index)
+        }
+        proxy.revealMessageAction = { [weak controller] id in
+            controller?.revealIfNeeded(messageId: id)
+        }
         return controller
     }
 
     func updateUIViewController(_ controller: MessageListController, context: Context) {
         controller.isLoading = isLoading
+        controller.noticeVisible = noticeVisible
         controller.actions = actions
         controller.onReachedTop = onReachedTop
         controller.onPrependHandled = onPrependHandled
@@ -385,6 +448,11 @@ final class MessageListController: UIViewController {
     var isLoading = true
     var onReachedTop: (() -> Void)?
     var onPrependHandled: (() -> Void)?
+    /// Сверху показана плашка («Загружаем…», поиск сообщения): плавающая дата уступает ей
+    /// место, они рисуются в одной точке.
+    var noticeVisible = false {
+        didSet { if noticeVisible { setFloatingDate(visible: false) } }
+    }
 
     /// Насколько близко к низу считается «мы внизу» — примерно один пузырь.
     private static let bottomThreshold: CGFloat = 80
@@ -406,6 +474,28 @@ final class MessageListController: UIViewController {
     private var wasAtBottomBeforeLayout = true
     /// Базовый верхний отступ ленты.
     private static let basePadding: CGFloat = 8
+    /// Окно, в течение которого рост высоты содержимого до-прижимает ленту к низу.
+    private static let stickToBottomWindow: TimeInterval = 0.8
+    /// До какого момента (по часам) действует это окно. 0 — выключено.
+    private var stickToBottomDeadline: TimeInterval = 0
+    /// Высота содержимого на прошлом сообщении коллекции о смене contentSize.
+    private var lastContentHeight: CGFloat = 0
+    /// Строки, чьи ячейки надо проявить (новые пузыри у низа). Ждут здесь, потому что
+    /// ячейка может появиться позже снимка — вместе с докруткой к низу.
+    private var pendingFadeIds: Set<String> = []
+    /// До какого момента это ожидание в силе: иначе строка проявилась бы, когда до неё
+    /// долистают через минуту.
+    private var fadeDeadline: TimeInterval = 0
+    /// Плавающая дата: капсула с подписью дня, живёт в `view`, а не в коллекции.
+    private var floatingDate: UIView!
+    private var floatingDateLabel: UILabel!
+    /// Строка, по которой сейчас подписана пилюля: пересчёт даты только при её смене.
+    private var floatingDateRowId: String?
+    /// Отложенное гашение пилюли после остановки прокрутки.
+    private var floatingDateHide: Task<Void, Never>?
+
+    /// Строка с разделителем непрочитанных — на неё лента встаёт при входе в чат.
+    private var unreadAnchorIndex: Int? { rows.firstIndex { $0.unreadHeader } }
     /// Свайп-ответ: порог срабатывания и предел протяжки (как в прежней версии).
     /// Пороги свайпа-ответа взяты у Telegram: тянется до 80 pt, срабатывает после 45.
     private static let replyThreshold: CGFloat = 45
@@ -415,6 +505,9 @@ final class MessageListController: UIViewController {
     private var swipingIndexPath: IndexPath?
     /// Кого тянем прямо сейчас (фиксируется на старте жеста).
     private var swipingRowId: String?
+    /// Плитка, спрятанная под открытым просмотрщиком: сообщение и индекс медиа в нём.
+    /// Хранится в самом классе: расширения не носят хранимых полей.
+    private var hiddenTile: (messageId: String, index: Int)?
     /// Порог уже перейден: отклик даём в момент перехода, как Telegram, а не на отпускании.
     private var swipePassedThreshold = false
     /// Сдвиги пузырей по id сообщения: во время жеста меняется только один объект,
@@ -440,7 +533,11 @@ final class MessageListController: UIViewController {
         configuration.backgroundColor = .clear
         let layout = UICollectionViewCompositionalLayout.list(using: configuration)
 
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        let collection = ContentSizeReportingCollectionView(frame: .zero, collectionViewLayout: layout)
+        collection.onContentSizeChange = { [weak self] height in
+            self?.contentHeightDidChange(height)
+        }
+        collectionView = collection
         collectionView.backgroundColor = .clear
         // До первой установки позиции лента невидима: иначе на долю секунды виден кадр,
         // где она стоит наверху, а следом рывок к последнему сообщению.
@@ -474,6 +571,47 @@ final class MessageListController: UIViewController {
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
+        setUpFloatingDate()
+    }
+
+    /// Пилюля с датой поверх ленты. Кладётся в `view`, а НЕ в коллекцию: внутри коллекции
+    /// она уехала бы вместе с содержимым, а секции diffable-источника (штатный способ
+    /// липких заголовков) сломали бы и вклейку истории, и поиск строки по id.
+    private func setUpFloatingDate() {
+        let pill = UIView()
+        pill.backgroundColor = UIColor(Eb.surface200)
+        // Высота 20 (число Telegram) — радиус ровно половина, получается капсула.
+        pill.layer.cornerRadius = 10
+        pill.layer.cornerCurve = .continuous
+        pill.alpha = 0
+        pill.isUserInteractionEnabled = false
+        pill.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = UILabel()
+        // 13 pt с потолком 18 при крупном системном шрифте — тоже числа Telegram.
+        label.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(
+            for: .systemFont(ofSize: 13, weight: .semibold), maximumPointSize: 18
+        )
+        label.adjustsFontForContentSizeCategory = true
+        label.textColor = UIColor(Eb.textMuted)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        pill.addSubview(label)
+        view.addSubview(pill)
+
+        let height = pill.heightAnchor.constraint(equalToConstant: 20)
+        // Не required: под крупным шрифтом пилюля должна вырастать, а не обрезать подпись.
+        height.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            pill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            pill.topAnchor.constraint(equalTo: view.topAnchor, constant: Self.basePadding + 8),
+            pill.heightAnchor.constraint(greaterThanOrEqualTo: label.heightAnchor, constant: 2),
+            height,
+            label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 6),
+            label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -6),
+            label.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+        ])
+        floatingDate = pill
+        floatingDateLabel = label
     }
 
     private func setUpDataSource() {
@@ -481,6 +619,9 @@ final class MessageListController: UIViewController {
             [weak self] cell, _, id in
             guard let self, let model = self.rowsById[id] else { return }
             cell.backgroundConfiguration = .clear()
+            // Ячейку могли переиспользовать посреди проявления нового пузыря (fadeInCells) —
+            // прозрачной она достаться не должна.
+            cell.contentView.alpha = 1
             cell.contentConfiguration = UIHostingConfiguration {
                 MessageCell(
                     model: model, actions: self.actions, swipe: self.swipeState(for: id),
@@ -526,7 +667,8 @@ final class MessageListController: UIViewController {
         let follow = proxy?.followNextMessage ?? false
         // Вставка сверху: запоминаем расстояние до низа ДО применения, чтобы после
         // вклейки вернуть ровно ту же точку — видимое место не сдвинется вовсе.
-        if isPrepend(previous: previous, next: newRows) {
+        let prepending = isPrepend(previous: previous, next: newRows)
+        if prepending {
             collectionView.layoutIfNeeded()
             pendingPrependAnchor = collectionView.contentSize.height - collectionView.contentOffset.y
         }
@@ -546,6 +688,33 @@ final class MessageListController: UIViewController {
 
         let isFirst = !didInitialLayout && !newRows.isEmpty
         let countChanged = previous.count != newRows.count
+
+        // Хвостовой ран РЕАЛЬНО добавленных в конец строк (аналог телеграмовского
+        // maxAnimatedInsertionIndex). Первый снимок и вклейка истории сюда не попадают.
+        var tailAdded: [MessageRowModel] = []
+        if !isFirst, !prepending {
+            for row in newRows.reversed() {
+                guard previousById[row.id] == nil else { break }
+                tailAdded.append(row)
+            }
+        }
+        // Проявляем не больше четырёх ячеек: пачка из десяти мигала бы вся целиком.
+        let fadeInIds = tailAdded.prefix(4).map(\.id)
+        // Бейдж кнопки «вниз»: чужие сообщения, пришедшие, пока мы НЕ внизу. Свои и так
+        // утягивают ленту (followNextMessage), их считать не за что. Считаем здесь, а
+        // ПУБЛИКУЕМ в completion снимка: apply(rows:) зовётся из updateUIViewController,
+        // то есть посреди обновления SwiftUI, а запись в @Published оттуда — это
+        // «Publishing changes from within view updates».
+        let incomingBelow = (!wasAtBottom && !follow)
+            ? tailAdded.filter { !$0.message.isMine }.count
+            : 0
+
+        // Проявление новых пузырей: ячейка может быть уже на экране, а может приехать
+        // вместе с докруткой к низу — поэтому список ждёт в pendingFadeIds, и гасит ячейку
+        // тот, кто первым её увидит: willDisplay или проход после применения снимка.
+        pendingFadeIds = Set(fadeInIds)
+        fadeDeadline = fadeInIds.isEmpty ? 0 : Date().timeIntervalSince1970 + 1
+
         dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
             guard let self else { return }
             if let anchor = self.pendingPrependAnchor {
@@ -554,25 +723,105 @@ final class MessageListController: UIViewController {
                 let target = self.collectionView.contentSize.height - anchor
                 self.collectionView.setContentOffset(CGPoint(x: 0, y: target), animated: false)
                 self.onPrependHandled?()
+            } else if isFirst, let anchorIndex = self.unreadAnchorIndex {
+                self.didInitialLayout = true
+                // Вход на первом непрочитанном: строку с разделителем прижимаем к ВЕРХУ
+                // экрана (у Telegram это .bottom(0.0) на перевёрнутой ленте), чтобы
+                // непрочитанное заполняло экран под ним. Для чатов без якоря ветка ниже
+                // оставляет всё как было — лента открывается сразу внизу.
+                self.scrollToUnreadAnchor(index: anchorIndex)
+                // Кнопка «вниз» показывается по общему правилу (есть куда листать и мы не
+                // внизу) — его тут ничто не меняет. Бейдж на ней получает то же значение,
+                // что и при приходе сообщений мимо низа: сколько ЧУЖИХ строк осталось ниже
+                // разделителя. Проверка «не внизу» обязательна: разделитель мог оказаться
+                // на последних строках, целиком влезших в экран, и тогда считать нечего.
+                if let proxy = self.proxy, !self.isAtBottom {
+                    let below = self.rows[anchorIndex...].filter { !$0.message.isMine }.count
+                    if proxy.newBelow != below { proxy.newBelow = below }
+                }
+                // Мы заведомо НЕ внизу. Без этого первое же изменение высоты вью (рост
+                // композера, клавиатура) увело бы ленту в низ по wasAtBottomBeforeLayout,
+                // который до первой равновысокой раскладки остаётся значением по умолчанию.
+                self.wasAtBottomBeforeLayout = false
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    // Второй проход по той же причине, что и у низа: ячейки досчитывают
+                    // высоту после первой раскладки, и цель сдвигается. Лента ещё скрыта,
+                    // поэтому доводка не видна.
+                    if let index = self.unreadAnchorIndex { self.scrollToUnreadAnchor(index: index) }
+                    self.reveal()
+                }
             } else if isFirst {
                 self.didInitialLayout = true
                 self.scrollToBottom(animated: false)
                 // Повторная доводка: ячейки досчитывают высоту после первой раскладки.
                 // Показываем ленту только после неё — тогда открытие выглядит как сразу
                 // готовый экран, без промежуточных кадров.
+                self.armStickToBottom()
                 DispatchQueue.main.async { [weak self] in
                     self?.scrollToBottom(animated: false)
                     self?.reveal()
                 }
             } else if follow {
                 self.proxy?.followNextMessage = false
+                self.armStickToBottom()
                 self.scrollToBottom(animated: true)
             } else if wasAtBottom, countChanged {
+                self.armStickToBottom()
                 self.scrollToBottom(animated: true)
+            }
+            if incomingBelow > 0, let proxy = self.proxy {
+                proxy.newBelow += incomingBelow
             }
             self.updateTopInsetForShortContent()
             self.updatePosition()
+            // Проявление новых пузырей — последним: ячейки к этому моменту уже созданы.
+            self.fadeInCells(ids: fadeInIds)
         }
+    }
+
+    /// Новый пузырь проявляется на месте (Telegram: alpha 0→1 за 0.2 с) вместо мгновенного
+    /// появления. Позиции не касается вовсе — анимируется только alpha содержимого ячейки.
+    private func fadeInCells(ids: [String]) {
+        guard !pendingFadeIds.isEmpty, let dataSource else { return }
+        for id in ids where pendingFadeIds.contains(id) {
+            guard let indexPath = dataSource.indexPath(for: id),
+                  let cell = collectionView.cellForItem(at: indexPath) else { continue }
+            pendingFadeIds.remove(id)
+            fadeIn(cell: cell)
+        }
+    }
+
+    private func fadeIn(cell: UICollectionViewCell) {
+        let content = cell.contentView
+        content.alpha = 0
+        UIView.animate(
+            withDuration: 0.2, animations: { content.alpha = 1 },
+            completion: { _ in content.alpha = 1 }
+        )
+    }
+
+    /// Открыть окно до-прижатия к низу. Нужно потому, что цель докрутки считается в
+    /// completion снимка, когда самоизмеряющаяся ячейка с фото ещё не знает финальную
+    /// высоту: без этого лента после прихода фото остаётся НЕ внизу.
+    private func armStickToBottom() {
+        stickToBottomDeadline = Date().timeIntervalSince1970 + Self.stickToBottomWindow
+    }
+
+    /// Коллекция сообщила, что высота содержимого изменилась.
+    private func contentHeightDidChange(_ height: CGFloat) {
+        let grew = height > lastContentHeight + 0.5
+        lastContentHeight = height
+        // Только РОСТ и только внутри окна после команды «встать в низ»: вклейка истории
+        // (pendingPrependAnchor) и обычное листание сюда попадать не должны.
+        guard collectionView != nil, grew, didInitialLayout, pendingPrependAnchor == nil else { return }
+        guard Date().timeIntervalSince1970 < stickToBottomDeadline else { return }
+        // Палец на ленте — решает пользователь, добивать низ нельзя.
+        guard !collectionView.isTracking, !collectionView.isDragging else { return }
+        // Прижимаем напрямую, без layoutIfNeeded внутри scrollToBottom: мы уже внутри
+        // раскладки коллекции, и повторный проход отсюда — верный путь к рекурсии.
+        collectionView.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
+        updatePosition()
     }
 
     /// Страница истории — это когда сверху появились новые строки, а прежняя первая
@@ -622,6 +871,18 @@ final class MessageListController: UIViewController {
         // Ниже содержимого уехать невозможно: цель ограничена снизу верхним отступом.
         collectionView.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: animated)
         if !animated { updatePosition() }
+    }
+
+    /// Поставить строку с разделителем непрочитанных к верхней кромке. Своей арифметикой
+    /// тут делать нечего: высоты строк выше экрана ещё не измерены, а `scrollToItem`
+    /// спрашивает их у раскладки сам.
+    private func scrollToUnreadAnchor(index: Int) {
+        guard index < rows.count else { return }
+        collectionView.layoutIfNeeded()
+        collectionView.scrollToItem(
+            at: IndexPath(item: index, section: 0), at: .top, animated: false
+        )
+        updatePosition()
     }
 
     func scroll(to messageId: String) {
@@ -715,7 +976,11 @@ final class MessageListController: UIViewController {
     private func updatePosition() {
         guard let proxy, collectionView != nil else { return }
         let atBottom = isAtBottom
-        if proxy.atBottom != atBottom { proxy.atBottom = atBottom }
+        if proxy.atBottom != atBottom {
+            proxy.atBottom = atBottom
+            // Дошли до низа — всё накопленное показано, бейдж гаснет.
+            if atBottom, proxy.newBelow != 0 { proxy.newBelow = 0 }
+        }
         let show = canScroll && !atBottom
         if proxy.showScrollDown != show { proxy.showScrollDown = show }
     }
@@ -788,7 +1053,7 @@ extension MessageListController: UIGestureRecognizerDelegate {
         return state.bubbleFrame.insetBy(dx: -8, dy: -4).contains(local)
     }
 
-    /// Рамка плитки фото в координатах окна — только если ячейка сейчас на экране и хотя
+    /// Рамка плитки медиа в координатах окна — только если ячейка сейчас на экране и хотя
     /// бы частично видна; иначе просмотрщику лететь некуда, и он закроется затуханием.
     func tileFrameInWindow(messageId: String, index: Int) -> CGRect? {
         guard let dataSource,
@@ -814,6 +1079,54 @@ extension MessageListController: UIGestureRecognizerDelegate {
         let visible = collectionView.convert(collectionView.bounds, to: nil)
         guard cellFrame.intersects(visible) else { return nil }
         return cell.contentView.convert(local, to: nil)
+    }
+
+    /// Спрятать плитку-источник просмотрщика (nil — вернуть все на место). Прячем через
+    /// MessageSwipeState строки, а НЕ через MessageRowModel: модель — это снимок
+    /// diffable-источника, и её правка означала бы reconfigure ячейки, то есть пересборку
+    /// SwiftUI-пузыря под открытым просмотрщиком — вместе с рамками плиток, по которым
+    /// кадр летит назад. Плитка гасится непрозрачностью и держит своё место, поэтому
+    /// высота ячейки не меняется и лента не двигается.
+    func setHiddenTile(messageId: String?, index: Int) {
+        if let previous = hiddenTile {
+            swipeStates[previous.messageId]?.hiddenTileIndex = nil
+        }
+        hiddenTile = nil
+        guard let messageId else { return }
+        hiddenTile = (messageId: messageId, index: index)
+        // Через swipeState(for:), а не через swipeStates[...]: строки может не быть на
+        // экране (её плитку ещё подведёт revealIfNeeded), а состояние понадобится к
+        // моменту, когда ячейка появится.
+        swipeState(for: messageId).hiddenTileIndex = index
+    }
+
+    /// Подвести строку в видимую область. Зовёт открытый просмотрщик на смене кадра:
+    /// закрытие должно лететь в живую плитку, а не гаснуть уменьшением. Когда строка и так
+    /// видна — НЕ делает ничего: иначе каждое листание галереи двигало бы ленту, и возврат
+    /// приходил бы в уехавшую плитку. Прокрутка без анимации и без участия арифметики
+    /// contentOffset: цель считает раскладка (scrollToItem), высоты строк выше экрана она
+    /// знает, а мы — нет.
+    func revealIfNeeded(messageId: String) {
+        guard didInitialLayout, let dataSource,
+              let indexPath = dataSource.indexPath(for: messageId),
+              let frame = collectionView.collectionViewLayout
+                  .layoutAttributesForItem(at: indexPath)?.frame
+        else { return }
+        // Палец на ленте важнее: закрытие просмотрщика оставляет ленту живой.
+        guard !collectionView.isTracking, !collectionView.isDragging else { return }
+        let inset = collectionView.adjustedContentInset
+        let viewport = CGRect(
+            x: 0,
+            y: collectionView.contentOffset.y + inset.top,
+            width: collectionView.bounds.width,
+            height: max(0, collectionView.bounds.height - inset.top - inset.bottom)
+        )
+        // «Видно достаточно» — либо строка целиком во вьюпорте, либо она выше экрана и
+        // заполняет его целиком: в обоих случаях плитка на экране, двигать нечего.
+        let shown = frame.intersection(viewport).height
+        guard shown < min(frame.height, viewport.height) - 1 else { return }
+        collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
+        updatePosition()
     }
 
     /// Растр пузыря плюс его оконная рамка: это и поднимает меню над размытым фоном.
@@ -852,11 +1165,113 @@ extension MessageListController: UICollectionViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         updatePosition()
+        updateFloatingDate()
         // Следующая страница — за полтора экрана до верха, а не в упор к нему.
         guard didInitialLayout, !rows.isEmpty else { return }
         if scrollView.contentOffset.y < scrollView.bounds.height * Self.topTriggerScreens {
             onReachedTop?()
         }
+    }
+
+    /// Ячейка нового пузыря доехала до экрана (обычно вместе с докруткой к низу) — гасим её
+    /// и проявляем за 0.2 с, как Telegram. Позиции это не касается вовсе.
+    func collectionView(
+        _ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell,
+        forItemAt indexPath: IndexPath
+    ) {
+        guard !pendingFadeIds.isEmpty, Date().timeIntervalSince1970 < fadeDeadline,
+              let id = dataSource?.itemIdentifier(for: indexPath),
+              pendingFadeIds.remove(id) != nil else { return }
+        fadeIn(cell: cell)
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        // Палец на ленте — до-прижатие к низу отменяется: где стоять, решает пользователь.
+        stickToBottomDeadline = 0
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { scheduleFloatingDateHide() }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        scheduleFloatingDateHide()
+    }
+
+    // MARK: - Плавающая дата
+
+    /// Дату задаёт ВЕРХНЯЯ видимая строка. Зовётся на каждый кадр прокрутки, поэтому вся
+    /// работа здесь — один `indexPathForItem` и словарь; форматирование даты (а это
+    /// Calendar) только при смене строки. Наружу, в SwiftUI, состояние не выводится
+    /// НАМЕРЕННО: любое @Published пересчитывало бы `rows` целиком на каждом кадре.
+    private func updateFloatingDate() {
+        guard floatingDate != nil, let dataSource else { return }
+        // Только живая прокрутка — палец или инерция (поведение Telegram). Программные
+        // докрутки (новое сообщение, клавиатура, прыжок к цитате) пилюлю не зажигают.
+        guard collectionView.isDragging || collectionView.isDecelerating else { return }
+        // Короткая переписка не листается — ориентир не нужен; плашка сверху важнее пилюли.
+        guard canScroll, !noticeVisible else {
+            setFloatingDate(visible: false)
+            return
+        }
+        // Точка чуть ниже верхней кромки вьюпорта (в координатах содержимого).
+        let probe = CGPoint(
+            x: collectionView.bounds.midX,
+            y: max(collectionView.contentOffset.y + 2, 0)
+        )
+        guard let indexPath = collectionView.indexPathForItem(at: probe),
+              let id = dataSource.itemIdentifier(for: indexPath),
+              let row = rowsById[id] else { return }
+        // Своя капсула дня из ячейки подошла к верху — две одинаковые плашки рядом лишние.
+        if row.dayHeader != nil,
+           let cell = collectionView.cellForItem(at: indexPath),
+           cell.frame.minY - collectionView.contentOffset.y < 34 {
+            setFloatingDate(visible: false)
+            return
+        }
+        if floatingDateRowId != id {
+            floatingDateRowId = id
+            floatingDateLabel.text = formatMessageDay(row.message.createdAt)
+        }
+        floatingDateHide?.cancel()
+        floatingDateHide = nil
+        setFloatingDate(visible: true)
+    }
+
+    /// После остановки прокрутки дата держится ещё 0.3 с и гаснет (поведение Telegram).
+    private func scheduleFloatingDateHide() {
+        floatingDateHide?.cancel()
+        floatingDateHide = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            self?.setFloatingDate(visible: false)
+        }
+    }
+
+    /// Появление за 0.3 с, гашение за 0.4 с — числа Telegram.
+    private func setFloatingDate(visible: Bool) {
+        guard let pill = floatingDate else { return }
+        let target: CGFloat = visible ? 1 : 0
+        guard abs(pill.alpha - target) > 0.01 else { return }
+        UIView.animate(withDuration: visible ? 0.3 : 0.4) { pill.alpha = target }
+    }
+}
+
+/// Коллекция, которая докладывает о СМЕНЕ высоты содержимого. Готового колбэка у
+/// UIScrollView нет, а `viewDidLayoutSubviews` контроллера тут не помогает:
+/// самоизмеряющаяся ячейка с фото доращивает высоту внутри раскладки самой коллекции,
+/// вью контроллера при этом не перекладывается — и лента остаётся не внизу.
+private final class ContentSizeReportingCollectionView: UICollectionView {
+
+    var onContentSizeChange: ((CGFloat) -> Void)?
+    private var reportedHeight: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let height = contentSize.height
+        guard abs(height - reportedHeight) > 0.5 else { return }
+        reportedHeight = height
+        onContentSizeChange?(height)
     }
 }
 
@@ -871,6 +1286,18 @@ private struct MessageCell: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if model.unreadHeader {
+                // Полоса во всю ширину ленты: отрицательный отступ гасит горизонтальные 10
+                // у всей ячейки. Числа Telegram: текст 13 pt, поля 6 сверху и 5 снизу.
+                Text("Непрочитанные сообщения")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Eb.textMuted)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 6)
+                    .padding(.bottom, 5)
+                    .background(Eb.surface200.opacity(0.9))
+                    .padding(.horizontal, -10)
+            }
             if let day = model.dayHeader {
                 Text(day)
                     .font(.caption2.weight(.semibold))

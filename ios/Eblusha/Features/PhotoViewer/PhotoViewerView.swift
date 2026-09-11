@@ -77,6 +77,11 @@ struct PhotoViewerView: View {
         proxy.chromeVisible && chromeReady
     }
 
+    /// Текущий кадр — видео: у него нет «Сохранить в Фото», «Копировать» и «Поделиться».
+    /// Все три работают с UIImage и локальным файлом, а видео мы не качаем целиком — оно
+    /// играет потоком (см. VideoPage.swift), и полного файла на руках просто нет.
+    private var isVideoItem: Bool { currentItem?.isVideo ?? false }
+
     // MARK: - Body
 
     var body: some View {
@@ -111,6 +116,14 @@ struct PhotoViewerView: View {
             withAnimation(.easeOut(duration: 0.2)) { captionExpanded = false }
             guard gallery.items.indices.contains(index) else { return }
             withAnimation(.snappy) { stripPosition = gallery.items[index].id }
+            // Чат под просмотрщиком подводит плитку нового кадра в видимую область: иначе
+            // пролистал десяток кадров — и закрытие уходит не в плитку, а в затухание.
+            // Обе воронки смены кадра (свайп пейджера и прыжок по ленте миниатюр) пишут
+            // proxy.currentIndex, так что канал здесь один. Через Task, а не напрямую:
+            // прокрутка ленты синхронно меняет её @Published-состояние, а мы ещё внутри
+            // обработки обновления SwiftUI.
+            let item = gallery.items[index]
+            Task { @MainActor in callbacks.onCurrentItemChanged?(item) }
         }
         .task {
             // Из плитки кадр летит 0.38 с, без плитки — fade 0.2 с; хром — следом.
@@ -119,13 +132,17 @@ struct PhotoViewerView: View {
             guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.2)) { chromeReady = true }
         }
-        .confirmationDialog("Удалить фото?", isPresented: $confirmDelete, titleVisibility: .visible) {
+        .confirmationDialog(
+            isVideoItem ? "Удалить видео?" : "Удалить фото?",
+            isPresented: $confirmDelete,
+            titleVisibility: .visible
+        ) {
             Button("Удалить", role: .destructive) {
                 if let item = currentItem { dismissThen { callbacks.onDelete(item) } }
             }
             Button("Отмена", role: .cancel) {}
         } message: {
-            Text("Сообщение с этим фото будет удалено.")
+            Text(isVideoItem ? "Сообщение с этим видео будет удалено." : "Сообщение с этим фото будет удалено.")
         }
     }
 
@@ -187,11 +204,13 @@ struct PhotoViewerView: View {
             Spacer(minLength: 4)
 
             Menu {
-                Button { save(item) } label: {
-                    Label("Сохранить в Фото", systemImage: "square.and.arrow.down")
-                }
-                Button { copy(item) } label: {
-                    Label("Копировать", systemImage: "doc.on.doc")
+                if !item.isVideo {
+                    Button { save(item) } label: {
+                        Label("Сохранить в Фото", systemImage: "square.and.arrow.down")
+                    }
+                    Button { copy(item) } label: {
+                        Label("Копировать", systemImage: "doc.on.doc")
+                    }
                 }
                 if callbacks.canForward {
                     Button { dismissThen { callbacks.onForward(item) } } label: {
@@ -317,7 +336,8 @@ struct PhotoViewerView: View {
                 ForEach(Array(gallery.items.enumerated()), id: \.element.id) { index, item in
                     PhotoViewerThumbTile(
                         image: store.thumb(for: item),
-                        isActive: index == proxy.currentIndex
+                        isActive: index == proxy.currentIndex,
+                        isVideo: item.isVideo
                     )
                     .onTapGesture { proxy.jump?(index, true) }
                 }
@@ -336,12 +356,22 @@ struct PhotoViewerView: View {
 
     private func actionBar(item: PhotoViewerItem) -> some View {
         HStack(spacing: 0) {
-            actionButton("square.and.arrow.up", label: "Поделиться") { share(item) }
+            if item.isVideo {
+                // Вместо «Поделиться»/«Сохранить» (им нужен файл целиком, а видео играет
+                // потоком) — переход к сообщению: самое полезное, что остаётся.
+                actionButton("text.bubble", label: "Показать в чате") {
+                    dismissThen { callbacks.onShowInChat(item) }
+                }
+            } else {
+                actionButton("square.and.arrow.up", label: "Поделиться") { share(item) }
+            }
             actionButton("arrowshape.turn.up.left", label: "Ответить") { dismissThen { callbacks.onReply(item) } }
             if callbacks.canForward {
                 actionButton("arrowshape.turn.up.right", label: "Переслать") { dismissThen { callbacks.onForward(item) } }
             }
-            actionButton("square.and.arrow.down", label: "Сохранить") { save(item) }
+            if !item.isVideo {
+                actionButton("square.and.arrow.down", label: "Сохранить") { save(item) }
+            }
             if item.isMine && callbacks.canDelete {
                 actionButton("trash", label: "Удалить") { confirmDelete = true }
             }
@@ -474,6 +504,8 @@ private struct PhotoViewerThumbTile: View {
 
     let image: UIImage?
     let isActive: Bool
+    /// Видео помечаем уголком с треугольником: по одному постеру фото от видео не отличить.
+    var isVideo: Bool = false
 
     private var size: CGSize { isActive ? Self.activeSize : Self.normalSize }
 
@@ -490,6 +522,16 @@ private struct PhotoViewerThumbTile: View {
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            if isVideo {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(3)
+                    .background(.black.opacity(0.45), in: Circle())
+                    .padding(3)
+            }
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .strokeBorder(.white, lineWidth: isActive ? 2 : 0)
