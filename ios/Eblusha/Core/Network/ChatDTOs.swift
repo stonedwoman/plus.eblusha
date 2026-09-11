@@ -32,13 +32,17 @@ struct ConversationDto: Decodable, Identifiable {
     var secretInitiatorDeviceId: String?
     var secretPeerDeviceId: String? // ЕДИНСТВЕННОЕ устройство, на котором принят секретный чат
     var lastMessageAt: String?
+    /// Когда беседу завели. Нужен порядку списка: у только что созданной беседы и у
+    /// принятой секретки сообщений ещё нет, и без этой метки строка уезжала в самый хвост
+    /// (веб падает на неё же — ConversationListPane.tsx:107-112).
+    var createdAt: String?
     var createdById: String?
     var participants: [ParticipantDto] = []
     var messages: [MessageDto] = []
 
     private enum CodingKeys: String, CodingKey {
         case id, title, avatarUrl, isGroup, isSecret, type, secretStatus
-        case secretInitiatorDeviceId, secretPeerDeviceId, lastMessageAt, createdById
+        case secretInitiatorDeviceId, secretPeerDeviceId, lastMessageAt, createdAt, createdById
         case participants, messages
     }
 
@@ -54,6 +58,7 @@ struct ConversationDto: Decodable, Identifiable {
         secretInitiatorDeviceId = try c.decodeIfPresent(String.self, forKey: .secretInitiatorDeviceId)
         secretPeerDeviceId = try c.decodeIfPresent(String.self, forKey: .secretPeerDeviceId)
         lastMessageAt = try c.decodeIfPresent(String.self, forKey: .lastMessageAt)
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
         createdById = try c.decodeIfPresent(String.self, forKey: .createdById)
         participants = try c.decodeIfPresent([ParticipantDto].self, forKey: .participants) ?? []
         messages = try c.decodeIfPresent([MessageDto].self, forKey: .messages) ?? []

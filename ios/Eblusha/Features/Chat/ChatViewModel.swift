@@ -48,7 +48,14 @@ final class ChatViewModel: ObservableObject {
         var isGroup = false
         var senderAvatars: [String: String?] = [:]
         var headerAvatarUrl: String?
+        /// Подзаголовок ГРУППЫ — перечисление участников. У 1:1 пусто: там строку статуса
+        /// шапка считает сама из peerStatus/peerLastSeen/игры (ChatHeader).
         var headerSubtitle: String?
+        /// Сырой статус собеседника (ONLINE/BACKGROUND/IN_CALL/OFFLINE…). Именно сырой, а
+        /// не готовая подпись: по нему шапка красит и точку присутствия, и текст.
+        var peerStatus: String?
+        /// Когда собеседника видели последний раз (мс эпохи) — «был(а) онлайн …».
+        var peerLastSeen: Int64?
         var messages: [Message] = []
         var hasMore = false
         var nextCursor: String?
@@ -182,8 +189,6 @@ final class ChatViewModel: ObservableObject {
     // Карантин после НЕУДАЧНОЙ подгрузки назад — иначе мгновенный бесконечный ретрай.
     var lastOlderFailMs: TimeInterval = 0
 
-    private var peerUserId: String?
-
     // --- Секретный режим (логика — в ChatViewModelSecret.swift) ---
     let secretRepo: SecretRepository
     /// В Kotlin поле @Volatile; здесь класс @MainActor, гонок нет по построению.
@@ -273,8 +278,9 @@ final class ChatViewModel: ObservableObject {
             // Групповым пузырям нужны аватары отправителей (история их не несёт).
             ui.senderAvatars = await repo.conversationSenderAvatars(conversationId)
         } else {
-            peerUserId = meta?.otherUserId
-            ui.peerUserId = peerUserId
+            ui.peerUserId = meta?.otherUserId
+            ui.peerStatus = meta?.otherStatus
+            ui.peerLastSeen = meta?.otherLastSeen
         }
         let header = await repo.conversationHeader(conversationId)
         ui.headerAvatarUrl = header.avatarUrl
@@ -317,9 +323,15 @@ final class ChatViewModel: ObservableObject {
 
         case .presence(let userId, let status, _):
             // Живой статус в шапке открытого 1:1 (раньше замерзал на момент открытия).
-            if !ui.isGroup, userId == peerUserId {
-                ui.headerSubtitle = presenceHeaderLabel(status)
+            // Собеседника берём из ui: он заполнен и в секретке, где initSecret достаёт
+            // его из участников треда, а не из meta беседы.
+            guard !ui.isGroup, let peer = ui.peerUserId, userId == peer else { return }
+            // Момент ухода в офлайн запоминаем сами: сервер lastSeen в событии не шлёт, а
+            // без него строка деградировала бы до «оффлайн» вместо «был(а) онлайн только что».
+            if status.uppercased() == "OFFLINE", ui.peerStatus?.uppercased() != "OFFLINE" {
+                ui.peerLastSeen = Int64(Date().timeIntervalSince1970 * 1000)
             }
+            ui.peerStatus = status
 
         default:
             break

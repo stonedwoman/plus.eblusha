@@ -34,6 +34,10 @@ extension ChatViewModel {
         let header = await repo.conversationHeader(conversationId)
         ui.isSecret = true
         ui.headerAvatarUrl = header.avatarUrl
+        // Точка присутствия на аватаре шапки нужна и секретке — текст там занят чипом
+        // защиты, и без точки статус собеседника в секретном чате не читался вовсе.
+        ui.peerStatus = meta?.otherStatus
+        ui.peerLastSeen = meta?.otherLastSeen
         // Подпись шапки в секретке рисует не headerSubtitle, а чип состояния защиты
         // (SecretHeaderStatusChip): статичное «🔒 секретный чат» выглядело одинаково и при
         // настройке, и при рабочем ключе, и при сбое ключей.
@@ -200,6 +204,11 @@ extension ChatViewModel {
         switch event {
         case .typing:
             return false // индикаторы набора работают и в секретках — обычный обработчик
+
+        case .presence:
+            // Присутствие собеседника от секретности не зависит: точка на аватаре шапки
+            // нужна и здесь, а считает её общий обработчик.
+            return false
 
         case .conversationsChanged(let cid, let kind):
             guard cid == conversationId, kind == "deleted" else { return true }

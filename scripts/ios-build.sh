@@ -105,7 +105,9 @@ xcodebuild build \
   -allowProvisioningDeviceRegistration \
   $auth \
   EBLUSHA_BUILD_TAG="$BUILD_TAG" \
-  $extra 2>&1 | tail -40
+  $extra 2>&1 | grep -E "error:|warning: (unused|will never)|\*\* BUILD" | head -40
+# Хвост лога прятал саму ошибку: xcodebuild сыплет тысячами строк, и «error:» уезжал
+# выше tail. Фильтруем по существу, полный лог при нужде смотреть на маке.
 REMOTE
 
 if [ "$install" = 1 ]; then

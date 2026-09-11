@@ -95,13 +95,18 @@ struct ChatListView: View {
                 // У секреток нет квитанций — «Прочитано» только облачным с непрочитанными.
                 let canMarkRead = !conversation.isSecretV2 && conversation.unreadCount > 0
 
+                // Идущий звонок в беседе: подсветка строки, подпись и кнопка входа.
+                let call = vm.callTile(for: conversation.id)
+
                 ConversationRow(
                     c: conversation,
                     typing: vm.ui.typingConversations.contains(conversation.id),
                     hasCloudSibling: hasCloudSibling,
-                    onTap: { onOpenChat(conversation) }
+                    call: call,
+                    onTap: { onOpenChat(conversation) },
+                    onJoinCall: { vm.joinCall(conversation) }
                 )
-                .listRowBackground(Color.clear)
+                .listRowBackground(callRowBackground(call))
                 .listRowSeparatorTint(Eb.border)
                 // Секретка с отступом под родителем — веб-паритет вложенности.
                 .listRowInsets(EdgeInsets(
@@ -157,6 +162,17 @@ struct ChatListView: View {
                     ticks += 1
                 } while (vm.ui.refreshing || vm.ui.loading) && ticks < 40
             }.value
+        }
+    }
+
+    /// Плитка беседы со звонком заливается оранжевым — порт веб-градиента
+    /// (ConversationListPane.tsx:224-240); свой звонок заметно теплее чужого.
+    @ViewBuilder
+    private func callRowBackground(_ call: CallTile?) -> some View {
+        if let call, call.kind != .ended {
+            Eb.brand.opacity(call.mine || call.participating ? 0.16 : 0.10)
+        } else {
+            Color.clear
         }
     }
 
@@ -344,49 +360,81 @@ struct AnimatedWordmark: View {
 
 // MARK: - Строка беседы
 
-/// Строка списка: аватар 52 с индикатором, название и время, последнее сообщение и бейдж
-/// непрочитанных. Вся строка — кнопка, поэтому тап по аватару и по тексту ведёт в чат.
+/// Строка списка: аватар 52 с индикатором, название и время, вторая строка (статус +
+/// превью) и бейдж непрочитанных. Сама строка — кнопка, поэтому тап по аватару и по
+/// тексту ведёт в чат; кнопка входа в звонок живёт РЯДОМ с ней, а не внутри.
 private struct ConversationRow: View {
     let c: Conversation
     var typing = false
     var hasCloudSibling = false
+    /// Звонок в этой беседе (nil — звонка нет); считает ChatListViewModel.callTile.
+    var call: CallTile?
     let onTap: () -> Void
+    var onJoinCall: () -> Void = {}
+
+    /// Во что играет собеседник (веб пишет это прямо в подзаголовок плитки).
+    @ObservedObject private var presenceGames = PresenceGames.shared
 
     var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 12) {
-                avatar
+        // Кнопка звонка — СОСЕД строки, а не вложенная кнопка: вложенная в строке
+        // списка тапа не получает, его забирает внешняя.
+        HStack(spacing: 10) {
+            Button(action: onTap) { rowContent }
+                .buttonStyle(.plain)
+            if let call, call.kind != .ended {
+                joinButton(call)
+            }
+        }
+    }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        titleText
-                        Spacer(minLength: 4)
-                        if let at = c.lastMessageAt {
-                            Text(formatListTime(at))
-                                .font(.caption)
-                                .foregroundStyle(c.unreadCount > 0 ? Eb.brand : Eb.textMuted)
-                        }
-                    }
-                    HStack(spacing: 8) {
-                        if let (subtitle, color) = subtitleLine {
-                            Text(subtitle)
-                                .font(.subheadline)
-                                .foregroundStyle(color)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 4)
-                        if c.unreadCount > 0 {
-                            unreadBadge
-                        }
+    private var rowContent: some View {
+        HStack(spacing: 12) {
+            avatar
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    titleText
+                    Spacer(minLength: 4)
+                    if let at = c.lastMessageAt {
+                        Text(formatListTime(at))
+                            .font(.caption)
+                            .foregroundStyle(c.unreadCount > 0 ? Eb.brand : Eb.textMuted)
                     }
                 }
-                // Одинаковая высота строк, даже когда второй строки текста нет.
-                .frame(minHeight: 52)
+                HStack(spacing: 8) {
+                    subtitleLine
+                    Spacer(minLength: 4)
+                    if c.unreadCount > 0 {
+                        unreadBadge
+                    }
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            // Одинаковая высота строк, даже когда второй строки текста нет.
+            .frame(minHeight: 52)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    /// «Подключиться» / «Тоже сюда» / «Вернуться» — веб-подписи кнопок шапки
+    /// (MessagesPane.tsx:1041-1043), сжатые до ширины плитки.
+    private func joinButton(_ call: CallTile) -> some View {
+        let label = call.mine ? "Вернуться" : (call.participating ? "Тоже сюда" : "Подключиться")
+        return Button(action: onJoinCall) {
+            HStack(spacing: 5) {
+                Image(systemName: call.mine ? "arrow.up.left.and.arrow.down.right" : "phone.fill")
+                    .font(.system(size: 11, weight: .bold))
+                Text(label)
+                    .font(.caption2.weight(.bold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(Eb.brand, in: Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(call.mine ? "Вернуться в звонок" : "Присоединиться к звонку")
     }
 
     @ViewBuilder
@@ -405,7 +453,17 @@ private struct ConversationRow: View {
             ZStack(alignment: .bottomTrailing) {
                 AvatarView(name: c.title, avatarUrl: c.avatarUrl, size: 52)
                 if c.isGroup {
-                    GroupBadge()
+                    // В группе точки присутствия нет, поэтому идущий звонок показываем
+                    // трубкой вместо значка группы (веб даёт аватару presence IN_CALL).
+                    if call?.kind == .ongoing { CallBadge() } else { GroupBadge() }
+                } else if peerGame != nil {
+                    // Играющий получает геймпад ВМЕСТО точки — как avatarPresenceForUser
+                    // веба (Avatar.tsx:247-270); красный, если он ещё и в звонке.
+                    GamePresenceBadge(
+                        inCall: c.otherStatus?.uppercased() == "IN_CALL",
+                        ringSize: 18,
+                        ringColor: Eb.paper
+                    )
                 } else {
                     // Кольцо под цвет фона экрана, а не панели — иначе виден серый ободок.
                     PresenceBadge(
@@ -442,27 +500,113 @@ private struct ConversationRow: View {
             .background(Eb.brand, in: Capsule())
     }
 
-    /// Приоритет второй строки: «печатает…» → последнее сообщение → присутствие собеседника.
-    /// У V2-секреток превью нет (шифртекст не показываем) — только индикатор набора.
-    private var subtitleLine: (String, Color)? {
-        if typing { return ("печатает…", Eb.brand) }
-        if c.isSecretV2 { return nil }
-        if let text = c.lastMessageText?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !text.isEmpty {
-            return (text, c.unreadCount > 0 ? Eb.textPrimary : Eb.textMuted)
+    /// Вторая строка плитки: статус беседы И превью последнего сообщения вместе.
+    ///
+    /// В вебе здесь ТОЛЬКО статус — «печатает» → состояние звонка → присутствие, а текста
+    /// сообщения в списке нет вовсе (ConversationListPane.tsx:308-383). На телефоне
+    /// превью — главный ориентир списка, терять его нельзя. Поэтому: живой статус идёт
+    /// короткой меткой-префиксом, превью — за ней и усекается первым. Звонок вытесняет
+    /// превью целиком (как в вебе): строка и так занята таймером и кнопкой входа.
+    /// Веб-ветку «N непрочитанных» не повторяем — справа уже висит числовой бейдж.
+    @ViewBuilder
+    private var subtitleLine: some View {
+        if typing {
+            Text("печатает…")
+                .font(.subheadline)
+                .foregroundStyle(Eb.brand)
+                .lineLimit(1)
+        } else if let call, call.kind != .ended {
+            callLine(call)
+        } else {
+            HStack(spacing: 6) {
+                if let (tag, color) = statusTag {
+                    Text(tag)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(color)
+                        .lineLimit(1)
+                        // Метка статуса короткая и не должна усекаться раньше превью.
+                        .layoutPriority(1)
+                }
+                if let preview {
+                    Text(preview)
+                        .font(.subheadline)
+                        .foregroundStyle(c.unreadCount > 0 ? Eb.textPrimary : Eb.textMuted)
+                        .lineLimit(1)
+                }
+            }
         }
-        if c.isGroup { return nil }
-        switch c.otherStatus?.uppercased() {
+    }
+
+    /// Состояние звонка словами веба: «Звоним...», «В ЗВОНКЕ: m:ss» (только участнику —
+    /// длительность конфиденциальна), «В ЗВОНКЕ» остальным.
+    @ViewBuilder
+    private func callLine(_ call: CallTile) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "phone.fill")
+                .font(.system(size: 11, weight: .bold))
+            if call.kind == .dialing {
+                Text("Звоним…")
+            } else if call.participating, let startedAt = call.startedAt {
+                // Таймер тикает локально: сервер шлёт только момент начала.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text("В ЗВОНКЕ: " + callDurationLabel(
+                        since: Date(timeIntervalSince1970: Double(startedAt) / 1000),
+                        now: context.date
+                    ))
+                }
+            } else {
+                Text("В ЗВОНКЕ")
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(Eb.brand600)
+        .lineLimit(1)
+    }
+
+    /// Короткая метка перед превью: «Завершён N назад» у только что закончившегося
+    /// звонка, иначе присутствие собеседника (веб-подзаголовок плитки).
+    private var statusTag: (String, Color)? {
+        if let call, call.kind == .ended, let endedAt = call.endedAt {
+            // Текст общий с шапкой беседы (ChatHeader.formatCallEndedLabel).
+            return (formatCallEndedLabel(endedAt), Eb.brand600)
+        }
+        if c.isGroup || c.isSecretV2 { return nil }
+        let status = c.otherStatus?.uppercased()
+        // Игра вытесняет обычный статус — как formatPresence веба (ChatsPage.tsx:5902-5912).
+        // Нет данных об игре (сервер не прислал presence:game) — нет и строки про неё.
+        if let game = peerGame {
+            if status == "IN_CALL" { return ("В ЗВОНКЕ И В \(game)", Eb.online) }
+            if status == "ONLINE" || status == "BACKGROUND" || c.online {
+                return ("ИГРАЕТ В \(game)", Eb.online)
+            }
+        }
+        switch status {
         case "ONLINE": return ("ОНЛАЙН", Eb.online)
         case "IN_CALL": return ("В ЗВОНКЕ", Eb.online)
         case "BACKGROUND": return ("В ФОНЕ", Eb.presenceBg)
         default:
             if c.online { return ("ОНЛАЙН", Eb.online) }
-            if let lastSeen = c.otherLastSeen {
+            // «был(а) онлайн …» длинное и вытеснило бы превью, поэтому показываем его
+            // только когда показывать больше нечего. Полная строка присутствия живёт в
+            // шапке беседы — там она и в вебе.
+            if preview == nil, let lastSeen = c.otherLastSeen {
                 return ("был(а) онлайн \(formatLastSeen(lastSeen))", Eb.textMuted)
             }
             return nil
         }
+    }
+
+    private var peerGame: String? {
+        guard !c.isGroup, let peer = c.otherUserId else { return nil }
+        return presenceGames.games[peer]
+    }
+
+    /// Превью последнего сообщения; у V2-секреток его нет (шифртекст не показываем).
+    private var preview: String? {
+        guard !c.isSecretV2 else { return nil }
+        let text = c.lastMessageText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let text, !text.isEmpty else { return nil }
+        return text
     }
 }
 
@@ -480,6 +624,25 @@ private struct GroupBadge: View {
         }
         .frame(width: size, height: size)
         // Та же геометрия, что у PresenceBadge: юго-восток значка — в угол квадрата аватара.
+        .offset(x: size * 0.146, y: size * 0.146)
+    }
+}
+
+/// Значок «в беседе идёт звонок» — на месте значка группы, пока звонок жив.
+/// Красный тот же, что у точки IN_CALL на аватарах (ebCallRed, веб #ef4444).
+private struct CallBadge: View {
+    private let size: CGFloat = 18
+
+    var body: some View {
+        ZStack {
+            Circle().fill(ebCallRed)
+            Circle().strokeBorder(Eb.paper, lineWidth: 2)
+            Image(systemName: "phone.fill")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+        // Та же геометрия, что у PresenceBadge и GroupBadge.
         .offset(x: size * 0.146, y: size * 0.146)
     }
 }

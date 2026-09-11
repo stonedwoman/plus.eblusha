@@ -114,6 +114,13 @@ final class RealtimeClient: ObservableObject {
             for id in self.joinedConversations {
                 socket.emit("conversation:join", id)
             }
+            // Снапшот игрового присутствия сервер шлёт сам сразу после подключения
+            // (socket.ts:1630-1636) и перечисляет ТОЛЬКО играющих: переставшие играть,
+            // пока сокет лежал, иначе остались бы висеть. Чистим ДО прихода снапшота.
+            PresenceGames.shared.clear()
+            // Состояние звонков снапшотом сервер сам не рассылает — его просит экран
+            // списка, которому известен актуальный набор бесед (requestCallStatuses).
+            //
             // Отложенный сигналинг звонков — ДО socketReconnected, чтобы call:accept
             // ушёл раньше повторного call:room:join и звонящий получил call:accepted штатно.
             self.flushPendingEmits(socket)
@@ -167,6 +174,31 @@ final class RealtimeClient: ObservableObject {
             // появились бы только после их следующей смены статуса.
             guard let batch: PresenceDeviceBatch = Self.decode(data) else { return }
             PresenceDevices.shared.updateAll(batch.items.map { ($0.userId, $0.device) })
+        }
+        // Игровое присутствие («Играет в X», геймпад вместо точки). Карта, как и у
+        // устройств, живёт отдельно от событий — её читают сразу несколько экранов.
+        // Ни `presence:game:hello`, ни `:subscribe` не шлём: сервер и так рассылает
+        // `presence:game` всем сокетам (socket.ts:510) и делает снапшот на подключении,
+        // так что запрашивать нечего.
+        for event in ["presence:game", "presence:game:snapshot"] {
+            socket.on(event) { data, _ in
+                guard let payload: PresenceGamePayload = Self.decode(data) else { return }
+                PresenceGames.shared.update(userId: payload.userId, game: payload.game?.domain)
+            }
+        }
+        socket.on("presence:game:snapshot:batch") { data, _ in
+            guard let batch: PresenceGameBatch = Self.decode(data) else { return }
+            PresenceGames.shared.updateAll(batch.items.map { ($0.userId, $0.game?.domain) })
+        }
+        // Идущий звонок в беседе: приходит в комнату беседы, поэтому виден только по тем
+        // беседам, в чьи комнаты мы вошли (экран списка заводит их все).
+        socket.on("call:status") { data, _ in
+            guard let payload: CallStatusPayload = Self.decode(data) else { return }
+            CallStatusStore.shared.apply(payload)
+        }
+        socket.on("call:status:bulk") { data, _ in
+            guard let payload: CallStatusBulkPayload = Self.decode(data) else { return }
+            CallStatusStore.shared.applyBulk(payload.statuses)
         }
         bind(socket, "secret:notify", SecretNotifyPayload.self) {
             .secretNotify(toDeviceId: $0.toDeviceId, msgId: $0.msgId)
@@ -306,6 +338,15 @@ final class RealtimeClient: ObservableObject {
 
     func endCall(conversationId: String) {
         emitObject("call:end", ["conversationId": conversationId])
+    }
+
+    /// Снапшот идущих звонков по видимым беседам (веб: requestCallStatuses в socket.ts).
+    /// Без него о звонке узнаёшь, только если он начался при живом сокете: `call:status`
+    /// приходит событием, а состояния «на момент подключения» сервер сам не рассылает.
+    /// Сервер отвечает только по беседам, где мы состоим, и берёт не больше 200 id.
+    func requestCallStatuses(_ conversationIds: [String]) {
+        guard !conversationIds.isEmpty else { return }
+        emitObject("call:status:request", ["conversationIds": Array(conversationIds.prefix(200))])
     }
 
     func joinCallRoom(conversationId: String, video: Bool) {

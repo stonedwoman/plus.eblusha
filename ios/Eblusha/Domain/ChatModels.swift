@@ -172,6 +172,13 @@ struct Conversation: Identifiable, Equatable, Hashable {
     var createdById: String? // секретные треды: ключ треда генерирует ТОЛЬКО создатель
     var secretStatus: String?       // PENDING (приглашение) | ACTIVE | CANCELLED
     var secretPeerDeviceId: String?
+    /// Когда беседу завели (мс эпохи). Только для порядка списка: беседа без сообщений
+    /// сортируется по ней, иначе новая строка тонет под перепиской годичной давности.
+    /// Объявлен последним и с дефолтом — чтобы memberwise-init оставался совместимым.
+    var createdAt: Int64? = nil
+
+    /// Свежесть беседы для сортировки — порт веб-`tsOf` (ConversationListPane.tsx:107-112).
+    var sortTs: Int64 { lastMessageAt ?? createdAt ?? 0 }
 
     /// V2-секретка — E2EE через секретный транспорт; НИКОГДА не различать по isSecret одному.
     var isSecretV2: Bool { type?.caseInsensitiveCompare("SECRET") == .orderedSame }

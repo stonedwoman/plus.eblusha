@@ -11,20 +11,10 @@ struct MessagesPage {
     let nextCursor: String?
 }
 
-/// Шапка чата: аватар беседы + подзаголовок (имена участников группы / статус 1:1).
+/// Шапка чата: аватар беседы + подзаголовок группы (имена участников).
 struct ConvHeader {
     let avatarUrl: String?
     let subtitle: String?
-}
-
-/// Строка присутствия в шапке 1:1 (веб-паритет: ONLINE/BACKGROUND/IN_CALL, иначе ничего).
-func presenceHeaderLabel(_ status: String?) -> String? {
-    switch status?.uppercased() {
-    case "ONLINE": return "в сети"
-    case "BACKGROUND": return "в фоне"
-    case "IN_CALL": return "в звонке"
-    default: return nil
-    }
 }
 
 final class ChatRepository {
@@ -83,9 +73,9 @@ final class ChatRepository {
                     }
                 }
             }
-            let list = items
-                .map { toDomain($0.conversation, meId: me, unreadCount: $0.unreadCount) }
-                .sorted { ($0.lastMessageAt ?? 0) > ($1.lastMessageAt ?? 0) }
+            let list = Self.sortedByFreshness(
+                items.map { toDomain($0.conversation, meId: me, unreadCount: $0.unreadCount) }
+            )
             // Кешируем ПОЛНЫЙ список: conversationMeta() должен резолвить и строки,
             // которые выдача прячет.
             conversationsById = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
@@ -116,17 +106,17 @@ final class ChatRepository {
         return participantAvatars[conversationId] ?? [:]
     }
 
-    /// Шапка: группа → имена участников; 1:1 → статус (как веб).
+    /// Шапка: аватар беседы и подзаголовок ГРУППЫ (имена участников).
     func conversationHeader(_ conversationId: String) async -> ConvHeader {
         if participantNames[conversationId] == nil { _ = await listConversations() }
         let conv = conversationsById[conversationId]
         let names = (participantNames[conversationId] ?? []).filter { !$0.isEmpty }
-        let subtitle: String?
-        if conv?.isGroup == true {
-            subtitle = names.isEmpty ? nil : names.joined(separator: ", ")
-        } else {
-            subtitle = presenceHeaderLabel(conv?.otherStatus)
-        }
+        // Только состав группы. Строку присутствия 1:1 шапка считает сама
+        // (ChatHeader.formatPeerPresence): ей нужны и статус, и «был(а) онлайн», и игра,
+        // а не одна готовая подпись, замерзающая на момент открытия беседы.
+        let subtitle: String? = conv?.isGroup == true && !names.isEmpty
+            ? names.joined(separator: ", ")
+            : nil
         return ConvHeader(avatarUrl: conv?.avatarUrl, subtitle: subtitle)
     }
 
@@ -148,6 +138,20 @@ final class ChatRepository {
         return groupSecretSiblings(visible)
     }
 
+    /// Порядок списка: свежие сверху, при равных метках — прежний порядок.
+    ///
+    /// `sorted(by:)` в Swift НЕ стабильна, а меток «0» в списке легко набирается несколько
+    /// (беседы без сообщений и без createdAt из старого кеша). Без явного сравнения позиций
+    /// такие строки перетасовывались бы на каждом обновлении списка.
+    private static func sortedByFreshness(_ list: [Conversation]) -> [Conversation] {
+        list.enumerated()
+            .sorted { l, r in
+                let lts = l.element.sortTs, rts = r.element.sortTs
+                return lts == rts ? l.offset < r.offset : lts > rts
+            }
+            .map { $0.element }
+    }
+
     /// Пара «облако+секретка» сортируется по свежайшему из двух и рисуется облако-затем-секрет.
     private func groupSecretSiblings(_ list: [Conversation]) -> [Conversation] {
         final class Group {
@@ -156,9 +160,9 @@ final class ChatRepository {
             var other: [Conversation] = []
             var sortTs: Int64 {
                 max(
-                    cloud?.lastMessageAt ?? 0,
-                    secret?.lastMessageAt ?? 0,
-                    other.map { $0.lastMessageAt ?? 0 }.max() ?? 0
+                    cloud?.sortTs ?? 0,
+                    secret?.sortTs ?? 0,
+                    other.map { $0.sortTs }.max() ?? 0
                 )
             }
         }
@@ -187,8 +191,16 @@ final class ChatRepository {
         }
         return order
             .compactMap { byKey[$0] }
-            .sorted { $0.sortTs > $1.sortTs }
-            .flatMap { g in [g.cloud, g.secret].compactMap { $0 } + g.other }
+            .enumerated()
+            // Та же причина стабильности, что у sortedByFreshness: равные метки не должны
+            // менять порядок блоков между обновлениями.
+            .sorted { l, r in
+                let lts = l.element.sortTs, rts = r.element.sortTs
+                return lts == rts ? l.offset < r.offset : lts > rts
+            }
+            .flatMap { item in
+                [item.element.cloud, item.element.secret].compactMap { $0 } + item.element.other
+            }
     }
 
     // MARK: - Сообщения
@@ -443,7 +455,8 @@ final class ChatRepository {
             type: dto.type,
             createdById: dto.createdById,
             secretStatus: dto.secretStatus,
-            secretPeerDeviceId: dto.secretPeerDeviceId
+            secretPeerDeviceId: dto.secretPeerDeviceId,
+            createdAt: parseIsoToMillis(dto.createdAt)
         )
     }
 
@@ -552,6 +565,10 @@ final class ChatRepository {
         let createdById: String?
         let secretStatus: String?
         let secretPeerDeviceId: String?
+        /// Добавлено позже: у кеша, записанного прежней версией, поля нет — decodeIfPresent
+        /// по умолчанию даёт nil, и порядок просто падает на lastMessageAt до первого
+        /// успешного обновления списка.
+        let createdAt: Int64?
     }
 
     private func persistCache(_ list: [Conversation]) {
@@ -563,7 +580,8 @@ final class ChatRepository {
                 online: $0.online, otherUserId: $0.otherUserId,
                 otherLastSeen: $0.otherLastSeen, otherStatus: $0.otherStatus,
                 type: $0.type, createdById: $0.createdById,
-                secretStatus: $0.secretStatus, secretPeerDeviceId: $0.secretPeerDeviceId
+                secretStatus: $0.secretStatus, secretPeerDeviceId: $0.secretPeerDeviceId,
+                createdAt: $0.createdAt
             )
         }
         if let data = try? JSONEncoder().encode(cached) {
@@ -583,7 +601,8 @@ final class ChatRepository {
                 online: $0.online, otherUserId: $0.otherUserId,
                 otherLastSeen: $0.otherLastSeen, otherStatus: $0.otherStatus,
                 type: $0.type, createdById: $0.createdById,
-                secretStatus: $0.secretStatus, secretPeerDeviceId: $0.secretPeerDeviceId
+                secretStatus: $0.secretStatus, secretPeerDeviceId: $0.secretPeerDeviceId,
+                createdAt: $0.createdAt
             )
         }
     }

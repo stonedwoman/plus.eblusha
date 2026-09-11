@@ -1,6 +1,28 @@
 import Foundation
 import Combine
 
+/// Готовое состояние звонка ДЛЯ ПЛИТКИ беседы: вью-модель уже свела серверный статус с
+/// нашим локальным звонком, чтобы вью не пересчитывала это в `body`.
+struct CallTile: Equatable {
+    enum Kind: Equatable {
+        /// Мы дозваниваемся («Звоним…»).
+        case dialing
+        /// Звонок идёт прямо сейчас.
+        case ongoing
+        /// Только что завершился («Завершён N мин назад»).
+        case ended
+    }
+
+    let kind: Kind
+    /// Мы участник звонка (этим или другим своим устройством) — веб показывает
+    /// длительность ТОЛЬКО участникам, остальным просто «В ЗВОНКЕ».
+    let participating: Bool
+    /// Звонок открыт на ЭТОМ устройстве: кнопка не «Подключиться», а «Вернуться».
+    let mine: Bool
+    let startedAt: Int64?
+    let endedAt: Int64?
+}
+
 /// Порт `feature/chat/ChatListViewModel.kt`.
 ///
 /// Отличия от Kotlin-оригинала: без UpdateManager (обновления на iOS — TestFlight/App
@@ -17,6 +39,15 @@ final class ChatListViewModel: ObservableObject {
         var error: String?
         /// НАШЕ присутствие (ONLINE/BACKGROUND/AWAY/IN_CALL/OFFLINE) для своей строки.
         var selfPresence = "OFFLINE"
+        /// Состояние звонков по беседам — зеркало общего CallStatusStore
+        /// (Core/Realtime: его читают и шапка беседы, и этот список).
+        var calls: [String: CallStatusStore.Entry] = [:]
+        /// Беседа, звонок которой открыт на ЭТОМ устройстве (дозвон или разговор).
+        var myCallConversationId: String?
+        /// Наш звонок уже соединён, а не «Звоним…».
+        var myCallActive = false
+        /// Начало НАШЕГО разговора — таймер плитки для участника.
+        var myCallStartedAt: Int64?
     }
 
     @Published private(set) var ui = UiState(loading: true)
@@ -40,6 +71,14 @@ final class ChatListViewModel: ObservableObject {
     private var typingRows: [String: TimeInterval] = [:]
     private var typingSweep: Task<Void, Never>?
 
+    /// Звонки живут в ядре, а не в этом экране: список только читает состояние и просит
+    /// подключиться. Берём из контейнера, а не через init, чтобы не менять точку сборки.
+    private let callManager = AppContainer.shared.callManager
+
+    /// Сколько после звонка держим в плитке «Завершён …» — столько же, сколько шапка
+    /// беседы (ChatHeader.callEndedVisibleMs), иначе список и шапка говорят разное.
+    private static let endedCallTTL: Int64 = 5 * 60_000
+
     init(
         repo: ChatRepository,
         realtime: RealtimeClient,
@@ -57,6 +96,30 @@ final class ChatListViewModel: ObservableObject {
             ui.conversations = cached
         }
         refresh()
+
+        // Состояние звонков в беседах (call:status / call:status:bulk) — общий стор.
+        CallStatusStore.shared.$calls
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] calls in self?.ui.calls = calls }
+            .store(in: &cancellables)
+
+        // Свой звонок: о нём сервер рассылает тот же call:status, но плитка должна
+        // подсветиться сразу, не дожидаясь эха, — и только локальное состояние знает,
+        // что оверлей открыт ЗДЕСЬ (кнопка «Вернуться», а не «Подключиться»).
+        callManager.$phase
+            .combineLatest(callManager.$conversationId, callManager.$activeSince)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                guard let self else { return }
+                let (phase, conversationId, activeSince) = state
+                // Входящий звонок плитку не меняет: его показывает оверлей поверх всего.
+                let mine = (phase == .idle || phase == .incoming) ? nil : conversationId
+                let startedAt = activeSince.map { Int64($0.timeIntervalSince1970 * 1000) }
+                self.ui.myCallConversationId = mine
+                self.ui.myCallActive = phase.isActive
+                self.ui.myCallStartedAt = startedAt
+            }
+            .store(in: &cancellables)
 
         // Свой статус следует за сокетом только как ФОЛБЭК (connected-but-unconfirmed →
         // BACKGROUND). На обрыве myPresence НЕ чистим (веб-паритет): краткий реконнект не
@@ -219,6 +282,50 @@ final class ChatListViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Идущий звонок в беседе
+
+    /// Что показывать про звонок в плитке беседы. Порт приоритетов веба
+    /// (ConversationListPane.tsx:328-381): «Звоним...» на дозвоне, «В ЗВОНКЕ: m:ss»
+    /// участнику, «В ЗВОНКЕ» остальным, «Завершён N назад» — сразу после звонка.
+    func callTile(for conversationId: String) -> CallTile? {
+        let entry = ui.calls[conversationId]
+        if ui.myCallConversationId == conversationId {
+            guard ui.myCallActive else {
+                return CallTile(
+                    kind: .dialing, participating: true, mine: true,
+                    startedAt: nil, endedAt: nil
+                )
+            }
+            return CallTile(
+                kind: .ongoing, participating: true, mine: true,
+                startedAt: ui.myCallStartedAt ?? entry?.startedAt, endedAt: nil
+            )
+        }
+        guard let entry else { return nil }
+        if entry.active {
+            // Участник по версии СЕРВЕРА — это мы же, но с другого устройства
+            // (веб в этом случае подписывает кнопку «Тоже сюда»).
+            let participating = repo.currentUserId().map { entry.participants.contains($0) } ?? false
+            return CallTile(
+                kind: .ongoing, participating: participating, mine: false,
+                startedAt: entry.startedAt, endedAt: nil
+            )
+        }
+        guard let endedAt = entry.endedAt,
+              Int64(Date().timeIntervalSince1970 * 1000) - endedAt < Self.endedCallTTL
+        else { return nil }
+        return CallTile(
+            kind: .ended, participating: false, mine: false,
+            startedAt: entry.startedAt, endedAt: endedAt
+        )
+    }
+
+    /// Кнопка плитки: войти в идущий звонок беседы (или вернуться в свой). Логика общая
+    /// с кнопками шапки — joinOrStartConversationCall в ChatHeader.swift.
+    func joinCall(_ c: Conversation, video: Bool = false) {
+        joinOrStartConversationCall(conversationId: c.id, title: c.title, video: video)
+    }
+
     func refresh() {
         lastRefresh = Date().timeIntervalSince1970
         Task {
@@ -230,8 +337,15 @@ final class ChatListViewModel: ObservableObject {
                 // Членство во всех комнатах бесед (веб-паритет): иначе сервер не шлёт
                 // conversation:typing_update на экран списка.
                 list.forEach { realtime.joinConversation($0.id) }
+                // Снапшот идущих звонков (веб-паритет): без него список узнаёт о звонке,
+                // только если тот начался при живом сокете. Просим здесь же, потому что
+                // именно тут известен актуальный набор бесед — и после реконнекта сюда
+                // приводит ресинк по realtime.$connected.
+                realtime.requestCallStatuses(list.map { $0.id })
                 ui.loading = false
                 ui.refreshing = false
+                // Порядок задаёт репозиторий (lastMessageAt, а у беседы без сообщений —
+                // createdAt), здесь его не пересчитываем: две сортировки разошлись бы.
                 ui.conversations = list
             case .failure(let message, _):
                 ui.loading = false

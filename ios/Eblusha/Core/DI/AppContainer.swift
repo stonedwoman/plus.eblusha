@@ -74,6 +74,10 @@ final class AppContainer {
         // Ключи тредов, prekeys, идентичность устройства и расшифрованные вложения.
         secretRepository.clearLocalData()
         PresenceDevices.shared.clear()
+        // Игры и звонки — такое же присутствие: новому владельцу сессии показывать,
+        // кто во что играл и где шёл звонок, нельзя.
+        PresenceGames.shared.clear()
+        CallStatusStore.shared.clear()
     }
 
     /// Прогрев на старте: поднять сессию из Keychain (порт container.warmup()).

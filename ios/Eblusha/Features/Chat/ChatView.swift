@@ -2,7 +2,7 @@ import SwiftUI
 
 // Порт `ui/chat/ChatScreen.kt`: шапка, лента с ранами и пузырями, композер, выбор,
 // пересылка, вьюер, голосовые, секретные карточки.
-// Ещё не портированы: фоторедактор перед отправкой и экран участников группы.
+// Ещё не портирован: фоторедактор перед отправкой.
 
 /// Сдвиг пузыря при свайпе-ответе. Отдельный объект на строку: во время жеста
 /// перерисовывается только сам пузырь, а не вся ячейка и не вся лента.
@@ -128,6 +128,12 @@ struct ChatView: View {
     /// Короткая галочка «Готово» после прихода ключа секретки (веб: secretBootDonePulse).
     /// Живёт во вью, а не в UiState: это анимация экрана, а не состояние беседы.
     @State private var secretDonePulse = false
+    /// Открыт экран участников и настроек группы (шторкой, как модалки веба).
+    @State private var groupSheet = false
+    /// Беседа, перечитанная после правки названия/аватара на экране участников.
+    /// `conversation` приезжает сюда значением из списка и о правке не узнаёт, а
+    /// пересоздавать экран ради двух полей нельзя — потеряются позиция ленты и черновик.
+    @State private var groupOverride: Conversation?
 
     init(conversation: Conversation, onBack: @escaping () -> Void) {
         self.conversation = conversation
@@ -329,7 +335,7 @@ struct ChatView: View {
         // Родная панель навигации вместо своей шапки: штатная кнопка «назад», по центру —
         // собеседник, справа — звонки и меню. Материал панели рисует система, свой фон
         // не подкладываем — иначе на iOS 26 пропадает стекло.
-        .navigationTitle(conversation.title)
+        .navigationTitle(headerTitleText)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { headerToolbar }
         // Возврат в список чатов свайпом вправо из любой точки. Кроме входящих пузырей:
@@ -409,6 +415,26 @@ struct ChatView: View {
                 },
                 onDismiss: { reactionTarget = nil }
             )
+        }
+        // Участники и настройки группы. Именно шторкой, а не пушем в стек: стек здесь
+        // принадлежит списку чатов, а возврат из беседы живёт на своём жесте
+        // (edgeSwipeBack) — второй экран в том же стеке конфликтовал бы с ним.
+        .sheet(isPresented: $groupSheet) {
+            NavigationStack {
+                GroupMembersView(
+                    conversation: headerConversation,
+                    showsCloseButton: true,
+                    onClose: { groupSheet = false },
+                    onUpdated: {
+                        // Экран уже дождался обновления списка бесед — берём беседу из
+                        // кеша репозитория целиком, чтобы не собирать её по полям.
+                        Task { @MainActor in
+                            groupOverride = await AppContainer.shared.chatRepository
+                                .conversationMeta(conversation.id)
+                        }
+                    }
+                )
+            }
         }
         .sheet(item: $userCard) { seed in
             UserCardSheet(
@@ -603,21 +629,33 @@ struct ChatView: View {
                             .foregroundStyle(Color(hex: 0x86EFAC))
                     }
                 }
-                // Порт кнопок звонка из шапки ChatScreen.kt: сначала видео, потом аудио.
-                // Разрешения CallManager добирает сам перед публикацией треков.
-                Button {
-                    AppContainer.shared.callManager.startOutgoing(
-                        conversationId: conversation.id, title: conversation.title, video: true)
-                } label: {
-                    Label("Видеозвонок", systemImage: "video")
-                }
-                Button {
-                    AppContainer.shared.callManager.startOutgoing(
-                        conversationId: conversation.id, title: conversation.title, video: false)
-                } label: {
-                    Label("Позвонить", systemImage: "phone")
-                }
+                // Видео и трубка. Когда в беседе УЖЕ идёт звонок, те же две кнопки
+                // означают «подключиться», а свой свёрнутый звонок — «развернуть»
+                // (ChatHeaderCallButtons). Разрешения CallManager добирает сам.
+                ChatHeaderCallButtons(
+                    conversationId: conversation.id,
+                    onStart: { video in
+                        AppContainer.shared.callManager.startOutgoing(
+                            conversationId: conversation.id, title: headerTitleText, video: video
+                        )
+                    },
+                    onJoin: { video in
+                        joinOrStartConversationCall(
+                            conversationId: conversation.id, title: headerTitleText, video: video
+                        )
+                    },
+                    onExpand: { AppContainer.shared.callManager.expand() }
+                )
                 Menu {
+                    if vm.ui.isGroup {
+                        // Веб-паритет меню шапки группы: добавить людей, сменить название
+                        // и аватар. Раньше с телефона не было ни одного из трёх.
+                        Button {
+                            groupSheet = true
+                        } label: {
+                            Label("Участники и настройки", systemImage: "person.2")
+                        }
+                    }
                     if !vm.ui.isSecret {
                         Button {
                             vm.markAllRead()
@@ -641,50 +679,42 @@ struct ChatView: View {
         }
     }
 
-    /// Центр панели: аватар 34 + название + «печатает…»/статус. Шрифты чуть мельче, чем
-    /// были в своей шапке, — две строки должны уместиться в 44 pt системной панели.
-    /// В 1:1 тап по всей связке открывает карточку собеседника (веб-паритет), в группе — нет.
+    /// Центр панели навигации. Раньше это была своя связка на одной готовой строке
+    /// `ui.headerSubtitle`, из-за чего в шапке не было ни «был(а) онлайн …», ни игры, ни
+    /// идущего звонка, ни точки присутствия; всё это считает ChatHeaderTitle.
     private var headerTitle: some View {
-        HStack(spacing: 8) {
-            AvatarView(
-                name: conversation.title,
-                avatarUrl: vm.ui.headerAvatarUrl ?? conversation.avatarUrl,
-                size: 34
-            )
-            VStack(alignment: .leading, spacing: 1) {
-                Text(conversation.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                // «Печатает…» вытесняет статусную строку (веб-паритет).
-                if let typing = vm.ui.typingName {
-                    // Раньше выводилось просто «Виктор…» — читалось как обрезанный текст.
-                    Text(vm.ui.isGroup ? "\(typing) печатает…" : "печатает…")
-                        .font(.caption)
-                        .foregroundStyle(Eb.brand)
-                        .lineLimit(1)
-                } else if vm.ui.isSecret {
-                    // В секретке подпись была статичной («🔒 секретный чат») и одинаковой
-                    // и во время настройки, и при рабочем ключе — теперь состояние видно.
-                    SecretHeaderStatusChip(state: secretProtectionState)
-                } else if let subtitle = vm.ui.headerSubtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+        ChatHeaderTitle(
+            model: ChatHeaderModel(
+                conversationId: conversation.id,
+                title: headerTitleText,
+                avatarUrl: groupOverride?.avatarUrl ?? vm.ui.headerAvatarUrl ?? conversation.avatarUrl,
+                isGroup: vm.ui.isGroup,
+                peerUserId: vm.ui.peerUserId,
+                peerStatus: vm.ui.peerStatus,
+                peerLastSeen: vm.ui.peerLastSeen,
+                typingName: vm.ui.typingName,
+                groupSubtitle: vm.ui.headerSubtitle,
+                secretState: vm.ui.isSecret ? secretProtectionState : nil
+            ),
+            onTap: {
+                if vm.ui.isGroup {
+                    // Тап по шапке группы — «Настройки группы» веба (MessagesPane.tsx:305-318).
+                    groupSheet = true
+                } else if let peerId = vm.ui.peerUserId {
+                    userCard = UserCardSeed(
+                        userId: peerId, name: headerTitleText,
+                        avatarUrl: vm.ui.headerAvatarUrl ?? conversation.avatarUrl
+                    )
                 }
             }
-        }
-        // Цель нажатия — вся связка, а не только аватар: в панели он мелкий.
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if !vm.ui.isGroup, let peerId = vm.ui.peerUserId {
-                userCard = UserCardSeed(
-                    userId: peerId, name: conversation.title, avatarUrl: conversation.avatarUrl
-                )
-            }
-        }
+        )
     }
+
+    /// Беседа с учётом правок, сделанных на экране участников.
+    private var headerConversation: Conversation { groupOverride ?? conversation }
+
+    /// Название беседы с учётом переименования, сделанного на этом же экране.
+    private var headerTitleText: String { headerConversation.title }
 
     /// Заголовок, пояснение и подпись кнопки подтверждения — общие со списком чатов,
     /// чтобы одно и то же действие не описывалось в двух местах по-разному.
