@@ -1,42 +1,33 @@
+import QuartzCore
 import SwiftUI
 import UIKit
 
 // Порт компонентов мультивыбора и пересылки из `ui/chat/ChatScreen.kt`:
-// SelectionCheck (~1768) / SelectionTopBar (~2097) / SelectionActionBar (~2109) /
-// ReplyDraftPreview (~2172) / ForwardPickerSheet (~2199).
+// SelectionCheck (~1768) / SelectionActionBar (~2109) / ReplyDraftPreview (~2172) /
+// ForwardPickerSheet (~2199). Шапки режима выбора (SelectionTopBar) здесь больше нет:
+// счётчик и «Отмена» живут в системной панели навигации (ChatView.headerToolbar).
 
 /// Кружок-галка выбора: залитая, когда выбран, пустой контур — когда нет.
+///
+/// Переключение с «попом»: у Telegram это три ручных отрезка масштаба (1.0→0.9 за 0.08,
+/// 0.9→1.1 за 0.13, 1.1→1.0 за 0.1), одна пружина с малым затуханием даёт тот же отскок
+/// без таймеров. Невыбранный кружок так и остаётся чуть меньше — ровно прежние 22 pt из
+/// 24, поэтому колонка контуров выглядит как была, а выбранный слегка выступает.
+///
+/// Рамка фиксированная: глифы `circle` и `checkmark.circle.fill` разной ширины, и без
+/// неё каждая галка подвигала бы соседнее содержимое строки.
 struct SelectionCheck: View {
     let selected: Bool
 
     var body: some View {
         Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-            .font(.system(size: 22))
+            .font(.system(size: 24))
             .foregroundStyle(selected ? Eb.brand : Eb.textMuted)
-    }
-}
-
-/// Шапка режима выбора: крестик-отмена + счётчик (вместо обычной шапки чата).
-struct SelectionTopBar: View {
-    let count: Int
-    let onClose: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.title3)
-                    .foregroundStyle(Eb.textPrimary)
-                    .frame(width: 40, height: 40)
-            }
-            Text(count > 0 ? "Выбрано: \(count)" : "Выберите сообщения")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(Eb.textPrimary)
-            Spacer()
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(Eb.surface200)
+            // Штатная подмена символа вместо «исчез один, появился другой».
+            .contentTransition(.symbolEffect(.replace))
+            .frame(width: 26, height: 26)
+            .scaleEffect(selected ? 1 : 0.92)
+            .animation(.spring(response: 0.25, dampingFraction: 0.55), value: selected)
     }
 }
 
@@ -48,6 +39,9 @@ struct SelectionActionBar: View {
     let canDelete: Bool
     /// false в секретных чатах — пересылка из них запрещена (E2EE).
     let canForward: Bool
+    /// Сколько сообщений реально удалится (свои неудалённые, vm.deletableSelectedCount).
+    /// nil — вызов без счётчика: подписываем общим числом выбранных, как раньше.
+    var deleteCount: Int? = nil
     let onReply: () -> Void
     let onForward: () -> Void
     let onCopy: () -> Void
@@ -61,20 +55,29 @@ struct SelectionActionBar: View {
             // этого выключали tonalElevation, подмешивавший surfaceTint).
             Rectangle().fill(Eb.border).frame(height: 1)
             HStack(spacing: 0) {
+                // Пустой выбор стал достижимым состоянием (снятие последней галки режим
+                // больше не гасит), поэтому действия при нуле выбранных — неактивны:
+                // иначе «Копировать» молча гасило бы режим, а «Переслать» ругалось бы
+                // «нечего пересылать». У «Удалить» это уже делает canDelete.
                 SelectionAction(
-                    icon: "arrowshape.turn.up.left", label: "Ответить", action: onReply
+                    icon: "arrowshape.turn.up.left", label: "Ответить",
+                    enabled: count > 0, action: onReply
                 )
                 if canForward {
                     SelectionAction(
                         icon: "arrowshape.turn.up.right",
                         label: count > 0 ? "Переслать \(count)" : "Переслать",
+                        enabled: count > 0,
                         action: onForward
                     )
                 }
-                SelectionAction(icon: "doc.on.doc", label: "Копировать", action: onCopy)
+                SelectionAction(
+                    icon: "doc.on.doc", label: "Копировать",
+                    enabled: count > 0, action: onCopy
+                )
                 SelectionAction(
                     icon: "trash",
-                    label: count > 0 ? "Удалить \(count)" : "Удалить",
+                    label: deleteLabel,
                     tint: Eb.error,
                     enabled: canDelete,
                     action: onDelete
@@ -85,6 +88,12 @@ struct SelectionActionBar: View {
             .padding(.vertical, 8)
         }
         .background(Eb.surface200)
+    }
+
+    /// Число в подписи — то, что исчезнет на самом деле.
+    private var deleteLabel: String {
+        let n = deleteCount ?? count
+        return n > 0 ? "Удалить \(n)" : "Удалить"
     }
 }
 
@@ -425,4 +434,301 @@ func copyMessagesToClipboard(_ messages: [Message]) {
     // Пустой буфер не затираем: раньше выбор одних картинок очищал ранее скопированное.
     guard !text.isEmpty else { return }
     UIPasteboard.general.string = text
+}
+
+// MARK: - Протяжка двумя пальцами: выделение пачкой
+
+// Выбрать 10-15 подряд идущих сообщений («переслать кусок переписки») стоило пятнадцати
+// прицельных тапов. Здесь — второй способ ввода той же функции: два пальца ведут по ленте
+// и отмечают всё, через что прошли, а возврат пальца назад по своему следу откатывает
+// переключения — промах прощается тем же движением, каким сделан.
+//
+// Числа поведения взяты из разбора Telegram-iOS (/tmp/tg-selection.md), код — свой.
+
+/// Пороги протяжки.
+enum MessageSelectionPanMetrics {
+    /// Вертикальное смещение, после которого жест берётся за дело.
+    static let activationThreshold: CGFloat = 5
+    /// Полоса у верхнего и нижнего края ленты, в которой включается автопрокрутка.
+    static let autoScrollZone: CGFloat = 50
+    /// Сколько палец должен простоять у края, прежде чем лента поедет сама.
+    static let autoScrollDelay: CFTimeInterval = 0.45
+    /// Максимальный шаг автопрокрутки за кадр.
+    static let autoScrollStep: CGFloat = 15
+    /// Медленнее этой доли шага автопрокрутка не идёт — иначе у самой границы полосы
+    /// лента ползёт незаметно и кажется, что жест сломался.
+    static let autoScrollMinFactor: CGFloat = 0.15
+    /// Шаг досбора строк между двумя отсчётами жеста (см. `samples(to:)`).
+    static let samplingStep: CGFloat = 12
+}
+
+/// Распознаватель протяжки: ровно два пальца, старт после 5 pt по вертикали.
+///
+/// Свой подкласс нужен ровно из-за порога: штатный UIPanGestureRecognizer начинается
+/// после ~10 pt, а к этому моменту палец уже сходит с первой строки, и мазок начинается
+/// со второго сообщения. Горизонтальное движение двумя пальцами мы не берём вовсе.
+final class MessageSelectionPanRecognizer: UIPanGestureRecognizer {
+
+    private var origin: CGPoint?
+
+    override func reset() {
+        super.reset()
+        origin = nil
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesBegan(touches, with: event)
+        // Пальцы ложатся не одновременно: точку отсчёта берём, когда их стало двое.
+        guard state == .possible, numberOfTouches == 2, origin == nil else { return }
+        origin = location(in: view)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesMoved(touches, with: event)
+        // Базовый класс начал бы жест сам, но позже и по любому направлению.
+        guard state == .possible, numberOfTouches == 2, let origin else { return }
+        let point = location(in: view)
+        let dy = abs(point.y - origin.y)
+        let dx = abs(point.x - origin.x)
+        guard dy >= MessageSelectionPanMetrics.activationThreshold, dy > dx else { return }
+        state = .began
+    }
+}
+
+/// Ведёт мазок выделения по ленте и у края катит ленту сам.
+///
+/// Живёт отдельно от контроллера ленты намеренно: весь автомат (направление, стопка
+/// пройденных строк, откат) — это чистая логика над тремя замыканиями, а в MessageListView
+/// остаётся только создание и проводка. Так двухпальцевый жест не попадает в тамошний
+/// арбитраж, где ЛЮБОЙ не-скролловый pan считается свайпом-ответом: делегат у этого
+/// распознавателя свой, этот класс.
+@MainActor
+final class MessageSelectionPanDriver: NSObject {
+
+    /// Строка под пальцем: её id и текущее состояние выбора.
+    struct RowHit {
+        let id: String
+        let selected: Bool
+    }
+
+    /// Мост к ленте. Замыкания ставит контроллер: сам драйвер знает про ленту ровно
+    /// столько, сколько нужно, чтобы найти строку под пальцем и подвинуть прокрутку.
+    struct Hooks {
+        /// Строка в точке (координаты СОДЕРЖИМОГО коллекции) или nil — там ничего,
+        /// что можно выделять (пусто, системная плашка, ещё не отправленный пузырь).
+        let rowAt: (CGPoint) -> RowHit?
+        /// Пакетно выбрать/снять (ChatViewModel.setSelected).
+        let setSelected: ([String], Bool) -> Void
+        /// Можно ли сейчас двигать ленту: false, пока вклеивается страница истории — её
+        /// позицию восстанавливают по якорю, и наш сдвиг в этот момент дал бы прыжок.
+        let canScroll: () -> Bool
+        /// Идёт свайп-ответ: тогда жест не начинаем вовсе.
+        let isBusy: () -> Bool
+    }
+
+    /// Автопрокрутка у краёв — самая рискованная половина жеста: у верхнего края она
+    /// въезжает в подгрузку истории. Если на устройстве лента дёргается, достаточно
+    /// поставить здесь false: сам мазок этим не ломается, просто перестаёт продлеваться
+    /// за пределы экрана.
+    var autoScrollEnabled = true
+
+    /// Сам распознаватель — чтобы арбитраж ленты мог узнать его в лицо.
+    var gestureRecognizer: UIGestureRecognizer { recognizer }
+
+    private let recognizer = MessageSelectionPanRecognizer()
+    private weak var collection: UICollectionView?
+    private var hooks: Hooks?
+
+    /// Направление мазка: выбираем или снимаем. Решается по первой строке под пальцем.
+    private var selecting = false
+    /// След: пройденные строки по порядку, первая — начальная. Возврат пальца назад
+    /// откатывает всё, что после совпавшей строки.
+    private var trail: [String] = []
+    /// Точка, по которой уже собирали строки, — от неё досчитываем пропуски.
+    private var lastSamplePoint: CGPoint?
+    private var displayLink: CADisplayLink?
+    /// Когда палец вошёл в краевую полосу: до +0.45 с лента стоит.
+    private var edgeEnteredAt: CFTimeInterval?
+
+    /// Повесить жест на ленту.
+    func attach(to collectionView: UICollectionView, hooks: Hooks) {
+        collection = collectionView
+        self.hooks = hooks
+        recognizer.minimumNumberOfTouches = 2
+        recognizer.maximumNumberOfTouches = 2
+        recognizer.delegate = self
+        recognizer.addTarget(self, action: #selector(handlePan(_:)))
+        collectionView.addGestureRecognizer(recognizer)
+        // Прокрутка остаётся ОДНОпальцевой. Иначе UIScrollView листает теми же двумя
+        // пальцами, лента едет под мазком и отмечается не то. Привычное листание одним
+        // пальцем это не трогает.
+        collectionView.panGestureRecognizer.maximumNumberOfTouches = 1
+    }
+
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        guard let collection, let hooks else { return }
+        switch gesture.state {
+        case .began:
+            let point = gesture.location(in: collection)
+            guard let hit = hooks.rowAt(point) else {
+                // Начали с пустого места — мазку не от чего оттолкнуться.
+                finish()
+                return
+            }
+            // Лента могла ещё катиться по инерции с прошлого листания: гасим, иначе
+            // строки поедут под неподвижными пальцами.
+            if collection.isDecelerating {
+                collection.setContentOffset(collection.contentOffset, animated: false)
+            }
+            // Направление задаёт первая строка: не выбрана — мазок выбирает, выбрана —
+            // снимает. И сразу переключаем её саму.
+            selecting = !hit.selected
+            trail = [hit.id]
+            lastSamplePoint = point
+            hooks.setSelected([hit.id], selecting)
+            startAutoScrollClock()
+        case .changed:
+            advance(to: gesture.location(in: collection))
+        default:
+            finish()
+        }
+    }
+
+    /// Довести мазок до точки, собрав всё, через что палец прошёл по дороге.
+    private func advance(to point: CGPoint) {
+        guard let hooks, !trail.isEmpty else { return }
+        for sample in samples(to: point) {
+            guard let hit = hooks.rowAt(sample) else { continue }
+            apply(rowId: hit.id, hooks: hooks)
+        }
+        lastSamplePoint = point
+    }
+
+    /// Промежуточные пробы между прошлой точкой и текущей: между двумя отсчётами жеста
+    /// палец проезжает десятки точек, и короткая строка посреди мазка (однословный ответ)
+    /// иначе осталась бы неотмеченной.
+    private func samples(to point: CGPoint) -> [CGPoint] {
+        guard let previous = lastSamplePoint else { return [point] }
+        let dx = point.x - previous.x
+        let dy = point.y - previous.y
+        let distance = max(abs(dx), abs(dy))
+        let steps = Int(distance / MessageSelectionPanMetrics.samplingStep)
+        guard steps > 1 else { return [point] }
+        // Потолок на случай рывка через весь экран: перебирать сотни точек незачем.
+        let capped = min(steps, 60)
+        return (1...capped).map { step in
+            let ratio = CGFloat(step) / CGFloat(capped)
+            return CGPoint(x: previous.x + dx * ratio, y: previous.y + dy * ratio)
+        }
+    }
+
+    /// Одна строка под пальцем: либо продолжаем след, либо откатываемся по нему назад.
+    private func apply(rowId: String, hooks: Hooks) {
+        if let index = trail.firstIndex(of: rowId) {
+            // Палец вернулся к уже пройденной строке — снимаем всё, что было после неё.
+            guard index < trail.count - 1 else { return }
+            let undo = Array(trail[(index + 1)...])
+            trail.removeSubrange((index + 1)...)
+            hooks.setSelected(undo, !selecting)
+        } else {
+            trail.append(rowId)
+            hooks.setSelected([rowId], selecting)
+        }
+    }
+
+    private func startAutoScrollClock() {
+        guard autoScrollEnabled, displayLink == nil else { return }
+        edgeEnteredAt = nil
+        let link = CADisplayLink(target: self, selector: #selector(stepAutoScroll))
+        // .common — иначе во время самой прокрутки такт пропадает.
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    @objc private func stepAutoScroll() {
+        guard let collection, let hooks, !trail.isEmpty else {
+            // Ленты больше нет (экран закрыли посреди мазка) или мазок кончился: такт
+            // держит драйвер ссылкой, и без этого он тикал бы до конца жизни процесса.
+            finish()
+            return
+        }
+        let point = recognizer.location(in: collection)
+        // Близость к краю считаем в ВИДИМЫХ координатах: точка жеста — в координатах
+        // содержимого, а полоса в 50 pt живёт у края экрана.
+        let visibleY = point.y - collection.contentOffset.y
+        let height = collection.bounds.height
+        let zone = MessageSelectionPanMetrics.autoScrollZone
+        var direction: CGFloat = 0
+        var factor: CGFloat = 0
+        if visibleY < zone {
+            direction = -1
+            factor = (zone - visibleY) / zone
+        } else if visibleY > height - zone {
+            direction = 1
+            factor = (visibleY - (height - zone)) / zone
+        }
+        guard direction != 0 else {
+            edgeEnteredAt = nil
+            return
+        }
+        let now = CACurrentMediaTime()
+        guard let entered = edgeEnteredAt else {
+            // Первый кадр у края: с этого мгновения отсчитываем задержку, чтобы лента не
+            // трогалась от того, что мазок просто дошёл до нижнего сообщения.
+            edgeEnteredAt = now
+            return
+        }
+        guard now - entered >= MessageSelectionPanMetrics.autoScrollDelay,
+              hooks.canScroll() else { return }
+        let speed = MessageSelectionPanMetrics.autoScrollStep
+            * max(MessageSelectionPanMetrics.autoScrollMinFactor, min(1, factor))
+        let targetY = clampedOffsetY(collection.contentOffset.y + direction * speed, in: collection)
+        guard targetY != collection.contentOffset.y else { return }
+        // Без анимации: анимированный сдвиг накладывался бы сам на себя каждый кадр.
+        collection.setContentOffset(
+            CGPoint(x: collection.contentOffset.x, y: targetY), animated: false
+        )
+        // Лента уехала — под пальцем теперь другие строки, хотя сам палец не двигался и
+        // .changed не придёт; собрать их больше некому.
+        advance(to: recognizer.location(in: collection))
+    }
+
+    /// Не даём уехать за пределы содержимого: у края отрицательный offset дал бы резинку,
+    /// которую потом отбрасывает обратно.
+    private func clampedOffsetY(_ value: CGFloat, in collection: UICollectionView) -> CGFloat {
+        let inset = collection.adjustedContentInset
+        let minY = -inset.top
+        let maxY = max(minY, collection.contentSize.height + inset.bottom - collection.bounds.height)
+        return min(max(value, minY), maxY)
+    }
+
+    private func finish() {
+        trail = []
+        lastSamplePoint = nil
+        edgeEnteredAt = nil
+        displayLink?.invalidate()
+        displayLink = nil
+    }
+}
+
+extension MessageSelectionPanDriver: UIGestureRecognizerDelegate {
+
+    /// Берёмся только за вертикальное движение ровно двумя пальцами по строке сообщения
+    /// и только когда лента не занята свайпом-ответом.
+    func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        guard let pan = gesture as? UIPanGestureRecognizer,
+              let collection, let hooks,
+              pan.numberOfTouches == 2, !hooks.isBusy()
+        else { return false }
+        let velocity = pan.velocity(in: collection)
+        guard abs(velocity.y) >= abs(velocity.x) else { return false }
+        return hooks.rowAt(pan.location(in: collection)) != nil
+    }
+
+    /// Мазок ленту ни с кем не делит: ни с прокруткой, ни со свайпом-ответом, ни с
+    /// долгим нажатием. С прокруткой они и так разведены по числу пальцев.
+    func gestureRecognizer(
+        _ gesture: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool { false }
 }

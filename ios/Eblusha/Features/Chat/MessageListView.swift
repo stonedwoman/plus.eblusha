@@ -36,6 +36,8 @@ struct MessageListView: View {
     let onEdit: (Message) -> Void
     let onPickReaction: (Message) -> Void
     let onLongPress: (Message) -> Void
+    /// Двойной тап по пузырю — быстрая реакция первым слотом (экран запоминает выбор).
+    let onQuickReact: (Message) -> Void
     let quickSlots: [String]
 
     @State private var jumpTask: Task<Void, Never>?
@@ -53,6 +55,8 @@ struct MessageListView: View {
                 onQuoteTap: { jumpToQuote($0) },
                 onTap: { message in if vm.ui.selectionMode { vm.toggleSelect(message.id) } },
                 onLongPress: onLongPress,
+                onDoubleTap: onQuickReact,
+                onSetSelected: { ids, selected in vm.setSelected(ids, selected: selected) },
                 onForward: onForward,
                 onOpenImage: onOpenImage,
                 onOpenSender: onOpenSender,
@@ -314,6 +318,18 @@ struct MessageRowModel: Identifiable, Equatable {
     let outgoingUpload: OutgoingUpload?
 
     var id: String { message.id }
+
+    /// Сообщения на сервере ещё нет: летящее вложение, мгновенный текстовый пузырь или
+    /// запись очереди секретки. Отвечать на такое, пересылать, править и выделять нечего —
+    /// все жесты ленты об этот признак спотыкаются заранее, а не о временный id внутри.
+    // @MainActor — из-за ChatViewModel.isOutgoingId: вью-модель изолирована главным
+    // актором, а сама модель строки — обычная структура. Читают признак только лента и
+    // её жесты, они и так на главном потоке.
+    @MainActor
+    var isPending: Bool {
+        outgoingUpload != nil || ChatViewModel.isOutgoingId(message.id)
+            || SecretOutbox.isPending(message.id)
+    }
 }
 
 /// Замыкания живут в контроллере и не участвуют в сравнении строк — иначе каждая ячейка
@@ -322,6 +338,11 @@ struct MessageRowActions {
     let onQuoteTap: (String) -> Void
     let onTap: (Message) -> Void
     let onLongPress: (Message) -> Void
+    /// Двойной тап по пузырю. Лента зовёт его ТОЛЬКО там, где одиночного тапа нет вовсе
+    /// (см. quickReactRow(atCollectionPoint:)), поэтому спорить им не с чем.
+    let onDoubleTap: (Message) -> Void
+    /// Пакетное «выбрать/снять» для протяжки двумя пальцами (ChatViewModel.setSelected).
+    let onSetSelected: ([String], Bool) -> Void
     let onForward: (Message) -> Void
     /// Сообщение, индекс среди его медиа (фото, затем видео) и рамка плитки в окне.
     let onOpenImage: (Message, Int, CGRect?) -> Void
@@ -513,6 +534,9 @@ final class MessageListController: UIViewController {
     /// Сдвиги пузырей по id сообщения: во время жеста меняется только один объект,
     /// и перерисовывается только один пузырь.
     private var swipeStates: [String: MessageSwipeState] = [:]
+    /// Протяжка двумя пальцами: второй вход в мультивыбор. Весь автомат мазка — в
+    /// MessageSelectionPanDriver, здесь только проводка к ленте и к вью-модели.
+    private let selectionPan = MessageSelectionPanDriver()
 
     private func swipeState(for id: String) -> MessageSwipeState {
         if let existing = swipeStates[id] { return existing }
@@ -557,6 +581,8 @@ final class MessageListController: UIViewController {
         // палец на сообщении по-прежнему листает ленту.
         let replyPan = UIPanGestureRecognizer(target: self, action: #selector(handleReplyPan(_:)))
         replyPan.delegate = self
+        // Один палец: два — это мазок выделения, и ответ не должен уезжать вместе с ним.
+        replyPan.maximumNumberOfTouches = 1
         collectionView.addGestureRecognizer(replyPan)
         // Долгое нажатие — тоже на коллекции, а не SwiftUI-модификатором в ячейке.
         // SwiftUI-жесты внутри UIKit-прокрутки перехватывали касание: палец на фото
@@ -565,6 +591,28 @@ final class MessageListController: UIViewController {
         longPress.minimumPressDuration = 0.32
         longPress.delegate = self
         collectionView.addGestureRecognizer(longPress)
+        // Двойной тап — быстрая реакция. Одиночному тапу он не мешает и не задерживает
+        // его: жест берётся за дело только на пузырях, где одиночного тапа нет вовсе
+        // (текст без вложений и без превью ссылки), — см. quickReactRow.
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        // САМОЕ ВАЖНОЕ здесь. По умолчанию распознаватель тапа придерживает touchesEnded
+        // до своего провала, и КАЖДЫЙ одиночный тап в ленте (фото, файл, ссылка, галочка
+        // выбора) отзывался бы с задержкой в треть секунды — ожиданием второго тапа.
+        // Одиночный тап уходит вью сразу, а двойной приходит вдогонку; столкнуться им
+        // негде, потому что берёмся мы только за пузыри без одиночного тапа.
+        doubleTap.delaysTouchesEnded = false
+        doubleTap.delegate = self
+        collectionView.addGestureRecognizer(doubleTap)
+        // Мазок выделения двумя пальцами. Делегат у него свой (сам драйвер), поэтому в
+        // здешний арбитраж он не попадает; с прокруткой они разведены числом пальцев —
+        // драйвер оставляет ленте ровно один (см. attach).
+        selectionPan.attach(to: collectionView, hooks: MessageSelectionPanDriver.Hooks(
+            rowAt: { [weak self] point in self?.selectionHit(atCollectionPoint: point) },
+            setSelected: { [weak self] ids, selected in self?.actions?.onSetSelected(ids, selected) },
+            canScroll: { [weak self] in self?.canScrollUnderSelection ?? false },
+            isBusy: { [weak self] in self?.swipingRowId != nil }
+        ))
         NSLayoutConstraint.activate([
             collectionView.topAnchor.constraint(equalTo: view.topAnchor),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -699,7 +747,10 @@ final class MessageListController: UIViewController {
             }
         }
         // Проявляем не больше четырёх ячеек: пачка из десяти мигала бы вся целиком.
-        let fadeInIds = tailAdded.prefix(4).map(\.id)
+        // И только ЧУЖИЕ: свой пузырь встаёт в ленту мгновенно, ещё до ответа сервера, а
+        // его подмена серверным (тот же текст, другой id) — это для снимка новая строка,
+        // и проявление показало бы мигание на ровном месте.
+        let fadeInIds = tailAdded.filter { !$0.message.isMine }.prefix(4).map(\.id)
         // Бейдж кнопки «вниз»: чужие сообщения, пришедшие, пока мы НЕ внизу. Свои и так
         // утягивают ленту (followNextMessage), их считать не за что. Считаем здесь, а
         // ПУБЛИКУЕМ в completion снимка: apply(rows:) зовётся из updateUIViewController,
@@ -901,9 +952,22 @@ final class MessageListController: UIViewController {
         guard let row = row(atCollectionPoint: point) else { return }
         // Меню действий для ещё не отправленного бессмысленно: сервер этого сообщения не
         // видел — ни ответить, ни переслать, ни отредактировать. Отмена живёт на пузыре.
-        guard row.outgoingUpload == nil else { return }
+        guard !row.isPending else { return }
+        // В режиме выбора строка глухая: долгое нажатие поверх галочек открывало бы
+        // второе меню поверх панели действий.
+        guard !row.selectionMode else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         actions?.onLongPress(row.message)
+    }
+
+    /// Быстрая реакция двойным тапом (порт поведения Telegram: второй тап по пузырю
+    /// ставит первую реакцию из быстрых слотов, повторный — снимает её).
+    @objc private func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended,
+              let row = quickReactRow(atCollectionPoint: recognizer.location(in: collectionView))
+        else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        actions?.onDoubleTap(row.message)
     }
 
     @objc private func handleReplyPan(_ recognizer: UIPanGestureRecognizer) {
@@ -914,7 +978,7 @@ final class MessageListController: UIViewController {
                   let row = row(atCollectionPoint: point),
                   !row.message.isSystem,
                   // Свайп-ответ на ещё не отправленное: replyToId указывал бы на временный id.
-                  row.outgoingUpload == nil,
+                  !row.isPending,
                   !row.selectionMode
             else {
                 swipingIndexPath = nil
@@ -932,8 +996,11 @@ final class MessageListController: UIViewController {
             // Влево тянутся ВСЕ сообщения — и свои, и чужие (порт Telegram: translation.x
             // зажат в [-80, 0]). Одна сторона для всех понятнее, чем «наружу из колонки»,
             // и не спорит с жестом «назад», который работает вправо.
+            // За пределом протяжки пузырь не встаёт колом: дальше он идёт резинкой, как
+            // содержимое прокрутки за краем. Жёсткий клэмп ощущался стеной — палец ехал,
+            // а пузырь стоял, и было непонятно, жив ли ещё жест.
             let raw = recognizer.translation(in: collectionView).x
-            let dx = min(max(raw, -Self.replyMaxDrag), 0)
+            let dx = -Self.rubberBanded(-min(raw, 0))
             // Двигается САМ пузырь внутри SwiftUI-содержимого (SwipeToReplyRow), а не
             // ячейка: сдвиг контейнера хостинг-конфигурация не показывала.
             swipeState(for: row.id).offset = dx
@@ -965,6 +1032,15 @@ final class MessageListController: UIViewController {
         default:
             break
         }
+    }
+
+    /// Затухание за пределом протяжки: первые 80 pt идут один к одному, дальше добавка
+    /// тает и упирается в те же 80 сверху (итого не дальше 160). Коэффициент 0.55 — тот
+    /// же, что у системной прокрутки за край, поэтому движение ощущается «родным».
+    private static func rubberBanded(_ distance: CGFloat) -> CGFloat {
+        guard distance > replyMaxDrag else { return max(distance, 0) }
+        let extra = distance - replyMaxDrag
+        return replyMaxDrag + (1 - 1 / (extra * 0.55 / replyMaxDrag + 1)) * replyMaxDrag
     }
 
     /// Показать ленту после того, как позиция выставлена.
@@ -1017,21 +1093,62 @@ extension MessageListController: UIGestureRecognizerDelegate {
     /// горизонтально ВЛЕВО. Всё остальное остаётся прокрутке и жесту «назад».
     func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
         if recognizer is UILongPressGestureRecognizer {
+            // Ровно один палец: два лежащих на ленте — это начало мазка выделения, и меню
+            // из-под него всплывать не должно.
+            guard recognizer.numberOfTouches <= 1 else { return false }
             // Меню — только с пузыря: пустое поле строки и системные сообщения не в счёт.
             let point = recognizer.location(in: collectionView)
-            guard let row = row(atCollectionPoint: point) else { return false }
+            guard let row = row(atCollectionPoint: point), !row.selectionMode, !row.isPending
+            else { return false }
             return bubbleContains(row: row, collectionPoint: point)
+        }
+        if let tap = recognizer as? UITapGestureRecognizer {
+            return quickReactRow(atCollectionPoint: tap.location(in: collectionView)) != nil
         }
         guard let pan = recognizer as? UIPanGestureRecognizer,
               pan.view === collectionView, pan !== collectionView.panGestureRecognizer
         else { return true }
         let velocity = pan.velocity(in: collectionView)
         guard abs(velocity.x) > abs(velocity.y) * 1.5 else { return false }
-        guard let row = row(atCollectionPoint: pan.location(in: collectionView)) else { return false }
+        guard let row = row(atCollectionPoint: pan.location(in: collectionView)),
+              // В режиме выбора строка глухая целиком, а ответить на ещё не отправленное
+              // нечем: обе проверки есть и в самом обработчике, здесь они экономят жест.
+              !row.selectionMode, !row.isPending
+        else { return false }
         guard bubbleContains(row: row, collectionPoint: pan.location(in: collectionView)) else { return false }
         // Ответ — только движением ВЛЕВО, для любого сообщения (Telegram). Движение вправо
         // целиком остаётся жесту «назад», поэтому спорить им больше не о чем.
         return velocity.x < 0
+    }
+
+    /// Строка, которой годится двойной тап. Правило нарочно узкое: реагируем только там,
+    /// где одиночный тап НЕ занят ничем, — на пузыре без вложений и без карточки ссылки.
+    /// У фото, видео, файла, голосового и превью ссылки одиночный тап уже значит «открыть»,
+    /// и второй тап пришёл бы поверх уже начавшегося перехода.
+    private func quickReactRow(atCollectionPoint point: CGPoint) -> MessageRowModel? {
+        guard let row = row(atCollectionPoint: point),
+              !row.selectionMode, !row.isPending,
+              !row.message.isSystem, !row.message.deleted,
+              row.message.attachments.isEmpty, row.message.linkPreview == nil,
+              bubbleContains(row: row, collectionPoint: point)
+        else { return nil }
+        return row
+    }
+
+    /// Строка под пальцем для мазка выделения. Системные плашки и ещё не отправленные
+    /// пузыри вью-модель всё равно отсеет (setSelected), но мазок обязан идти СКВОЗЬ них,
+    /// а не обрываться на первой такой строке — поэтому отсекаем их здесь же.
+    private func selectionHit(atCollectionPoint point: CGPoint) -> MessageSelectionPanDriver.RowHit? {
+        guard let row = row(atCollectionPoint: point), !row.message.isSystem, !row.isPending
+        else { return nil }
+        return MessageSelectionPanDriver.RowHit(id: row.id, selected: row.selected)
+    }
+
+    /// Можно ли катить ленту под мазком: лента уже встала на первую позицию и не занята
+    /// вклейкой страницы истории (её положение восстанавливают по якорю — наш сдвиг
+    /// пришёлся бы ровно в этот момент и дал бы прыжок).
+    private var canScrollUnderSelection: Bool {
+        didInitialLayout && pendingPrependAnchor == nil
     }
 
     /// Строка под точкой коллекции. Ищем по идентификатору из снимка, а не по индексу в
@@ -1157,6 +1274,9 @@ extension MessageListController: UIGestureRecognizerDelegate {
         if recognizer is UILongPressGestureRecognizer, other === collectionView.panGestureRecognizer {
             return false
         }
+        // Мазок выделения ленту ни с кем не делит. Спрашивают обоих участников пары, и
+        // «да» от любого включило бы их вместе — поэтому отказ нужен и с этой стороны.
+        if other === selectionPan.gestureRecognizer { return false }
         return true
     }
 }
@@ -1321,7 +1441,6 @@ private struct MessageCell: View {
                 highlighted: model.highlighted,
                 onQuoteTap: { actions?.onQuoteTap($0) },
                 onTap: { actions?.onTap(model.message) },
-                onStartSelect: {},
                 onForward: { actions?.onForward(model.message) },
                 onOpenImage: { index, frame in
                     actions?.onOpenImage(model.message, index, frame.flatMap { cellToWindow?($0) })

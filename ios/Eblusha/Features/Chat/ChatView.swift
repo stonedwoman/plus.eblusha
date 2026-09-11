@@ -118,8 +118,13 @@ struct ChatView: View {
     let onBack: () -> Void
 
     @StateObject private var vm: ChatViewModel
-    @State private var editTarget: Message?
-    @State private var editText = ""
+    /// Что правим прямо сейчас (nil — правки нет). Правка живёт ПАНЕЛЬЮ над клавиатурой,
+    /// а не модалкой на пол-экрана: почти всегда это одна буква, а модалка уводила с
+    /// переписки, роняла клавиатуру и отбирала панель форматирования.
+    @State private var editing: ComposerEdit?
+    /// Сохранение летит на сервер: кнопка погашена, панель ещё на месте — на сбое текст
+    /// остаётся в поле.
+    @State private var editSaving = false
     @State private var confirmDelete = false
     @State private var forwardSheet: ForwardRequest?
     /// Открытая галерея фото (nil — просмотрщик закрыт).
@@ -195,12 +200,14 @@ struct ChatView: View {
                         )
                     },
                     onOpenAttachment: { openAttachment($0) },
-                    onEdit: { message in
-                        editText = message.content ?? ""
-                        editTarget = message
-                    },
+                    onEdit: { message in beginEdit(message) },
                     onPickReaction: { reactionTarget = $0 },
                     onLongPress: { openActionsMenu(for: $0) },
+                    onQuickReact: { message in
+                        // Первый быстрый слот — то же, что предлагает меню крайним левым
+                        // кружком; выбор запоминается общим путём (applyReaction).
+                        applyReaction(quickSlots.first ?? ReactionFavorites.defaults[0], to: message)
+                    },
                     quickSlots: quickSlots
                 )
                     // Карточки секретного треда (приглашение / ожидание / привязка
@@ -268,8 +275,11 @@ struct ChatView: View {
             if vm.ui.selectionMode {
                 SelectionActionBar(
                     count: vm.ui.selectedIds.count,
-                    canDelete: vm.selectedMessages().contains { $0.isMine && !$0.deleted },
+                    // Одним счётом и «можно ли удалять», и число в подписи: сервер удаляет
+                    // только СВОИ неудалённые, и кнопка обещает ровно то, что исчезнет.
+                    canDelete: vm.deletableSelectedCount > 0,
                     canForward: !vm.ui.isSecret,
+                    deleteCount: vm.deletableSelectedCount,
                     onReply: { vm.replyToSelected() },
                     onForward: { forwardSheet = ForwardRequest(messages: vm.selectedMessages()) },
                     onCopy: {
@@ -350,7 +360,13 @@ struct ChatView: View {
                         let grew = height > composerHeight + 1
                         composerHeight = height
                         if grew { pinToken += 1 }
-                    }
+                    },
+                    // Правка: текст сообщения занимает поле ввода, набранный черновик
+                    // композер откладывает сам и возвращает по выходу.
+                    editing: editing,
+                    editSaving: editSaving,
+                    onSaveEdit: { text in saveEdit(text) },
+                    onCancelEdit: { cancelEdit() }
                 )
             }
         }
@@ -371,17 +387,26 @@ struct ChatView: View {
         }) { onBack() }
         .onAppear {
             quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
+            // Открытая беседа звуком не отзывается: человек и так видит сообщение (то же
+            // правило у веба). Остальные беседы озвучивает подписка списка.
+            ChatSounds.setActiveConversation(conversation.id)
         }
         // Плашка пересылки поджимает ленту снизу так же, как цитата ответа: последнее
         // сообщение не должно уехать под неё (onHeightChanged знает только про композер).
         .onChange(of: vm.ui.forwardDraft != nil) { _, live in
             if live { pinToken += 1 }
         }
+        // Вход в мультивыбор закрывает правку: композер вместе с её панелью уезжает под
+        // панель действий, и сохранять стало бы нечем — а незакрытая правка вернулась бы
+        // с «Отменой» как чёртик из коробки.
+        .onChange(of: vm.ui.selectionMode) { _, on in
+            if on { cancelEdit() }
+        }
         .onDisappear {
             vm.onDisappear()
-        }
-        .sheet(item: $editTarget) { target in
-            editSheet(target)
+            // Именно свою беседу: при переходе в другую её onAppear успевает раньше этого
+            // onDisappear, и голое обнуление стёрло бы уже НОВУЮ открытую беседу.
+            ChatSounds.leaveConversation(conversation.id)
         }
         .sheet(item: $forwardSheet) { request in
             ForwardPickerSheet(
@@ -413,10 +438,7 @@ struct ChatView: View {
                 onReply: { vm.setReply(target.message) },
                 onCopy: { copyMessageToClipboard(target.message) },
                 onForward: { forwardSheet = ForwardRequest(messages: [target.message]) },
-                onEdit: {
-                    editText = target.message.content ?? ""
-                    editTarget = target.message
-                },
+                onEdit: { beginEdit(target.message) },
                 onDelete: { vm.delete(messageId: target.message.id) },
                 onSelect: { vm.startSelection(target.message.id) },
                 onClose: { closeActionsMenu() }
@@ -867,34 +889,34 @@ struct ChatView: View {
         }
     }
 
-    private func editSheet(_ target: Message) -> some View {
-        NavigationStack {
-            VStack(spacing: Spacing.lg) {
-                TextField("Текст сообщения", text: $editText, axis: .vertical)
-                    .lineLimit(3...10)
-                    .padding(12)
-                    .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 12))
-                    .foregroundStyle(Eb.textPrimary)
-                Spacer()
-            }
-            .padding(Spacing.lg)
-            .background(Eb.paper)
-            .navigationTitle("Изменить")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Отмена") { editTarget = nil }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Сохранить") {
-                        vm.edit(messageId: target.id, content: editText)
-                        editTarget = nil
-                    }
-                    .disabled(editText.trimmed().isEmpty)
-                }
-            }
+    // MARK: - Правка сообщения
+
+    /// Открыть правку в панели композера. Ещё не отправленное править нечем: сервер о нём
+    /// не знает (та же проверка стоит и в ChatViewModel.edit).
+    private func beginEdit(_ message: Message) {
+        guard !ChatViewModel.isOutgoingId(message.id), !vm.ui.isSecret else { return }
+        editSaving = false
+        editing = ComposerEdit(id: message.id, text: message.content ?? "")
+    }
+
+    /// Крестик на плашке. Текст сообщения из поля уберёт сам композер, вернув отложенный
+    /// черновик, — здесь только состояние экрана.
+    private func cancelEdit() {
+        editing = nil
+        editSaving = false
+    }
+
+    /// «Сохранить». Панель остаётся на экране, пока сервер не ответил: на сбое правка не
+    /// должна пропасть молча — текст остаётся в поле, и кнопку можно нажать ещё раз.
+    private func saveEdit(_ text: String) {
+        guard let target = editing, !editSaving else { return }
+        let trimmed = text.trimmed()
+        guard !trimmed.isEmpty else { return }
+        editSaving = true
+        vm.edit(messageId: target.id, content: trimmed) { saved in
+            editSaving = false
+            if saved { editing = nil }
         }
-        .presentationDetents([.medium])
     }
 }
 
@@ -922,7 +944,6 @@ struct MessageRow: View {
     let highlighted: Bool
     var onQuoteTap: ((String) -> Void)?
     let onTap: () -> Void
-    let onStartSelect: () -> Void
     let onForward: () -> Void
     /// Индекс среди медиа сообщения (Message.galleryMedia: фото, затем видео) и рамка
     /// плитки в координатах ячейки («messageCell»).
@@ -968,6 +989,11 @@ struct MessageRow: View {
             // визуальная часть. Влево уезжает ВСЯ строка — и свои, и входящие, как в
             // Telegram: одна сторона для всех, а не «наружу из своей колонки».
             SwipeToReplyRow(state: swipe) {
+                // В режиме выбора содержимое строки НЕ отвечает ни на что: ни реакции, ни
+                // ссылки, ни открытие фото, ни плеер голосового. Одно правило вместо
+                // проверки `selectionMode` в каждом обработчике — иначе любой новый
+                // элемент пузыря приходилось бы вспоминать и глушить отдельно. Сам тап по
+                // строке ловит contentShape СНАРУЖИ этого HStack, и галочка ставится.
                 HStack(alignment: .center, spacing: 0) {
                     if selectionMode && !m.isMine {
                         SelectionCheck(selected: selected)
@@ -1003,6 +1029,7 @@ struct MessageRow: View {
                             .padding(.trailing, 2)
                     }
                 }
+                .allowsHitTesting(!selectionMode)
             }
             .background(
                 selected ? Eb.brand.opacity(0.14)
@@ -1077,9 +1104,7 @@ struct MessageRow: View {
                     accent: nameColorForUser(reply.senderId, order: participantOrder),
                     background: groupIncomingBubbleBg(reply.senderId, order: participantOrder),
                     decryptSecretAttachment: decryptSecretAttachment,
-                    // В режиме выбора тап по карточке — это выбор строки, а не прыжок к
-                    // оригиналу: иначе галочку нельзя было бы поставить по цитате.
-                    onTap: { if selectionMode { onTap() } else { onQuoteTap?(reply.id) } }
+                    onTap: { onQuoteTap?(reply.id) }
                 )
             }
 
@@ -1196,9 +1221,7 @@ struct MessageRow: View {
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
                     swipe.tileFrames[0] = $0
                 }
-                .onTapGesture {
-                    if selectionMode { onTap() } else { onOpenImage(0, swipe.tileFrames[0]) }
-                }
+                .onTapGesture { onOpenImage(0, swipe.tileFrames[0]) }
         } else if images.count > 1 {
             // Мозаика по пропорциям кадров (порт веб-renderImageGroup): вся геометрия
             // считается из метаданных ДО загрузки, поэтому высота ячейки не меняется.
@@ -1212,9 +1235,7 @@ struct MessageRow: View {
                 decryptSecretAttachment: decryptSecretAttachment,
                 hiddenTileIndex: swipe.hiddenTileIndex,
                 onTileFrame: { index, frame in swipe.tileFrames[index] = frame },
-                onOpenImage: { index in
-                    if selectionMode { onTap() } else { onOpenImage(index, swipe.tileFrames[index]) }
-                }
+                onOpenImage: { index in onOpenImage(index, swipe.tileFrames[index]) }
             )
         }
 
@@ -1227,9 +1248,7 @@ struct MessageRow: View {
                 att: att,
                 size: att.videoDisplaySize(screen: screenSize, extraInset: forwardContentInset),
                 durationSec: att.durationSec,
-                onPlay: {
-                    if selectionMode { onTap() } else { onOpenImage(index, swipe.tileFrames[index]) }
-                }
+                onPlay: { onOpenImage(index, swipe.tileFrames[index]) }
             )
             .opacity(swipe.hiddenTileIndex == index ? 0 : 1)
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
@@ -1289,7 +1308,7 @@ struct MessageRow: View {
 
     private func fileRow(_ att: MessageAttachment) -> some View {
         Button {
-            if selectionMode { onTap() } else { onOpenAttachment(att) }
+            onOpenAttachment(att)
         } label: {
             fileRowLabel(att)
         }
@@ -1361,11 +1380,7 @@ struct MessageRow: View {
         // Карточка теперь кликабельна целиком: раньше открыть ссылку можно было, только
         // попав пальцем в сам url в тексте выше.
         .onTapGesture {
-            if selectionMode {
-                onTap()
-            } else if let url = URL(string: preview.url) {
-                UIApplication.shared.open(url)
-            }
+            if let url = URL(string: preview.url) { UIApplication.shared.open(url) }
         }
     }
 

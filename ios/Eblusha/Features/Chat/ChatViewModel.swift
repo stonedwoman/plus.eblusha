@@ -626,17 +626,29 @@ final class ChatViewModel: ObservableObject {
         // (в вебе submit тоже ничего не ждёт).
         ui.error = nil
         ui.replyingTo = []
+        // Пузырь встаёт в ленту В ТОТ ЖЕ КАДР, а не после оборота к серверу: на медленной
+        // сети между нажатием и появлением проходили секунды, и сообщение отправляли
+        // второй раз. Приём тот же, что у вложений (insertOutgoingBubble).
+        let pendingId = insertPendingText(trimmed, reply: reply)
         enqueueTextSend { [weak self] in
             guard let self else { return }
             switch await self.repo.sendText(
                 self.conversationId, text: trimmed, replyToId: replyId, replyBundle: bundle
             ) {
             case .success(let message):
+                // Подмена ровно одна: временный уходит, настоящий встаёт на его место.
+                // Сообщение могли уже принести сокет или тихий релоад (они снимают пузырь
+                // сами, dropEchoedOutgoing) — тогда вставлять нечего.
+                self.removeOutgoing(pendingId)
                 if !self.ui.messages.contains(where: { $0.id == message.id }) {
                     self.insertOrdered(message)
                 }
+                // Звук — на ПОДТВЕРЖДЕНИИ отправки, а не на нажатии кнопки: иначе он врал
+                // бы про то, чего ещё не случилось.
+                ChatSounds.messageSent()
             case .failure(let message, _):
-                // Сбой сети НЕ съедает написанное.
+                // Сбой сети НЕ съедает написанное: пузырь снимаем, текст — обратно в поле.
+                self.removeOutgoing(pendingId)
                 self.ui.error = message
                 self.ui.restoredDraft = trimmed
                 self.ui.replyingTo = reply
@@ -759,6 +771,31 @@ final class ChatViewModel: ObservableObject {
         let reply: [Message]
     }
 
+    /// Оптимистичный пузырь ТЕКСТОВОГО сообщения. В `ui.outgoing` он намеренно не
+    /// попадает: там живут отправки с файлами, и их накладка (затемнение с кольцом
+    /// прогресса) поверх текста означала бы «идёт загрузка», которой нет. От настоящего
+    /// его отличает префикс id — по нему лента гасит меню, свайп-ответ и выбор, а вместо
+    /// галочки квитанции рисует часы.
+    private func insertPendingText(_ text: String, reply: [Message]) -> String {
+        let id = Self.outgoingIdPrefix + UUID().uuidString.lowercased()
+        insertOrdered(Message(
+            id: id,
+            conversationId: conversationId,
+            senderId: repo.currentUserId() ?? "",
+            senderName: "Вы",
+            type: "TEXT",
+            content: text,
+            createdAt: Int64(Date().timeIntervalSince1970 * 1000),
+            isMine: true,
+            isSystem: false,
+            // Цитаты видны на пузыре сразу — отправляется он именно с ними.
+            replyTo: reply.map {
+                ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt)
+            }
+        ))
+        return id
+    }
+
     /// Ставит пузырь в ленту ДО аплоада и запоминает, чем его повторить.
     /// Возвращает id временного сообщения — ключ и к ui.outgoing, и к полезной нагрузке.
     private func insertOutgoingBubble(
@@ -840,6 +877,7 @@ final class ChatViewModel: ObservableObject {
                 if !ui.messages.contains(where: { $0.id == message.id }) {
                     insertOrdered(message)
                 }
+                ChatSounds.messageSent()
                 fetchMissingPreviews()
             case .failure(let message, _):
                 // Пузырь ОСТАЁТСЯ с пометкой: жмёшь «Повторить» — уходит теми же файлами.
@@ -891,16 +929,19 @@ final class ChatViewModel: ObservableObject {
     /// по составу, и только среди УЖЕ ДОГРУЖЕННЫХ пузырей — пока файл летит, сервер о
     /// сообщении ещё не знает, и похожее сообщение это другое сообщение.
     private func dropEchoedOutgoing(_ incoming: [Message]) {
-        guard !ui.outgoing.isEmpty else { return }
+        guard ui.messages.contains(where: { Self.isOutgoingId($0.id) }) else { return }
         for message in incoming where message.isMine && !Self.isOutgoingId(message.id) {
             // Одно эхо снимает ОДИН пузырь — самый старый из подходящих: две одинаковые
             // отправки подряд иначе схлопнулись бы в одну.
             let match = ui.messages.first { candidate in
-                guard Self.isOutgoingId(candidate.id), let state = ui.outgoing[candidate.id] else {
-                    return false
+                guard Self.isOutgoingId(candidate.id) else { return false }
+                // У пузыря с файлами ждём конца загрузки: пока файл летит, сервер о
+                // сообщении ещё не знает, и похожее сообщение — это ДРУГОЕ сообщение.
+                // У текстового состояния аплоада нет вовсе, и он готов к подмене сразу.
+                if let state = ui.outgoing[candidate.id] {
+                    guard !state.failed, state.progress >= 1 else { return false }
                 }
-                return !state.failed && state.progress >= 1
-                    && candidate.attachments.count == message.attachments.count
+                return candidate.attachments.count == message.attachments.count
                     && (candidate.content ?? "") == (message.content ?? "")
             }
             guard let match else { continue }
@@ -1211,11 +1252,22 @@ final class ChatViewModel: ObservableObject {
         ui.messages[index].reactions = reactions
     }
 
-    func edit(messageId: String, content: String) {
-        guard !secretMode, !Self.isOutgoingId(messageId), !content.trimmed().isEmpty else { return }
+    /// Правка текста. [onDone] нужен панели правки в композере: она закрывается только по
+    /// успеху, а на сбое остаётся с набранным — иначе поправленный текст пропадал бы молча.
+    func edit(messageId: String, content: String, onDone: ((Bool) -> Void)? = nil) {
+        guard !secretMode, !Self.isOutgoingId(messageId), !content.trimmed().isEmpty else {
+            onDone?(false)
+            return
+        }
         Task {
-            if case .success = await repo.editMessage(messageId: messageId, content: content) {
+            switch await repo.editMessage(messageId: messageId, content: content) {
+            case .success:
                 reloadSilently()
+                onDone?(true)
+            case .failure(let message, _):
+                // Раньше отказ сервера не показывался вовсе — правка просто «не случалась».
+                ui.error = message
+                onDone?(false)
             }
         }
     }
@@ -1262,16 +1314,29 @@ final class ChatViewModel: ObservableObject {
         ui.selectedIds = [messageId]
     }
 
+    /// Снятая последняя галка режим НЕ гасит. Раньше опустевший выбор схлопывал экран
+    /// обратно к композеру, и промах по кружку стоил всего режима; веб так не делает —
+    /// toggleMessageMultiSelect правит только список, гасит режим одна «Отмена».
     func toggleSelect(_ messageId: String) {
         guard !Self.isOutgoingId(messageId) else { return }
         var next = ui.selectedIds
         if !next.insert(messageId).inserted { next.remove(messageId) }
-        if next.isEmpty {
-            ui.selectionMode = false
-            ui.selectedIds = []
-        } else {
-            ui.selectedIds = next
-        }
+        ui.selectionMode = true
+        ui.selectedIds = next
+    }
+
+    /// Пакетное «выбрать/снять» — для протяжки двумя пальцами (MessageSelectionPanDriver).
+    /// Непригодные id отсеиваются поштучно, а не отказом всей пачке: под пальцем мог
+    /// оказаться ещё не отправленный пузырь, и из-за него терялся бы весь мазок.
+    func setSelected(_ ids: [String], selected: Bool) {
+        let usable = ids.filter { !Self.isOutgoingId($0) }
+        guard !usable.isEmpty else { return }
+        var next = ui.selectedIds
+        if selected { next.formUnion(usable) } else { next.subtract(usable) }
+        // Режим включает сам жест: протяжка — это второй вход в мультивыбор, наравне с
+        // пунктом «Выбрать» в меню сообщения.
+        ui.selectionMode = true
+        ui.selectedIds = next
     }
 
     func clearSelection() {
@@ -1281,6 +1346,13 @@ final class ChatViewModel: ObservableObject {
 
     func selectedMessages() -> [Message] {
         ui.messages.filter { ui.selectedIds.contains($0.id) }
+    }
+
+    /// Сколько из выбранного реально удалится: сервер разрешает удалять только СВОИ и
+    /// ещё не удалённые (src/routes/messages.ts). Кнопка подписывалась общим числом
+    /// выбранных и обещала больше, чем делала: выбрал 7 своих и чужих — исчезнет 3.
+    var deletableSelectedCount: Int {
+        ui.messages.filter { ui.selectedIds.contains($0.id) && $0.isMine && !$0.deleted }.count
     }
 
     /// Пакетное удаление выбранных НАШИХ сообщений (серверное удаление — для всех).

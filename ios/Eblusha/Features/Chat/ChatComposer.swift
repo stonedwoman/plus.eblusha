@@ -61,7 +61,24 @@ struct ChatComposer: View {
     /// Панель выросла (цитата, чипы, вторая строка) — лента компенсирует высоту.
     let onHeightChanged: (CGFloat) -> Void
 
+    // --- Правка сообщения (порт веб-плашки «Редактирование сообщения») ---
+    // Со значениями по умолчанию и ПОСЛЕДНИМИ в списке свойств: у struct-вью
+    // инициализатор почленный, и любой другой порядок ломал бы уже написанные вызовы.
+    /// Что правим; nil — обычный режим. Текст сообщения кладётся в то же поле ввода,
+    /// поэтому правка достаётся вместе с панелью Ж/К/З, которой не было в модалке.
+    var editing: ComposerEdit? = nil
+    /// Сохранение уже летит на сервер — кнопка погашена, панель ещё на месте.
+    var editSaving = false
+    /// «Сохранить»: отдаёт то, что сейчас в поле.
+    var onSaveEdit: (String) -> Void = { _ in }
+    /// Крестик на плашке либо уход с беседы.
+    var onCancelEdit: () -> Void = {}
+
     @State private var draft = ""
+    /// Черновик, отложенный на время правки: в поле лежит текст правимого сообщения.
+    /// Вместе с беседой, которой он принадлежит, — переезд на другой чат посреди правки
+    /// не должен вернуть в поле чужой текст.
+    @State private var stashedDraft: (conversationId: String, text: String)?
     /// Ближайшее изменение текста — не набор пользователя (восстановление черновика).
     @State private var suppressTypingOnce = false
     /// Открытый редактор фото: свежий выбор или правка кадра, уже стоящего в очереди.
@@ -87,6 +104,8 @@ struct ChatComposer: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private var isEmpty: Bool { draft.trimmed().isEmpty && staged.isEmpty }
+
+    private var isEditing: Bool { editing != nil }
 
     /// На сколько панель без клавиатуры опускается в зону home indicator: чуть больше
     /// трети системного отступа (на Face ID-телефонах — 12 pt), на кнопочных — ноль.
@@ -132,11 +151,25 @@ struct ChatComposer: View {
                 }
             )
 
+            // Плашка правки — над цитатой ответа и над строкой ввода, как в вебе. Группа
+            // нужна ради перехода: анимация висит на НЕЙ, а не на всей панели, иначе
+            // масштабом поехал бы и рост поля от набранного текста.
+            Group {
+                if let edit = editing {
+                    ComposerEditBar(edit: edit, onCancel: onCancelEdit)
+                        .transition(.scale(scale: 0.001, anchor: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: editing)
+
             if !replyingTo.isEmpty {
                 ReplyDraftPreview(messages: replyingTo, onClear: onClearReply)
             }
 
-            if voiceState.showsBar {
+            // На время правки голосовая строка уступает место полю: записать новое
+            // голосовое нельзя (микрофон погашен), а уже записанный черновик никуда не
+            // девается — он вернётся, как только правка закроется.
+            if voiceState.showsBar && !isEditing {
                 // Палец больше не нужен: идёт зафиксированная запись или готов черновик —
                 // и та и другая ветка занимают место строки ввода. Во время удержания
                 // строку НЕ подменяем: кнопка микрофона несёт жест и обязана остаться.
@@ -170,11 +203,22 @@ struct ChatComposer: View {
         .onAppear {
             restoreDraft()
             applyRestoredDraft()
+            // Страховка на случай, когда панель появляется уже с открытой правкой
+            // (композер пересоздали, пока правка жила во вью-состоянии экрана).
+            applyEditing(from: nil, to: editing)
         }
         .onChange(of: conversationId) { previous, current in
             // Экран умеет переезжать на другую беседу без пересоздания (тап по пушу из
             // другого чата) — иначе набранное сохранилось бы под чужим id.
-            DraftStore.set(previous, draft)
+            if isEditing {
+                // Правка принадлежит ПРЕЖНЕЙ беседе: панель закрываем, а отложенный
+                // черновик возвращаем туда, откуда он взят, — не в поле новой беседы.
+                DraftStore.set(previous, stashedDraft?.text ?? "")
+                stashedDraft = nil
+                onCancelEdit()
+            } else {
+                DraftStore.set(previous, draft)
+            }
             draft = DraftStore.get(current)
             suppressTypingOnce = true
             // Начатая запись и записанный черновик принадлежат ПРЕЖНЕЙ беседе — иначе
@@ -182,8 +226,22 @@ struct ChatComposer: View {
             voiceState.cancelAll(recorder: voiceRecorder)
         }
         .onDisappear {
-            DraftStore.set(conversationId, draft)
+            // В поле может лежать текст правимого сообщения — черновиком беседы он не
+            // является, поэтому в хранилище уходит отложенный.
+            DraftStore.set(conversationId, isEditing ? (stashedDraft?.text ?? "") : draft)
             voiceState.cancelAll(recorder: voiceRecorder)
+            // Экран уходит — запись заведомо кончилась; флаг для звуков снимаем здесь же,
+            // иначе чат остался бы немым до следующей записи.
+            ChatSounds.setRecording(false)
+        }
+        // Пока пишется голосовое, звуки чата молчат: системный щелчок лёг бы прямо в
+        // записываемую дорожку. Флаг общий на приложение, поэтому его ставит композер —
+        // рекордер про звуки чата ничего не знает и знать не должен.
+        .onChange(of: voiceRecorder.isRecording) { _, recording in
+            ChatSounds.setRecording(recording)
+        }
+        .onChange(of: editing) { previous, current in
+            applyEditing(from: previous, to: current)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -237,15 +295,51 @@ struct ChatComposer: View {
     /// затирает его.
     private func applyRestoredDraft() {
         guard let restored = restoredDraft, !restored.isEmpty else { return }
+        if isEditing {
+            // Поле занято правкой: вернувшийся текст кладём в отложенный черновик, иначе
+            // он влился бы в редактируемое сообщение и уехал на сервер вместе с ним.
+            let waiting = stashedDraft?.text ?? ""
+            let merged = waiting.trimmed().isEmpty ? restored : restored + " " + waiting
+            stashedDraft = (conversationId, merged)
+            onConsumeRestoredDraft()
+            return
+        }
         draft = draft.trimmed().isEmpty ? restored : restored + " " + draft
         suppressTypingOnce = true
         onConsumeRestoredDraft()
     }
 
+    /// Вход в правку и выход из неё. Текст сообщения занимает поле ввода, а набранный
+    /// черновик ждёт в стороне: иначе одно другое затирало бы, и отмена правки оставляла
+    /// бы человека без того, что он уже написал.
+    private func applyEditing(from previous: ComposerEdit?, to current: ComposerEdit?) {
+        if let current {
+            // Смена цели правки без выхода (правку начали поверх правки) черновик уже
+            // отложила — второй раз его отбирать нельзя.
+            guard previous?.id != current.id else { return }
+            if previous == nil { stashedDraft = (conversationId, draft) }
+            draft = current.text
+            // Подстановка текста — не набор: «печатает…» у собеседника от правки не горит.
+            suppressTypingOnce = true
+            // Клавиатура остаётся поднятой — ради этого панель и затевалась.
+            focused = true
+            return
+        }
+        guard previous != nil else { return }
+        // Возвращаем черновик, только если он от ЭТОЙ беседы (переезд забирает его сам).
+        if let stash = stashedDraft, stash.conversationId == conversationId {
+            draft = stash.text
+            suppressTypingOnce = true
+        }
+        stashedDraft = nil
+    }
+
     private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 6) {
+            // Во время правки скрепка, камера и микрофон погашены — как в вебе
+            // (disabled={!!editState}): править можно только текст уже отправленного.
             AttachmentPickerButton(
-                disabled: sending,
+                disabled: sending || isEditing,
                 onPicked: { files in openPicked(files) },
                 onError: onError
             )
@@ -261,7 +355,7 @@ struct ChatComposer: View {
                         .foregroundStyle(Eb.textMuted)
                         .frame(width: 34, height: 38)
                 }
-                .disabled(sending)
+                .disabled(sending || isEditing)
                 .accessibilityLabel("Снять фото")
             }
 
@@ -291,16 +385,24 @@ struct ChatComposer: View {
                 // видел «печатает…» просто оттого, что человек открыл чат.
                 if suppressTypingOnce {
                     suppressTypingOnce = false
-                } else {
+                } else if !isEditing {
+                    // Правка — не набор нового сообщения: «печатает…» на неё не зажигаем
+                    // (веб ведёт себя так же: editState не трогает typing).
                     onDraftChanged(text)
                 }
-                DraftStore.set(conversationId, text)
+                // В хранилище черновиков текст правимого сообщения попасть не должен:
+                // отменил правку — и чужой текст остался бы в поле навсегда.
+                if !isEditing { DraftStore.set(conversationId, text) }
             }
 
             // Микрофон и «отправить» занимают ОДНО место: раньше микрофон исчезал на первом
             // же символе, поле рывком расширялось на 38 pt и текст под курсором прыгал.
             Group {
-                if isEmpty {
+                if isEditing {
+                    // Правка занимает то же место: кнопка отправки становится кнопкой
+                    // сохранения, микрофон на время правки недоступен.
+                    saveEditButton
+                } else if isEmpty {
                     VoiceRecordButton(
                         recorder: voiceRecorder,
                         state: voiceState,
@@ -431,6 +533,92 @@ struct ChatComposer: View {
                 .background(sending ? Eb.surface300 : Eb.brand, in: Circle())
         }
         .disabled(sending)
+    }
+
+    /// «Сохранить» на месте кнопки отправки. Поле при этом НЕ очищается: панель закрывает
+    /// экран и только по успеху сервера — иначе на сбое правка пропала бы молча.
+    private var saveEditButton: some View {
+        Button {
+            onSaveEdit(draft)
+        } label: {
+            Group {
+                if editSaving {
+                    ProgressView().tint(.white)
+                } else {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 38, height: 38)
+            .background(editSaveDisabled ? Eb.surface300 : Eb.brand, in: Circle())
+        }
+        .disabled(editSaveDisabled)
+        .accessibilityLabel("Сохранить")
+    }
+
+    /// Пустой текст сервер не примет (ChatViewModel.edit его отсекает), да и смысла в
+    /// «правке в пустоту» нет: стереть сообщение — это удаление, отдельный пункт меню.
+    private var editSaveDisabled: Bool { editSaving || draft.trimmed().isEmpty }
+}
+
+/// Что правит композер: id сообщения и его исходный текст.
+/// Equatable — на нём держится `onChange(of: editing)` и переход появления панели.
+struct ComposerEdit: Equatable {
+    let id: String
+    let text: String
+}
+
+/// Плашка «Редактирование сообщения» над полем ввода — порт веб-блока над формой
+/// (MessagesPane.tsx) и телеграмной EditAccessoryPanel: карандаш, акцентный заголовок,
+/// одна строка исходного текста, крестик справа. Модалки на пол-экрана здесь нет
+/// нарочно: правка почти всегда — это одна буква, а модалка уводила с переписки,
+/// роняла клавиатуру и отбирала панель Ж/К/З, которой у голого TextField не было.
+private struct ComposerEditBar: View {
+    let edit: ComposerEdit
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "pencil")
+                .font(.system(size: 17))
+                .foregroundStyle(Eb.brand)
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Eb.brand)
+                .frame(width: 3, height: 34)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Редактирование сообщения")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Eb.brand)
+                    .lineLimit(1)
+                // Разметку показываем разобранной, а не звёздочками: в поле ниже человек
+                // видит исходник, а здесь — как сообщение выглядит в ленте.
+                Text(ChatMarkdown.render(preview))
+                    .font(.caption)
+                    .foregroundStyle(Eb.textMuted)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button(action: onCancel) {
+                Image(systemName: "xmark")
+                    .font(.caption)
+                    .foregroundStyle(Eb.textMuted)
+                    // 32×32 — палец попадает мимо иконки и всё равно закрывает панель.
+                    .frame(width: 32, height: 32)
+            }
+            .accessibilityLabel("Отменить правку")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Eb.surface200)
+    }
+
+    /// Однострочный текст: переводы строк схлопываем, иначе lineLimit(1) показал бы
+    /// только первую строку и панель врала бы о содержимом.
+    private var preview: String {
+        edit.text
+            .split(whereSeparator: \.isNewline)
+            .joined(separator: " ")
     }
 }
 

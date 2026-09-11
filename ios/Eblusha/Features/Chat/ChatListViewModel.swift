@@ -184,7 +184,21 @@ final class ChatListViewModel: ObservableObject {
                 }
             }
 
-        case .messageNew, .messageNotify, .conversationsChanged, .secretChatAccepted:
+        case .messageNew(let conversationId, let messageId, let senderId, _),
+             .messageNotify(let conversationId, let messageId, let senderId, _):
+            // Звук входящего живёт ЗДЕСЬ, а не на экране беседы: подписка списка не
+            // умирает вместе с открытым чатом, и звучать должно как раз то, что пришло
+            // мимо него. Все условия («не своё», не в фоне, беседа не открыта, не идёт
+            // звонок или запись) — внутри ChatSounds.
+            ChatSounds.messageArrived(
+                conversationId: conversationId,
+                messageId: messageId,
+                senderId: senderId,
+                currentUserId: repo.currentUserId()
+            )
+            scheduleRefresh()
+
+        case .conversationsChanged, .secretChatAccepted:
             scheduleRefresh()
 
         default:
