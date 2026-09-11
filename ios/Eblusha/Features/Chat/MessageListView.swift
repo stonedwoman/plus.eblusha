@@ -28,7 +28,8 @@ struct MessageListView: View {
     let pinToken: Int
     let sendToken: Int
     let onForward: (Message) -> Void
-    let onOpenImage: ([MessageAttachment], Int) -> Void
+    /// Сообщение, индекс среди его фото и рамка плитки в координатах окна (для анимации).
+    let onOpenImage: (Message, Int, CGRect?) -> Void
     let onOpenSender: (Message) -> Void
     let onOpenAttachment: (MessageAttachment) -> Void
     let onEdit: (Message) -> Void
@@ -214,7 +215,8 @@ struct MessageRowActions {
     let onTap: (Message) -> Void
     let onLongPress: (Message) -> Void
     let onForward: (Message) -> Void
-    let onOpenImage: ([MessageAttachment], Int) -> Void
+    /// Сообщение, индекс среди его фото и рамка плитки в координатах окна (для анимации).
+    let onOpenImage: (Message, Int, CGRect?) -> Void
     let onOpenSender: (Message) -> Void
     let onOpenAttachment: (MessageAttachment) -> Void
     let onReply: (Message) -> Void
@@ -389,7 +391,12 @@ final class MessageListController: UIViewController {
             guard let self, let model = self.rowsById[id] else { return }
             cell.backgroundConfiguration = .clear()
             cell.contentConfiguration = UIHostingConfiguration {
-                MessageCell(model: model, actions: self.actions, swipe: self.swipeState(for: id))
+                MessageCell(
+                    model: model, actions: self.actions, swipe: self.swipeState(for: id),
+                    // Плитка фото сообщает рамку в координатах ячейки — просмотрщику нужна оконная,
+                    // чтобы кадр вырос ровно из своего места.
+                    cellToWindow: { [weak cell] rect in cell?.contentView.convert(rect, to: nil) }
+                )
             }
             // Отступы задаёт сам пузырь — системные поля списка тут лишние.
             .margins(.all, 0)
@@ -706,6 +713,8 @@ private struct MessageCell: View {
     let model: MessageRowModel
     let actions: MessageRowActions?
     let swipe: MessageSwipeState
+    /// Перевод рамки из системы координат ячейки («messageCell») в окно; ставит контроллер.
+    var cellToWindow: ((CGRect) -> CGRect?)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -732,7 +741,9 @@ private struct MessageCell: View {
                 onTap: { actions?.onTap(model.message) },
                 onStartSelect: {},
                 onForward: { actions?.onForward(model.message) },
-                onOpenImage: { images, index in actions?.onOpenImage(images, index) },
+                onOpenImage: { index, frame in
+                    actions?.onOpenImage(model.message, index, frame.flatMap { cellToWindow?($0) })
+                },
                 onOpenSender: { actions?.onOpenSender(model.message) },
                 decryptSecretAttachment: actions?.decryptSecretAttachment,
                 onOpenAttachment: { actions?.onOpenAttachment($0) },

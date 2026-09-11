@@ -55,6 +55,8 @@
 	<string>Микрофон нужен для звонков и голосовых сообщений.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Доступ к фото нужен, чтобы отправлять их в переписке.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Нужно, чтобы сохранять фото из переписки в вашу медиатеку.</string>
 
 	<!-- audio — звонок продолжается со свёрнутым приложением; voip — входящие звонки
 	     через PushKit; remote-notification — уведомления о сообщениях. Заменяет
