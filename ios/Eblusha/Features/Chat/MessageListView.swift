@@ -102,6 +102,29 @@ struct MessageListView: View {
         let tzOffset = Int64(TimeZone.current.secondsFromGMT())
         func dayIndex(_ millis: Int64) -> Int64 { (millis / 1000 + tzOffset) / 86_400 }
 
+        // Ран — как в вебе (ChatMessageRow.tsx:106-107): подряд идущие сообщения ОДНОГО
+        // автора всегда одна лестница, пауза значения не имеет. Пятиминутное окно, которое
+        // тут было раньше, рвало ран на ровном месте: написал в 10:00 и в 15:00 — веб
+        // показывает один блок, а телефон повторял имя, второй аватар и большой отступ.
+        //
+        // Единственная добавка к вебу — граница дня: разделителей дней в вебе нет, а у нас
+        // они есть, и без этой проверки плашка «Сегодня» вклинивалась бы внутрь лестницы,
+        // а аватар автора уезжал бы под неё.
+        func sameRun(_ earlier: Message?, _ later: Message?) -> Bool {
+            guard let earlier, let later else { return false }
+            if earlier.isSystem || later.isSystem { return false }
+            if earlier.senderId != later.senderId { return false }
+            return dayIndex(earlier.createdAt) == dayIndex(later.createdAt)
+        }
+
+        // Карточке цитаты нужна миниатюра ОРИГИНАЛА, а серверный `replyTo` вложений не
+        // отдаёт — оригинал ищем в уже загруженной истории, как веб (fullList.find).
+        // Индекс строим один раз за проход: поиск по всей ленте из каждой ячейки стоил бы
+        // O(n) на строку и съедал прокрутку.
+        var byId: [String: Message] = [:]
+        byId.reserveCapacity(messages.count)
+        for message in messages { byId[message.id] = message }
+
         var names: [String: String] = [:]
         for message in messages where !message.senderName.isEmpty {
             names[message.senderId] = message.senderName
@@ -118,14 +141,19 @@ struct MessageListView: View {
             let earlier = index > 0 ? messages[index - 1] : nil
             let later = index + 1 < messages.count ? messages[index + 1] : nil
             let newDay = earlier.map { dayIndex($0.createdAt) != dayIndex(message.createdAt) } ?? true
+            var quotePreviews: [String: ReplyQuotePreview] = [:]
+            for reply in message.replyTo {
+                quotePreviews[reply.id] = makeReplyQuotePreview(reply: reply, quoted: byId[reply.id])
+            }
             return MessageRowModel(
                 message: message,
                 isGroup: vm.ui.isGroup,
                 senderAvatarUrl: vm.ui.senderAvatars[message.senderId] ?? nil,
                 senderNames: names,
                 participantOrder: participantOrder,
-                isFirstInRun: !continuesRun(earlier, message),
-                isLastInRun: !continuesRun(message, later),
+                replyQuotePreviews: quotePreviews,
+                isFirstInRun: !sameRun(earlier, message),
+                isLastInRun: !sameRun(message, later),
                 dayHeader: newDay ? formatMessageDay(message.createdAt) : nil,
                 selectionMode: vm.ui.selectionMode,
                 selected: vm.ui.selectedIds.contains(message.id),
@@ -207,6 +235,9 @@ struct MessageRowModel: Identifiable, Equatable {
     let senderNames: [String: String]
     /// Позиция каждого участника беседы: слот палитры имени и фона пузыря.
     let participantOrder: [String: Int]
+    /// Предпросмотры цитат этой строки (id оригинала → миниатюра, подпись, время).
+    /// Считает лента: только она видит всю загруженную историю, где лежит оригинал.
+    let replyQuotePreviews: [String: ReplyQuotePreview]
     let isFirstInRun: Bool
     let isLastInRun: Bool
     let dayHeader: String?
@@ -790,5 +821,8 @@ private struct MessageCell: View {
         .padding(.horizontal, 10)
         // Система координат ячейки: в ней пузырь сообщает свою рамку для жестов.
         .coordinateSpace(name: "messageCell")
+        // Данные карточки цитаты — через окружение: карточка сидит глубоко внутри пузыря,
+        // и протаскивать словарь через всю сигнатуру MessageRow не за что.
+        .environment(\.replyQuotePreviews, model.replyQuotePreviews)
     }
 }

@@ -304,6 +304,7 @@ extension ChatViewModel {
                 size: a.size,
                 width: a.width,
                 height: a.height,
+                durationSec: a.duration.map { Int($0) },
                 secretNonce: a.nonce,
                 secretThreadId: m.threadId
             )

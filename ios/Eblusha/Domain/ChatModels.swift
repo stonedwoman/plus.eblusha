@@ -51,6 +51,9 @@ struct MessageAttachment: Codable, Equatable {
     var height: Int?
     /// Кадр-постер видео (metadata.posterKey); nil — постера нет.
     var posterUrl: String?
+    /// Длительность медиа в секундах (`metadata.duration` ВЛОЖЕНИЯ, не сообщения): у видео
+    /// она нужна плитке в пузыре, а `Message.audioDurationSec` описывает только голосовое.
+    var durationSec: Int?
     /// E2EE: nonce файла — url отдаёт шифртекст, расшифровать ключом треда secretThreadId.
     var secretNonce: String?
     var secretThreadId: String?
@@ -91,6 +94,41 @@ struct MessageAttachment: Codable, Equatable {
         // Ширина пузыря ограничена экраном минус аватар и отступы (веб: vw - 100).
         targetW = min(targetW, screen.width - 100)
         return CGSize(width: targetW.rounded(), height: (targetW * ratio).rounded())
+    }
+
+    /// Пропорция кадра h/w для мозаики альбома — порт веб-`getRatio`: без метаданных
+    /// считаем квадрат, панорамы и «простыни» зажимаем в 0.2..5, иначе одна картинка
+    /// растянула бы весь альбом. Считается из метаданных, то есть ДО загрузки.
+    var albumRatio: CGFloat {
+        guard let width, let height, width > 0, height > 0 else { return 1 }
+        return AlbumLayout.clampRatio(CGFloat(height) / CGFloat(width))
+    }
+
+    /// Бюджет альбома: порт веб-`gridMaxW`/`gridMaxH` (мобильная ветка — 85% ширины окна,
+    /// высота до min(420, 55% окна)), но ширина зажата тем, что реально остаётся пузырю.
+    /// В вебе лишнее поджимал flex, здесь плитки жёсткого размера, поэтому вычитаем
+    /// 120 = отступы ячейки (2×10) + аватар с зазором (28+6) + паддинги пузыря (2×12)
+    /// + минимальный зазор до края (40): иначе мозаика вылезала бы за пузырь в группе.
+    static func albumBudget(screen: CGSize) -> (maxWidth: CGFloat, maxHeight: CGFloat) {
+        let byViewport = max(280, (screen.width * 0.85).rounded(.down))
+        return (
+            maxWidth: min(byViewport, screen.width - 120),
+            maxHeight: min(420, (screen.height * 0.55).rounded())
+        )
+    }
+
+    /// Размер плитки видео. Математика та же, что у картинки, но при отсутствии
+    /// метаданных веб (`VideoMessageBubble`) берёт 16/9, а не 4/3 как у фото, — иначе
+    /// плитка была бы заметно выше кадра, который в неё потом ляжет.
+    func videoDisplaySize(screen: CGSize) -> CGSize {
+        if let width, let height, width > 0, height > 0 { return displaySize(screen: screen) }
+        var guessed = self
+        // Подставляем не 16×9 (displaySize мелкие кадры НЕ растягивает), а сразу
+        // «экранный» размер в пропорции 16/9.
+        let base = max(320, screen.width / 2)
+        guessed.width = Int(base.rounded())
+        guessed.height = Int((base * 9 / 16).rounded())
+        return guessed.displaySize(screen: screen)
     }
 }
 

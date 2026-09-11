@@ -4,8 +4,6 @@ import SwiftUI
 // пересылка, вьюер, голосовые, секретные карточки.
 // Ещё не портированы: фоторедактор перед отправкой и экран участников группы.
 
-private let runGapMs: Int64 = 5 * 60 * 1000
-
 /// Сдвиг пузыря при свайпе-ответе. Отдельный объект на строку: во время жеста
 /// перерисовывается только сам пузырь, а не вся ячейка и не вся лента.
 final class MessageSwipeState: ObservableObject {
@@ -42,16 +40,6 @@ struct SwipeableBubble<Content: View>: View {
                 state.bubbleFrame = $0
             }
     }
-}
-
-/// Позднее сообщение продолжает ран раннего: тот же автор, оба не системные, в окне 5 мин.
-/// Не private: ранами занимается MessageListView, собирая их один раз за проход.
-func continuesRun(_ earlier: Message?, _ later: Message?) -> Bool {
-    guard let earlier, let later else { return false }
-    if earlier.isSystem || later.isSystem { return false }
-    if earlier.senderId != later.senderId { return false }
-    let gap = later.createdAt - earlier.createdAt
-    return gap >= 0 && gap <= runGapMs
 }
 
 /// Зеркало веб-`hashStringToUint`: катящийся 31-хэш как беззнаковое 32-битное.
@@ -859,10 +847,10 @@ struct MessageRow: View {
         }
     }
 
-    /// Автор цитаты: сначала имя из загруженной истории, потом — «вы» для своих.
-    private func replyAuthorName(_ reply: ReplyInfo) -> String? {
-        if let name = senderNames[reply.senderId], !name.isEmpty { return name }
-        return nil
+    /// Имя автора цитаты из уже загруженной истории. Пусто — карточка сама подставит
+    /// «Участник» (веб-паритет: безымянная серая полоска не объясняла, кому отвечают).
+    private func replyAuthorName(_ reply: ReplyInfo) -> String {
+        senderNames[reply.senderId] ?? ""
     }
 
     /// Время, пометка «изм.» и галочки квитанций — одной строкой.
@@ -914,33 +902,21 @@ struct MessageRow: View {
                     .italic()
             }
 
+            // Цитата — мини-пузырь (ReplyQuoteCard): миниатюра оригинала, подпись и время,
+            // фон и полоса тоном АВТОРА ЦИТАТЫ, как в вебе. Что именно показать (картинка
+            // или текст), считает лента: серверный replyTo вложений не отдаёт, оригинал
+            // виден только ей — карточка берёт это из окружения replyQuotePreviews.
             ForEach(m.replyTo, id: \.id) { reply in
-                HStack(spacing: 6) {
-                    // Полоса цитаты — цвета автора, как в вебе: по ней взгляд отличает,
-                    // кому отвечают, ещё до чтения имени.
-                    Rectangle()
-                        .fill(nameColorForUser(reply.senderId, order: participantOrder))
-                        .frame(width: 2)
-                    VStack(alignment: .leading, spacing: 1) {
-                        // Имя автора цитаты: без него плитка была безымянной серой
-                        // полоской и было непонятно, кому вообще отвечают.
-                        if let author = replyAuthorName(reply) {
-                            Text(author)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(nameColorForUser(reply.senderId, order: participantOrder))
-                                .lineLimit(1)
-                        }
-                        Text(reply.content?.isEmpty == false ? reply.content! : "Вложение")
-                            .font(.caption)
-                            .foregroundStyle(Eb.textMuted)
-                            .lineLimit(2)
-                    }
-                }
-                .padding(.vertical, 3)
-                .padding(.horizontal, 6)
-                .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
-                .onTapGesture { onQuoteTap?(reply.id) }
+                ReplyQuoteCard(
+                    reply: reply,
+                    authorName: replyAuthorName(reply),
+                    accent: nameColorForUser(reply.senderId, order: participantOrder),
+                    background: groupIncomingBubbleBg(reply.senderId, order: participantOrder),
+                    decryptSecretAttachment: decryptSecretAttachment,
+                    // В режиме выбора тап по карточке — это выбор строки, а не прыжок к
+                    // оригиналу: иначе галочку нельзя было бы поставить по цитате.
+                    onTap: { if selectionMode { onTap() } else { onQuoteTap?(reply.id) } }
+                )
             }
 
             attachmentsView
@@ -998,40 +974,54 @@ struct MessageRow: View {
     @ViewBuilder
     private var attachmentsView: some View {
         let images = m.attachments.filter { $0.type == "IMAGE" }
-        let files = m.attachments.filter { $0.type != "IMAGE" }
+        let videos = m.attachments.filter { $0.type == "VIDEO" }
+        // Всё остальное (голосовые и документы) — строками под медиа, как в вебе.
+        let files = m.attachments.filter { $0.type != "IMAGE" && $0.type != "VIDEO" }
 
-        if !images.isEmpty {
-            // Альбом: одна — во всю ширину, больше — сетка 2 колонки (упрощение веб-сетки).
-            let columns = images.count == 1
-                ? [GridItem(.flexible())]
-                : [GridItem(.flexible(), spacing: 3), GridItem(.flexible(), spacing: 3)]
-            if images.count == 1, let att = images.first {
-                // Одиночная картинка — точный размер из метаданных, как в вебе.
-                let size = att.displaySize(screen: screenSize)
-                attachmentImage(att, width: size.width, height: size.height)
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
-                        swipe.tileFrames[0] = $0
-                    }
-                    .onTapGesture {
-                        if selectionMode { onTap() } else { onOpenImage(0, swipe.tileFrames[0]) }
-                    }
-            } else {
-                // Альбом: квадратные плитки в две колонки — соседи с разными пропорциями
-                // иначе рвут сетку.
-                let side = min(screenSize.width - 120, 320) / 2 - 2
-                LazyVGrid(columns: columns, spacing: 3) {
-                    ForEach(Array(images.enumerated()), id: \.offset) { idx, att in
-                        attachmentImage(att, width: side, height: side)
-                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
-                                swipe.tileFrames[idx] = $0
-                            }
-                            .onTapGesture {
-                                if selectionMode { onTap() } else { onOpenImage(idx, swipe.tileFrames[idx]) }
-                            }
-                    }
+        if images.count == 1, let att = images.first {
+            // Одиночная картинка — точный размер из метаданных и вписывание (contain),
+            // как в вебе: мозаика начинается только с двух кадров.
+            let size = att.displaySize(screen: screenSize)
+            attachmentImage(att, width: size.width, height: size.height)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
+                    swipe.tileFrames[0] = $0
                 }
-            }
+                .onTapGesture {
+                    if selectionMode { onTap() } else { onOpenImage(0, swipe.tileFrames[0]) }
+                }
+        } else if images.count > 1 {
+            // Мозаика по пропорциям кадров (порт веб-renderImageGroup): вся геометрия
+            // считается из метаданных ДО загрузки, поэтому высота ячейки не меняется.
+            let budget = MessageAttachment.albumBudget(screen: screenSize)
+            AttachmentAlbumView(
+                atts: images,
+                maxWidth: budget.maxWidth,
+                maxHeight: budget.maxHeight,
+                decryptSecretAttachment: decryptSecretAttachment,
+                // Индекс плитки = индекс фото в сообщении (тот же фильтр IMAGE, что у
+                // галереи в openGallery), поэтому просмотрщик открывает именно тот кадр,
+                // по которому ткнули, и улетает обратно в его рамку.
+                onTileFrame: { index, frame in swipe.tileFrames[index] = frame },
+                onOpenImage: { index in
+                    if selectionMode { onTap() } else { onOpenImage(index, swipe.tileFrames[index]) }
+                }
+            )
         }
+
+        // Видео — плитка с кадром-постером и кнопкой Play вместо строки «movie.mp4 · 12 МБ».
+        // Рамки плиток видео в swipe.tileFrames НЕ пишем: там нумерация галереи фото, а
+        // видео в неё не попадает — чужой индекс увёл бы просмотрщик не в тот кадр.
+        ForEach(Array(videos.enumerated()), id: \.offset) { _, att in
+            VideoAttachmentTile(
+                att: att,
+                size: att.videoDisplaySize(screen: screenSize),
+                durationSec: att.durationSec,
+                // Плеер тот же, что у файловой строки: секретное видео расшифровывается
+                // ключом треда, обычное скачивается и уходит в VideoPlayerSheet.
+                onPlay: { if selectionMode { onTap() } else { onOpenAttachment(att) } }
+            )
+        }
+
         ForEach(Array(files.enumerated()), id: \.offset) { _, att in
             if att.type == "AUDIO" {
                 // «AUDIO» → waveform-плеер вместо файловой строки (порт AttachmentView).
@@ -1091,10 +1081,11 @@ struct MessageRow: View {
         .buttonStyle(.plain)
     }
 
+    /// Строка файла. Видео сюда больше не попадает (у него плитка с постером), картинки —
+    /// тоже, так что это документы и подстраховка для голосового без плеера.
     private func fileRowLabel(_ att: MessageAttachment) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: att.type == "AUDIO" ? "mic.fill"
-                : att.type == "VIDEO" ? "film" : "doc.fill")
+            Image(systemName: att.type == "AUDIO" ? "mic.fill" : "doc.fill")
                 .foregroundStyle(Eb.brand)
             VStack(alignment: .leading, spacing: 1) {
                 Text(att.name ?? (att.type == "AUDIO" ? "Голосовое" : "Файл"))
@@ -1112,7 +1103,7 @@ struct MessageRow: View {
                 }
             }
             Spacer(minLength: 4)
-            Image(systemName: att.type == "VIDEO" ? "play.circle" : "arrow.down.circle")
+            Image(systemName: "arrow.down.circle")
                 .foregroundStyle(Eb.textMuted)
         }
         .padding(6)

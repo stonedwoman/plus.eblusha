@@ -407,7 +407,10 @@ final class ChatRepository {
             size: dto.size,
             width: int("width"),
             height: int("height"),
-            posterUrl: str("posterKey")
+            posterUrl: str("posterKey"),
+            // Длительность видео (сервер считает её вместе с постером) — её показывает
+            // уголок плитки видео в пузыре.
+            durationSec: int("duration")
         )
     }
 
