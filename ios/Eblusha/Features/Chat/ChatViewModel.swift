@@ -25,6 +25,9 @@ final class ChatViewModel: ObservableObject {
         var nextCursor: String?
         var typingName: String?
         var error: String?
+        /// Короткий положительный итог действия («Переслано в «…»»): показывается вместо
+        /// молчания, когда сказать надо, но ошибки нет. Гаснет сам (см. showNotice).
+        var notice: String?
         /// Ответ: 1 (одиночный) или ≥2 (мультиответ) цитируемых сообщений.
         var replyingTo: [Message] = []
         /// Режим мультивыбора (порт selectionMode/selectedIds из Kotlin UiState).
@@ -38,6 +41,14 @@ final class ChatViewModel: ObservableObject {
         var uploadProgress: Float?
         /// Очередь вложений (веб-паритет: выбранное НЕ отправляется сразу, а встаёт чипами).
         var staged: [OutgoingFile] = []
+        /// Отложенная пересылка В ЭТУ беседу (веб forwardComposerDraft): сообщения уже
+        /// выбраны, но ещё не ушли — текст композера станет комментарием к ним.
+        var forwardDraft: ForwardDraft?
+        /// Пуст ли композер. Нужно только плашке пересылки: пока пусто, отправляет она
+        /// (у пустого композера вместо стрелки стоит микрофон). Пишется ТОЛЬКО на
+        /// переходе пусто/непусто и только при живом черновике — иначе каждое нажатие
+        /// клавиши перестраивало бы ленту (ровно то, от чего композер вынесли отдельно).
+        var composerEmpty = true
         // --- Секретный тред V2 (имена 1:1 с Kotlin ChatUiState) ---
         /// E2EE-транспорт: без квитанций, реакций и правки (веб-паритет).
         var isSecret = false
@@ -111,6 +122,8 @@ final class ChatViewModel: ObservableObject {
     private var pendingReload: Task<Void, Never>?
     /// Хвостовой markRead: последняя пачка сообщений не должна остаться непрочитанной.
     private var markReadTrailing: Task<Void, Never>?
+    /// Автогашение плашки-итога: держим, чтобы новый итог отменял таймер прошлого.
+    private var noticeDismiss: Task<Void, Never>?
     private var prependingReset: Task<Void, Never>?
     private var requestedPreviews: Set<String> = []
     var cancellables: Set<AnyCancellable> = []
@@ -156,6 +169,15 @@ final class ChatViewModel: ObservableObject {
         realtime.joinConversation(conversationId)
 
         Task { await bootstrap() }
+
+        // Черновик пересылки лист выбора получателя кладёт ДО перехода сюда, так что
+        // забираем его сразу при создании. Плюс подписка: беседа-получатель могла быть
+        // уже открыта (тогда экран не пересоздаётся и «сразу» не случится).
+        adoptForwardDraftIfAny()
+        ForwardDraftStore.shared.$pending
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.adoptForwardDraftIfAny() }
+            .store(in: &cancellables)
 
         // Ресинк открытого чата после реконнекта сокета.
         var wasConnected = realtime.connected
@@ -437,6 +459,14 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Отправка
 
     func send(_ text: String) {
+        // При живом черновике пересылки кнопка отправки отправляет ПЕРЕСЫЛКУ, а набранное
+        // становится комментарием к ней — как в вебе (MessagesPane.tsx:3229-3258), где
+        // composer-текст уходит в executeForwardPayloadDelivery(..., comment).
+        if ui.forwardDraft != nil {
+            setTyping(false)
+            sendForwardDraft(comment: text)
+            return
+        }
         let trimmed = text.trimmed()
         guard !trimmed.isEmpty, !ui.sending else { return }
         setTyping(false)
@@ -494,9 +524,32 @@ final class ChatViewModel: ObservableObject {
         ui.error = nil
     }
 
+    /// Положительный итог действия короткой плашкой: человек должен видеть, что пересылка
+    /// дошла, а не догадываться по тишине. Гаснет сама — это не состояние, а сообщение.
+    func showNotice(_ text: String) {
+        ui.notice = text
+        noticeDismiss?.cancel()
+        noticeDismiss = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self?.ui.notice = nil
+        }
+    }
+
+    func clearNotice() {
+        noticeDismiss?.cancel()
+        ui.notice = nil
+    }
+
     /// Шлёт все [files] ОДНИМ сообщением (фотоальбом). Веб-капы: 10 фото + 10 файлов.
     func sendAttachments(_ files: [OutgoingFile], caption: String? = nil, onSuccess: (() -> Void)? = nil) {
         guard !files.isEmpty else { return }
+        // Веб при живом черновике пересылки вложения из композера не пускает
+        // (MessagesPane.tsx:3238-3243): иначе непонятно, что уйдёт — файл или пересылка.
+        if ui.forwardDraft != nil {
+            ui.error = "Сначала отправьте или отмените пересылку — вложения с ней не уходят"
+            return
+        }
         if ui.sending {
             ui.error = "Подождите — идёт отправка предыдущего сообщения"
             return
@@ -620,6 +673,11 @@ final class ChatViewModel: ObservableObject {
     /// AUDIO-сообщение с длительностью и волной.
     func sendVoice(_ data: Data, durationSec: Int, waveform: [Int]) {
         guard !ui.sending else { return }
+        // Тот же запрет, что у вложений: пока висит черновик пересылки, композер занят ею.
+        if ui.forwardDraft != nil {
+            ui.error = "Сначала отправьте или отмените пересылку — голосовое с ней не уходит"
+            return
+        }
         // Голосовое отвечает на цитату так же, как текст и вложения (веб: replyToId +
         // metadata рядом с duration), и гасит плашку сразу после отправки.
         let reply = ui.replyingTo
@@ -837,15 +895,156 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Пересылка
 
-    /// Пересылает messages в беседу targetConversationId (и снимает выбор, если активен).
-    func forward(targetConversationId: String, messages: [Message]) {
+    /// Тап по беседе в листе выбора получателя. Ничего НЕ отправляет — как веб
+    /// (ChatModals.tsx:2815-2882): складывает черновик пересылки и просит навигацию
+    /// открыть беседу-получателя, где к пересылке можно приписать комментарий и только
+    /// потом отправить. Раньше пересылка уходила по тапу молча, и об отказе сервера
+    /// человек не узнавал.
+    func stageForward(targetConversationId: String, messages: [Message]) {
         // Пересылка ИЗ секретки запрещена: forwardMessage ушёл бы в облачный /send открытым
-        // текстом + связал бы имя/mime/размер с .enc-блобом на сервере.
-        if secretMode { clearSelection(); return }
+        // текстом + связал бы имя/mime/размер с .enc-блобом на сервере. Но молчать об этом
+        // нельзя — веб отказ объясняет.
+        if secretMode {
+            clearSelection()
+            ui.error = "Из секретного чата пересылать нельзя: сообщения не покидают устройство открытыми"
+            return
+        }
+        let list = messages.filter { !$0.isSystem && !$0.deleted }
         clearSelection()
+        guard !list.isEmpty else {
+            ui.error = "Нечего пересылать: выбраны только системные или удалённые сообщения"
+            return
+        }
         Task {
-            for m in messages where !m.isSystem && !m.deleted {
-                _ = await repo.forwardMessage(targetConversationId: targetConversationId, message: m)
+            // Название получателя нужно и плашке черновика, и переходу; кеш бесед отвечает
+            // сразу, сеть — только при промахе.
+            let title = (await repo.conversationMeta(targetConversationId))?.title ?? "беседа"
+            ForwardDraftStore.shared.stage(ForwardDraft(
+                destinationConversationId: targetConversationId,
+                destinationTitle: title,
+                messages: list
+            ))
+            // Переход — тем же одноразовым запросом, которым открывается чат по тапу на
+            // уведомление: RootView его уже слушает, новых путей навигации не нужно.
+            AppLifecycle.shared.requestOpenConversation(
+                conversationId: targetConversationId, title: title
+            )
+        }
+    }
+
+    /// Черновик адресован ЭТОЙ беседе — показываем его у себя. Хранилище при этом НЕ
+    /// чистим: черновик снимает отправка или крестик, иначе выброшенный экземпляр
+    /// вьюмодели (SwiftUI создаёт их по нескольку) унёс бы пересылку с собой.
+    private func adoptForwardDraftIfAny() {
+        guard ui.forwardDraft == nil,
+              let draft = ForwardDraftStore.shared.draft(for: conversationId)
+        else { return }
+        ui.forwardDraft = draft
+        // Композер восстановит сохранённый черновик молча (без onDraftChanged), поэтому
+        // «пусто ли там» спрашиваем у того же хранилища, что и он.
+        ui.composerEmpty = DraftStore.get(conversationId).trimmed().isEmpty
+    }
+
+    /// Крестик на плашке — «Отменить пересылку» (веб: setForwardComposerDraft(null)).
+    func cancelForwardDraft() {
+        ui.forwardDraft = nil
+        ForwardDraftStore.shared.clear()
+    }
+
+    /// Отправка отложенной пересылки одним заходом. Комментарий из композера уходит в
+    /// `metadata.forwardComposerCaption` ПЕРВОГО сообщения пачки — ровно как веб
+    /// (ChatsPage.tsx:1513-1523), поэтому на обеих платформах он виден в одном пузыре.
+    /// Итог обязательно виден: отказ — ошибкой, успех — плашкой «Переслано в «…»».
+    func sendForwardDraft(comment: String?) {
+        guard let draft = ui.forwardDraft, !ui.sending else { return }
+        // Пустая пачка — не повод показывать «Переслано»: черновик просто снимаем.
+        guard !draft.messages.isEmpty else {
+            ui.forwardDraft = nil
+            ForwardDraftStore.shared.clear()
+            return
+        }
+        if secretMode {
+            ui.forwardDraft = nil
+            ForwardDraftStore.shared.clear()
+            ui.error = "Пересылка в секретный чат не поддерживается"
+            return
+        }
+        Task {
+            ui.sending = true
+            ui.error = nil
+            var sent = 0
+            var failure: String?
+            loop: for (index, message) in draft.messages.enumerated() {
+                let result = await repo.forwardMessage(
+                    targetConversationId: draft.destinationConversationId,
+                    message: message,
+                    // Комментарий — только у первого: иначе он повторился бы N раз.
+                    composerCaption: index == 0 ? comment : nil
+                )
+                switch result {
+                case .success:
+                    sent += 1
+                case .failure(let reason, _):
+                    // Веб на отказе обрывает пачку (outcome == 'blocked') — не долбим сервер
+                    // и не размазываем пересылку по половине сообщений.
+                    failure = reason
+                    break loop
+                }
+            }
+            ui.sending = false
+            if let failure {
+                ui.error = sent > 0
+                    ? "Переслано \(sent) из \(draft.messages.count): \(failure)"
+                    : "Не удалось переслать: \(failure)"
+            } else {
+                showNotice("Переслано в «\(draft.destinationTitle)»")
+            }
+            if sent > 0 {
+                // Ушедшее не должно уйти повторно, даже если часть пачки упала.
+                ui.forwardDraft = nil
+                ForwardDraftStore.shared.clear()
+                // Комментарий уехал внутри пересылки — в черновике беседы его быть не должно.
+                DraftStore.set(conversationId, "")
+                reloadSilently()
+            }
+        }
+    }
+
+    /// Немедленная пересылка без перехода и комментария. Остаётся для вызовов, которым
+    /// переход не нужен; в отличие от прежней версии результат НЕ теряется: успех —
+    /// плашкой «Переслано в «…»», отказ сервера — ошибкой.
+    func forward(targetConversationId: String, messages: [Message]) {
+        if secretMode {
+            clearSelection()
+            ui.error = "Из секретного чата пересылать нельзя: сообщения не покидают устройство открытыми"
+            return
+        }
+        let list = messages.filter { !$0.isSystem && !$0.deleted }
+        clearSelection()
+        guard !list.isEmpty else { return }
+        Task {
+            let title = (await repo.conversationMeta(targetConversationId))?.title
+            var sent = 0
+            var failure: String?
+            loop: for message in list {
+                switch await repo.forwardMessage(
+                    targetConversationId: targetConversationId, message: message
+                ) {
+                case .success:
+                    sent += 1
+                case .failure(let reason, _):
+                    failure = reason
+                    break loop
+                }
+            }
+            if let failure {
+                ui.error = sent > 0
+                    ? "Переслано \(sent) из \(list.count): \(failure)"
+                    : "Не удалось переслать: \(failure)"
+            } else if let title {
+                showNotice("Переслано в «\(title)»")
+            } else {
+                showNotice("Переслано")
             }
         }
     }
@@ -900,7 +1099,13 @@ final class ChatViewModel: ObservableObject {
 
     func onInputChanged(_ text: String) {
         lastInputMs = Date().timeIntervalSince1970
-        setTyping(!text.trimmed().isEmpty)
+        let empty = text.trimmed().isEmpty
+        // В стейт пишем только при живом черновике пересылки и только на переходе
+        // пусто/непусто: иначе каждая клавиша перестраивала бы экран вместе с лентой.
+        if ui.forwardDraft != nil, empty != ui.composerEmpty {
+            ui.composerEmpty = empty
+        }
+        setTyping(!empty)
     }
 
     private func setTyping(_ typing: Bool) {

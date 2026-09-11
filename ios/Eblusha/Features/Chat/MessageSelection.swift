@@ -175,24 +175,52 @@ struct ForwardRequest: Identifiable {
     let messages: [Message]
 }
 
-/// Шит выбора беседы-получателя пересылки.
+/// Шит выбора беседы-получателя пересылки. Тексты — порт модала пересылки из веба
+/// (frontend/src/ui/pages/chats/render/ChatModals.tsx:2725-2790): заголовок со счётчиком,
+/// подсказка о том, ЧТО будет дальше (откроется чат, можно приписать комментарий), и
+/// объяснение пустого списка.
 struct ForwardPickerSheet: View {
     let repo: ChatRepository
     let currentConversationId: String
     let onPick: (String) -> Void
+    /// Сколько сообщений пересылаем — только для заголовка. Со значением по умолчанию:
+    /// старый вызов без счётчика обязан продолжать компилироваться.
+    var messageCount: Int = 0
 
     @State private var conversations: [Conversation] = []
+    /// Список бесед уже загружен: до этого «нет бесед» показывать нельзя — это не пустота,
+    /// а ещё не пришедший ответ.
+    @State private var loaded = false
+
+    /// Беседы-кандидаты: без текущей (переслать себе же в этот чат веб не предлагает).
+    private var targets: [Conversation] {
+        conversations.filter { $0.id != currentConversationId }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Переслать в…")
+            Text(messageCount > 1 ? "Переслать сообщения (\(messageCount))" : "Переслать в…")
                 .font(.body.weight(.semibold))
                 .foregroundStyle(Eb.textPrimary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
+            Text("Выберите беседу — откроется чат, можно добавить комментарий и отправить.")
+                .font(.caption)
+                .foregroundStyle(Eb.textMuted)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            if loaded, targets.isEmpty {
+                Text("Нет других бесед для пересылки. Откройте ещё один диалог или группу.")
+                    .font(.footnote)
+                    .foregroundStyle(Eb.textMuted)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 28)
+            }
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(conversations.filter { $0.id != currentConversationId }) { conv in
+                    ForEach(targets) { conv in
                         Button {
                             onPick(conv.id)
                         } label: {
@@ -223,6 +251,7 @@ struct ForwardPickerSheet: View {
             // Секретные треды отвергают обычный путь отправки — пересылка В них
             // не поддерживается.
             conversations = list.filter { !$0.isSecretV2 }
+            loaded = true
         }
     }
 }

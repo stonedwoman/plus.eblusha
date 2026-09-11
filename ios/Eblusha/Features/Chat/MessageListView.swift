@@ -137,6 +137,16 @@ struct MessageListView: View {
             participantOrder[id] = index
         }
 
+        // Пачки пересылки (порт computeMultiSourceForwardBundles) считаются здесь же одним
+        // проходом: строка узнаёт своё место в конверте словарём, а не поиском по ленте.
+        //
+        // Почему пачка НЕ склеивается в одну ячейку, как в вебе: id строки — это id
+        // сообщения, и на нём держится всё остальное — прыжок к цитате (scroll(to:)),
+        // рамки плиток для просмотрщика, вклейка истории по прежней первой строке.
+        // Строк столько же, сколько сообщений; конверт рисует каждая, а общую шапку
+        // источника — только первая в пачке (slot.isFirst), и визуально это тот же конверт.
+        let forwardSlots = computeForwardBundleSlots(messages)
+
         return messages.enumerated().map { index, message in
             let earlier = index > 0 ? messages[index - 1] : nil
             let later = index + 1 < messages.count ? messages[index + 1] : nil
@@ -152,6 +162,7 @@ struct MessageListView: View {
                 senderNames: names,
                 participantOrder: participantOrder,
                 replyQuotePreviews: quotePreviews,
+                forwardSlot: forwardSlots[message.id],
                 isFirstInRun: !sameRun(earlier, message),
                 isLastInRun: !sameRun(message, later),
                 dayHeader: newDay ? formatMessageDay(message.createdAt) : nil,
@@ -238,6 +249,11 @@ struct MessageRowModel: Identifiable, Equatable {
     /// Предпросмотры цитат этой строки (id оригинала → миниатюра, подпись, время).
     /// Считает лента: только она видит всю загруженную историю, где лежит оригинал.
     let replyQuotePreviews: [String: ReplyQuotePreview]
+    /// Место строки в пачке пересылки: по нему строка знает, рисовать ли общую шапку
+    /// источника. nil — сообщение не переслано. Участвует в сравнении строк: когда пачка
+    /// растёт, у её первой строки шапка остаётся, а у соседей меняется счёт — и
+    /// diffable-источник переконфигурирует именно их (reconfigureItems).
+    let forwardSlot: ForwardBundleSlot?
     let isFirstInRun: Bool
     let isLastInRun: Bool
     let dayHeader: String?
@@ -794,6 +810,7 @@ private struct MessageCell: View {
                 senderAvatarUrl: model.senderAvatarUrl,
                 senderNames: model.senderNames,
                 participantOrder: model.participantOrder,
+                forwardSlot: model.forwardSlot,
                 isFirstInRun: model.isFirstInRun,
                 isLastInRun: model.isLastInRun,
                 selectionMode: model.selectionMode,

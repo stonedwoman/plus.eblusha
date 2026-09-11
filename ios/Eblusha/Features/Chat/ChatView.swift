@@ -216,6 +216,26 @@ struct ChatView: View {
                 .onTapGesture { vm.clearError() }
             }
 
+            // Итог действия («Переслано в «…»»): раньше пересылка уходила молча, и об
+            // успехе — как и об отказе сервера — человек не узнавал вовсе.
+            if let notice = vm.ui.notice {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Eb.brand)
+                    Text(notice)
+                        .font(.footnote)
+                        .foregroundStyle(Eb.textPrimary)
+                    Spacer(minLength: 4)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
+                .background(Eb.brand.opacity(0.12))
+                .contentShape(Rectangle())
+                .onTapGesture { vm.clearNotice() }
+            }
+
             if vm.ui.selectionMode {
                 SelectionActionBar(
                     count: vm.ui.selectedIds.count,
@@ -235,6 +255,21 @@ struct ChatView: View {
                 // Композер скрыт, пока приглашение не принято обеими сторонами.
                 EmptyView()
             } else {
+                // Отложенная пересылка: что уйдёт, кнопка «Переслать» (когда в поле пусто —
+                // там вместо стрелки микрофон) и крестик «Отменить». Набранный текст
+                // становится комментарием к пересылке, как в вебе.
+                if let draft = vm.ui.forwardDraft {
+                    ForwardDraftBar(
+                        draft: draft,
+                        composerEmpty: vm.ui.composerEmpty,
+                        sending: vm.ui.sending,
+                        onSend: {
+                            sendToken += 1
+                            vm.sendForwardDraft(comment: nil)
+                        },
+                        onCancel: { vm.cancelForwardDraft() }
+                    )
+                }
                 ChatComposer(
                     conversationId: conversation.id,
                     staged: vm.ui.staged,
@@ -302,6 +337,11 @@ struct ChatView: View {
         .onAppear {
             quickSlots = ReactionFavorites.quickSlots(userId: vm.currentUserId)
         }
+        // Плашка пересылки поджимает ленту снизу так же, как цитата ответа: последнее
+        // сообщение не должно уехать под неё (onHeightChanged знает только про композер).
+        .onChange(of: vm.ui.forwardDraft != nil) { _, live in
+            if live { pinToken += 1 }
+        }
         .onDisappear {
             vm.onDisappear()
         }
@@ -313,9 +353,13 @@ struct ChatView: View {
                 repo: AppContainer.shared.chatRepository,
                 currentConversationId: conversation.id,
                 onPick: { targetId in
-                    vm.forward(targetConversationId: targetId, messages: request.messages)
+                    // Тап по беседе НИЧЕГО не отправляет (веб: ChatModals.tsx:2815-2882):
+                    // пересылка ложится черновиком, экран уезжает в беседу-получателя, и
+                    // там к ней можно приписать комментарий и отправить кнопкой.
+                    vm.stageForward(targetConversationId: targetId, messages: request.messages)
                     forwardSheet = nil
-                }
+                },
+                messageCount: request.messages.count
             )
             .presentationDetents([.medium, .large])
         }
@@ -756,6 +800,10 @@ struct MessageRow: View {
     var senderNames: [String: String] = [:]
     /// Позиция участника беседы → слот в палитре имени и фона пузыря (веб-паритет).
     var participantOrder: [String: Int] = [:]
+    /// Место сообщения в пачке пересылки — считает лента (computeForwardBundleSlots).
+    /// nil у непересланного, а у пересланного без слота конверт рисуется сам по себе:
+    /// шапка тогда собирается из одной этой пересылки.
+    var forwardSlot: ForwardBundleSlot?
     let isFirstInRun: Bool
     let isLastInRun: Bool
     let selectionMode: Bool
@@ -895,13 +943,6 @@ struct MessageRow: View {
                     .foregroundStyle(nameColorForUser(m.senderId, order: participantOrder))
             }
 
-            if let forward = m.forwardFrom {
-                Text("↪ переслано от \(forward.authorName)")
-                    .font(.caption)
-                    .foregroundStyle(Eb.textMuted)
-                    .italic()
-            }
-
             // Цитата — мини-пузырь (ReplyQuoteCard): миниатюра оригинала, подпись и время,
             // фон и полоса тоном АВТОРА ЦИТАТЫ, как в вебе. Что именно показать (картинка
             // или текст), считает лента: серверный replyTo вложений не отдаёт, оригинал
@@ -919,14 +960,24 @@ struct MessageRow: View {
                 )
             }
 
-            attachmentsView
-
-            if let content = m.content, !content.isEmpty {
-                MessageTextView(content: content, deleted: m.deleted)
-            }
-
-            if let preview = m.linkPreview {
-                linkPreviewCard(preview)
+            if let forward = m.forwardFrom {
+                // Пересланное лежит в янтарном конверте, как в вебе: шапка «кто и откуда»
+                // (у пачки — одна, у первой строки), имя автора оригинала его цветом и
+                // ОРИГИНАЛЬНОЕ время внутри. Своё время и галочки остаются у внешнего
+                // пузыря — на телефоне иначе непонятно, дошла ли сама пересылка.
+                ForwardEnvelope(
+                    header: forwardHeaderTitle(forward),
+                    headerColor: nameColorForUser(m.senderId, order: participantOrder),
+                    authorName: forward.authorName,
+                    // Автора чужого чата в участниках беседы нет, поэтому цвет — по хэшу от
+                    // того же ключа, что считает веб: тон имени совпадает с браузером.
+                    authorColor: nameColorForUser(forwardAuthorHueKey(forward), order: [:]),
+                    originalTime: forwardOriginalTimeLabel(forward)
+                ) {
+                    payloadView
+                }
+            } else {
+                payloadView
             }
 
             if !m.reactions.isEmpty {
@@ -971,6 +1022,41 @@ struct MessageRow: View {
         // ленты как UIKit-жест: SwiftUI-модификатор здесь перехватывал касание у прокрутки.
     }
 
+    /// Содержимое сообщения: вложения, текст, превью ссылки. Один и тот же кусок и внутри
+    /// конверта пересылки, и без него: второй рендер вложений разъехался бы с рамками
+    /// плиток, которыми просмотрщик открывается и закрывается.
+    @ViewBuilder
+    private var payloadView: some View {
+        attachmentsView
+
+        if let content = m.content, !content.isEmpty {
+            MessageTextView(content: content, deleted: m.deleted)
+        }
+
+        if let preview = m.linkPreview {
+            linkPreviewCard(preview)
+        }
+    }
+
+    /// Шапка конверта «Роман из переписки с Настей» (nil — не рисуем). У пачки шапку несёт
+    /// только первая строка: остальные продолжают тот же конверт, как в вебе.
+    private func forwardHeaderTitle(_ info: ForwardInfo) -> String? {
+        if let slot = forwardSlot {
+            return slot.isFirst ? slot.headerTitle : nil
+        }
+        // Слота нет (строка вне ленты) — собираем шапку из этой одной пересылки.
+        let name = m.senderName.trimmed()
+        let phrase = formatForwardSourcePhraseAfterName([info])
+        return name.isEmpty ? phrase : "\(name) \(phrase)"
+    }
+
+    /// Ширина, которую отъедает конверт пересылки. Плитки и мозаика считают размер от
+    /// ширины экрана ЗАРАНЕЕ, поэтому поправку надо передать им: иначе медиа вылезает за
+    /// янтарную рамку.
+    private var forwardContentInset: CGFloat {
+        m.forwardFrom == nil ? 0 : ForwardEnvelopeMetrics.horizontalInset
+    }
+
     @ViewBuilder
     private var attachmentsView: some View {
         let images = m.attachments.filter { $0.type == "IMAGE" }
@@ -981,7 +1067,7 @@ struct MessageRow: View {
         if images.count == 1, let att = images.first {
             // Одиночная картинка — точный размер из метаданных и вписывание (contain),
             // как в вебе: мозаика начинается только с двух кадров.
-            let size = att.displaySize(screen: screenSize)
+            let size = att.displaySize(screen: screenSize, extraInset: forwardContentInset)
             attachmentImage(att, width: size.width, height: size.height)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
                     swipe.tileFrames[0] = $0
@@ -992,7 +1078,9 @@ struct MessageRow: View {
         } else if images.count > 1 {
             // Мозаика по пропорциям кадров (порт веб-renderImageGroup): вся геометрия
             // считается из метаданных ДО загрузки, поэтому высота ячейки не меняется.
-            let budget = MessageAttachment.albumBudget(screen: screenSize)
+            let budget = MessageAttachment.albumBudget(
+                screen: screenSize, extraInset: forwardContentInset
+            )
             AttachmentAlbumView(
                 atts: images,
                 maxWidth: budget.maxWidth,
@@ -1014,7 +1102,7 @@ struct MessageRow: View {
         ForEach(Array(videos.enumerated()), id: \.offset) { _, att in
             VideoAttachmentTile(
                 att: att,
-                size: att.videoDisplaySize(screen: screenSize),
+                size: att.videoDisplaySize(screen: screenSize, extraInset: forwardContentInset),
                 durationSec: att.durationSec,
                 // Плеер тот же, что у файловой строки: секретное видео расшифровывается
                 // ключом треда, обычное скачивается и уходит в VideoPlayerSheet.

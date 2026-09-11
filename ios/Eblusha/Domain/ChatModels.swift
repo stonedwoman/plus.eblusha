@@ -61,7 +61,10 @@ struct MessageAttachment: Codable, Equatable {
     /// Размер плитки под картинку — порт расчёта из веба (`ChatMessageRow.tsx`):
     /// бокс с точными пропорциями резервируется ДО загрузки, поэтому лента не прыгает,
     /// а картинка вписывается целиком (contain), а не обрезается.
-    func displaySize(screen: CGSize) -> CGSize {
+    /// `extraInset` — ширина, которую отъедает обёртка вокруг картинки (конверт
+    /// пересылки: ForwardEnvelopeMetrics.horizontalInset). Без него плитка считалась бы
+    /// от полного пузыря и вылезала за янтарную рамку.
+    func displaySize(screen: CGSize, extraInset: CGFloat = 0) -> CGSize {
         // Веб: maxScreen = max(320, vw/2), heightBudget = min(420, vh*0.55) на мобильном.
         let maxScreen = max(320, screen.width / 2)
         let heightBudget = min(420, screen.height * 0.55)
@@ -92,7 +95,7 @@ struct MessageAttachment: Codable, Equatable {
             targetW = targetH / ratio
         }
         // Ширина пузыря ограничена экраном минус аватар и отступы (веб: vw - 100).
-        targetW = min(targetW, screen.width - 100)
+        targetW = min(targetW, screen.width - 100 - extraInset)
         return CGSize(width: targetW.rounded(), height: (targetW * ratio).rounded())
     }
 
@@ -109,10 +112,13 @@ struct MessageAttachment: Codable, Equatable {
     /// В вебе лишнее поджимал flex, здесь плитки жёсткого размера, поэтому вычитаем
     /// 120 = отступы ячейки (2×10) + аватар с зазором (28+6) + паддинги пузыря (2×12)
     /// + минимальный зазор до края (40): иначе мозаика вылезала бы за пузырь в группе.
-    static func albumBudget(screen: CGSize) -> (maxWidth: CGFloat, maxHeight: CGFloat) {
+    /// `extraInset` — потеря ширины на обёртке (конверт пересылки), см. displaySize.
+    static func albumBudget(
+        screen: CGSize, extraInset: CGFloat = 0
+    ) -> (maxWidth: CGFloat, maxHeight: CGFloat) {
         let byViewport = max(280, (screen.width * 0.85).rounded(.down))
         return (
-            maxWidth: min(byViewport, screen.width - 120),
+            maxWidth: min(byViewport, screen.width - 120 - extraInset),
             maxHeight: min(420, (screen.height * 0.55).rounded())
         )
     }
@@ -120,15 +126,17 @@ struct MessageAttachment: Codable, Equatable {
     /// Размер плитки видео. Математика та же, что у картинки, но при отсутствии
     /// метаданных веб (`VideoMessageBubble`) берёт 16/9, а не 4/3 как у фото, — иначе
     /// плитка была бы заметно выше кадра, который в неё потом ляжет.
-    func videoDisplaySize(screen: CGSize) -> CGSize {
-        if let width, let height, width > 0, height > 0 { return displaySize(screen: screen) }
+    func videoDisplaySize(screen: CGSize, extraInset: CGFloat = 0) -> CGSize {
+        if let width, let height, width > 0, height > 0 {
+            return displaySize(screen: screen, extraInset: extraInset)
+        }
         var guessed = self
         // Подставляем не 16×9 (displaySize мелкие кадры НЕ растягивает), а сразу
         // «экранный» размер в пропорции 16/9.
         let base = max(320, screen.width / 2)
         guessed.width = Int(base.rounded())
         guessed.height = Int((base * 9 / 16).rounded())
-        return guessed.displaySize(screen: screen)
+        return guessed.displaySize(screen: screen, extraInset: extraInset)
     }
 }
 
