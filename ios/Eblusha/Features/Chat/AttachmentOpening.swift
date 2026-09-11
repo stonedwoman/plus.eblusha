@@ -113,12 +113,19 @@ struct SecretImageView: View {
 
     @State private var local: URL?
     @State private var failed = false
+    /// url вложения, к которому относятся local/failed: ячейка ленты переиспользуется под
+    /// ДРУГОЕ сообщение на том же месте списка, а @State подмену переживает — без метки
+    /// в плитке осталась бы расшифрованная картинка ПРЕДЫДУЩЕГО сообщения.
+    @State private var resolvedFor: String?
 
     var body: some View {
+        // Годен только результат ЭТОГО вложения; чужой считаем отсутствующим (спиннер).
+        let ready = resolvedFor == att.url ? local : nil
+        let broken = resolvedFor == att.url && failed
         Group {
-            if let local, let image = UIImage(contentsOfFile: local.path) {
+            if let local = ready, let image = UIImage(contentsOfFile: local.path) {
                 Image(uiImage: image).resizable().scaledToFill()
-            } else if failed {
+            } else if broken {
                 ZStack {
                     Rectangle().fill(Eb.surface300)
                     Image(systemName: "lock.slash")
@@ -132,8 +139,22 @@ struct SecretImageView: View {
             }
         }
         .task(id: att.url) {
-            guard local == nil, let decrypt else { return }
-            if let url = await decrypt(att) { local = url } else { failed = true }
+            // Одна попытка на вложение: и успех, и провал помечаются resolvedFor, поэтому
+            // рекомпозиции не перезапускают расшифровку, а ошибка не долбит в цикле.
+            guard resolvedFor != att.url else { return }
+            guard let decrypt else {
+                local = nil
+                failed = true
+                resolvedFor = att.url
+                return
+            }
+            let url = await decrypt(att)
+            // Ячейку могли отдать другому сообщению, пока шла расшифровка (.task отменён):
+            // чужой результат в свой @State не пишем.
+            guard !Task.isCancelled else { return }
+            local = url
+            failed = (url == nil)
+            resolvedFor = att.url
         }
     }
 }

@@ -355,6 +355,9 @@ extension ChatViewModel {
                 isSystem: false
             )
             ui.error = nil
+            // Снимок цитат — как у вложений и голосовых: плашку гасим сразу (веб-паритет),
+            // а при сбое возвращаем, чтобы повтор выглядел так же, как первая попытка.
+            let reply = ui.replyingTo
             ui.replyingTo = []
             ui.messages = dedupSortedSecret(ui.messages + [optimistic])
             var r = await secretRepo.sendText(
@@ -377,6 +380,7 @@ extension ChatViewModel {
                 ui.messages = ui.messages.filter { $0.id != msgId }
                 ui.error = message
                 ui.restoredDraft = text
+                ui.replyingTo = reply
             }
         }
     }
@@ -409,18 +413,29 @@ extension ChatViewModel {
     /// uploadCancelled=false уже применены вызывающим). В отличие от текста, вложения НЕ
     /// ставятся в очередь до прихода ключа — без ключа шифровать нечем, поэтому честная
     /// ошибка (веб-паттерн: аплоад заблокирован без ключа).
-    func sendSecretAttachments(_ files: [OutgoingFile], caption: String?, onSuccess: (() -> Void)?) {
+    ///
+    /// [replySnapshot] — цитаты, которые висели в композере. Сам ответ по проводу НЕ идёт:
+    /// в E2EE-транспорте цитат нет ни в вебе, ни здесь (ChatsPage.tsx: «Ответы/цитаты в
+    /// секретках пока не поддерживаются»), но плашку гасим, как веб — иначе она подхватится
+    /// к следующему тексту и тот улетит ответом на чужое сообщение.
+    func sendSecretAttachments(
+        _ files: [OutgoingFile],
+        caption: String?,
+        replySnapshot: [Message],
+        onSuccess: (() -> Void)?
+    ) {
         Task {
             if !secretRepo.hasThreadKey(conversationId) {
                 await secretRepo.syncInbox() // ключ мог уже ждать в инбоксе
                 if !secretRepo.hasThreadKey(conversationId) {
                     ui.error = "Ключ шифрования ещё не получен — попробуйте чуть позже"
-                    return
+                    return // плашку НЕ гасим: отправки не было, цитата ещё пригодится
                 }
             }
             ui.sending = true
             ui.error = nil
             ui.uploadProgress = 0
+            ui.replyingTo = []
             let r = await secretRepo.sendAttachments(
                 conversationId: conversationId,
                 peerUserIds: secretPeers,
@@ -455,19 +470,28 @@ extension ChatViewModel {
                     ui.error = message
                 }
                 ui.restoredDraft = caption
+                ui.replyingTo = replySnapshot // повтор пойдёт с той же цитатой
             }
         }
     }
 
-    /// Голосовое в секретке: вызывается из sendVoice() при secretMode.
-    func sendSecretVoice(_ data: Data, durationSec: Int, waveform: [Int]) {
+    /// Голосовое в секретке: вызывается из sendVoice() при secretMode. [replySnapshot] —
+    /// как у вложений: по проводу цитата в E2EE не уходит, но плашку гасим (веб-паритет)
+    /// и возвращаем её при сбое.
+    func sendSecretVoice(
+        _ data: Data,
+        durationSec: Int,
+        waveform: [Int],
+        replySnapshot: [Message]
+    ) {
         Task {
             if !secretRepo.hasThreadKey(conversationId) {
                 ui.error = "Ключ шифрования ещё не получен — попробуйте чуть позже"
-                return
+                return // отправки не было — плашка остаётся на месте
             }
             ui.sending = true
             ui.error = nil
+            ui.replyingTo = []
             let file = OutgoingFile(bytes: data, name: "voice-message.m4a", mime: "audio/mp4")
             switch await secretRepo.sendAttachments(
                 conversationId: conversationId,
@@ -483,6 +507,7 @@ extension ChatViewModel {
             case .failure(let message, _):
                 ui.sending = false
                 ui.error = message
+                ui.replyingTo = replySnapshot
             }
         }
     }

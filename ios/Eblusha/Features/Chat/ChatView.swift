@@ -970,7 +970,19 @@ struct MessageRow: View {
         ForEach(Array(files.enumerated()), id: \.offset) { _, att in
             if att.type == "AUDIO" {
                 // «AUDIO» → waveform-плеер вместо файловой строки (порт AttachmentView).
-                VoiceMessagePlayer(url: att.url, durationSec: m.audioDurationSec, waveform: m.waveform)
+                if att.secretNonce != nil {
+                    // В секретке по url лежит ШИФРТЕКСТ: AVPlayer на него давал молчащий
+                    // пузырь. Плеер получает файл только после расшифровки ключом треда —
+                    // веб-паритет (ChatMessageRow.tsx, ветка decryptPending у AUDIO).
+                    SecretVoiceMessagePlayer(
+                        att: att,
+                        durationSec: m.audioDurationSec,
+                        waveform: m.waveform,
+                        decrypt: decryptSecretAttachment
+                    )
+                } else {
+                    VoiceMessagePlayer(url: att.url, durationSec: m.audioDurationSec, waveform: m.waveform)
+                }
             } else {
                 fileRow(att)
             }

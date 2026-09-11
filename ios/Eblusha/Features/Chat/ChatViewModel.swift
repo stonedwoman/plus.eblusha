@@ -492,19 +492,30 @@ final class ChatViewModel: ObservableObject {
             return
         }
         uploadCancelled = false
+        // Ответ уходит ВМЕСТЕ с вложением (веб: uploadAndSendAttachments(files, text,
+        // replyDraft)). Снимок берём до запроса: плашку гасим сразу, иначе она подхватится
+        // к следующему тексту, и тот улетит цитатой на чужое сообщение.
+        let reply = ui.replyingTo
+        let replyId = reply.last?.id
+        let replyBundle: [ReplyInfo]? = reply.count >= 2
+            ? reply.map { ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt) }
+            : nil
         if secretMode {
             // E2EE-вложения шифруются ключом треда и уходят непрозрачными блобами.
-            sendSecretAttachments(limited, caption: caption, onSuccess: onSuccess)
+            sendSecretAttachments(limited, caption: caption, replySnapshot: reply, onSuccess: onSuccess)
             return
         }
         Task {
             ui.sending = true
             ui.error = nil
             ui.uploadProgress = 0
+            ui.replyingTo = []
             let r = await repo.sendAttachments(
                 conversationId,
                 files: limited,
                 caption: caption,
+                replyToId: replyId,
+                replyBundle: replyBundle,
                 onProgress: { [weak self] done, total in
                     guard total > 0 else { return }
                     let pct = min(max(Float(done) / Float(total), 0), 1)
@@ -530,6 +541,9 @@ final class ChatViewModel: ObservableObject {
             case .failure(let message, _):
                 ui.sending = false
                 ui.uploadProgress = nil
+                // Сбой/отмена не должны съесть ответ: плашка возвращается вместе с подписью,
+                // чтобы повтор ушёл той же цитатой (как в текстовом send).
+                ui.replyingTo = reply
                 if uploadCancelled {
                     // Отмена — не ошибка, но подпись возвращаем: она была частью сообщения.
                     ui.restoredDraft = caption
@@ -587,15 +601,28 @@ final class ChatViewModel: ObservableObject {
     /// AUDIO-сообщение с длительностью и волной.
     func sendVoice(_ data: Data, durationSec: Int, waveform: [Int]) {
         guard !ui.sending else { return }
+        // Голосовое отвечает на цитату так же, как текст и вложения (веб: replyToId +
+        // metadata рядом с duration), и гасит плашку сразу после отправки.
+        let reply = ui.replyingTo
+        let replyId = reply.last?.id
+        let replyBundle: [ReplyInfo]? = reply.count >= 2
+            ? reply.map { ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt) }
+            : nil
         if secretMode {
-            sendSecretVoice(data, durationSec: durationSec, waveform: waveform)
+            sendSecretVoice(data, durationSec: durationSec, waveform: waveform, replySnapshot: reply)
             return
         }
         Task {
             ui.sending = true
             ui.error = nil
+            ui.replyingTo = []
             switch await repo.sendVoiceMessage(
-                conversationId, bytes: data, durationSec: durationSec, waveform: waveform
+                conversationId,
+                bytes: data,
+                durationSec: durationSec,
+                waveform: waveform,
+                replyToId: replyId,
+                replyBundle: replyBundle
             ) {
             case .success(let message):
                 ui.sending = false
@@ -605,6 +632,8 @@ final class ChatViewModel: ObservableObject {
             case .failure(let message, _):
                 ui.sending = false
                 ui.error = message
+                // Цитата возвращается на место — повтор уйдёт ответом на то же сообщение.
+                ui.replyingTo = reply
             }
         }
     }

@@ -63,12 +63,16 @@ extension ChatRepository {
         bytes: Data,
         fileName: String,
         mime: String,
-        caption: String? = nil
+        caption: String? = nil,
+        replyToId: String? = nil,
+        replyBundle: [ReplyInfo]? = nil
     ) async -> ApiResult<Message> {
         await sendAttachments(
             conversationId,
             files: [OutgoingFile(bytes: bytes, name: fileName, mime: mime)],
-            caption: caption
+            caption: caption,
+            replyToId: replyToId,
+            replyBundle: replyBundle
         )
     }
 
@@ -82,6 +86,10 @@ extension ChatRepository {
         _ conversationId: String,
         files: [OutgoingFile],
         caption: String? = nil,
+        /// Ответ: id последней цитаты (веб buildReplyDraftFromMessages → replyToId).
+        replyToId: String? = nil,
+        /// ВСЕ цитаты мультиответа; в metadata уходят только при ≥2 — веб-паритет.
+        replyBundle: [ReplyInfo]? = nil,
         /// done/total байт по ВСЕМ файлам сообщения (для прогресса в композере).
         onProgress: ((Int64, Int64) -> Void)? = nil,
         /// true → аборт между частями (кнопка «отмена» у прогресса).
@@ -118,13 +126,21 @@ extension ChatRepository {
             let types = attachments.map(\.type).filter { seenTypes.insert($0).inserted }
             let msgType = types.count == 1 ? types[0] : "FILE"
             let trimmedCaption = caption?.trimmed()
+            // Бандл — только при мультиответе: одиночная цитата живёт чистым replyToId
+            // (веб: buildReplyQuoteMetadataForSend отдаёт undefined при <2).
+            let bundle = (replyBundle?.count ?? 0) >= 2 ? replyBundle : nil
+            let replyMetadata: JSONValue? = bundle.map { quotes in
+                JSONValue.object(["replyQuoteBundle": replyQuoteBundleRows(quotes)])
+            }
             let response: SendMessageResponse = try await AppContainer.shared.api.post(
                 "conversations/send",
                 body: SendMessageRequest(
                     conversationId: conversationId,
                     type: msgType,
                     content: (trimmedCaption?.isEmpty == false) ? caption : nil,
-                    attachments: attachments
+                    replyToId: replyToId,
+                    attachments: attachments,
+                    metadata: replyMetadata
                 )
             )
             return self.mapMessage(response.message)
@@ -139,7 +155,9 @@ extension ChatRepository {
         _ conversationId: String,
         bytes: Data,
         durationSec: Int,
-        waveform: [Int]
+        waveform: [Int],
+        replyToId: String? = nil,
+        replyBundle: [ReplyInfo]? = nil
     ) async -> ApiResult<Message> {
         await safeApiCall {
             let uploaded: UploadResponse = try await AppContainer.shared.api.uploadMultipart(
@@ -153,15 +171,23 @@ extension ChatRepository {
                     originalName: "voice-message.m4a", mime: "audio/mp4", objectKey: uploaded.path
                 )
             )
-            let metadata = JSONValue.object([
+            var metadataFields: [String: JSONValue] = [
                 "duration": .number(Double(durationSec)),
                 "waveform": .array(waveform.map { .number(Double($0)) }),
-            ])
+            ]
+            // Мультиответ кладётся РЯДОМ с duration/waveform в один объект metadata —
+            // ровно как веб (`metadata: { duration, ...replyVoiceMeta }`), иначе цитаты
+            // затёрли бы длительность и голосовое перестало бы рисоваться волной.
+            if let bundle = replyBundle, bundle.count >= 2 {
+                metadataFields["replyQuoteBundle"] = replyQuoteBundleRows(bundle)
+            }
+            let metadata = JSONValue.object(metadataFields)
             let response: SendMessageResponse = try await AppContainer.shared.api.post(
                 "conversations/send",
                 body: SendMessageRequest(
                     conversationId: conversationId,
                     type: "AUDIO",
+                    replyToId: replyToId,
                     attachments: [attachment],
                     metadata: metadata
                 )
@@ -248,6 +274,25 @@ extension ChatRepository {
         guard width > 0, height > 0 else { return nil }
         return (width, height)
     }
+}
+
+/// Ряды `metadata.replyQuoteBundle` для мультиответа у вложений. Формат байт-в-байт с
+/// текстовой отправкой (ChatRepositoryReplyBundle.buildReplyBundleMetadata) и вебом
+/// (chatsMessages.ts: buildReplyQuoteMetadataForSend): messageId / senderId (только
+/// непустой) / preview (обрезка до 420) / createdAt (ISO, только когда известен).
+/// Отдаём МАССИВ, а не готовый объект metadata: голосовому его нужно положить рядом с
+/// duration/waveform, а не вместо них.
+private func replyQuoteBundleRows(_ bundle: [ReplyInfo]) -> JSONValue {
+    JSONValue.array(bundle.map { (r: ReplyInfo) -> JSONValue in
+        var row: [String: JSONValue] = [
+            "messageId": .string(r.id),
+            // preview пишется всегда, даже пустой (веб/Kotlin: (content ?: "").take(420)).
+            "preview": .string(String((r.content ?? "").prefix(420))),
+        ]
+        if !r.senderId.isEmpty { row["senderId"] = .string(r.senderId) }
+        if let createdAt = r.createdAt { row["createdAt"] = .string(millisToIso(createdAt)) }
+        return .object(row)
+    })
 }
 
 // MARK: - Низкоуровневые запросы аплоада (недостающие режимы APIClient)

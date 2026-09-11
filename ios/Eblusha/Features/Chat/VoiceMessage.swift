@@ -182,6 +182,122 @@ struct VoiceMessagePlayer: View {
     }
 }
 
+/// Голосовое секретного чата: по своему url вложение отдаёт ШИФРТЕКСТ, поэтому плеер
+/// получает URL только после расшифровки ключом треда в локальный файл. Веб-паритет
+/// (ChatMessageRow.tsx, ветка AUDIO): пока идёт расшифровка — спиннер «Расшифровка аудио…»,
+/// при сбое — «Не удалось расшифровать аудио», и только потом обычный VoiceMessagePlayer.
+struct SecretVoiceMessagePlayer: View {
+    let att: MessageAttachment
+    let durationSec: Int?
+    let waveform: [Int]?
+    /// Расшифровка в кэш-файл (ChatViewModel.decryptSecretAttachment).
+    let decrypt: ((MessageAttachment) async -> URL?)?
+    var onSurface: Color = Eb.textPrimary
+
+    @State private var local: URL?
+    @State private var failed = false
+    /// url вложения, к которому относятся local/failed. Ячейка ленты переиспользуется под
+    /// ДРУГОЕ сообщение на том же месте списка, а @State подмену переживает — без этой
+    /// метки в пузыре остался бы (и играл) расшифрованный файл ПРЕДЫДУЩЕГО голосового.
+    @State private var resolvedFor: String?
+
+    var body: some View {
+        // Годен только результат ЭТОГО вложения; чужой считаем отсутствующим — покажем спиннер.
+        let ready = resolvedFor == att.url ? local : nil
+        let broken = resolvedFor == att.url && failed
+        Group {
+            if let ready {
+                VoiceMessagePlayer(
+                    url: ready.absoluteString,
+                    durationSec: durationSec,
+                    waveform: waveform,
+                    onSurface: onSurface
+                )
+            } else if broken {
+                Text("Не удалось расшифровать аудио")
+                    .font(.caption)
+                    .foregroundStyle(Eb.error)
+            } else {
+                // Плашка со спиннером ровно как в вебе: та же поверхность, кант и подпись.
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .tint(Eb.brand)
+                        .scaleEffect(0.7)
+                        .frame(width: 16, height: 16)
+                    Text("Расшифровка аудио…")
+                        .font(.footnote)
+                        .foregroundStyle(Eb.textMuted)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Eb.border, lineWidth: 1))
+            }
+        }
+        // id по url: в переиспользованной ячейке ленты должна начаться расшифровка
+        // вложения НОВОГО сообщения, а не остаться подвешенной на прежнем.
+        .task(id: att.url) {
+            // Одна попытка на вложение: и успех, и провал помечаются resolvedFor, поэтому
+            // рекомпозиции не перезапускают расшифровку и ошибка не долбит в цикле.
+            guard resolvedFor != att.url else { return }
+            // Без замыкания расшифровки играть нечего — честная ошибка лучше вечного спиннера.
+            guard let decrypt else {
+                local = nil
+                failed = true
+                resolvedFor = att.url
+                return
+            }
+            let file = await decrypt(att)
+            // Пока качались/расшифровывались байты, ячейку могли отдать другому сообщению
+            // (тогда .task отменён): чужой результат в свой @State не пишем.
+            guard !Task.isCancelled else { return }
+            local = file.map { playableAudioURL($0, mime: att.mime) }
+            failed = (file == nil)
+            resolvedFor = att.url
+        }
+    }
+}
+
+/// Расширение локального аудиофайла по mime. AVPlayer определяет контейнер локального
+/// файла по расширению (для file:// нет Content-Type), а без него молча уходит в .failed.
+private func audioFileExtension(for mime: String?) -> String {
+    let m = (mime ?? "").lowercased()
+    if m.contains("mpeg") || m.contains("mp3") { return "mp3" }
+    if m.contains("wav") { return "wav" }
+    if m.contains("aiff") { return "aiff" }
+    if m.contains("caf") { return "caf" }
+    // Диктофоны iOS и Android пишут m4a (AAC в mp4-контейнере) — это же дефолт и для
+    // неизвестного/веб-webm mime: другой контейнер AVPlayer всё равно не проиграет,
+    // так что попытка с m4a — максимум, что можно сделать.
+    return "m4a"
+}
+
+/// Готовит расшифрованный секретный файл к воспроизведению: SecretRepository кладёт кэш
+/// под хеш БЕЗ расширения, поэтому рядом создаётся жёсткая ссылка с расширением.
+/// Ссылка, а не копия — второй копии расшифрованных байтов на диске не нужно; лежит она
+/// в том же каталоге и с тем же префиксом треда, поэтому purgeThreadLocal стирает её
+/// вместе с самим кэшем и расшифровка не переживает закрытие секретки.
+private func playableAudioURL(_ file: URL, mime: String?) -> URL {
+    guard file.pathExtension.isEmpty else { return file }
+    let fm = FileManager.default
+    let alias = file.appendingPathExtension(audioFileExtension(for: mime))
+    if fm.fileExists(atPath: alias.path) { return alias }
+    do {
+        try fm.linkItem(at: file, to: alias)
+        return alias
+    } catch {
+        // Гонка соседнего пузыря (ссылку уже создали) или ФС без жёстких ссылок:
+        // берём готовый алиас, иначе копию, и лишь в крайнем случае файл как есть.
+        if fm.fileExists(atPath: alias.path) { return alias }
+        do {
+            try fm.copyItem(at: file, to: alias)
+            return alias
+        } catch {
+            return file
+        }
+    }
+}
+
 /// Обёртка AVPlayer со стейтом для SwiftUI — роль колбэков MediaPlayer из Kotlin
 /// (onPrepared/onCompletion/onError + цикл positionMs).
 private final class VoicePlayback: ObservableObject {
