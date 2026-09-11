@@ -1,0 +1,678 @@
+[
+ {
+  "title": "Ответ с фото/файлом/голосовым на iOS теряет цитату, а плашка ответа остаётся висеть",
+  "web": "frontend/src/ui/pages/ChatsPage.tsx:4991 и :5445-5455 — uploadAndSendAttachments(files, text, replyTo) шлёт replyToId + metadata.replyQuoteBundle; frontend/src/ui/pages/chats/render/MessagesPane.tsx:3268-3270 — после отправки вложений setReplyTo(null)",
+  "ios": "ios/Eblusha/Features/Chat/ChatViewModel.swift:479 sendAttachments / :579 sendStaged / :585 sendVoice — replyToId не передаётся вовсе, ui.replyingTo не очищается (очистка только в send(text), :437); ios/Eblusha/Features/Chat/ChatView.swift:244-251",
+  "userImpact": "Нажал «Ответить», прикрепил фото (или записал голосовое) — сообщение уходит БЕЗ цитаты, как будто ответа не было. Плашка «Ответ на …» остаётся над композером и подхватится к следующему текстовому сообщению, которое улетит с чужой цитатой.",
+  "severity": "high",
+  "effort": "small",
+  "dimension": "quotes",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: ChatsPage.tsx:4991 принимает replyDraft и на :5445-5455 шлёт replyToId + metadata.replyQuoteBundle; голосовое на :5790-5802 тоже с replyToId, и оба пути делают setReplyTo(null) (MessagesPane.tsx:3268-3270, ChatsPage.tsx:5802). iOS: ChatViewModel.swift:479 sendAttachments / :580 sendStaged / :588 sendVoice не читают и не чистят ui.replyingTo (снимок и очистка есть только в send(text) на :428/:437/:451), а сам слой репозитория вообще не имеет параметра ответа — ChatRepositoryUploads.swift:81 и :138 собирают SendMessageRequest без replyToId, хотя поле в DTO есть (ChatDTOs.swift:172) и используется только для текста (ChatRepositoryReplyBundle.swift:18-32). Флоу достижим: плашка ответа и чипы вложений показываются одновременно (ChatComposer.swift:74-75, ChatView.swift:244-252), а onSendStaged/onSendVoice (ChatView.swift:265-271) clearReply не зовут. Та же дыра в секретном чате (ChatViewModelSecret.swift:412 и :463 — без очистки, в отличие от sendSecret на :358). Это не десктопное отличие и не из списка осознанных.",
+   "correctedSeverity": "high",
+   "fixSketch": "Добавить в ChatRepositoryUploads.sendAttachments/sendVoiceMessage параметры replyToId и replyBundle и прокинуть их в SendMessageRequest.replyToId (а bundle при ≥2 цитатах — в metadata.replyQuoteBundle рядом с duration/waveform, как это делает ChatRepositoryReplyBundle.sendText). В ChatViewModel.sendAttachments/sendVoice (и в секретных sendSecretAttachments/sendSecretVoice) снять снимок ui.replyingTo, очистить его перед отправкой и вернуть обратно в ветке .failure — ровно по образцу send(_ text:) на строках 428/437/451."
+  }
+ },
+ {
+  "title": "Сообщения, отправленные до прихода ключа, на iOS исчезают бесследно (и теряются при выходе из чата)",
+  "web": "frontend/src/ui/pages/ChatsPage.tsx:1391-1410 — при отсутствии ключа треда текст кладётся в pendingByConv и сразу рисуется «оптимистичным» пузырём в ленте, плюс попадает в secretBootQueueRef; flushSecretBootQueue (ChatsPage.tsx:1532-1575) досылает его при появлении ключа и убирает пузырь. Очередь живёт на уровне страницы, переключение бесед её не рушит.",
+  "ios": "ios/Eblusha/Features/Chat/ChatViewModelSecret.swift:330-336 — sendSecret без ключа делает secretQueue.append(text) и ui.secretQueued = …, но НИ пузыря, ни какой-либо отметки в ленте не создаёт; ui.secretQueued нигде не отображается. secretQueue — хранимое поле ChatViewModel, а ChatView создаёт VM через @StateObject (ChatView.swift:141-149), поэтому возврат в список чатов уничтожает очередь вместе с VM.",
+  "userImpact": "Пользователь пишет в только что принятый секретный чат, жмёт «отправить» — поле очищается, а в переписке НИЧЕГО не появляется. Выглядит как проглоченное сообщение. Если после этого выйти назад в список, текст пропадает навсегда: ни у отправителя, ни у собеседника его не будет. В вебе тот же сценарий даёт видимый пузырь, который сам «доезжает».",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "secret",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб: ChatsPage.tsx:1391-1412 кладёт текст в pendingByConv, MessagesPane.tsx:1714-1715 подмешивает pending в ленту (виден пузырь), MessagesPane.tsx:2729-2734 рисует строку «N сообщ. в очереди», flushSecretBootQueue (ChatsPage.tsx:1532-1580) досылает при появлении ключа; состояние живёт на уровне страницы. iOS: ChatViewModelSecret.swift:327-341 делает только secretQueue.append + ui.secretQueued, оптимистичного Message нет (хотя в ветке с ключом ниже, 343-358, он есть); ui.secretQueued не отображается ни в одном View (grep по всему ios/), а штатная полоска SecretKeysWaitingBar (SecretChatCards.swift:377-389) — мёртвый код, нигде не инстанцируется. Сценарий достижим: композер скрыт только при secretInvite/secretWaiting (ChatView.swift:241-244), а дым-оверлей привязки устройства — только при hasOtherDevices && !hasAnySecretKeys (SecretChatCards.swift:88-90). Черновик очищается до вызова (ChatComposer.swift:211-220, draft=\"\" + DraftStore.set(...,\"\")), secretQueue — обычное поле в памяти (ChatViewModel.swift:122) без персиста/outbox, а VM создаётся @StateObject в ChatView.init (ChatView.swift:141-149) внутри navigationDestination (RootView.swift:194), поэтому возврат в список уничтожает очередь вместе с текстом. Вложения намеренно не копятся (ChatViewModelSecret.swift:407-415) — расхождение только по тексту. В список осознанных отличий не входит, к десктопу не привязано.",
+   "correctedSeverity": "high",
+   "fixSketch": "Подключить уже написанную SecretKeysWaitingBar первой строкой композера при ui.isSecret && !ui.secretReady (передав ui.secretQueued) и в sendSecret добавлять в ленту такой же оптимистичный пузырь с пометкой «ждём ключ», который flushSecretQueue затем заменяет реальным сообщением по тому же id — как pendingByConv в вебе. Саму очередь вынести из @StateObject-VM в хранилище, живущее дольше экрана (по conversationId, рядом с DraftStore, желательно с записью на диск), чтобы выход в список чатов и перезапуск приложения не стирали неотправленный текст."
+  }
+ },
+ {
+  "title": "Голосовое сообщение в секретном чате на iOS проигрывается по ссылке на шифртекст",
+  "web": "frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:1270-1292 — для AUDIO в секретке считается needsDecrypt, на время расшифровки показывается спиннер «Расшифровка аудио...», при сбое — «Не удалось расшифровать аудио», и плееру отдаётся уже расшифрованный blob-URL (audioUrl = resolvedUrl).",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:971-973 — ветка attachments отдаёт VoiceMessagePlayer(url: att.url, …) без единой проверки att.secretNonce, хотя у секретных вложений nonce выставлен (ChatViewModelSecret.swift:265-275). VoiceMessage.swift:146-147 просто скармливает этот URL AVPlayer. Расшифровка decryptSecretAttachment применяется только к картинкам (ChatView.swift:985-990) и к открытию файлов.",
+  "userImpact": "Полученную в секретном чате голосовую заметку на айфоне невозможно послушать: нажатие на play не даёт ничего (AVPlayer не может прочитать зашифрованный файл), волна и таймер стоят на нуле, никакого объяснения нет. В вебе то же сообщение играет нормально.",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "secret",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб: `/DATA/eblusha-plus/frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:1265-1296` — для AUDIO считается `needsDecrypt` (secret + `metadata.e2ee.kind === 'ciphertext'`), пока идёт расшифровка показывается спиннер «Расшифровка аудио...», при ошибке — «Не удалось расшифровать аудио», а плееру отдаётся `resolvedUrl` (blob расшифрованного файла). Байты действительно шифрованы: голосовое в секретке загружается как `.enc` (`frontend/src/ui/pages/ChatsPage.tsx:5655-5700`, `encryptSecretThreadBytes`/`encryptBinary`) и уходит дескриптором с `attType: 'AUDIO'` + nonce (`ChatsPage.tsx:5763-5780`, `frontend/src/domain/secret/secretThreadMessaging.ts:180-258`). iOS: `ios/Eblusha/Features/Chat/ChatView.swift:970-975` — единственная ветка AUDIO отдаёт `VoiceMessagePlayer(url: att.url, ...)` без проверки `att.secretNonce`, хотя nonce у секретных вложений выставляется (`ChatViewModelSecret.swift:265-277`); `decryptSecretAttachment` (`ChatViewModelSecret.swift:300-308`) вызывается только из `attachmentImage` (`ChatView.swift:985-992`) и из открытия файлов (`AttachmentOpening.swift:72`) — grep по всему проекту даёт ровно одно использование `VoiceMessagePlayer`, без расшифровки. `VoiceMessage.swift:145-147` скармливает этот URL прямо в AVPlayer, а при `status == .failed` (`VoiceMessage.swift:228-231`) просто молча гасит `preparing`/`playing` — ни ошибки, ни объяснения. Ломается и полученное, и своё же отправленное голосовое: `sendSecretVoice` (`ChatViewModelSecret.swift:462-487`) кладёт в ленту то же `secretToMessage` с nonce. Это не десктоп-специфика и не из списка осознанных отличий.",
+   "correctedSeverity": "high",
+   "fixSketch": "Сделать для звука то же, что уже сделано для картинок: обёртку вида `SecretAudioView`, которая при `att.secretNonce != nil` ждёт `decryptSecretAttachment(att)` (кэш-файл `file://`, `resolveMediaUrl` такие URL пропускает как есть — `Core/Util/MediaUrl.swift:40`) и только потом строит `VoiceMessagePlayer(url: fileURL.absoluteString, ...)`, а до этого показывает спиннер «Расшифровка аудио...», при nil — «Не удалось расшифровать аудио», как в вебе. Для этого пробросить уже существующий `decryptSecretAttachment` из `MessageRow` (`ChatView.swift:731`) в ветку AUDIO в `attachmentsView` (`ChatView.swift:970-975`) — новых механизмов не нужно, только переиспользовать путь SecretImageView."
+  }
+ },
+ {
+  "title": "Пересланное сообщение: конверт с источником и оригинальным временем vs одна серая строчка",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:2209-2270 (соло-пересылка в конверте .msg-forward-bundle-outer) + chats/render/ChatMessageRow.tsx:456-467 (имя исходного автора цветом хэша пересылки), 275-291 (время берётся ОРИГИНАЛЬНОЕ), 308 (галочки у пересланного не рисуются), 293 (право-выровненная строка «19:32, вчера»); текст источника — chats/chatsMessages.ts:52-56 («из «Чат»» / «из переписки с …»), несколько пересылок склеиваются в одну пачку (computeMultiSourceForwardBundles)",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:845-850 — внутри обычного пузыря одна серая курсивная строка «↪ переслано от Имя»; ни названия чата-источника, ни оригинального времени, ни янтарной рамки-конверта; несколько пересланных подряд остаются отдельными пузырями; время и галочки — свои, как у обычного сообщения",
+  "userImpact": "Пересылка на телефоне выглядит как обычное сообщение с мелкой подписью: не видно, откуда переслали, когда это было написано, и пачка из 5 пересланных сообщений рассыпается на 5 пузырей вместо одного узнаваемого конверта, как в вебе.",
+  "severity": "high",
+  "effort": "large",
+  "dimension": "row",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по коду с обеих сторон. Веб для ЛЮБОЙ пересылки (даже одиночной) строит конверт: MessagesPane.tsx:2206-2370 оборачивает сообщение в .msg-forward-bundle-outer с янтарной рамкой 2px rgba(217,119,6,.5) и штриховкой (style.css:1259-1292), сверху жирная строка «Имя из «Чат»»/«из переписки с …» (chatsMessages.ts:52-56, 298+) с иконкой Forward; внутри ChatMessageRow.tsx:456-467 показывает имя автора оригинала цветом хэша, 275-291 подменяет время на ОРИГИНАЛЬНОЕ (extractOriginalForwardedInstantFromMessage, chatsMessages.ts:455) с относительным днём («19:32, вчера»), 308 прячет галочки у пересланного; подряд идущие пересылки от одного пересылающего из одного источника склеиваются в один конверт (computeMultiSourceForwardBundles, chatsMessages.ts:259-292). iOS в ChatView.swift:845-850 внутри обычного пузыря рисует одну серую курсивную строку «↪ переслано от Имя», время и галочки — обычный metaRow по m.createdAt (ChatView.swift:813-826), группировки пересылок в MessageListView.swift нет. При этом данные уже есть и просто не используются: ForwardInfo.sourceChatTitle / directChatPeerName / originalCreatedAt (Domain/ChatModels.swift:27-33, парсятся в Core/Repository/ChatRepository.swift:478-501) — grep не находит ни одного чтения этих трёх полей в UI. Расхождение не десктопное (конверт в вебе безусловный, isMobile там влияет только на вызов меню тапом) и не входит в список осознанных отличий.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatView.swift вместо строки «↪ переслано от …» собрать конверт: заголовок «Имя из «Чат»»/«из переписки с …» (по уже готовым ForwardInfo.sourceChatTitle/isGroupSource/directChatPeerName) цветом хэша плюс иконка arrowshape.turn.up.right, а сам контент положить в контейнер с янтарной обводкой (RoundedRectangle 14, stroke Color(hex 0xD97706).opacity(0.5), 2pt), где имя автора оригинала — цветом хэша, время — из forwardFrom.originalCreatedAt с относительным днём, а галочки квитанций у пересланного блока не рисовать (внешний пузырь оставляет своё время/галочки). Затем в MessageListView добавить склейку подряд идущих пересылок в один конверт по тем же правилам, что computeMultiSourceForwardBundles (тот же пересылающий + тот же отпечаток источника + лимиты по времени), рендеря группу одной ячейкой с внутренними пузырями."
+  }
+ },
+ {
+  "title": "Альбом: мозаика по пропорциям кадров vs две колонки квадратов",
+  "web": "frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:1037-1245 — раскладка «как в Telegram»: 2 фото рядом с шириной по обратным пропорциям, 3 — большое слева + два стопкой справа, 4+ — 2×2; каждая плитка держит СВОЁ соотношение сторон (aspect-ratio 1/ratio), показываются только первые 4, на четвёртой «+N»; ширина сетки на мобиле до 85% ширины экрана",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:934-967 — LazyVGrid в 2 колонки КВАДРАТНЫХ плиток со стороной min(width-120,320)/2-2 (≈125pt на iPhone), contentMode .fit внутри квадрата, показываются ВСЕ фото, «+N» нет",
+  "userImpact": "Альбом на телефоне мелкий (вся сетка ≈270pt при экране 390pt) и «клеточный»: у каждого кадра серые поля сверху/снизу, три фото дают строку из двух и одинокий квадрат под ними, а альбом из 10 снимков разворачивается в пять рядов вместо аккуратной мозаики с «+6».",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "row",
+  "verdict": {
+   "real": true,
+   "why": "Проверил оба источника, утверждение подтверждается почти дословно. Веб (/DATA/eblusha-plus/frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:1037-1245): `visible = atts.slice(0, 4)`, `extra = atts.length - 4`, ratio = h/w из метаданных с клампом 0.2..5; ширина сетки на мобиле `Math.max(280, gridVw*0.85)` (т.е. ~331pt на 390pt-экране) плюс бюджет высоты; раскладки: 2 — `flex: r1` / `flex: r0` (обратные пропорции), 3 — большая слева `flex: r1+r2` и колонка `.msg-media-col` справа, 4+ — две колонки по две плитки; каждая плитка `aspectRatio: 1/ratio` и `object-fit: cover` (style.css:2646-2653 — обрезки нет, т.к. пропорция плитки равна пропорции кадра), а на последней видимой — `<div className=\"msg-media-more\">+{extra}</div>`. Мобильная ветка есть (`gridIsMobile`), так что это не десктоп-онли. iOS (/DATA/eblusha-plus/ios/Eblusha/Features/Chat/ChatView.swift:934-967): при images.count > 1 — `LazyVGrid` из двух `GridItem(.flexible())`, сторона `let side = min(screenSize.width - 120, 320) / 2 - 2` (на iPhone 390 → 133pt, вся сетка ≈269pt), `attachmentImage(att, width: side, height: side)` — квадрат; внутри (ChatView.swift:1000-1005) `CachedImage(contentMode: .fit)` с `.frame(width:height:)` и `.background(Eb.surface100)`, т.е. у неквадратных кадров реально видны серые поля. `ForEach(images.enumerated())` — без слайса, показываются все; грепом по ios/Eblusha/Features/Chat/ ни «+N»-оверлея, ни альтернативной мозаики нет (единственные «мозаики» в коде — пиксель-эффект фоторедактора). Расхождение не входит в список осознанных (там про UICollectionView-ленту, долгое нажатие, свайп-ответ, жесты, таббар).",
+   "correctedSeverity": "medium",
+   "why2": "см. why",
+   "fixSketch": "В `attachmentsView` (ChatView.swift:934-967) заменить LazyVGrid на порт веб-мозаики: брать первые 4 вложения, считать ratio = h/w из метаданных (кламп 0.2..5), ширину сетки взять как `max(280, screenWidth*0.85)` минус паддинги пузыря и высоту из тех же формул (2: r0*r1/(r0+r1), 3: r0*(r1+r2)/Σ, 4: (r0+r2)*(r1+r3)/Σ), и разложить HStack/VStack с весами по обратным пропорциям (2 рядом, 3 = большая слева + стопка справа, 4 = 2×2), spacing 3-4. Плитки рисовать `contentMode: .fill` с `.frame(width:height:)` вычисленного слота и `.clipped()` (пропорция слота равна пропорции кадра, так что серых полей и обрезки не будет), а на четвёртой плитке при `atts.count > 4` наложить полупрозрачный оверлей с «+N», тап по которому открывает PhotoViewer на индексе 3 и передаёт весь массив, как сейчас."
+  }
+ },
+ {
+  "title": "Видео в сообщении: кадр-постер с кнопкой Play vs строка файла",
+  "web": "frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:1311-1330 → ui/components/VideoMessageBubble.tsx:98-230 — постер (генерится на сервере, ключ posterKey), размер по width/height вложения, круглая кнопка воспроизведения, проигрывание ПРЯМО в пузыре + кнопка на полный экран",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:934-936 и 1008-1040 — VIDEO попадает в общий список «files» и рисуется как строка файла (иконка «film», имя, размер, значок play.circle); кадра из видео в пузыре нет, тап открывает отдельный плеер",
+  "userImpact": "Присланное видео в ленте выглядит как безликая строчка «movie.mp4· 12 МБ» — непонятно, что там внутри, пока не откроешь; в вебе виден кадр и видео запускается внутри пузыря.",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "row",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: ChatMessageRow.tsx:1307-1329 перехватывает effectiveType==='VIDEO' и отдаёт VideoMessageBubble.tsx, где постер берётся из posterKey либо догоняется через POST /attachments/{id}/thumbnail (96-180), пузырь размерится по width/height (мобильная ветка maxScreen=max(320, vw/2), 118-140 — значит не только десктоп), рисуется кадр objectFit:'cover' или круглая кнопка Play (324-388), тап играет ВНУТРИ пузыря (handleBubbleClick 216-243) плюс отдельная кнопка на полный экран (263-289). iOS: ChatView.swift:934-935 в медиа-ветку пускает только type==\"IMAGE\", всё остальное уходит в files → fileRow (970-978) → fileRowLabel (1008-1044): иконка \"film\", имя, размер ByteCountFormatter, справа глиф play.circle; кадра нет, тап уходит в AttachmentOpener.prepare (AttachmentOpening.swift:70-80), который сначала СКАЧИВАЕТ файл целиком, потом отдаёт плееру. Убойная деталь: постер на iOS уже разобран и выброшен — ChatModels.swift:52-53 объявляет posterUrl («Кадр-постер видео (metadata.posterKey)»), ChatRepository.swift:410 заполняет его из posterKey, и grep по всему проекту не находит ни одного чтения этого поля. В списке осознанных отличий этого нет, поведение не десктоп-специфичное.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatView.swift развести вложения не по IMAGE/прочее, а вынести VIDEO в отдельную ветку: рисовать плитку размером att.displaySize(screen:) с CachedImage по уже существующему att.posterUrl (пропустив его через thumbMediaUrl/resolveMediaUrl, как картинки) и оверлеем круглой кнопки Play; при отсутствии постера — тёмная заглушка с той же кнопкой, а не строка файла. Тап по плитке оставить на AVPlayer, но играть потоком по авторизованному URL (AVURLAsset с заголовком Bearer через AVAssetResourceLoader или короткоживущий signed-url), чтобы не ждать полной загрузки; за постером при пустом posterKey можно дёрнуть тот же POST /attachments/{id}/thumbnail, что и веб."
+  }
+ },
+ {
+  "title": "Карточка ответа: мини-пузырь с миниатюрой и временем vs узкая полоска",
+  "web": "frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:636-745 — цитата рисуется вложенным ПУЗЫРЁМ, затонированным цветом автора цитаты (groupIncomingBubbleBg), внутри: имя автора 13px/700 его цветом, МИНИАТЮРА фото (до 112×72, MessagesPane.tsx:1717-1730), текст до 240 символов, время цитаты справа («19:32, вчера»); над пузырём строка «Имя ответил(а) на сообщение» с иконкой кавычек (ChatMessageRow.tsx:236-243, 470-503)",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:852-878 — полоска 2pt цветом автора + имя caption2 + текст в 2 строки на фоне white 5%; миниатюры фото нет (вместо неё слово «Вложение»), времени цитаты нет, строки «Имя ответил(а) на сообщение» нет",
+  "userImpact": "Ответ на фото на телефоне выглядит как «Вложение» — не видно, на какой именно снимок отвечают; сама цитата мелкая и одноцветная, тогда как в вебе это заметный цветной мини-пузырь с картинкой и временем.",
+  "severity": "medium",
+  "effort": "medium",
+  "dimension": "row",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб (ChatMessageRow.tsx:636-745 + MessagesPane.tsx:1717-1730): цитата — вложенный пузырь, затонированный groupIncomingBubbleBg по автору цитаты, с именем 13px/700, миниатюрой первого фото до 112×72 (берётся из уже загруженного сообщения через fullList.find, т.к. серверный replyTo вложений не отдаёт — src/routes/messages.ts:45), текстом до 240 символов и временем цитаты справа 11px; над пузырём строка «Имя ответил на сообщение» с иконкой Quote (ChatMessageRow.tsx:236-243, 469-503; фраза в chats/chatsMessages.ts:39-45). iOS (ChatView.swift:852-878): полоска 2pt цветом автора, имя caption2 (и вовсе отсутствует, если имени нет в senderNames, ChatView.swift:807-810 — веб подставляет «Участник»), текст в 2 строки или литерал «Вложение», фон Color.white.opacity(0.05) без тонирования per-sender; миниатюры и времени цитаты нет, хотя ReplyInfo.createdAt заполняется (ChatModels.swift:19-24, ChatRepository.swift:366-371); строки «ответил на сообщение» в ios/ нет вообще (grep даёт только комментарии про свайп-ответ). Это не десктоп-специфика и не входит в список осознанных отличий.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatView.swift:852-878 найти цитируемое сообщение в уже загруженной ленте по reply.id и, если у него есть фото-вложение, рисовать миниатюру ~112×72 с радиусом 8 слева/сверху вместо слова «Вложение» (а generic-подпись при наличии превью скрывать, как replySnippetIsGenericRu в вебе), плюс добавить в плитку строку времени цитаты из reply.createdAt справа мелким muted-шрифтом. Фон плитки заменить на groupIncomingBubbleBg(reply.senderId) вместо white 5%, имени дать фолбэк «Участник», и над пузырём (там, где рисуется имя отправителя, ChatView.swift:838-842) выводить «\\(m.senderName) ответил на сообщение» с иконкой quote — тогда вид совпадёт с вебом."
+  }
+ },
+ {
+  "title": "Ран рвётся по 5-минутной паузе, которой в вебе нет",
+  "web": "frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:106-107 — isLastOfRun/isPrevSame считаются ТОЛЬКО по совпадению senderId у соседей, времени в правиле нет: подряд идущие сообщения одного автора всегда один ран (имя один раз, аватар один, отступ 2px — style.css:704-705)",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:7 (runGapMs = 5 мин) и 48-55 (continuesRun: тот же автор И разрыв ≤5 мин) + MessageListView.swift:120-121",
+  "userImpact": "Человек написал в 10:00 и следующее в 15:00 — в вебе это одна «лестница» без повторов, на iPhone ран разрывается: снова имя автора, второй аватар и большой отступ. Одна и та же переписка выглядит разбитой на большее число блоков, чем в вебе.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "row",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб: ChatMessageRow.tsx:106-107 считает ран строго по senderId соседей (времени в правиле нет), и от этого зависят отступ (:135 → style.css:704-705, 2px против 12px), имя автора в группе (:214) и аватар (:264); те же sender-only правила в ветках пересылок MessagesPane.tsx:1935,1955 и :2210,2226. Единственное временное окно в вебе — MULTI_FWD_GAP_MS=25с (chatsMessages.ts:224) для склейки пересылок, к ранам не относится; разделителей дней в вебе нет, так что ран внутри дня ничем больше не рвётся. iOS: ChatView.swift:7 runGapMs=5 мин и continuesRun на :49-55 требует и того же автора, и разрыва ≤5 мин; результат идёт в isFirstInRun/isLastInRun (MessageListView.swift:127-128) и управляет ровно тем же: отступ 8 против 2 (ChatView.swift:801), аватар только у последнего в ране (:773), имя автора в группе только у первого (:839). Итог: два сообщения одного автора с паузой >5 мин в вебе — одна лестница, на iOS — новый блок с повторным именем, вторым аватаром и большим отступом. В список осознанных отличий это не входит.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatView.swift убрать из continuesRun проверку окна (оставить «оба не системные + один senderId»), либо выставить runGapMs фактически бесконечным, чтобы раны на iOS считались по соседям, как в вебе. Заодно проверить MessageListView.swift:118-130: если ран теперь склеивается через разделитель дня, рвать его по смене dayIndex."
+  }
+ },
+ {
+  "title": "У своих сообщений в группе нет ни имени, ни аватара",
+  "web": "frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:214 (showGroupSenderName = isGroupConv && !isPrevSame — БЕЗ проверки «не я»), 470-503 (имя 14px/700 своим цветом над своим пузырём тоже), 265 + 1480 (avatarOnRight: в группе у своих сообщений аватар рисуется справа от пузыря в конце рана)",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:839-843 (имя только при `isGroup && !m.isMine`), 770-780 (слот аватара только при `isGroup && !m.isMine`)",
+  "userImpact": "В группе своя половина ленты на телефоне выглядит иначе, чем в вебе: без своего имени цветом сверху и без своего аватара справа — строки короче и «легче», ряд аватаров идёт только слева.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "row",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено обоими источниками. В вебе showGroupSenderName = isGroupConv && !isPrevSame (ChatMessageRow.tsx:214) без проверки «не я», и именно эта строка рисует имя 14px/700 цветом автора внутри пузыря (строки 245, 470-503) — то есть и над своими сообщениями в группе; аватар своих в группе рисуется справа от пузыря на последнем сообщении рана (avatarOnRight = !leftAlignAll && isGroupConv && isMe, строка 265, рендер 1480), и это именно узкий/мобильный ветвь (leftAlignAll включается только при ширине панели ≥900, ChatsPage.tsx:4154), CSS ничего не прячет. На iOS имя жёстко ограничено `isGroup && !m.isMine && isFirstInRun` (ChatView.swift:839), а слот аватара — `isGroup && !m.isMine` (ChatView.swift:770-780), справа от пузыря аватара нет вовсе, только Spacer. В списке осознанных отличий этого нет.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatView.swift:839 убрать условие `!m.isMine`, чтобы у своих сообщений в группе тоже печаталось имя первым в ране цветом nameColorForUser(m.senderId). В HStack строки (ChatView.swift:769-784) добавить зеркальный слот аватара после SwipeableBubble при `isGroup && m.isMine` — по той же логике, что слева: AvatarView 28pt при isLastInRun, иначе Color.clear-заглушка того же размера, а Spacer(minLength: 40) перенести перед слотом."
+  }
+ },
+ {
+  "title": "Пересланное на iOS без конверта и без «откуда»: одна курсивная строка вместо шапки источника",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:2062-2099 — шапка «Имя из переписки с …» / «Имя из «Группа»» + иконка Forward и оранжевый конверт .msg-forward-bundle-outer (frontend/src/style.css:1259-1292); заголовок источника — frontend/src/ui/pages/chats/chatsMessages.ts:298-333; имя автора оригинала цветом внутри конверта — ChatMessageRow.tsx:457-469",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:823-828 — только Text(\"↪ переслано от …\") серым курсивом внутри обычного пузыря; sourceChatTitle / isGroupSource / directChatPeerName разбираются (ios/Eblusha/Core/Repository/ChatRepository.swift:478-496), но в UI не используются",
+  "userImpact": "Пересланное почти не отличается от обычного сообщения: нет рамки-конверта, не видно, из какой группы или из переписки с кем это пришло, имя автора оригинала не выделено цветом. В вебе то же сообщение — заметная оранжевая карточка с подписью «Казёл из переписки с Романом».",
+  "severity": "high",
+  "effort": "large",
+  "dimension": "quotes",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб рисует пересылку как отдельный оранжевый конверт: шапка «Имя из переписки с X» / «Имя из «Группа»» цветом отправителя + иконка Forward (frontend/src/ui/pages/chats/render/MessagesPane.tsx:2062-2099 для пачки и 2331-2363 для одиночной), рамка/свечение .msg-forward-bundle-outer (frontend/src/style.css:1259-1292, вне любого @media — то же и на мобильном вебе), текст шапки собирает formatForwardSourcePhraseAfterName → formatMultiSourceForwardBundleSourceHeader (chatsMessages.ts:52-56, 297-335), имя автора оригинала цветом внутри конверта (ChatMessageRow.tsx:457-469); даже одиночная пересылка идёт через бандл (chatsMessages.ts:290), то есть plain-варианта в вебе нет. На iOS весь UI пересылки — одна строка Text(\"↪ переслано от …\") серым курсивом в обычном пузыре (ios/Eblusha/Features/Chat/ChatView.swift:845-850); grep по всей Features/Chat не нашёл других мест рендера (остальные совпадения — пикер пересылки и пункт меню). sourceChatTitle/isGroupSource/directChatPeerName действительно разбираются (Core/Repository/ChatRepository.swift:492-498) и отправляются обратно (ChatRepositoryForward.swift:69-102), но ни одна вью их не читает — мёртвые на экране. Ни склейки подряд идущих пересылок, ни цветного имени автора оригинала на iOS нет. К списку осознанных отличий не относится, не десктоп-специфично.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatView.swift (блок bubble, ~845) заменить одну курсивную строку на шапку «\\(m.senderName) \\(phrase)» жирным, цветом nameColorForUser(m.senderId), с иконкой arrowshape.turn.up.right, где phrase собирается из ForwardInfo по правилам веба (isGroupSource → «из «\\(sourceChatTitle)»», иначе «из переписки с \\(directChatPeerName)», фолбэк «из личной переписки»). Содержимое пересылки обернуть в контейнер-конверт — RoundedRectangle(cornerRadius: 14) со stroke Color(red:0.85,green:0.47,blue:0.02).opacity(0.5) шириной 2 и тёмным градиентным фоном, а внутри него первой строкой показать forward.authorName цветом nameColorForUser(forward.authorId); позже можно добавить склейку подряд идущих пересылок одного отправителя в один конверт, как computeMultiSourceForwardBundles в вебе."
+  }
+ },
+ {
+  "title": "Нет пачек пересылки: несколько пересланных из одного чата рисуются N отдельными пузырями",
+  "web": "frontend/src/ui/pages/chats/chatsMessages.ts:260-295 computeMultiSourceForwardBundles (подряд идущие пересылки одного источника, зазор ≤25 c) + frontend/src/ui/pages/chats/render/MessagesPane.tsx:1731-1737 и 2091-2097 — один конверт, внутри по пузырю на сообщение; несколько пересланных фото склеиваются в один альбом — ChatsPage.tsx:1481-1509 (mergeAsImageBulk)",
+  "ios": "ios/Eblusha/Features/Chat/ChatViewModel.swift:789-798 — цикл по messages с отдельным repo.forwardMessage на каждое; группировки при рендере нет (ios/Eblusha/Features/Chat/MessageListView.swift:117-135 строит строки один-в-один)",
+  "userImpact": "Переслал 4 сообщения — получил 4 пузыря, в каждом повторяется «↪ переслано от X», вместо одной пачки; 3 пересланных фото в вебе становятся одним альбомом, на iOS — тремя пузырями. Лента выглядит захламлённой, не читается как одна пересылка.",
+  "severity": "high",
+  "effort": "large",
+  "dimension": "quotes",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено в обоих источниках. Веб: chatsMessages.ts:260-296 computeMultiSourceForwardBundles склеивает подряд идущие пересылки одного отправителя из одного источника (зазор ≤25 с, MULTI_FWD_GAP_MS; окно 7 дней), причём в конверт заворачивается даже одиночная пересылка; MessagesPane.tsx:1731-1737 строит skip-set и карту начал пачек, :2090-2097 рисует один .msg-forward-bundle-outer с вложенными пузырями и общей шапкой источника. Отправка: ChatsPage.tsx:1481-1509 mergeAsImageBulk сливает вложения нескольких пересылаемых фото в одно IMAGE-сообщение. iOS: ChatViewModel.swift:789-798 — цикл с отдельным repo.forwardMessage на каждое сообщение, склейки альбома нет; MessageListView.swift:117-135 маппит messages.enumerated() один-в-один в MessageRowModel, единственная группировка — isFirstInRun/isLastInRun по отправителю, ничего про forward; ChatView.swift:845-850 в каждом пузыре печатает «↪ переслано от Имя». Грепом по Features/Chat/*.swift другой реализации конверта нет — функция не «в другом файле». Отличие видно на телефоне (не десктопное) и в список осознанных не входит. Уточнения к заголовку: расходится не только пачка, но и шапка — веб даёт один заголовок источника («из переписки с X» / название группы), iOS даже для одной пересылки печатает «переслано от автора»; склейка альбома ломается на отправке с iOS (тогда и веб-получатель видит три пузыря в конверте вместо альбома).",
+   "correctedSeverity": "medium",
+   "fixSketch": "В MessageListView.buildRows добавить предпроход-аналог computeMultiSourceForwardBundles (ключ: отправитель + отпечаток источника forwardFrom, зазор 25 с) и рисовать пачку одной строкой-конвертом с общей шапкой источника, внутри — по пузырю на сообщение, а шапку «↪ переслано от …» в ChatView.swift:845 показывать только вне конверта. В ChatViewModel.forward, если все выбранные сообщения — только картинки без подписей и уходят в один чат, слать одно IMAGE-сообщение со слитыми attachments (порт mergeAsImageBulk), иначе оставить прежний цикл."
+  }
+ },
+ {
+  "title": "Пересылка уходит мгновенно по тапу: нет перехода в чат-получатель, нет черновика и комментария, нет подтверждения",
+  "web": "frontend/src/ui/pages/chats/render/ChatModals.tsx:2817-2882 — тап по беседе собирает payload'ы, ставит setForwardComposerDraft, переключает на беседу-получателя и фокусирует композер; черновик «Переслать сообщения (N)» с миниатюрами и крестиком — MessagesPane.tsx:2877-2939; подсказка «Комментарий к пересылке (необязательно)…» — MessagesPane.tsx:3326-3328; фактическая отправка по кнопке — MessagesPane.tsx:3229-3258",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:288-298 — onPick сразу зовёт vm.forward и закрывает лист; ios/Eblusha/Features/Chat/ChatViewModel.swift:789-798 — результат игнорируется (`_ = await repo.forwardMessage`), ни тоста, ни ошибки",
+  "userImpact": "Выбрал беседу — лист закрылся, и всё: остался в исходном чате, никакого «отправлено», нельзя отменить или приписать комментарий; если сервер отказал, человек об этом не узнает.",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "quotes",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по коду обеих сторон. Веб (ChatModals.tsx:2815-2882) по тапу по беседе НЕ отправляет: он ставит forwardComposerDraft, переключается на беседу-получателя (selectConversation) и фокусирует композер; там появляется чип «Переслать сообщения (N)» с миниатюрами и крестиком «Отменить пересылку» (MessagesPane.tsx:2877-2939), плейсхолдер «Комментарий к пересылке (необязательно)…» (MessagesPane.tsx:3326-3328), а отправка идёт только по кнопке через executeForwardPayloadDelivery(..., comment) с systemToast.error на отказах (MessagesPane.tsx:3229-3258). iOS (ChatView.swift:308-316) в onPick сразу зовёт vm.forward и закрывает лист; ChatViewModel.swift:787-798 гоняет цикл `_ = await repo.forwardMessage(...)`, выбрасывая ApiResult (ChatRepositoryForward.swift:17-19). ForwardPickerSheet (MessageSelection.swift:179-228) — только заголовок и список бесед, поля комментария и шага подтверждения нет. Toast/Banner-инфраструктуры в Features/Chat нет вовсе (grep Toast|Banner|HUD попадает только в PhotoViewer), поэтому ошибка сервера полностью немая; пересылка из секретки тоже молча выходит (`if secretMode { clearSelection(); return }`), тогда как веб объясняет отказ. Отличие не десктопное (тот же модал и тот же чип работают в мобильной вёрстке веба) и не входит в список осознанных.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В onPick вместо немедленного vm.forward класть «черновик пересылки» (целевая беседа + сообщения) в общий стейт и переходить в беседу-получателя через NavigationStack/ChatListView, показывая над композером чип «Переслать (N)» с крестиком и плейсхолдером «Комментарий к пересылке (необязательно)…», а фактическую отправку (комментарий отдельным/первым сообщением, как в вебе) делать по кнопке отправки. Минимальный вариант, если навигация дорога: сделать vm.forward awaited по ApiResult и показать короткий баннер «Переслано в <беседа>» / текст ошибки, а также не молчать при secretMode."
+  }
+ },
+ {
+  "title": "Комментарий к пересылке (forwardComposerCaption) на iOS не виден",
+  "web": "frontend/src/ui/pages/chats/chatsMessages.ts:388-396 extractForwardComposerCaption; комментарий кладётся в metadata первого сообщения пачки — ChatsPage.tsx:1500 и 1514-1523; рисуется текстом под конвертом внутри серого пузыря — MessagesPane.tsx:2194-2196",
+  "ios": "ios/Eblusha/Core/Repository/ChatRepository.swift:478-496 — metadata разбирается, но ключ forwardComposerCaption не читается (грепом по ios/ совпадений нет), поэтому ChatView.swift:815-905 его нечем нарисовать",
+  "userImpact": "Веб-пользователь пересылает сообщение с припиской «смотри что пишут» — на iPhone приходит только пересланное, приписка исчезает бесследно, и непонятно, зачем это переслали.",
+  "severity": "medium",
+  "effort": "medium",
+  "dimension": "quotes",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб кладёт приписку к пересылке ТОЛЬКО в metadata.forwardComposerCaption (frontend/src/ui/pages/ChatsPage.tsx:1500 для склейки фото и :1513-1523 для первого сообщения пачки; ключ и extractForwardComposerCaption — chats/chatsMessages.ts:388-396) и рисует её текстом в наружном пузыре под вложенным конвертом (chats/render/MessagesPane.tsx:1975 и 2195 для пачки, 2246 и 2461 для одиночной пересылки), а также добавляет в копируемый текст (chatsMessages.ts:87-92). На iOS ключа нет вообще: регистронезависимый греп по всему ios/ по composerCaption/forwardCaption/forwardComment даёт ноль совпадений; ChatRepository.parseForwardFrom (ios/Eblusha/Core/Repository/ChatRepository.swift:477-501) читает только forwardFrom/sourceDmPeerName/forwardOriginalCreatedAt, а модель Message (ios/Eblusha/Domain/ChatModels.swift:140-164) не хранит ни сырой metadata, ни поля подписи — то есть фолбэка нет. Пузырь ChatView.swift:838-890 рисует имя, «↪ переслано от …», цитаты, вложения, m.content, превью ссылки и реакции — приписке взяться неоткуда. Симметрично и на отправку: ChatRepositoryForward.swift:17-110 (forwardMessage/buildForwardMetadata) этот ключ не пишет, так что с iPhone комментарий к пересылке вообще нельзя добавить. К списку осознанных отличий это не относится и к десктопным взаимодействиям не сводится.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Добавить в Message (ChatModels.swift) поле forwardComposerCaption и парсить его в ChatRepository рядом с parseForwardFrom (metadata.forwardComposerCaption, trim, пустое → nil), подставляя в toDomain около ChatRepository.swift:391. В ChatView.bubble (ок. :845-885) после блока forwardFrom/цитат и перед/после m.content рисовать эту подпись обычным MessageTextView, как веб в MessagesPane.tsx:2195; по желанию — поле «комментарий» в шторке пересылки, пишущее тот же ключ в buildForwardMetadata."
+  }
+ },
+ {
+  "title": "Карточка цитаты в пузыре: вместо мини-пузыря с миниатюрой, фоном по автору и временем — тонкая оранжевая полоска",
+  "web": "frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:636-746 (одиночная цитата) и :505-635 (мультицитата): мини-пузырь .msg-bubble--forward-quote с собственным фоном по автору (groupIncomingBubbleBg), именем автора его цветом, миниатюрой вложения до 112×72 (:676-694) и правым временем formatSmallBubbleTimeLabel (:729-742)",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:830-853 — Rectangle 2 pt всегда цвета Eb.brand + имя + Text(content ?? \"Вложение\") в 2 строки на фоне white.opacity(0.05); миниатюры и времени нет",
+  "userImpact": "Ответ на фото на iOS — безликая плашка со словом «Вложение»: не видно, на какую картинку отвечают и когда она была. Все цитаты выглядят одинаково-оранжевыми, тогда как в вебе каждая окрашена под своего автора и показывает сам кадр.",
+  "severity": "medium",
+  "effort": "medium",
+  "dimension": "quotes",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено частично: в вебе (ChatMessageRow.tsx:636-746 и :505-635) цитата — вложенный мини-пузырь с фоном groupIncomingBubbleBg, миниатюрой первого IMAGE-вложения до 112×72 (:676-694) и правым временем formatSmallBubbleTimeLabel (:729-742); на iOS (ChatView.swift:852-878) это плоская плашка white.opacity(0.05) без миниатюры и без времени, текст сводится к «Вложение». НО утверждение переврало детали: полоска НЕ всегда Eb.brand — это nameColorForUser(reply.senderId) (:857), и имя автора тоже окрашено его цветом (:865), так что «все цитаты одинаково-оранжевые» и «безликая» — неверно (brand-полоска на :1075 относится к карточке ссылки, а не к цитате). Реальные видимые пробелы: нет кадра отвечаемого фото, нет времени цитаты (хотя ReplyInfo.createdAt уже есть — ChatModels.swift:19-24), фон не тонирован по автору, и вид вложения не различается («Вложение» вместо «Видео»/«Голосовое сообщение»).",
+   "correctedSeverity": "medium",
+   "fixSketch": "В MessageRow (ChatView.swift:852-878) находить цитируемое сообщение в уже загруженном списке ChatViewModel (сервер вложения в replyTo не отдаёт — messages.ts:45) и при наличии IMAGE рисовать CachedImage 112×72 с corner 8, скрывая при этом родовой текст, как делает replyQuoteVisual/replySnippetIsGenericRu в вебе. Плюс завернуть плитку в мини-пузырь с фоном groupIncomingBubbleBg(reply.senderId) и добавить справа время из reply.createdAt тем же форматом, что formatSmallBubbleTimeLabel; заодно для не-картинок подставлять «Видео»/«Голосовое сообщение» вместо общего «Вложение»."
+  }
+ },
+ {
+  "title": "Черновик мультиответа над композером показывает только одну цитату и без миниатюр",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:2803-2875 — заголовок formatReplyBundleHeader, до 5 строк превью с миниатюрами 28×28 и «…ещё N», у одиночной цитаты миниатюра 40×40",
+  "ios": "ios/Eblusha/Features/Chat/MessageSelection.swift:129-170 ReplyDraftPreview — заголовок «Ответ на 3 сообщения», но ниже только messages.first?.content одной строкой; миниатюр нет",
+  "userImpact": "Выбрал 3 сообщения и нажал «Ответить» — над композером виден текст только одного, остальные вслепую. При цитировании фото вместо картинки написано «Вложение».",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "quotes",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб (MessagesPane.tsx:2802-2875): заголовок formatReplyBundleHeader, при >1 цитате колонка до 5 строк, в каждой миниатюра 28×28 + текст, затем «…ещё N»; при одиночной цитате миниатюра 40×40, текст из previewTextForReplyDraft («Фото»/«Видео»/«Голосовое сообщение», chatsMessages.ts:155-169), причём общий термин скрывается, если есть картинка (replySnippetIsGenericRu, :184). iOS (MessageSelection.swift:128-168 ReplyDraftPreview): заголовок «Ответ на N сообщений» есть, но тело — единственный Text(first.content ?? \"Вложение\") с lineLimit(1), по messages нет никакого перебора и нет ни одного Image для вложения. Это единственный вид черновика (используется в ChatComposer.swift:75), и мультиответ реально достижим: SelectionActionBar «Ответить» (MessageSelection.swift:64) → ChatViewModel.replyToSelected() (:779-784) кладёт все выбранные в ui.replyingTo, а send (:428-432) отправляет их все в replyBundle. То есть пользователь цитирует N сообщений, видя одно. Дополнительно: отсутствие миниатюры и плоское «Вложение» бьют и по гораздо более частому одиночному ответу, где веб показывает картинку 40×40 и «Фото». В список осознанных отличий это не входит.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ReplyDraftPreview заменить единственный Text на VStack(alignment: .leading, spacing: 2) с ForEach(messages.prefix(5)) — строка = миниатюра первого IMAGE-вложения (AsyncImage 28×28, cornerRadius 6, .scaledToFill + clipped) плюс текст превью, и хвост «…ещё N» при messages.count > 5; для одиночной цитаты оставить одну строку, но с миниатюрой 40×40. Текст брать из порта previewTextForReplyDraft («Фото»/«Видео»/«Голосовое сообщение»/«Вложение» по attachments.first?.type вместо жёсткого «Вложение») и прятать его, если миниатюра есть и текст общий — как replySnippetIsGenericRu в вебе."
+  }
+ },
+ {
+  "title": "Полный пикер эмодзи на iOS — 602 эмодзи из захардкоженного списка вместо 3145 с сервера",
+  "web": "frontend/src/ui/pages/chats/fluentReactionAssets.ts:34-43 тянет весь индекс /fluent-emoji/reactions.json (3145 эмодзи), категорий 10, включая «Флаги» (frontend/src/ui/pages/chats/components/MessageReactionRail.tsx:57-68)",
+  "ios": "ios/Eblusha/Features/Chat/ReactionPicker.swift:122-245 — enum EmojiCatalog с 602 эмодзи в 9 категориях, «Флагов» нет вовсе",
+  "userImpact": "Ходовых эмодзи просто нет в пикере: 🫡, 🥲, 🫶, 🫂, 🎄, 🍾, 🏳️‍🌈 и т. п. Если с веба поставили такую реакцию, ответить тем же с телефона невозможно — ровно та проблема, которую пикер и должен был закрыть (см. комментарий в ReactionPicker.swift:6-7).",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "reactions",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб: fluentReactionAssets.ts:34-43 грузит /fluent-emoji/reactions.json — в файле frontend/public/fluent-emoji/reactions.json ровно 3145 записей с EN+RU ключевыми словами, MessageReactionRail.tsx:46-68 даёт 10 категорий, включая «Флаги», а кнопка «+» (строки 572-585) не гейтится по isMobile, то есть мобильный веб тоже получает полный набор. iOS: ReactionPicker.swift:122-245 — захардкоженный EmojiCatalog, 632 литерала / 600 уникальных вне «популярных» (+24 популярных, все дубли), 9 категорий, ветки flags нет; грепом подтверждено, что это единственный каталог эмодзи в проекте (ссылки только ReactionPicker.swift:53-69, ChatView.swift:352, PhotoEditor/OverlayTool.swift:874,898), никакого индекса эмодзи в бандл не кладётся. 🫡 🥲 🫶 🫂 🎄 🍾 🏳️‍🌈 есть в вебе и отсутствуют на iOS. Две поправки к отчёту: (1) «ответить тем же невозможно» преувеличено — ChatView.swift:891-905 делает уже стоящие чипсы реакций тапабельными (onReact(reaction.emoji)), так что присоединиться к чужой 🫡 можно, невозможно именно поставить её первым; (2) отчёт упускает более раздражающий дефект там же: EmojiCatalog.search (ReactionPicker.swift:163-167) знает всего 26 подписей и при отсутствии совпадения возвращает весь каталог (matched.isEmpty ? all : matched), поэтому поле поиска на iOS практически бутафорское — «ракета», «cat» или вставленный эмодзи молча показывают нефильтрованный список.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Положить тот же reactions.json (369 КБ) ресурсом в бандл приложения (или тянуть с сервера с кешем) и ленивым парсингом строить каталог, а категории считать по полю search точно как emojiEntryMatchesCategory в вебе — с десятой вкладкой «Флаги» и «популярными» как первыми 143 записями индекса. Поиск перевести на те же RU/EN ключевые слова из индекса плюс подстроку по самому эмодзи, и при нуле совпадений показывать «Ничего» вместо всего списка; картинки не нужны — рисовать системным эмодзи-шрифтом, как сейчас."
+  }
+ },
+ {
+  "title": "Поиск в пикере iOS почти не работает и при промахе показывает весь каталог вместо «Ничего»",
+  "web": "MessageReactionRail.tsx:189-196 — поиск по полным ru+en названиям/ключевым словам всех 3145 эмодзи, плюс поиск по вставленному символу эмодзи; при отсутствии совпадений выводится «Ничего» (MessageReactionRail.tsx:472)",
+  "ios": "ReactionPicker.swift:161-165 — ищет по 26 рукописным русским подписям (names), а при пустом результате возвращает `all` (весь каталог); ReactionPicker.swift:55-59",
+  "userImpact": "Пользователь набирает «сердце» — получает только ❤️ (без 🧡💙💚), набирает «пицца» или «cat» — на экран вываливается весь каталог, как будто поиск вообще проигнорирован. Вдобавок `all` — конкатенация категорий с повторами (⭐ 🌟 ✨ ⚡ 🔥 ❄️ есть и в nature, и в symbols; 🧘 в people и activities), а грид строится через ForEach(id: \\.self) — дубли ключей дают битые/пустые ячейки.",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "reactions",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по коду с обеих сторон. Веб (MessageReactionRail.tsx:184-196 + fluentReactionAssets.ts:17-27) фильтрует индекс из frontend/public/fluent-emoji/reactions.json — я распарсил файл: 3145 эмодзи, у каждого строка с en+ru ключевыми словами, AND-по-словам, плюс поиск по вставленному символу; пустой результат даёт «Ничего» (строка 472). Инпут поиска не завязан на isMobile, так что на мобильном вебе поведение то же. iOS (ReactionPicker.swift:160-165) фильтрует словарь names из ровно 26 записей, только русские подписи, и при пустом результате возвращает `all` — весь каталог; состояния «Ничего» нет. Проверка по индексу: «сердц» даёт в вебе 27 эмодзи, на iOS один ❤️ (у 🧡💙💚 подписей нет); «cat» — 12 в вебе, на iOS весь каталог, как и любое русское слово вне словаря («торт», «машина», «звезда»). Пример «пицца» из отчёта неверен — 🍕 в словаре есть, но вывод не меняется. Дубли в `all` реальны: ⭐🌟✨⚡🔥❄️ дважды (nature ~205 и symbols ~235), 🕳️ в objects+symbols, 🧘 в people+activities, а грид — ForEach(shown, id: \\.self) (строка 88), т.е. в fallback ключи повторяются; это следствие того же fallback, формулировка про «пустые ячейки» — догадка, но дублирующиеся ID достоверны. Пикер действительно подключён (ChatView.swift:352). В список осознанных отличий это не попадает и десктоп-специфичным не является.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В EmojiCatalog.search вернуть пустой массив вместо `all` и показать в ReactionPickerSheet плашку «Ничего», а сам индекс подписей собрать из ru+en ключевых слов (можно положить в бандл усечённый до каталога reactions.json и искать AND-по-словам с той же нормализацией, что normalizeFluentReactionSearch: lowercase, ё→е, отбрасывание не-букв). Заодно дедуплицировать `all`/категории при сборке списка и в гриде использовать стабильный ключ вида offset+emoji вместо id: \\.self."
+  }
+ },
+ {
+  "title": "iOS всегда рисует счётчик, даже когда реакция одна",
+  "web": "MessageReactionRail.tsx:544 — число показывается только при count > 1, одиночная реакция это просто эмодзи",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:897 — `Text(\"\\(reaction.emoji) \\(reaction.count)\")` без условия",
+  "userImpact": "Под каждым пузырём с одной реакцией на телефоне висит «👍 1», в вебе — «👍». Видно на каждом сообщении с реакцией, самое заметное расхождение в этом измерении.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "reactions",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: frontend/src/ui/pages/chats/components/MessageReactionRail.tsx:544 — `{data.count > 1 ? <span className=\"msg-reaction-rail-chip-count\">{data.count}</span> : null}`, то есть при одиночной реакции чип содержит только эмодзи; рельса рисуется инлайном для каждого пузыря из render/ChatMessageRow.tsx:1444, а проп isMobile меняет лишь обработку касаний — на мобильном вебе правило то же, это не десктоп-онли. iOS: ios/Eblusha/Features/Chat/ChatView.swift:891-897 — `Text(\"\\(reaction.emoji) \\(reaction.count)\")` без условия; это единственный путь отрисовки рельсы (MessageListView.swift:410 → MessageCell на :741 → MessageRow в ChatView.swift:707), ReactionPicker/MessageActionsSheet — это пикер и меню, не рельса. Семантика count совпадает: MessageReaction.count (Domain/ChatModels.swift:12-16) заполняется группировкой `count: list.count` в Core/Repository/ChatRepository.swift:338-350, ровно как в вебе (строки 158-169), поэтому одиночная реакция даёт count == 1 на обеих сторонах. Замечание к отчёту: путь к файлу веба указан неверно (components/, а не render/), сам факт верен. В список осознанных отличий не входит. Оценку «самое заметное расхождение» снижаю: разница постоянная, но чисто косметическая — один лишний символ внутри капсулы, поведение и попадание по чипу идентичны.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatView.swift:897 сделать число условным, повторив правило веба: `Text(reaction.count > 1 ? \"\\(reaction.emoji) \\(reaction.count)\" : reaction.emoji)`. Горизонтальный паддинг капсулы при этом стоит слегка выровнять (эмодзи без числа выглядит в текущих 6pt чуть уже), в остальном разметка и обработчик onReact не меняются."
+  }
+ },
+ {
+  "title": "Разный вид чипа реакции и разная отметка «моей» реакции",
+  "web": "style.css:776 (--msg-reaction-emoji: 20px) и style.css:920-950 — чип без фона и рамки, крупный эмодзи 20px, счётчик 11px; «моя» отличается только полной непрозрачностью против 0.82, ❤️ подкрашивается красным (MessageReactionRail.tsx:299-303)",
+  "ios": "ChatView.swift:894-905 — капсула с фоном (Color.white.opacity(0.07), своя — Eb.brand.opacity(0.28)), эмодзи размером .caption (~12-13 pt)",
+  "userImpact": "На iOS реакции — мелкие серые «пилюли», в вебе — крупные эмодзи без подложки. Свою реакцию на iOS видно по жёлтой капсуле, в вебе — почти никак (разница в непрозрачности 18%). Один и тот же чат выглядит по-разному, на телефоне эмодзи ощутимо мельче.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "reactions",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: MessageReactionRail.tsx:516-546 рисует чип как кнопку без подложки (style.css:920-936 — background: transparent, border: none, padding: 0), эмодзи 20px (style.css:776-777, 938-942), счётчик 11px/600 и только при count>1; «моя» помечается лишь accentForEmoji (MessageReactionRail.tsx:299-303: opacity 1 против 0.82 плюс цвет #ef4444 для ❤️ / #ffc46b для остальных), рельса вставлена в .msg-meta (ChatMessageRow.tsx:1443-1445), т.е. в одну строку со временем. iOS: ChatView.swift:891-909 — отдельный HStack под текстом, каждый элемент Text(\"эмодзи count\") с .font(.caption) (~12 pt), padding 6/2 и .background(mine ? Eb.brand.opacity(0.28) : Color.white.opacity(0.07), in: Capsule()). Других мест отрисовки чипов реакции в ios/Eblusha нет (ReactionPicker.swift и MessageActionsSheet.swift — только пикеры), так что «функция в другом файле» исключена. Разница не десктопная: медиазапросы в style.css не переопределяют ни --msg-reaction-emoji, ни .msg-reaction-rail-chip, поэтому веб на телефоне выглядит так же. В список осознанных отличий (UICollectionView, долгое нажатие, свайп-ответ, жесты, таббар) это не входит. Автор отчёта упустил ещё два видимых пункта: iOS всегда печатает счётчик («😀 1»), веб при count=1 его скрывает; и iOS ставит реакции отдельной строкой под контентом, а веб — в строке метаданных рядом со временем.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatView.swift:891-909 убрать капсулу и собрать чип как в вебе: HStack(spacing: 1) из Text(эмодзи).font(.system(size: 20)) и, только если count > 1, Text(count).font(.system(size: 11, weight: .semibold)), без background/padding, высота строки ~22."
+  }
+ },
+ {
+  "title": "Ответ (реплай) теряется при отправке вложения и голосового",
+  "web": "frontend/src/ui/pages/ChatsPage.tsx:4991 + :5445-5453 — uploadAndSendAttachments принимает replyDraft и кладёт в запрос replyToId + metadata с цитатой; для голосового то же в ChatsPage.tsx:5789-5800; после отправки плашка гасится (MessagesPane.tsx:3269-3270, ChatsPage.tsx:5804 setReplyTo(null))",
+  "ios": "ios/Eblusha/Features/Chat/ChatViewModel.swift:479-540 sendAttachments и :588-605 sendVoice не передают ни replyToId, ни bundle (в подписи Core/Repository/ChatRepositoryUploads.swift:81-95 reply вообще нет) и не сбрасывают ui.replyingTo; отвечать умеет только текстовый send (ChatViewModel.swift:418-440)",
+  "userImpact": "Свайпнул «ответить», прикрепил фото (или записал голосовое) — сообщение уходит БЕЗ цитаты, собеседник не понимает, на что ответ. Плюс плашка «Ответ на …» остаётся висеть над полем после отправки, и следующее текстовое сообщение неожиданно улетает ответом на старое.",
+  "severity": "high",
+  "effort": "small",
+  "dimension": "composer",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по коду обеих сторон. Веб: ChatsPage.tsx:4991 принимает replyDraft, :5445-5453 кладёт в POST /conversations/send replyToId + metadata цитаты; голосовое — :5792-5800 то же, затем :5804 setReplyTo(null); композер (общий и для мобильной раскладки) передаёт replyTo и гасит плашку в MessagesPane.tsx:3268-3270. iOS: ChatViewModel.swift:475-537 sendAttachments и :583-604 sendVoice зовут repo без какого-либо reply — в ChatRepositoryUploads.swift:78-127 и :137-171 SendMessageRequest собирается вообще без replyToId/metadata-цитаты, а ui.replyingTo не сбрасывается (grep: сброс есть только в текстовом send, ChatViewModel.swift:437, и в секретном тексте ChatViewModelSecret.swift:358). Плашка ответа при этом рисуется всегда (ChatComposer.swift:74-76), кнопка отправки при непустой очереди уходит в onSendStaged (ChatComposer.swift:211-220 → ChatView.swift:264-271). Итог: ответ фото/файлом/голосовым уходит без цитаты, и плашка остаётся — следующий текст неожиданно становится ответом на старое сообщение. В список осознанных отличий не входит, не десктоп-специфично. Оговорка: в веб-ветке секретного чата V2 (ChatsPage.tsx:5433-5441) цитата у вложений тоже не передаётся, так что расхождение касается обычных чатов (основной случай) — но даже там веб плашку гасит, а iOS нет.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Протянуть ответ до аплоада: добавить параметры replyToId/replyBundle в ChatRepository.sendAttachments и sendVoiceMessage (ChatRepositoryUploads.swift) и писать их в SendMessageRequest ровно как в ChatRepositoryReplyBundle.swift — replyToId всегда, metadata.replyQuoteBundle при ≥2 цитатах, для голосового смерживая bundle с duration/waveform в один объект metadata. В ChatViewModel.sendAttachments/sendVoice (и в sendSecretAttachments/sendSecretVoice, где это применимо) снимать снимок ui.replyingTo до запроса, сразу очищать его, передавать в repo и возвращать обратно при ошибке/отмене — той же схемой, что уже используется в текстовом send (ChatViewModel.swift:428-452)."
+  }
+ },
+ {
+  "title": "При отправке вложений нет оптимистичного пузыря с прогрессом в ленте — чипы висят в композере",
+  "web": "frontend/src/ui/pages/ChatsPage.tsx:5031-5078 строит pendingAttachments и кладёт оптимистичное сообщение в pendingByConv; пузырь рисуется сразу, прогресс наливается поверх картинки (chats/render/ChatMessageRow.tsx:1016, :1309). Очередь композера очищается мгновенно при submit (MessagesPane.tsx:3262-3268)",
+  "ios": "ios/Eblusha/Features/Chat/ChatViewModel.swift:520-540 — сообщение вставляется в ленту ТОЛЬКО после success; очередь чипов чистится тоже только при успехе (:580-586), а прогресс живёт узкой полоской над полем (ComposerAttachments.swift:224-242)",
+  "userImpact": "Нажал «отправить» с фото — в переписке ничего не появилось, миниатюры остались в композере, как будто ничего не произошло. На медленной сети это читается как «не отправилось»; в вебе картинка сразу встаёт в ленту и наливается прогрессом.",
+  "severity": "high",
+  "effort": "large",
+  "dimension": "composer",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено чтением обоих источников: веб кладёт оптимистичный пузырь в ленту до аплоада и мгновенно чистит чипы, iOS вставляет сообщение и чистит очередь только при success, прогресс живёт узкой полосой над полем ввода. Серьёзность снизил до medium, а не high: на iOS обратная связь всё же есть и заметна — полноширинная ProgressView с процентами и кнопкой отмены над композером (ComposerAttachments.swift:224-242) плюс заблокированная кнопка отправки (ChatComposer.swift:229), так что «как будто ничего не произошло» из отчёта преувеличено; расходится ощущение мгновенности и место, где видно отправку, а не факт наличия индикации.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В sendAttachments/sendSecretAttachments сразу вставлять в ui.messages локальное сообщение (temp-id, вложения с локальными Data/URL превью и полем progress), тут же чистить ui.staged, а по .success подменять temp-запись серверной, по .failure/отмене — убирать её и возвращать чипы с подписью; onProgress обновляет progress именно у этой записи, а не только ui.uploadProgress. В рендере пузыря (ChatView.swift, блок вложений) добавить показ локального превью и полоску прогресса поверх картинки/видео по аналогии с ChatMessageRow.tsx:1016, полосу над композером тогда можно оставить только как «отмена»."
+  }
+ },
+ {
+  "title": "Фото из галереи уходят сразу из редактора — нет очереди «набрал вложения → подпись → отправить»",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:3032-3049 — выбранное только СТАВИТСЯ в очередь (addComposerImage/addComposerFile), карточки показываются над полем (:2940-3030), отправка отдельной кнопкой (submit на :3196)",
+  "ios": "ios/Eblusha/Features/Chat/ChatComposer.swift:158-175 — картинки всегда открывают PhotoEditorView, а его кнопка-стрелка = отправка: ChatComposer.swift:121-133 (onStageFiles и сразу onSendStaged), Features/PhotoEditor/PhotoEditorView.swift:199-206",
+  "userImpact": "Нельзя «положить» фото и продолжить собирать сообщение: выбрал кадр — он уже улетел. Невозможно собрать в одном сообщении фото из галереи И документ, выбранный вторым заходом; нельзя убрать один кадр из набора, не отменив весь выбор.",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "composer",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обеим сторонам. Веб: MessagesPane.tsx:3032-3048 выбранное только стейджится (addComposerImage/addComposerFile), чипы с личным крестиком и необязательной кнопкой «Редактировать» рисуются над полем (:2940-3029), отправка — отдельный form onSubmit (:3194+); повторные выборы дописываются в ту же очередь, гейта isMobile нет. iOS: ChatComposer.swift:158-175 — любой выбор с image/* всегда уходит в PhotoEditorSession(replacingIndex: nil), а :121-133 после onDone делает onStageFiles и сразу onSendStaged; в PhotoEditorView.swift:190-211 единственная утвердительная кнопка — arrow.up = send(), второй выход только xmark = отмена всего (:70-74), удаления отдельного кадра нет (thumbnails :168-188 лишь переключают страницу). Мимо проходит собственный рабочий механизм очереди с чипами и поштучным удалением (ComposerAttachments.swift:216,292 + sendButton ChatComposer.swift:204-218) — он используется только для видео и документов. Дополнительно: если документы уже в очереди, выбор фото выбрасывает и их, т.к. sendStaged (ChatViewModel.swift:580-585) отправляет весь ui.staged. В списке осознанных отличий этого нет; комментарий в коде («как в Telegram») говорит лишь о намеренности на iOS, но противоречит эталону и заявленному там же веб-паритету.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatComposer.swift:121-133 для свежего выбора (session.replacingIndex == nil) сделать кнопку редактора не отправкой, а постановкой в очередь: onStageFiles(files), вернуть caption в draft/DraftStore и закрыть редактор, не вызывая onSendStaged — дальше человек добирает вложения и жмёт уже существующую стрелку композера (:204-218), которая и так шлёт очередь с текстом-подписью. Заодно сменить в PhotoEditorView иконку arrow.up на «Готово» для этого режима и (опционально) добавить в полоске thumbnails :168-188 удаление кадра, чтобы паритет с вебовыми чипами был полным."
+  }
+ },
+ {
+  "title": "Из композера нельзя снять фото камерой",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:3032 — обычный <input type=\"file\" multiple> без accept: мобильный Safari на том же телефоне предлагает «Снять фото или видео» / «Медиатека» / «Выбрать файл»",
+  "ios": "ios/Eblusha/Features/Chat/ComposerAttachments.swift:34-45 — в меню скрепки ровно два пункта: «Фото или видео» (PhotosPicker) и «Файл» (fileImporter); камеры в чате нет нигде (камера используется только в звонках и QR-сканере), хотя NSCameraUsageDescription в Info.plist:52 уже есть",
+  "userImpact": "Чтобы отправить свежий снимок, надо выйти из приложения, снять «Камерой», вернуться и искать кадр в галерее. В браузере с того же телефона это один тап по скрепке.",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "composer",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб: MessagesPane.tsx:3032 — скрытый `<input type=\"file\" multiple>` без accept/capture, кликается скрепкой на строке 3291; в мобильном Safari такой инпут даёт системный лист с пунктом «Снять фото или видео», то есть камера в браузере на том же телефоне доступна одним тапом по скрепке. iOS: ComposerAttachments.swift:33-45 — в Menu ровно два Button, «Фото или видео» → .photosPicker (строки 59-65, matching .images/.videos) и «Файл» → .fileImporter (строки 71-79); AttachmentPickerButton — единственная точка вложений композера (ChatComposer.swift:160). Grep по всему ios/ на UIImagePickerController/sourceType/camera даёт только звонки (Features/Call/CallView.swift, Core/Call/CallManager.swift, LiveKit) и QR-сканер (Features/Social/QrScannerView.swift) — в чате съёмки нет. NSCameraUsageDescription действительно объявлен, но путь в заявке неточен: ios/Eblusha/Resources/Info.plist:52 (номер строки верный). В список осознанных отличий это не входит, к десктопу не относится, в других файлах iOS не реализовано.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Добавить в Menu в ComposerAttachments.swift третий пункт «Снять фото» перед «Фото или видео»: .sheet с UIViewControllerRepresentable-обёрткой над UIImagePickerController (sourceType .camera, mediaTypes [\"public.image\",\"public.movie\"]), и скрывать пункт, если UIImagePickerController.isSourceTypeAvailable(.camera) == false. Результат прогонять через тот же путь, что readPhotoItems: собрать байты (jpegData для фото, Data с temp-URL для видео), имя — существующим штампом photoStampName (строка ~200), лимит 100 МБ и onPicked([OutgoingFile]) те же; NSCameraUsageDescription уже есть в Resources/Info.plist:52, менять plist не нужно."
+  }
+ },
+ {
+  "title": "Нет форматирования текста: ни панели выделения Ж/К/зачёркнутый, ни согласованной отправки markdown",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:2606-2645 — при выделении текста всплывает панель B/I/U (работает и по тапу: слушается document selectionchange, ChatsPage.tsx:4694-4702); значение поля конвертируется из HTML в markdown с экранированием (ChatsPage.tsx:4539-4542 → ui/lib/chatMarkdown.ts:75)",
+  "ios": "ios/Eblusha/Features/Chat/ChatComposer.swift:177-194 — обычный TextField с plain-строкой, панели форматирования нет, текст уходит в repo.sendText байт в байт (ChatViewModel.swift:418)",
+  "userImpact": "На iOS нельзя выделить слово и сделать жирным — только напечатать звёздочки вручную. При этом `**вот так**` с iOS приезжает жирным (ChatMarkdown.swift рендерит), а то же самое, напечатанное в вебе, экранируется и остаётся палками: одинаковый ввод даёт разный результат.",
+  "severity": "medium",
+  "effort": "medium",
+  "dimension": "composer",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по коду с обеих сторон, и даже сильнее, чем в отчёте. ВЕБ: поле ввода — contenteditable (MessagesPane.tsx:3333), над выделением всплывает единственная, ничем не заgated'ная по mobile панель B/I/U (MessagesPane.tsx:2606-2645; CSS .composer-sel-toolbar — style.css:1813, без media-запросов), формат применяется через execCommand (ChatsPage.tsx:4590-4598), а показ панели живёт на document 'selectionchange' (ChatsPage.tsx:4693-4695), т.е. срабатывает и от тапа/лупы на тач-экране, а не только от мыши. Отправляется htmlToMarkdown(innerHTML) (ChatsPage.tsx:4537-4541 → chatMarkdown.ts:75), причём turndown экранирует '*' и '_' по всему тексту (node_modules/turndown/lib/turndown.browser.es.js:51 markdownEscapes), а собственный override (chatMarkdown.ts:30-37) снимает экранирование только с URL. IOS: композер — plain SwiftUI TextField с String-биндингом (ChatComposer.swift:177-194), во всём файле (240 строк) нет ни панели форматирования, ни attributed-draft, ни кастомного edit-menu (грепы по Жирный/strikeThrough/attributedText/AttributedString в Features/Chat дают только рендер ChatMarkdown), текст уходит как есть: send() делает лишь trimmed() (ChatViewModel.swift:418-426). Асимметрия тоже настоящая и хуже описанной: приём на iOS — ChatMarkdown.render (MessageTextView.swift:29), '**'/'~~' он понимает (ChatMarkdown.swift:159-182), но обратный слэш не обрабатывает вообще (inline(), ChatMarkdown.swift:98-156), поэтому напечатанное в вебе «**важно**» уезжает как «\\*\\*важно\\*\\*» и на iOS показывается с ВИДИМЫМИ слэшами, тогда как веб то же сообщение отрисует как «**важно**» (markdown-it снимает экранирование). Ни к одному пункту списка осознанных отличий это не относится и от наведения мышью/правого клика не зависит.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Заменить TextField в ChatComposer.swift:177 на UIViewRepresentable над UITextView с attributed-черновиком: добавить в editMenuForTextIn/canPerformAction пункты Жирный/Курсив/Зачёркнутый (или свою мини-панель над выделением, как в вебе) и при отправке сериализовать атрибуты в markdown (**/_/~~) — обратный к ChatMarkdown проход, чтобы веб и iOS давали одинаковую строку. Заодно научить ChatMarkdown.inline снимать экранирование '\\*', '\\_', '\\`', '\\[' и т.п., иначе приходящее из веба «\\*\\*важно\\*\\*» так и будет показываться со слэшами."
+  }
+ },
+ {
+  "title": "Жёсткий лимит 100 МБ на вложение, которого нет в вебе",
+  "web": "frontend/src/ui/pages/ChatsPage.tsx:447-467 (addComposerFile) — проверки размера нет вовсе, крупные файлы уходят чанками (ChatsPage.tsx:5081 CHUNK_UPLOAD_THRESHOLD), сервер разрешает до 1 ГБ (src/routes/upload.ts:44)",
+  "ios": "ios/Eblusha/Features/Chat/ComposerAttachments.swift:108-112 и :192-193 (отсечка при чтении) + ChatViewModel.swift:126 maxUploadBytes и :489-492 — «Файл слишком большой (макс. 100 МБ)»",
+  "userImpact": "Видео на 200-300 МБ спокойно уходит из браузера, а нативный клиент отказывается с ошибкой — непонятно, почему «в браузере можно, а в приложении нельзя».",
+  "severity": "medium",
+  "effort": "medium",
+  "dimension": "composer",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено в обоих источниках. Веб: frontend/src/ui/pages/ChatsPage.tsx:447-467 (addComposerFile) ограничивает только КОЛИЧЕСТВО вложений (MAX_PENDING_FILES, тост «не более 10 файлов»), проверки размера нет; поиск по всему frontend/src (кроме Cloud) даёт единственный байтовый порог — ChatsPage.tsx:5081 CHUNK_UPLOAD_THRESHOLD = 10 МБ, то есть крупные файлы просто уходят чанками (:5290, :5318), а сервер разрешает 1 ГБ (src/routes/upload.ts:44 limits.fileSize) при nginx client_max_body_size 1024m (deploy/nginx-docker.conf:130). iOS: жёсткая отсечка 100 МБ в трёх местах — ComposerAttachments.swift:108-112 (видео из PhotosPicker, после чтения, «Файл слишком большой (макс. 100 МБ)»), ComposerAttachments.swift:192-193 (readPickedFile, по declaredSize ДО чтения, возвращает nil), ChatViewModel.swift:126 maxUploadBytes и :490-492 (ui.error). Это не ограничение протокола: чанковая загрузка на iOS уже реализована (ChatRepositoryUploads.swift:31 simpleUploadMaxBytes = 10 МБ, :175-207 цикл частей) — лимит стоит потому, что OutgoingFile.bytes держит файл целиком в памяти. В список осознанных отличий не входит. Побочно: путь документов показывает НЕ ту ошибку — readPickedFile при негабарите отдаёт nil, и пользователь видит «Не удалось прочитать выбранные файлы» вместо текста про размер.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Перевести отправку вложений на iOS с байтов в памяти (OutgoingFile.bytes: Data) на файл-URL: документы читать частями через FileHandle прямо в чанк-загрузку, а из PhotosPicker забирать видео как URL/Movie-трансферабл с копией в tmp, а не через loadTransferable(type: Data.self). После этого поднять лимит до серверного (1 ГБ) — снять отсечки в ComposerAttachments.swift:108-112 и :192-193 и maxUploadBytes в ChatViewModel.swift:126; заодно отделить отказ по размеру от ошибки чтения, чтобы пикер документов не врал «Не удалось прочитать выбранные файлы»."
+  }
+ },
+ {
+  "title": "Во время отправки/загрузки композер полностью заблокирован",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:3520-3522 — submit заблокирован только при editBusy, скрепка (:3292) и микрофон (:3502) — только при редактировании/пересылке; во время аплоада можно писать и отправлять дальше",
+  "ios": "ios/Eblusha/Features/Chat/ChatComposer.swift:229 (.disabled(sending)), :160-161 (скрепка disabled: sending), VoiceMessage.swift:37 (микрофон disabled: sending) + ChatViewModel.swift:483-486 «Подождите — идёт отправка предыдущего сообщения»",
+  "userImpact": "Пока грузится тяжёлый файл (это минуты), нельзя отправить ни одного сообщения: серая кнопка отправки, серая скрепка, серый микрофон. В вебе переписка в это время продолжается.",
+  "severity": "medium",
+  "effort": "medium",
+  "dimension": "composer",
+  "verdict": {
+   "correctedSeverity": "medium",
+   "fixSketch": "Split the single `ui.sending` flag into a text-send flag and an upload flag: let `sendAttachments`/`sendStaged`/`sendVoice` set only `ui.uploading` (which drives the progress bar + cancel), and pass `sending:` into ChatComposer solely from the short text-send path, so the send button, paperclip and mic stay live during an upload. To avoid reordering, funnel outgoing sends through an internal serial queue (an actor or a task chain) instead of blocking the UI, and drop the `guard !ui.sending` / \"Подождите — идёт отправка предыдущего сообщения\" branch in ChatViewModel.swift:481-483 and 589 in favour of enqueueing.",
+   "real": true,
+   "why": "Both sides check out. iOS holds ui.sending for the entire attachment upload (ChatViewModel.swift:595 → cleared only at 601/606, with onProgress callbacks in between), and that flag greys and disables the send button (ChatComposer.swift:227,229), the attachment picker (ChatComposer.swift:161 → ComposerAttachments.swift:56) and the mic (VoiceMessage.swift:37), while send()/sendStaged()/sendVoice() bail out via `guard !ui.sending` (ChatViewModel.swift:422, 589) and a second attachment triggers the toast \"Подождите — идёт отправка предыдущего сообщения\" (ChatViewModel.swift:481-483). Web sets attachUploading (ChatsPage.tsx:5015) but consumes it only for the progress panel (MessagesPane.tsx:3542) and composer height (ChatsPage.tsx:4855) — the send button is disabled only on editBusy (MessagesPane.tsx:3522), paperclip and mic only on editState/forwardComposerDraft (:3290, :3501), the submit handler bails only on editBusy (:3199), and uploadAndSendAttachments (ChatsPage.tsx:4991) has no in-flight guard, so text sends continue during an upload. The cited line numbers are 1-3 lines off but every construct is real; this is not desktop-only and is not on the known-intentional list. Only iOS secret chats deliberately bypass the gate (ChatViewModelSecret.swift:344)."
+  }
+ },
+ {
+  "title": "Идущий звонок не виден ни в списке, ни в шапке — и к нему нельзя присоединиться",
+  "web": "Плитка беседы со звонком заливается оранжевым градиентом и в подзаголовке пишет «Звоним...», «В ЗВОНКЕ», «В ЗВОНКЕ: 3:12», «Завершён 5 мин назад» (frontend/src/ui/pages/chats/render/ConversationListPane.tsx:348-381); шапка беседы подсвечивается и меняет кнопки на «Подключиться» / «Тоже сюда» / «Развернуть» / «Сбросить» (frontend/src/ui/pages/chats/render/MessagesPane.tsx:266-270, 1041-1042, 1137-1146). Данные приходят событиями call:status / call:status:bulk (frontend/src/utils/socket.ts:471-477).",
+  "ios": "RealtimeClient подписан только на call:incoming/accepted/declined/ended, событий о состоянии звонка в беседе нет (ios/Eblusha/Core/Realtime/RealtimeClient.swift:196-205). В строке списка ветки звонка нет вовсе (ios/Eblusha/Features/Chat/ChatListView.swift:462-481), в шапке всегда две кнопки «начать звонок» (ios/Eblusha/Features/Chat/ChatView.swift:548-559).",
+  "userImpact": "В беседе уже идёт групповой звонок — на телефоне об этом ничего не говорит: плитка обычная, шапка обычная. Нажатие на трубку начинает СВОЙ звонок вместо присоединения к идущему, длительности и «Завершён N мин назад» тоже нет.",
+  "severity": "high",
+  "effort": "large",
+  "dimension": "list",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: плитка беседы заливается оранжевым градиентом и аватар получает presence IN_CALL при activeCalls[c.id].active (ConversationListPane.tsx:190-230, 265-266), подзаголовок пишет «Звоним...»/«В ЗВОНКЕ»/«В ЗВОНКЕ: m:ss»/«Завершён N мин назад» (ConversationListPane.tsx:328-381), шапка подсвечивается (MessagesPane.tsx:258-270) и для неучастника меняет кнопки на «Подключиться»/«Подключиться с видео» (или «Тоже сюда»/«Видео сюда»), которые делают startOutgoing+joinCallRoom БЕЗ call:invite (MessagesPane.tsx:1034-1097); во всех ветках есть явные isMobile-подписи, значит это не десктоп-онли. Источник данных — call:status / call:status:bulk / call:status:request (socket.ts:471-477, сервер src/realtime/socket.ts:1046, 2782-2811). iOS: bind только на call:incoming/accepted/declined/ended (RealtimeClient.swift:196-210), grep «call:status» по ios/ пуст, в RealtimeEvents.swift:23-26 такого case нет, в ChatDTOs полей о звонке тоже нет — узнать о идущем звонке физически нечем. В строке списка ветки звонка нет (ChatListView.swift:462-481; «В ЗВОНКЕ» на :472 — это присутствие собеседника, и достижимо только у 1:1 с пустым lastMessageText), в шапке всегда те же две кнопки startOutgoing (ChatView.swift:545-559). Две детали заявки преувеличены: (1) трубка НЕ начинает отдельный звонок — connectRoom берёт токен по conversationId и попадает в ту же комнату, а сервер дедуплицирует групповой invite (src/realtime/socket.ts:2212-2232: startedAt сохраняется, дубля системного сообщения нет); плохо лишь то, что UI при этом показывает «Звоним…», а в 1:1 лишний call:invite перезванивает собеседнику; (2) паритет «Развернуть»/«Сбросить» на iOS есть — свёрнутая плашка CallOverlay.swift:33-37 + MinimizedCallPill. Плюс о групповом звонке приходит пуш «Групповой звонок» и системное сообщение в ленту (socket.ts:2264-2275). Но ядро расхождения настоящее: звонок, в котором пользователь не участвует, на телефоне никак не обозначен — обычная плитка, обычная шапка, ни длительности, ни «Завершён N мин назад», ни подписанной кнопки присоединения.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Подписать RealtimeClient на call:status и call:status:bulk (и слать call:status:request для видимых бесед при коннекте/возврате в онлайн), сложив состояние в общий ObservableObject вида CallStatusStore: conversationId → {active, startedAt, endedAt, participants}. Читать его в ChatListView.subtitleLine/фоне строки (подсветка + «В ЗВОНКЕ», длительность только участникам, «Завершён N мин назад») и в headerToolbar ChatView, где при активном звонке заменять трубку/камеру на «Подключиться»/«Подключиться с видео» — новый CallManager.joinOngoing(conversationId:video:), который делает joinCallRoom + connectRoom и сразу ставит фазу .connecting, без inviteCall и без «Звоним…»."
+  }
+ },
+ {
+  "title": "Только что созданная беседа и принятая секретка падают в самый низ списка",
+  "web": "При сортировке берётся время последнего сообщения ИЛИ, если сообщений нет, дата создания беседы — специально, чтобы свежий секретный тред не утонул (frontend/src/ui/pages/chats/render/ConversationListPane.tsx:107-112).",
+  "ios": "Сортировка только по lastMessageAt, пусто → 0 (ios/Eblusha/Core/Repository/ChatRepository.swift:88 и 157-163, 190).",
+  "userImpact": "Создал беседу или принял приглашение в секретный чат, вернулся в список — новой строки сверху нет, она в самом хвосте, под перепиской годичной давности. Выглядит как «чат не создался».",
+  "severity": "high",
+  "effort": "small",
+  "dimension": "list",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб в ConversationListPane.tsx:107-112 явно откатывается на conversation.createdAt («a just-accepted secret thread has no messages yet and would otherwise sink to the very bottom»), и это значение идёт в sortTs групп (строки 160, 170). iOS в ChatRepository.swift:88 и sortTs (157-163) с сортировкой на 190 использует ТОЛЬКО lastMessageAt с ?? 0; toDomain (434) даёт фолбэк лишь на createdAt последнего сообщения, а conversation.createdAt на iOS вообще не декодируется — его нет ни в ConversationDto (ChatDTOs.swift:24-59), ни в модели Conversation (ChatModels.swift:110-117). Бэкенд это подтверждает: lastMessageAt в схеме nullable без дефолта (prisma/schema.prisma:108) и не выставляется ни при POST /conversations (conversations.ts:589), ни при POST /threads (threads.ts:85), ни при авто-создании беседы после принятия контакта (contacts.ts:202); при этом GET /conversations (conversations.ts:441-489) возвращает беседу целиком, т.е. createdAt на проводе есть и теряет его именно iOS. Никакого пиннинга PENDING-приглашений на iOS-списке нет (в ChatListView.swift/ChatListViewModel.swift нет упоминаний secretStatus), так что строка действительно уезжает в самый хвост. Это не десктоп-специфика и не из списка осознанных отличий. Серьёзность снижаю до medium: баг виден только у беседы без сообщений и лечится сам после первого сообщения (secret.ts:405 обновляет lastMessageAt при пуше), но у пользователя с длинным списком новая строка уходит под переписку годичной давности.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Добавить createdAt в ConversationDto (ChatDTOs.swift, включая CodingKeys и init) и в domain-модель Conversation (плюс в Codable-кеш на ChatRepository.swift:542/559/579, чтобы порядок не ломался при чтении из кеша), заполняя его в toDomain через parseIsoToMillis. Затем ввести единый computed sortTs = lastMessageAt ?? createdAt ?? 0 и использовать его и в сортировке на строке 88, и в Group.sortTs (157-163) — это точно повторит веб-овский tsOf."
+  }
+ },
+ {
+  "title": "В шапке 1:1 нет «был(а) онлайн …», у офлайн-собеседника подзаголовок пустой",
+  "web": "formatPresence даёт «В сети» / «В фоне» / «В звонке» / «В беседе» / «был(а) онлайн 12 мин назад» / «оффлайн» (frontend/src/ui/pages/ChatsPage.tsx:5903-5928), шапка печатает это под именем (frontend/src/ui/pages/chats/render/MessagesPane.tsx:602).",
+  "ios": "presenceHeaderLabel покрывает только ONLINE/BACKGROUND/IN_CALL, на всё остальное возвращает nil (ios/Eblusha/Core/Repository/ChatRepository.swift:21-28), подзаголовок при nil просто не рисуется (ios/Eblusha/Features/Chat/ChatView.swift:606-611). Поле otherLastSeen в модели есть, но не используется.",
+  "userImpact": "У собеседника не в сети под именем в шапке пусто — непонятно, он офлайн или статус не загрузился; «был(а) онлайн N мин назад», по которому на вебе решают, писать сейчас или позже, на телефоне узнать негде.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "list",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: formatPresence (frontend/src/ui/pages/ChatsPage.tsx:5903-5928) после ONLINE/BACKGROUND/IN_CALL отдаёт «был(а) онлайн только что / N мин назад / N ч назад / дату» либо «оффлайн», и шапка печатает это всегда — блок в frontend/src/ui/pages/chats/render/MessagesPane.tsx:602 не десктопный (isMobile в этой шапке влияет только на кнопку «⋮» на строке 470), значит на мобильном вебе строка тоже видна. iOS: presenceHeaderLabel (ios/Eblusha/Core/Repository/ChatRepository.swift:21-28) на всё, кроме ONLINE/BACKGROUND/IN_CALL, возвращает nil; вызывается в conversationHeader (ChatRepository.swift:128) и в realtime-обработчике .presence (ChatViewModel.swift:227), который при уходе собеседника в офлайн прямо на глазах стирает подзаголовок. ChatView.swift:606-611 рисует подзаголовок через if let, а аватар в шапке — обычный AvatarView(size: 34) (ChatView.swift:591) без точки присутствия, поэтому у офлайн-собеседника в шапке беседы нет никакого признака статуса: «офлайн» и «статус не загрузился» выглядят одинаково. Неточность отчёта: otherLastSeen на iOS всё же используется — в плитке списка (ChatListView.swift:476-478, но только когда нет превью последнего сообщения) и в карточке пользователя (UserProfileCard.swift:584-592, один тап по шапке); сам вывод про шапку это не отменяет, но снижает серьёзность. Данные и хелпер уже есть: otherLastSeen заполняется в ChatRepository.swift:438, formatLastSeen — в Core/Util/TimeUtil.swift:71.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Расширить presenceHeaderLabel до варианта, принимающего и статус, и otherLastSeen: для прочих статусов возвращать «был(а) онлайн \\(formatLastSeen(lastSeen))», а без lastSeen — «оффлайн» (попутно можно выровнять регистр с вебом «В сети/В фоне/В звонке» и добавить «В беседе» для группового звонка). Прокинуть lastSeen в оба вызова: ChatRepository.conversationHeader:128 (conv?.otherLastSeen уже под рукой) и ChatViewModel.swift:227, где при realtime-presence брать lastSeen из кеша беседы/пейлоада, чтобы строка не обнулялась при уходе собеседника в офлайн."
+  }
+ },
+ {
+  "title": "Вторая строка плитки: веб показывает присутствие, iOS — превью сообщения, поэтому статус в списке почти никогда не виден",
+  "web": "Подзаголовок плитки — это статус: «печатает», «N непрочитанных», состояние звонка, иначе присутствие собеседника; текста последнего сообщения в списке нет вообще (frontend/src/ui/pages/chats/render/ConversationListPane.tsx:311-383).",
+  "ios": "Приоритет «печатает…» → текст последнего сообщения → присутствие, то есть присутствие показывается ТОЛЬКО в беседе без сообщений (ios/Eblusha/Features/Chat/ChatListView.swift:462-481); превью строится без префиксов «Вы:» и без имени автора в группах (ios/Eblusha/Core/Repository/ChatRepository.swift:445-457).",
+  "userImpact": "Список на телефоне и на вебе читается по-разному: на вебе это доска присутствия («В сети», «В ЗВОНКЕ: 3:12»), на телефоне — лента превью, где узнать, кто сейчас онлайн, можно только по точке на аватаре. В группе превью не говорит, кто написал, а своё же последнее сообщение выглядит как чужое.",
+  "severity": "medium",
+  "effort": "medium",
+  "dimension": "list",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб: вторая строка плитки — исключительно статус, приоритет «печатает» → «N непрочитанных» → состояние звонка («Звоним...», «В ЗВОНКЕ: 3:12» участнику, «В ЗВОНКЕ» остальным, «Завершён N мин назад») → присутствие для 1:1 и null для групп (ConversationListPane.tsx:308-383); текста последнего сообщения в списке нет вообще — grep по lastMessage/preview в файле пуст. iOS: subtitleLine — «печатает…» → c.lastMessageText → присутствие (ChatListView.swift:461-481), то есть присутствие видно только в беседе без сообщений. Превью собирается в ChatRepository.previewFor (:447-458, подключено на :433) без «Вы: » и без имени автора в группах. Главная потеря не в самом превью (для телефона это норма), а в том, что состояния звонка в списке на iOS нет вовсе: «В ЗВОНКЕ» на :472 берётся из otherStatus и появляется лишь в пустом 1:1, а «Звоним...», живой таймер и «Завершён N мин назад» отсутствуют (grep -i call по ChatListView даёт только строки 324 и 472). Единственная поверхность звонка — MinimizedCallPill для СВОЕГО звонка (CallOverlay.swift:35,138), про звонки в других беседах она молчит. В список осознанных отличий это не входит.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatListView.subtitleLine выстроить веб-приоритет: «печатает…» → состояние звонка беседы (активный с таймером для участника, без таймера для остальных, «Звоним...», «Завершён N назад») → присутствие 1:1, и только при отсутствии статуса падать на превью последнего сообщения (счётчик непрочитанных оставить бейджем). В ChatRepository.previewFor добавить префикс «Вы: » для своих сообщений и имя автора для групп, прокинув senderId/имя отправителя в Conversation."
+  }
+ },
+ {
+  "title": "Игровое присутствие («Играет в …», геймпад на аватаре) отсутствует целиком",
+  "web": "В плитке — «В ЗВОНКЕ И В Dota 2» (frontend/src/ui/pages/chats/render/ConversationListPane.tsx:356-364), в шапке — вторая строка «ИГРАЕТ В …» и картинка игры по центру (frontend/src/ui/pages/chats/render/MessagesPane.tsx:585-601, 612-706), на аватаре — значок геймпада вместо точки (frontend/src/ui/components/Avatar.tsx:247-270).",
+  "ios": "Ни игрового присутствия, ни значка геймпада нет нигде: PresenceBadge знает только точку и иконку устройства (ios/Eblusha/UI/Components/Avatar.swift:90-121), в подзаголовках игр нет (ios/Eblusha/Features/Chat/ChatListView.swift:470-480).",
+  "userImpact": "Человек играет — веб это показывает и в списке, и в шапке, и геймпадом на аватаре; на телефоне он выглядит просто «в сети». Расхождение сразу заметно, когда веб и телефон открыты рядом.",
+  "severity": "medium",
+  "effort": "large",
+  "dimension": "list",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено кодом с обеих сторон. ВЕБ: `presenceGameByUserId` наполняется из сокет-событий `presence:game` / `:snapshot` / `:snapshot:batch` (frontend/src/ui/pages/ChatsPage.tsx:536, 2998-3037) и используется в трёх местах, видимых и в мобильной вёрстке: плитка списка — суффикс «В ЗВОНКЕ И В <игра>» (ConversationListPane.tsx:331-364) и фолбэк `formatPresence` → «Играет в X» / «В звонке и в X» (ChatsPage.tsx:5902-5912, вызов ConversationListPane.tsx:383); шапка беседы — вторая строка «ИГРАЕТ В X» (MessagesPane.tsx:584-601, блок не под `isMobile`); аватар — вместо точки значок геймпада, причём `avatarPresenceForUser` отдаёт 'PLAYING' при любом базовом статусе (ChatsPage.tsx:5931-5939 + Avatar.tsx:227, 247-270). IOS: во всём ios/Eblusha нет ни одного упоминания игрового присутствия — grep по `presenceGame|gamepad|steamApp|PLAYING|играет` даёт только плеер голосовых; RealtimeClient.swift:160-170 подписан лишь на `presence:update` и `presence:device:snapshot:batch`, событий `presence:game*` не слушает вовсе (сервер их рассылает: src/realtime/socket.ts:29-31, 510); PresenceBadge умеет только точку и иконку устройства (UI/Components/Avatar.swift:80-121); подзаголовок списка знает лишь ОНЛАЙН/В ЗВОНКЕ/В ФОНЕ (Features/Chat/ChatListView.swift:460-480); шапка — `presenceHeaderLabel` с четырьмя вариантами без игры (Core/Repository/ChatRepository.swift:21-28, применение ChatViewModel.swift:224-228). Одна поправка к заявке: картинка игры по центру шапки — чисто десктопная (`if (isMobile) return null`, MessagesPane.tsx:618; та же гейт-проверка в hasHeaderGame, :823), её в расхождение для телефона включать нельзя; реальный мобильный дефицит — текст «Играет в X» в списке и в шапке плюс значок геймпада.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Добавить синглтон `PresenceGames` по образцу `PresenceDevices` и подписать RealtimeClient на `presence:game`, `presence:game:snapshot` и `presence:game:snapshot:batch` (плюс отправлять `presence:game:hello`/`presence:game:subscribe` для открытых собеседников при коннекте), храня name/steamAppId по userId с тем же TTL-поведением, что и веб. Затем прокинуть это в три вида: в `PresenceBadge` рисовать SF Symbol `gamecontroller.fill` вместо точки (зелёный, красный если человек ещё и в звонке), в `ChatListView.subtitleLine` и в `presenceHeaderLabel`/`ChatViewModel` подставлять «ИГРАЕТ В <игра>» и «В ЗВОНКЕ И В <игра>» с той же приоритизацией, что в `formatPresence` веба; картинку игры по центру шапки не переносить — она десктопная."
+  }
+ },
+ {
+  "title": "Состояние шифрования в шапке секретного чата не меняется",
+  "web": "Янтарная плашка в подзаголовке живая: «🔒 Настраивается…» → «🔒 Защищено», при беде «⚠️ Ошибка ключей» (frontend/src/ui/pages/chats/render/MessagesPane.tsx:508-531).",
+  "ios": "Подзаголовок выставляется один раз строкой «🔒 секретный чат» и больше не меняется, хотя secretReady в модели есть (ios/Eblusha/Features/Chat/ChatViewModelSecret.swift:26-28, ios/Eblusha/Features/Chat/ChatView.swift:606-611).",
+  "userImpact": "Не видно, готовы ли ключи: пользователь пишет в чат, который ещё «настраивается», и не понимает, почему сообщения висят; об ошибке ключей шапка тоже молчит.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "list",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено обеими сторонами. Веб держит подзаголовок живым: янтарная плашка в MessagesPane.tsx:505-531 берёт текст из activeSecretUiState.readyState (ChatsPage.tsx:2232-2258) и переключается «🔒 Настраивается…» → «🔒 Защищено» → «⚠️ Ошибка ключей», плюс дублирует это полосой над композером (MessagesPane.tsx:2706-2755) с числом сообщений в очереди. На iOS ui.headerSubtitle пишется ровно один раз строкой «🔒 секретный чат» (ChatViewModelSecret.swift:28) и больше нигде на секретном пути не переписывается (grep headerSubtitle даёт только ChatViewModel.swift:187/227 — непрочная ветка presence), а ChatView.swift:606-611 просто печатает его серым капшеном; secretReady честно щёлкает (ChatViewModelSecret.swift:33,78,95,337), но шапка его не читает — он используется только для кнопки QR (ChatView.swift:538). Хуже, чем в отчёте: портированная полоса SecretKeysWaitingBar (SecretChatCards.swift:373-390) объявлена, но ни разу не инстанцирована, поэтому «ждём ключи» на iOS вообще негде увидеть, кроме оверлей-карточек (SecretChatCards.swift:33,58,89), которые закрывают лишь invite / ожидание accept'а / совсем новое устройство при наличии других. Типовой случай одного устройства после «Принять» (secretInvite=false, secretReady=false, hasOtherDevices=false) выглядит как обычный чат: сообщения молча копятся в очереди. Поля ошибки в UiState (ChatViewModel.swift:43-54) нет вовсе, так что «⚠️ Ошибка ключей» на iOS не существует ни в каком виде. Это не десктопная особенность и не входит в список осознанных отличий.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Сделать подзаголовок секретного чата вычисляемым в ChatView.headerTitle из vm.ui (secretReady / secretWaiting / новое поле secretError) вместо разового ui.headerSubtitle в initSecret — три текста как в вебе: «🔒 Настраивается…», «🔒 Защищено», «⚠️ Ошибка ключей». Заодно включить уже написанную SecretKeysWaitingBar первой строкой над ChatComposer при ui.isSecret && !ui.secretReady, передав ui.secretQueued, и завести в UiState флаг ошибки ключей, выставляемый там же, где сейчас requestThreadKey/keyImported."
+  }
+ },
+ {
+  "title": "В группе из шапки нельзя добавить участников и открыть настройки группы",
+  "web": "Меню шапки группы: «Добавить участников» и «Выйти из беседы» (frontend/src/ui/pages/chats/render/ChatModals.tsx:3189-3226); тап по аватару или названию открывает «Настройки группы» — смена аватара и названия (frontend/src/ui/pages/chats/render/MessagesPane.tsx:305-318, ChatModals.tsx:3283-3300).",
+  "ios": "Меню «…» — только «Отметить прочитанным» и «Выйти из беседы» (ios/Eblusha/Features/Chat/ChatView.swift:560-579); тап по шапке в группе не делает ничего (ios/Eblusha/Features/Chat/ChatView.swift:616-622).",
+  "userImpact": "С телефона нельзя дозвать человека в беседу, переименовать её или поставить аватар, и нельзя даже посмотреть состав участников — приходится идти в веб.",
+  "severity": "medium",
+  "effort": "large",
+  "dimension": "list",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено в обоих источниках. Веб в мобильной раскладке: кнопка «…» в шапке группы (MessagesPane.tsx:312-327) открывает меню с «Добавить участников» → модалка выбора друзей/поиска по EBL-ID (ChatModals.tsx:3189-3226, 2938), а тап по аватару или названию группы открывает «Настройки группы» со сменой аватара и названия (ChatModals.tsx:3283+). iOS: меню «…» содержит только «Отметить прочитанным» и «Выйти из беседы» (ChatView.swift:559-579), тап по шапке в группе намеренно ничего не делает (ChatView.swift:616-622), и ни в одном другом месте приложения нет добавления участников/переименования/аватара группы — в репозитории есть только DELETE participants/me (ChatRepository.swift:273), в списке чатов свайп/контекст-меню дают лишь «Прочитано» и удаление (ChatListView.swift:112-140), группу можно только СОЗДАТЬ (CreateGroupView.swift, название + участники, без аватара); сам файл признаёт пробел в комментарии ChatView.swift:5 («Ещё не портированы: … экран участников группы»). Расхождение не входит в список осознанных и не является десктоп-онли. Поправка к заявке: веб тоже не показывает состав участников (в модалке только аватар и название, а в «Добавить участников» — список подходящих контактов), так что пункт про «посмотреть состав» — не расхождение; реальные пробелы — добавление участника, переименование, аватар группы.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В headerToolbar (ChatView.swift:559) при vm.ui.isGroup добавить пункты «Добавить участников» и «Настройки группы», а в группе повесить onTapGesture шапки (ChatView.swift:616) на открытие тех же настроек. Под них нужны два экрана-шита: выбор контактов для POST conversations/{id}/participants (можно переиспользовать список из CreateGroupView) и редактор названия/аватара группы с PATCH/загрузкой файла — плюс соответствующие методы в ChatRepository рядом с leave-эндпоинтом."
+  }
+ },
+ {
+  "title": "На iOS нет полосы «🔒 Ждём ключи шифрования…» над композером — компонент написан, но не подключён",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:2706-2752 — над композером постоянная бирюзовая плашка, пока readyState != ready: «🔒 Настраивается… ждём ключи от собеседника. Можно писать — отправим автоматически.», а при непустой очереди — «… N сообщ. в очереди — отправим автоматически.»",
+  "ios": "ios/Eblusha/Features/Chat/SecretChatCards.swift:378-390 — SecretKeysWaitingBar с ровно этим текстом объявлен, но во всём проекте не используется ни разу; ChatView.swift:245-287 собирает ChatComposer без него, а сам ChatComposer.swift даже не принимает секретное состояние.",
+  "userImpact": "Секретный чат, который ещё настраивается, на айфоне выглядит как обычный полностью рабочий чат: нет ни объяснения «ждём ключи», ни счётчика того, что стоит в очереди. Вместе с невидимой очередью это читается как «мессенджер сломался».",
+  "severity": "high",
+  "effort": "small",
+  "dimension": "secret",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: MessagesPane.tsx:2706-2752 — постоянная бирюзовая плашка первой строкой внутри .msg-input-bar при isSecret && readyState !== 'ready', с текстом «🔒 Настраивается… ждём ключи от собеседника…» и счётчиком очереди (activeSecretQueuedCount, ChatsPage.tsx:2415); плюс спиннер «Настраиваем защиту…» над лентой (MessagesPane.tsx:1487-1511) и подзаголовок шапки «🔒 Настраивается…» (MessagesPane.tsx:523-527). Пане общая для мобильного веба, так что это не десктопная деталь. iOS: SecretKeysWaitingBar объявлен (SecretChatCards.swift:378-390) и в собственном комментарии (:9, :375) назначен первой строкой композера, но grep по всему ios/ даёт только объявление — ни одного места использования; ChatView.swift:241-287 собирает ChatComposer без него, ChatComposer.swift:11-36 секретного состояния не принимает; ui.secretQueued пишется (ChatViewModelSecret.swift:333/390/400), но ни одной вьюхой не читается; строк «Настраивается»/«Защищено» в ios/ нет вообще. SecretChatOverlay (ChatView.swift:189) в этом состоянии ничего не рисует — его третья ветка требует hasOtherDevices && !hasAnySecretKeys, то есть только новое устройство. Итог: при принятом, но ещё не доехавшем ключе (обычный случай, когда ключи других тредов уже есть) айфон показывает штатный композер, текст молча уходит в secretQueue (ChatViewModelSecret.swift:329-340) без плашки, счётчика и спиннера. Неточности отчёта не меняют сути: текст на iOS не дословно совпадает с вебом («🔒 Ждём ключи шифрования… (N в очереди — отправим автоматически)»), и в вебе к error-состоянию добавлена кнопка «Привязать устройство» (только легаси-треды).",
+   "correctedSeverity": "medium",
+   "fixSketch": "Протащить секретное состояние в композер: добавить в ChatComposer параметры (например secretPending: Bool, secretQueued: Int) и вставить уже написанный SecretKeysWaitingBar(queued:) первой строкой его VStack, как предписывает комментарий SecretChatCards.swift:375; в ChatView.swift:245 передавать vm.ui.isSecret && !vm.ui.secretReady && !vm.ui.secretInvite && !vm.ui.secretWaiting и vm.ui.secretQueued. Заодно привести текст к вебу («🔒 Настраивается… ждём ключи от собеседника» / «N сообщ. в очереди — отправим автоматически») и добавить вариант для нерабочей секретки, чтобы плашка покрывала и случай, когда ключей на устройстве нет вовсе."
+  }
+ },
+ {
+  "title": "На iOS нет состояния «ключи не доехали» — ни сообщения, ни кнопок восстановления",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:2737 («⚠️ Секретный чат недоступен на этом устройстве.») и 2754-2803 — красная плашка с текстом «Не удалось получить ключи для секретного чата (NO_KEYPACKAGE).» и кнопками «Восстановить» (refreshKeysAndRetry) и «Привязать устройство»; плашка зажигается по таймауту (ChatsPage.tsx:2494 и 2518). В шапке при этом «⚠️ Ошибка ключей» (MessagesPane.tsx:525).",
+  "ios": "ios/Eblusha/Features/Chat/ChatViewModel.swift:41-70 — в UiState вообще нет секретного error/readyState; ChatViewModelSecret.swift:115-162 бесконечно опрашивает инбокс каждые 3.5 с и никогда не переходит в состояние ошибки. Единственный секретный error — linkError внутри карточки привязки (SecretChatCards.swift:196-201).",
+  "userImpact": "Если key package не доехал (собеседник оффлайн, старый клиент, сбой), айфон молча крутится вечно: пустой чат, обычный композер, ноль диагностики и ноль способов что-то предпринять. В вебе через пару минут появляется явная ошибка и две кнопки — «Восстановить» и «Привязать устройство».",
+  "severity": "high",
+  "effort": "medium",
+  "dimension": "secret",
+  "verdict": {
+   "real": true,
+   "why": "Confirmed in both sources, and the gap is larger than claimed. Web: ChatsPage.tsx:2459-2524 arms a 120s watchdog (+12s grace) that sets NO_KEYPACKAGE and secretComposerInlineError, rendered by MessagesPane.tsx:2706-2753 (bootstrapping hint / «⚠️ Секретный чат недоступен на этом устройстве.») and 2754-2803 (red bar with «Восстановить» → refreshKeysAndRetry and «Привязать устройство»), plus the header chip «⚠️ Ошибка ключей» at MessagesPane.tsx:521-527. iOS: ChatViewModel.swift:41-70 has no secret readyState/error (ui.error is set only for network/send failures at ChatViewModelSecret.swift:228/378/417/466/517), ChatViewModelSecret.swift:152-163 polls the inbox every 3.5s forever with no timeout, and grep finds no NO_KEYPACKAGE/root-cause anywhere in ios/. The only keyless UI is SecretDeviceLinkJoinCard, gated on hasOtherDevices && !hasAnySecretKeys (SecretChatCards.swift:88-102), so single-device users see nothing. Additionally SecretKeysWaitingBar (SecretChatCards.swift:378-391) and ui.secretQueued are never mounted in any view, so even the web's «🔒 Настраивается… ждём ключи» row is missing; a message typed without a key is silently swallowed into secretQueue (ChatViewModelSecret.swift:326-338) while ChatView.swift:629-650 shows «Сообщений пока нет / Напишите первым» and the header keeps the constant «🔒 секретный чат». Not a desktop-only or already-accepted difference.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Add a secret readyState (bootstrapping/error) to ChatViewModel.UiState with a 120s watchdog started in initSecret and cancelled by keyImported/deviceLinked; on expiry retry once (syncInbox + requestThreadKey + republish OPKs) and flip to error. Mount the already-written SecretKeysWaitingBar as the composer's first row whenever isSecret && !secretReady (showing secretQueued), swap it for a red bar with «Восстановить» (that same retry) and «Привязать устройство» (createLinkInvite / join card) in the error state, and mirror the state in headerSubtitle («🔒 Настраивается…» / «⚠️ Ошибка ключей»)."
+  }
+ },
+ {
+  "title": "Шапка секретного чата на iOS не показывает состояние защиты",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:505-531 — под названием янтарная плашка-бейдж, текст которой меняется по состоянию: «🔒 Защищено» / «🔒 Настраивается…» / «⚠️ Ошибка ключей».",
+  "ios": "ios/Eblusha/Features/Chat/ChatViewModelSecret.swift:28 — ui.headerSubtitle жёстко выставляется в «🔒 секретный чат» один раз при инициализации и больше никогда не меняется; выводится обычной серой подписью (ChatView.swift:596-602), без плашки и без цвета.",
+  "userImpact": "По шапке на айфоне нельзя понять, готов ли чат шифровать: и во время настройки, и при полностью рабочем ключе она выглядит одинаково. В вебе состояние читается с одного взгляда.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "secret",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по коду обеих сторон. Веб: MessagesPane.tsx:505-531 — янтарная жирная плашка под названием в шапке 1:1, текст пересчитывается из activeSecretUiState.readyState (ChatsPage.tsx:2232-2258): «🔒 Защищено» / «🔒 Настраивается…» / «⚠️ Ошибка ключей»; плашка НЕ завязана на isMobile, на мобильном вебе тоже видна. iOS: ui.headerSubtitle = \"🔒 секретный чат\" пишется единственный раз в ChatViewModelSecret.swift:28, grep по всему ios/ не находит других присвоений для секретной ветки (ChatViewModel.swift:227 защищён peerUserId, который initSecret не выставляет), рисуется обычной серой .caption в ChatView.swift:606-610; ui.secretReady переключается в ChatViewModelSecret.swift:33/78/95/337, но подпись из него не пересчитывается, и статусного чипа в тулбаре нет вовсе. Влияние в отчёте преувеличено: громкие не-готовые состояния на iOS закрыты полноэкранными карточками SecretChatOverlay (SecretChatCards.swift:33 ожидание, :58 приглашение, :89 привязка нового устройства). НЕ закрыт случай «устройство уже имеет другие секретные ключи и ждёт ключ этого треда» (ветка requestThreadKey): оверлея нет, шапка выглядит как у полностью готового чата, а готовая полоска SecretKeysWaitingBar («🔒 Ждём ключи шифрования…» + размер очереди, SecretChatCards.swift:378-389) и ui.secretQueued — мёртвый код, никуда не подключены. Аналога «⚠️ Ошибка ключей» на iOS нет ни в каком виде.",
+   "correctedSeverity": "medium",
+   "fixSketch": "Сделать подпись шапки для секретного чата вычисляемой: небольшой янтарный чип в headerTitle (ChatView.swift:596-610) с текстом из secretReady/secretInvite/secretWaiting/ошибки ключей — «🔒 Защищено» / «🔒 Настраивается…» / «⚠️ Ошибка ключей», обновляемый во всех точках смены secretReady (ChatViewModelSecret.swift:33/78/95/337), а не однократно в initSecret. Заодно подключить уже написанную SecretKeysWaitingBar с ui.secretQueued первой строкой композера при isSecret && !secretReady, чтобы бесключевое ожидание без оверлея было видно."
+  }
+ },
+ {
+  "title": "Нет оверлея прогресса «Настраиваем защиту…» / «Ждём подтверждение…» / «Готово»",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:1487-1512 — поверх ленты по центру спиннер LoadingSpinner с подписью «Настраиваем защиту…», либо «Ждём подтверждение…» (создатель ждёт квитанцию об импорте ключа), а по завершении — короткая галочка «Готово».",
+  "ios": "ios/Eblusha/Features/Chat/SecretChatCards.swift:29-104 — SecretChatOverlay обрабатывает только три состояния (secretWaiting, secretInvite, привязка нового устройства) и в состоянии bootstrapping не рисует ничего; ChatView.swift:202-206 даёт лишь общий ProgressView, и только когда лента ещё грузится и пуста.",
+  "userImpact": "Промежуток между «Принять» и приходом ключа на айфоне выглядит как обычный пустой чат без единого признака работы, и момент готовности ничем не отмечен. В вебе видно и процесс, и его завершение.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "secret",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: MessagesPane.tsx:1486-1512 рисует центральный оверлей со спиннером и подписями «Настраиваем защиту…» / «Ждём подтверждение…» / «Готово» (пульс задаётся в ChatsPage.tsx:2397-2412), без гейта на isMobile, плюс дублирует состояние в шапке (MessagesPane.tsx:520-527 «🔒 Настраивается…») и полосой над композером с числом сообщений в очереди (MessagesPane.tsx:2706-2742). iOS: SecretChatOverlay (SecretChatCards.swift:31-99) имеет только ветки secretWaiting, secretInvite и привязки устройства (последняя требует hasOtherDevices && !hasAnySecretKeys), в обычном bootstrapping не рисует ничего; ChatView.swift:189-206 даёт лишь общий ProgressView при vm.ui.loading && messages.isEmpty и emptyState «Сообщений пока нет». После acceptSecretInvite (ChatViewModelSecret.swift:493-510) оверлей исчезает, а приход ключа (ChatViewModelSecret.swift:73-82) просто перезагружает ленту — завершение ничем не отмечено; подзаголовок шапки в секретке статичный «🔒 секретный чат» (ChatViewModelSecret.swift:28). Дополнительно: готовая полоска SecretKeysWaitingBar (SecretChatCards.swift:378-391) нигде не подключена (grep находит только определение), поэтому нет и подсказки над композером, и счётчика молча накопленных сообщений. Это не десктопная особенность и не входит в список осознанных отличий.",
+   "correctedSeverity": "medium",
+   "fixSketch": "В ChatView.swift добавить в SecretChatOverlay четвёртую ветку для isSecret && !secretReady && !secretInvite && !secretWaiting (и когда карточка привязки не показывается): ProgressView с подписью «Настраиваем защиту…» (для создателя, ждущего квитанцию, — «Ждём подтверждение…»), а по срабатыванию secretRepo.keyImported — короткий, на ~0.7 с, пульс галочки «Готово»; одновременно подавить emptyState в этом состоянии, чтобы не выводилось «Сообщений пока нет». Заодно смонтировать уже написанную SecretKeysWaitingBar первой строкой композера при isSecret && !secretReady, передав ui.secretQueued, — тогда набранные во время настройки сообщения перестанут копиться молча."
+  }
+ },
+ {
+  "title": "Аватар автора в ленте 28pt вместо 40px",
+  "web": "frontend/src/ui/components/Avatar.tsx:46 (size = 40 по умолчанию, ChatMessageRow.tsx:269 зовёт без size) + style.css:725 (.avatar-spacer 40px — столько же занимает пустой слот)",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:774-777 — AvatarView(size: 28) и такой же пустой слот 28×28",
+  "userImpact": "Аватары в групповом чате заметно мельче, чем в вебе на том же телефоне: лицо/инициалы хуже читаются, левое поле ленты на 12pt уже.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "row",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам: веб рисует аватар автора в строке сообщения размером 40px — Avatar.tsx:46 (size = 40 по умолчанию) и ChatMessageRow.tsx:269 зовёт <Avatar> без size, пустой слот .avatar-spacer 40px (style.css:725), плюс gap 8px у .msg (style.css:703), итого левое поле 48px; CSS нигде не уменьшает его на узких экранах, потому что размер задан инлайном. На iOS ChatView.swift:774-777 — AvatarView(..., size: 28) и заглушка Color.clear 28×28 в HStack(spacing: 6) (ChatView.swift:767), а AvatarView честно ставит frame(width:size,height:size) и инициалы size/2.4 (UI/Components/Avatar.swift:64,72). Значит аватар на 30% меньше по диаметру (28 vs 40), инициалы ~11.7pt вместо ~16.7pt, левый жёлоб 34pt вместо 48px. Это не десктопная особенность и не входит в список осознанных отличий; в остальных местах iOS использует 40/44/52, комментария о намеренном 28 нет. Но расхождение чисто косметическое, без функциональных последствий, и 28pt близко к нативной норме (Telegram iOS ~31pt), поэтому серьёзность ниже заявленной.",
+   "correctedSeverity": "low",
+   "fixSketch": "В ios/Eblusha/Features/Chat/ChatView.swift:774-777 поднять размер до эталонного: AvatarView(..., size: 40) и Color.clear.frame(width: 40, height: 40), а spacing внутреннего HStack (строка 767) сменить с 6 на 8, чтобы левый жёлоб совпал с вебовыми 48px. Проверить, что пузырь при этом не упирается в правый край (Spacer(minLength: 40) и кэп ширины пузыря) и что высота ячеек в UICollectionView пересчитывается — иначе короткие строки станут выше из-за аватара."
+  }
+ },
+ {
+  "title": "У последнего пузыря рана нет «хвостика»",
+  "web": "frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:200-206 (классы tail-left/tail-right навешиваются на последний пузырь рана) + style.css:2212-2234 (треугольник 8px цветом пузыря у нижнего угла, у своих справа, у входящих слева)",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:925-928 — у всех пузырей просто RoundedRectangle(cornerRadius: 14) с обводкой; хвостика нет ни у одного",
+  "userImpact": "Пузыри на телефоне — просто закруглённые прямоугольники; в вебе конец серии помечен уголком, направленным к автору, и группы сообщений визуально отделяются друг от друга.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "row",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб: ChatMessageRow.tsx:202-206 навешивает tail-right/tail-left на последний пузырь рана (то же в MessagesPane.tsx:1987 и :2258), а style.css:2212-2240 рисует ::after-треугольник border:8px цветом --bubble-bg у нижнего угла (left:-4px у входящих, right:-4px у своих, margin-bottom:6px); медиазапросов, отключающих хвост на узких экранах, нет, так что это видно и в мобильном вебе — не десктоп-онли деталь. iOS: ChatView.swift:924-927 — background(bubbleColor, in: RoundedRectangle(cornerRadius: 14)) плюс обводка тем же RoundedRectangle, и ни одного хвоста; grep по всем .swift на tail/UnevenRoundedRectangle/cornerRadii/кастомный Shape для пузыря не находит реализации в другом файле (только алфавитный tail в ContactsView.swift:738 и пути PhotoEditor). При этом заявленное «группы не отделяются» преувеличено: iOS знает о ранах (ChatView.swift:715-716, MessageListView.swift:127-128) и отделяет их отступом (ChatView.swift:801, top 8 против 2) и аватаром только у последнего (:773) — отсутствует именно уголок, силуэт пузыря читается плоским. В список осознанных отличий это не входит.",
+   "correctedSeverity": "low",
+   "fixSketch": "Добавить простой Shape-хвостик (треугольник 8×8 в Path) и в ChatView.swift:924-927 вешать его как .overlay(alignment: m.isMine ? .bottomTrailing : .bottomLeading) только при isLastInRun, залитый bubbleColor, со сдвигом наружу на 4pt и отступом снизу 6pt — чтобы совпало с CSS ::after; тот же треугольник нужно подмешать в обводку/скрывать в режиме выделения, как это делает style.css:2237-2240. Заодно оставить по 4pt горизонтального запаса у пузыря внутри SwipeableBubble/HStack (ChatView.swift:780-783), чтобы уголок не обрезался и не съезжал при свайпе-ответе."
+  }
+ },
+ {
+  "title": "Нет строки «Имя ответил на N сообщений» над цитатами",
+  "web": "frontend/src/ui/pages/chats/render/ChatMessageRow.tsx:236-243 (formatSenderReplyActionPhrase / formatSenderReplySingleActionPhrase) и :470-504 — строка «Имя ответил на 3 сообщения» цветом автора + иконка Quote, показывается и в 1:1",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:815-853 — в пузыре только имя отправителя, и только в группе у первого в ране; фразы про ответ нет",
+  "userImpact": "В личке на iOS ничего не подсказывает, что сообщение — это ответ, кроме узкой плашки; в группе при мультиответе не видно, на сколько сообщений человек ответил.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "quotes",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено обеими сторонами. Веб: ChatMessageRow.tsx:234-245 собирает фразу через formatSenderReplyActionPhrase/formatSenderReplySingleActionPhrase (chatsMessages.ts:40-46 → «ответил на N сообщений» / «ответил на сообщение»), и :470-504 рисует showSenderContextRow = showGroupSenderName || replySenderActionPhrase — жирная строка 14px цветом автора + иконка Quote, причём для любого ответа, в том числе в 1:1 и на своих исходящих. iOS: ChatView.swift:837-843 — в шапке пузыря только Text(m.senderName) под условием isGroup && !m.isMine && isFirstInRun; grep по всему ios/ не находит ни строки «ответил на», ни аналога иконки Quote. Влияние в заявке преувеличено: iOS разбирает мультиответ (ChatRepository.swift:366-372, ChatModels.swift:155 replyTo: [ReplyInfo]) и рисует каждую цитату отдельной плиткой с цветной полосой автора, его именем и превью в 2 строки (ChatView.swift:852-880), так что и факт ответа, и количество (N плиток), и кому отвечают пользователь видит. Отсутствует именно итоговая подпись-фраза, а не информация. Под осознанные отличия (UICollectionView, долгое нажатие, свайп-ответ, жесты, таббар) это не попадает.",
+   "correctedSeverity": "low",
+   "fixSketch": "В ChatView.swift в шапке пузыря (837-843) заменить одиночный Text(m.senderName) на строку контекста по правилам веба: если m.replyTo непустой — показать «\\(m.senderName) ответил на сообщение» при одной цитате и «\\(m.senderName) ответил на \\(n) \\(плюрал)» при n ≥ 2, цветом nameColorForUser, рядом Image(systemName: \"quote.opening\") в цвете Eb.brand; показывать эту строку и в 1:1, и на своих пузырях (то есть условие isGroup && !isMine && isFirstInRun расширить на «есть ответ»). Плюрализацию («сообщение/сообщения/сообщений») вынести в маленький хелпер рядом с formatClockTime, чтобы совпадала с ruPluralSoobsheniya из chatsMessages.ts."
+  }
+ },
+ {
+  "title": "«Копировать» на iOS отсутствует у фото/файлов и теряет вложения, цитаты и «Переслано от»",
+  "web": "ChatModals.tsx:2644 — «Копировать» показывается всегда: есть текст — копируется buildMessageCopyText (шапка «Переслано от…», цитаты, текст, «Файл: name.pdf» / «Видео: …» — chatsMessages.ts:58-110, chatsAttachments.ts:383-392), нет текста — в буфер уходит сама картинка; отдельным пунктом есть «Копировать изображение» (ChatModals.tsx:2629)",
+  "ios": "MessageActionsSheet.swift:27 и :90-92 — пункт «Копировать» есть только при непустом content; ChatView.swift:340 — `UIPasteboard.general.string = target.content`",
+  "userImpact": "У сообщения-фотографии без подписи в меню на iOS вообще нет «Копировать» (в вебе есть, и копируется картинка). У пересланного сообщения или ответа с файлом на iOS в буфер попадает только сам текст — без «Переслано от …», без цитаты, без имени файла, которые кладёт веб.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "reactions",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено чтением обоих источников, но с поправкой. Веб: ChatModals.tsx:2632-2645 рендерит «Копировать» безусловно и при пустом тексте кладёт в буфер картинку (copyImageFromUrl), а текст собирает buildMessageCopyText (chatsMessages.ts:58-110) — с «Переслано от …, из «…»», шапкой цитат и строками «Файл:/Видео:/Аудио: name» из describeCopyableAttachment (chatsAttachments.ts:383-392); меню открывается и по тапу/долгому нажатию (ChatMessageRow.tsx:337-344, 368, 444-453), то есть это не десктоп-онли. iOS: MessageActionsSheet.swift:27 + :90-92 показывают «Копировать» только при hasText, а ChatView.swift:340 — UIPasteboard.general.string = target.content (та же потеря в мультивыборе, ChatView.swift:235). Поправка к заявке: скопировать саму картинку на iOS всё же можно — в просмотрщике фото в меню «…» есть «Копировать» (PhotoViewerView.swift:189-194, PhotoViewerModels.swift:603), как и в веб-лайтбоксе (ImageLightbox.tsx:644). Итог: у фото без подписи в листе долгого нажатия пункта нет (в вебе есть), и в буфер уходит только content — без шапки пересылки, цитат и имён файлов.",
+   "correctedSeverity": "low",
+   "fixSketch": "Убрать гейт hasText в MessageActionsSheet.swift:90-92 — показывать «Копировать», если есть текст ИЛИ вложение-картинка. В ChatView.swift:340 (и :235 для мультивыбора) звать общий порт buildMessageCopyText (шапка «Переслано от …», строки цитат, «Файл:/Видео:/Аудио: name»), а при пустом результате кластьUIPasteboard.general.image, как это уже делает PhotoViewerModels.swift:603."
+  }
+ },
+ {
+  "title": "Порядок реакций у пузыря: веб сортирует по популярности, iOS — как пришло с сервера",
+  "web": "MessageReactionRail.tsx:157-171 — группировка и сортировка по count по убыванию, при равенстве по самому эмодзи",
+  "ios": "Core/Repository/ChatRepository.swift:338-351 — группы в порядке первого появления в ответе сервера; ChatView.swift:893 выводит их как есть",
+  "userImpact": "У сообщения с 😂×3 и 👍×1 веб покажет «😂 3 👍», iOS — «👍 1 😂 3». На одном и том же сообщении порядок и «главная» реакция разные на двух клиентах.",
+  "severity": "low",
+  "effort": "small",
+  "dimension": "reactions",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено по обоим источникам. Веб: frontend/src/ui/pages/chats/components/MessageReactionRail.tsx:157-171 — группирует реакции в map, затем `entries.sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))`, то есть по количеству по убыванию, при равенстве — по коду эмодзи (детерминированно). iOS: ios/Eblusha/Core/Repository/ChatRepository.swift:339-351 — собирает `seenEmoji` в порядке первого встреченного в `dto.reactions` и потом строит `grouped` строго в этом порядке; сортировки нет ни здесь, ни в рендере — ChatView.swift:891-893 делает `ForEach(m.reactions, id: \\.emoji)` без переупорядочивания, и больше `reactions` нигде не сортируется (grep по всем .swift: только MessageActionsSheet.swift:84 и ChatView.swift:326/356 — там `.first { $0.emoji == ... }` для проверки mine). Сервер порядок не задаёт: в src/routes/messages.ts:14-17 `messageReactionsWithUser` — это только `include: { user: ... }`, никакого `orderBy`, так что на iOS порядок = порядок строк в БД, т.е. кто первым поставил эмодзи. Отдельно усугубляет ChatViewModel.swift:682-693: при оптимистичной постановке новый эмодзи всегда `append` в конец, а после обновления с сервера чип перескакивает в позицию «первого появления». Это не входит в список осознанных отличий (там про UICollectionView, долгое нажатие, свайп-ответ, жесты, таббар) и не десктоп-специфично — мобильный веб сортирует так же.",
+   "correctedSeverity": "low",
+   "fixSketch": "В ChatRepository.swift после сборки `grouped` (строка ~351) отсортировать тем же правилом, что веб: `grouped.sort { $0.count != $1.count ? $0.count > $1.count : $0.emoji < $1.emoji }`. Ту же сортировку применить в ChatViewModel.swift после мутации массива в оптимистичном апдейте (перед `ui.messages[index].reactions = reactions`, строка ~693), иначе свежепоставленный эмодзи будет висеть в конце до ответа сервера и потом прыгать."
+  }
+ },
+ {
+  "title": "Картинку из буфера обмена в поле ввода не вставить",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:3426-3470 — onPaste достаёт image из clipboard и кладёт в очередь (addComposerImage(file, 'paste'))",
+  "ios": "ios/Eblusha/Features/Chat/ChatComposer.swift:177 — TextField со строкой: системное «Вставить» умеет только текст, картинка из буфера игнорируется, другого пути вставки в композере нет",
+  "userImpact": "Скопировал картинку/скриншот — «Вставить» в поле ввода ничего не даёт, приходится идти через галерею. В браузере на том же телефоне вставка работает.",
+  "severity": "medium",
+  "effort": "medium",
+  "dimension": "composer",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: MessagesPane.tsx:3426-3470 — onPaste перебирает clipboardData.items, для image/* вызывает addComposerImage(file,'paste') и гасит событие; в мобильной Safari это тоже работает (вставка в contenteditable), так что отличие не десктопное. iOS: ChatComposer.swift:177-180 — это обычный SwiftUI TextField со String-биндингом; по всему ios/ нет ни paste(_:)/canPerformAction/pasteConfiguration/pasteDelegate, ни UIViewRepresentable-обёртки над UITextView, ни PasteButton/onPasteCommand/onDrop. UIPasteboard встречается только в исходящую сторону (ChatView.swift:235,340; PhotoViewerModels.swift:603 копирует картинку в буфер). Единственные входные пути вложений — PhotosPicker и fileImporter в ComposerAttachments.swift:34-79; share extension в проекте тоже нет (только Eblusha/ + project.yml). Итог: картинка, лежащая лишь в буфере (скопирована из Safari, из чужого мессенджера, из своего же просмотрщика фото), в сообщение не попадёт без сохранения в «Фото». В списке осознанных отличий этого нет.",
+   "correctedSeverity": "low",
+   "fixSketch": "Заменить SwiftUI TextField в ChatComposer на тонкую UIViewRepresentable-обёртку над UITextView, у которой переопределены canPerformAction(.paste:)/paste(_:): брать UIPasteboard.general.itemProviders/images, собирать OutgoingFile и отправлять тем же путём, что и пикер (PhotoEditorSession → onStageFiles), а текст из буфера вставлять как сейчас. Дешёвая альтернатива без переписывания поля — при фокусе проверять UIPasteboard.general.hasImages и показывать над полем чип «Вставить картинку» (или системный PasteButton), который стажирует картинку из буфера."
+  }
+ },
+ {
+  "title": "Аватар в шапке беседы без индикатора присутствия",
+  "web": "Аватар 60 px с точкой/иконкой устройства в цвете статуса и красной точкой «в звонке» (frontend/src/ui/pages/chats/render/MessagesPane.tsx:455-472).",
+  "ios": "В панели навигации просто AvatarView 34 без PresenceBadge (ios/Eblusha/Features/Chat/ChatView.swift:589-593).",
+  "userImpact": "Внутри беседы статус собеседника цветом не читается — в списке точка есть, а в шапке пропадает; при пустом подзаголовке (офлайн) в шапке вообще нет ни одного признака присутствия.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "list",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено с обеих сторон. Веб: MessagesPane.tsx:451-466 передаёт в шапочный Avatar 60 px presence=avatarPresenceForUser(peer) и inCall, а Avatar.tsx:107-121/227-283 всегда рисует точку (серую для OFFLINE, иконку устройства в цвете статуса, красный маркер для IN_CALL); блок не гейтится isMobile, значит и в мобильном вебе точка видна. iOS: ChatView.swift:588-593 в headerTitle — чистый AvatarView(size: 34) без PresenceBadge, хотя PresenceBadge существует (UI/Components/Avatar.swift:80-120) и применяется в строке списка чатов (ChatListView.swift:421-432), в контактах и карточке профиля. То есть точка есть в списке и пропадает в шапке — это не «функция в другом файле» и не десктоп-онли, и в список осознанных отличий не входит. Поправка к отчёту: статус на iOS частично читается текстом подзаголовка (ChatViewModel.swift:227 + presenceHeaderLabel в ChatRepository.swift:21-29 даёт «в сети»/«в фоне»/«в звонке»), поэтому полностью без признаков остаётся только OFFLINE, где presenceHeaderLabel возвращает nil.",
+   "correctedSeverity": "low",
+   "fixSketch": "В ChatView.swift:588-593 обернуть шапочный AvatarView в ZStack(alignment: .bottomTrailing) и добавить PresenceBadge(userId: vm.ui.peerUserId, status: <сырой статус собеседника>, ringSize: 12, dotSize: 8, ringColor: цвет фона навбара) — только для не-групп и не-секретных, чтобы бейдж не лез на замок. Для этого протащить в ChatViewModel.UI сырой статус рядом с headerSubtitle: начальный из meta.otherStatus (ChatRepository.swift:128 / ChatViewModel.swift:182-187) и обновление в ветке .presence (ChatViewModel.swift:224-227), где сейчас сохраняется только готовая строка."
+  }
+ },
+ {
+  "title": "Закрытие секретного чата из шапки подтверждается без предупреждения о последствиях",
+  "web": "frontend/src/ui/pages/chats/render/MessagesPane.tsx:707-805 — модалка «Завершить секретный чат?» с явным текстом «Сообщения этого секретного чата будут удалены у всех участников. Это действие необратимо.» и кнопками «Отменить» / красная «Завершить»; пункт меню называется «Завершить секретный чат» (ChatModals.tsx:3253).",
+  "ios": "ios/Eblusha/Features/Chat/ChatView.swift:418-430 — .confirmationDialog с заголовком «Закрыть секретный чат?» и кнопками «Закрыть»/«Отмена», БЕЗ текста-пояснения. Показательно, что в списке чатов такой текст есть (ChatListView.swift:183-190: «Секретный чат будет закрыт и скрыт у всех участников.») — то есть на самом iOS два разных подтверждения одного действия.",
+  "userImpact": "Необратимое удаление переписки у обоих участников подтверждается голым вопросом из двух слов — человек нажимает «Закрыть», думая, что просто убирает чат из списка. Плюс разнобой формулировок: «Завершить» в вебе, «Закрыть» на iOS.",
+  "severity": "medium",
+  "effort": "small",
+  "dimension": "secret",
+  "verdict": {
+   "real": true,
+   "why": "Подтверждено в обоих источниках: веб (MessagesPane.tsx:707-805) показывает модалку с пояснением «Сообщения этого секретного чата будут удалены у всех участников. Это действие необратимо.» и есть ветка isMobile, то есть текст виден и на мобильном вебе; iOS (ChatView.swift:417-430) использует .confirmationDialog вообще без message-замыкания — только заголовок «Закрыть секретный чат?» и кнопки «Закрыть»/«Отмена». При этом сам iOS в списке чатов (ChatListView.swift:179-206, deleteAlert) для того же действия текст пояснения даёт — расхождение внутри одной платформы реально. Две поправки к отчёту: (1) на iOS пояснения нет и у вариантов «Удалить чат?»/«Выйти из беседы?», а в вебе те же пункты шапки (ChatModals.tsx:3208-3224, 3258-3274) вызывают api.delete вообще без подтверждения — веб лучше только в секретном кейсе; (2) серьёзность завышена: заголовок прямо называет действие, кнопка красная role:.destructive, а фактический вызов — declineInvite → CANCELLED (ChatViewModel.swift:620-637), то есть «скрыт у всех», как и написано в алерте списка; разнобой «Завершить»/«Закрыть» внутри iOS согласован (свайп, меню списка, меню чата — везде «Закрыть»), это выбор терминологии, а не баг.",
+   "correctedSeverity": "low",
+   "fixSketch": "В ChatView.swift:417-430 добавить к .confirmationDialog замыкание message: { Text(...) } с теми же тремя формулировками, что уже есть в ChatListView.deleteAlert (для секретки — «Секретный чат будет закрыт и скрыт у всех участников.»). Лучше вынести тройку (заголовок, пояснение, подпись кнопки) в один общий хелпер, чтобы список чатов и открытый чат не расходились впредь."
+  }
+ }
+]
