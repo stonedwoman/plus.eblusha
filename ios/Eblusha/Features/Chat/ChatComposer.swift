@@ -196,6 +196,9 @@ struct ChatComposer: View {
         .animation(.easeOut(duration: 0.2), value: focused)
         // Фон уходит под полосу home indicator — иначе внизу видна полоса другого цвета.
         .background(Eb.surface200.ignoresSafeArea(edges: .bottom))
+        // Полотно беседы теперь той же поверхности, поэтому панель ввода отделяет
+        // волосок сверху — ровно как .msg-input-bar в вебе.
+        .overlay(alignment: .top) { Rectangle().fill(Eb.border).frame(height: 1) }
         // Высота панели меняется от цитаты, чипов и второй строки — лента должна на это
         // отвечать, иначе последнее сообщение уезжает под композер (порт
         // KeepBottomVisibleOnComposerGrowth).

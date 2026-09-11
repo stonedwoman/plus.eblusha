@@ -13,6 +13,8 @@ struct ContactsView: View {
     /// «назад» из любой точки (см. `edgeSwipeBack`); nil — если экран показан не в стеке.
     let onBack: (() -> Void)?
     let onOpenConversation: (ConversationRef) -> Void
+    /// Какие края списка сейчас растворяются (см. scrollEdgeFade).
+    @State private var fade = ListEdgeFade()
 
     @StateObject private var vm: ContactsViewModel
 
@@ -45,6 +47,18 @@ struct ContactsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Eb.surface200)
+        // Те же краевые фейды, что в списке бесед (см. scrollEdgeFade).
+        .scrollEdgeFade(top: fade.top, bottom: fade.bottom)
+        .onScrollGeometryChange(for: ListEdgeFade.self) { geometry in
+            ListEdgeFade(
+                top: geometry.contentOffset.y - geometry.contentInsets.top > 2,
+                bottom: geometry.contentOffset.y + geometry.containerSize.height
+                    < geometry.contentSize.height - 2
+            )
+        } action: { _, value in
+            guard fade != value else { return }
+            withAnimation(.easeOut(duration: 0.15)) { fade = value }
+        }
         .navigationTitle("Контакты")
         // Возврат свайпом вправо из любой точки — как в остальных экранах стека.
         .edgeSwipeBack { onBack?() }

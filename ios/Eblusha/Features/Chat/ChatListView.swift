@@ -20,6 +20,8 @@ struct ChatListView: View {
     let onNewGroup: () -> Void
 
     @State private var confirmDelete: Conversation?
+    /// Какие края списка сейчас растворяются (есть ли что листать вверх и вниз).
+    @State private var fade = ListEdgeFade()
     /// Универсальная карточка пользователя. Лист живёт у родителя (в SwiftUI sheet держит
     /// родитель, см. UserCardSheet). Из списка сейчас не вызывается — тап по аватару, как и по
     /// строке, открывает чат, а карточка доступна из шапки самого чата; точка входа сохранена.
@@ -162,6 +164,20 @@ struct ChatListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Eb.surface200)
+        // Края списка растворяются в подложке, когда за ними есть что листать — порт
+        // веб-фейдов (ConversationListPane: две полоски по 24 px, включаются по
+        // scrollTop > 2 и по остатку снизу). Верхняя плитка на своём месте не тускнеет.
+        .scrollEdgeFade(top: fade.top, bottom: fade.bottom)
+        .onScrollGeometryChange(for: ListEdgeFade.self) { geometry in
+            ListEdgeFade(
+                top: geometry.contentOffset.y - geometry.contentInsets.top > 2,
+                bottom: geometry.contentOffset.y + geometry.containerSize.height
+                    < geometry.contentSize.height - 2
+            )
+        } action: { _, value in
+            guard fade != value else { return }
+            withAnimation(.easeOut(duration: 0.15)) { fade = value }
+        }
         .refreshable {
             // refresh() запускает загрузку в собственной Task и возвращается сразу — без
             // ожидания флага системный индикатор гас бы мгновенно. Ждём, пока ViewModel
@@ -375,6 +391,33 @@ struct AnimatedWordmark: View {
                 t.disablesAnimations = true
                 withTransaction(t) { flip = false }
             }
+        }
+    }
+}
+
+/// Состояние краевых фейдов списка: есть ли скрытое содержимое сверху и снизу.
+struct ListEdgeFade: Equatable {
+    var top = false
+    var bottom = false
+}
+
+extension View {
+    /// Растворение краёв списка в подложке — порт веб-фейдов списка бесед: полоска 24 pt
+    /// от цвета панели к прозрачному, появляется только когда за краем что-то есть.
+    func scrollEdgeFade(
+        top: Bool, bottom: Bool, color: Color = Eb.surface200, height: CGFloat = 24
+    ) -> some View {
+        overlay(alignment: .top) {
+            LinearGradient(colors: [color, color.opacity(0)], startPoint: .top, endPoint: .bottom)
+                .frame(height: height)
+                .opacity(top ? 1 : 0)
+                .allowsHitTesting(false)
+        }
+        .overlay(alignment: .bottom) {
+            LinearGradient(colors: [color, color.opacity(0)], startPoint: .bottom, endPoint: .top)
+                .frame(height: height)
+                .opacity(bottom ? 1 : 0)
+                .allowsHitTesting(false)
         }
     }
 }
