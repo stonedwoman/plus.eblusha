@@ -42,6 +42,10 @@ struct SettingsView: View {
     @State private var avatarItem: PhotosPickerItem?
     /// Выбранный, но ещё не подтверждённый источник (нужен выход из аккаунта).
     @State private var pendingServer: AppConfig.Server?
+    /// Режим автопроигрывания видео в ленте — СЫРОЙ строкой, ключом из InlineVideoPlayer:
+    /// его же читает координатор автоплея. @AppStorage, а не своя обёртка над UserDefaults,
+    /// ради перерисовки пикера: без наблюдения он остался бы с прежней галочкой.
+    @AppStorage(VideoAutoplayMode.storageKey) private var videoAutoplayRaw = VideoAutoplayMode.wifi.rawValue
 
     init(onBack: (() -> Void)? = nil, onLogout: @escaping () -> Void) {
         self.onBack = onBack
@@ -97,6 +101,7 @@ struct SettingsView: View {
             avatarSection
             profileSection
             statusSection
+            mediaSection
             serverSection
             devicesSection
             sessionsSection
@@ -254,6 +259,30 @@ struct SettingsView: View {
     /// Выбор применяется сразу, без «Сохранить» (порт setStatus).
     private var statusBinding: Binding<String> {
         Binding(get: { currentStatus }, set: { vm.setStatus($0) })
+    }
+
+    // MARK: - Медиа
+
+    /// Автопроигрывание коротких видео в ленте. Настройка одна и хранится строкой в
+    /// UserDefaults: тот же ключ читает координатор автоплея напрямую на каждом решении
+    /// (InlineVideoPlayer.swift), поэтому выбор применяется сразу, без перезахода в чат.
+    private var mediaSection: some View {
+        Section {
+            Picker(selection: $videoAutoplayRaw) {
+                ForEach(VideoAutoplayMode.allCases) { mode in
+                    Text(mode.title).tag(mode.rawValue)
+                }
+            } label: {
+                Text("Автовоспроизведение видео")
+                    .foregroundStyle(Eb.textPrimary)
+            }
+            .pickerStyle(.menu)
+        } header: {
+            Text("Медиа")
+        } footer: {
+            Text("Короткие видео в переписке оживают сами — без звука и только пока плитка на экране. Звук и перемотка остаются в плеере по тапу.")
+        }
+        .ebRow()
     }
 
     // MARK: - Источник (основной сервер или зеркало)

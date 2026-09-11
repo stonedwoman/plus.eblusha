@@ -230,15 +230,20 @@ struct ChatComposer: View {
             // является, поэтому в хранилище уходит отложенный.
             DraftStore.set(conversationId, isEditing ? (stashedDraft?.text ?? "") : draft)
             voiceState.cancelAll(recorder: voiceRecorder)
-            // Экран уходит — запись заведомо кончилась; флаг для звуков снимаем здесь же,
-            // иначе чат остался бы немым до следующей записи.
+            // Экран уходит — запись заведомо кончилась; флаги снимаем здесь же, иначе чат
+            // остался бы немым, а лента — без автоплея до следующей записи (onChange по
+            // isRecording при уничтожении панели уже не придёт).
             ChatSounds.setRecording(false)
+            InlineVideoCoordinator.shared.isSuspended = false
         }
         // Пока пишется голосовое, звуки чата молчат: системный щелчок лёг бы прямо в
         // записываемую дорожку. Флаг общий на приложение, поэтому его ставит композер —
         // рекордер про звуки чата ничего не знает и знать не должен.
         .onChange(of: voiceRecorder.isRecording) { _, recording in
             ChatSounds.setRecording(recording)
+            // Автоплей видео в ленте на время записи глушим: лишний декодер и перерисовка
+            // плиток идут по тому же главному потоку, что и волна под пальцем.
+            InlineVideoCoordinator.shared.isSuspended = recording
         }
         .onChange(of: editing) { previous, current in
             applyEditing(from: previous, to: current)
@@ -341,7 +346,10 @@ struct ChatComposer: View {
             AttachmentPickerButton(
                 disabled: sending || isEditing,
                 onPicked: { files in openPicked(files) },
-                onError: onError
+                onError: onError,
+                // Съёмка живёт здесь (fullScreenCover камеры и запрос разрешения ниже по
+                // файлу) — лист прикрепления только просит её открыть, закрывшись сам.
+                onCamera: { openCamera() }
             )
 
             // Съёмка отдельной кнопкой, а не пунктом в меню скрепки: в вебе с телефона

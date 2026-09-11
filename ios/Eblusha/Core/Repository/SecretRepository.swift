@@ -889,7 +889,16 @@ final class SecretRepository {
                 guard let resolved = resolveMediaUrl(url), let remote = URL(string: resolved) else {
                     return nil
                 }
-                guard let cipher = await self.downloadBytes(remote) else { return nil }
+                // Прогресс — в общий реестр под ключом ИСХОДНОГО url вложения: ровно его
+                // знает плитка в пузыре, поэтому кольцо появляется на самом кадре.
+                // cancellable: false — отменённая расшифровка оставила бы плитку с
+                // замком навсегда, а повторить её человеку нечем.
+                guard let cipher = await MediaDownloadCenter.downloadData(
+                    URLRequest(url: remote),
+                    key: url,
+                    cancellable: false,
+                    session: self.downloadSession
+                ) else { return nil }
                 // Guard обязателен: битый base64-nonce из враждебного дескриптора не
                 // должен ронять процесс — сообщение-то остаётся в истории.
                 guard let nonce = SecretCrypto.b64UrlDecode(nonceB64),
@@ -908,13 +917,6 @@ final class SecretRepository {
                 }
             }
         }
-    }
-
-    private func downloadBytes(_ url: URL) async -> Data? {
-        guard let (data, response) = try? await downloadSession.data(from: url),
-              let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode) else { return nil }
-        return data
     }
 
     private func fileGate(_ cacheName: String) -> AsyncSemaphore {

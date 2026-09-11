@@ -381,12 +381,26 @@ private struct AlbumImageTile: View {
         .frame(width: size.width, height: size.height)
         .clipped()
         .background(Eb.surface100)
+        // Кольцо скачивания рисуется ПОВЕРХ уже занятого места, поэтому высота плитки не
+        // меняется и лента не прыгает. Живёт оно ровно там, где кадр действительно качают
+        // в самом пузыре, — на шифртексте секретного вложения (SecretRepository сообщает
+        // прогресс в MediaDownloadCenter). У обычной картинки качалка своя, с кэшем и
+        // заглушкой на месте (CachedImage), и второй индикатор ей ни к чему.
+        .overlay {
+            if att.secretNonce != nil {
+                MediaDownloadRing(key: att.url, cornerRadius: 0)
+            }
+        }
     }
 }
 
 /// Видео в пузыре: кадр-постер, круглая кнопка Play и длительность в углу — вместо
 /// безликой строки «movie.mp4 · 12 МБ». Постер серверный (`metadata.posterKey` →
 /// `MessageAttachment.posterUrl`), размер плитки считается из метаданных ДО загрузки.
+///
+/// Короткое видео плитка проигрывает сама: без звука, циклом и только пока она на экране
+/// (InlineVideoPlayer.swift). Тап по-прежнему открывает полноценный просмотрщик со звуком
+/// и перемоткой — автоплей это превью, а не замена плееру.
 struct VideoAttachmentTile: View {
 
     let att: MessageAttachment
@@ -397,19 +411,31 @@ struct VideoAttachmentTile: View {
     /// Тап: открыть плеер. Скачиванием/расшифровкой занимается вызывающий.
     let onPlay: () -> Void
 
+    /// Идёт ли автопроигрывание (первый кадр уже на экране).
+    @State private var inlinePlaying = false
+    /// К какому вложению относится `inlinePlaying`: ячейка ленты переиспользуется под
+    /// ДРУГОЕ сообщение, а @State подмену переживает — без метки плитка чужого видео
+    /// осталась бы с погашенным постером (та же ловушка, что с resolvedFor).
+    @State private var playingFor: String?
+
     var body: some View {
         poster
             .frame(width: size.width, height: size.height)
             .clipped()
             // Тёмная подложка видна, пока постер грузится и когда его нет вовсе.
             .background(Eb.surface300)
+            .overlay { inlineVideo }
             .overlay {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 54, height: 54)
-                    .background(.black.opacity(0.45), in: Circle())
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.25)))
+                // Во время автопроигрывания круг Play лишний: видео и так идёт, а тап
+                // работает по всей плитке.
+                if !showsInlineVideo {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 54, height: 54)
+                        .background(.black.opacity(0.45), in: Circle())
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.25)))
+                }
             }
             .overlay(alignment: .bottomLeading) {
                 if let footer {
@@ -425,6 +451,33 @@ struct VideoAttachmentTile: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .contentShape(Rectangle())
             .onTapGesture(perform: onPlay)
+    }
+
+    /// Показываем ли сейчас видео вместо постера. Кроссфейд 0.18 с — то же число, что у
+    /// веб-пузыря видео (VideoMessageBubble), чтобы подмена не выглядела рывком.
+    private var showsInlineVideo: Bool { inlinePlaying && playingFor == att.url }
+
+    @ViewBuilder
+    private var inlineVideo: some View {
+        if let url = autoplayURL {
+            InlineVideoLayer(url: url, eligible: true) { playing in
+                playingFor = att.url
+                inlinePlaying = playing
+            }
+            .frame(width: size.width, height: size.height)
+            .opacity(showsInlineVideo ? 1 : 0)
+            .animation(.easeInOut(duration: 0.18), value: showsInlineVideo)
+            // Тап остаётся плиточным: слой плеера жестов не перехватывает.
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// Откуда играть в ленте. Пусто — значит автоплей этому вложению не положен (секретка,
+    /// неизвестные метаданные, слишком длинное или тяжёлое): тогда плеера нет вовсе, и
+    /// плитка не стоит нам ни байта.
+    private var autoplayURL: URL? {
+        guard att.isInlineAutoplayable else { return nil }
+        return resolveMediaUrl(att.url).flatMap { URL(string: $0) }
     }
 
     @ViewBuilder

@@ -1011,7 +1011,7 @@ final class ChatViewModel: ObservableObject {
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
               let jpeg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.8)
         else { return nil }
-        // В ту же папку, что и копии выбранного: её подметает pruneStagingDirectory при
+        // В ту же папку, что и копии выбранного: её подметает pruneOutgoingStaging при
         // следующем выборе файлов, и переживший падение мусор не остаётся навсегда.
         let url = outgoingStagingDirectory()
             .appendingPathComponent("outgoing-preview-\(UUID().uuidString).jpg")

@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import Photos
 import UIKit
 import CoreTransferable
 import UniformTypeIdentifiers
@@ -7,10 +8,11 @@ import UniformTypeIdentifiers
 // Порт стейджинга вложений из `ui/chat/ChatScreen.kt` (pickAttachment / очередь чипов /
 // прогресс аплоада). Веб-паритет: выбранное НЕ отправляется сразу — встаёт чипами над
 // композером, подпись набирается после, отправка — кнопкой (мимо-тап не шлёт мгновенно).
-// Вместо системного GetMultipleContents Android'а — два источника: PhotosPicker (до 10
-// фото И видео из галереи, без разрешения на всю библиотеку) и fileImporter (до 10
-// документов). Видео идёт в «прочие» (как в Kotlin, где GetMultipleContents не различает):
-// капы вью-модели — 10 картинок + 10 остальных, лимит размера — серверный (см. ниже).
+// Вместо системного GetMultipleContents Android'а — три источника: своя сетка медиатеки
+// в листе прикрепления (AttachmentSheet.swift), системный PhotosPicker на весь архив
+// (до 10 фото И видео, без разрешения на библиотеку) и fileImporter (до 10 документов).
+// Видео идёт в «прочие» (как в Kotlin, где GetMultipleContents не различает): капы
+// вью-модели — 10 картинок + 10 остальных, лимит размера — серверный (см. ниже).
 
 /// Потолок вложения — РОВНО серверный: multer `limits.fileSize` (src/routes/upload.ts) при
 /// nginx `client_max_body_size 1024m`. Своего, более жёсткого лимита у клиента больше нет:
@@ -35,35 +37,35 @@ private struct PickFailure: Error {
 
 // MARK: - Кнопка-скрепка с пикерами
 
-/// Скрепка композера: меню «Фото» (галерея) / «Файл» (документы). Выбранное читается в
-/// байты и уходит наверх готовыми OutgoingFile — вью-модель кладёт их в очередь
-/// (vm.stageFiles). Всё-или-ничего, как readPickedFile в Kotlin: недочитанный набор
-/// не стейджится частично.
+/// Скрепка композера: открывает свой лист прикрепления (сетка последних кадров +
+/// строки «Фото или видео» / «Камера» / «Файл»). Выбранное читается в байты и уходит
+/// наверх готовыми OutgoingFile — вью-модель кладёт их в очередь (vm.stageFiles).
+/// Всё-или-ничего, как readPickedFile в Kotlin: недочитанный набор не стейджится
+/// частично.
 struct AttachmentPickerButton: View {
     let disabled: Bool
     /// Пикер вернул прочитанные файлы (vm.stageFiles).
     let onPicked: ([OutgoingFile]) -> Void
     /// Сбой чтения выбранного — в общий баннер ошибок (vm.setError).
     let onError: (String) -> Void
+    /// Съёмка живёт в ChatComposer (там fullScreenCover камеры и запрос разрешения) —
+    /// лист только просит её открыть, закрывшись. nil — строки «Камера» в листе нет.
+    var onCamera: (() -> Void)?
 
+    @State private var showSheet = false
     @State private var showPhotosPicker = false
     @State private var showFileImporter = false
     @State private var photoItems: [PhotosPickerItem] = []
     /// Чтение выбранного в память может занять секунды — на это время скрепка гаснет.
     @State private var reading = false
 
+    /// Железо считаем один раз: на симуляторе камеры нет, и строка в листе была бы
+    /// кнопкой в никуда.
+    private static let hasCamera = UIImagePickerController.isSourceTypeAvailable(.camera)
+
     var body: some View {
-        Menu {
-            Button {
-                showPhotosPicker = true
-            } label: {
-                Label("Фото или видео", systemImage: "photo.on.rectangle")
-            }
-            Button {
-                showFileImporter = true
-            } label: {
-                Label("Файл", systemImage: "doc")
-            }
+        Button {
+            showSheet = true
         } label: {
             if reading {
                 ProgressView()
@@ -76,13 +78,39 @@ struct AttachmentPickerButton: View {
             }
         }
         .disabled(disabled || reading)
+        .accessibilityLabel("Прикрепить")
+        // Свой лист вместо меню из двух пунктов: последние кадры сразу под пальцем, а
+        // переписка остаётся видимой сверху. Лист ничего не отправляет — только стейджит.
+        .sheet(isPresented: $showSheet) {
+            AttachmentSheetView(
+                cameraAvailable: onCamera != nil && Self.hasCamera,
+                onPickAssets: { assets in readAssets(assets) },
+                onSystemPicker: { afterSheet { showPhotosPicker = true } },
+                onCamera: { afterSheet { onCamera?() } },
+                onFiles: { afterSheet { showFileImporter = true } }
+            )
+        }
+        // Системные пикеры — на ОТДЕЛЬНОЙ невидимой вью: и .photosPicker, и .fileImporter
+        // под капотом тот же .sheet, а два показа с одной вью SwiftUI склеивает (лист
+        // прикрепления уже занял модификатор выше). Размера у подложки нет, на раскладку
+        // скрепки она не влияет.
+        .background { systemPickers }
+    }
+
+    private var systemPickers: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
         // Мультивыбор: несколько фото станут ОДНИМ сообщением-альбомом (веб-паритет;
         // картинки первыми; текст композера станет подписью альбома, как на вебе).
         // Видео берётся тем же пикером (Kotlin GetMultipleContents тоже не различал).
+        // selectionBehavior: .ordered — системный пикер рисует НОМЕРА в порядке тапов и
+        // возвращает выбранное в том же порядке; при .default он отдал бы порядок
+        // библиотеки, то есть альбом собрался бы не так, как человек тыкал.
         .photosPicker(
             isPresented: $showPhotosPicker,
             selection: $photoItems,
             maxSelectionCount: 10,
+            selectionBehavior: .ordered,
             matching: .any(of: [.images, .videos])
         )
         .onChange(of: photoItems) { _, items in
@@ -104,6 +132,40 @@ struct AttachmentPickerButton: View {
         }
     }
 
+    /// Закрываем лист сами и только потом открываем следующее. Пока лист уезжает, SwiftUI
+    /// глотает второй модальный показ с того же места — ровно та же грабля, из-за которой
+    /// редактор после съёмки открывается с паузой (ChatComposer, fullScreenCover камеры).
+    @MainActor
+    private func afterSheet(_ action: @escaping () -> Void) {
+        showSheet = false
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            action()
+        }
+    }
+
+    /// Кадры, выбранные в нашей сетке, идут ТЕМ ЖЕ путём, что и системный пикер:
+    /// прочитанные файлы уходят в onPicked, а дальше ChatComposer.openPicked разводит
+    /// картинки в редактор, прочее — в очередь чипов.
+    @MainActor
+    private func readAssets(_ assets: [PHAsset]) {
+        guard !assets.isEmpty else { return }
+        showSheet = false
+        reading = true
+        Task { @MainActor in
+            // Даём листу уехать: полноэкранный редактор, который откроется следом,
+            // SwiftUI проглотил бы вместе с закрытием листа.
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            switch await readPickedAssets(assets) {
+            case .success(let files):
+                onPicked(files)
+            case .failure(let failure):
+                onError(failure.message)
+            }
+            reading = false
+        }
+    }
+
     /// Читает выбор галереи (фото И видео) в байты. Галерея не отдаёт исходное имя
     /// файла — генерим человекочитаемое по времени и порядку выбора.
     private func readPhotoItems(_ items: [PhotosPickerItem]) {
@@ -111,7 +173,7 @@ struct AttachmentPickerButton: View {
         // @MainActor: стейт и колбэки вью-модели трогаем только с главного;
         // тяжёлое (декод HEIC) уезжает в detached-задачи.
         Task { @MainActor in
-            pruneStagingDirectory()
+            pruneOutgoingStaging()
             var files: [OutgoingFile] = []
             for (i, item) in items.enumerated() {
                 let stamp = photoNameStamp.string(from: Date())
@@ -208,7 +270,7 @@ struct AttachmentPickerButton: View {
     private func readFileURLs(_ urls: [URL]) {
         reading = true
         Task.detached {
-            pruneStagingDirectory()
+            pruneOutgoingStaging()
             var files: [OutgoingFile] = []
             for url in urls {
                 switch readPickedFile(url) {
@@ -278,9 +340,10 @@ func outgoingStagingDirectory() -> URL {
 }
 
 /// Убирает то, что пережило прошлые отправки (упавшие, отменённые, убитые перезапуском).
+/// Не private: то же делает выгрузка роликов из медиатеки (AttachmentSheet.swift).
 /// Удалять отображённый в память файл безопасно: mmap держит содержимое, пока им
 /// пользуются, а место на диске освобождается сразу.
-private func pruneStagingDirectory() {
+func pruneOutgoingStaging() {
     let deadline = Date().addingTimeInterval(-3600)
     let urls = (try? FileManager.default.contentsOfDirectory(
         at: outgoingStagingDirectory(), includingPropertiesForKeys: [.contentModificationDateKey]
@@ -311,7 +374,9 @@ private struct PickedMovie: Transferable {
 }
 
 /// Штамп для имён фото/видео из галереи (у PhotosPicker нет исходного имени файла).
-private let photoNameStamp: DateFormatter = {
+/// Не private: тем же штампом подписываются кадры из нашей сетки, у которых исходное
+/// имя не прочиталось (AttachmentSheet.swift).
+let photoNameStamp: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyyMMdd-HHmmss"
     return formatter
@@ -372,6 +437,16 @@ struct ComposerAttachmentsBar: View {
         }
     }
 
+    /// Номер кадра в альбоме — его позиция среди КАРТИНОК очереди (прочие файлы уходят
+    /// отдельными вложениями, нумеровать там нечего). При одной картинке номера нет:
+    /// упорядочивать нечего, а лишний кружок мешает смотреть на кадр. Считается на лету,
+    /// поэтому удаление чипа из середины перенумеровывает хвост само.
+    private func albumNumber(at index: Int) -> Int? {
+        guard staged.indices.contains(index), staged[index].mime.hasPrefix("image/") else { return nil }
+        guard staged.filter({ $0.mime.hasPrefix("image/") }).count > 1 else { return nil }
+        return staged[0...index].filter { $0.mime.hasPrefix("image/") }.count
+    }
+
     // Чип: картинка — миниатюрой 64×64 (тап — в редактор), прочее — иконка + имя 96×64.
     private func stagedChip(_ f: OutgoingFile, index: Int) -> some View {
         ZStack(alignment: .topTrailing) {
@@ -384,6 +459,19 @@ struct ComposerAttachmentsBar: View {
                             .frame(width: 18, height: 18)
                             .background(Color.black.opacity(0.6), in: Circle())
                             .padding(2)
+                    }
+                    // Номер — в ВЕРХ-ЛЕВО: верх-право занят крестиком, низ-лево карандашом.
+                    // Тапы не перехватывает, иначе по номеру не открылся бы редактор.
+                    .overlay(alignment: .topLeading) {
+                        if let number = albumNumber(at: index) {
+                            Text("\(number)")
+                                .font(.system(size: 10, weight: .bold).monospacedDigit())
+                                .foregroundStyle(.white)
+                                .frame(width: 18, height: 18)
+                                .background(Eb.brand, in: Circle())
+                                .padding(2)
+                                .allowsHitTesting(false)
+                        }
                     }
                     .contentShape(Rectangle())
                     .onTapGesture { onEditStaged?(index) }

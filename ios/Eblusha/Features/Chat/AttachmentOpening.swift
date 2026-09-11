@@ -76,18 +76,27 @@ enum AttachmentOpener {
         guard let resolved = resolveMediaUrl(att.url), let remote = URL(string: resolved) else {
             return nil
         }
-        guard let local = await download(remote, suggestedName: att.name) else { return nil }
+        guard let local = await download(remote, key: att.url, suggestedName: att.name) else {
+            return nil
+        }
         return AttachmentPreview(url: local, isVideo: isVideo)
     }
 
-    private static func download(_ url: URL, suggestedName: String?) async -> URL? {
+    /// `key` — `MessageAttachment.url` как он лежит в сообщении: по нему строка файла в
+    /// ленте находит СВОЙ прогресс и рисует процент вместо стрелки (MediaDownloadCenter).
+    private static func download(_ url: URL, key: String, suggestedName: String?) async -> URL? {
         var request = URLRequest(url: url)
         // Прокси файлов требует тот же bearer, что и остальной API.
         if let token = AppContainer.shared.sessionStore.currentAccessToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+        // Качаем через общий реестр: он же даёт процент и отмену крестом. Возвращается
+        // временный файл, который дальше надо унести под человеческое имя.
+        guard let tmp = await MediaDownloadCenter.download(request, key: key) else {
+            NSLog("AttachmentOpener: не удалось скачать вложение %@", key)
+            return nil
+        }
         do {
-            let (tmp, _) = try await URLSession.shared.download(for: request)
             // Имя из сообщения — чтобы в просмотре и «Поделиться» файл назывался по-людски.
             let name = (suggestedName?.isEmpty == false ? suggestedName! : url.lastPathComponent)
             let destination = FileManager.default.temporaryDirectory
@@ -99,7 +108,9 @@ enum AttachmentOpener {
             try FileManager.default.moveItem(at: tmp, to: destination)
             return destination
         } catch {
-            NSLog("AttachmentOpener: не удалось скачать вложение: %@", String(describing: error))
+            // Скачанное осталось бы мусором во временных: переносить его некуда.
+            try? FileManager.default.removeItem(at: tmp)
+            NSLog("AttachmentOpener: не удалось сохранить вложение: %@", String(describing: error))
             return nil
         }
     }

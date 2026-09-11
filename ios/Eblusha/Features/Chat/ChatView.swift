@@ -1288,6 +1288,11 @@ struct MessageRow: View {
             return AnyView(
                 SecretImageView(att: att, decrypt: decryptSecretAttachment)
                     .frame(width: width, height: height)
+                    // Кольцо с процентом поверх места, которое кадр уже занял: в секретке
+                    // картинка рисуется только после того, как ВЕСЬ шифртекст скачан и
+                    // расшифрован, и на тяжёлом снимке это заметное ожидание.
+                    // Оверлей рисуется в уже занятом месте — высоту ячейки он не трогает.
+                    .overlay { MediaDownloadRing(key: att.url) }
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             )
         }
@@ -1337,8 +1342,9 @@ struct MessageRow: View {
                 }
             }
             Spacer(minLength: 4)
-            Image(systemName: "arrow.down.circle")
-                .foregroundStyle(Eb.textMuted)
+            // Стрелка «скачать», а во время скачивания — процент на её месте: раньше тап
+            // по файлу выглядел проглоченным (единственным признаком был флаг внутри вью).
+            MediaDownloadBadge(key: att.url)
         }
         .padding(6)
         .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
