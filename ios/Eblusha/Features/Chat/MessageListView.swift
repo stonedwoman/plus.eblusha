@@ -393,14 +393,16 @@ final class MessageListController: UIViewController {
     /// Базовый верхний отступ ленты.
     private static let basePadding: CGFloat = 8
     /// Свайп-ответ: порог срабатывания и предел протяжки (как в прежней версии).
-    private static let replyThreshold: CGFloat = 56
-    private static let replyMaxDrag: CGFloat = 84
+    /// Пороги свайпа-ответа взяты у Telegram: тянется до 80 pt, срабатывает после 45.
+    private static let replyThreshold: CGFloat = 45
+    private static let replyMaxDrag: CGFloat = 80
 
     /// Строка, которую сейчас тянут вбок.
     private var swipingIndexPath: IndexPath?
-    /// Кого и в какую сторону тянем прямо сейчас (фиксируется на старте жеста).
+    /// Кого тянем прямо сейчас (фиксируется на старте жеста).
     private var swipingRowId: String?
-    private var swipingDirection: CGFloat = 1
+    /// Порог уже перейден: отклик даём в момент перехода, как Telegram, а не на отпускании.
+    private var swipePassedThreshold = false
     /// Сдвиги пузырей по id сообщения: во время жеста меняется только один объект,
     /// и перерисовывается только один пузырь.
     private var swipeStates: [String: MessageSwipeState] = [:]
@@ -645,23 +647,32 @@ final class MessageListController: UIViewController {
                 return
             }
             swipingIndexPath = indexPath
-            // Строку и сторону фиксируем на старте: во время жеста лента может обновиться,
-            // и пересчёт по индексу увёл бы сдвиг на соседнее сообщение.
+            // Строку фиксируем на старте: во время жеста лента может обновиться, и
+            // пересчёт по индексу увёл бы сдвиг на соседнее сообщение.
             swipingRowId = row.id
-            swipingDirection = replyDirection(for: row)
+            swipePassedThreshold = false
 
         case .changed:
             guard let id = swipingRowId, let row = rowsById[id] else { return }
-            // Левая колонка тянется вправо, правая — влево; сторону решила геометрия пузыря.
+            // Влево тянутся ВСЕ сообщения — и свои, и чужие (порт Telegram: translation.x
+            // зажат в [-80, 0]). Одна сторона для всех понятнее, чем «наружу из колонки»,
+            // и не спорит с жестом «назад», который работает вправо.
             let raw = recognizer.translation(in: collectionView).x
-            let dx = swipingDirection > 0
-                ? min(max(raw, 0), Self.replyMaxDrag)
-                : min(max(raw, -Self.replyMaxDrag), 0)
-            // Двигается САМ пузырь внутри SwiftUI-содержимого (SwipeableBubble), а не
+            let dx = min(max(raw, -Self.replyMaxDrag), 0)
+            // Двигается САМ пузырь внутри SwiftUI-содержимого (SwipeToReplyRow), а не
             // ячейка: сдвиг контейнера хостинг-конфигурация не показывала.
             swipeState(for: row.id).offset = dx
+            // Отклик — в момент перехода порога, как в Telegram: рука понимает, что
+            // отпускать уже можно, не доводя жест до конца.
+            let passed = dx <= -Self.replyThreshold
+            if passed != swipePassedThreshold {
+                swipePassedThreshold = passed
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            }
 
         case .ended, .cancelled, .failed:
+            let passed = swipePassedThreshold
+            swipePassedThreshold = false
             guard let id = swipingRowId, let row = rowsById[id] else {
                 swipingIndexPath = nil
                 swipingRowId = nil
@@ -671,12 +682,10 @@ final class MessageListController: UIViewController {
             swipingRowId = nil
             let message = row.message
             let state = swipeState(for: message.id)
-            let triggered = recognizer.state == .ended && abs(state.offset) >= Self.replyThreshold
-            withAnimation(.spring(duration: 0.25)) { state.offset = 0 }
-            if triggered {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                actions?.onReply(message)
-            }
+            let triggered = recognizer.state == .ended && passed
+            // Возврат — пружиной за 0.2 с, тоже как в Telegram.
+            withAnimation(.spring(duration: 0.2)) { state.offset = 0 }
+            if triggered { actions?.onReply(message) }
 
         default:
             break
@@ -725,9 +734,8 @@ final class MessageListController: UIViewController {
 
 extension MessageListController: UIGestureRecognizerDelegate {
 
-    /// Жест ответа берётся за дело только если палец лёг НА ПУЗЫРЬ и движется явно
-    /// горизонтально в его сторону ответа: входящий — вправо, свой — влево. Всё
-    /// остальное остаётся прокрутке и жесту «назад».
+    /// Жест ответа берётся за дело, только если палец лёг НА ПУЗЫРЬ и движется явно
+    /// горизонтально ВЛЕВО. Всё остальное остаётся прокрутке и жесту «назад».
     func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
         if recognizer is UILongPressGestureRecognizer {
             // Меню — только с пузыря: пустое поле строки и системные сообщения не в счёт.
@@ -742,8 +750,9 @@ extension MessageListController: UIGestureRecognizerDelegate {
         guard abs(velocity.x) > abs(velocity.y) * 1.5 else { return false }
         guard let row = row(atCollectionPoint: pan.location(in: collectionView)) else { return false }
         guard bubbleContains(row: row, collectionPoint: pan.location(in: collectionView)) else { return false }
-        // Тянуть можно только «наружу из своей колонки»: левый пузырь — вправо, правый — влево.
-        return replyDirection(for: row) > 0 ? velocity.x > 0 : velocity.x < 0
+        // Ответ — только движением ВЛЕВО, для любого сообщения (Telegram). Движение вправо
+        // целиком остаётся жесту «назад», поэтому спорить им больше не о чем.
+        return velocity.x < 0
     }
 
     /// Строка под точкой коллекции. Ищем по идентификатору из снимка, а не по индексу в
@@ -754,19 +763,6 @@ extension MessageListController: UIGestureRecognizerDelegate {
         if let id = dataSource?.itemIdentifier(for: indexPath), let row = rowsById[id] { return row }
         guard indexPath.item < rows.count else { return nil }
         return rows[indexPath.item]
-    }
-
-    /// В какую сторону едет пузырь этой строки: вправо у левой колонки, влево у правой.
-    /// Сторону определяем по РАМКЕ пузыря в ячейке, а не по флагу «моё сообщение»:
-    /// колонка — это то, что человек видит, и жест должен слушаться картинки на экране.
-    /// Рамку сообщает сам пузырь (SwipeableBubble); пока её нет, падаем на флаг.
-    private func replyDirection(for row: MessageRowModel) -> CGFloat {
-        guard let state = swipeStates[row.id], state.bubbleFrame != .zero,
-              let indexPath = dataSource?.indexPath(for: row.id),
-              let cell = collectionView.cellForItem(at: indexPath),
-              cell.contentView.bounds.width > 1
-        else { return row.message.isMine ? -1 : 1 }
-        return state.bubbleFrame.midX < cell.contentView.bounds.midX ? 1 : -1
     }
 
     /// Лежит ли точка на пузыре строки. Рамку пузыря сообщает сам SwiftUI-пузырь.
@@ -791,14 +787,9 @@ extension MessageListController: UIGestureRecognizerDelegate {
         return cell.contentView.convert(local, to: nil)
     }
 
-    /// Жест «назад» спрашивает: можно ли стартовать здесь. Нельзя — только если палец
-    /// на входящем пузыре: там движение вправо означает ответ.
-    func allowsBackSwipe(atWindowPoint point: CGPoint) -> Bool {
-        guard let window = collectionView.window else { return true }
-        let inCollection = window.convert(point, to: collectionView)
-        guard let row = row(atCollectionPoint: inCollection), !row.message.isMine else { return true }
-        return !bubbleContains(row: row, collectionPoint: inCollection)
-    }
+    /// Жест «назад» спрашивает: можно ли стартовать здесь. Теперь всегда можно: ответ
+    /// тянется влево у любого сообщения, а «назад» — вправо, и пересечься им негде.
+    func allowsBackSwipe(atWindowPoint point: CGPoint) -> Bool { true }
 
     /// Идём рядом с прокруткой, а не вместо неё. Исключение — долгое нажатие и прокрутка:
     /// кто первый начался, тот и победил, иначе меню всплывало бы посреди медленного

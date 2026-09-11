@@ -19,35 +19,41 @@ final class MessageSwipeState: ObservableObject {
 /// Пузырь, который умеет уезжать вбок: как на Android — сдвигается сам пузырь, аватар и
 /// галочки выбора стоят на месте, а за пузырём проявляется стрелка ответа. Входящие
 /// едут вправо, свои — влево.
-struct SwipeableBubble<Content: View>: View {
+struct SwipeToReplyRow<Content: View>: View {
     @ObservedObject var state: MessageSwipeState
-    let isMine: Bool
     @ViewBuilder let content: () -> Content
 
-    /// Где проявляется стрелка ответа: со стороны, откуда уехал пузырь.
-    private var arrowAlignment: Alignment {
-        if state.offset > 0 { return .leading }
-        if state.offset < 0 { return .trailing }
-        return isMine ? .trailing : .leading
-    }
+    /// Насколько близко к срабатыванию: кружок наливается по мере утягивания.
+    /// Делитель 40 и клэмп — как в Telegram (alpha = |offset| / 40).
+    private var progress: CGFloat { min(abs(state.offset) / 40, 1) }
 
     var body: some View {
-        content()
-            .offset(x: state.offset)
-            // Фон выравнивается по РАСКЛАДОЧНОЙ рамке, а offset — чисто визуальный сдвиг,
-            // поэтому стрелка остаётся там, откуда уехал пузырь: пузырь уехал вправо —
-            // стрелка слева, и наоборот. Сторону берём из самого сдвига, чтобы она не
-            // спорила с направлением жеста (его решает геометрия колонки, см. ленту).
-            .background(alignment: arrowAlignment) {
-                Image(systemName: "arrowshape.turn.up.left.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(Eb.brand)
-                    .padding(.horizontal, 10)
-                    .opacity(min(abs(state.offset) / 56, 1))
-            }
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
-                state.bubbleFrame = $0
-            }
+        ZStack(alignment: .trailing) {
+            // Кружок стоит у правого края НЕПОДВИЖНО, а строка уезжает влево и открывает
+            // его — так это сделано в Telegram (узел лежит за правой границей строки).
+            ReplyCircle(progress: progress)
+                .padding(.trailing, 6)
+                .allowsHitTesting(false)
+            content()
+                .offset(x: state.offset)
+        }
+    }
+}
+
+/// Кружок со стрелкой ответа: 33 pt, как в Telegram, растёт от 0.65 до 1 по мере утягивания.
+private struct ReplyCircle: View {
+    let progress: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Eb.surface300)
+            Image(systemName: "arrowshape.turn.up.left.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Eb.brand)
+        }
+        .frame(width: 33, height: 33)
+        .scaleEffect(0.65 + progress * 0.35)
+        .opacity(Double(progress))
     }
 }
 
@@ -895,34 +901,44 @@ struct MessageRow: View {
         } else {
             // Галки выбора по краям (у входящих слева, у своих справа), фон выбранной
             // строки, тап всей строкой в режиме выбора; свайп-ответ на самом пузыре.
-            HStack(alignment: .center, spacing: 0) {
-                if selectionMode && !m.isMine {
-                    SelectionCheck(selected: selected)
-                        .padding(.leading, 2)
-                        .padding(.trailing, 6)
-                }
-                HStack(alignment: .bottom, spacing: 6) {
-                    if m.isMine { Spacer(minLength: 40) }
-                    if isGroup && !m.isMine {
-                        // Слот аватара: виден только у последнего в ране, но место держат все.
-                        Group {
-                            if isLastInRun {
-                                AvatarView(name: m.senderName, avatarUrl: senderAvatarUrl, size: 28)
-                                    .onTapGesture { onOpenSender?() }
-                            } else {
-                                Color.clear.frame(width: 28, height: 28)
+            // Свайп-ответ: жест живёт на коллекции (MessageListView), здесь только
+            // визуальная часть. Влево уезжает ВСЯ строка — и свои, и входящие, как в
+            // Telegram: одна сторона для всех, а не «наружу из своей колонки».
+            SwipeToReplyRow(state: swipe) {
+                HStack(alignment: .center, spacing: 0) {
+                    if selectionMode && !m.isMine {
+                        SelectionCheck(selected: selected)
+                            .padding(.leading, 2)
+                            .padding(.trailing, 6)
+                    }
+                    HStack(alignment: .bottom, spacing: 6) {
+                        if m.isMine { Spacer(minLength: 40) }
+                        if isGroup && !m.isMine {
+                            // Слот аватара: виден только у последнего в ране, место держат все.
+                            Group {
+                                if isLastInRun {
+                                    AvatarView(name: m.senderName, avatarUrl: senderAvatarUrl, size: 28)
+                                        .onTapGesture { onOpenSender?() }
+                                } else {
+                                    Color.clear.frame(width: 28, height: 28)
+                                }
                             }
                         }
+                        // Рамку пузыря (в раскладочных координатах, без сдвига жеста) знает
+                        // лента: по ней она решает, лёг ли палец на сообщение.
+                        bubble
+                            .onGeometryChange(for: CGRect.self) {
+                                $0.frame(in: .named("messageCell"))
+                            } action: {
+                                swipe.bubbleFrame = $0
+                            }
+                        if !m.isMine { Spacer(minLength: 40) }
                     }
-                    // Свайп-ответ: сам жест живёт на коллекции (MessageListView), а здесь
-                    // только визуальная часть — едет пузырь, стрелка проявляется за ним.
-                    SwipeableBubble(state: swipe, isMine: m.isMine) { bubble }
-                    if !m.isMine { Spacer(minLength: 40) }
-                }
-                if selectionMode && m.isMine {
-                    SelectionCheck(selected: selected)
-                        .padding(.leading, 6)
-                        .padding(.trailing, 2)
+                    if selectionMode && m.isMine {
+                        SelectionCheck(selected: selected)
+                            .padding(.leading, 6)
+                            .padding(.trailing, 2)
+                    }
                 }
             }
             .background(
