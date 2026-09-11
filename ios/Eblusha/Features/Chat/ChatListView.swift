@@ -55,7 +55,10 @@ struct ChatListView: View {
 
             bottomPanel
         }
-        .background(Eb.paper.ignoresSafeArea())
+        // Панель списка — серая поверхность на всю высоту (веб: .conversations-list,
+        // background surface-200). Карточки бесед той же поверхности, их отделяют кант и
+        // тень: на почти чёрном они выглядели наклейками, а экран — разваленным.
+        .background(Eb.surface200.ignoresSafeArea())
         // Своя шапка и своя нижняя панель — системную панель навигации здесь не показываем.
         // Заголовок при скрытой панели не рисуется, но питает подпись кнопки «назад»
         // на пушащихся экранах: «Чаты» вместо безликого «Назад».
@@ -158,7 +161,7 @@ struct ChatListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Eb.paper)
+        .background(Eb.surface200)
         .refreshable {
             // refresh() запускает загрузку в собственной Task и возвращается сразу — без
             // ожидания флага системный индикатор гас бы мгновенно. Ждём, пока ViewModel
@@ -480,7 +483,7 @@ private struct ConversationRow: View {
                     GamePresenceBadge(
                         inCall: c.otherStatus?.uppercased() == "IN_CALL",
                         ringSize: 18,
-                        ringColor: Eb.paper
+                        ringColor: Eb.surface200
                     )
                 } else {
                     // Кольцо под цвет фона экрана, а не панели — иначе виден серый ободок.
@@ -488,7 +491,7 @@ private struct ConversationRow: View {
                         userId: c.otherUserId,
                         status: c.otherStatus ?? (c.online ? "ONLINE" : "OFFLINE"),
                         onlineFallback: c.online,
-                        ringColor: Eb.paper
+                        ringColor: Eb.surface200
                     )
                 }
             }
@@ -635,7 +638,7 @@ private struct GroupBadge: View {
     var body: some View {
         ZStack {
             Circle().fill(Eb.surface300)
-            Circle().strokeBorder(Eb.paper, lineWidth: 2)
+            Circle().strokeBorder(Eb.surface200, lineWidth: 2)
             Image(systemName: "person.2.fill")
                 .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(Eb.textMuted)
@@ -654,7 +657,7 @@ private struct CallBadge: View {
     var body: some View {
         ZStack {
             Circle().fill(ebCallRed)
-            Circle().strokeBorder(Eb.paper, lineWidth: 2)
+            Circle().strokeBorder(Eb.surface200, lineWidth: 2)
             Image(systemName: "phone.fill")
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(.white)

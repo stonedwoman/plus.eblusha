@@ -44,7 +44,7 @@ struct ContactsView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Eb.paper)
+        .background(Eb.surface200)
         .navigationTitle("Контакты")
         // Возврат свайпом вправо из любой точки — как в остальных экранах стека.
         .edgeSwipeBack { onBack?() }
@@ -435,7 +435,7 @@ private struct PersonRow<Actions: View>: View {
                 onlineFallback: user.online,
                 ringSize: 14,
                 dotSize: 9,
-                ringColor: Eb.paper
+                ringColor: Eb.surface200
             )
         }
     }
@@ -555,7 +555,7 @@ private struct AddContactSheet: View {
                 .listRowBackground(Eb.surface100)
             }
             .scrollContentBackground(.hidden)
-            .background(Eb.paper)
+            .background(Eb.surface200)
             .navigationTitle("Новый контакт")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
