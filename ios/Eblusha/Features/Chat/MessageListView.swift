@@ -247,9 +247,13 @@ final class MessageListProxy: ObservableObject {
     /// Можно ли начать жест «назад» из этой точки экрана (в координатах окна). Лента
     /// отвечает «нет», если палец лёг на входящий пузырь — там свайп вправо значит ответ.
     var backSwipeAllowed: ((CGPoint) -> Bool)?
+    /// Актуальная рамка плитки фото (сообщение, индекс среди его фото) в координатах окна;
+    /// nil — ячейки нет на экране. Просмотрщик улетает по ней обратно в чат.
+    var tileFrameAction: ((String, Int) -> CGRect?)?
 
     func scrollToBottom(animated: Bool) { scrollToBottomAction?(animated) }
     func scrollToMessage(_ id: String) { scrollToMessageAction?(id) }
+    func tileFrameInWindow(messageId: String, index: Int) -> CGRect? { tileFrameAction?(messageId, index) }
 }
 
 // MARK: - UIKit-лента
@@ -277,6 +281,9 @@ private struct MessageListRepresentable: UIViewControllerRepresentable {
         }
         proxy.backSwipeAllowed = { [weak controller] point in
             controller?.allowsBackSwipe(atWindowPoint: point) ?? true
+        }
+        proxy.tileFrameAction = { [weak controller] id, index in
+            controller?.tileFrameInWindow(messageId: id, index: index)
         }
         return controller
     }
@@ -670,6 +677,19 @@ extension MessageListController: UIGestureRecognizerDelegate {
               let state = swipeStates[row.id] else { return false }
         let local = collectionView.convert(collectionPoint, to: cell.contentView)
         return state.bubbleFrame.insetBy(dx: -8, dy: -4).contains(local)
+    }
+
+    /// Рамка плитки фото в координатах окна — только если ячейка сейчас на экране и хотя
+    /// бы частично видна; иначе просмотрщику лететь некуда, и он закроется затуханием.
+    func tileFrameInWindow(messageId: String, index: Int) -> CGRect? {
+        guard let dataSource,
+              let indexPath = dataSource.indexPath(for: messageId),
+              let cell = collectionView.cellForItem(at: indexPath),
+              let local = swipeStates[messageId]?.tileFrames[index] else { return nil }
+        let cellFrame = collectionView.convert(cell.frame, to: nil)
+        let visible = collectionView.convert(collectionView.bounds, to: nil)
+        guard cellFrame.intersects(visible) else { return nil }
+        return cell.contentView.convert(local, to: nil)
     }
 
     /// Жест «назад» спрашивает: можно ли стартовать здесь. Нельзя — только если палец

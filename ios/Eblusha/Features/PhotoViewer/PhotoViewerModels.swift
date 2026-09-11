@@ -67,6 +67,10 @@ struct PhotoViewerGallery: Identifiable {
     let items: [PhotoViewerItem]
     let startIndex: Int
     let sourceFrame: CGRect?       // nil — без анимации из плитки
+    /// Актуальная рамка плитки кадра в координатах окна на момент закрытия: лента могла
+    /// проскроллиться, пока просмотрщик открыт, а после листания закрывается уже другой
+    /// кадр. nil — плитки на экране нет, закрываемся уменьшением с затуханием.
+    var sourceFrameProvider: ((PhotoViewerItem) -> CGRect?)? = nil
 }
 
 /// Что делает хром по кнопкам; всё исполняет координатор (ChatView) — у него есть
@@ -77,6 +81,9 @@ struct PhotoViewerCallbacks {
     var onForward: (PhotoViewerItem) -> Void
     var onDelete: (PhotoViewerItem) -> Void          // только для isMine
     var onShowInChat: (PhotoViewerItem) -> Void      // закрыть и промотать к сообщению
+    /// В секретных чатах пересылки и удаления нет — кнопки прячутся, а не молчат.
+    var canForward: Bool = true
+    var canDelete: Bool = true
 
     /// Пустые обработчики — для превью и тестов, где координатора нет.
     static let noop = PhotoViewerCallbacks(

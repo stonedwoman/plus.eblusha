@@ -27,13 +27,41 @@ final class ZoomableImageView: UIView {
 
     var isZoomed: Bool { scrollView.zoomScale > 1.01 }
 
-    /// Текущая рамка кадра в координатах окна — для полёта в плитку при закрытии.
-    /// nil, пока вью не в окне или размер ещё не посчитан (не было layout).
+    /// Все жесты страницы разом: pinch, панорама скролл-вью и оба тапа. Контроллер гасит
+    /// их на время свайпа-закрытия — иначе второй палец мог бы начать зум прямо во время
+    /// полёта кадра, а тап по уезжающему кадру дёргал бы хром. isEnabled = false у
+    /// распознавателя ещё и отменяет уже идущий жест, так что «дожать» pinch не выйдет.
+    var gesturesEnabled: Bool = true {
+        didSet {
+            guard gesturesEnabled != oldValue else { return }
+            scrollView.pinchGestureRecognizer?.isEnabled = gesturesEnabled
+            // Пока кадр вписан, pan и так не начинается (см. ZoomScrollView), но в зуме
+            // он живой — без этого флага панорама продолжала бы двигать кадр под полётом.
+            scrollView.panGestureRecognizer.isEnabled = gesturesEnabled
+            doubleTap.isEnabled = gesturesEnabled
+            singleTap.isEnabled = gesturesEnabled
+        }
+    }
+
+    /// Текущая рамка ВИДИМОЙ части кадра в координатах окна — старт полёта при закрытии.
+    /// В зуме контейнер больше экрана, и полёт «всего» увеличенного контейнера начинался бы
+    /// с невидимых краёв далеко за bounds — поэтому берём пересечение с видимой областью
+    /// скролл-вью (bounds учитывает contentOffset). Пока кадр вписан, пересечение — это
+    /// он целиком. Конвертация через скролл-вью проходит всю цепочку transform'ов выше
+    /// (сдвиг и масштаб свайпа-закрытия у контроллера), так что рамка — ровно то, что
+    /// сейчас на экране. nil, пока вью не в окне или размер ещё не посчитан (не было layout).
     var imageFrameInWindow: CGRect? {
         guard window != nil, zoomContainer.bounds.width > 0, zoomContainer.bounds.height > 0 else {
             return nil
         }
-        return zoomContainer.convert(zoomContainer.bounds, to: nil)
+        // frame контейнера — уже с учётом zoom-transform, в системе координат скролл-вью.
+        let visible = zoomContainer.frame.intersection(scrollView.bounds)
+        guard !visible.isNull, visible.width > 0, visible.height > 0 else {
+            // Кадр целиком за пределами bounds (bounce на краю в зуме) — отдаём весь
+            // контейнер, чтобы контроллер хоть от чего-то оттолкнулся, а не отменял полёт.
+            return zoomContainer.convert(zoomContainer.bounds, to: nil)
+        }
+        return scrollView.convert(visible, to: nil)
     }
 
     // MARK: - Дополнение к контракту (internal, для контроллера)
@@ -69,7 +97,7 @@ final class ZoomableImageView: UIView {
     private static let crossfadeDuration: TimeInterval = 0.15
     private static let defaultFailedText = "Не удалось загрузить изображение"
 
-    private let scrollView = UIScrollView()
+    private let scrollView = ZoomScrollView()
     /// Зумируемое вью: UIScrollView масштабирует его transform, оба слоя лежат внутри.
     private let zoomContainer = ZoomContentView()
     private let thumbImageView = UIImageView()
@@ -77,6 +105,8 @@ final class ZoomableImageView: UIView {
     private let spinner = UIActivityIndicatorView(style: .large)
     private let failedBadge = UIView()
     private let failedLabel = UILabel()
+    private let doubleTap = UITapGestureRecognizer()
+    private let singleTap = UITapGestureRecognizer()
 
     /// Пропорции из width/height вложения — самый слабый источник, но единственный до
     /// прихода картинок.
@@ -125,13 +155,16 @@ final class ZoomableImageView: UIView {
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.bouncesZoom = true
         scrollView.bounces = true
-        // alwaysBounce — выключены намеренно: пока кадр вписан (контент ≤ bounds), pan
-        // скролл-вью не начинается, и вертикальный свайп достаётся жесту закрытия у
-        // контроллера, а горизонтальный — пейджеру.
+        // alwaysBounce — выключены намеренно, а сам запрет панорамы при вписанном кадре
+        // живёт в ZoomScrollView.gestureRecognizerShouldBegin: так вертикальный свайп
+        // достаётся жесту закрытия у контроллера, а горизонтальный — пейджеру.
         scrollView.alwaysBounceVertical = false
         scrollView.alwaysBounceHorizontal = false
         scrollView.minimumZoomScale = 1
         scrollView.maximumZoomScale = 3
+        // Каждый проход layout скролл-вью (а он идёт покадрово во время анимированного
+        // зума — bounds меняются каждый кадр) заново центрирует кадр через inset.
+        scrollView.onLayout = { [weak self] in self?.centerContent() }
         addSubview(scrollView)
 
         for imageView in [thumbImageView, fullImageView] {
@@ -179,9 +212,9 @@ final class ZoomableImageView: UIView {
 
         // Двойной тап — зум в точку; одиночный ждёт провала двойного, иначе первый тап
         // двойного успевал бы прятать хром.
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        doubleTap.addTarget(self, action: #selector(handleDoubleTap(_:)))
         doubleTap.numberOfTapsRequired = 2
-        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
+        singleTap.addTarget(self, action: #selector(handleSingleTap(_:)))
         singleTap.numberOfTapsRequired = 1
         singleTap.require(toFail: doubleTap)
         scrollView.addGestureRecognizer(doubleTap)
@@ -214,7 +247,10 @@ final class ZoomableImageView: UIView {
     }
 
     /// Полноразмер проявляется поверх миниатюры кроссфейдом; геометрия при этом не
-    /// меняется (см. заголовок файла), зум пользователя сохраняется.
+    /// меняется (см. заголовок файла), зум и панорама пользователя сохраняются: если
+    /// пропорции full совпали с thumb (обычный случай), контейнер вообще не трогаем; если
+    /// разошлись больше чем на 1 %, applyFittedLayout переносит масштаб и центр в новую
+    /// геометрию через viewportAnchor.
     func setFull(_ image: UIImage?) {
         guard image !== fullImageView.image else { return }
         crossfadeGeneration &+= 1
@@ -279,6 +315,7 @@ final class ZoomableImageView: UIView {
         scrollView.setZoomScale(scrollView.minimumZoomScale, animated: animated)
         if !animated {
             centerContent()
+            trackViewportAnchor()
             notifyZoomIfChanged()
         }
     }
@@ -328,7 +365,11 @@ final class ZoomableImageView: UIView {
         scrollView.minimumZoomScale = 1
         scrollView.maximumZoomScale = maxScale
         if scrollView.zoomScale > maxScale {
+            // Планка опустилась ниже текущего зума (full оказался меньше ожидаемого):
+            // ужимаем и сразу перецентрируем — делегат при программном зуме зовётся,
+            // но полагаться на это не будем.
             scrollView.zoomScale = maxScale
+            centerContent()
         }
     }
 
@@ -339,6 +380,8 @@ final class ZoomableImageView: UIView {
     }
 
     /// Поворот / смена bounds: пересчитать «вписать» и вернуть тот же центр кадра.
+    /// Порядок важен: frame скролл-вью меняем здесь, а его собственный layoutSubviews
+    /// (с центрированием) пройдёт после нашего — уже по новой геометрии контейнера.
     override func layoutSubviews() {
         super.layoutSubviews()
         scrollView.frame = bounds
@@ -404,12 +447,17 @@ final class ZoomableImageView: UIView {
 
     /// Стандартный приём центрирования: пока контент меньше bounds, добираем разницу
     /// contentInset'ом — тогда и bounce, и инерция скролл-вью работают как обычно.
+    /// Зовётся и из layoutSubviews скролл-вью (покадрово при анимированном зуме), поэтому
+    /// пишем inset только при реальном отличии: присваивание contentInset само помечает
+    /// скролл-вью на layout, и без этой проверки получился бы бесконечный цикл layout.
     private func centerContent() {
         let boundsSize = scrollView.bounds.size
         let contentSize = zoomContainer.frame.size
         let dx = max(0, (boundsSize.width - contentSize.width) / 2)
         let dy = max(0, (boundsSize.height - contentSize.height) / 2)
-        scrollView.contentInset = UIEdgeInsets(top: dy, left: dx, bottom: dy, right: dx)
+        let inset = UIEdgeInsets(top: dy, left: dx, bottom: dy, right: dx)
+        guard inset != scrollView.contentInset else { return }
+        scrollView.contentInset = inset
     }
 
     private func trackViewportAnchor() {
@@ -472,11 +520,40 @@ extension ZoomableImageView: UIScrollViewDelegate {
 
     func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
         centerContent()
+        trackViewportAnchor()
         notifyZoomIfChanged()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         trackViewportAnchor()
+    }
+}
+
+// MARK: - Скролл-вью
+
+/// Скролл-вью страницы. Две обязанности сверх стандартного:
+/// 1. Пока кадр вписан, собственная панорама не начинается вовсе — по масштабу, а не по
+///    сравнению contentSize с bounds: те отличаются на доли пикселя из-за округления
+///    «вписать», и float-равенство то срабатывало, то нет, отбирая свайп у закрытия/пейджера.
+///    Порог 1.01 тот же, что у isZoomed, — контроллер и скролл-вью думают одинаково.
+/// 2. Каждый проход layout перецентрирует кадр: анимированный setZoomScale/zoom(to:)
+///    меняет bounds покадрово (и, значит, зовёт layoutSubviews), а scrollViewDidZoom при
+///    анимации приходит один раз с конечным масштабом — без этого inset на конце двойного
+///    тапа обновлялся скачком, и кадр «прыгал» в центр.
+private final class ZoomScrollView: UIScrollView {
+
+    var onLayout: (() -> Void)?
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === panGestureRecognizer, zoomScale <= 1.01 {
+            return false
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayout?()
     }
 }
 

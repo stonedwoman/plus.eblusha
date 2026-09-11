@@ -58,6 +58,9 @@ struct PhotoViewerView: View {
 
     // MARK: - Состояние
 
+    /// Действие, которое выполнится после закрытия с анимацией (см. dismissThen).
+    @State private var afterDismiss: (() -> Void)?
+
     /// Текущий кадр; nil только при кривом индексе (пустая галерея) — тогда хрома нет.
     private var currentItem: PhotoViewerItem? {
         gallery.items.indices.contains(proxy.currentIndex) ? gallery.items[proxy.currentIndex] : nil
@@ -83,7 +86,15 @@ struct PhotoViewerView: View {
                     gallery: gallery,
                     store: store,
                     proxy: proxy,
-                    onDismissed: callbacks.onClose
+                    onDismissed: {
+                        // Сначала координатор снимает обёртку, потом — отложенное действие
+                        // (ответить, переслать…): кнопки закрывают просмотрщик с анимацией
+                        // контроллера, а не рывком.
+                        callbacks.onClose()
+                        let pending = afterDismiss
+                        afterDismiss = nil
+                        pending?()
+                    }
                 )
                 .ignoresSafeArea()
 
@@ -110,7 +121,7 @@ struct PhotoViewerView: View {
         }
         .confirmationDialog("Удалить фото?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Удалить", role: .destructive) {
-                if let item = currentItem { callbacks.onDelete(item) }
+                if let item = currentItem { dismissThen { callbacks.onDelete(item) } }
             }
             Button("Отмена", role: .cancel) {}
         } message: {
@@ -182,13 +193,15 @@ struct PhotoViewerView: View {
                 Button { copy(item) } label: {
                     Label("Копировать", systemImage: "doc.on.doc")
                 }
-                Button { callbacks.onForward(item) } label: {
-                    Label("Переслать", systemImage: "arrowshape.turn.up.right")
+                if callbacks.canForward {
+                    Button { dismissThen { callbacks.onForward(item) } } label: {
+                        Label("Переслать", systemImage: "arrowshape.turn.up.right")
+                    }
                 }
-                Button { callbacks.onShowInChat(item) } label: {
+                Button { dismissThen { callbacks.onShowInChat(item) } } label: {
                     Label("Показать в чате", systemImage: "text.bubble")
                 }
-                if item.isMine {
+                if item.isMine && callbacks.canDelete {
                     Button(role: .destructive) { confirmDelete = true } label: {
                         Label("Удалить", systemImage: "trash")
                     }
@@ -324,10 +337,12 @@ struct PhotoViewerView: View {
     private func actionBar(item: PhotoViewerItem) -> some View {
         HStack(spacing: 0) {
             actionButton("square.and.arrow.up", label: "Поделиться") { share(item) }
-            actionButton("arrowshape.turn.up.left", label: "Ответить") { callbacks.onReply(item) }
-            actionButton("arrowshape.turn.up.right", label: "Переслать") { callbacks.onForward(item) }
+            actionButton("arrowshape.turn.up.left", label: "Ответить") { dismissThen { callbacks.onReply(item) } }
+            if callbacks.canForward {
+                actionButton("arrowshape.turn.up.right", label: "Переслать") { dismissThen { callbacks.onForward(item) } }
+            }
             actionButton("square.and.arrow.down", label: "Сохранить") { save(item) }
-            if item.isMine {
+            if item.isMine && callbacks.canDelete {
                 actionButton("trash", label: "Удалить") { confirmDelete = true }
             }
         }
@@ -382,7 +397,16 @@ struct PhotoViewerView: View {
             requestDismiss()
         } else {
             callbacks.onClose()
+            let pending = afterDismiss
+            afterDismiss = nil
+            pending?()
         }
+    }
+
+    /// Закрыть с анимацией и после этого выполнить действие координатора.
+    private func dismissThen(_ action: @escaping () -> Void) {
+        afterDismiss = action
+        close()
     }
 
     /// Что есть в памяти для действия: полный кадр, иначе миниатюра (isFull = false).

@@ -16,6 +16,11 @@ import UIKit
 ///
 /// Изоляция: UIViewController уже @MainActor, подкласс наследует её — отдельной пометки
 /// не нужно, а store и proxy (оба @MainActor) вызываются напрямую.
+///
+/// Статус-бар и полоска «домой»: контроллер живёт внутри UIHostingController обёртки
+/// (fullScreenCover), и его prefersStatusBarHidden / prefersHomeIndicatorAutoHidden UIKit
+/// не спрашивает — реальную работу делают модификаторы SwiftUI в PhotoViewerView
+/// (.statusBarHidden(true) и .persistentSystemOverlays по chromeVisible). Здесь их нет.
 final class PhotoViewerController: UIViewController {
 
     // MARK: - Константы
@@ -29,6 +34,9 @@ final class PhotoViewerController: UIViewController {
     private static let flyBackDuration: TimeInterval = 0.3
     private static let scaleFadeDuration: TimeInterval = 0.22
     private static let snapBackDuration: TimeInterval = 0.35
+    /// Сколько ждём сброса зума перед полётом в плитку, если UIScrollView так и не
+    /// отчитался о конце анимации (страховка; обычно колбэк приходит раньше).
+    private static let zoomResetTimeout: TimeInterval = 0.45
     /// Порог закрытия свайпом: по смещению пальца и по скорости отпускания.
     private static let dismissDistance: CGFloat = 120
     private static let dismissVelocity: CGFloat = 800
@@ -55,7 +63,8 @@ final class PhotoViewerController: UIViewController {
     private let tileBackground = UIColor(Eb.surface100)
 
     /// Внутренний UIScrollView пейджера (_UIQueuingScrollView) — единственный способ
-    /// выключить листание в зуме и на время свайпа-закрытия. Ищется среди subviews один раз.
+    /// выключить листание в зуме и на время свайпа-закрытия, а также узнать, движется ли
+    /// пейджер прямо сейчас. Ищется среди subviews один раз.
     private lazy var pagerScrollView: UIScrollView? = pager.view.subviews
         .compactMap { $0 as? UIScrollView }
         .first
@@ -72,7 +81,8 @@ final class PhotoViewerController: UIViewController {
 
     /// Слабые ссылки на живые страницы: пейджер сам держит текущую и соседей, а нам нужно
     /// только обновлять их по сигналу store. Сильный кэш держал бы декодированные кадры
-    /// давно перелистанных страниц, сводя на нет вытеснение в store.
+    /// давно перелистанных страниц, сводя на нет вытеснение в store. Полноразмеры живут
+    /// только в store (окно ±1, хвост до ±2) — контроллер их не дублирует.
     private struct WeakPage {
         weak var controller: PhotoPageController?
     }
@@ -81,17 +91,29 @@ final class PhotoViewerController: UIViewController {
     /// Стартовый индекс после зажима в границы items (координатор мог ошибиться).
     private let startIndex: Int
     private var currentIndex: Int
-    /// Размер вью на момент открытия: после поворота оконные координаты sourceFrame врут,
-    /// и лететь «в плитку» уже некуда — закрываемся уменьшением.
-    private var openedSize: CGSize?
+    /// Размер ОКНА на момент открытия: после поворота оконные координаты плиток врут, и
+    /// лететь «в плитку» уже некуда — закрываемся уменьшением. Сравниваем именно окно, а
+    /// не view: размер view может отличаться из-за safe area / хостинга, окно — нет.
+    private var openedWindowSize: CGSize?
     private var didOpen = false
     private var isDismissing = false
-    /// Пейджер в середине перехода (жестом или по jump) — свайп-закрытие и новые jump ждут.
-    private var isTransitioning = false
+    private var didFinishDismiss = false
+    /// Идёт анимированный jump (setViewControllers(animated: true)): пейджер заблокирован,
+    /// свайп-закрытие и новые jump ждут завершения. Снимается в completion.
+    private var isJumping = false
     private var dismissPanActive = false
+    /// Страница, которую тянет свайп-закрытие: жесты у неё выключены на время свайпа и
+    /// включаются обратно именно у неё — даже если текущая страница к тому моменту
+    /// почему-то сменилась.
+    private weak var swipePage: PhotoPageController?
+    /// Смещение кадра на момент начала свайпа (снято с presentation-слоя, если палец
+    /// перехватил пружину возврата): новый жест продолжает движение с этого места, а не
+    /// прыгает в ноль.
+    private var swipeBaseOffset: CGPoint = .zero
+    /// Продолжение закрытия, ждущее сброса зума (закрытие кнопкой в зуме).
+    private var zoomResetContinuation: (() -> Void)?
 
     private var storeSubscription: AnyCancellable?
-    private var chromeSubscription: AnyCancellable?
 
     // MARK: - Инициализация
 
@@ -176,10 +198,6 @@ final class PhotoViewerController: UIViewController {
         storeSubscription = store.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.refreshPages() }
-        chromeSubscription = proxy.$chromeVisible
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.setNeedsUpdateOfHomeIndicatorAutoHidden() }
 
         // Предзагрузку запускаем на следующем витке: viewDidLoad может выполняться внутри
         // обновления SwiftUI, а store при старте загрузки публикует objectWillChange —
@@ -193,7 +211,6 @@ final class PhotoViewerController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        setNeedsStatusBarAppearanceUpdate()
         openIfNeeded()
     }
 
@@ -210,18 +227,13 @@ final class PhotoViewerController: UIViewController {
         super.viewWillTransition(to: size, with: coordinator)
         // Поворот посреди свайпа: жест отменяем (переключение isEnabled шлёт .cancelled),
         // кадр пружиной вернётся на место, а страницы пересчитают вписывание сами.
+        // Важно сделать это ДО layout: у zoomView не должно быть transform, когда
+        // контейнер страницы раздаёт ей новые bounds.
         if dismissPanActive {
             dismissPan.isEnabled = false
             dismissPan.isEnabled = true
         }
     }
-
-    override var prefersStatusBarHidden: Bool { true }
-
-    override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
-
-    /// Полоска «домой» прячется вместе с хромом — как в системном просмотре Фото.
-    override var prefersHomeIndicatorAutoHidden: Bool { !proxy.chromeVisible }
 
     // MARK: - Страницы
 
@@ -235,10 +247,16 @@ final class PhotoViewerController: UIViewController {
         page.zoomView.onSingleTap = { [weak self] in
             self?.toggleChrome()
         }
-        page.zoomView.onZoomChanged = { [weak self, weak page] _ in
+        page.zoomView.onZoomChanged = { [weak self, weak page] zoomed in
             // Листание выключаем только по текущей странице: соседи зумиться не могут, а их
             // сброс зума при уходе не должен включать пейджер посреди чужого жеста.
             guard let self, let page, page === self.currentPage else { return }
+            // Закрытие кнопкой в зуме ждёт, пока кадр вернётся к «вписано» — только тогда
+            // копия для полёта получит рамку разумного размера.
+            if !zoomed, let continuation = self.zoomResetContinuation {
+                self.zoomResetContinuation = nil
+                continuation()
+            }
             self.updatePagingEnabled()
         }
         // Заодно чистим записи об уже отпущенных страницах — словарь не растёт.
@@ -279,11 +297,30 @@ final class PhotoViewerController: UIViewController {
         updatePagingEnabled()
     }
 
-    /// Листание живёт, пока кадр не в зуме и не идёт свайп-закрытие. С одним фото пейджер
-    /// только бы пружинил у краёв — тоже выключаем.
+    /// Пейджер движется: палец тянет страницы, идёт инерция после отпускания или
+    /// анимированный jump. Спрашиваем сам скролл-вью, а не храним флаг из willTransitionTo:
+    /// парный didFinishAnimating приходит не всегда (отменённый в самом начале жест), и
+    /// флаг залипал, навсегда блокируя свайп-закрытие и переходы по миниатюрам.
+    private var isPagerMoving: Bool {
+        if isJumping { return true }
+        guard let scrollView = pagerScrollView else { return false }
+        return scrollView.isDragging || scrollView.isDecelerating
+    }
+
+    /// То же плюс isTracking (палец лежит на пейджере, движения ещё нет) — для jump по
+    /// миниатюре: менять страницы под лежащим пальцем нельзя. Для свайпа-закрытия
+    /// isTracking не годится: он истинен для любого касания кадра, в том числе того,
+    /// из которого свайп и рождается.
+    private var isPagerBusy: Bool {
+        isPagerMoving || (pagerScrollView?.isTracking ?? false)
+    }
+
+    /// Листание живёт, пока кадр не в зуме, не идёт свайп-закрытие и не летит jump. С одним
+    /// фото пейджер только бы пружинил у краёв — тоже выключаем.
     private func updatePagingEnabled() {
         let zoomed = currentPage?.zoomView.isZoomed ?? false
-        pagerScrollView?.isScrollEnabled = gallery.items.count > 1 && !zoomed && !dismissPanActive && !isDismissing
+        pagerScrollView?.isScrollEnabled = gallery.items.count > 1
+            && !zoomed && !dismissPanActive && !isDismissing && !isJumping
     }
 
     private func toggleChrome() {
@@ -295,7 +332,7 @@ final class PhotoViewerController: UIViewController {
 
     private func jump(to index: Int, animated: Bool) {
         guard gallery.items.indices.contains(index), !isDismissing, !dismissPanActive else { return }
-        guard index != currentIndex, !isTransitioning else { return }
+        guard index != currentIndex, !isPagerBusy else { return }
         let direction: UIPageViewController.NavigationDirection = index > currentIndex ? .forward : .reverse
         let previous = currentPage
         let target = pageController(at: index)
@@ -312,10 +349,13 @@ final class PhotoViewerController: UIViewController {
         store.ensureLoaded(gallery.items[index])
 
         if animated {
-            isTransitioning = true
+            // На время анимации пейджер заперт: палец на середине чужого перехода ставит
+            // _UIQueuingScrollView в несогласованное состояние (не та страница после).
+            isJumping = true
+            updatePagingEnabled()
             pager.setViewControllers([target], direction: direction, animated: true) { [weak self] _ in
                 guard let self else { return }
-                self.isTransitioning = false
+                self.isJumping = false
                 self.store.prefetch(around: index)
                 self.updatePagingEnabled()
                 // Известная странность UIPageViewController: после анимированного
@@ -324,44 +364,67 @@ final class PhotoViewerController: UIViewController {
                 // анимации приводит очередь в порядок; если пользователь уже листает дальше —
                 // не трогаем.
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.currentIndex == index, !self.isTransitioning, !self.isDismissing else { return }
+                    guard let self, self.currentIndex == index, !self.isPagerMoving, !self.isDismissing else { return }
                     self.pager.setViewControllers([target], direction: direction, animated: false)
                 }
             }
         } else {
             pager.setViewControllers([target], direction: direction, animated: false)
             store.prefetch(around: index)
+            updatePagingEnabled()
         }
-        updatePagingEnabled()
     }
 
     // MARK: - Открытие
 
     private func openIfNeeded() {
-        guard !didOpen, view.window != nil, view.bounds.width > 0, view.bounds.height > 0 else { return }
+        guard !didOpen, let window = view.window, view.bounds.width > 0, view.bounds.height > 0 else { return }
         didOpen = true
-        openedSize = view.bounds.size
+        openedWindowSize = window.bounds.size
         // Страницам нужен реальный layout, чтобы отдать рамку «вписано» под полёт.
         view.layoutIfNeeded()
         if proxy.currentIndex != currentIndex {
             proxy.currentIndex = currentIndex
         }
 
-        if let page = currentPage, let source = sourceFrameInView() {
+        if let page = currentPage, let source = frameInView(fromWindow: gallery.sourceFrame, snapshot: true) {
             animateOpen(from: source, page: page)
         } else {
             animateFadeIn()
         }
     }
 
-    /// Рамка плитки в координатах нашей вью. nil — плитки нет, она вне экрана или размер
-    /// экрана с момента открытия изменился (оконные координаты после поворота уже врут).
-    private func sourceFrameInView() -> CGRect? {
-        guard let frame = gallery.sourceFrame, view.window != nil else { return nil }
-        if let openedSize, openedSize != view.bounds.size { return nil }
+    /// Окно с момента открытия сменило размер (поворот, Stage Manager): любые оконные
+    /// координаты плиток, снятые до этого, уже врут — лететь по ним нельзя.
+    private var windowSizeChanged: Bool {
+        guard let openedWindowSize, let window = view.window else { return true }
+        return openedWindowSize != window.bounds.size
+    }
+
+    /// Рамка плитки (в координатах окна) → координаты нашей вью. nil — плитки нет, она вне
+    /// экрана или вырождена. `snapshot` — рамка снята заранее (sourceFrame на момент
+    /// открытия): такую после смены размера окна использовать нельзя, оконные координаты
+    /// уже врут; рамка от sourceFrameProvider снимается прямо сейчас и годится всегда.
+    private func frameInView(fromWindow frame: CGRect?, snapshot: Bool) -> CGRect? {
+        guard let frame, view.window != nil else { return nil }
+        if snapshot, windowSizeChanged { return nil }
         let rect = view.convert(frame, from: nil)
         guard rect.width > 1, rect.height > 1, rect.intersects(view.bounds) else { return nil }
         return rect
+    }
+
+    /// Куда лететь при закрытии. Если координатор дал sourceFrameProvider — верим только
+    /// ему: он отдаёт актуальную рамку плитки ЭТОГО кадра (лента могла проскроллиться, а
+    /// после листания закрывается уже другой кадр), а nil от него значит «плитки на экране
+    /// нет» — тогда закрываемся уменьшением, а не летим в устаревшую стартовую рамку.
+    /// Провайдера нет — стартовая рамка, но только для стартового кадра: для остальных
+    /// она заведомо чужая.
+    private func dismissTargetFrame(for page: PhotoPageController) -> CGRect? {
+        if let provider = gallery.sourceFrameProvider {
+            return frameInView(fromWindow: provider(page.item), snapshot: false)
+        }
+        let fallback: CGRect? = page.index == startIndex ? gallery.sourceFrame : nil
+        return frameInView(fromWindow: fallback, snapshot: true)
     }
 
     private func animateOpen(from source: CGRect, page: PhotoPageController) {
@@ -419,6 +482,9 @@ final class PhotoViewerController: UIViewController {
         UIView.animate(withDuration: 0.12, animations: { flight.alpha = 0 }) { _ in
             flight.removeFromSuperview()
         }
+        // Пока закрытие не началось — иначе кнопка «назад», нажатая в полёте открытия,
+        // уже выключила взаимодействие, и включать его обратно нельзя.
+        guard !isDismissing else { return }
         view.isUserInteractionEnabled = true
         updatePagingEnabled()
         revealChrome()
@@ -445,29 +511,77 @@ final class PhotoViewerController: UIViewController {
     private func dismissViewer(velocity: CGPoint) {
         guard !isDismissing else { return }
         isDismissing = true
-        dismissPanActive = false
+        endSwipe()
         view.isUserInteractionEnabled = false
         dismissPan.isEnabled = false
         pagerScrollView?.isScrollEnabled = false
         // Хром гаснет своей анимацией (0.2 с) параллельно с уходом кадра.
         proxy.chromeVisible = false
 
-        let page = currentPage
-        if currentIndex == startIndex,
-           let page,
-           let image = page.zoomView.currentImage,
-           let source = sourceFrameInView(),
+        guard let page = currentPage else {
+            animateScaleFade(page: nil)
+            return
+        }
+
+        // Закрытие кнопкой в зуме: рамка зумированного кадра может быть в разы больше
+        // экрана, и копия для полёта такого размера — это отдельный слой на десятки
+        // мегабайт плюс рывок. Сначала возвращаем кадр к «вписано» (анимация скролл-вью),
+        // а летим уже из нормальной рамки. Скорость пальца здесь неуместна — её нет.
+        if page.zoomView.isZoomed {
+            zoomResetContinuation = { [weak self, weak page] in
+                guard let self, let page else { return }
+                self.performDismissAnimation(page: page, velocity: .zero)
+            }
+            page.zoomView.resetZoom(animated: true)
+            // Страховка: если UIScrollView не отчитается о конце зума (или кадр уже на
+            // пороге 1.01 и колбэк не придёт), закрываемся по таймеру.
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.zoomResetTimeout) { [weak self] in
+                guard let self, let continuation = self.zoomResetContinuation else { return }
+                self.zoomResetContinuation = nil
+                continuation()
+            }
+            return
+        }
+
+        performDismissAnimation(page: page, velocity: velocity)
+    }
+
+    private func performDismissAnimation(page: PhotoPageController, velocity: CGPoint) {
+        guard !didFinishDismiss else { return }
+        // Кнопка могла быть нажата, пока кадр ещё пружинит после свайпа: модельные
+        // значения уже «на месте», а на экране кадр посреди пути. Снимаем реальное
+        // положение с presentation-слоя, чтобы копия стартовала оттуда, где кадр виден.
+        settleAnimatedState(page: page)
+
+        if let image = page.zoomView.currentImage,
+           let target = dismissTargetFrame(for: page),
            let start = page.zoomView.imageFrameInWindow.map({ view.convert($0, from: nil) }) {
-            animateFlyBack(image: image, from: start, to: source, velocity: velocity)
+            animateFlyBack(image: image, from: start, to: target, velocity: velocity)
         } else {
             animateScaleFade(page: page)
         }
     }
 
+    /// Переносит в модель то, что сейчас реально на экране (presentation-слой), и снимает
+    /// анимации. Нужно всякий раз, когда новое движение перехватывает незавершённое:
+    /// палец ловит пружину возврата или кнопка закрытия нажата во время неё. Без этого
+    /// removeAllAnimations мгновенно ставит кадр в модельное положение — заметный скачок.
+    private func settleAnimatedState(page: PhotoPageController) {
+        let zoomLayer = page.zoomView.layer
+        if zoomLayer.animationKeys()?.isEmpty == false, let presentation = zoomLayer.presentation() {
+            page.zoomView.transform = presentation.affineTransform()
+        }
+        if backdrop.layer.animationKeys()?.isEmpty == false, let presentation = backdrop.layer.presentation() {
+            backdrop.alpha = CGFloat(presentation.opacity)
+        }
+        zoomLayer.removeAllAnimations()
+        backdrop.layer.removeAllAnimations()
+    }
+
     /// Кадр летит в плитку. Рамка старта снята с живой страницы через imageFrameInWindow —
-    /// она уже учитывает сдвиг и масштаб свайпа (и зум, если закрывают кнопкой в зуме),
-    /// поэтому копия подхватывает кадр ровно там, где он сейчас на экране.
-    private func animateFlyBack(image: UIImage, from start: CGRect, to source: CGRect, velocity: CGPoint) {
+    /// она уже учитывает сдвиг и масштаб свайпа, поэтому копия подхватывает кадр ровно
+    /// там, где он сейчас на экране.
+    private func animateFlyBack(image: UIImage, from start: CGRect, to target: CGRect, velocity: CGPoint) {
         let flight = makeFlightView(image: image)
         flight.frame = start
         flight.backgroundColor = tileBackground.withAlphaComponent(0)
@@ -477,8 +591,8 @@ final class PhotoViewerController: UIViewController {
         // Начальная скорость пружины у UIKit — в долях расстояния в секунду: берём проекцию
         // скорости пальца на направление к плитке. После свайпа кадр не спотыкается на
         // старте анимации, а продолжает движение; при закрытии кнопкой стартует с нуля.
-        let dx = source.midX - start.midX
-        let dy = source.midY - start.midY
+        let dx = target.midX - start.midX
+        let dy = target.midY - start.midY
         let distanceSquared = dx * dx + dy * dy
         let springVelocity: CGFloat = distanceSquared > 1
             ? min(max((velocity.x * dx + velocity.y * dy) / distanceSquared, 0), 8)
@@ -492,7 +606,7 @@ final class PhotoViewerController: UIViewController {
             initialSpringVelocity: springVelocity,
             options: []
         ) {
-            flight.frame = source
+            flight.frame = target
             flight.backgroundColor = self.tileBackground
             self.backdrop.alpha = 0
         } completion: { [weak self] _ in
@@ -501,7 +615,7 @@ final class PhotoViewerController: UIViewController {
         }
     }
 
-    /// Нет плитки, куда лететь (не стартовый кадр, поворот, кадр не загружен) —
+    /// Нет плитки, куда лететь (плитка ушла с экрана, поворот, кадр не загружен) —
     /// уменьшение с затуханием; после свайпа продолжает уже набранные сдвиг и масштаб.
     private func animateScaleFade(page: PhotoPageController?) {
         UIView.animate(withDuration: Self.scaleFadeDuration, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
@@ -516,6 +630,15 @@ final class PhotoViewerController: UIViewController {
     }
 
     private func finishDismiss() {
+        // Один раз: обёртка снимает fullScreenCover, и после этого контроллер — мёртвый
+        // объект, которому ничего не должно приходить. Ожидающее продолжение закрытия
+        // (сброс зума) на всякий случай снимаем.
+        guard !didFinishDismiss else { return }
+        didFinishDismiss = true
+        zoomResetContinuation = nil
+        storeSubscription = nil
+        proxy.jump = nil
+        proxy.requestDismiss = nil
         // Экран уже пуст — обёртка снимает fullScreenCover без своей анимации.
         onDismissed()
     }
@@ -523,32 +646,52 @@ final class PhotoViewerController: UIViewController {
     // MARK: - Свайп-закрытие
 
     @objc private func handleDismissPan(_ pan: UIPanGestureRecognizer) {
-        guard let page = currentPage, !isDismissing else { return }
-        let translation = pan.translation(in: view)
-
         switch pan.state {
         case .began:
+            // shouldBegin уже отсёк закрытие и пустой пейджер; это страховка от гонки:
+            // без swipePage последующие .changed просто игнорируются.
+            guard let page = currentPage, !isDismissing else { return }
+            // Жест признан после гистерезиса ~10 pt: обнуляем translation, иначе первый
+            // .changed рывком сдвинул бы кадр на эти 10 pt.
+            pan.setTranslation(.zero, in: view)
             dismissPanActive = true
+            swipePage = page
+            // Пока кадр тянут, скролл-вью зума и тапы страницы не должны видеть касание:
+            // иначе двойной тап или пинч посреди свайпа ломают геометрию.
+            page.zoomView.gesturesEnabled = false
             updatePagingEnabled()
-            // Если пружина возврата от прошлого свайпа ещё идёт — палец важнее.
-            page.zoomView.layer.removeAllAnimations()
-            backdrop.layer.removeAllAnimations()
+            // Если пружина возврата от прошлого свайпа ещё идёт — палец важнее: берём
+            // положение с экрана и продолжаем с него.
+            settleAnimatedState(page: page)
+            let current = page.zoomView.transform
+            swipeBaseOffset = CGPoint(x: current.tx, y: current.ty)
 
         case .changed:
-            let distance = abs(translation.y)
+            guard let page = swipePage, !isDismissing else { return }
+            let offset = totalOffset(pan)
+            let distance = abs(offset.y)
             let scale = 1 - 0.3 * min(distance / Self.scaleDistance, 1)
             let progress = min(distance / Self.progressDistance, 1)
             // Кадр идёт за пальцем по обеим осям и уменьшается вокруг своего центра.
-            page.zoomView.transform = CGAffineTransform(translationX: translation.x, y: translation.y)
+            page.zoomView.transform = CGAffineTransform(translationX: offset.x, y: offset.y)
                 .scaledBy(x: scale, y: scale)
             backdrop.alpha = 1 - progress
             proxy.dismissProgress = progress
 
         case .ended, .cancelled, .failed:
-            dismissPanActive = false
+            let page = swipePage
+            let offset = totalOffset(pan)
             let velocity = pan.velocity(in: view)
+            endSwipe()
+            guard let page, !isDismissing else { return }
+            // По скорости закрываем только если флик сонаправлен смещению: оттянул вниз и
+            // резко бросил вверх — это «передумал», кадр возвращается. Сильный обратный
+            // флик перевешивает и порог по расстоянию.
+            let coDirected = offset.y * velocity.y >= 0
+            let strongFlick = abs(velocity.y) > Self.dismissVelocity
             let shouldClose = pan.state == .ended
-                && (abs(translation.y) > Self.dismissDistance || abs(velocity.y) > Self.dismissVelocity)
+                && ((abs(offset.y) > Self.dismissDistance && (coDirected || !strongFlick))
+                    || (coDirected && strongFlick))
             if shouldClose {
                 dismissViewer(velocity: velocity)
             } else {
@@ -558,6 +701,21 @@ final class PhotoViewerController: UIViewController {
         default:
             break
         }
+    }
+
+    /// Смещение кадра = база на момент начала жеста + путь пальца.
+    private func totalOffset(_ pan: UIPanGestureRecognizer) -> CGPoint {
+        let translation = pan.translation(in: view)
+        return CGPoint(x: swipeBaseOffset.x + translation.x, y: swipeBaseOffset.y + translation.y)
+    }
+
+    /// Снять состояние свайпа и вернуть странице её жесты — вызывается и по концу жеста,
+    /// и при закрытии, чтобы страница не осталась «глухой», если жест оборвали.
+    private func endSwipe() {
+        dismissPanActive = false
+        swipePage?.zoomView.gesturesEnabled = true
+        swipePage = nil
+        swipeBaseOffset = .zero
     }
 
     private func snapBack(page: PhotoPageController) {
@@ -624,11 +782,11 @@ final class PhotoViewerController: UIViewController {
 extension PhotoViewerController: UIGestureRecognizerDelegate {
 
     /// Свайп-закрытие берётся за дело только при явно вертикальном движении и только
-    /// если пейджер ещё не начал листать. Одновременность с pan пейджера не разрешаем:
+    /// если пейджер не движется. Одновременность с pan пейджера не разрешаем:
     /// когда наш жест начинается, UIKit отменяет чужой, и наоборот.
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === dismissPan else { return true }
-        guard !isDismissing, !isTransitioning, let page = currentPage, !page.zoomView.isZoomed else { return false }
+        guard !isDismissing, !isPagerMoving, let page = currentPage, !page.zoomView.isZoomed else { return false }
         if let pagerPan = pagerScrollView?.panGestureRecognizer,
            pagerPan.state == .began || pagerPan.state == .changed {
             return false
@@ -664,18 +822,10 @@ extension PhotoViewerController: UIPageViewControllerDelegate {
 
     func pageViewController(
         _ pageViewController: UIPageViewController,
-        willTransitionTo pendingViewControllers: [UIViewController]
-    ) {
-        isTransitioning = true
-    }
-
-    func pageViewController(
-        _ pageViewController: UIPageViewController,
         didFinishAnimating finished: Bool,
         previousViewControllers: [UIViewController],
         transitionCompleted completed: Bool
     ) {
-        isTransitioning = false
         guard let current = currentPage else { return }
         // Ушедшая страница возвращается к «вписано»: вернувшись к ней, пользователь ждёт
         // целый кадр, а не прошлый зум.
@@ -695,6 +845,11 @@ extension PhotoViewerController: UIPageViewControllerDelegate {
 /// Страница пейджера: тонкая обёртка над ZoomableImageView, знает свой индекс и кадр.
 /// Отдельный контроллер нужен только потому, что UIPageViewController оперирует
 /// контроллерами, а не вью.
+///
+/// Корневая view — пустой контейнер, а zoomView лежит внутри. Корнем владеет пейджер:
+/// _UIQueuingScrollView присваивает ему frame при каждом layout, а frame у вью с
+/// transform ≠ identity не определён — свайп-закрытие (transform на кадре) в момент
+/// layout давал скачок. Transform и alpha свайпа/анимаций вешаются только на zoomView.
 private final class PhotoPageController: UIViewController {
 
     let index: Int
@@ -716,6 +871,25 @@ private final class PhotoPageController: UIViewController {
     }
 
     override func loadView() {
-        view = zoomView
+        let container = PageContainerView()
+        container.backgroundColor = .clear
+        container.zoomView = zoomView
+        container.addSubview(zoomView)
+        view = container
+    }
+}
+
+/// Контейнер страницы раздаёт zoomView размер через bounds + center, а не frame /
+/// autoresizingMask: эти два свойства определены и при transform ≠ identity, поэтому
+/// поворот или перекладка пейджера посреди свайпа (пока transform ещё не снят) не
+/// портят геометрию кадра.
+private final class PageContainerView: UIView {
+    weak var zoomView: UIView?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let zoomView else { return }
+        zoomView.bounds = CGRect(origin: .zero, size: bounds.size)
+        zoomView.center = CGPoint(x: bounds.midX, y: bounds.midY)
     }
 }

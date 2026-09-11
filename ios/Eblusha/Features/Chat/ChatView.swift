@@ -13,6 +13,9 @@ final class MessageSwipeState: ObservableObject {
     /// Рамка пузыря в координатах ячейки — по ней жесты понимают, куда лёг палец:
     /// свайп по входящему пузырю вправо — это ответ, а вправо мимо пузыря — «назад».
     var bubbleFrame: CGRect = .zero
+    /// Рамки плиток фото (индекс среди фото сообщения → рамка в координатах ячейки):
+    /// просмотрщик открывается из своей плитки и улетает обратно в актуальную.
+    var tileFrames: [Int: CGRect] = [:]
 }
 
 /// Пузырь, который умеет уезжать вбок: как на Android — сдвигается сам пузырь, аватар и
@@ -91,6 +94,9 @@ struct ChatView: View {
     @State private var forwardSheet: ForwardRequest?
     /// Открытая галерея фото (nil — просмотрщик закрыт).
     @State private var gallery: PhotoViewerGallery?
+    /// Что сделать, когда fullScreenCover просмотрщика полностью ушёл (лист пересылки
+    /// поверх ещё закрывающегося cover система не показывает).
+    @State private var pendingAfterGallery: (() -> Void)?
     @State private var userCard: UserCardSeed?
     /// Открытое вложение (видео в плеере, документ в системном просмотре).
     @State private var preview: AttachmentPreview?
@@ -343,7 +349,11 @@ struct ChatView: View {
                 onDismiss: { userCard = nil }
             )
         }
-        .fullScreenCover(item: $gallery) { gallery in
+        .fullScreenCover(item: $gallery, onDismiss: {
+            let pending = pendingAfterGallery
+            pendingAfterGallery = nil
+            pending?()
+        }) { gallery in
             PhotoViewerView(
                 gallery: gallery,
                 decrypt: vm.ui.isSecret ? { await vm.decryptSecretAttachment($0) } : nil,
@@ -410,12 +420,14 @@ struct ChatView: View {
         for m in source where !m.deleted && !m.isSystem {
             let trimmed = m.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let images = m.attachments.filter { $0.type == "IMAGE" }
+            // В секретных чатах у чужих сообщений имя пустое — берём название беседы.
+            let sender = m.senderName.isEmpty ? (m.isMine ? "Вы" : conversation.title) : m.senderName
             for (i, att) in images.enumerated() {
                 items.append(PhotoViewerItem(
                     id: "\(m.id)#\(i)",
                     attachment: att,
                     messageId: m.id,
-                    senderName: m.senderName,
+                    senderName: sender,
                     isMine: m.isMine,
                     createdAt: m.createdAt,
                     caption: trimmed.isEmpty ? nil : trimmed
@@ -424,12 +436,24 @@ struct ChatView: View {
         }
         guard !items.isEmpty else { return }
         let start = items.firstIndex { $0.id == "\(message.id)#\(imageIndex)" } ?? 0
+        // Просмотрщик показывается поверх (overFullScreen) и клавиатуру сам не прячет —
+        // иначе она осталась бы торчать над кадром.
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         // Системную анимацию fullScreenCover глушим: кадр вырастает из плитки силами
         // самого просмотрщика, а шторка снизу поверх этого выглядела бы двойным движением.
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            gallery = PhotoViewerGallery(items: items, startIndex: start, sourceFrame: sourceFrame)
+            gallery = PhotoViewerGallery(
+                items: items,
+                startIndex: start,
+                sourceFrame: sourceFrame,
+                // Куда улетать при закрытии: лента могла проскроллиться, а кадр — смениться.
+                sourceFrameProvider: { item in
+                    let index = Int(item.id.split(separator: "#").last ?? "") ?? 0
+                    return listProxy.tileFrameInWindow(messageId: item.messageId, index: index)
+                }
+            )
         }
     }
 
@@ -439,34 +463,30 @@ struct ChatView: View {
         withTransaction(transaction) { gallery = nil }
     }
 
+    /// Кнопки просмотрщика: он сам закрывается с анимацией и лишь потом зовёт эти
+    /// обработчики, поэтому здесь ничего закрывать не нужно.
     private var galleryCallbacks: PhotoViewerCallbacks {
         PhotoViewerCallbacks(
             onClose: { closeGallery() },
             onReply: { item in
-                closeGallery()
                 if let message = vm.ui.messages.first(where: { $0.id == item.messageId }) {
                     vm.setReply(message)
                 }
             },
             onForward: { item in
-                closeGallery()
                 guard let message = vm.ui.messages.first(where: { $0.id == item.messageId }) else { return }
-                // Лист поверх ещё закрывающегося fullScreenCover система не показывает —
-                // даём ему уйти.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    forwardSheet = ForwardRequest(messages: [message])
-                }
+                pendingAfterGallery = { forwardSheet = ForwardRequest(messages: [message]) }
             },
             onDelete: { item in
-                closeGallery()
                 vm.delete(messageId: item.messageId)
             },
             onShowInChat: { item in
-                closeGallery()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    listProxy.scrollToMessage(item.messageId)
-                }
-            }
+                listProxy.scrollToMessage(item.messageId)
+                listProxy.highlightedId = item.messageId
+            },
+            // В секретных чатах нет ни пересылки, ни удаления у всех — кнопки прячем.
+            canForward: !vm.ui.isSecret,
+            canDelete: !vm.ui.isSecret
         )
     }
 
@@ -684,8 +704,6 @@ struct MessageRow: View {
     let onForward: () -> Void
     /// Индекс среди фото сообщения и рамка плитки в координатах ячейки («messageCell»).
     let onOpenImage: (Int, CGRect?) -> Void
-    /// Рамки плиток фото — для анимации открытия просмотрщика из своего места.
-    @State private var tileFrames: [Int: CGRect] = [:]
     var onOpenSender: (() -> Void)?
     /// Расшифровка секретного вложения в локальный файл (в обычном чате не зовётся).
     var decryptSecretAttachment: ((MessageAttachment) async -> URL?)?
@@ -901,10 +919,10 @@ struct MessageRow: View {
                 let size = att.displaySize(screen: screenSize)
                 attachmentImage(att, width: size.width, height: size.height)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
-                        tileFrames[0] = $0
+                        swipe.tileFrames[0] = $0
                     }
                     .onTapGesture {
-                        if selectionMode { onTap() } else { onOpenImage(0, tileFrames[0]) }
+                        if selectionMode { onTap() } else { onOpenImage(0, swipe.tileFrames[0]) }
                     }
             } else {
                 // Альбом: квадратные плитки в две колонки — соседи с разными пропорциями
@@ -914,10 +932,10 @@ struct MessageRow: View {
                     ForEach(Array(images.enumerated()), id: \.offset) { idx, att in
                         attachmentImage(att, width: side, height: side)
                             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
-                                tileFrames[idx] = $0
+                                swipe.tileFrames[idx] = $0
                             }
                             .onTapGesture {
-                                if selectionMode { onTap() } else { onOpenImage(idx, tileFrames[idx]) }
+                                if selectionMode { onTap() } else { onOpenImage(idx, swipe.tileFrames[idx]) }
                             }
                     }
                 }
