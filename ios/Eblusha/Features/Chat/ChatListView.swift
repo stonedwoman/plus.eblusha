@@ -106,16 +106,23 @@ struct ChatListView: View {
                     onTap: { onOpenChat(conversation) },
                     onJoinCall: { vm.joinCall(conversation) }
                 )
-                // Беседа — карточка на сером, как плитки внизу и как было до перехода на
-                // системный список: плоские строки с волосками рассыпали экран на две
-                // разные половины. Кант цветной: секретка зелёная, непрочитанные ярче
-                // онлайна — тот же порядок, что в вебе.
-                .listRowBackground(conversationCard(conversation, call: call))
+                // Карточка беседы — порт веб-плитки `.tile`: фон surface-200, радиус 12,
+                // поле 10, кант 1.5. Фон рисует САМА строка, а не listRowBackground:
+                // тот всегда во всю ширину строки, поэтому карточка упиралась в края
+                // экрана, а содержимое отступало — вид разъезжался.
+                .padding(10)
+                .background(conversationCardFill(call), in: RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(cardBorderColor(conversation, call: call), lineWidth: 1.5)
+                }
+                .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                // Поля от краёв экрана и вложенность секретки — как в вебе (16 и +14).
+                .padding(.leading, hasCloudSibling ? 30 : 16)
+                .padding(.trailing, 16)
+                .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
-                // Секретка с отступом под родителем — веб-паритет вложенности.
-                .listRowInsets(EdgeInsets(
-                    top: 4, leading: hasCloudSibling ? 26 : 12, bottom: 4, trailing: 12
-                ))
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     // Первая кнопка — у края экрана и на полном свайпе; удаление всё равно
                     // идёт через подтверждение (confirmDelete), случайный свайп безопасен.
@@ -170,24 +177,11 @@ struct ChatListView: View {
     /// Плитка беседы со звонком заливается оранжевым — порт веб-градиента
     /// (ConversationListPane.tsx:224-240); свой звонок заметно теплее чужого.
     @ViewBuilder
-    /// Подложка строки: карточка беседы. Во время звонка она подсвечивается брендовым
-    /// цветом — заливка поверх серого, чтобы карточка осталась карточкой.
-    private func conversationCard(_ c: Conversation, call: CallTile?) -> some View {
-        RoundedRectangle(cornerRadius: 14)
-            .fill(Eb.surface200)
-            .overlay {
-                if let call, call.kind != .ended {
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(Eb.brand.opacity(call.mine || call.participating ? 0.16 : 0.10))
-                }
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(cardBorderColor(c, call: call), lineWidth: 1.5)
-            }
-            // Подложка строки занимает всю её высоту, поэтому карточки разделяет
-            // не отступ списка, а этот: иначе канты соседних строк слипались бы.
-            .padding(.vertical, 3)
+    /// Заливка карточки: обычно серая поверхность, во время звонка — брендовый оттенок
+    /// поверх неё (в вебе это градиент той же насыщенности).
+    private func conversationCardFill(_ call: CallTile?) -> Color {
+        guard let call, call.kind != .ended else { return Eb.surface200 }
+        return Eb.brand.opacity(call.mine || call.participating ? 0.16 : 0.10)
     }
 
     /// Цвет канта карточки: звонок → бренд, секретка → зелёный, непрочитанные ярче
