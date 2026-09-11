@@ -24,12 +24,21 @@ struct SwipeableBubble<Content: View>: View {
     let isMine: Bool
     @ViewBuilder let content: () -> Content
 
+    /// Где проявляется стрелка ответа: со стороны, откуда уехал пузырь.
+    private var arrowAlignment: Alignment {
+        if state.offset > 0 { return .leading }
+        if state.offset < 0 { return .trailing }
+        return isMine ? .trailing : .leading
+    }
+
     var body: some View {
         content()
             .offset(x: state.offset)
             // Фон выравнивается по РАСКЛАДОЧНОЙ рамке, а offset — чисто визуальный сдвиг,
-            // поэтому стрелка остаётся там, откуда уехал пузырь.
-            .background(alignment: isMine ? .trailing : .leading) {
+            // поэтому стрелка остаётся там, откуда уехал пузырь: пузырь уехал вправо —
+            // стрелка слева, и наоборот. Сторону берём из самого сдвига, чтобы она не
+            // спорила с направлением жеста (его решает геометрия колонки, см. ленту).
+            .background(alignment: arrowAlignment) {
                 Image(systemName: "arrowshape.turn.up.left.fill")
                     .font(.system(size: 20))
                     .foregroundStyle(Eb.brand)

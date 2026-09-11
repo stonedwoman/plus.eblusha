@@ -398,6 +398,9 @@ final class MessageListController: UIViewController {
 
     /// Строка, которую сейчас тянут вбок.
     private var swipingIndexPath: IndexPath?
+    /// Кого и в какую сторону тянем прямо сейчас (фиксируется на старте жеста).
+    private var swipingRowId: String?
+    private var swipingDirection: CGFloat = 1
     /// Сдвиги пузырей по id сообщения: во время жеста меняется только один объект,
     /// и перерисовывается только один пузырь.
     private var swipeStates: [String: MessageSwipeState] = [:]
@@ -631,33 +634,42 @@ final class MessageListController: UIViewController {
         case .began:
             let point = recognizer.location(in: collectionView)
             guard let indexPath = collectionView.indexPathForItem(at: point),
-                  indexPath.item < rows.count,
-                  !rows[indexPath.item].message.isSystem,
+                  let row = row(atCollectionPoint: point),
+                  !row.message.isSystem,
                   // Свайп-ответ на ещё не отправленное: replyToId указывал бы на временный id.
-                  rows[indexPath.item].outgoingUpload == nil,
-                  !rows[indexPath.item].selectionMode
+                  row.outgoingUpload == nil,
+                  !row.selectionMode
             else {
                 swipingIndexPath = nil
+                swipingRowId = nil
                 return
             }
             swipingIndexPath = indexPath
+            // Строку и сторону фиксируем на старте: во время жеста лента может обновиться,
+            // и пересчёт по индексу увёл бы сдвиг на соседнее сообщение.
+            swipingRowId = row.id
+            swipingDirection = replyDirection(for: row)
 
         case .changed:
-            guard let indexPath = swipingIndexPath, indexPath.item < rows.count else { return }
-            let message = rows[indexPath.item].message
-            // Входящие тянутся вправо, свои — влево (свои пузыри прижаты к правому краю).
+            guard let id = swipingRowId, let row = rowsById[id] else { return }
+            // Левая колонка тянется вправо, правая — влево; сторону решила геометрия пузыря.
             let raw = recognizer.translation(in: collectionView).x
-            let dx = message.isMine
-                ? min(max(raw, -Self.replyMaxDrag), 0)
-                : min(max(raw, 0), Self.replyMaxDrag)
+            let dx = swipingDirection > 0
+                ? min(max(raw, 0), Self.replyMaxDrag)
+                : min(max(raw, -Self.replyMaxDrag), 0)
             // Двигается САМ пузырь внутри SwiftUI-содержимого (SwipeableBubble), а не
             // ячейка: сдвиг контейнера хостинг-конфигурация не показывала.
-            swipeState(for: message.id).offset = dx
+            swipeState(for: row.id).offset = dx
 
         case .ended, .cancelled, .failed:
-            guard let indexPath = swipingIndexPath, indexPath.item < rows.count else { return }
+            guard let id = swipingRowId, let row = rowsById[id] else {
+                swipingIndexPath = nil
+                swipingRowId = nil
+                return
+            }
             swipingIndexPath = nil
-            let message = rows[indexPath.item].message
+            swipingRowId = nil
+            let message = row.message
             let state = swipeState(for: message.id)
             let triggered = recognizer.state == .ended && abs(state.offset) >= Self.replyThreshold
             withAnimation(.spring(duration: 0.25)) { state.offset = 0 }
@@ -730,14 +742,31 @@ extension MessageListController: UIGestureRecognizerDelegate {
         guard abs(velocity.x) > abs(velocity.y) * 1.5 else { return false }
         guard let row = row(atCollectionPoint: pan.location(in: collectionView)) else { return false }
         guard bubbleContains(row: row, collectionPoint: pan.location(in: collectionView)) else { return false }
-        return row.message.isMine ? velocity.x < 0 : velocity.x > 0
+        // Тянуть можно только «наружу из своей колонки»: левый пузырь — вправо, правый — влево.
+        return replyDirection(for: row) > 0 ? velocity.x > 0 : velocity.x < 0
     }
 
-    /// Строка под точкой коллекции.
+    /// Строка под точкой коллекции. Ищем по идентификатору из снимка, а не по индексу в
+    /// массиве: `rows` обновляется раньше, чем коллекция перестраивает ячейки, и в этот
+    /// зазор индекс мог указывать на соседнее сообщение — жест доставался чужому пузырю.
     private func row(atCollectionPoint point: CGPoint) -> MessageRowModel? {
-        guard let indexPath = collectionView.indexPathForItem(at: point),
-              indexPath.item < rows.count else { return nil }
+        guard let indexPath = collectionView.indexPathForItem(at: point) else { return nil }
+        if let id = dataSource?.itemIdentifier(for: indexPath), let row = rowsById[id] { return row }
+        guard indexPath.item < rows.count else { return nil }
         return rows[indexPath.item]
+    }
+
+    /// В какую сторону едет пузырь этой строки: вправо у левой колонки, влево у правой.
+    /// Сторону определяем по РАМКЕ пузыря в ячейке, а не по флагу «моё сообщение»:
+    /// колонка — это то, что человек видит, и жест должен слушаться картинки на экране.
+    /// Рамку сообщает сам пузырь (SwipeableBubble); пока её нет, падаем на флаг.
+    private func replyDirection(for row: MessageRowModel) -> CGFloat {
+        guard let state = swipeStates[row.id], state.bubbleFrame != .zero,
+              let indexPath = dataSource?.indexPath(for: row.id),
+              let cell = collectionView.cellForItem(at: indexPath),
+              cell.contentView.bounds.width > 1
+        else { return row.message.isMine ? -1 : 1 }
+        return state.bubbleFrame.midX < cell.contentView.bounds.midX ? 1 : -1
     }
 
     /// Лежит ли точка на пузыре строки. Рамку пузыря сообщает сам SwiftUI-пузырь.
