@@ -177,26 +177,11 @@ struct ChatListView: View {
     }
 
     private func deleteAlert(_ target: Conversation) -> Alert {
-        let (title, body, action): (String, String, String)
-        if target.isSecretV2 {
-            (title, body, action) = (
-                "Закрыть секретный чат?",
-                "Секретный чат будет закрыт и скрыт у всех участников.",
-                "Закрыть"
-            )
-        } else if target.isGroup {
-            (title, body, action) = (
-                "Выйти из беседы?",
-                "Беседа исчезнет из вашего списка, остальные участники останутся.",
-                "Выйти"
-            )
-        } else {
-            (title, body, action) = (
-                "Удалить чат?",
-                "Переписка будет удалена у всех участников безвозвратно.",
-                "Удалить"
-            )
-        }
+        // Тексты общие с шапкой открытого чата (ConversationRemovalPrompt): пока они
+        // лежали в двух вьюхах, одно и то же действие спрашивалось по-разному.
+        let (title, body, action) = ConversationRemovalPrompt.texts(
+            isSecret: target.isSecretV2, isGroup: target.isGroup
+        )
         return Alert(
             title: Text(title),
             message: Text(body),

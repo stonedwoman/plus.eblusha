@@ -18,6 +18,25 @@ struct ChatComposer: View {
     /// Текст, возвращённый вьюмоделью после неудачной отправки (или отменённой подписи).
     let restoredDraft: String?
 
+    // --- Состояние защиты секретного треда (веб: плашки над .msg-input-bar) ---
+    // Все параметры этого блока со значениями по умолчанию: композер зовут и из обычных
+    // чатов, и старый вызов не должен переставать компилироваться.
+    /// Ключа треда ещё нет: висит плашка «Настраивается…». Отправку НЕ блокируем —
+    /// вьюмодель копит текст и дошлёт его сама по приходу ключа (веб-паритет).
+    var secretPending = false
+    /// Сколько сообщений уже стоит в очереди до ключа (веб: N сообщ. в очереди).
+    var secretQueued = 0
+    /// Ключи не доехали: код первопричины из движка (nil — ошибки нет).
+    var secretKeysErrorCode: String? = nil
+    /// Повтор обмена ключами прямо сейчас идёт — кнопки карточки ошибки погашены.
+    var secretKeysRetrying = false
+    /// Есть другие свои устройства — тогда в карточке ошибки есть «Привязать устройство».
+    var secretCanLinkDevice = false
+    /// «Восстановить»: повторить обмен ключами. Что именно это значит, решает экран.
+    var onRetrySecretKeys: () -> Void = {}
+    /// «Привязать устройство»: забрать ключи со своего же устройства.
+    var onLinkDevice: () -> Void = {}
+
     let onClearReply: () -> Void
     let onRemoveStaged: (Int) -> Void
     let onCancelUpload: () -> Void
@@ -59,6 +78,21 @@ struct ChatComposer: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Состояние защиты — ПЕРВОЙ строкой панели, как в вебе: сначала красная
+            // карточка «ключи не доехали» (она важнее и несёт действия), иначе бирюзовая
+            // «настраивается…» со счётчиком очереди.
+            if let code = secretKeysErrorCode {
+                SecretKeysErrorCard(
+                    code: code,
+                    canLinkDevice: secretCanLinkDevice,
+                    busy: secretKeysRetrying,
+                    onRetry: onRetrySecretKeys,
+                    onLinkDevice: onLinkDevice
+                )
+            } else if secretPending {
+                SecretKeysWaitingBar(queued: secretQueued)
+            }
+
             ComposerAttachmentsBar(
                 staged: staged,
                 uploadProgress: uploadProgress,

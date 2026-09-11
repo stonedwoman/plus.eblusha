@@ -43,8 +43,19 @@ final class ChatViewModel: ObservableObject {
         var isSecret = false
         /// Ключ треда на руках — композер реально может шифровать.
         var secretReady = false
-        /// Сообщения, ждущие прихода ключа создателя.
+        /// Сколько сообщений ждёт прихода ключа создателя (зеркало SecretOutbox
+        /// по этой беседе — источник правды там, здесь только число для UI).
         var secretQueued = 0
+        /// Счётчик-сигнал «ключ треда приехал, пока экран открыт»: по нему вью даёт
+        /// короткую галочку «Готово». Именно счётчик, а не Bool от secretReady: в уже
+        /// рабочей секретке secretReady поднимается в initSecret, и галочка вспыхивала бы
+        /// при каждом входе, хотя ничего не происходило.
+        var secretKeyArrived = 0
+        /// Ключи не доехали: код первопричины (веб ROOT_CAUSE, обычно NO_KEYPACKAGE).
+        /// nil — ошибки нет. Ставится сторожем ожидания, а не первым сетевым сбоем.
+        var secretKeysError: String?
+        /// Идёт ручной повтор обмена ключами («Восстановить») — кнопки плашки погашены.
+        var secretKeysRetrying = false
         /// PENDING-приглашение, которое это устройство должно принять или отклонить.
         var secretInvite = false
         var secretInviteBusy = false
@@ -118,8 +129,13 @@ final class ChatViewModel: ObservableObject {
     /// В Kotlin поле @Volatile; здесь класс @MainActor, гонок нет по построению.
     var secretMode = false
     var secretPeers: [String] = []
-    /// Отправки, поставленные в очередь до прихода ключа треда.
-    var secretQueue: [String] = []
+    /// Идёт досыл очереди SecretOutbox. Флаг нужен потому, что повод сбросить очередь
+    /// приходит сразу с нескольких сторон (keyImported, deviceLinked, инбокс-полл,
+    /// возврат из фона) — без него одна и та же запись улетала бы дважды.
+    var secretFlushing = false
+    /// Сторож ожидания ключей: по его срабатыванию экран признаёт, что ключи не доехали
+    /// (веб-паритет). Хранится, чтобы приход ключа его отменял, а не гасил плашку задним числом.
+    var secretKeysWatchdog: Task<Void, Never>?
 
     static let pageSize = 80 // веб MESSAGES_PAGE_SIZE
     // >10 МБ уходит чанками (веб-паритет); страховочный потолок — 100 МБ (файл в памяти).
@@ -392,6 +408,9 @@ final class ChatViewModel: ObservableObject {
             Task {
                 await secretRepo.syncInbox()
                 await loadSecret()
+                // Ключ мог приехать, пока экран лежал в фоне (или прошлый досыл упал на
+                // мёртвой сети) — очередь не должна ждать нового сообщения от собеседника.
+                flushSecretQueue()
             }
             return
         }
@@ -659,7 +678,11 @@ final class ChatViewModel: ObservableObject {
                 result = await repo.deleteConversation(conversationId)
             }
             switch result {
-            case .success: onDone()
+            case .success:
+                // Чат закрыт/удалён — досылать очередь некуда, а держать её на диске
+                // значило бы хранить текст уже уничтоженной секретки.
+                if secretMode { SecretOutbox.clear(conversationId) }
+                onDone()
             case .failure(let message, _): ui.error = message
             }
         }

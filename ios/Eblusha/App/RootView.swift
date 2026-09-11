@@ -11,6 +11,11 @@ struct RootView: View {
     @ObservedObject private var session: SessionStore
     @ObservedObject private var lifecycle = AppLifecycle.shared
     @State private var bootstrapped = false
+    /// Досыл секретной очереди при приходе ключа — работает и когда экран беседы закрыт.
+    @State private var secretFlusher = SecretOutboxFlusher(
+        secret: AppContainer.shared.secretRepository,
+        chats: AppContainer.shared.chatRepository
+    )
 
     init() {
         self.session = AppContainer.shared.sessionStore
@@ -78,6 +83,11 @@ struct RootView: View {
         }
         // Глобальные секретные обработчики (порт LaunchedEffect из RootNavHost): работают
         // и когда чат закрыт — иначе ключ принявшему устройству не уедет до открытия чата.
+        // Досыл секретной очереди при приходе ключа работает и с закрытым чатом.
+        .task(id: loggedIn) {
+            guard loggedIn else { return }
+            secretFlusher.start()
+        }
         .onReceive(container.realtimeClient.events.receive(on: DispatchQueue.main)) { event in
             switch event {
             case .secretNotify:

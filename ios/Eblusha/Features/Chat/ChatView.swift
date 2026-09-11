@@ -137,6 +137,9 @@ struct ChatView: View {
     @State private var quickSlots = ReactionFavorites.defaults
     /// Высота композера в прошлом замере — по её приросту лента понимает, что её поджали.
     @State private var composerHeight: CGFloat = 0
+    /// Короткая галочка «Готово» после прихода ключа секретки (веб: secretBootDonePulse).
+    /// Живёт во вью, а не в UiState: это анимация экрана, а не состояние беседы.
+    @State private var secretDonePulse = false
 
     init(conversation: Conversation, onBack: @escaping () -> Void) {
         self.conversation = conversation
@@ -189,6 +192,8 @@ struct ChatView: View {
                         SecretChatOverlay(
                             ui: vm.ui,
                             title: conversation.title,
+                            bootstrapping: secretBootstrapping,
+                            donePulse: secretDonePulse,
                             onAccept: { vm.acceptSecretInvite() },
                             onDecline: { vm.declineSecretInvite() },
                             onOpenScanner: { vm.openLinkScanner() },
@@ -249,6 +254,16 @@ struct ChatView: View {
                     replyingTo: vm.ui.replyingTo,
                     sending: vm.ui.sending,
                     restoredDraft: vm.ui.restoredDraft,
+                    // Плашки состояния защиты — первой строкой панели, как в вебе.
+                    secretPending: vm.ui.isSecret && !vm.ui.secretReady,
+                    secretQueued: vm.ui.secretQueued,
+                    secretKeysErrorCode: vm.ui.secretKeysError,
+                    secretKeysRetrying: vm.ui.secretKeysRetrying,
+                    // «Привязать устройство» имеет смысл только новому устройству: забрать
+                    // ключи можно лишь у СВОИХ, и лишь когда своих ключей здесь нет вовсе.
+                    secretCanLinkDevice: vm.ui.hasOtherDevices && !vm.ui.hasAnySecretKeys,
+                    onRetrySecretKeys: { vm.retrySecretKeys() },
+                    onLinkDevice: { vm.openLinkScanner() },
                     onClearReply: { vm.clearReply() },
                     onRemoveStaged: { vm.removeStaged($0) },
                     onCancelUpload: { vm.cancelUpload() },
@@ -415,18 +430,30 @@ struct ChatView: View {
         .onChange(of: vm.ui.secretDeclined) { _, declined in
             if declined { onBack() }
         }
+        // Момент готовности защиты ничем не отмечался — короткая галочка «Готово», как в вебе.
+        // Сигнал даёт вьюмодель (ui.secretKeyArrived), а не сам secretReady: в уже рабочей
+        // секретке он поднимается при инициализации, и галочка мигала бы на каждом входе.
+        .onChange(of: vm.ui.secretKeyArrived) { _, _ in
+            guard vm.ui.isSecret else { return }
+            secretDonePulse = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(700))
+                secretDonePulse = false
+            }
+        }
         .confirmationDialog(
-            vm.ui.isSecret ? "Закрыть секретный чат?" : vm.ui.isGroup ? "Выйти из беседы?" : "Удалить чат?",
+            removalPrompt.title,
             isPresented: $confirmDelete,
             titleVisibility: .visible
         ) {
-            Button(
-                vm.ui.isSecret ? "Закрыть" : vm.ui.isGroup ? "Выйти" : "Удалить",
-                role: .destructive
-            ) {
+            Button(removalPrompt.action, role: .destructive) {
                 vm.deleteOrLeave(onDone: onBack)
             }
             Button("Отмена", role: .cancel) {}
+        } message: {
+            // Раньше необратимое удаление переписки у ОБОИХ подтверждалось голым вопросом
+            // из двух слов — без пояснения, которое в списке чатов есть.
+            Text(removalPrompt.message)
         }
     }
 
@@ -603,6 +630,10 @@ struct ChatView: View {
                         .font(.caption)
                         .foregroundStyle(Eb.brand)
                         .lineLimit(1)
+                } else if vm.ui.isSecret {
+                    // В секретке подпись была статичной («🔒 секретный чат») и одинаковой
+                    // и во время настройки, и при рабочем ключе — теперь состояние видно.
+                    SecretHeaderStatusChip(state: secretProtectionState)
                 } else if let subtitle = vm.ui.headerSubtitle {
                     Text(subtitle)
                         .font(.caption)
@@ -622,11 +653,36 @@ struct ChatView: View {
         }
     }
 
+    /// Заголовок, пояснение и подпись кнопки подтверждения — общие со списком чатов,
+    /// чтобы одно и то же действие не описывалось в двух местах по-разному.
+    private var removalPrompt: (title: String, message: String, action: String) {
+        ConversationRemovalPrompt.texts(isSecret: vm.ui.isSecret, isGroup: vm.ui.isGroup)
+    }
+
+    /// Секретка ещё не шифрует, и ни одна карточка экран не перехватила: показываем, что
+    /// обмен ключами идёт. При сработавшем стороже спиннер гасим — вместо него над
+    /// композером висит плашка «ключи не доехали» с кнопками.
+    private var secretBootstrapping: Bool {
+        vm.ui.isSecret && !vm.ui.secretReady && !vm.ui.secretInvite && !vm.ui.secretWaiting
+            && vm.ui.secretKeysError == nil
+            && !(vm.ui.hasOtherDevices && !vm.ui.hasAnySecretKeys)
+    }
+
+    /// Состояние защиты для чипа шапки (порт activeSecretUiState.readyState): ошибка
+    /// важнее настройки, настройка — важнее «Защищено».
+    private var secretProtectionState: SecretProtectionState {
+        if vm.ui.secretKeysError != nil { return .failed }
+        return vm.ui.secretReady ? .ready : .bootstrapping
+    }
+
     /// Пустая беседа и несостоявшаяся загрузка: раньше и то и другое выглядело как
     /// пустая серая область, в которой непонятно, сломалось что-то или нет.
     @ViewBuilder
     private var emptyState: some View {
-        if !vm.ui.loading, vm.ui.messages.isEmpty, !vm.ui.secretInvite, !vm.ui.secretWaiting {
+        // Во время настройки защиты на этом же месте крутится спиннер оверлея — две
+        // подписи поверх друг друга читались бы как сломанный экран.
+        if !vm.ui.loading, vm.ui.messages.isEmpty, !vm.ui.secretInvite, !vm.ui.secretWaiting,
+           !secretBootstrapping, !secretDonePulse {
             VStack(spacing: 10) {
                 if vm.ui.error != nil {
                     Image(systemName: "wifi.exclamationmark")
@@ -821,7 +877,16 @@ struct MessageRow: View {
                 .font(.system(size: 11))
                 .foregroundStyle(Eb.textMuted)
             if m.isMine {
-                receiptTicks
+                // Пузырь секретки, ждущий ключа, ещё НЕ отправлен: галочка «отправлено»
+                // тут врала бы, поэтому у него часы — как только очередь уедет, пузырь
+                // заменится серверным сообщением с обычными галочками.
+                if SecretOutbox.isPending(m.id) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Eb.textMuted)
+                } else {
+                    receiptTicks
+                }
             }
         }
     }

@@ -5,8 +5,13 @@ import SwiftUI
 // (SecretDeviceLinkJoinCard — QR-сканер + 8-значный код) и диалог доверенного
 // устройства (SecretDeviceLinkInviteDialog — QR + код + TTL-таймер + «Код истёк»).
 //
+// Плюс видимые состояния защиты (веб-паритет MessagesPane): спиннер «Настраиваем
+// защиту…» внутри SecretChatOverlay, плашка «Настраивается… ждём ключи» и карточка
+// «ключи не доехали» над композером, чип состояния для шапки.
+//
 // Подключение к ChatView — см. integration_notes: оверлей вешается на messageList,
-// диалог приглашения — sheet, полоска «Ждём ключи…» — первой строкой композера.
+// диалог приглашения — sheet, плашки состояния — первой строкой композера
+// (ChatComposer сам их рисует по своим secret*-параметрам), чип — в headerTitle.
 
 /// Зелёный секреток (веб-паритет), как в ChatListView.
 private let secretGreen = Color(hex: 0x22C55E)
@@ -20,6 +25,13 @@ struct SecretChatOverlay: View {
     let ui: ChatViewModel.UiState
     /// Имя собеседника (заголовок беседы) — для текстов карточек.
     let title: String
+    // Состояния ниже приходят снаружи (в UiState их нет) и ОБЯЗАНЫ иметь значения по
+    // умолчанию: иначе уже написанный вызов из ChatView перестал бы компилироваться.
+    /// Ключа треда ещё нет, но экран не перехвачен ни одной карточкой — показываем, что
+    /// работа идёт (веб: readyState == 'bootstrapping').
+    var bootstrapping = false
+    /// Короткий пульс «Готово» сразу после прихода ключа (веб: secretBootDonePulse, ~0.7 с).
+    var donePulse = false
     let onAccept: () -> Void
     let onDecline: () -> Void
     let onOpenScanner: () -> Void
@@ -99,6 +111,35 @@ struct SecretChatOverlay: View {
                 )
             }
         }
+        // Ключей нет, но ни одна карточка экран не перехватила (обычный случай: ключ
+        // этого треда едет от создателя). В вебе тут центральный спиннер, и без него
+        // промежуток между «Принять» и приходом ключа выглядит как пустой чат.
+        else if bootstrapping || donePulse {
+            bootstrapProgress
+        }
+    }
+
+    /// Порт центрального оверлея MessagesPane: спиннер с подписью, а по приходу ключа —
+    /// короткая галочка «Готово». Вуали НЕТ и касания не перехватываются (веб:
+    /// pointerEvents none) — под ним можно листать историю и писать в композер.
+    private var bootstrapProgress: some View {
+        VStack(spacing: 10) {
+            if donePulse {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(secretGreenSoft)
+            } else {
+                ProgressView()
+            }
+            // Веб-вариант «Ждём подтверждение…» (создатель ждёт квитанцию) на iOS занимает
+            // полноэкранная карточка secretWaiting — отдельного состояния под него нет.
+            Text(donePulse ? "Готово" : "Настраиваем защиту…")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Eb.textMuted)
+        }
+        .padding(16)
+        .opacity(0.95)
+        .allowsHitTesting(false)
     }
 
     /// Полупрозрачная вуаль на всю ленту (порт matchParentSize + surface200 α0.97).
@@ -370,22 +411,120 @@ struct SecretDeviceLinkInviteSheet: View {
     }
 }
 
-// MARK: - Полоска «Ждём ключи шифрования…» над композером
+// MARK: - Строки состояния защиты над композером
 
-/// Порт строки композера «🔒 Ждём ключи шифрования…» (+ размер очереди): вставляется
-/// первой строкой в composer, когда ui.isSecret && !ui.secretReady. Отправка при этом
-/// НЕ блокируется — sendSecret копит сообщения и сбросит их сам по приходу ключа.
+/// Бирюзовая часть цвета плашек состояния (веб: rgba(13,148,136,…) поверх surface).
+private let secretTeal = Color(hex: 0x0D9488)
+/// Красный плашек ошибки (веб: rgba(239,68,68,…)) — ярче общего Eb.error на фоне.
+private let secretRed = Color(hex: 0xEF4444)
+
+/// Порт бирюзовой плашки MessagesPane: первая строка композера, пока ключа треда нет.
+/// Отправка при этом НЕ блокируется — sendSecret копит текст и дошлёт его сам по приходу
+/// ключа, поэтому в плашке показываем размер очереди (веб: activeSecretQueuedCount):
+/// молча копящиеся сообщения читаются как «мессенджер съел сообщение».
 struct SecretKeysWaitingBar: View {
     let queued: Int
 
     var body: some View {
-        Text("🔒 Ждём ключи шифрования…"
-            + (queued > 0 ? " (\(queued) в очереди — отправим автоматически)" : ""))
-            .font(.caption)
-            .foregroundStyle(Eb.textMuted)
+        Text(queued > 0
+            ? "🔒 Настраивается… ждём ключи от собеседника. \(queued) сообщ. в очереди — "
+                + "отправим автоматически."
+            : "🔒 Настраивается… ждём ключи от собеседника. Можно писать — отправим автоматически.")
+            .font(.footnote)
+            .foregroundStyle(Eb.textPrimary)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 4)
-            .background(Eb.surface200)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(secretTeal.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Eb.border))
+            // Отступы носит сама плашка: композер о её геометрии знать не должен.
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+    }
+}
+
+/// Порт красной плашки MessagesPane «Не удалось получить ключи…»: ключи не доехали
+/// (собеседник оффлайн, старый клиент, потерянный key package). Без неё айфон крутился
+/// молча и не давал ни диагностики, ни выхода.
+///
+/// Действия отдаются наружу замыканиями, а не зовут вьюмодель: экран сам решает, что
+/// такое «повторить обмен ключами» (republish OPK + key_request + syncInbox) и куда
+/// ведёт привязка устройства.
+struct SecretKeysErrorCard: View {
+    /// Код первопричины из движка (веб: ROOT_CAUSE, по умолчанию NO_KEYPACKAGE).
+    let code: String
+    /// У аккаунта есть ДРУГИЕ устройства — только тогда ключи реально можно забрать у них.
+    let canLinkDevice: Bool
+    /// Повтор обмена ключами уже идёт — кнопки гасим, чтобы не слать запрос пачкой.
+    var busy = false
+    let onRetry: () -> Void
+    let onLinkDevice: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("⚠️ Секретный чат недоступен на этом устройстве.")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Eb.textPrimary)
+            Text("Не удалось получить ключи для секретного чата (\(code)).")
+                .font(.footnote)
+                .foregroundStyle(Eb.error)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button(busy ? "…" : "Восстановить", action: onRetry)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Eb.brand)
+                if canLinkDevice {
+                    Button("Привязать устройство", action: onLinkDevice)
+                        .buttonStyle(.bordered)
+                        .tint(Eb.textMuted)
+                }
+            }
+            .font(.footnote)
+            .disabled(busy)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(secretRed.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(secretRed.opacity(0.30)))
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+    }
+}
+
+// MARK: - Чип состояния защиты в шапке
+
+/// Состояние защиты секретного треда для шапки (порт activeSecretUiState.readyState).
+enum SecretProtectionState: Equatable {
+    /// Ключ треда на руках — чат реально шифрует.
+    case ready
+    /// Ключа ещё нет, обмен идёт.
+    case bootstrapping
+    /// Ключи не доехали (сработал таймаут ожидания).
+    case failed
+}
+
+/// Порт янтарной плашки-бейджа под названием беседы: по шапке должно быть видно, готов
+/// ли чат шифровать. Ставится вместо серой подписи «🔒 секретный чат», которая выглядела
+/// одинаково и во время настройки, и при рабочем ключе.
+struct SecretHeaderStatusChip: View {
+    let state: SecretProtectionState
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.bold))
+            .foregroundStyle(state == .failed ? Eb.error : Eb.textPrimary)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Eb.away.opacity(0.10), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Eb.away.opacity(0.24)))
+    }
+
+    private var text: String {
+        switch state {
+        case .ready: return "🔒 Защищено"
+        case .bootstrapping: return "🔒 Настраивается…"
+        case .failed: return "⚠️ Ошибка ключей"
+        }
     }
 }

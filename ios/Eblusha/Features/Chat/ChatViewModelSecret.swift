@@ -7,9 +7,18 @@ import Foundation
 // инбокс-полл 3.5 с + реконсиляция историей каждые ~21 с.
 //
 // Extension живёт в ОТДЕЛЬНОМ файле, поэтому private-члены ChatViewModel ему не видны, а
-// хранимые поля добавить нельзя: secretRepo/secretMode/secretPeers/secretQueue и
+// хранимые поля добавить нельзя: secretRepo/secretMode/secretPeers/secretFlushing и
 // секретные поля UiState вносятся в сам класс, часть private снимается — см.
 // integration_notes (точечные правки ChatViewModel.swift).
+
+/// Сколько ждём key package, прежде чем пробовать починиться самим: веб даёт сторожу
+/// ровно 120 с (ChatsPage.tsx), и ту же планку держим здесь — уронить её ниже значит
+/// пугать ошибкой того, у кого собеседник просто вышел в лифт.
+/// Константы файловые, а не static в extension: хранимых полей extension не носит.
+private let secretKeysWaitTimeoutSeconds: Double = 120
+/// Фора после попытки самолечения (веб: те же 12 с): ключ мог поехать прямо сейчас, и
+/// мигать ошибкой за секунду до его прихода незачем.
+private let secretKeysGraceSeconds: Double = 12
 
 extension ChatViewModel {
 
@@ -25,12 +34,17 @@ extension ChatViewModel {
         let header = await repo.conversationHeader(conversationId)
         ui.isSecret = true
         ui.headerAvatarUrl = header.avatarUrl
-        ui.headerSubtitle = "🔒 секретный чат"
+        // Подпись шапки в секретке рисует не headerSubtitle, а чип состояния защиты
+        // (SecretHeaderStatusChip): статичное «🔒 секретный чат» выглядело одинаково и при
+        // настройке, и при рабочем ключе, и при сбое ключей.
         await secretRepo.ensureDeviceBootstrap()
         // Забрать уже ждущий key package ДО первого рендера истории.
         await secretRepo.syncInbox()
         let ready = secretRepo.hasThreadKey(conversationId)
         ui.secretReady = ready
+        // Очередь переживает и закрытие экрана, и перезапуск приложения — поднимаем её
+        // пузыри ДО истории, чтобы «ждёт ключ» было видно сразу при входе.
+        restoreSecretOutbox()
 
         let pending = meta?.isSecretPending == true
         if pending && amCreator {
@@ -55,6 +69,12 @@ extension ChatViewModel {
             await secretRepo.onPeerAccepted(threadId: conversationId, peerDeviceId: acceptedDevice)
         }
         await loadSecret()
+        // Ключ мог быть на руках всё это время (или приехать только что, в syncInbox выше) —
+        // тогда очередь уезжает сразу при входе, без ожидания нового события.
+        flushSecretQueue()
+        // Сторож ожидания: без него бесключевой чат крутился молча и вечно — ни причины,
+        // ни кнопок (веб показывает «Не удалось получить ключи» через две минуты).
+        startSecretKeysWatchdog()
         subscribeSecretStreams()
         startSecretLoops()
     }
@@ -77,6 +97,8 @@ extension ChatViewModel {
                 guard let self, threadId == self.conversationId else { return }
                 self.ui.secretReady = true
                 self.ui.secretInvite = false
+                self.ui.secretKeyArrived += 1
+                self.stopSecretKeysWatchdog()
                 self.flushSecretQueue()
                 Task { await self.loadSecret() }
             }
@@ -94,6 +116,8 @@ extension ChatViewModel {
                 self.ui.linkRequestedOn = nil
                 self.ui.secretReady = ready || self.ui.secretReady
                 if ready {
+                    self.ui.secretKeyArrived += 1
+                    self.stopSecretKeysWatchdog()
                     self.flushSecretQueue()
                     Task { await self.loadSecret() }
                 }
@@ -157,6 +181,9 @@ extension ChatViewModel {
                 try? await Task.sleep(for: .seconds(3.5))
                 guard let self else { return }
                 await self.secretRepo.syncInbox()
+                // Ремень к keyImported: ключ мог сесть без события (ре-бутстрап, потерянный
+                // паблишер), а упавший на сети досыл иначе ждал бы нового сообщения.
+                if self.ui.secretQueued > 0 { self.flushSecretQueue() }
                 tick += 1
                 if tick % 6 == 0 { await self.loadSecret() }
             }
@@ -180,6 +207,10 @@ extension ChatViewModel {
             // мёртвого чата; собеседник закрыл секретку → уничтожаем локальные следы.
             ui.secretInvite = false
             ui.secretDeclined = true
+            // Тред мёртв (отклонён/закрыт собеседником) — адресата у очереди больше нет,
+            // держать её на диске значило бы хранить текст закрытой секретки.
+            SecretOutbox.clear(conversationId)
+            stopSecretKeysWatchdog()
             Task { await secretRepo.purgeThreadLocal(conversationId) }
             return true
 
@@ -219,6 +250,7 @@ extension ChatViewModel {
             let fresh = page.messages.map { secretToMessage($0) }
             ui.loading = false
             ui.messages = dedupSortedSecret(fresh + ui.messages)
+            reconcileSecretOutbox()
             if !pagedBack {
                 ui.hasMore = page.hasMore
                 ui.nextCursor = page.nextCursor
@@ -310,6 +342,7 @@ extension ChatViewModel {
     private func appendSecret(_ m: DecryptedSecretMessage) {
         guard !ui.messages.contains(where: { $0.id == m.id }) else { return }
         ui.messages = dedupSortedSecret(ui.messages + [secretToMessage(m)])
+        reconcileSecretOutbox()
         ui.typingName = nil
     }
 
@@ -329,12 +362,23 @@ extension ChatViewModel {
             if !secretRepo.hasThreadKey(conversationId) {
                 // Копим до прихода key package создателя (веб-паритет): не-создатель НИКОГДА
                 // не генерирует ключ треда — перетёр бы настоящий на устройствах собеседника.
-                secretQueue.append(text)
-                ui.secretQueued = secretQueue.count
+                // Хранилище живёт ВНЕ vm (SecretOutbox): очередь в @StateObject-поле умирала
+                // вместе с экраном, и текст пропадал у обоих участников навсегда.
+                let entry = SecretOutbox.add(conversationId, text: text)
+                ui.secretQueued = SecretOutbox.count(conversationId)
+                ui.error = nil
+                // Веб-паритет pendingByConv: пузырь появляется сразу, иначе отправка
+                // выглядит проглоченной. flush заменит его серверным сообщением.
+                ui.messages = dedupSortedSecret(ui.messages + [outboxBubble(entry)])
+                // Плашку цитаты гасим, как в ветке с ключом: сообщение принято, а цитат в
+                // E2EE-транспорте нет вовсе — иначе она подхватилась бы к следующему тексту.
+                ui.replyingTo = []
                 await secretRepo.syncInbox() // оппортунистически: ключ мог уже ждать
                 // Закрываем гонку «проверили → поставили в очередь»: ключ мог сесть между.
                 if secretRepo.hasThreadKey(conversationId) {
                     ui.secretReady = true
+                    ui.secretKeyArrived += 1
+                    stopSecretKeysWatchdog()
                     flushSecretQueue()
                 }
                 return
@@ -385,25 +429,156 @@ extension ChatViewModel {
         }
     }
 
-    /// Сброс очереди, скопившейся до прихода ключа. Сбой возвращает остаток в очередь
-    /// по порядку, а не роняет его молча.
-    func flushSecretQueue() {
-        guard !secretQueue.isEmpty else { return }
-        let pending = secretQueue
-        secretQueue.removeAll()
-        ui.secretQueued = 0
+    /// Пузырь ждущей записи. id — временный (SecretOutbox.pendingIdPrefix): по нему лента
+    /// отличает «ждёт ключ» от отправленного, а flush снимает пузырь по тому же id.
+    private func outboxBubble(_ entry: SecretOutbox.Entry) -> Message {
+        Message(
+            id: entry.id,
+            conversationId: conversationId,
+            senderId: repo.currentUserId() ?? "",
+            senderName: "Вы",
+            type: "TEXT",
+            content: entry.text,
+            createdAt: entry.createdAtMs,
+            isMine: true,
+            isSystem: false
+        )
+    }
+
+    /// Вход в чат: вернуть в ленту пузыри, оставшиеся с прошлого запуска/визита.
+    func restoreSecretOutbox() {
+        let pending = SecretOutbox.all(conversationId)
+        ui.secretQueued = pending.count
+        guard !pending.isEmpty else { return }
+        ui.messages = dedupSortedSecret(ui.messages + pending.map { outboxBubble($0) })
+    }
+
+    /// Снять пузыри, чьи сообщения на сервере УЖЕ есть: первый заход мог дойти, а ответ —
+    /// потеряться на сети, и тогда «ждущий» пузырь висел бы рядом с настоящим сообщением,
+    /// дублируя текст в ленте. Сверяем по msgId, зафиксированному при постановке в очередь.
+    private func reconcileSecretOutbox() {
+        let arrived = Set(ui.messages.map(\.id))
+        let delivered = SecretOutbox.all(conversationId).filter { arrived.contains($0.msgId) }
+        guard !delivered.isEmpty else { return }
+        for entry in delivered { SecretOutbox.remove(conversationId, id: entry.id) }
+        let staleIds = Set(delivered.map(\.id))
+        ui.messages.removeAll { staleIds.contains($0.id) }
+        ui.secretQueued = SecretOutbox.count(conversationId)
+    }
+
+    // MARK: - Сторож ожидания ключей (порт watchdog ChatsPage)
+
+    /// Запустить (или перезапустить) отсчёт ожидания key package. Порядок как в вебе:
+    /// 120 с ждём → одна попытка самолечения → 12 с форы → только тогда ошибка с кнопками.
+    func startSecretKeysWatchdog() {
+        secretKeysWatchdog?.cancel()
+        secretKeysWatchdog = nil
+        // Ждать нечего: ключ уже есть, либо приглашение ещё даже не принято (до accept'а
+        // ключи не клянчим вовсе), либо тред уже мёртв.
+        guard ui.isSecret, !ui.secretReady, !ui.secretInvite, !ui.secretDeclined,
+              !secretRepo.hasThreadKey(conversationId) else { return }
+        ui.secretKeysError = nil
+        secretKeysWatchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(secretKeysWaitTimeoutSeconds))
+            guard !Task.isCancelled, let self, !self.secretRepo.hasThreadKey(self.conversationId)
+            else { return }
+            // Одна автоматическая попытка (веб: refreshKeysAndRetry по таймауту) — чаще
+            // всего у устройства просто вышли одноразовые ключи, и она всё чинит сама.
+            await self.recoverSecretKeys()
+            if !self.secretRepo.hasThreadKey(self.conversationId) {
+                try? await Task.sleep(for: .seconds(secretKeysGraceSeconds))
+            }
+            guard !Task.isCancelled else { return }
+            if self.secretRepo.hasThreadKey(self.conversationId) {
+                self.ui.secretReady = true
+                self.ui.secretKeyArrived += 1
+                // Гасим плашку напрямую, а НЕ через stopSecretKeysWatchdog(): тот отменил
+                // бы задачу, внутри которой мы сейчас находимся, и следующий же await
+                // (loadSecret) вернулся бы отменённым запросом, показав ложную ошибку сети.
+                self.ui.secretKeysError = nil
+                self.ui.secretKeysRetrying = false
+                self.flushSecretQueue()
+                await self.loadSecret()
+            } else {
+                self.ui.secretKeysError = "NO_KEYPACKAGE"
+            }
+        }
+    }
+
+    /// Ключ приехал (или ждать больше нечего): отсчёт снимаем вместе с плашкой ошибки.
+    func stopSecretKeysWatchdog() {
+        secretKeysWatchdog?.cancel()
+        secretKeysWatchdog = nil
+        ui.secretKeysError = nil
+        ui.secretKeysRetrying = false
+    }
+
+    /// Кнопка «Восстановить» красной плашки — тот же повтор, что делает сторож, но по
+    /// просьбе человека: неудача оставляет плашку на месте, удача открывает чат.
+    func retrySecretKeys() {
+        guard !ui.secretKeysRetrying else { return }
         Task {
-            for (i, text) in pending.enumerated() {
+            ui.secretKeysRetrying = true
+            await recoverSecretKeys()
+            ui.secretKeysRetrying = false
+            if secretRepo.hasThreadKey(conversationId) {
+                ui.secretReady = true
+                ui.secretKeyArrived += 1
+                stopSecretKeysWatchdog()
+                flushSecretQueue()
+                await loadSecret()
+            } else {
+                ui.secretKeysError = "NO_KEYPACKAGE"
+            }
+        }
+    }
+
+    /// Повтор обмена ключами (порт refreshKeysAndRetry): перепубликовать одноразовые ключи
+    /// этого устройства — их исчерпание и есть обычная причина NO_KEYPACKAGE, создателю
+    /// нечем запечатать ключ треда, — затем снова попросить ключ и разобрать инбокс.
+    private func recoverSecretKeys() async {
+        await secretRepo.ensureDeviceBootstrap()
+        await secretRepo.replenishPrekeys()
+        await secretRepo.requestThreadKey(threadId: conversationId, userIds: secretPeers)
+        await secretRepo.syncInbox()
+    }
+
+    /// Досыл очереди, скопившейся до прихода ключа. Источник правды — SecretOutbox, и
+    /// запись снимается ТОЛЬКО после успешной отправки: сбой сети (и даже смерть процесса
+    /// посреди досыла) оставляет остаток на диске, а следующий повод пробует снова.
+    func flushSecretQueue() {
+        guard !secretFlushing else { return }
+        let pending = SecretOutbox.all(conversationId)
+        ui.secretQueued = pending.count
+        guard !pending.isEmpty else { return }
+        // Ключа всё ещё нет — шифровать нечем; пузыри остаются на экране до keyImported.
+        guard secretRepo.hasThreadKey(conversationId) else { return }
+        secretFlushing = true
+        Task {
+            defer {
+                secretFlushing = false
+                ui.secretQueued = SecretOutbox.count(conversationId)
+            }
+            for entry in pending {
+                // msgId зафиксирован при постановке в очередь: если первый заход дошёл до
+                // сервера, а ответ потерялся, повтор — идемпотентный no-op, а не дубликат.
                 switch await secretRepo.sendText(
-                    conversationId: conversationId, peerUserIds: secretPeers, text: text
+                    conversationId: conversationId,
+                    peerUserIds: secretPeers,
+                    text: entry.text,
+                    msgId: entry.msgId
                 ) {
                 case .success(let m):
-                    ui.messages = dedupSortedSecret(ui.messages + [secretToMessage(m)])
+                    SecretOutbox.remove(conversationId, id: entry.id)
+                    // Временный пузырь уходит, на его месте — серверное сообщение с
+                    // настоящим id (поздние копии из инбокса/истории дедупятся им же).
+                    ui.messages = dedupSortedSecret(
+                        ui.messages.filter { $0.id != entry.id } + [secretToMessage(m)]
+                    )
+                    ui.secretQueued = SecretOutbox.count(conversationId)
                 case .failure(let message, _):
-                    secretQueue.insert(contentsOf: pending[i...], at: 0)
-                    ui.secretQueued = secretQueue.count
                     ui.error = message
-                    return
+                    return // остаток ждёт следующего повода: полл инбокса, фон→экран, отправка
                 }
             }
         }
@@ -537,6 +712,8 @@ extension ChatViewModel {
                 // ляжет в его инбокс, и его ключевое устройство ответит (оключует нас),
                 // когда снова выйдет в сеть.
                 await secretRepo.requestThreadKey(threadId: conversationId, userIds: secretPeers)
+                // Ожидание ключа началось именно сейчас — отсчёт сторожа тоже.
+                startSecretKeysWatchdog()
             case .failure(let message, _):
                 ui.secretInviteBusy = false
                 ui.error = message
@@ -554,6 +731,9 @@ extension ChatViewModel {
                 ui.secretInviteBusy = false
                 ui.secretInvite = false
                 ui.secretDeclined = true
+                // Сами отклонили приглашение — набранное до этого отправлять уже некуда.
+                SecretOutbox.clear(conversationId)
+                stopSecretKeysWatchdog()
             case .failure(let message, _):
                 // Неудавшийся decline НЕ должен закрывать экран, пока тред на сервере PENDING.
                 ui.secretInviteBusy = false
