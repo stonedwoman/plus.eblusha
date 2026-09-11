@@ -106,6 +106,13 @@ struct MessageListView: View {
         for message in messages where !message.senderName.isEmpty {
             names[message.senderId] = message.senderName
         }
+        // Позиция участника в отсортированном списке беседы — по ней берутся цвет имени и
+        // фон пузыря (порт participantColorIndex из веба). Участники приезжают вместе со
+        // списком бесед; пока их нет, цвет считается по хэшу, как раньше.
+        var participantOrder: [String: Int] = [:]
+        for (index, id) in vm.ui.senderAvatars.keys.sorted().enumerated() {
+            participantOrder[id] = index
+        }
 
         return messages.enumerated().map { index, message in
             let earlier = index > 0 ? messages[index - 1] : nil
@@ -116,6 +123,7 @@ struct MessageListView: View {
                 isGroup: vm.ui.isGroup,
                 senderAvatarUrl: vm.ui.senderAvatars[message.senderId] ?? nil,
                 senderNames: names,
+                participantOrder: participantOrder,
                 isFirstInRun: !continuesRun(earlier, message),
                 isLastInRun: !continuesRun(message, later),
                 dayHeader: newDay ? formatMessageDay(message.createdAt) : nil,
@@ -197,6 +205,8 @@ struct MessageRowModel: Identifiable, Equatable {
     let isGroup: Bool
     let senderAvatarUrl: String?
     let senderNames: [String: String]
+    /// Позиция каждого участника беседы: слот палитры имени и фона пузыря.
+    let participantOrder: [String: Int]
     let isFirstInRun: Bool
     let isLastInRun: Bool
     let dayHeader: String?
@@ -752,6 +762,7 @@ private struct MessageCell: View {
                 isGroup: model.isGroup,
                 senderAvatarUrl: model.senderAvatarUrl,
                 senderNames: model.senderNames,
+                participantOrder: model.participantOrder,
                 isFirstInRun: model.isFirstInRun,
                 isLastInRun: model.isLastInRun,
                 selectionMode: model.selectionMode,

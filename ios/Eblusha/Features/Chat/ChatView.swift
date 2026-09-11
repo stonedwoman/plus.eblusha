@@ -62,15 +62,30 @@ private func hashStringToUint(_ s: String?) -> UInt32 {
     return UInt32(h)
 }
 
-// Стабильный цвет имени per-user — та же палитра и хэш, что у веба (nameColorForUser).
-private let nameColorPalette: [Color] = [
+// Цвета имён авторов — порт `chats/chatsColors.ts`. Цвет берётся по ПОЗИЦИИ участника в
+// беседе, а не по хэшу от id: хэш в маленькой группе то и дело давал двоим один цвет
+// (парадокс дней рождения). Хэш остался запасным путём для id вне беседы — например,
+// автора пересланного сообщения из чужого чата.
+private let nameColorPalette13: [Color] = [
     Color(hex: 0xB39DDB), Color(hex: 0xA5D6A7), Color(hex: 0x90CAF9), Color(hex: 0xFFCC80),
     Color(hex: 0xF48FB1), Color(hex: 0x80CBC4), Color(hex: 0xCE93D8), Color(hex: 0xFFAB91),
     Color(hex: 0x9FA8DA), Color(hex: 0xAED581), Color(hex: 0xFFECB3), Color(hex: 0xEF9A9A),
     Color(hex: 0x81D4FA),
 ]
-private func nameColorForUser(_ userId: String?) -> Color {
-    nameColorPalette[Int(hashStringToUint(userId)) % nameColorPalette.count]
+/// Резерв для беседы больше 13 человек — ещё 13 различимых тонов (веб-паритет).
+private let nameColorPalette26: [Color] = nameColorPalette13 + [
+    Color(hex: 0x9575CD), Color(hex: 0x4DB6AC), Color(hex: 0x64B5F6), Color(hex: 0xFF8A65),
+    Color(hex: 0xF06292), Color(hex: 0xBA68C8), Color(hex: 0x4FC3F7), Color(hex: 0x81C784),
+    Color(hex: 0xDCE775), Color(hex: 0xFFD54F), Color(hex: 0xA1887F), Color(hex: 0x90A4AE),
+    Color(hex: 0x7986CB),
+]
+/// `order` — позиция участника в отсортированном списке беседы (см. `participantOrder`).
+func nameColorForUser(_ userId: String?, order: [String: Int]) -> Color {
+    if let userId, let index = order[userId] {
+        let palette = order.count > nameColorPalette13.count ? nameColorPalette26 : nameColorPalette13
+        return palette[index % palette.count]
+    }
+    return nameColorPalette13[Int(hashStringToUint(userId)) % nameColorPalette13.count]
 }
 
 // Тёмный тинт входящих пузырей per-sender в ГРУППАХ — та же палитра, что у веба.
@@ -79,8 +94,13 @@ private let groupBubblePalette: [Color] = [
     Color(hex: 0x162A2E), Color(hex: 0x2D2418), Color(hex: 0x1F2440), Color(hex: 0x223016),
     Color(hex: 0x301C22), Color(hex: 0x14222C), Color(hex: 0x2F2218), Color(hex: 0x241C30),
 ]
-private func groupIncomingBubbleBg(_ userId: String?) -> Color {
-    groupBubblePalette[Int(hashStringToUint(userId)) % groupBubblePalette.count]
+/// Фон входящего пузыря в группе берётся ТЕМ ЖЕ индексом участника, что и цвет имени —
+/// поэтому «имя + фон» одного человека согласованы, а у разных авторов фоны не совпадают.
+func groupIncomingBubbleBg(_ userId: String?, order: [String: Int]) -> Color {
+    if let userId, let index = order[userId] {
+        return groupBubblePalette[index % groupBubblePalette.count]
+    }
+    return groupBubblePalette[Int(hashStringToUint(userId)) % groupBubblePalette.count]
 }
 
 struct ChatView: View {
@@ -690,6 +710,8 @@ struct MessageRow: View {
     let senderAvatarUrl: String?
     /// Имена по id отправителя — для подписи плитки цитаты («кому отвечают»).
     var senderNames: [String: String] = [:]
+    /// Позиция участника беседы → слот в палитре имени и фона пузыря (веб-паритет).
+    var participantOrder: [String: Int] = [:]
     let isFirstInRun: Bool
     let isLastInRun: Bool
     let selectionMode: Bool
@@ -808,7 +830,7 @@ struct MessageRow: View {
     // тонированы per-sender.
     private var bubbleColor: Color {
         if m.isMine { return Eb.bubbleOut }
-        if isGroup { return groupIncomingBubbleBg(m.senderId) }
+        if isGroup { return groupIncomingBubbleBg(m.senderId, order: participantOrder) }
         return Eb.bubbleIn
     }
 
@@ -817,7 +839,7 @@ struct MessageRow: View {
             if isGroup && !m.isMine && isFirstInRun {
                 Text(m.senderName)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(nameColorForUser(m.senderId))
+                    .foregroundStyle(nameColorForUser(m.senderId, order: participantOrder))
             }
 
             if let forward = m.forwardFrom {
@@ -829,14 +851,18 @@ struct MessageRow: View {
 
             ForEach(m.replyTo, id: \.id) { reply in
                 HStack(spacing: 6) {
-                    Rectangle().fill(Eb.brand).frame(width: 2)
+                    // Полоса цитаты — цвета автора, как в вебе: по ней взгляд отличает,
+                    // кому отвечают, ещё до чтения имени.
+                    Rectangle()
+                        .fill(nameColorForUser(reply.senderId, order: participantOrder))
+                        .frame(width: 2)
                     VStack(alignment: .leading, spacing: 1) {
                         // Имя автора цитаты: без него плитка была безымянной серой
                         // полоской и было непонятно, кому вообще отвечают.
                         if let author = replyAuthorName(reply) {
                             Text(author)
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(nameColorForUser(reply.senderId))
+                                .foregroundStyle(nameColorForUser(reply.senderId, order: participantOrder))
                                 .lineLimit(1)
                         }
                         Text(reply.content?.isEmpty == false ? reply.content! : "Вложение")
