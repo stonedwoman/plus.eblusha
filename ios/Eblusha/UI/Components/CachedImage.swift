@@ -66,6 +66,17 @@ actor ImageLoader {
             return hit
         }
         if let running = inFlight[url] { return await running.value }
+        // Локальный файл: превью ещё не отправленного вложения и расшифрованная секретка
+        // лежат на диске. Через URLSession они не читаются вовсе — ответ у file:// не
+        // HTTP, и проверка статуса ниже отбрасывала бы картинку как несуществующую.
+        if url.isFileURL {
+            guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+            // «Стоимость» для NSCache — по размеру кадра в памяти (4 байта на пиксель):
+            // пересжимать картинку только ради числа байт было бы дороже самой загрузки.
+            let pixels = Int(image.size.width * image.scale * image.size.height * image.scale)
+            store(image, for: url, bytes: pixels * 4)
+            return image
+        }
         let task = Task<UIImage?, Never> { [weak self] in
             var request = URLRequest(url: url)
             // Картинки неизменяемы (url содержит ключ объекта), поэтому диск важнее сети.

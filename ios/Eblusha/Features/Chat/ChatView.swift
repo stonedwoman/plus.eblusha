@@ -834,6 +834,10 @@ struct MessageRow: View {
     let onEdit: () -> Void
     let onDelete: () -> Void
 
+    /// Ещё не отправленное вложение: прогресс с отменой или пометка сбоя с повтором.
+    /// Через окружение (как превью цитат): ставит ячейка ленты, см. MessageListView.
+    @Environment(\.outgoingUpload) private var outgoingUpload
+
     var body: some View {
         if m.isSystem {
             Text(m.content ?? "")
@@ -917,7 +921,7 @@ struct MessageRow: View {
                 // Пузырь секретки, ждущий ключа, ещё НЕ отправлен: галочка «отправлено»
                 // тут врала бы, поэтому у него часы — как только очередь уедет, пузырь
                 // заменится серверным сообщением с обычными галочками.
-                if SecretOutbox.isPending(m.id) {
+                if SecretOutbox.isPending(m.id) || ChatViewModel.isOutgoingId(m.id) {
                     Image(systemName: "clock")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Eb.textMuted)
@@ -1009,6 +1013,10 @@ struct MessageRow: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.04))
         )
+        // Пока файл летит — затемнение с кольцом прогресса и крестиком отмены прямо на
+        // пузыре (веб наливает прогресс поверх картинки, ChatMessageRow.tsx); упало —
+        // «Не отправилось» с повтором. Пустой пузырь накладку не рисует вовсе.
+        .overlay { OutgoingUploadOverlay(badge: outgoingUpload) }
         // Долгое нажатие (своё меню вместо системного contextMenu) живёт на коллекции
         // ленты как UIKit-жест: SwiftUI-модификатор здесь перехватывал касание у прокрутки.
     }

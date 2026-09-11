@@ -196,8 +196,10 @@ struct PhotoEditorView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 9)
                 .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 20))
-            Button(action: send) {
-                Image(systemName: "arrow.up")
+            // «Готово», а не «отправить»: редактор возвращает кадры в очередь композера
+            // (веб-паритет — выбранное только стейджится), отправка живёт на своей кнопке.
+            Button(action: finish) {
+                Image(systemName: "checkmark")
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 38, height: 38)
@@ -209,9 +211,9 @@ struct PhotoEditorView: View {
         .padding(.bottom, 10)
     }
 
-    // MARK: - Отправка
+    // MARK: - Возврат кадров в композер
 
-    private func send() {
+    private func finish() {
         guard !exporting else { return }
         exporting = true
         captionFocused = false

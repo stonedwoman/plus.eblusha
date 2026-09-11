@@ -58,6 +58,7 @@ struct MessageListView: View {
                 onPickReaction: onPickReaction,
                 onEdit: onEdit,
                 onDelete: { vm.delete(messageId: $0.id) },
+                onOutgoing: { id, action in vm.handleOutgoing(id, action) },
                 decryptSecretAttachment: vm.ui.isSecret ? { await vm.decryptSecretAttachment($0) } : nil
             ),
             onReachedTop: { loadOlderIfPossible() },
@@ -169,7 +170,8 @@ struct MessageListView: View {
                 selectionMode: vm.ui.selectionMode,
                 selected: vm.ui.selectedIds.contains(message.id),
                 highlighted: message.id == proxy.highlightedId,
-                quickSlots: quickSlots
+                quickSlots: quickSlots,
+                outgoingUpload: vm.ui.outgoing[message.id]
             )
         }
     }
@@ -261,6 +263,10 @@ struct MessageRowModel: Identifiable, Equatable {
     let selected: Bool
     let highlighted: Bool
     let quickSlots: [String]
+    /// Сообщение ещё не отправлено: прогресс аплоада или пометка сбоя. nil — обычная
+    /// строка. Лежит В МОДЕЛИ, а не в окружении ленты, чтобы diffable-источник видел
+    /// изменение прогресса и переконфигурировал ровно эту ячейку.
+    let outgoingUpload: OutgoingUpload?
 
     var id: String { message.id }
 }
@@ -281,6 +287,8 @@ struct MessageRowActions {
     let onPickReaction: (Message) -> Void
     let onEdit: (Message) -> Void
     let onDelete: (Message) -> Void
+    /// Кнопки на ещё не отправленном пузыре: отмена, повтор, удаление.
+    let onOutgoing: (String, OutgoingUploadAction) -> Void
     let decryptSecretAttachment: ((MessageAttachment) async -> URL?)?
 }
 
@@ -611,6 +619,9 @@ final class MessageListController: UIViewController {
         guard recognizer.state == .began else { return }
         let point = recognizer.location(in: collectionView)
         guard let row = row(atCollectionPoint: point) else { return }
+        // Меню действий для ещё не отправленного бессмысленно: сервер этого сообщения не
+        // видел — ни ответить, ни переслать, ни отредактировать. Отмена живёт на пузыре.
+        guard row.outgoingUpload == nil else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         actions?.onLongPress(row.message)
     }
@@ -622,6 +633,8 @@ final class MessageListController: UIViewController {
             guard let indexPath = collectionView.indexPathForItem(at: point),
                   indexPath.item < rows.count,
                   !rows[indexPath.item].message.isSystem,
+                  // Свайп-ответ на ещё не отправленное: replyToId указывал бы на временный id.
+                  rows[indexPath.item].outgoingUpload == nil,
                   !rows[indexPath.item].selectionMode
             else {
                 swipingIndexPath = nil
@@ -841,5 +854,12 @@ private struct MessageCell: View {
         // Данные карточки цитаты — через окружение: карточка сидит глубоко внутри пузыря,
         // и протаскивать словарь через всю сигнатуру MessageRow не за что.
         .environment(\.replyQuotePreviews, model.replyQuotePreviews)
+        // Тем же путём — накладка отправляемого: прогресс, отмена, повтор.
+        .environment(\.outgoingUpload, OutgoingUploadBadge(
+            state: model.outgoingUpload,
+            onCancel: { actions?.onOutgoing(model.message.id, .cancel) },
+            onRetry: { actions?.onOutgoing(model.message.id, .retry) },
+            onDiscard: { actions?.onOutgoing(model.message.id, .discard) }
+        ))
     }
 }

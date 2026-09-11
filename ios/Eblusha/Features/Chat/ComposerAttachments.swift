@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import UIKit
+import CoreTransferable
 import UniformTypeIdentifiers
 
 // Порт стейджинга вложений из `ui/chat/ChatScreen.kt` (pickAttachment / очередь чипов /
@@ -9,7 +10,28 @@ import UniformTypeIdentifiers
 // Вместо системного GetMultipleContents Android'а — два источника: PhotosPicker (до 10
 // фото И видео из галереи, без разрешения на всю библиотеку) и fileImporter (до 10
 // документов). Видео идёт в «прочие» (как в Kotlin, где GetMultipleContents не различает):
-// капы вью-модели — 10 картинок + 10 остальных, лимит размера — 100 МБ.
+// капы вью-модели — 10 картинок + 10 остальных, лимит размера — серверный (см. ниже).
+
+/// Потолок вложения — РОВНО серверный: multer `limits.fileSize` (src/routes/upload.ts) при
+/// nginx `client_max_body_size 1024m`. Своего, более жёсткого лимита у клиента больше нет:
+/// прежние 100 МБ отказывали в том, что браузер с того же телефона отправлял спокойно
+/// (в вебе проверки размера нет вообще, крупное просто уходит чанками).
+let attachmentSizeLimitBytes: Int64 = 1024 * 1024 * 1024
+
+/// Текст отказа по размеру — один на все входы (оба пикера и вью-модель): и сколько весит
+/// файл, и какой потолок. Раньше путь документов отдавал на негабарит просто nil, и человек
+/// видел «Не удалось прочитать выбранные файлы» — то есть про размер не узнавал вовсе.
+func oversizeAttachmentMessage(name: String, bytes: Int64) -> String {
+    let actual = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    let limit = ByteCountFormatter.string(fromByteCount: attachmentSizeLimitBytes, countStyle: .file)
+    return "Файл «\(name)» весит \(actual) — сервер принимает вложения до \(limit)"
+}
+
+/// Отказ при чтении выбранного, с ГОТОВЫМ текстом для баннера: отличает «слишком большой»
+/// от «не читается», чего прежний `-> OutgoingFile?` сделать не мог.
+private struct PickFailure: Error {
+    let message: String
+}
 
 // MARK: - Кнопка-скрепка с пикерами
 
@@ -89,6 +111,7 @@ struct AttachmentPickerButton: View {
         // @MainActor: стейт и колбэки вью-модели трогаем только с главного;
         // тяжёлое (декод HEIC) уезжает в detached-задачи.
         Task { @MainActor in
+            pruneStagingDirectory()
             var files: [OutgoingFile] = []
             for (i, item) in items.enumerated() {
                 let stamp = photoNameStamp.string(from: Date())
@@ -97,19 +120,6 @@ struct AttachmentPickerButton: View {
                 if let movieType = item.supportedContentTypes.first(where: {
                     $0.conforms(to: .movie) || $0.conforms(to: .audiovisualContent)
                 }) {
-                    guard let data = try? await item.loadTransferable(type: Data.self) else {
-                        onError("Не удалось прочитать выбранные файлы")
-                        reading = false
-                        return
-                    }
-                    // PhotosPickerItem не отдаёт размер до чтения (в отличие от
-                    // fileImporter, где отсечка стоит ДО чтения) — проверяем сразу после,
-                    // до стейджинга: лимит тот же, что у отправки (100 МБ).
-                    if data.count > 100 * 1024 * 1024 {
-                        onError("Файл слишком большой (макс. 100 МБ)")
-                        reading = false
-                        return
-                    }
                     // mime по UTType: галерея iPhone отдаёт QuickTime (.mov) или MP4;
                     // прочее падает в video/mp4 — веб и Android оба типа проигрывают.
                     let mime: String
@@ -124,9 +134,14 @@ struct AttachmentPickerButton: View {
                         mime = movieType.preferredMIMEType ?? "video/mp4"
                         ext = movieType.preferredFilenameExtension ?? "mp4"
                     }
-                    files.append(OutgoingFile(
-                        bytes: data, name: "video-\(stamp)-\(i + 1).\(ext)", mime: mime
-                    ))
+                    switch await readMovieItem(item, name: "video-\(stamp)-\(i + 1).\(ext)", mime: mime) {
+                    case .success(let file):
+                        files.append(file)
+                    case .failure(let failure):
+                        onError(failure.message)
+                        reading = false
+                        return
+                    }
                     continue
                 }
                 guard var data = try? await item.loadTransferable(type: Data.self) else {
@@ -158,20 +173,54 @@ struct AttachmentPickerButton: View {
         }
     }
 
-    /// Читает выбранные документы с диска (вне главного потока — файлы до 100 МБ).
+    /// Ролик из галереи забираем ФАЙЛОМ и держим отображением в память (mmap), а не
+    /// чтением в Data: `loadTransferable(type: Data.self)` поднимал бы в память весь ролик
+    /// целиком, и полугигабайтное видео убивало процесс раньше, чем дело доходило до
+    /// проверки размера. Отображённые страницы подгружаются по мере нарезки на чанки.
+    private func readMovieItem(
+        _ item: PhotosPickerItem, name: String, mime: String
+    ) async -> Result<OutgoingFile, PickFailure> {
+        if let movie = try? await item.loadTransferable(type: PickedMovie.self) {
+            let size = fileSizeOf(movie.url) ?? 0
+            if size > attachmentSizeLimitBytes {
+                try? FileManager.default.removeItem(at: movie.url)
+                return .failure(PickFailure(message: oversizeAttachmentMessage(name: name, bytes: size)))
+            }
+            guard let data = try? Data(contentsOf: movie.url, options: .mappedIfSafe) else {
+                return .failure(PickFailure(message: "Не удалось прочитать «\(name)»"))
+            }
+            return .success(OutgoingFile(bytes: data, name: name, mime: mime))
+        }
+        // Запасной путь: у части элементов галереи файлового представления нет вовсе —
+        // тогда читаем байтами, как раньше, и проверяем размер уже после чтения.
+        guard let data = try? await item.loadTransferable(type: Data.self) else {
+            return .failure(PickFailure(message: "Не удалось прочитать «\(name)»"))
+        }
+        if Int64(data.count) > attachmentSizeLimitBytes {
+            return .failure(PickFailure(
+                message: oversizeAttachmentMessage(name: name, bytes: Int64(data.count))
+            ))
+        }
+        return .success(OutgoingFile(bytes: data, name: name, mime: mime))
+    }
+
+    /// Читает выбранные документы с диска (вне главного потока: файл бывает гигабайтным).
     private func readFileURLs(_ urls: [URL]) {
         reading = true
         Task.detached {
+            pruneStagingDirectory()
             var files: [OutgoingFile] = []
             for url in urls {
-                guard let file = readPickedFile(url) else {
+                switch readPickedFile(url) {
+                case .success(let file):
+                    files.append(file)
+                case .failure(let failure):
                     await MainActor.run {
-                        onError("Не удалось прочитать выбранные файлы")
+                        onError(failure.message)
                         reading = false
                     }
                     return
                 }
-                files.append(file)
             }
             let picked = files
             await MainActor.run {
@@ -184,17 +233,81 @@ struct AttachmentPickerButton: View {
 
 /// Порт `readPickedFile` из ChatScreen.kt: security-scoped чтение выбранного документа
 /// в байты + видимое имя + mime.
-private func readPickedFile(_ url: URL) -> OutgoingFile? {
+private func readPickedFile(_ url: URL) -> Result<OutgoingFile, PickFailure> {
     let scoped = url.startAccessingSecurityScopedResource()
     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-    // Размер проверяем ДО чтения: многогигабайтное видео убивало бы процесс OOM-ом ещё до
-    // проверки лимита в отправке (ревью).
-    let declaredSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
-    if let declaredSize, declaredSize > 100 * 1024 * 1024 { return nil }
-    guard let data = try? Data(contentsOf: url) else { return nil }
+    let name = url.lastPathComponent
+    // Размер проверяем ДО чтения: многогигабайтный файл не должен даже начинать читаться.
+    if let declared = fileSizeOf(url), declared > attachmentSizeLimitBytes {
+        return .failure(PickFailure(message: oversizeAttachmentMessage(name: name, bytes: declared)))
+    }
+    // Копию кладём к себе и читаем отображением (mmap), а не Data(contentsOf:): документ
+    // провайдера («Файлы», iCloud) перестаёт быть доступен, как только кончится
+    // security-scoped доступ, а отправка большого файла идёт минутами. Отображение к тому
+    // же не держит весь файл в памяти — страницы подтягиваются по мере нарезки на чанки.
+    let copy = outgoingStagingDirectory().appendingPathComponent("\(UUID().uuidString)-\(name)")
+    try? FileManager.default.removeItem(at: copy)
+    do {
+        try FileManager.default.copyItem(at: url, to: copy)
+    } catch {
+        return .failure(PickFailure(message: "Не удалось прочитать «\(name)»"))
+    }
+    guard let data = try? Data(contentsOf: copy, options: .mappedIfSafe) else {
+        return .failure(PickFailure(message: "Не удалось прочитать «\(name)»"))
+    }
     let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
         ?? "application/octet-stream"
-    return OutgoingFile(bytes: data, name: url.lastPathComponent, mime: mime)
+    return .success(OutgoingFile(bytes: data, name: name, mime: mime))
+}
+
+/// Размер файла на диске (nil — не спросить: нет доступа или это не файл).
+private func fileSizeOf(_ url: URL) -> Int64? {
+    guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize else { return nil }
+    return Int64(size)
+}
+
+/// Временная папка для копий выбранного. Элемент PhotosPicker и security-scoped документ
+/// живут до конца выбора, а отправка идёт минутами — поэтому файл забираем себе.
+/// Не private: сюда же пишет локальные превью оптимистичный пузырь (ChatViewModel), и
+/// подметает эту папку один и тот же уборщик.
+func outgoingStagingDirectory() -> URL {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("outgoing-staging", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+}
+
+/// Убирает то, что пережило прошлые отправки (упавшие, отменённые, убитые перезапуском).
+/// Удалять отображённый в память файл безопасно: mmap держит содержимое, пока им
+/// пользуются, а место на диске освобождается сразу.
+private func pruneStagingDirectory() {
+    let deadline = Date().addingTimeInterval(-3600)
+    let urls = (try? FileManager.default.contentsOfDirectory(
+        at: outgoingStagingDirectory(), includingPropertiesForKeys: [.contentModificationDateKey]
+    )) ?? []
+    for url in urls {
+        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate
+        if let modified, modified > deadline { continue }
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+/// Файловое представление ролика из галереи: система отдаёт свой временный файл, мы
+/// копируем его к себе (копия переживает закрытие пикера) и дальше работаем с ним.
+private struct PickedMovie: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { movie in
+            SentTransferredFile(movie.url)
+        } importing: { received in
+            let ext = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
+            let copy = outgoingStagingDirectory().appendingPathComponent("\(UUID().uuidString).\(ext)")
+            try FileManager.default.copyItem(at: received.file, to: copy)
+            return PickedMovie(url: copy)
+        }
+    }
 }
 
 /// Штамп для имён фото/видео из галереи (у PhotosPicker нет исходного имени файла).
@@ -220,7 +333,9 @@ struct ComposerAttachmentsBar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Прогресс загрузки вложений: полоса + процент + отмена (веб-паритет).
+            // Полоса прогресса осталась только секретному пути: в обычном чате прогресс и
+            // отмена живут на самом пузыре в ленте (ui.outgoing), а композер в это время
+            // свободен — как в вебе, где отправляемое сразу видно в переписке.
             if let progress = uploadProgress {
                 HStack(spacing: 10) {
                     ProgressView(value: Double(min(max(progress, 0), 1)))
@@ -240,8 +355,8 @@ struct ComposerAttachmentsBar: View {
                 .padding(.vertical, 4)
                 .background(Eb.surface200)
             }
-            // Очередь вложений: чипы с крестиками (очередь чистится ТОЛЬКО при успехе
-            // отправки — сбой/отмена оставляют чипы на месте).
+            // Очередь вложений: чипы с крестиками. Чистится в момент отправки (веб-паритет):
+            // собранное тут же встаёт пузырём в ленте, а сбой ждёт повтора там же, а не здесь.
             if !staged.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -328,5 +443,123 @@ private struct StagedThumb: View {
                 UIImage(data: source)?.preparingThumbnail(of: CGSize(width: 128, height: 128))
             }).value
         }
+    }
+}
+
+// MARK: - Накладка отправляемого пузыря (прогресс, отмена, повтор)
+
+/// Что показать поверх оптимистичного пузыря и что делать с ним. Едет через окружение:
+/// пузырь сидит глубоко внутри MessageRow, и протаскивать это через всю его сигнатуру не
+/// за что — тем же приёмом туда попадают превью цитат (replyQuotePreviews).
+struct OutgoingUploadBadge {
+    var state: OutgoingUpload?
+    var onCancel: () -> Void = {}
+    var onRetry: () -> Void = {}
+    var onDiscard: () -> Void = {}
+}
+
+private struct OutgoingUploadKey: EnvironmentKey {
+    static let defaultValue = OutgoingUploadBadge()
+}
+
+extension EnvironmentValues {
+    var outgoingUpload: OutgoingUploadBadge {
+        get { self[OutgoingUploadKey.self] }
+        set { self[OutgoingUploadKey.self] = newValue }
+    }
+}
+
+/// Накладка на ещё не отправленный пузырь: пока грузится — затемнение, кольцо прогресса с
+/// процентами и крестик отмены (в вебе прогресс наливается прямо поверх картинки,
+/// ChatMessageRow.tsx:1016); если упало — «Не отправилось» с повтором и удалением.
+/// Затемнение заодно съедает тапы: открывать просмотрщик на ещё не отправленном кадре
+/// нечем, а долгое нажатие предлагало бы переслать несуществующее сообщение.
+struct OutgoingUploadOverlay: View {
+    let badge: OutgoingUploadBadge
+
+    var body: some View {
+        if let state = badge.state {
+            ZStack {
+                Color.black.opacity(state.failed ? 0.4 : 0.35)
+                if state.failed {
+                    failedControls
+                } else {
+                    progressRing(state.progress)
+                }
+            }
+            .contentShape(Rectangle())
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private var failedControls: some View {
+        VStack(spacing: 6) {
+            Text("Не отправилось")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+            // Причина — на самом пузыре: баннер над композером показывает только ПОСЛЕДНЮЮ
+            // ошибку, а упавших отправок может висеть несколько, каждая со своей.
+            if let reason = badge.state?.error, !reason.isEmpty {
+                Text(reason)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .padding(.horizontal, 10)
+            }
+            HStack(spacing: 8) {
+                Button(action: badge.onRetry) {
+                    Label("Повторить", systemImage: "arrow.clockwise")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.black.opacity(0.55), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Button(action: badge.onDiscard) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(.black.opacity(0.55), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func progressRing(_ progress: Float) -> some View {
+        // Кольцо всегда чуть-чуть залито (0.02): на нулевом прогрессе пустой круг читался
+        // бы как «ничего не происходит».
+        let value = CGFloat(min(max(progress, 0), 1))
+        return Button(action: badge.onCancel) {
+            ZStack {
+                Circle()
+                    .fill(.black.opacity(0.55))
+                    .frame(width: 58, height: 58)
+                Circle()
+                    .stroke(Color.white.opacity(0.25), lineWidth: 3)
+                    .frame(width: 46, height: 46)
+                Circle()
+                    .trim(from: 0, to: max(0.02, value))
+                    .stroke(Color.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 46, height: 46)
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .overlay(alignment: .bottom) {
+                Text("\(Int(value * 100))%")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .offset(y: 14)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }

@@ -1,13 +1,20 @@
 import SwiftUI
 import UIKit
+import AVFoundation
+import UniformTypeIdentifiers
 
 /// Композер вынесен из ChatView отдельной вью НЕ ради красоты: пока текст жил в @State
 /// самого экрана, каждое нажатие клавиши перестраивало тело ChatView целиком — вместе с
 /// лентой на сотни сообщений. Ввод отставал от пальца, а лента под ним мигала. Теперь
 /// текст живёт здесь, и переписка о наборе не знает.
 ///
-/// Порт нижней колонки `ChatScreen.kt`: прогресс/чипы вложений → панель ответа → строка
-/// ввода (или строка записи голосового).
+/// Порт нижней колонки `ChatScreen.kt`: прогресс/чипы вложений → панель ответа → панель
+/// форматирования выделения → строка ввода (или строка записи голосового).
+///
+/// Само поле ввода живёт в ComposerFormatting.swift: это UITextView, а не TextField, —
+/// от него нужны выделение (панель Ж/К/З/моно), свои пункты меню и вставка картинки из
+/// буфера, чего SwiftUI-поле не даёт. Вложения набираются очередью, как в вебе: и
+/// галерея, и камера, и буфер только ДОБАВЛЯЮТ чипы, отправка — кнопкой.
 struct ChatComposer: View {
 
     let conversationId: String
@@ -57,11 +64,24 @@ struct ChatComposer: View {
     @State private var draft = ""
     /// Ближайшее изменение текста — не набор пользователя (восстановление черновика).
     @State private var suppressTypingOnce = false
-    /// Открытый редактор фото: свежий выбор (кнопка в редакторе сразу отправляет) или
-    /// правка кадра, уже стоящего в очереди.
+    /// Открытый редактор фото: свежий выбор или правка кадра, уже стоящего в очереди.
+    /// В обоих случаях редактор ВОЗВРАЩАЕТ кадры в очередь, а не отправляет их.
     @State private var editorSession: PhotoEditorSession?
+    /// Открыта системная камера (съёмка прямо из композера).
+    @State private var showCamera = false
+    /// В буфере лежит картинка — над полем видна кнопка «Вставить картинку». Значение
+    /// обновляем при получении фокуса: проверка типа буфера содержимое не читает.
+    @State private var clipboardHasImage = false
     @StateObject private var voiceRecorder = VoiceRecorder()
-    @FocusState private var focused: Bool
+    /// Мост к полю ввода: выделение для панели форматирования и вставка стиля.
+    @StateObject private var textController = ComposerTextController()
+    /// Фокус поля — обычный @State, а не @FocusState: поле теперь UITextView, о своём
+    /// фокусе оно сообщает само (см. ComposerTextView).
+    @State private var focused = false
+    /// Возврат из другого приложения — повод перепроверить буфер: картинку чаще всего
+    /// копируют именно там, и поле при этом остаётся в фокусе (onChange по фокусу не
+    /// сработал бы вовсе).
+    @Environment(\.scenePhase) private var scenePhase
 
     private var isEmpty: Bool { draft.trimmed().isEmpty && staged.isEmpty }
 
@@ -75,6 +95,10 @@ struct ChatComposer: View {
             .safeAreaInsets.bottom ?? 0
         return min(12, (inset * 0.4).rounded())
     }()
+
+    /// На симуляторе и на устройстве без камеры кнопка съёмки просто не нужна: пикер с
+    /// sourceType = .camera там падает в пустой чёрный экран.
+    private static let cameraAvailable = UIImagePickerController.isSourceTypeAvailable(.camera)
 
     var body: some View {
         VStack(spacing: 0) {
@@ -117,6 +141,10 @@ struct ChatComposer: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
             } else {
+                // Порядок строк как в вебе: форматирование выделения — ближе всего к полю,
+                // под ним сама строка ввода.
+                ComposerFormatBar(controller: textController)
+                if clipboardHasImage && !sending { pasteImageBar }
                 inputRow
             }
         }
@@ -146,7 +174,16 @@ struct ChatComposer: View {
             DraftStore.set(conversationId, draft)
             voiceRecorder.cancel()
         }
-        .onChange(of: focused) { _, value in onFocusChanged(value) }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            clipboardHasImage = focused && ComposerClipboard.hasImage
+        }
+        .onChange(of: focused) { _, value in
+            onFocusChanged(value)
+            // Буфер проверяем в момент фокуса: hasImages не читает содержимое и не
+            // показывает системную плашку «вставлено из …», так что это дёшево и тихо.
+            clipboardHasImage = value && ComposerClipboard.hasImage
+        }
         .fullScreenCover(item: $editorSession) { session in
             PhotoEditorView(
                 items: session.items,
@@ -159,11 +196,16 @@ struct ChatComposer: View {
                         if let file = files.first { onReplaceStaged(index, file) }
                         return
                     }
-                    // Свежий выбор: кнопка редактора — это «отправить», как в Telegram.
+                    // Свежий выбор ТОЛЬКО встаёт в очередь — как в вебе, где выбранное
+                    // кладётся в pendingImages чипами, а отправка отдельной кнопкой.
+                    // Раньше редактор слал сразу: нельзя было добрать второе фото или
+                    // документ, а уже стоявшие в очереди файлы улетали заодно.
                     onStageFiles(files)
-                    draft = ""
-                    DraftStore.set(conversationId, "")
-                    onSendStaged(caption.trimmed().isEmpty ? nil : caption)
+                    // Подпись, набранную в редакторе, возвращаем в поле: она станет
+                    // подписью всего набора при отправке (и не пропадёт, если человек
+                    // решит добрать ещё вложений).
+                    draft = caption
+                    DraftStore.set(conversationId, caption)
                 },
                 onCancel: { editorSession = nil }
             )
@@ -190,42 +232,59 @@ struct ChatComposer: View {
     }
 
     private var inputRow: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .bottom, spacing: 6) {
             AttachmentPickerButton(
                 disabled: sending,
-                onPicked: { files in
-                    // Фото идут через редактор; всё остальное (видео, документы) — в
-                    // очередь как есть.
-                    let images = files.filter { $0.mime.hasPrefix("image/") }
-                    let rest = files.filter { !$0.mime.hasPrefix("image/") }
-                    let items = images.compactMap { PhotoEditItem(source: $0) }
-                    guard !items.isEmpty else {
-                        onStageFiles(files)
-                        return
-                    }
-                    editorSession = PhotoEditorSession(items: items, passthrough: rest, replacingIndex: nil)
-                },
+                onPicked: { files in openPicked(files) },
                 onError: onError
             )
 
-            TextField("Сообщение", text: $draft, axis: .vertical)
-                .lineLimit(1...5)
-                .focused($focused)
-                .foregroundStyle(Eb.textPrimary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 20))
-                .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Eb.border))
-                .onChange(of: draft) { _, text in
-                    // Восстановленный черновик — не набор текста: без этого собеседник
-                    // видел «печатает…» просто оттого, что человек открыл чат.
-                    if suppressTypingOnce {
-                        suppressTypingOnce = false
-                    } else {
-                        onDraftChanged(text)
-                    }
-                    DraftStore.set(conversationId, text)
+            // Съёмка отдельной кнопкой, а не пунктом в меню скрепки: в вебе с телефона
+            // «Снять фото» — первый пункт системного листа, то есть один тап.
+            if Self.cameraAvailable {
+                Button {
+                    openCamera()
+                } label: {
+                    Image(systemName: "camera")
+                        .font(.title3)
+                        .foregroundStyle(Eb.textMuted)
+                        .frame(width: 34, height: 38)
                 }
+                .disabled(sending)
+                .accessibilityLabel("Снять фото")
+            }
+
+            ComposerTextView(
+                text: $draft,
+                focused: $focused,
+                controller: textController,
+                onPasteImages: { files in stagePasted(files) }
+            )
+            .frame(maxWidth: .infinity)
+            .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Eb.border))
+            // Подсказка рисуется поверх: у UITextView своего placeholder нет. Отступы
+            // совпадают с textContainerInset поля, иначе текст «прыгнул» бы с первого
+            // символа. Тапы сквозь неё проходят в поле.
+            .overlay(alignment: .topLeading) {
+                if draft.isEmpty {
+                    Text("Сообщение")
+                        .foregroundStyle(Eb.textMuted)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .allowsHitTesting(false)
+                }
+            }
+            .onChange(of: draft) { _, text in
+                // Восстановленный черновик — не набор текста: без этого собеседник
+                // видел «печатает…» просто оттого, что человек открыл чат.
+                if suppressTypingOnce {
+                    suppressTypingOnce = false
+                } else {
+                    onDraftChanged(text)
+                }
+                DraftStore.set(conversationId, text)
+            }
 
             // Микрофон и «отправить» занимают ОДНО место: раньше микрофон исчезал на первом
             // же символе, поле рывком расширялось на 38 pt и текст под курсором прыгал.
@@ -240,6 +299,101 @@ struct ChatComposer: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        // Камера висит на строке ввода, а не на всей панели: второй fullScreenCover на
+        // ТОЙ ЖЕ вью SwiftUI игнорирует, а редактор фото уже занял модификатор наверху.
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraCaptureView(
+                onCaptured: { file in
+                    showCamera = false
+                    // Редактор открываем после закрытия камеры: два полноэкранных показа
+                    // подряд SwiftUI склеивает, и редактор не появляется вовсе.
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        openPicked([file])
+                    }
+                },
+                onError: { message in
+                    showCamera = false
+                    onError(message)
+                },
+                onCancel: { showCamera = false }
+            )
+            .ignoresSafeArea()
+        }
+    }
+
+    /// Кнопка «Вставить картинку»: длинный тап с системным «Вставить» находят не все,
+    /// а буфер со скриншотом — самый частый способ поделиться картинкой. Через системное
+    /// меню вставка проходит молча, а здесь iOS сначала спросит «Разрешить вставку?» —
+    /// это плата за чтение буфера мимо меню, и спрашивают только по явному тапу.
+    private var pasteImageBar: some View {
+        HStack(spacing: 6) {
+            Button {
+                stagePasted(ComposerClipboard.readImageFiles())
+            } label: {
+                Label("Вставить картинку", systemImage: "doc.on.clipboard")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Eb.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Eb.surface300, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 2)
+    }
+
+    /// Съёмку открываем только с живым разрешением. Без этой проверки отказавшийся
+    /// однажды человек получал бы чёрный прямоугольник без единой подсказки: система
+    /// второй раз не спрашивает, а пикер про запрет ничего не говорит.
+    @MainActor
+    private func openCamera() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            showCamera = true
+        case .notDetermined:
+            Task { @MainActor in
+                if await AVCaptureDevice.requestAccess(for: .video) {
+                    showCamera = true
+                } else {
+                    onError(Self.cameraDeniedMessage)
+                }
+            }
+        default:
+            onError(Self.cameraDeniedMessage)
+        }
+    }
+
+    private static let cameraDeniedMessage =
+        "Доступ к камере запрещён — включите его в «Настройки → Eblusha»"
+
+    /// Единый вход для всего выбранного (галерея, камера): картинки — через редактор,
+    /// прочее (видео, документы) — сразу в очередь.
+    @MainActor
+    private func openPicked(_ files: [OutgoingFile]) {
+        let images = files.filter { $0.mime.hasPrefix("image/") }
+        let rest = files.filter { !$0.mime.hasPrefix("image/") }
+        let items = images.compactMap { PhotoEditItem(source: $0) }
+        guard !items.isEmpty else {
+            onStageFiles(files)
+            return
+        }
+        editorSession = PhotoEditorSession(items: items, passthrough: rest, replacingIndex: nil)
+    }
+
+    /// Картинка из буфера идёт в очередь МИМО редактора — ровно как в вебе, где onPaste
+    /// зовёт addComposerImage(file, 'paste'). Полноэкранный редактор поверх набора текста
+    /// был бы неожиданным; поправить кадр можно тапом по чипу.
+    @MainActor
+    private func stagePasted(_ files: [OutgoingFile]) {
+        clipboardHasImage = false
+        guard !files.isEmpty else {
+            onError("В буфере обмена нет картинки")
+            return
+        }
+        onStageFiles(files)
     }
 
     private var sendButton: some View {
@@ -272,3 +426,91 @@ struct PhotoEditorSession: Identifiable {
     /// nil — свежий выбор; иначе индекс кадра в очереди, который правим.
     let replacingIndex: Int?
 }
+
+/// Съёмка прямо из композера. UIImagePickerController, а не свой AVFoundation-экран:
+/// системная камера — это готовые превью, вспышка, переключение камер, «переснять» и
+/// запись видео, а нам нужен только итоговый кадр. Разрешения уже объявлены
+/// (NSCameraUsageDescription и NSMicrophoneUsageDescription в Resources/Info.plist).
+struct CameraCaptureView: UIViewControllerRepresentable {
+    /// Снятое — тем же путём, что и выбранное в галерее (фото → редактор, видео → очередь).
+    let onCaptured: (OutgoingFile) -> Void
+    let onError: (String) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCaptured: onCaptured, onError: onError, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.mediaTypes = [UTType.image.identifier, UTType.movie.identifier]
+        picker.videoQuality = .typeHigh
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIImagePickerController, context: Context) {
+        context.coordinator.onCaptured = onCaptured
+        context.coordinator.onError = onError
+        context.coordinator.onCancel = onCancel
+    }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        var onCaptured: (OutgoingFile) -> Void
+        var onError: (String) -> Void
+        var onCancel: () -> Void
+
+        init(
+            onCaptured: @escaping (OutgoingFile) -> Void,
+            onError: @escaping (String) -> Void,
+            onCancel: @escaping () -> Void
+        ) {
+            self.onCaptured = onCaptured
+            self.onError = onError
+            self.onCancel = onCancel
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            let stamp = cameraNameStamp.string(from: Date())
+            // Видео камера кладёт во временный файл — читаем его так же, как документ.
+            if let url = info[.mediaURL] as? URL {
+                guard let data = try? Data(contentsOf: url) else {
+                    onError("Не удалось прочитать снятое видео")
+                    return
+                }
+                // Своей отсечки по размеру здесь нет нарочно: лимит один на все вложения
+                // и живёт в отправке (вью-модель) — иначе камера отказывала бы по своим
+                // правилам, отличным от галереи и документов.
+                onCaptured(OutgoingFile(
+                    bytes: data, name: "video-\(stamp).mov", mime: "video/quicktime"
+                ))
+                return
+            }
+            // JPEG, а не HEIC: HEIC не показывают ни веб, ни Android-клиент (тот же
+            // перегон делает readPhotoItems для галереи).
+            let picked = (info[.editedImage] as? UIImage) ?? (info[.originalImage] as? UIImage)
+            guard let image = picked, let jpeg = image.jpegData(compressionQuality: 0.9) else {
+                onError("Не удалось прочитать снимок")
+                return
+            }
+            onCaptured(OutgoingFile(
+                bytes: jpeg, name: "photo-\(stamp).jpg", mime: "image/jpeg"
+            ))
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            onCancel()
+        }
+    }
+}
+
+/// Штамп для имён снятого: у кадра из камеры исходного имени файла нет.
+private let cameraNameStamp: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyyMMdd-HHmmss"
+    return formatter
+}()

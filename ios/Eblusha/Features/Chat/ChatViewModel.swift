@@ -1,5 +1,28 @@
 import Foundation
 import Combine
+import UIKit
+import ImageIO
+
+/// Живая отправка вложения, пришитая к оптимистичному пузырю в ленте: пока файл летит,
+/// пузырь показывает прогресс и крестик отмены, а после сбоя остаётся с пометкой и
+/// кнопкой повтора. Веб держит такую же запись в pendingByConv (ChatsPage.tsx:5071),
+/// только повтора у него нет — призрак просто исчезает с тостом.
+struct OutgoingUpload: Equatable {
+    /// 0..1 по ВСЕМ файлам сообщения (тот же счёт, что был у полосы над композером).
+    var progress: Float = 0
+    /// Отправка упала (не отменена) — пузырь ждёт «Повторить» или «Удалить».
+    var failed = false
+    /// Текст сбоя для подписи/баннера.
+    var error: String?
+}
+
+/// Что человек нажал на оптимистичном пузыре. Одним входом, чтобы лента передавала
+/// действия одним замыканием, а не тремя.
+enum OutgoingUploadAction {
+    case cancel
+    case retry
+    case discard
+}
 
 /// Порт `feature/chat/ChatViewModel.kt`.
 ///
@@ -15,6 +38,12 @@ final class ChatViewModel: ObservableObject {
         /// Прямо сейчас в начало ленты вклеивается страница истории. Лента на это время
         /// переключает якорь размера на низ, иначе вставка сверху сдвигает видимое.
         var prepending = false
+        /// Короткая блокировка композера. Веб её почти не знает: там гаснет только правка
+        /// (MessagesPane.tsx: disabled={editBusy}) и композер под живой пересылкой, а во
+        /// время аплоада переписка продолжается. Здесь флаг остался ровно у этих двух
+        /// случаев — отправка пачки пересылки и секретный путь (ChatViewModelSecret);
+        /// обычные текст, голосовое и вложения композер больше НЕ запирают: отправляемое
+        /// видно пузырём в ленте, а поле ввода свободно.
         var sending = false
         var isGroup = false
         var senderAvatars: [String: String?] = [:]
@@ -38,7 +67,12 @@ final class ChatViewModel: ObservableObject {
         /// Текст, который надо вернуть в композер после сбоя отправки.
         var restoredDraft: String?
         /// Прогресс аплоада вложений 0..1; nil — аплоад не идёт (полоса в композере).
+        /// Обычный чат её больше не заполняет: прогресс переехал на сам пузырь в ленте
+        /// (см. outgoing), полоса осталась секретному пути до его переезда туда же.
         var uploadProgress: Float?
+        /// Отправки вложений, которые прямо сейчас летят (или упали): ключ — id
+        /// оптимистичного пузыря в messages. По ним пузырь рисует прогресс, отмену и повтор.
+        var outgoing: [String: OutgoingUpload] = [:]
         /// Очередь вложений (веб-паритет: выбранное НЕ отправляется сразу, а встаёт чипами).
         var staged: [OutgoingFile] = []
         /// Отложенная пересылка В ЭТУ беседу (веб forwardComposerDraft): сообщения уже
@@ -111,8 +145,21 @@ final class ChatViewModel: ObservableObject {
     }
 
     private var typingSent = false
-    /// true → аборт текущего аплоада между частями (кнопка «отмена» у прогресса).
+    /// true → аборт текущего аплоада между частями (кнопка «отмена» у полосы прогресса).
+    /// Общий флаг остался секретному пути; у обычных отправок отмена поштучная —
+    /// их теперь может лететь несколько сразу (cancelledOutgoing).
     var uploadCancelled = false
+    /// Чем повторить упавшую отправку: файлы, подпись и цитаты. Лежит ВНЕ UiState нарочно —
+    /// это мегабайты, которым нечего делать в публикуемом состоянии экрана.
+    private var outgoingPayloads: [String: OutgoingPayload] = [:]
+    /// Локальные превью пузырей (tmp-файлы): убираются вместе с пузырём.
+    private var outgoingPreviews: [String: [URL]] = [:]
+    /// Отменённые отправки. Под замком, потому что читает это фоновый колбэк аплоада,
+    /// а пишет главный поток.
+    private let cancelledOutgoing = Mutex<Set<String>>([])
+    /// Очередь текстовых отправок: запрос больше не запирает композер, но два быстро
+    /// набранных сообщения не должны прийти на сервер в обратном порядке.
+    private var textSendChain: Task<Void, Never>?
     private var typingHeartbeat: Task<Void, Never>?
     private var typingExpiry: Task<Void, Never>?
     private var lastInputMs: TimeInterval = 0
@@ -151,9 +198,18 @@ final class ChatViewModel: ObservableObject {
     var secretKeysWatchdog: Task<Void, Never>?
 
     static let pageSize = 80 // веб MESSAGES_PAGE_SIZE
-    // >10 МБ уходит чанками (веб-паритет); страховочный потолок — 100 МБ (файл в памяти).
-    private static let maxUploadBytes = 100 * 1024 * 1024
+    // >10 МБ уходит чанками (веб-паритет). Потолок — РОВНО серверный (multer limits.fileSize
+    // в src/routes/upload.ts + nginx client_max_body_size 1024m): прежние 100 МБ отказывали
+    // в том, что браузер с того же телефона отправлял спокойно.
+    private static let maxUploadBytes = attachmentSizeLimitBytes
+    /// Префикс id оптимистичного пузыря: по нему лента и меню действий отличают ещё не
+    /// отправленное от настоящего (у секретной очереди ту же роль играет
+    /// SecretOutbox.pendingIdPrefix).
+    static let outgoingIdPrefix = "outgoing-"
     private static let olderRetryCooldown: TimeInterval = 4
+
+    /// Сообщение ещё не существует на сервере — пересылать, цитировать и удалять нечего.
+    static func isOutgoingId(_ id: String) -> Bool { id.hasPrefix(outgoingIdPrefix) }
 
     init(
         repo: ChatRepository,
@@ -297,6 +353,7 @@ final class ChatViewModel: ObservableObject {
     /// назад история переживает refetch, свежие копии выигрывают дедуп, мета пагинации
     /// не сбрасывается после листания назад.
     private func applyPageOne(_ page: MessagesPage) {
+        dropEchoedOutgoing(page.messages)
         var seen = Set<String>()
         let merged = (page.messages + ui.messages)
             .filter { seen.insert($0.id).inserted }
@@ -446,6 +503,9 @@ final class ChatViewModel: ObservableObject {
         }
         let message = repo.mapMessage(dto)
         guard !ui.messages.contains(where: { $0.id == message.id }) else { return }
+        // Своё же эхо может обогнать ответ на POST — тогда оптимистичный пузырь снимаем
+        // здесь, иначе одно и то же сообщение секунду висело бы в ленте дважды.
+        dropEchoedOutgoing([message])
         // По порядку, а не просто в конец: сообщение из сокета может обогнать соседа по
         // времени, и следующий тихий релоад переставлял бы его на глазах.
         insertOrdered(message)
@@ -468,7 +528,7 @@ final class ChatViewModel: ObservableObject {
             return
         }
         let trimmed = text.trimmed()
-        guard !trimmed.isEmpty, !ui.sending else { return }
+        guard !trimmed.isEmpty else { return }
         setTyping(false)
         if secretMode {
             sendSecret(trimmed)
@@ -480,26 +540,37 @@ final class ChatViewModel: ObservableObject {
         let bundle: [ReplyInfo]? = reply.count >= 2
             ? reply.map { ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt) }
             : nil
-        Task {
-            ui.sending = true
-            ui.error = nil
-            ui.replyingTo = []
-            switch await repo.sendText(
-                conversationId, text: trimmed, replyToId: replyId, replyBundle: bundle
+        // Плашку цитаты гасим СИНХРОННО: композер свободен сразу, ещё до ответа сервера
+        // (в вебе submit тоже ничего не ждёт).
+        ui.error = nil
+        ui.replyingTo = []
+        enqueueTextSend { [weak self] in
+            guard let self else { return }
+            switch await self.repo.sendText(
+                self.conversationId, text: trimmed, replyToId: replyId, replyBundle: bundle
             ) {
             case .success(let message):
-                ui.sending = false
-                if !ui.messages.contains(where: { $0.id == message.id }) {
-                    insertOrdered(message)
+                if !self.ui.messages.contains(where: { $0.id == message.id }) {
+                    self.insertOrdered(message)
                 }
             case .failure(let message, _):
                 // Сбой сети НЕ съедает написанное.
-                ui.sending = false
-                ui.error = message
-                ui.restoredDraft = trimmed
-                ui.replyingTo = reply
+                self.ui.error = message
+                self.ui.restoredDraft = trimmed
+                self.ui.replyingTo = reply
             }
-            fetchMissingPreviews()
+            self.fetchMissingPreviews()
+        }
+    }
+
+    /// Ставит текстовую отправку в хвост очереди. Отправки идут одна за другой (иначе два
+    /// быстрых сообщения могли бы разъехаться по порядку на сервере), но UI при этом не
+    /// ждёт ничего: кнопка, скрепка и микрофон остаются живыми — как в вебе.
+    private func enqueueTextSend(_ work: @escaping @MainActor () async -> Void) {
+        let previous = textSendChain
+        textSendChain = Task { @MainActor in
+            await previous?.value
+            await work()
         }
     }
 
@@ -542,89 +613,332 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// Шлёт все [files] ОДНИМ сообщением (фотоальбом). Веб-капы: 10 фото + 10 файлов.
-    func sendAttachments(_ files: [OutgoingFile], caption: String? = nil, onSuccess: (() -> Void)? = nil) {
-        guard !files.isEmpty else { return }
+    ///
+    /// Сообщение встаёт в ленту СРАЗУ, до аплоада (веб: pendingByConv, ChatsPage.tsx:5071):
+    /// прогресс наливается на самом пузыре, отмена — там же, а композер всё это время
+    /// свободен. Возвращает true, если отправка принята (очередь чипов можно чистить);
+    /// false — не прошла проверка, и собранное остаётся на месте.
+    ///
+    /// [onSuccess] нужен только секретному пути, который по-прежнему чистит очередь по
+    /// факту успеха (логика в ChatViewModelSecret).
+    @discardableResult
+    func sendAttachments(
+        _ files: [OutgoingFile], caption: String? = nil, onSuccess: (() -> Void)? = nil
+    ) -> Bool {
+        guard !files.isEmpty else { return false }
         // Веб при живом черновике пересылки вложения из композера не пускает
         // (MessagesPane.tsx:3238-3243): иначе непонятно, что уйдёт — файл или пересылка.
         if ui.forwardDraft != nil {
             ui.error = "Сначала отправьте или отмените пересылку — вложения с ней не уходят"
-            return
+            return false
         }
-        if ui.sending {
-            ui.error = "Подождите — идёт отправка предыдущего сообщения"
-            return
-        }
+        // Гейта «идёт отправка предыдущего» больше нет: в вебе у uploadAndSendAttachments
+        // нет стража in-flight, и во время загрузки можно слать дальше. Каждая отправка
+        // живёт своим пузырём, поэтому параллельные друг другу не мешают.
         // Сначала картинки (веб-порядок вложений — он задаёт сетку альбома), каждый вид ≤10.
         // Капы ДО проверки размера, чтобы 11-й негабарит не ветировал валидный альбом.
         let imgs = files.filter { $0.mime.hasPrefix("image/") }
         let rest = files.filter { !$0.mime.hasPrefix("image/") }
         let limited = Array(imgs.prefix(10)) + Array(rest.prefix(10))
-        if let tooBig = limited.first(where: { $0.bytes.count > Self.maxUploadBytes }) {
-            ui.error = "Файл слишком большой (макс. 100 МБ): \(tooBig.name)"
-            return
+        if let tooBig = limited.first(where: { Int64($0.bytes.count) > Self.maxUploadBytes }) {
+            ui.error = oversizeAttachmentMessage(name: tooBig.name, bytes: Int64(tooBig.bytes.count))
+            return false
         }
-        uploadCancelled = false
         // Ответ уходит ВМЕСТЕ с вложением (веб: uploadAndSendAttachments(files, text,
         // replyDraft)). Снимок берём до запроса: плашку гасим сразу, иначе она подхватится
         // к следующему тексту, и тот улетит цитатой на чужое сообщение.
         let reply = ui.replyingTo
-        let replyId = reply.last?.id
-        let replyBundle: [ReplyInfo]? = reply.count >= 2
-            ? reply.map { ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt) }
-            : nil
         if secretMode {
+            // Секретный путь остался со старой механикой (общий uploadCancelled, полоса
+            // прогресса, очередь чипов по факту успеха), поэтому ему по-прежнему нужен
+            // страж in-flight: двух одновременных аплоадов он не выдержит.
+            if ui.sending {
+                ui.error = "Подождите — идёт отправка предыдущего сообщения"
+                return false
+            }
             // E2EE-вложения шифруются ключом треда и уходят непрозрачными блобами.
+            uploadCancelled = false
             sendSecretAttachments(limited, caption: caption, replySnapshot: reply, onSuccess: onSuccess)
-            return
+            return true
         }
+        ui.error = nil
+        ui.replyingTo = []
+        runOutgoing(insertOutgoingBubble(limited, caption: caption, reply: reply))
+        return true
+    }
+
+    // MARK: - Оптимистичная отправка вложений
+
+    /// Чем повторить отправку после сбоя. Хранится отдельно от ленты: сам пузырь несёт
+    /// только то, что видно (превью, подпись, цитаты).
+    private struct OutgoingPayload {
+        let files: [OutgoingFile]
+        let caption: String?
+        let reply: [Message]
+    }
+
+    /// Ставит пузырь в ленту ДО аплоада и запоминает, чем его повторить.
+    /// Возвращает id временного сообщения — ключ и к ui.outgoing, и к полезной нагрузке.
+    private func insertOutgoingBubble(
+        _ files: [OutgoingFile], caption: String?, reply: [Message]
+    ) -> String {
+        let id = Self.outgoingIdPrefix + UUID().uuidString.lowercased()
+        let atts = files.map { Self.optimisticAttachment($0) }
+        // Тип сообщения — по тому же веб-правилу, что и в аплоаде: все одного вида → этот
+        // вид, смесь → FILE. Иначе пузырь перестроился бы при подмене серверным.
+        var kinds = Set<String>()
+        let types = atts.map(\.type).filter { kinds.insert($0).inserted }
+        let trimmedCaption = caption?.trimmed()
+        let message = Message(
+            id: id,
+            conversationId: conversationId,
+            senderId: repo.currentUserId() ?? "",
+            senderName: "Вы",
+            type: types.count == 1 ? types[0] : "FILE",
+            content: (trimmedCaption?.isEmpty == false) ? caption : nil,
+            createdAt: Int64(Date().timeIntervalSince1970 * 1000),
+            isMine: true,
+            isSystem: false,
+            attachments: atts,
+            // Цитаты видны на пузыре сразу — отправляется он именно с ними.
+            replyTo: reply.map {
+                ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt)
+            }
+        )
+        outgoingPayloads[id] = OutgoingPayload(files: files, caption: caption, reply: reply)
+        insertOrdered(message)
+        attachLocalPreviews(to: id, files: files)
+        return id
+    }
+
+    /// Запускает (или повторяет) загрузку пузыря [id]. Прогресс и отмена живут на пузыре,
+    /// композер в это время свободен.
+    private func runOutgoing(_ id: String) {
+        guard let payload = outgoingPayloads[id] else { return }
+        ui.outgoing[id] = OutgoingUpload(progress: 0)
+        cancelledOutgoing.withLock { $0.remove(id) }
+        let replyId = payload.reply.last?.id
+        // Мультиответ: все цитаты уходят в metadata.replyQuoteBundle (≥2, как Kotlin/веб).
+        let replyBundle: [ReplyInfo]? = payload.reply.count >= 2
+            ? payload.reply.map {
+                ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt)
+            }
+            : nil
         Task {
-            ui.sending = true
-            ui.error = nil
-            ui.uploadProgress = 0
-            ui.replyingTo = []
-            let r = await repo.sendAttachments(
+            let result = await repo.sendAttachments(
                 conversationId,
-                files: limited,
-                caption: caption,
+                files: payload.files,
+                caption: payload.caption,
                 replyToId: replyId,
                 replyBundle: replyBundle,
                 onProgress: { [weak self] done, total in
                     guard total > 0 else { return }
                     let pct = min(max(Float(done) / Float(total), 0), 1)
                     // Колбэк приходит с фонового потока; стейт дросселируем до целых
-                    // процентов — иначе рекомпозиции на каждый чанк.
+                    // процентов — иначе ячейка ленты перенастраивалась бы на каждый чанк.
                     Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        if Int(pct * 100) != Int((self.ui.uploadProgress ?? 0) * 100) {
-                            self.ui.uploadProgress = pct
+                        guard let self, let current = self.ui.outgoing[id] else { return }
+                        if Int(pct * 100) != Int(current.progress * 100) {
+                            self.ui.outgoing[id]?.progress = pct
                         }
                     }
                 },
-                isCancelled: { [weak self] in self?.uploadCancelled ?? true }
+                isCancelled: { [weak self] in
+                    self?.cancelledOutgoing.withLock { $0.contains(id) } ?? true
+                }
             )
-            switch r {
+            cancelledOutgoing.withLock { $0.remove(id) }
+            // Пузырь могли снять (отмена, уход с экрана) — тогда результат уже не наш:
+            // если отправка всё-таки дошла, сообщение принесут сокет и тихий релоад.
+            guard outgoingPayloads[id] != nil else { return }
+            switch result {
             case .success(let message):
-                onSuccess?()
-                ui.sending = false
-                ui.uploadProgress = nil
+                // Подмена временного настоящим — одним обновлением, чтобы пузырь не мигал.
+                removeOutgoing(id)
                 if !ui.messages.contains(where: { $0.id == message.id }) {
                     insertOrdered(message)
                 }
+                fetchMissingPreviews()
             case .failure(let message, _):
-                ui.sending = false
-                ui.uploadProgress = nil
-                // Сбой/отмена не должны съесть ответ: плашка возвращается вместе с подписью,
-                // чтобы повтор ушёл той же цитатой (как в текстовом send).
-                ui.replyingTo = reply
-                if uploadCancelled {
-                    // Отмена — не ошибка, но подпись возвращаем: она была частью сообщения.
-                    ui.restoredDraft = caption
-                } else {
-                    ui.error = message
-                    ui.restoredDraft = caption
-                }
+                // Пузырь ОСТАЁТСЯ с пометкой: жмёшь «Повторить» — уходит теми же файлами.
+                // В вебе призрак просто исчезал с тостом, и сообщение приходилось собирать
+                // заново; подпись и цитаты здесь тоже никуда не деваются.
+                ui.outgoing[id] = OutgoingUpload(
+                    progress: ui.outgoing[id]?.progress ?? 0, failed: true, error: message
+                )
+                ui.error = message
             }
         }
+    }
+
+    /// Единая точка для действий с пузыря (лента передаёт их одним замыканием).
+    func handleOutgoing(_ messageId: String, _ action: OutgoingUploadAction) {
+        switch action {
+        case .cancel: cancelOutgoing(messageId)
+        case .retry: retryOutgoing(messageId)
+        case .discard: discardOutgoing(messageId)
+        }
+    }
+
+    /// «Повторить» на упавшем пузыре: та же отправка теми же файлами, тот же пузырь.
+    func retryOutgoing(_ messageId: String) {
+        guard ui.outgoing[messageId]?.failed == true, outgoingPayloads[messageId] != nil else { return }
+        ui.error = nil
+        runOutgoing(messageId)
+    }
+
+    /// Крестик на летящем пузыре: пузырь уходит сразу (веб снимает призрак в тот же миг),
+    /// а загрузка бросается на ближайшей части — серверную сессию аплоад прибирает сам.
+    func cancelOutgoing(_ messageId: String) {
+        guard ui.outgoing[messageId] != nil else { return }
+        // Флаг снимет сама задача, когда закончится: чистить его здесь значило бы отпустить
+        // уже отменённый аплоад догружаться до конца.
+        cancelledOutgoing.withLock { $0.insert(messageId) }
+        removeOutgoing(messageId)
+    }
+
+    /// «Удалить» на упавшем пузыре — то же снятие, но грузить уже нечего.
+    func discardOutgoing(_ messageId: String) {
+        guard ui.outgoing[messageId] != nil else { return }
+        removeOutgoing(messageId)
+    }
+
+    /// Сервер прислал НАШЕ же сообщение (эхо сокета или тихий релоад) раньше, чем вернулся
+    /// ответ на отправку — снимаем оптимистичный пузырь, иначе одно и то же висело бы в
+    /// ленте дважды. Сравнивать по id нельзя: временный серверному не родня, поэтому ищем
+    /// по составу, и только среди УЖЕ ДОГРУЖЕННЫХ пузырей — пока файл летит, сервер о
+    /// сообщении ещё не знает, и похожее сообщение это другое сообщение.
+    private func dropEchoedOutgoing(_ incoming: [Message]) {
+        guard !ui.outgoing.isEmpty else { return }
+        for message in incoming where message.isMine && !Self.isOutgoingId(message.id) {
+            // Одно эхо снимает ОДИН пузырь — самый старый из подходящих: две одинаковые
+            // отправки подряд иначе схлопнулись бы в одну.
+            let match = ui.messages.first { candidate in
+                guard Self.isOutgoingId(candidate.id), let state = ui.outgoing[candidate.id] else {
+                    return false
+                }
+                return !state.failed && state.progress >= 1
+                    && candidate.attachments.count == message.attachments.count
+                    && (candidate.content ?? "") == (message.content ?? "")
+            }
+            guard let match else { continue }
+            removeOutgoing(match.id)
+        }
+    }
+
+    /// Снять пузырь целиком: из ленты, из состояния отправок, из нагрузки повтора, плюс
+    /// стереть его временные превью.
+    private func removeOutgoing(_ id: String) {
+        ui.messages.removeAll { $0.id == id }
+        ui.outgoing.removeValue(forKey: id)
+        outgoingPayloads.removeValue(forKey: id)
+        for url in outgoingPreviews.removeValue(forKey: id) ?? [] {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// Дорисовывает пузырю локальные превью картинок (в вебе их роль играет blob:-URL).
+    /// Отдельным проходом и вне главного потока: пузырь обязан появиться в тот же кадр, а
+    /// миниатюра 12-мегапиксельного кадра — это десятки миллисекунд, которые лента
+    /// почувствовала бы рывком.
+    private func attachLocalPreviews(to id: String, files: [OutgoingFile]) {
+        let sources: [(Int, Data)] = files.enumerated().compactMap { index, file in
+            file.mime.hasPrefix("image/") ? (index, file.bytes) : nil
+        }
+        guard !sources.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            let made: [(Int, URL)] = await Task.detached {
+                sources.compactMap { index, bytes in
+                    ChatViewModel.writeLocalPreview(bytes).map { (index, $0) }
+                }
+            }.value
+            guard let self, let row = self.ui.messages.firstIndex(where: { $0.id == id }) else {
+                // Пузыря уже нет (отмена или успех) — держать файлы превью незачем.
+                for (_, url) in made { try? FileManager.default.removeItem(at: url) }
+                return
+            }
+            for (index, url) in made where self.ui.messages[row].attachments.indices.contains(index) {
+                let old = self.ui.messages[row].attachments[index]
+                // url у вложения — let, поэтому запись пересобираем целиком.
+                self.ui.messages[row].attachments[index] = MessageAttachment(
+                    url: url.absoluteString,
+                    type: old.type,
+                    mime: old.mime,
+                    name: old.name,
+                    size: old.size,
+                    width: old.width,
+                    height: old.height
+                )
+            }
+            self.outgoingPreviews[id, default: []].append(contentsOf: made.map { $0.1 })
+        }
+    }
+
+    /// Миниатюра отправляемой картинки во временный файл. Пишем ужатую копию, а не
+    /// оригинал: класть на диск вторые мегабайты тех же байт незачем, а пузырю нужен кадр,
+    /// а не полное разрешение.
+    private nonisolated static func writeLocalPreview(_ bytes: Data) -> URL? {
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            // Снимок с портретным EXIF иначе лёг бы боком.
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1280,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              let jpeg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.8)
+        else { return nil }
+        // В ту же папку, что и копии выбранного: её подметает pruneStagingDirectory при
+        // следующем выборе файлов, и переживший падение мусор не остаётся навсегда.
+        let url = outgoingStagingDirectory()
+            .appendingPathComponent("outgoing-preview-\(UUID().uuidString).jpg")
+        do {
+            try jpeg.write(to: url, options: .atomic)
+        } catch {
+            return nil
+        }
+        return url
+    }
+
+    /// Вложение оптимистичного пузыря: тип и размеры известны сразу, url появится, когда
+    /// допишется локальное превью (до тех пор плитка держит своё место серым фоном).
+    private static func optimisticAttachment(_ file: OutgoingFile) -> MessageAttachment {
+        let type = attachmentKind(file.mime)
+        let dims = type == "IMAGE" ? imageHeaderSize(file.bytes) : nil
+        return MessageAttachment(
+            url: "",
+            type: type,
+            mime: file.mime,
+            name: file.name,
+            size: Int64(file.bytes.count),
+            width: dims?.width,
+            height: dims?.height
+        )
+    }
+
+    /// Тот же разбор, что в аплоаде (ChatRepositoryUploads.attachmentTypeFor) — он private,
+    /// а пузырю тип нужен ДО отправки.
+    private static func attachmentKind(_ mime: String) -> String {
+        if mime.hasPrefix("image/") { return "IMAGE" }
+        if mime.hasPrefix("video/") { return "VIDEO" }
+        if mime.hasPrefix("audio/") { return "AUDIO" }
+        return "FILE"
+    }
+
+    /// Размеры кадра из ЗАГОЛОВКА файла, без декодирования: плитка обязана встать на своё
+    /// место в тот же кадр, и её высота не должна меняться после загрузки картинки.
+    private static func imageHeaderSize(_ bytes: Data) -> (width: Int, height: Int)? {
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = props[kCGImagePropertyPixelWidth] as? Int,
+              let height = props[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0
+        else { return nil }
+        // EXIF-поворот меняет стороны местами: без этого портретный снимок резервировал бы
+        // альбомную плитку, и лента прыгнула бы, когда кадр наконец нарисуется.
+        let orientation = props[kCGImagePropertyOrientation] as? Int ?? 1
+        let rotated = (5...8).contains(orientation)
+        return rotated ? (height, width) : (width, height)
     }
 
     /// Кнопка «отмена» у прогресса: аборт между частями, серверная сессия прибирается.
@@ -661,18 +975,31 @@ final class ChatViewModel: ObservableObject {
         ui.staged = []
     }
 
-    /// Отправка очереди с подписью. Очередь чистится ТОЛЬКО при успехе — сбой/отмена
-    /// оставляют чипы на месте (плюс restoredDraft вернёт подпись).
+    /// Отправка очереди с подписью. Чипы уходят СРАЗУ, как в вебе (MessagesPane.tsx:3262):
+    /// собранное уже стоит пузырём в ленте, и человек может набирать следующее сообщение,
+    /// пока это летит. Отказ на проверке (пересылка, размер) очередь не трогает.
     func sendStaged(_ caption: String?) {
         let files = ui.staged
-        guard !files.isEmpty, !ui.sending else { return }
-        sendAttachments(files, caption: caption, onSuccess: { [weak self] in self?.ui.staged = [] })
+        guard !files.isEmpty else { return }
+        if secretMode {
+            // Секретный путь пока без пузыря-призрака: он чистит очередь по факту успеха.
+            sendAttachments(files, caption: caption, onSuccess: { [weak self] in self?.ui.staged = [] })
+            return
+        }
+        if sendAttachments(files, caption: caption) {
+            ui.staged = []
+        } else {
+            // Отправку не приняли (живая пересылка, негабарит) — композер уже очистил поле,
+            // возвращаем подпись туда же, где её набирали.
+            ui.restoredDraft = caption
+        }
     }
 
     /// Отправляет записанный голосовой клип (data — AAC/MP4 из VoiceRecorder) как
     /// AUDIO-сообщение с длительностью и волной.
     func sendVoice(_ data: Data, durationSec: Int, waveform: [Int]) {
-        guard !ui.sending else { return }
+        // Гейта «идёт отправка» нет и здесь: в вебе микрофон гаснет только на правке и
+        // пересылке (MessagesPane.tsx:3501), а не на время загрузки.
         // Тот же запрет, что у вложений: пока висит черновик пересылки, композер занят ею.
         if ui.forwardDraft != nil {
             ui.error = "Сначала отправьте или отмените пересылку — голосовое с ней не уходит"
@@ -689,10 +1016,9 @@ final class ChatViewModel: ObservableObject {
             sendSecretVoice(data, durationSec: durationSec, waveform: waveform, replySnapshot: reply)
             return
         }
+        ui.error = nil
+        ui.replyingTo = []
         Task {
-            ui.sending = true
-            ui.error = nil
-            ui.replyingTo = []
             switch await repo.sendVoiceMessage(
                 conversationId,
                 bytes: data,
@@ -702,12 +1028,10 @@ final class ChatViewModel: ObservableObject {
                 replyBundle: replyBundle
             ) {
             case .success(let message):
-                ui.sending = false
                 if !ui.messages.contains(where: { $0.id == message.id }) {
                     insertOrdered(message)
                 }
             case .failure(let message, _):
-                ui.sending = false
                 ui.error = message
                 // Цитата возвращается на место — повтор уйдёт ответом на то же сообщение.
                 ui.replyingTo = reply
@@ -747,7 +1071,9 @@ final class ChatViewModel: ObservableObject {
     }
 
     func react(_ message: Message, emoji: String) {
-        guard !secretMode else { return }
+        // Оптимистичный пузырь сервер ещё не видел: реакция по временному id ушла бы в
+        // никуда и вернулась ошибкой. То же касается правки, удаления, ответа и выбора.
+        guard !secretMode, !Self.isOutgoingId(message.id) else { return }
         let mine = message.reactions.first { $0.emoji == emoji }?.mine ?? false
         // Оптимистично: счётчик меняется под пальцем, а не через раундтрип. Сервер
         // подтвердит тем же значением, ошибка — вернёт снимок.
@@ -804,7 +1130,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func edit(messageId: String, content: String) {
-        guard !secretMode, !content.trimmed().isEmpty else { return }
+        guard !secretMode, !Self.isOutgoingId(messageId), !content.trimmed().isEmpty else { return }
         Task {
             if case .success = await repo.editMessage(messageId: messageId, content: content) {
                 reloadSilently()
@@ -813,6 +1139,12 @@ final class ChatViewModel: ObservableObject {
     }
 
     func delete(messageId: String) {
+        // Удалить ещё не отправленное — это снять пузырь вместе с его загрузкой.
+        if Self.isOutgoingId(messageId) {
+            cancelledOutgoing.withLock { $0.insert(messageId) }
+            removeOutgoing(messageId)
+            return
+        }
         guard !secretMode else { return }
         // Помечаем СРАЗУ: лента удалённые не показывает, и пузырь исчезает по нажатию,
         // а не через секунду-две, всё это время показывая исходный текст серым курсивом.
@@ -833,17 +1165,23 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Ответ
 
-    func setReply(_ message: Message) { ui.replyingTo = [message] }
+    /// Ответ на ещё не отправленное невозможен: replyToId указывал бы на временный id.
+    func setReply(_ message: Message) {
+        guard !Self.isOutgoingId(message.id) else { return }
+        ui.replyingTo = [message]
+    }
     func clearReply() { ui.replyingTo = [] }
 
     // MARK: - Мультивыбор (порт startSelection/toggleSelect/... из Kotlin)
 
     func startSelection(_ messageId: String) {
+        guard !Self.isOutgoingId(messageId) else { return }
         ui.selectionMode = true
         ui.selectedIds = [messageId]
     }
 
     func toggleSelect(_ messageId: String) {
+        guard !Self.isOutgoingId(messageId) else { return }
         var next = ui.selectedIds
         if !next.insert(messageId).inserted { next.remove(messageId) }
         if next.isEmpty {
