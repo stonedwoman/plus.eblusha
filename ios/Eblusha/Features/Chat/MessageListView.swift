@@ -1130,9 +1130,22 @@ extension MessageListController: UIGestureRecognizerDelegate {
               !row.selectionMode, !row.isPending,
               !row.message.isSystem, !row.message.deleted,
               row.message.attachments.isEmpty, row.message.linkPreview == nil,
-              bubbleContains(row: row, collectionPoint: point)
+              bubbleContains(row: row, collectionPoint: point),
+              // Полоса реакций — часть пузыря, но у неё свои кнопки: два тапа по чипу
+              // означают «поставил и снял», а не «быстрая реакция».
+              !reactionsContain(row: row, collectionPoint: point)
         else { return nil }
         return row
+    }
+
+    /// Лежит ли точка на полосе реакций этой строки (рамку сообщает сам пузырь).
+    private func reactionsContain(row: MessageRowModel, collectionPoint: CGPoint) -> Bool {
+        guard let state = swipeStates[row.id], state.reactionsFrame != .zero,
+              let indexPath = dataSource?.indexPath(for: row.id),
+              let cell = collectionView.cellForItem(at: indexPath)
+        else { return false }
+        let local = collectionView.convert(collectionPoint, to: cell.contentView)
+        return state.reactionsFrame.insetBy(dx: -6, dy: -6).contains(local)
     }
 
     /// Строка под пальцем для мазка выделения. Системные плашки и ещё не отправленные
