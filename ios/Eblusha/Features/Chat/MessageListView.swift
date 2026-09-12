@@ -531,6 +531,12 @@ final class MessageListController: UIViewController {
     private var hiddenTile: (messageId: String, index: Int)?
     /// Порог уже перейден: отклик даём в момент перехода, как Telegram, а не на отпускании.
     private var swipePassedThreshold = false
+    /// Якорь видимой строки на время перестройки ячеек: id и сколько её верх отстоял от
+    /// верха экрана. По нему лента возвращается на место, когда ячейка меняет высоту.
+    private var pendingHeightAnchor: (id: String, offset: CGFloat)?
+    /// До какого момента держим этот якорь: высота самоизмеряющихся ячеек доезжает не в
+    /// том же проходе раскладки, поэтому окно, а не один вызов.
+    private var heightAnchorDeadline: TimeInterval = 0
     /// Сдвиги пузырей по id сообщения: во время жеста меняется только один объект,
     /// и перерисовывается только один пузырь.
     private var swipeStates: [String: MessageSwipeState] = [:]
@@ -766,6 +772,14 @@ final class MessageListController: UIViewController {
         pendingFadeIds = Set(fadeInIds)
         fadeDeadline = fadeInIds.isEmpty ? 0 : Date().timeIntervalSince1970 + 1
 
+        // Реакция, правка, догрузившаяся картинка — всё это меняет ВЫСОТУ уже стоящей
+        // ячейки. Коллекция держит contentOffset, поэтому строки ниже съезжают, и лента
+        // дёргается под пальцем. Запоминаем видимую строку и её положение на экране, чтобы
+        // вернуть картинку на место (у прокрутки к низу и вклейки истории свои ветки).
+        if !isPrepend(previous: previous, next: newRows), !isFirst, !follow {
+            captureHeightAnchor(preferBottom: wasAtBottom)
+        }
+
         dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
             guard let self else { return }
             if let anchor = self.pendingPrependAnchor {
@@ -820,6 +834,9 @@ final class MessageListController: UIViewController {
             } else if wasAtBottom, countChanged {
                 self.armStickToBottom()
                 self.scrollToBottom(animated: true)
+            } else {
+                // Ничего не листаем — только удерживаем то, на что человек смотрит.
+                self.restoreHeightAnchor()
             }
             if incomingBelow > 0, let proxy = self.proxy {
                 proxy.newBelow += incomingBelow
@@ -859,6 +876,46 @@ final class MessageListController: UIViewController {
         stickToBottomDeadline = Date().timeIntervalSince1970 + Self.stickToBottomWindow
     }
 
+    /// Снять якорь: верхняя видимая строка и её отступ от верха экрана. Когда лента и так
+    /// стоит у низа, якорем служит сам низ — там ожидание другое: выросшая ячейка должна
+    /// доехать до конца, а не остаться наполовину за краем.
+    private func captureHeightAnchor(preferBottom: Bool) {
+        guard collectionView != nil, didInitialLayout else { return }
+        heightAnchorDeadline = Date().timeIntervalSince1970 + Self.stickToBottomWindow
+        if preferBottom {
+            pendingHeightAnchor = nil
+            armStickToBottom()
+            return
+        }
+        let top = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+        let visible = collectionView.indexPathsForVisibleItems.sorted()
+        for indexPath in visible {
+            guard let attributes = collectionView.layoutAttributesForItem(at: indexPath),
+                  attributes.frame.maxY > top,
+                  let id = dataSource?.itemIdentifier(for: indexPath) else { continue }
+            pendingHeightAnchor = (id: id, offset: attributes.frame.minY - collectionView.contentOffset.y)
+            return
+        }
+        pendingHeightAnchor = nil
+    }
+
+    /// Вернуть видимую строку туда, где она была до перестройки ячеек.
+    private func restoreHeightAnchor() {
+        guard let anchor = pendingHeightAnchor, collectionView != nil,
+              Date().timeIntervalSince1970 < heightAnchorDeadline,
+              // Палец на ленте — решает пользователь.
+              !collectionView.isTracking, !collectionView.isDragging,
+              let indexPath = dataSource?.indexPath(for: anchor.id),
+              let attributes = collectionView.layoutAttributesForItem(at: indexPath)
+        else { return }
+        let target = attributes.frame.minY - anchor.offset
+        let maxOffset = max(-collectionView.adjustedContentInset.top, bottomOffset)
+        let clamped = min(max(target, -collectionView.adjustedContentInset.top), maxOffset)
+        guard abs(clamped - collectionView.contentOffset.y) > 0.5 else { return }
+        collectionView.setContentOffset(CGPoint(x: 0, y: clamped), animated: false)
+        updatePosition()
+    }
+
     /// Коллекция сообщила, что высота содержимого изменилась.
     private func contentHeightDidChange(_ height: CGFloat) {
         let grew = height > lastContentHeight + 0.5
@@ -866,6 +923,12 @@ final class MessageListController: UIViewController {
         // Только РОСТ и только внутри окна после команды «встать в низ»: вклейка истории
         // (pendingPrependAnchor) и обычное листание сюда попадать не должны.
         guard collectionView != nil, grew, didInitialLayout, pendingPrependAnchor == nil else { return }
+        // Ячейка доросла уже после применения снимка — удерживаем видимую строку тем же
+        // якорем (реакция под пальцем как раз такой случай).
+        if pendingHeightAnchor != nil {
+            restoreHeightAnchor()
+            return
+        }
         guard Date().timeIntervalSince1970 < stickToBottomDeadline else { return }
         // Палец на ленте — решает пользователь, добивать низ нельзя.
         guard !collectionView.isTracking, !collectionView.isDragging else { return }
