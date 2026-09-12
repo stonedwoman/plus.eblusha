@@ -1138,33 +1138,41 @@ struct MessageRow: View {
             // в ReactionChips (порт MessageReactionRail). Пустоту отсекаем здесь, чтобы
             // VStack не оставлял под сообщением без реакций лишний зазор.
             if !m.reactions.isEmpty {
-                ReactionChips(
-                    reactions: m.reactions,
-                    isSelectedInMulti: selected,
-                    onTap: { onReact($0) }
-                )
-                // Рамка полосы уходит ленте: двойной тап «быстрая реакция» живёт на
-                // пузыре, а чипы лежат внутри него — без этого второй тап по чипу
-                // (снял реакцию — поставил снова) добавлял ещё одну.
-                .onGeometryChange(for: CGRect.self) {
-                    $0.frame(in: .named("messageCell"))
-                } action: {
-                    swipe.reactionsFrame = $0
+                // Реакции и метка времени — в ОДНОЙ строке: так делает Telegram, он
+                // уводит статус в конец последнего ряда реакций. Иначе пузырь с реакцией
+                // раздувается сразу на две строки — ряд чипов и строка времени под ним.
+                HStack(alignment: .bottom, spacing: 8) {
+                    ReactionChips(
+                        reactions: m.reactions,
+                        isSelectedInMulti: selected,
+                        onTap: { onReact($0) }
+                    )
+                    // Рамка полосы уходит ленте: двойной тап «быстрая реакция» живёт на
+                    // пузыре, а чипы лежат внутри него — без этого второй тап по чипу
+                    // (снял реакцию — поставил снова) добавлял ещё одну.
+                    .onGeometryChange(for: CGRect.self) {
+                        $0.frame(in: .named("messageCell"))
+                    } action: {
+                        swipe.reactionsFrame = $0
+                    }
+                    metaRow
                 }
+            } else {
+                // Без реакций метке времени негде ехать: невидимая копия держит ширину
+                // пузыря, а видимая лежит оверлеем в правом нижнем углу. Раньше в этой
+                // строке стоял Spacer, и он растягивал КАЖДЫЙ пузырь до предела: короткое
+                // «ок» рисовалось плитой в пол-экрана.
+                metaRow.hidden()
             }
-
-            // Невидимая копия метки времени держит ширину пузыря, а видимая лежит
-            // оверлеем в правом нижнем углу. Раньше в этой строке стоял Spacer, и он
-            // растягивал КАЖДЫЙ пузырь до предела: короткое «ок» рисовалось плитой в
-            // пол-экрана.
-            metaRow.hidden()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .overlay(alignment: .bottomTrailing) {
-            metaRow
-                .padding(.trailing, 12)
-                .padding(.bottom, 8)
+            if m.reactions.isEmpty {
+                metaRow
+                    .padding(.trailing, 12)
+                    .padding(.bottom, 8)
+            }
         }
         .background(bubbleColor, in: RoundedRectangle(cornerRadius: 14))
         .overlay(
