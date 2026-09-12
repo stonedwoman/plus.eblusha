@@ -430,6 +430,25 @@
       min-height: 2.85rem;
     }
 
+    /* Ссылка на живую карту мира: выглядит как соседние кнопки */
+    .hero__actions a.btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: "Source Sans 3", sans-serif;
+      font-size: 0.9375rem;
+      font-weight: 600;
+      padding: 0.7rem 1.5rem;
+      min-height: 2.85rem;
+      border-radius: var(--radius-sm);
+      text-decoration: none;
+      transition: transform var(--t-fast), background var(--t-fast), border-color var(--t-fast);
+    }
+
+    .hero__actions a.btn-secondary:hover {
+      transform: translateY(-1px);
+    }
+
     button {
       font-family: "Source Sans 3", sans-serif;
       font-size: 0.8125rem;
@@ -819,6 +838,7 @@
       <div class="hero__actions">
         <button type="button" class="btn-secondary" id="refreshBtn" aria-busy="false">Обновить</button>
         <button type="button" class="btn-primary" id="copyBtn" disabled>Скопировать код</button>
+        <a class="btn-secondary" id="mapLink" href="/v/map/" rel="noopener">Карта мира</a>
       </div>
 
       <p class="toast" id="toast" role="status"></p>
