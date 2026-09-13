@@ -499,6 +499,8 @@ final class MessageListController: UIViewController {
     private static let stickToBottomWindow: TimeInterval = 0.8
     /// До какого момента (по часам) действует это окно. 0 — выключено.
     private var stickToBottomDeadline: TimeInterval = 0
+    /// Отложенная доводка низа после анимированной прокрутки (см. scrollToBottom).
+    private var bottomSettleWork: DispatchWorkItem?
     /// Высота содержимого на прошлом сообщении коллекции о смене contentSize.
     private var lastContentHeight: CGFloat = 0
     /// Строки, чьи ячейки надо проявить (новые пузыри у низа). Ждут здесь, потому что
@@ -1012,9 +1014,43 @@ final class MessageListController: UIViewController {
     func scrollToBottom(animated: Bool) {
         guard !rows.isEmpty else { return }
         collectionView.layoutIfNeeded()
+        // Окно до-прижатия открываем и здесь. Самоизмеряющиеся ячейки ниже экрана своей
+        // высоты ещё не знают, поэтому посчитанная сейчас цель по мере их материализации
+        // уезжает ниже. Раньше окно открывалось только при пришедших сообщениях, и кнопка
+        // «вниз» из-за этого вставала за пару сообщений до конца.
+        armStickToBottom()
         // Ниже содержимого уехать невозможно: цель ограничена снизу верхним отступом.
         collectionView.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: animated)
-        if !animated { updatePosition() }
+        if animated {
+            // Анимация летит к цели, посчитанной ДО измерения ячеек. Если к её концу низ
+            // оказался дальше, а роста содержимого больше не случится (то есть
+            // contentHeightDidChange не сработает), добиваем остаток сами.
+            settleAtBottomAfterAnimation()
+        } else {
+            updatePosition()
+        }
+    }
+
+    /// Доводка после анимированной прокрутки к низу.
+    private func settleAtBottomAfterAnimation() {
+        bottomSettleWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.collectionView != nil else { return }
+            // Палец на ленте — решает человек.
+            guard !self.collectionView.isTracking, !self.collectionView.isDragging else { return }
+            // Сравниваем с настоящей целью, а не через isAtBottom: у того порог в 80 pt,
+            // и «почти внизу» он считает низом — ровно тот случай, который и чиним.
+            guard abs(self.collectionView.contentOffset.y - self.bottomOffset) > 1 else {
+                self.updatePosition()
+                return
+            }
+            self.collectionView.setContentOffset(
+                CGPoint(x: 0, y: self.bottomOffset), animated: false
+            )
+            self.updatePosition()
+        }
+        bottomSettleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     /// Поставить строку с разделителем непрочитанных к верхней кромке. Своей арифметикой
@@ -1420,6 +1456,8 @@ extension MessageListController: UICollectionViewDelegate {
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         // Палец на ленте — до-прижатие к низу отменяется: где стоять, решает пользователь.
         stickToBottomDeadline = 0
+        bottomSettleWork?.cancel()
+        bottomSettleWork = nil
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
