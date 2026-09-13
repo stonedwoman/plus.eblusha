@@ -20,6 +20,9 @@ enum VoiceTranscriptionError: LocalizedError {
     case unavailableOnDevice
     /// Распознавание не справилось (тишина, шум, битый файл).
     case failed
+    /// Ошибка самого движка: несём её текст наружу, иначе диагностировать нечем —
+    /// на устройстве логи недоступны, и «не удалось разобрать речь» не говорит ничего.
+    case engine(String)
 
     var errorDescription: String? {
         switch self {
@@ -29,6 +32,8 @@ enum VoiceTranscriptionError: LocalizedError {
             return "Офлайн-распознавание недоступно. Включите диктовку: Настройки → Основные → Клавиатура → Включить диктовку"
         case .failed:
             return "Не удалось разобрать речь"
+        case .engine(let detail):
+            return detail
         }
     }
 }
@@ -72,6 +77,26 @@ enum VoiceTranscriber {
         guard await authorize() == .authorized else { throw VoiceTranscriptionError.denied }
         guard let recognizer = recognizer() else { throw VoiceTranscriptionError.unavailableOnDevice }
 
+        // Две попытки: с автопунктуацией и без неё. Пунктуация офлайн поддержана не для
+        // каждого языка, и отказ движка из-за неё терял бы весь текст целиком.
+        do {
+            return try await recognize(fileURL: fileURL, recognizer: recognizer, punctuation: true)
+        } catch VoiceTranscriptionError.engine(let detail) {
+            do {
+                return try await recognize(fileURL: fileURL, recognizer: recognizer, punctuation: false)
+            } catch {
+                // Наружу отдаём ПЕРВУЮ ошибку: она про настоящую причину, а повтор —
+                // лишь проверка догадки про пунктуацию.
+                throw VoiceTranscriptionError.engine(detail)
+            }
+        }
+    }
+
+    private static func recognize(
+        fileURL: URL,
+        recognizer: SFSpeechRecognizer,
+        punctuation: Bool
+    ) async throws -> String {
         let request = SFSpeechURLRecognitionRequest(url: fileURL)
         // Аудио не покидает телефон — ради этого всё и затевалось.
         request.requiresOnDeviceRecognition = true
@@ -80,43 +105,79 @@ enum VoiceTranscriber {
         // Голосовое — это надиктованная речь, а не команда ассистенту.
         request.taskHint = .dictation
         // Точки и запятые: без них длинная расшифровка читается сплошным потоком.
-        request.addsPunctuation = true
+        request.addsPunctuation = punctuation
 
+        // ССЫЛКИ ДЕРЖИМ САМИ. recognitionTask возвращает задачу, и если её не удержать,
+        // ARC освобождает задачу вместе с распознавателем прямо посреди работы: приходит
+        // отмена, которая снаружи выглядит как «не удалось разобрать речь». Ровно на этом
+        // функция и не работала.
+        let session = RecognitionSession(recognizer: recognizer)
         return try await withCheckedThrowingContinuation { continuation in
-            // Speech может дёрнуть обработчик и с результатом, и с ошибкой — продолжение
-            // же допускает ровно одно возобновление, иначе падение процесса.
-            let once = ResumeOnce()
-            recognizer.recognitionTask(with: request) { result, error in
-                if let result, result.isFinal {
-                    let text = result.bestTranscription.formattedString
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    once.run {
-                        if text.isEmpty {
-                            continuation.resume(throwing: VoiceTranscriptionError.failed)
-                        } else {
-                            continuation.resume(returning: text)
-                        }
-                    }
-                    return
-                }
-                if error != nil {
-                    once.run { continuation.resume(throwing: VoiceTranscriptionError.failed) }
+            session.start(request: request) { outcome in
+                switch outcome {
+                case .text(let text):
+                    continuation.resume(returning: text)
+                case .failure(let error):
+                    continuation.resume(throwing: error)
                 }
             }
         }
     }
 }
 
-/// Однократное возобновление продолжения: обработчик Speech вызывается не один раз.
-private final class ResumeOnce: @unchecked Sendable {
-    private let lock = NSLock()
-    private var done = false
+/// Держатель одного распознавания: хранит распознаватель и задачу живыми до конца и
+/// возобновляет продолжение ровно один раз (обработчик Speech зовут многократно).
+private final class RecognitionSession: @unchecked Sendable {
+    enum Outcome {
+        case text(String)
+        case failure(VoiceTranscriptionError)
+    }
 
-    func run(_ body: () -> Void) {
+    private let lock = NSLock()
+    private var finished = false
+    private let recognizer: SFSpeechRecognizer
+    private var task: SFSpeechRecognitionTask?
+    private var completion: ((Outcome) -> Void)?
+
+    init(recognizer: SFSpeechRecognizer) {
+        self.recognizer = recognizer
+    }
+
+    func start(request: SFSpeechRecognitionRequest, completion: @escaping (Outcome) -> Void) {
+        self.completion = completion
+        // self в замыкании — СИЛЬНО: задача должна пережить выход из scope. Цикл
+        // task → замыкание → self → task рвётся в finish(), где мы обнуляем обе ссылки.
+        task = recognizer.recognitionTask(with: request) { result, error in
+            if let error {
+                let ns = error as NSError
+                // kAFAssistantErrorDomain 1110 — «речь не распознана»: тишина или шум,
+                // это не поломка, а честный результат.
+                if ns.code == 1110 {
+                    self.finish(.failure(.failed))
+                } else {
+                    self.finish(.failure(.engine(
+                        "Распознавание не запустилось: \(ns.localizedDescription) [\(ns.domain) \(ns.code)]"
+                    )))
+                }
+                return
+            }
+            guard let result, result.isFinal else { return }
+            let text = result.bestTranscription.formattedString
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            self.finish(text.isEmpty ? .failure(.failed) : .text(text))
+        }
+    }
+
+    private func finish(_ outcome: Outcome) {
         lock.lock()
-        let first = !done
-        done = true
+        let first = !finished
+        finished = true
+        let handler = completion
         lock.unlock()
-        if first { body() }
+        guard first else { return }
+        handler?(outcome)
+        // Рвём цикл и отпускаем движок.
+        completion = nil
+        task = nil
     }
 }
