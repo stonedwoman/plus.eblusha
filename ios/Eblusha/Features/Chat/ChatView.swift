@@ -413,6 +413,9 @@ struct ChatView: View {
             // Именно свою беседу: при переходе в другую её onAppear успевает раньше этого
             // onDisappear, и голое обнуление стёрло бы уже НОВУЮ открытую беседу.
             ChatSounds.leaveConversation(conversation.id)
+            // Голосовое глушим при уходе с экрана: плеер теперь общий и переживает ячейку,
+            // а мини-плеера у нас нет — звук из закрытого чата нечем было бы остановить.
+            VoicePlaybackCenter.shared.stop()
         }
         .sheet(item: $forwardSheet) { request in
             ForwardPickerSheet(

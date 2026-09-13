@@ -627,62 +627,466 @@ private struct LiveWaveform: View {
 
 // MARK: - Плеер AUDIO-вложений
 
-/// Порт VoiceMessagePlayer из ChatScreen.kt: play/pause, волна, чьи бары закрашиваются
-/// прогрессом воспроизведения, и метка «текущее / всего». Стримит `resolveMediaUrl(url)`
-/// через AVPlayer; использует сохранённую [waveform], а без неё — детерминированную
-/// псевдоволну из URL.
+/// Часы воспроизведения — отдельный объект намеренно. Позиция меняется ~20 раз в секунду,
+/// и живи она в общем центре, каждый тик перерисовывал бы ВСЕ видимые голосовые пузыри:
+/// на `@ObservedObject` SwiftUI не различает, какое именно поле изменилось. Часы слушает
+/// только тот пузырь, который сейчас играет.
+@MainActor
+final class VoicePlaybackClock: ObservableObject {
+    @Published fileprivate(set) var positionMs: Int64 = 0
+}
+
+/// Общий проигрыватель голосовых. Раньше AVPlayer жил внутри пузыря (`@StateObject`), и от
+/// этого шли все жалобы: прокрутил ленту — ячейка уехала вместе со звуком; ячейку отдали
+/// другому сообщению — в ней оставалось состояние чужого; два пузыря играли одновременно.
+/// Теперь воспроизведение не зависит от жизни ячейки, а пузырь — это только вид на общее
+/// состояние, опознающий себя по ключу вложения.
+@MainActor
+final class VoicePlaybackCenter: ObservableObject {
+    static let shared = VoicePlaybackCenter()
+
+    /// Ключ заряженного вложения (`MessageAttachment.url`) — по нему пузырь понимает, что
+    /// играют именно его.
+    @Published private(set) var activeKey: String?
+    @Published private(set) var playing = false
+    @Published private(set) var preparing = false
+    /// Файл не открылся: пузырь показывает это вместо вечного спиннера.
+    @Published private(set) var failed = false
+    /// Длительность из самого файла; 0 — ещё неизвестна, и пузырь берёт свою из метаданных.
+    @Published private(set) var totalMs: Int64 = 0
+    /// Скорость общая для всех голосовых и переживает перезапуск — как в Telegram: выставил
+    /// один раз и слушаешь так дальше.
+    @Published private(set) var rate: Float
+    /// Пока палец ведёт по волне, позицию диктует он, а не плеер.
+    @Published private(set) var scrubbing = false
+
+    let clock = VoicePlaybackClock()
+
+    private var player: AVPlayer?
+    private var timeObserver: Any?
+    private var cancellables: Set<AnyCancellable> = []
+    /// Длительность из метаданных сообщения: нужна, чтобы перемотка работала ещё до того,
+    /// как AVPlayer прочитает файл и сообщит настоящую.
+    private var fallbackMs: Int64 = 0
+    /// Сессию активировали мы — значит нам её и гасить (у звонка она своя).
+    private var ownsSession = false
+
+    private static let rateKey = "eblusha.voice.rate"
+    private static let rates: [Float] = [1, 1.5, 2]
+
+    private init() {
+        let saved = UserDefaults.standard.float(forKey: Self.rateKey)
+        rate = Self.rates.contains(saved) ? saved : 1
+
+        // Звонок, будильник, чужое видео — playback обязан уступить и не возобновляться сам:
+        // голосовое, заигравшее посреди разговора, звучит как чужой голос в трубке.
+        NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard
+                    let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                    AVAudioSession.InterruptionType(rawValue: raw) == .began
+                else { return }
+                self?.pause()
+            }
+            .store(in: &cancellables)
+
+        // Выдернули наушники — замолкаем, а не продолжаем вслух на всю комнату.
+        NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard
+                    let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                    AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable
+                else { return }
+                self?.pause()
+            }
+            .store(in: &cancellables)
+    }
+
+    // MARK: Управление
+
+    /// Кнопка play/pause пузыря: своё — пауза/продолжить, чужое — переключаемся на него.
+    func toggle(key: String, source: String, metadataMs: Int64) {
+        // После сбоя (сеть отвалилась, файл не открылся) плеер мёртв: повторный тап обязан
+        // начать заново, иначе кнопка молча залипает.
+        if activeKey == key, !failed {
+            playing ? pause() : resume()
+        } else {
+            start(key: key, source: source, metadataMs: metadataMs, at: 0)
+        }
+    }
+
+    /// Тап или протяжка по волне: играем с указанной доли, даже если это сообщение ещё не
+    /// было заряжено — так же ведут себя Telegram и WhatsApp.
+    func seek(key: String, source: String, metadataMs: Int64, to fraction: Double) {
+        if activeKey == key, !failed {
+            seek(to: fraction)
+        } else {
+            start(key: key, source: source, metadataMs: metadataMs, at: fraction)
+        }
+    }
+
+    func pause() {
+        guard playing else { return }
+        player?.pause()
+        playing = false
+        releaseSession()
+    }
+
+    private func resume() {
+        guard let player else { return }
+        guard callIsIdle else { return }
+        activateSession()
+        // Дошли до конца и жмём play — начинаем сначала, иначе кнопка выглядит мёртвой.
+        if totalEffectiveMs > 0, clock.positionMs >= totalEffectiveMs - 120 {
+            player.seek(to: .zero)
+            clock.positionMs = 0
+        }
+        player.defaultRate = rate
+        player.play()
+        playing = true
+    }
+
+    /// Перебирает 1× → 1,5× → 2× → 1×. Скорость применяется на лету и запоминается.
+    func cycleRate() {
+        let index = Self.rates.firstIndex(of: rate) ?? 0
+        rate = Self.rates[(index + 1) % Self.rates.count]
+        UserDefaults.standard.set(rate, forKey: Self.rateKey)
+        guard let player else { return }
+        player.defaultRate = rate
+        // Скорость у играющего плеера меняется только присвоением rate; у поставленного
+        // на паузу — нет, иначе он самовольно заиграет.
+        if playing { player.rate = rate }
+    }
+
+    /// Снять с воспроизведения полностью (например, когда пошла прослушка черновика).
+    func stop() {
+        player?.pause()
+        detachPlayer()
+        activeKey = nil
+        playing = false
+        preparing = false
+        failed = false
+        totalMs = 0
+        fallbackMs = 0
+        clock.positionMs = 0
+        releaseSession()
+    }
+
+    // MARK: Протяжка по волне
+
+    func beginScrub() {
+        scrubbing = true
+    }
+
+    /// Во время протяжки позицию рисуем сразу, а плеер догоняем — иначе волна дёргается.
+    func scrub(to fraction: Double) {
+        guard totalEffectiveMs > 0 else { return }
+        clock.positionMs = Int64(max(0, min(1, fraction)) * Double(totalEffectiveMs))
+    }
+
+    func endScrub() {
+        guard scrubbing else { return }
+        scrubbing = false
+        guard totalEffectiveMs > 0 else { return }
+        seek(to: Double(clock.positionMs) / Double(totalEffectiveMs))
+    }
+
+    // MARK: Внутреннее
+
+    /// Длительность, на которую опирается перемотка: настоящая, а пока её нет — из метаданных.
+    private var totalEffectiveMs: Int64 { totalMs > 0 ? totalMs : fallbackMs }
+
+    /// Во время разговора голосовые не играем: сессия занята звонком, и перебивать её
+    /// значило бы оборвать звук там, где он нужен по делу (та же проверка у inline-видео).
+    private var callIsIdle: Bool {
+        AppContainer.shared.callManager.phase == .idle
+    }
+
+    private func seek(to fraction: Double) {
+        guard let player, totalEffectiveMs > 0 else { return }
+        let ms = Int64(max(0, min(1, fraction)) * Double(totalEffectiveMs))
+        clock.positionMs = ms
+        player.seek(
+            to: CMTime(value: CMTimeValue(ms), timescale: 1000),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+    }
+
+    private func start(key: String, source: String, metadataMs: Int64, at fraction: Double) {
+        guard callIsIdle else { return }
+        guard let url = URL(string: source) else { return }
+
+        detachPlayer()
+        activeKey = key
+        playing = false
+        failed = false
+        preparing = true
+        totalMs = 0
+        fallbackMs = metadataMs
+        clock.positionMs = 0
+
+        let item = AVPlayerItem(url: url)
+        // Речь на 1,5× и 2× без «бурундука»: алгоритм растягивает время, не трогая высоту.
+        item.audioTimePitchAlgorithm = .timeDomain
+        let created = AVPlayer(playerItem: item)
+        // defaultRate — чтобы play() стартовал сразу на выбранной скорости, а не на 1×.
+        created.defaultRate = rate
+        player = created
+
+        item.publisher(for: \.status)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard let self, self.player === created else { return }
+                switch status {
+                case .readyToPlay:
+                    self.preparing = false
+                    let duration = item.duration
+                    if duration.isNumeric, duration.seconds > 0 {
+                        self.totalMs = Int64(duration.seconds * 1000)
+                    }
+                    // Стартовая доля известна только сейчас: до готовности seek молчит.
+                    if fraction > 0 { self.seek(to: fraction) }
+                    self.activateSession()
+                    created.defaultRate = self.rate
+                    created.play()
+                    self.playing = true
+                case .failed:
+                    self.preparing = false
+                    self.playing = false
+                    self.failed = true
+                    self.releaseSession()
+                default:
+                    break
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime, object: item)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, self.player === created else { return }
+                self.playing = false
+                // Позицию оставляем в конце: пузырь показывает «прослушано целиком», а
+                // следующий тап по play начнёт сначала (см. resume).
+                self.clock.positionMs = self.totalEffectiveMs
+                self.releaseSession()
+            }
+            .store(in: &cancellables)
+
+        // 20 раз в секунду: на глаз волна ползёт плавно, а нагрузка остаётся на одном пузыре.
+        timeObserver = created.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.05, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] time in
+            guard let self, self.player === created, time.isNumeric else { return }
+            // Под пальцем позицию ведёт протяжка — плеер её не перебивает.
+            guard !self.scrubbing else { return }
+            self.clock.positionMs = Int64(time.seconds * 1000)
+        }
+    }
+
+    private func detachPlayer() {
+        if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
+        timeObserver = nil
+        cancellables.removeAll()
+        player?.replaceCurrentItem(with: nil)
+        player = nil
+    }
+
+    /// `.playback` + `.spokenAudio` — режим для речи: слышно с выключенным звонком (как в
+    /// вебе и на Android) и чужая музыка глушится, а не мешается с голосом.
+    private func activateSession() {
+        guard !ownsSession else { return }
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .spokenAudio)
+        try? session.setActive(true)
+        ownsSession = true
+        // Черновик в композере и лента не должны звучать хором.
+        VoicePlayback.stopCurrent()
+    }
+
+    /// Отпускаем сессию, чтобы чужая музыка вернулась сама.
+    private func releaseSession() {
+        guard ownsSession else { return }
+        ownsSession = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+
+/// Пузырь голосового: play/pause, волна с перемоткой (тап и протяжка), переключатель
+/// скорости и метка времени. Своего плеера не держит — только показывает общий центр,
+/// поэтому переиспользование ячейки ленты больше не путает состояния.
 struct VoiceMessagePlayer: View {
+    /// Ключ-идентификатор вложения (`MessageAttachment.url`) — стабилен и у секретных.
     let url: String
+    /// Что реально играть: у секретного — расшифрованный локальный файл.
+    var playable: URL?
     let durationSec: Int?
     let waveform: [Int]?
     var onSurface: Color = Eb.textPrimary
 
-    @StateObject private var playback = VoicePlayback()
+    @ObservedObject private var center = VoicePlaybackCenter.shared
+
+    private var isActive: Bool { center.activeKey == url }
+    private var source: String { playable?.absoluteString ?? (resolveMediaUrl(url) ?? url) }
+    private var metadataMs: Int64 { Int64(durationSec ?? 0) * 1000 }
+    private var totalMs: Int64 {
+        isActive && center.totalMs > 0 ? center.totalMs : metadataMs
+    }
 
     var body: some View {
         let bars = (waveform?.isEmpty == false)
             ? waveform!
             : pseudoWaveform(seed: url, bars: VoiceRecorder.bars)
-        let totalMs = playback.totalMs > 0 ? playback.totalMs : Int64(durationSec ?? 0) * 1000
-        let progress = totalMs > 0 ? Double(playback.positionMs) / Double(totalMs) : 0
 
         HStack(spacing: 10) {
-            Button {
-                playback.toggle(urlString: resolveMediaUrl(url) ?? url)
-            } label: {
-                Group {
-                    if playback.preparing {
-                        ProgressView()
-                            .tint(.white)
-                            .scaleEffect(0.8)
-                    } else {
-                        Image(systemName: playback.playing ? "pause.fill" : "play.fill")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                }
-                .frame(width: 40, height: 40)
-                .background(Eb.brand, in: Circle())
-            }
-            .buttonStyle(.plain)
-
-            VStack(alignment: .leading, spacing: 2) {
-                WaveformBars(
-                    bars: bars,
-                    progress: progress,
-                    played: Eb.brand,
-                    idle: onSurface.opacity(0.3)
-                )
-                .frame(height: 26)
-                .frame(maxWidth: .infinity)
-                Text("\(formatRecordTime(playback.positionMs)) / \(formatRecordTime(totalMs))")
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(onSurface.opacity(0.7))
+            playButton
+            VStack(alignment: .leading, spacing: 3) {
+                waveformRow(bars: bars)
+                bottomRow
             }
         }
         .frame(minWidth: 200, maxWidth: 280)
         .padding(.vertical, 2)
+    }
+
+    private var playButton: some View {
+        Button {
+            center.toggle(key: url, source: source, metadataMs: metadataMs)
+        } label: {
+            Group {
+                if isActive && center.preparing {
+                    ProgressView()
+                        .tint(.white)
+                        .scaleEffect(0.8)
+                } else if isActive && center.failed {
+                    Image(systemName: "exclamationmark")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                } else {
+                    Image(systemName: isActive && center.playing ? "pause.fill" : "play.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 40, height: 40)
+            .background(Eb.brand, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isActive && center.playing ? "Пауза" : "Воспроизвести")
+    }
+
+    @ViewBuilder
+    private func waveformRow(bars: [Int]) -> some View {
+        GeometryReader { geo in
+            Group {
+                if isActive {
+                    // Часы слушает только активный пузырь — остальные не перерисовываются.
+                    ActiveWaveform(
+                        clock: center.clock,
+                        bars: bars,
+                        totalMs: totalMs,
+                        played: Eb.brand,
+                        idle: onSurface.opacity(0.3)
+                    )
+                } else {
+                    WaveformBars(bars: bars, progress: 0, played: Eb.brand, idle: onSurface.opacity(0.3))
+                }
+            }
+            .contentShape(Rectangle())
+            // Тап — прыжок в точку. Именно тап, а не жест перетаскивания: тап не спорит
+            // с прокруткой ленты и работает даже на ещё не заряженном сообщении.
+            .gesture(
+                SpatialTapGesture()
+                    .onEnded { value in
+                        let fraction = geo.size.width > 0 ? value.location.x / geo.size.width : 0
+                        center.seek(
+                            key: url, source: source, metadataMs: metadataMs, to: fraction
+                        )
+                    }
+            )
+            // Протяжка — только у играющего пузыря: в остальных она отнимала бы у ленты
+            // вертикальную прокрутку ради жеста, которым там всё равно некуда мотать.
+            .gesture(
+                DragGesture(minimumDistance: 8)
+                    .onChanged { value in
+                        if !center.scrubbing { center.beginScrub() }
+                        let fraction = geo.size.width > 0 ? value.location.x / geo.size.width : 0
+                        center.scrub(to: fraction)
+                    }
+                    .onEnded { _ in center.endScrub() },
+                including: isActive ? .gesture : .subviews
+            )
+        }
+        .frame(height: 26)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var bottomRow: some View {
+        HStack(spacing: 6) {
+            if isActive {
+                // Текущее/всего — только у играющего: в остальных пузырях это был бы
+                // застывший «0:00 /», который ничего не сообщает.
+                ActiveTimeLabel(clock: center.clock, totalMs: totalMs, color: onSurface.opacity(0.7))
+            } else {
+                Text(formatRecordTime(totalMs))
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(onSurface.opacity(0.7))
+            }
+            Spacer(minLength: 4)
+            if isActive {
+                Button {
+                    center.cycleRate()
+                } label: {
+                    Text(rateLabel(center.rate))
+                        .font(.system(size: 11, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Eb.brand)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Eb.brand.opacity(0.15), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Скорость воспроизведения \(rateLabel(center.rate))")
+            }
+        }
+    }
+
+    private func rateLabel(_ rate: Float) -> String {
+        rate == 1 ? "1×" : (rate == 1.5 ? "1,5×" : "2×")
+    }
+}
+
+/// Волна играющего пузыря. Отдельный вид ради подписки на часы: перерисовка 20 раз в
+/// секунду остаётся здесь и не задевает соседние сообщения.
+private struct ActiveWaveform: View {
+    @ObservedObject var clock: VoicePlaybackClock
+    let bars: [Int]
+    let totalMs: Int64
+    let played: Color
+    let idle: Color
+
+    var body: some View {
+        let progress = totalMs > 0 ? Double(clock.positionMs) / Double(totalMs) : 0
+        WaveformBars(bars: bars, progress: progress, played: played, idle: idle)
+    }
+}
+
+/// Метка «текущее / всего» играющего пузыря — по той же причине отдельным видом.
+private struct ActiveTimeLabel: View {
+    @ObservedObject var clock: VoicePlaybackClock
+    let totalMs: Int64
+    let color: Color
+
+    var body: some View {
+        Text("\(formatRecordTime(clock.positionMs)) / \(formatRecordTime(totalMs))")
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundStyle(color)
     }
 }
 
@@ -711,8 +1115,11 @@ struct SecretVoiceMessagePlayer: View {
         let broken = resolvedFor == att.url && failed
         Group {
             if let ready {
+                // Ключ — ВСЕГДА att.url: имя расшифрованного файла меняется между
+                // расшифровками, и по нему пузырь терял бы себя в общем плеере.
                 VoiceMessagePlayer(
-                    url: ready.absoluteString,
+                    url: att.url,
+                    playable: ready,
                     durationSec: durationSec,
                     waveform: waveform,
                     onSurface: onSurface
@@ -803,8 +1210,22 @@ private func playableAudioURL(_ file: URL, mime: String?) -> URL {
 }
 
 /// Обёртка AVPlayer со стейтом для SwiftUI — роль колбэков MediaPlayer из Kotlin
-/// (onPrepared/onCompletion/onError + цикл positionMs).
+/// (onPrepared/onCompletion/onError + цикл positionMs). Используется только прослушкой
+/// черновика в композере; лентой правит VoicePlaybackCenter.
+///
+/// @MainActor — иначе не позвать общий центр, чтобы не звучать с лентой хором.
+@MainActor
 private final class VoicePlayback: ObservableObject {
+    /// Последний плеер черновика: общий центр глушит его, когда в ленте жмут play
+    /// (и наоборот — см. toggle). Слабая, чтобы не держать уехавший композер.
+    private static weak var current: VoicePlayback?
+
+    static func stopCurrent() {
+        guard let current, current.playing else { return }
+        current.player?.pause()
+        current.playing = false
+    }
+
     @Published var playing = false
     @Published var preparing = false
     @Published var positionMs: Int64 = 0
@@ -820,11 +1241,15 @@ private final class VoicePlayback: ObservableObject {
             player?.pause()
             playing = false
         } else if let player {
+            VoicePlaybackCenter.shared.stop()
+            Self.current = self
             activatePlaybackSession()
             player.play()
             playing = true
         } else if !preparing {
             guard let url = URL(string: urlString) else { return }
+            VoicePlaybackCenter.shared.stop()
+            Self.current = self
             preparing = true
             activatePlaybackSession()
             let item = AVPlayerItem(url: url)
