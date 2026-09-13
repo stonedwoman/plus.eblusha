@@ -555,6 +555,36 @@ final class MessageListController: UIViewController {
         super.viewDidLoad()
         setUpCollectionView()
         setUpDataSource()
+        // Клавиатура сообщает о себе ДО того, как вьюпорт сожмётся, — это единственный
+        // момент, когда «мы внизу» ещё достоверно.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(keyboardWillChangeFrame(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil
+        )
+    }
+
+    /// Клавиатура выезжает, прячется или меняет высоту (эмодзи-панель, автоподсказки).
+    @objc private func keyboardWillChangeFrame(_ note: Notification) {
+        guard collectionView != nil, didInitialLayout else { return }
+        let pinned = isAtBottom
+        wasAtBottomBeforeLayout = pinned
+        guard pinned else { return }
+        // Страховка поверх viewDidLayoutSubviews: тот прижимает низ только если высота
+        // ленты РЕАЛЬНО изменилась. Когда SwiftUI отдаёт клавиатуру безопасной областью,
+        // а коллекция её игнорирует (contentInsetAdjustmentBehavior = .never), высота не
+        // меняется вовсе — и без этого прижатия строки просто остались бы под клавиатурой.
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey]
+            as? Double) ?? 0.25
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.03) { [weak self] in
+            guard let self, self.collectionView != nil else { return }
+            // Палец на ленте — решает человек.
+            guard !self.collectionView.isTracking, !self.collectionView.isDragging else { return }
+            // За время анимации могли увести ленту вверх: навязываться не нужно.
+            guard self.wasAtBottomBeforeLayout, !self.isAtBottom else { return }
+            self.scrollToBottom(animated: false)
+        }
     }
 
     private func setUpCollectionView() {
@@ -1115,6 +1145,12 @@ final class MessageListController: UIViewController {
     private func updatePosition() {
         guard let proxy, collectionView != nil else { return }
         let atBottom = isAtBottom
+        // Снимок держим СВЕЖИМ. Раньше он снимался только в проходах раскладки с
+        // неизменной высотой, а прокрутка таких проходов не вызывает — и пока человек
+        // листал ленту, значение устаревало. К приходу клавиатуры лента «не знала», что
+        // её уже вернули вниз, и не прижималась: последние сообщения оставались под
+        // клавиатурой. Условие то же (высота стабильна), но проверяется на каждый сдвиг.
+        if view.bounds.height == lastBoundsHeight { wasAtBottomBeforeLayout = atBottom }
         if proxy.atBottom != atBottom {
             proxy.atBottom = atBottom
             // Дошли до низа — всё накопленное показано, бейдж гаснет.
