@@ -930,6 +930,14 @@ struct VoiceMessagePlayer: View {
 
     @ObservedObject private var center = VoicePlaybackCenter.shared
 
+    /// Текст расшифровки и метка, к какому вложению он относится: ячейка ленты
+    /// переиспользуется под другое сообщение, а @State это переживает — без метки в
+    /// пузыре осталась бы расшифровка ПРЕДЫДУЩЕГО голосового.
+    @State private var transcript: String?
+    @State private var transcriptFor: String?
+    @State private var transcribing = false
+    @State private var transcriptError: String?
+
     private var isActive: Bool { center.activeKey == url }
     private var source: String { playable?.absoluteString ?? (resolveMediaUrl(url) ?? url) }
     private var metadataMs: Int64 { Int64(durationSec ?? 0) * 1000 }
@@ -942,15 +950,87 @@ struct VoiceMessagePlayer: View {
             ? waveform!
             : pseudoWaveform(seed: url, bars: VoiceRecorder.bars)
 
-        HStack(spacing: 10) {
-            playButton
-            VStack(alignment: .leading, spacing: 3) {
-                waveformRow(bars: bars)
-                bottomRow
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                playButton
+                VStack(alignment: .leading, spacing: 3) {
+                    waveformRow(bars: bars)
+                    bottomRow
+                }
             }
+            transcriptView
         }
         .frame(minWidth: 200, maxWidth: 280)
         .padding(.vertical, 2)
+        // Кэш переживает перезапуск, поэтому у уже расшифрованного текст появляется сразу.
+        .task(id: url) {
+            guard transcriptFor != url else { return }
+            transcript = TranscriptStore.shared.text(for: url)
+            transcriptError = nil
+            transcriptFor = url
+        }
+    }
+
+    /// Готовый текст под волной. Показываем без сворачивания: расшифровку запрашивают,
+    /// когда слушать некогда, и прятать её за второй тап было бы издевательством.
+    @ViewBuilder
+    private var transcriptView: some View {
+        if transcriptFor == url, let transcript, !transcript.isEmpty {
+            Text(transcript)
+                .font(.footnote)
+                .foregroundStyle(onSurface)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 2)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(onSurface.opacity(0.12))
+                        .frame(height: 1)
+                        .offset(y: -4)
+                }
+        } else if let transcriptError, transcriptFor == url {
+            Text(transcriptError)
+                .font(.caption2)
+                .foregroundStyle(Eb.error)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Распознавание идёт на устройстве; файл сначала нужен локально — секретное
+    /// расшифровывается ключом треда, обычное скачивается (оба пути уже есть у вложений).
+    private func runTranscription() {
+        guard !transcribing else { return }
+        transcribing = true
+        transcriptError = nil
+        Task { @MainActor in
+            defer { transcribing = false }
+            let file: URL?
+            if let playable {
+                file = playable
+            } else {
+                file = await AttachmentOpener.prepare(
+                    MessageAttachment(url: url, type: "AUDIO"), decryptSecret: nil
+                )?.url
+            }
+            guard let file else {
+                transcriptError = "Не удалось получить аудио"
+                transcriptFor = url
+                return
+            }
+            do {
+                // Скачанный блоб часто без расширения, а Speech определяет контейнер
+                // локального файла именно по нему — тот же трюк, что и для плеера.
+                let readable = playableAudioURL(file, mime: nil)
+                let text = try await VoiceTranscriber.transcribe(fileURL: readable)
+                TranscriptStore.shared.save(text, for: url)
+                transcript = text
+                transcriptFor = url
+            } catch {
+                transcriptError = (error as? LocalizedError)?.errorDescription
+                    ?? "Не удалось разобрать речь"
+                transcriptFor = url
+            }
+        }
     }
 
     private var playButton: some View {
@@ -1038,6 +1118,7 @@ struct VoiceMessagePlayer: View {
                     .foregroundStyle(onSurface.opacity(0.7))
             }
             Spacer(minLength: 4)
+            transcribeButton
             if isActive {
                 Button {
                     center.cycleRate()
@@ -1053,6 +1134,29 @@ struct VoiceMessagePlayer: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Скорость воспроизведения \(rateLabel(center.rate))")
             }
+        }
+    }
+
+    /// «Аа» — расшифровать. Пропадает, когда текст уже показан: повторять нечего.
+    @ViewBuilder
+    private var transcribeButton: some View {
+        if transcriptFor == url, transcript?.isEmpty == false {
+            EmptyView()
+        } else if transcribing {
+            ProgressView()
+                .scaleEffect(0.6)
+                .frame(width: 22, height: 16)
+        } else {
+            Button(action: runTranscription) {
+                Text("Аа")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(onSurface.opacity(0.7))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(onSurface.opacity(0.1), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Расшифровать голосовое")
         }
     }
 

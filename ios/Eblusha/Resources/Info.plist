@@ -51,6 +51,10 @@
 	     видит пользователь в системном запросе, поэтому по-русски и по делу. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Камера нужна для видеозвонков.</string>
+	<!-- Распознавание идёт ТОЛЬКО на устройстве (requiresOnDeviceRecognition), звук
+	     никуда не уходит — но системе разрешение нужно в любом случае. -->
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Распознавание речи нужно, чтобы показать текст голосового сообщения. Обработка идёт на самом телефоне.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Микрофон нужен для звонков и голосовых сообщений.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

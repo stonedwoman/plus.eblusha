@@ -73,6 +73,9 @@ final class AppContainer {
         chatRepository.clearLocalData()
         // Ключи тредов, prekeys, идентичность устройства и расшифрованные вложения.
         secretRepository.clearLocalData()
+        // Расшифровки голосовых — это содержимое переписки открытым текстом (в том числе
+        // из секреток), поэтому логаут их стирает вместе со всем остальным.
+        TranscriptStore.shared.clear()
         PresenceDevices.shared.clear()
         // Игры и звонки — такое же присутствие: новому владельцу сессии показывать,
         // кто во что играл и где шёл звонок, нельзя.
