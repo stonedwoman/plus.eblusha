@@ -1295,7 +1295,12 @@ struct MessageRow: View {
                         decrypt: decryptSecretAttachment
                     )
                 } else {
-                    VoiceMessagePlayer(url: att.url, durationSec: m.audioDurationSec, waveform: m.waveform)
+                    VoiceMessagePlayer(
+                        url: att.url,
+                        durationSec: m.audioDurationSec,
+                        waveform: m.waveform,
+                        mime: att.mime
+                    )
                 }
             } else {
                 fileRow(att)

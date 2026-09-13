@@ -926,6 +926,8 @@ struct VoiceMessagePlayer: View {
     var playable: URL?
     let durationSec: Int?
     let waveform: [Int]?
+    /// mime вложения: по нему выбирается расширение файла для распознавания.
+    var mime: String?
     var onSurface: Color = Eb.textPrimary
 
     @ObservedObject private var center = VoicePlaybackCenter.shared
@@ -1009,7 +1011,7 @@ struct VoiceMessagePlayer: View {
                 file = playable
             } else {
                 file = await AttachmentOpener.prepare(
-                    MessageAttachment(url: url, type: "AUDIO"), decryptSecret: nil
+                    MessageAttachment(url: url, type: "AUDIO", mime: mime), decryptSecret: nil
                 )?.url
             }
             guard let file else {
@@ -1020,7 +1022,7 @@ struct VoiceMessagePlayer: View {
             do {
                 // Скачанный блоб часто без расширения, а Speech определяет контейнер
                 // локального файла именно по нему — тот же трюк, что и для плеера.
-                let readable = playableAudioURL(file, mime: nil)
+                let readable = playableAudioURL(file, mime: mime)
                 let text = try await VoiceTranscriber.transcribe(fileURL: readable)
                 TranscriptStore.shared.save(text, for: url)
                 transcript = text
@@ -1226,6 +1228,7 @@ struct SecretVoiceMessagePlayer: View {
                     playable: ready,
                     durationSec: durationSec,
                     waveform: waveform,
+                    mime: att.mime,
                     onSurface: onSurface
                 )
             } else if broken {
@@ -1287,15 +1290,26 @@ private func audioFileExtension(for mime: String?) -> String {
     return "m4a"
 }
 
-/// Готовит расшифрованный секретный файл к воспроизведению: SecretRepository кладёт кэш
-/// под хеш БЕЗ расширения, поэтому рядом создаётся жёсткая ссылка с расширением.
+/// Расширения, по которым AVFoundation узнаёт звук. Всё остальное для неё — мусор.
+private let knownAudioExtensions: Set<String> = [
+    "m4a", "mp4", "mp3", "wav", "aiff", "aif", "caf", "aac", "m4b",
+]
+
+/// Готовит локальный файл к воспроизведению и распознаванию: рядом создаётся жёсткая
+/// ссылка с ПОНЯТНЫМ расширением.
+///
+/// Проверять «расширения нет» было недостаточно, и на этом ломалась расшифровка: файлы
+/// хранилища называются `<ключ>.eblusha` — расширение есть, но AVFoundation такого не
+/// знает и отвечает -11828 (формат не распознан). Смотрим не на наличие расширения, а на
+/// то, звуковое ли оно; неизвестное — заменяем выведенным из mime.
+///
 /// Ссылка, а не копия — второй копии расшифрованных байтов на диске не нужно; лежит она
 /// в том же каталоге и с тем же префиксом треда, поэтому purgeThreadLocal стирает её
 /// вместе с самим кэшем и расшифровка не переживает закрытие секретки.
 private func playableAudioURL(_ file: URL, mime: String?) -> URL {
-    guard file.pathExtension.isEmpty else { return file }
+    guard !knownAudioExtensions.contains(file.pathExtension.lowercased()) else { return file }
     let fm = FileManager.default
-    let alias = file.appendingPathExtension(audioFileExtension(for: mime))
+    let alias = file.deletingPathExtension().appendingPathExtension(audioFileExtension(for: mime))
     if fm.fileExists(atPath: alias.path) { return alias }
     do {
         try fm.linkItem(at: file, to: alias)
