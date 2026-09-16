@@ -23,6 +23,13 @@ final class RealtimeClient: ObservableObject {
     private var socket: SocketIOClient?
     private var socketToken: String?
     private var refreshing = false
+    /// Единственная идущая ротация токена. Раньше гейтов было два и они не знали друг о
+    /// друге: `opening` у connect(), `refreshing` у onAuthError(), а
+    /// reconnectForDeviceChange() шёл мимо обоих. Разбуженный пушем телефон с протухшим
+    /// токеном отправлял два bootstrap подряд (видно в журналах сервера: 38 и 103 мс),
+    /// и оба, вернувшись, звали rebuildSocket — второй сносил только что поднятое
+    /// соединение. Теперь ротация одна на всех: опоздавшие ждут её результат.
+    private var refreshTask: Task<String?, Never>?
     private var authRetries = 0
     private let maxAuthRetries = 3
 
@@ -68,20 +75,28 @@ final class RealtimeClient: ObservableObject {
     /// устройства): без переподключения сервер оставил бы нас в комнате старого устройства.
     func reconnectForDeviceChange() {
         guard session.currentRefreshToken() != nil else { return }
-        Task { await openSocket(proactiveRefresh: false) }
+        Task { await openSocket(proactiveRefresh: false, force: true) }
     }
 
     /// Добывает рабочий access-токен (обновив, если заведомо истёк) и (пере)собирает сокет.
-    private func openSocket(proactiveRefresh: Bool) async {
+    /// `force` — пересобрать даже живое соединение (смена device-id: его везёт
+    /// рукопожатие, и на старом сокете мы остаёмся в комнате прежнего устройства).
+    private func openSocket(proactiveRefresh: Bool, force: Bool = false) async {
         var token = session.currentAccessToken()
         if proactiveRefresh && (token == nil || session.isAccessTokenExpired()) {
-            token = await refreshAccessToken(stale: token) ?? session.currentAccessToken()
+            token = await sharedRefresh(stale: token) ?? session.currentAccessToken()
         }
         guard let token else {
             NSLog("RealtimeClient: нет access-токена, не подключаюсь")
             return
         }
-        await MainActor.run { rebuildSocket(token: token) }
+        await MainActor.run {
+            // Пока ходили за токеном, сокет мог подняться сам (авто-реконнект менеджера)
+            // и уже работать на этом же токене. Пересборка снесла бы живое соединение —
+            // ровно то, из-за чего связь «сбрасывалась при подключении».
+            if !force, socket?.status == .connected, socketToken == token { return }
+            rebuildSocket(token: token)
+        }
     }
 
     @MainActor
@@ -258,10 +273,22 @@ final class RealtimeClient: ObservableObject {
         let stale = socketToken
         Task {
             defer { self.refreshing = false }
-            if let fresh = await refreshAccessToken(stale: stale), fresh != stale {
+            if let fresh = await self.sharedRefresh(stale: stale), fresh != stale {
                 await MainActor.run { self.rebuildSocket(token: fresh) }
             }
         }
+    }
+
+    /// Ротация, разделяемая всеми путями: второй вызов не шлёт свой bootstrap, а ждёт
+    /// результат первого.
+    @MainActor
+    private func sharedRefresh(stale: String?) async -> String? {
+        if let existing = refreshTask { return await existing.value }
+        let task = Task<String?, Never> { await self.refreshAccessToken(stale: stale) }
+        refreshTask = task
+        let result = await task.value
+        refreshTask = nil
+        return result
     }
 
     /// Ротация access-токена через /mobile/session/bootstrap. Зеркало HTTP-варианта:

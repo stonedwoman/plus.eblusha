@@ -42,6 +42,11 @@ final class CallKitController: NSObject {
     /// reportNewIncomingCall отправлен, ответа системы ещё нет. Пока он в полёте,
     /// CXAnswerCallAction запрашивать нельзя — доложим ответ из completion.
     private var reportInFlight = false
+    /// Система РЕАЛЬНО показала входящий (успешная ветка reportNew). Без этого признака
+    /// любой CXEndCallAction выглядел как красная кнопка — см. provider(_:perform:).
+    private var callDidAppear = false
+    /// Провайдер сбрасывался: всё, что приходит после, — уборка системы, а не человек.
+    private var providerWasReset = false
     /// Завершение инициировано системной кнопкой (CXEndCallAction уже отработал) —
     /// наблюдатель фазы не должен рапортовать remoteEnded поверх.
     private var endingViaAction = false
@@ -154,6 +159,7 @@ final class CallKitController: NSObject {
         incomingVideo = video
         endingViaAction = false
         answerReported = false
+        callDidAppear = false
         reportInFlight = true
         provider.reportNewIncomingCall(with: uuid, update: Self.makeUpdate(callerName: callerName, video: video)) { error in
             guard self.callUUID == uuid else {
@@ -162,6 +168,7 @@ final class CallKitController: NSObject {
                 return
             }
             self.reportInFlight = false
+            if error == nil { self.callDidAppear = true }
             if let error {
                 // Звонок не показан — приложение продолжает звонить своим IncomingCallView.
                 NSLog("CallKitController: reportNewIncomingCall failed: %@", String(describing: error))
@@ -404,6 +411,7 @@ final class CallKitController: NSObject {
         callConversationId = nil
         incomingVideo = false
         answerReported = false
+        callDidAppear = false
         reportInFlight = false
     }
 }
@@ -416,6 +424,7 @@ extension CallKitController: CXProviderDelegate {
         // Система сбросила провайдера (крайне редко) — завершаем всё, чтобы состояния
         // не разъехались.
         DispatchQueue.main.async {
+            self.providerWasReset = true
             self.clear()
             self.endingUUID = nil
             let manager = AppContainer.shared.callManager
@@ -492,10 +501,36 @@ extension CallKitController: CXProviderDelegate {
             let manager = AppContainer.shared.callManager
             if manager.phase == .incoming, manager.conversationId == self.callConversationId {
                 self.endingViaAction = true
-                manager.declineIncoming() // красная кнопка на входящем = отклонить
+                // Происхождение CXEndCallAction на iOS достоверно не определяется: в самом
+                // действии причины нет. Но заведомо СИСТЕМНЫЕ случаи отсечь можно — звонок
+                // не был показан, репорт ещё в полёте, провайдер сбрасывался. Разница
+                // принципиальна: declineIncoming шлёт call:decline, а это конец звонка для
+                // ОБЕИХ сторон (сервер снимает callState, звонящему уходит отбой, в беседу
+                // пишется «Пропущенный звонок»). Остальные четыре системных снятия в этом
+                // файле молчат серверу — здесь было единственное исключение.
+                if self.callDidAppear, !self.reportInFlight, !self.providerWasReset {
+                    manager.declineIncoming() // красная кнопка на входящем
+                } else {
+                    manager.dismissIncoming() // системная уборка: гасим только у себя
+                }
             } else if manager.phase != .idle, manager.conversationId == self.callConversationId {
                 self.endingViaAction = true
                 manager.hangUp()
+            }
+            self.clear()
+            action.fulfill()
+        }
+    }
+
+    /// Система не дождалась выполнения действия. Метод обязателен к реализации: молчание
+    /// здесь оставляет системный звонок в подвешенном состоянии. Серверу не сообщаем —
+    /// это тайм-аут системы, а не решение человека.
+    func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
+        DispatchQueue.main.async {
+            NSLog("CallKitController: система не дождалась действия %@", String(describing: type(of: action)))
+            let manager = AppContainer.shared.callManager
+            if manager.phase == .incoming, manager.conversationId == self.callConversationId {
+                manager.dismissIncoming()
             }
             self.clear()
             action.fulfill()
