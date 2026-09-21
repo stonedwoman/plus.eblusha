@@ -109,17 +109,19 @@
     };
   }
 
-  function applyRect(tile, r) {
+  /** Геометрия через left/right, а не width: если во время анимации появится
+   *  полоса прокрутки и сетка станет уже, правый край плитки останется у края сетки. */
+  function applyRect(tile, r, gridW) {
     tile.style.top = r.top + "px";
     tile.style.left = r.left + "px";
-    tile.style.width = r.width + "px";
+    tile.style.right = Math.max(0, gridW - r.left - r.width) + "px";
     tile.style.height = r.height + "px";
   }
 
   function clearRect(tile) {
     tile.style.top = "";
     tile.style.left = "";
-    tile.style.width = "";
+    tile.style.right = "";
     tile.style.height = "";
   }
 
@@ -286,11 +288,11 @@
     };
 
     if (animate && !REDUCED_MOTION) {
-      applyRect(tile, first);
+      applyRect(tile, first, gridW);
       grid.style.minHeight = gridH + "px";
       void tile.offsetWidth; // зафиксировать стартовое положение
       tile.classList.add("boss-tile--animating");
-      applyRect(tile, { top: 0, left: 0, width: gridW, height: targetH });
+      applyRect(tile, { top: 0, left: 0, width: gridW, height: targetH }, gridW);
       grid.style.minHeight = Math.max(targetH, gridH) + "px";
       armEnd(tile, finish);
     } else {
@@ -342,11 +344,11 @@
     };
 
     if (animate && !REDUCED_MOTION) {
-      applyRect(tile, cur);
+      applyRect(tile, cur, grid.clientWidth);
       void tile.offsetWidth;
       tile.classList.add("boss-tile--animating");
       grid.classList.add("world-info__bosses--closing");
-      applyRect(tile, slot.rect);
+      applyRect(tile, slot.rect, grid.clientWidth);
       // px → px: сетка едет вместе с плиткой, а не падает и не прыгает.
       grid.style.minHeight = slot.naturalH + "px";
       armEnd(tile, finish);
