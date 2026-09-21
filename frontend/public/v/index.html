@@ -755,10 +755,6 @@
         transform var(--t-fast);
     }
 
-    .boss-tile:not(.boss-tile--expanded) {
-      cursor: pointer;
-    }
-
     .boss-tile__head {
       display: flex;
       align-items: center;
@@ -766,28 +762,19 @@
       min-width: 0;
     }
 
-    /* Кнопка раскрытия — только шапка, без своих кнопочных стилей */
-    .boss-tile__toggle {
-      flex: 1 1 auto;
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      gap: 0.7rem;
-      width: 100%;
-      margin: 0;
-      padding: 0;
-      border: 0;
-      border-radius: 6px;
-      background: none;
-      color: inherit;
-      font: inherit;
-      text-align: left;
+    .boss-tile {
       cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
     }
 
-    .boss-tile__toggle:focus-visible {
+    .boss-tile:focus-visible {
       outline: none;
       box-shadow: 0 0 0 2px rgba(200, 164, 90, 0.55);
+    }
+
+    .boss-tile img {
+      user-select: none;
+      -webkit-user-drag: none;
     }
 
     .boss-tile__title {
@@ -814,29 +801,6 @@
     .boss-tile--placeholder {
       visibility: hidden !important;
       pointer-events: none;
-    }
-
-    .boss-tile__close {
-      display: none;
-      position: absolute;
-      top: 0.5rem;
-      right: 0.6rem;
-      width: 2rem;
-      height: 2rem;
-      align-items: center;
-      justify-content: center;
-      border-radius: 50%;
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      background: rgba(255, 255, 255, 0.06);
-      color: #fff;
-      font-size: 1.25rem;
-      line-height: 1;
-      padding: 0;
-      cursor: pointer;
-    }
-
-    .boss-tile__close:hover {
-      background: rgba(255, 255, 255, 0.14);
     }
 
     .boss-tile__body {
@@ -880,14 +844,6 @@
 
     .world-info__boss-line--pending.boss-tile--expanded .boss-tile__status {
       color: rgba(245, 140, 140, 1);
-    }
-
-    .boss-tile--expanded .world-info__boss-mark {
-      visibility: hidden;
-    }
-
-    .boss-tile--expanded .boss-tile__close {
-      display: inline-flex;
     }
 
     .boss-tile--expanded .boss-tile__body {
@@ -980,26 +936,6 @@
       border-top: 1px solid rgba(255, 255, 255, 0.1);
       font-size: 0.8rem;
       opacity: 0.78;
-    }
-
-    .boss-tile__foot a {
-      color: var(--accent-hover);
-    }
-
-    .boss-tile__collapse {
-      margin-left: 0.9rem;
-      padding: 0.2rem 0.7rem;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.06);
-      color: #eee;
-      font: inherit;
-      font-size: 0.8rem;
-      cursor: pointer;
-    }
-
-    .boss-tile__collapse:hover {
-      background: rgba(255, 255, 255, 0.14);
     }
 
     @media (prefers-reduced-motion: reduce) {

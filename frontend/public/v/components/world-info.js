@@ -237,8 +237,7 @@
   }
 
   function setExpandedState(tile, on) {
-    var toggle = tile.querySelector(".boss-tile__toggle");
-    if (toggle) toggle.setAttribute("aria-expanded", on ? "true" : "false");
+    tile.setAttribute("aria-expanded", on ? "true" : "false");
   }
 
   function focusQuiet(el) {
@@ -315,7 +314,7 @@
       }
     });
 
-    if (animate) focusQuiet(tile.querySelector(".boss-tile__close"));
+    if (animate) focusQuiet(tile);
   }
 
   function collapseTile(tile, animate) {
@@ -356,7 +355,7 @@
     }
 
     if (animate) {
-      focusQuiet(tile.querySelector(".boss-tile__toggle"));
+      focusQuiet(tile);
       try {
         tile.scrollIntoView({ block: "nearest" });
       } catch (e) {
@@ -629,19 +628,15 @@
         tile.className =
           "world-info__boss-line boss-tile" +
           (done ? " world-info__boss-line--done" : " world-info__boss-line--pending");
-        tile.setAttribute("role", "group");
+        tile.setAttribute("role", "button");
+        tile.setAttribute("tabindex", "0");
+        tile.setAttribute("aria-expanded", "false");
         tile.setAttribute("aria-labelledby", nameId);
+        tile.setAttribute("aria-controls", bodyId);
         tile.setAttribute("data-boss", key);
 
         var head = document.createElement("div");
         head.className = "boss-tile__head";
-
-        // Кнопка — только шапка: имя кнопки остаётся именем босса, а не всем текстом советов.
-        var toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.className = "boss-tile__toggle";
-        toggle.setAttribute("aria-expanded", "false");
-        toggle.setAttribute("aria-controls", bodyId);
 
         if (imgSrc) {
           var thumb = document.createElement("span");
@@ -653,8 +648,9 @@
           img.height = 72;
           img.loading = "lazy";
           img.decoding = "async";
+          img.draggable = false;
           thumb.appendChild(img);
-          toggle.appendChild(thumb);
+          head.appendChild(thumb);
         }
 
         var titleBox = document.createElement("span");
@@ -668,22 +664,13 @@
         status.textContent = done ? "Повержен" : "Ещё жив";
         titleBox.appendChild(nameEl);
         titleBox.appendChild(status);
-        toggle.appendChild(titleBox);
+        head.appendChild(titleBox);
 
         var mark = document.createElement("span");
         mark.className = "world-info__boss-mark";
         mark.setAttribute("aria-hidden", "true");
         mark.textContent = done ? "✓" : "✗";
-        toggle.appendChild(mark);
-
-        head.appendChild(toggle);
-
-        var close = document.createElement("button");
-        close.type = "button";
-        close.className = "boss-tile__close";
-        close.setAttribute("aria-label", "Свернуть");
-        close.textContent = "×";
-        head.appendChild(close);
+        head.appendChild(mark);
 
         tile.appendChild(head);
 
@@ -700,41 +687,28 @@
         body.appendChild(tipsBox);
         var foot = document.createElement("div");
         foot.className = "boss-tile__foot";
-        var src = document.createElement("span");
-        src.textContent = "Источник: Valheim вики на Fandom, CC BY-SA · ";
-        var link = document.createElement("a");
-        link.href = wiki;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        link.textContent = "Смотреть на fandom.com ↗";
-        var collapseBtn = document.createElement("button");
-        collapseBtn.type = "button";
-        collapseBtn.className = "boss-tile__collapse";
-        collapseBtn.textContent = "Свернуть";
-        foot.appendChild(src);
-        foot.appendChild(link);
-        foot.appendChild(collapseBtn);
+        foot.textContent = "Источник: страница «" + nm + "» русской Valheim-вики на Fandom · CC BY-SA";
         body.appendChild(foot);
         tile.appendChild(body);
 
-        toggle.addEventListener("click", function () {
+        // Единственная цель клика — плитка целиком. Протяжку (выделение текста
+        // советов) за клик не считаем.
+        var downX = 0;
+        var downY = 0;
+        tile.addEventListener("pointerdown", function (e) {
+          downX = e.clientX;
+          downY = e.clientY;
+        });
+        tile.addEventListener("click", function (e) {
+          if (Math.abs(e.clientX - downX) > 6 || Math.abs(e.clientY - downY) > 6) return;
           toggleTile(tile);
         });
-        // Кликабельна вся плитка, а не только имя. В развёрнутом виде
-        // сворачивает клик по шапке; по тексту советов — нет, чтобы его можно было выделять.
-        tile.addEventListener("click", function (e) {
-          if (e.target.closest("a, button")) return;
-          if (!tile.classList.contains("boss-tile--expanded")) {
+        tile.addEventListener("keydown", function (e) {
+          if (e.target !== tile) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
             toggleTile(tile);
-          } else if (e.target.closest(".boss-tile__head")) {
-            collapseTile(tile, true);
           }
-        });
-        close.addEventListener("click", function () {
-          collapseTile(tile, true);
-        });
-        collapseBtn.addEventListener("click", function () {
-          collapseTile(tile, true);
         });
 
         bossList.appendChild(tile);
