@@ -52,13 +52,16 @@
     html {
       margin: 0;
       min-height: 100%;
-      background: #97a8c0;
+      /* Цвет, которым заканчивается градиент неба (#E1F6F4 в v-sky-full.js).
+         Холст неба закрывает не всю высоту окна, и ниже видно этот фон;
+         раньше он был заметно темнее и давал резкую горизонтальную границу. */
+      background: #e1f6f4;
     }
 
     /* Static sky is used for embedded previews and reduced-power fallbacks. */
     html.sky-static body,
     html.sky-error body {
-      background-image: linear-gradient(to top, #c8d2dc 40%, #97a8c0 80%);
+      background-image: linear-gradient(to top, #e1f6f4 40%, #07588a 100%);
       background-size: cover;
     }
 
