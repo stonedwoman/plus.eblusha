@@ -261,7 +261,8 @@
         var img = document.createElement("img");
         img.src = imgSrc;
         img.alt = nm;
-        img.width = 48;
+        img.width = 72;
+        img.height = 72;
         img.loading = "lazy";
         img.decoding = "async";
         aThumb.appendChild(img);

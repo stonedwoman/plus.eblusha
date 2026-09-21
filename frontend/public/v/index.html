@@ -625,12 +625,17 @@
 
     .world-info__bosses {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0.25rem 1.25rem;
-      font-size: 0.8125rem;
-      line-height: 1.45;
-      margin-bottom: 0.15rem;
-      align-items: start;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.5rem;
+      line-height: 1.35;
+      margin-bottom: 0.35rem;
+      align-items: stretch;
+    }
+
+    @media (max-width: 900px) {
+      .world-info__bosses {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
 
     @media (max-width: 420px) {
@@ -641,13 +646,28 @@
       .world-info__bosses {
         grid-template-columns: 1fr;
       }
+
+      .world-info__boss-thumb img {
+        width: 64px;
+        height: 64px;
+      }
     }
 
     .world-info__boss-line {
       display: flex;
       align-items: center;
-      gap: 0.4rem 0.55rem;
+      gap: 0.7rem;
       min-width: 0;
+      padding: 0.5rem 0.6rem;
+      border-radius: 10px;
+      border: 1px solid rgba(200, 164, 90, 0.14);
+      background: rgba(255, 255, 255, 0.025);
+      transition: border-color var(--t-fast), background var(--t-fast), transform var(--t-fast);
+    }
+
+    .world-info__boss-line:hover {
+      transform: translateY(-1px);
+      background: rgba(255, 255, 255, 0.05);
     }
 
     .world-info__boss-thumb {
@@ -656,11 +676,25 @@
     }
 
     .world-info__boss-thumb img {
-      width: 48px;
-      height: auto;
+      width: 72px;
+      height: 72px;
+      object-fit: cover;
       display: block;
-      border-radius: 5px;
+      border-radius: 8px;
       border: 1px solid rgba(200, 164, 90, 0.18);
+      background: rgba(0, 0, 0, 0.25);
+      transition: filter var(--t-fast), opacity var(--t-fast);
+    }
+
+    /* Неповерженные приглушены, поверженные в полный цвет — видно с одного взгляда */
+    .world-info__boss-line--pending .world-info__boss-thumb img {
+      filter: grayscale(0.65) brightness(0.8);
+      opacity: 0.75;
+    }
+
+    .world-info__boss-line:hover .world-info__boss-thumb img {
+      filter: none;
+      opacity: 1;
     }
 
     .world-info__boss-link {
@@ -668,7 +702,9 @@
       min-width: 0;
       color: inherit;
       text-decoration: none;
-      font-size: 0.8125rem;
+      font-size: 0.9375rem;
+      font-weight: 600;
+      overflow-wrap: anywhere;
     }
 
     .world-info__boss-link:hover {
@@ -678,11 +714,22 @@
 
     .world-info__boss-mark {
       flex: 0 0 auto;
-      font-weight: 600;
+      font-weight: 700;
+      font-size: 0.875rem;
+      width: 1.55rem;
+      height: 1.55rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      border: 1px solid currentColor;
+      opacity: 0.85;
     }
 
     .world-info__boss-line--done {
-      color: rgba(110, 231, 168, 0.88);
+      color: rgba(110, 231, 168, 0.92);
+      border-color: rgba(110, 231, 168, 0.3);
+      background: rgba(110, 231, 168, 0.07);
     }
 
     .world-info__boss-line--pending {
