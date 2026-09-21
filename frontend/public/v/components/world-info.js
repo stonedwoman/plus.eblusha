@@ -57,6 +57,31 @@
     return "неизвестно";
   }
 
+  function plural(value, one, few, many) {
+    var mod10 = value % 10;
+    var mod100 = value % 100;
+    if (mod100 >= 11 && mod100 <= 14) return many;
+    if (mod10 === 1) return one;
+    if (mod10 >= 2 && mod10 <= 4) return few;
+    return many;
+  }
+
+  /**
+   * Возраст события реальным временем. Игровыми сутками его не измерить:
+   * внутриигровые часы идут только когда на сервере есть люди.
+   */
+  function formatRealAgo(seconds) {
+    if (seconds == null || !isFinite(seconds)) return "";
+    var s = Math.max(0, Math.floor(seconds));
+    if (s < 90) return "только что";
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + " " + plural(m, "минуту", "минуты", "минут") + " назад";
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + " " + plural(h, "час", "часа", "часов") + " назад";
+    var d = Math.floor(h / 24);
+    return d + " " + plural(d, "день", "дня", "дней") + " назад";
+  }
+
   function formatGameDaysAgo(n) {
     if (n == null || !isFinite(n)) return "";
     var value = Math.max(0, Math.floor(Math.abs(n)));
@@ -95,6 +120,8 @@
           gameDaysAgo: undefined,
           eventDay: undefined,
           occurredAt: undefined,
+        secondsAgo: undefined,
+          secondsAgo: undefined,
         };
       }
       return {
@@ -105,6 +132,7 @@
         gameDaysAgo: undefined,
         eventDay: undefined,
         occurredAt: undefined,
+        secondsAgo: undefined,
       };
     }
 
@@ -117,6 +145,7 @@
         gameDaysAgo: undefined,
         eventDay: undefined,
         occurredAt: undefined,
+        secondsAgo: undefined,
       };
     }
 
@@ -127,6 +156,7 @@
     var apiGameDays = ev.gameDaysAgo != null ? ev.gameDaysAgo : ev.daysAgo;
     var apiEventDay = ev.eventDay;
     var apiAt = ev.occurredAt;
+    var apiSeconds = ev.secondsAgo;
 
     if (mapEv) {
       var d = mapEv(id);
@@ -139,6 +169,9 @@
           gameDaysAgo: apiGameDays != null ? apiGameDays : undefined,
           eventDay: apiEventDay != null ? apiEventDay : undefined,
           occurredAt: apiAt != null ? apiAt : undefined,
+      secondsAgo: apiSeconds != null ? apiSeconds : undefined,
+        secondsAgo: apiSeconds != null ? apiSeconds : undefined,
+          secondsAgo: apiSeconds != null ? apiSeconds : undefined,
         };
       }
       return {
@@ -149,6 +182,8 @@
         gameDaysAgo: apiGameDays != null ? apiGameDays : undefined,
         eventDay: apiEventDay != null ? apiEventDay : undefined,
         occurredAt: apiAt != null ? apiAt : undefined,
+      secondsAgo: apiSeconds != null ? apiSeconds : undefined,
+        secondsAgo: apiSeconds != null ? apiSeconds : undefined,
       };
     }
 
@@ -160,6 +195,7 @@
       gameDaysAgo: apiGameDays != null ? apiGameDays : undefined,
       eventDay: apiEventDay != null ? apiEventDay : undefined,
       occurredAt: apiAt != null ? apiAt : undefined,
+      secondsAgo: apiSeconds != null ? apiSeconds : undefined,
     };
   }
 
@@ -270,8 +306,14 @@
             (entry.unknown ? " world-info__event-chip--unknown" : "") +
             (isLatest ? " world-info__event-chip--latest" : "");
           var label = entry.nameRu || entry.id;
-          if (isLatest && entry.gameDaysAgo != null) {
-            label += " · " + formatGameDaysAgo(entry.gameDaysAgo);
+          if (isLatest) {
+            var ago =
+              entry.secondsAgo != null
+                ? formatRealAgo(entry.secondsAgo)
+                : entry.gameDaysAgo != null
+                  ? formatGameDaysAgo(entry.gameDaysAgo)
+                  : "";
+            if (ago) label += " · " + ago;
           }
           chip.textContent = label;
           chip.setAttribute("title", eventTooltip(entry));
