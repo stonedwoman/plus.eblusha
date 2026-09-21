@@ -340,13 +340,18 @@
       inset: 0;
     }
 
-    /* Layer order: static (z=1) is the body+text. The "hover" overlay
-       (glasses lifted + eyes visible) sits ABOVE it (z=2) and is permanently
-       at opacity 1. The "base" overlay (glasses-down + hair) covers it (z=3)
-       and slides up on hover to reveal what's beneath — no crossfade, no
-       semi-transparent overlap. */
+    /* Слои: static (z=1) — полный рисунок с надетыми очками, без дыры.
+       Накладка hover (очки подняты, видны глаза; z=2) в покое скрыта, поэтому
+       в покое на экране ровно исходный рисунок без швов. Накладка base
+       (тот же кусок с надетыми очками; z=3) уезжает вверх при наведении и
+       открывает hover. Обе накладки вырезаны одной мягкой маской по зоне
+       различий двух рисунков. При уходе курсора hover гаснет только когда
+       base вернулась на место (задержка = длительность её обратного хода). */
     .brand__logo--static { z-index: 1; opacity: 1; }
-    .brand__logo--hover  { z-index: 2; opacity: 1; }
+    .brand__logo--hover  { z-index: 2; opacity: 0; transition: opacity 0s linear 1400ms; }
+    .brand:hover .brand__logo--hover,
+    .brand:focus-within .brand__logo--hover,
+    .brand.is-logo-peeking .brand__logo--hover { opacity: 1; transition: opacity 0s linear 0s; }
 
     .brand__logo--base {
       z-index: 3;
@@ -1026,9 +1031,9 @@
     <header>
       <h1 class="brand">
         <span class="brand__logo-frame">
-          <img class="brand__logo brand__logo--static" src="/koban/logo-static.png?v=20260505-glasses" alt="КОБАНЮК" />
-          <img class="brand__logo brand__logo--base" src="/koban/logo-base-overlay.png?v=20260505-glasses" alt="" aria-hidden="true" />
-          <img class="brand__logo brand__logo--hover" src="/koban/logo-hover-overlay.png?v=20260509-lift" alt="" aria-hidden="true" />
+          <img class="brand__logo brand__logo--static" src="/koban/logo-static.png?v=20260921-recut" alt="КОБАНЮК" />
+          <img class="brand__logo brand__logo--base" src="/koban/logo-base-overlay.png?v=20260921-recut" alt="" aria-hidden="true" />
+          <img class="brand__logo brand__logo--hover" src="/koban/logo-hover-overlay.png?v=20260921-recut" alt="" aria-hidden="true" />
           <svg class="brand__logo brand__logo-svg-legacy" viewBox="0 0 980 270" role="img" aria-labelledby="brandTitle brandDesc" focusable="false">
             <title id="brandTitle">КОБАНЮК</title>
             <desc id="brandDesc">Лого игровых серверов KOBAN.UK: кабан в растаманской шапке, темных очках, с пивом и дымом. При наведении очки поднимаются и видны красные глаза.</desc>
