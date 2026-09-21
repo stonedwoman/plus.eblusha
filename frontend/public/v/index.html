@@ -630,6 +630,13 @@
       line-height: 1.35;
       margin-bottom: 0.35rem;
       align-items: stretch;
+      align-content: start;
+      position: relative;
+      transition: min-height 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    .world-info__bosses--measure {
+      transition: none !important;
     }
 
     @media (max-width: 900px) {
@@ -648,6 +655,20 @@
       }
 
       .world-info__boss-thumb img {
+        width: 64px;
+        height: 64px;
+      }
+
+      .boss-tile--expanded .world-info__boss-thumb img {
+        width: 84px;
+        height: 84px;
+      }
+
+      .boss-tile--expanded .world-info__boss-link {
+        font-size: 1.15rem;
+      }
+
+      .boss-tile--collapsing .world-info__boss-thumb img {
         width: 64px;
         height: 64px;
       }
@@ -734,6 +755,315 @@
 
     .world-info__boss-line--pending {
       color: rgba(232, 104, 104, 0.82);
+    }
+
+    /* ---- раскрывающаяся плитка ---- */
+    .boss-tile {
+      position: relative;
+      overflow: hidden;
+      transition:
+        opacity 0.3s ease,
+        transform 0.3s ease,
+        visibility 0s linear 0s,
+        padding 0.42s ease,
+        border-color var(--t-fast),
+        background var(--t-fast);
+    }
+
+    .boss-tile__head {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-width: 0;
+    }
+
+    /* Кнопка раскрытия — только шапка, без своих кнопочных стилей */
+    .boss-tile__toggle {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .boss-tile__toggle:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(200, 164, 90, 0.55);
+    }
+
+    .boss-tile__title {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+
+    /* В свёрнутом виде статус только для читалок, галочка сама по себе немая */
+    .boss-tile__status {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .boss-tile__close {
+      display: none;
+      flex: 0 0 auto;
+      width: 2rem;
+      height: 2rem;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      font-size: 1.25rem;
+      line-height: 1;
+      padding: 0;
+      cursor: pointer;
+    }
+
+    .boss-tile__close:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .boss-tile__body {
+      display: none;
+      color: rgba(255, 255, 255, 0.88);
+    }
+
+    .world-info__boss-thumb img,
+    .world-info__boss-link {
+      transition:
+        width 0.42s ease,
+        height 0.42s ease,
+        font-size 0.42s ease,
+        filter var(--t-fast),
+        opacity var(--t-fast);
+    }
+
+    /* Развёрнутая плитка накрывает сетку целиком */
+    .boss-tile--expanded {
+      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      z-index: 3;
+      background: rgba(9, 13, 12, 0.96);
+      border-color: rgba(200, 164, 90, 0.35);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+      padding: 0.85rem 1rem 0.9rem;
+    }
+
+    .boss-tile--expanded:hover {
+      transform: none;
+      background: rgba(9, 13, 12, 0.96);
+    }
+
+    .boss-tile--expanded .boss-tile__subhead {
+      color: rgba(200, 164, 90, 0.85);
+    }
+
+    .boss-tile--expanded .world-info__boss-thumb img {
+      width: 104px;
+      height: 104px;
+      filter: none;
+      opacity: 1;
+    }
+
+    .boss-tile--expanded .world-info__boss-link {
+      font-size: 1.35rem;
+    }
+
+    .boss-tile--expanded .boss-tile__status {
+      position: static;
+      width: auto;
+      height: auto;
+      overflow: visible;
+      clip: auto;
+      white-space: normal;
+      opacity: 1;
+    }
+
+    .world-info__boss-line--done.boss-tile--expanded .boss-tile__status {
+      color: rgba(120, 235, 175, 1);
+    }
+
+    .world-info__boss-line--pending.boss-tile--expanded .boss-tile__status {
+      color: rgba(245, 140, 140, 1);
+    }
+
+    .boss-tile--expanded .world-info__boss-mark {
+      display: none;
+    }
+
+    .boss-tile--expanded .boss-tile__close {
+      display: inline-flex;
+    }
+
+    .boss-tile--expanded .boss-tile__body {
+      display: block;
+      animation: bossBodyIn 0.3s ease both;
+    }
+
+    /* Пока плитка едет по размерам, содержимое не показываем */
+    .boss-tile--animating {
+      transition:
+        top 0.42s cubic-bezier(0.2, 0.8, 0.2, 1),
+        left 0.42s cubic-bezier(0.2, 0.8, 0.2, 1),
+        width 0.42s cubic-bezier(0.2, 0.8, 0.2, 1),
+        height 0.42s cubic-bezier(0.2, 0.8, 0.2, 1),
+        padding 0.42s cubic-bezier(0.2, 0.8, 0.2, 1),
+        border-color var(--t-fast),
+        background var(--t-fast);
+    }
+
+    .boss-tile--animating .boss-tile__body {
+      animation: none;
+      opacity: 0;
+    }
+
+    /* Сворачивание: миниатюра, шрифт и отступы едут вместе с рамкой, а не второй волной */
+    .boss-tile--collapsing {
+      padding: 0.5rem 0.6rem;
+    }
+
+    .boss-tile--collapsing .world-info__boss-thumb img {
+      width: 72px;
+      height: 72px;
+    }
+
+    .boss-tile--collapsing .world-info__boss-link {
+      font-size: 0.9375rem;
+    }
+
+    /* Восстановление после перерисовки: без въезда содержимого */
+    .boss-tile--restored .boss-tile__body {
+      animation: none;
+    }
+
+    /* Клон для замера: всё в конечном состоянии, переходы выключены */
+    .boss-tile--measure,
+    .boss-tile--measure * {
+      transition: none !important;
+      animation: none !important;
+    }
+
+    .boss-tile--measure .boss-tile__body {
+      opacity: 1;
+    }
+
+    @keyframes bossBodyIn {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    /* Соседи гаснут под развёрнутой плиткой и возвращаются при сворачивании */
+    .world-info__bosses--has-expanded .boss-tile:not(.boss-tile--expanded) {
+      opacity: 0;
+      transform: scale(0.96);
+      pointer-events: none;
+      visibility: hidden;
+      transition:
+        opacity 0.3s ease,
+        transform 0.3s ease,
+        visibility 0s linear 0.3s;
+    }
+
+    .world-info__bosses--closing .boss-tile:not(.boss-tile--expanded) {
+      opacity: 1;
+      transform: none;
+      visibility: visible;
+      transition:
+        opacity 0.3s ease 0.12s,
+        transform 0.3s ease 0.12s,
+        visibility 0s linear 0s;
+    }
+
+    .boss-tile__subhead {
+      margin-top: 0.9rem;
+    }
+
+    .boss-tips__list {
+      margin: 0.35rem 0 0;
+      padding-left: 1.2rem;
+      line-height: 1.5;
+      font-size: 0.9375rem;
+    }
+
+    .boss-tips__list li {
+      margin: 0.4rem 0;
+    }
+
+    .boss-tips__list ul {
+      margin: 0.3rem 0 0;
+      padding-left: 1.1rem;
+      font-size: 0.9rem;
+      opacity: 0.9;
+    }
+
+    .boss-tile__foot {
+      margin-top: 0.9rem;
+      padding-top: 0.6rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      font-size: 0.8rem;
+      opacity: 0.78;
+    }
+
+    .boss-tile__foot a {
+      color: var(--accent-hover);
+    }
+
+    .boss-tile__collapse {
+      margin-left: 0.9rem;
+      padding: 0.2rem 0.7rem;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      color: #eee;
+      font: inherit;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
+    .boss-tile__collapse:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .boss-tile,
+      .boss-tile--animating,
+      .boss-tile__body,
+      .world-info__bosses,
+      .world-info__boss-thumb img,
+      .world-info__boss-link {
+        transition: none !important;
+        animation: none !important;
+        opacity: 1;
+      }
     }
 
     .world-info__event-chip--unknown {

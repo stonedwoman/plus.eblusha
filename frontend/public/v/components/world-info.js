@@ -26,6 +26,353 @@
     return global.ValheimWorldRu;
   }
 
+  // ---- раскрытие плитки босса ----
+  // Плитка разворачивается поверх соседей и показывает раздел «Советы» с вики.
+  // Советы лежат в статическом /v/data/boss-tips.json (снят с Fandom, CC BY-SA).
+  var expandedKey = null;
+  var tipsCache = null;
+  var tipsLoading = null;
+  var lastBossesJson = null;
+  var resizeObs = null;
+  var REDUCED_MOTION =
+    typeof window !== "undefined" &&
+    window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function loadTips() {
+    if (tipsCache) return Promise.resolve(tipsCache);
+    if (tipsLoading) return tipsLoading;
+    tipsLoading = fetch("/v/data/boss-tips.json", { cache: "no-cache" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (j) {
+        tipsCache = j;
+        return j;
+      })
+      .catch(function () {
+        tipsLoading = null;
+        return null;
+      });
+    return tipsLoading;
+  }
+
+  function buildTipsList(entry) {
+    if (!entry || !entry.tips || !entry.tips.length) {
+      var none = document.createElement("div");
+      none.className = "world-info__muted";
+      none.textContent = "Советов на вики пока нет.";
+      return none;
+    }
+    var ul = document.createElement("ul");
+    ul.className = "boss-tips__list";
+    entry.tips.forEach(function (t) {
+      var li = document.createElement("li");
+      li.textContent = t.text || "";
+      if (t.sub && t.sub.length) {
+        var sub = document.createElement("ul");
+        t.sub.forEach(function (txt) {
+          var l2 = document.createElement("li");
+          l2.textContent = txt;
+          sub.appendChild(l2);
+        });
+        li.appendChild(sub);
+      }
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+
+  /** Заполняет контейнер советами. Если они уже в кэше — синхронно,
+   *  чтобы высоту плитки можно было измерить до анимации. */
+  function renderTipsInto(box, key) {
+    if (tipsCache) {
+      box.innerHTML = "";
+      box.appendChild(buildTipsList(tipsCache.bosses && tipsCache.bosses[key]));
+      return Promise.resolve(false);
+    }
+    box.innerHTML = '<div class="world-info__muted">Загружаю советы…</div>';
+    return loadTips().then(function (data) {
+      box.innerHTML = "";
+      box.appendChild(buildTipsList(data && data.bosses && data.bosses[key]));
+      return true;
+    });
+  }
+
+  function tileRect(tile) {
+    return {
+      top: tile.offsetTop,
+      left: tile.offsetLeft,
+      width: tile.offsetWidth,
+      height: tile.offsetHeight,
+    };
+  }
+
+  function applyRect(tile, r) {
+    tile.style.top = r.top + "px";
+    tile.style.left = r.left + "px";
+    tile.style.width = r.width + "px";
+    tile.style.height = r.height + "px";
+  }
+
+  function clearRect(tile) {
+    tile.style.top = "";
+    tile.style.left = "";
+    tile.style.width = "";
+    tile.style.height = "";
+  }
+
+  function stripIds(el) {
+    var withId = el.querySelectorAll("[id]");
+    for (var i = 0; i < withId.length; i++) withId[i].removeAttribute("id");
+    el.removeAttribute("id");
+  }
+
+  /** Итоговая высота плитки в развёрнутом виде. Меряем скрытым клоном с конечными
+   *  классами и выключенными переходами: живая плитка в этот момент ещё едет —
+   *  миниатюра 72px, шрифт маленький, и её scrollHeight врёт. */
+  function measureExpandedHeight(grid, tile, width) {
+    var clone = tile.cloneNode(true);
+    stripIds(clone);
+    clone.classList.remove("boss-tile--animating", "boss-tile--collapsing", "boss-tile--restored");
+    clone.classList.add("boss-tile--expanded", "boss-tile--measure");
+    clone.style.cssText =
+      "position:absolute;top:0;left:0;height:auto;visibility:hidden;pointer-events:none;width:" +
+      width +
+      "px;";
+    grid.appendChild(clone);
+    var h = clone.offsetHeight;
+    grid.removeChild(clone);
+    return h;
+  }
+
+  /** Куда плитке садиться при сворачивании и какой будет высота сетки без неё.
+   *  Ставим в поток свёрнутый клон на её место, пока сама плитка вне потока;
+   *  min-height сетки на время замера снимаем, иначе строки растянуты. */
+  function measureSlot(grid, tile) {
+    var clone = tile.cloneNode(true);
+    stripIds(clone);
+    clone.classList.remove(
+      "boss-tile--expanded",
+      "boss-tile--animating",
+      "boss-tile--collapsing",
+      "boss-tile--restored"
+    );
+    clone.classList.add("boss-tile--measure");
+    clone.style.cssText = "visibility:hidden;pointer-events:none;";
+    var savedMin = grid.style.minHeight;
+    grid.classList.add("world-info__bosses--measure");
+    grid.style.minHeight = "";
+    grid.insertBefore(clone, tile);
+    var rect = {
+      top: clone.offsetTop,
+      left: clone.offsetLeft,
+      width: clone.offsetWidth,
+      height: clone.offsetHeight,
+    };
+    var naturalH = grid.offsetHeight;
+    grid.removeChild(clone);
+    grid.style.minHeight = savedMin;
+    void grid.offsetHeight; // пересчёт, пока переходы сетки выключены
+    grid.classList.remove("world-info__bosses--measure");
+    return { rect: rect, naturalH: naturalH };
+  }
+
+  /** Снять обработчик и таймер незавершённого перехода: иначе старый onEnd
+   *  дёрнется посреди нового и плитка прыгнет. */
+  function cancelPending(tile) {
+    var p = tile._pending;
+    if (!p) return;
+    tile.removeEventListener("transitionend", p.onEnd);
+    clearTimeout(p.timer);
+    tile._pending = null;
+  }
+
+  /** Ждём именно переход высоты: background и border-color заканчиваются раньше
+   *  и тоже шлют transitionend с той же цели. */
+  function armEnd(tile, finish) {
+    cancelPending(tile);
+    var done = false;
+    var onEnd = function (e) {
+      if (done) return;
+      if (e && (e.target !== tile || e.propertyName !== "height")) return;
+      done = true;
+      tile.removeEventListener("transitionend", onEnd);
+      clearTimeout(pending.timer);
+      tile._pending = null;
+      finish();
+    };
+    var pending = { onEnd: onEnd, timer: setTimeout(onEnd, 650) };
+    tile._pending = pending;
+    tile.addEventListener("transitionend", onEnd);
+  }
+
+  function watchExpanded(grid, tile) {
+    unwatchExpanded();
+    if (typeof ResizeObserver === "undefined") return;
+    resizeObs = new ResizeObserver(function () {
+      syncExpandedHeight(grid, tile);
+    });
+    resizeObs.observe(tile);
+  }
+
+  function unwatchExpanded() {
+    if (resizeObs) {
+      resizeObs.disconnect();
+      resizeObs = null;
+    }
+  }
+
+  /** Высота сетки под развёрнутую плитку, но не ниже её собственной высоты
+   *  со скрытыми соседями — иначе под короткими советами пустая полоса. */
+  function syncExpandedHeight(grid, tile) {
+    if (!grid || !tile || !tile.classList.contains("boss-tile--expanded")) return;
+    if (tile.classList.contains("boss-tile--animating")) return;
+    var h = Math.max(tile.offsetHeight, grid._naturalH || 0);
+    grid.style.minHeight = h + "px";
+  }
+
+  function setExpandedState(tile, on) {
+    var toggle = tile.querySelector(".boss-tile__toggle");
+    if (toggle) toggle.setAttribute("aria-expanded", on ? "true" : "false");
+  }
+
+  function focusQuiet(el) {
+    if (!el) return;
+    try {
+      el.focus({ preventScroll: true });
+    } catch (e) {
+      el.focus();
+    }
+  }
+
+  function expandTile(tile, animate) {
+    var grid = tile.parentNode;
+    if (!grid) return;
+    var key = tile.getAttribute("data-boss");
+
+    var prev = grid.querySelector(".boss-tile--expanded");
+    if (prev && prev !== tile) collapseTile(prev, false);
+    cancelPending(tile);
+    grid.classList.remove("world-info__bosses--closing");
+    tile.classList.remove("boss-tile--collapsing");
+
+    var first = tileRect(tile);
+    var gridW = grid.clientWidth;
+    var gridH = grid.offsetHeight;
+    grid._naturalH = gridH;
+
+    expandedKey = key;
+    grid.classList.add("world-info__bosses--has-expanded");
+    tile.classList.add("boss-tile--expanded");
+    tile.classList.toggle("boss-tile--restored", !animate);
+    setExpandedState(tile, true);
+
+    var tipsBox = tile.querySelector("[data-tips]");
+    var tipsReady = renderTipsInto(tipsBox, key);
+    var targetH = measureExpandedHeight(grid, tile, gridW);
+
+    var finish = function () {
+      tile.classList.remove("boss-tile--animating");
+      clearRect(tile);
+      syncExpandedHeight(grid, tile);
+      watchExpanded(grid, tile);
+    };
+
+    if (animate && !REDUCED_MOTION) {
+      applyRect(tile, first);
+      grid.style.minHeight = gridH + "px";
+      void tile.offsetWidth; // зафиксировать стартовое положение
+      tile.classList.add("boss-tile--animating");
+      applyRect(tile, { top: 0, left: 0, width: gridW, height: targetH });
+      grid.style.minHeight = Math.max(targetH, gridH) + "px";
+      armEnd(tile, finish);
+    } else {
+      // Без анимации (восстановление после перерисовки): сетку тоже не анимировать.
+      grid.classList.add("world-info__bosses--measure");
+      grid.style.minHeight = Math.max(targetH, gridH) + "px";
+      void grid.offsetHeight;
+      grid.classList.remove("world-info__bosses--measure");
+      finish();
+    }
+
+    // Советы пришли позже замера — перенацелить идущую анимацию на новую высоту.
+    tipsReady.then(function (changed) {
+      if (!changed || !tile.classList.contains("boss-tile--expanded")) return;
+      if (tile.classList.contains("boss-tile--animating")) {
+        var h = measureExpandedHeight(grid, tile, grid.clientWidth);
+        tile.style.height = h + "px";
+        grid.style.minHeight = Math.max(h, grid._naturalH || 0) + "px";
+      } else {
+        syncExpandedHeight(grid, tile);
+      }
+    });
+
+    if (animate) focusQuiet(tile.querySelector(".boss-tile__close"));
+  }
+
+  function collapseTile(tile, animate) {
+    var grid = tile.parentNode;
+    if (!grid) return;
+    cancelPending(tile);
+    unwatchExpanded();
+
+    var cur = tileRect(tile); // текущее, возможно промежуточное положение
+    var slot = measureSlot(grid, tile);
+
+    expandedKey = null;
+    setExpandedState(tile, false);
+
+    var finish = function () {
+      tile.classList.remove(
+        "boss-tile--animating",
+        "boss-tile--expanded",
+        "boss-tile--collapsing",
+        "boss-tile--restored"
+      );
+      grid.classList.remove("world-info__bosses--has-expanded", "world-info__bosses--closing");
+      clearRect(tile);
+      grid.style.minHeight = "";
+    };
+
+    if (animate && !REDUCED_MOTION) {
+      applyRect(tile, cur);
+      void tile.offsetWidth;
+      tile.classList.add("boss-tile--animating", "boss-tile--collapsing");
+      grid.classList.add("world-info__bosses--closing");
+      applyRect(tile, slot.rect);
+      // px → px: сетка едет вместе с плиткой, а не падает и не прыгает.
+      grid.style.minHeight = slot.naturalH + "px";
+      armEnd(tile, finish);
+    } else {
+      finish();
+    }
+
+    if (animate) {
+      focusQuiet(tile.querySelector(".boss-tile__toggle"));
+      try {
+        tile.scrollIntoView({ block: "nearest" });
+      } catch (e) {
+        // старые браузеры — не критично
+      }
+    }
+  }
+
+  function toggleTile(tile) {
+    if (tile.classList.contains("boss-tile--animating")) return;
+    if (tile.classList.contains("boss-tile--expanded")) collapseTile(tile, true);
+    else expandTile(tile, true);
+  }
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape" || !expandedKey) return;
+      var open = document.querySelector(".boss-tile--expanded");
+      if (open) collapseTile(open, true);
+    });
+  }
+
   function bossName(key) {
     var V = getV();
     var m = (V && V.BOSS_NAMES_RU) || FALLBACK_BOSS_NAMES;
@@ -218,6 +565,22 @@
     if (!root) return;
     var w = world && typeof world === "object" ? world : {};
     var bosses = w.bosses && typeof w.bosses === "object" ? w.bosses : {};
+
+    // Опрос перерисовывает панель каждые ~20 с, а в событиях всегда меняется
+    // secondsAgo, так что сравнивать весь world бесполезно. Сравниваем только
+    // боссов: если они те же, сетку с плитками переносим в новую разметку как есть —
+    // развёрнутая плитка, её фокус и загруженные советы переживают перерисовку.
+    var bossesJson = "";
+    try {
+      bossesJson = JSON.stringify(bosses);
+    } catch (e) {
+      bossesJson = "";
+    }
+    var keepGrid =
+      bossesJson && bossesJson === lastBossesJson
+        ? root.querySelector(".world-info__bosses")
+        : null;
+    lastBossesJson = bossesJson;
     var rawEvents = Array.isArray(w.events) ? w.events : [];
     var events = rawEvents.map(normalizeEventEntry);
 
@@ -239,52 +602,131 @@
     bossHead.textContent = "Боссы";
     root.appendChild(bossHead);
 
-    var bossList = document.createElement("div");
-    bossList.className = "world-info__bosses";
-    BOSS_KEYS_ORDER.forEach(function (key) {
-      var done = !!bosses[key];
-      var nm = bossName(key);
-      var wiki = bossWikiUrl(key);
-      var imgSrc = bossImgSrc(key);
-      var line = document.createElement("div");
-      line.className =
-        "world-info__boss-line" +
-        (done ? " world-info__boss-line--done" : " world-info__boss-line--pending");
+    if (keepGrid) {
+      root.appendChild(keepGrid);
+    } else {
+      var bossList = document.createElement("div");
+      bossList.className = "world-info__bosses";
+      BOSS_KEYS_ORDER.forEach(function (key) {
+        var done = !!bosses[key];
+        var nm = bossName(key);
+        var wiki = bossWikiUrl(key);
+        var imgSrc = bossImgSrc(key);
+        var nameId = "boss-name-" + key;
+        var bodyId = "boss-body-" + key;
 
-      if (imgSrc) {
-        var aThumb = document.createElement("a");
-        aThumb.className = "world-info__boss-thumb";
-        aThumb.href = wiki;
-        aThumb.target = "_blank";
-        aThumb.rel = "noopener noreferrer";
-        aThumb.title = nm;
-        var img = document.createElement("img");
-        img.src = imgSrc;
-        img.alt = nm;
-        img.width = 72;
-        img.height = 72;
-        img.loading = "lazy";
-        img.decoding = "async";
-        aThumb.appendChild(img);
-        line.appendChild(aThumb);
+        var tile = document.createElement("div");
+        tile.className =
+          "world-info__boss-line boss-tile" +
+          (done ? " world-info__boss-line--done" : " world-info__boss-line--pending");
+        tile.setAttribute("role", "group");
+        tile.setAttribute("aria-labelledby", nameId);
+        tile.setAttribute("data-boss", key);
+
+        var head = document.createElement("div");
+        head.className = "boss-tile__head";
+
+        // Кнопка — только шапка: имя кнопки остаётся именем босса, а не всем текстом советов.
+        var toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "boss-tile__toggle";
+        toggle.setAttribute("aria-expanded", "false");
+        toggle.setAttribute("aria-controls", bodyId);
+
+        if (imgSrc) {
+          var thumb = document.createElement("span");
+          thumb.className = "world-info__boss-thumb";
+          var img = document.createElement("img");
+          img.src = imgSrc;
+          img.alt = "";
+          img.width = 72;
+          img.height = 72;
+          img.loading = "lazy";
+          img.decoding = "async";
+          thumb.appendChild(img);
+          toggle.appendChild(thumb);
+        }
+
+        var titleBox = document.createElement("span");
+        titleBox.className = "boss-tile__title";
+        var nameEl = document.createElement("span");
+        nameEl.className = "world-info__boss-link";
+        nameEl.id = nameId;
+        nameEl.textContent = nm;
+        var status = document.createElement("span");
+        status.className = "boss-tile__status";
+        status.textContent = done ? "Повержен" : "Ещё жив";
+        titleBox.appendChild(nameEl);
+        titleBox.appendChild(status);
+        toggle.appendChild(titleBox);
+
+        var mark = document.createElement("span");
+        mark.className = "world-info__boss-mark";
+        mark.setAttribute("aria-hidden", "true");
+        mark.textContent = done ? "✓" : "✗";
+        toggle.appendChild(mark);
+
+        head.appendChild(toggle);
+
+        var close = document.createElement("button");
+        close.type = "button";
+        close.className = "boss-tile__close";
+        close.setAttribute("aria-label", "Свернуть");
+        close.textContent = "×";
+        head.appendChild(close);
+
+        tile.appendChild(head);
+
+        var body = document.createElement("div");
+        body.className = "boss-tile__body";
+        body.id = bodyId;
+        var tipsHead = document.createElement("div");
+        tipsHead.className = "world-info__subhead boss-tile__subhead";
+        tipsHead.textContent = "Советы";
+        body.appendChild(tipsHead);
+        var tipsBox = document.createElement("div");
+        tipsBox.className = "boss-tips";
+        tipsBox.setAttribute("data-tips", "");
+        body.appendChild(tipsBox);
+        var foot = document.createElement("div");
+        foot.className = "boss-tile__foot";
+        var src = document.createElement("span");
+        src.textContent = "Источник: Valheim вики на Fandom, CC BY-SA · ";
+        var link = document.createElement("a");
+        link.href = wiki;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "Смотреть на fandom.com ↗";
+        var collapseBtn = document.createElement("button");
+        collapseBtn.type = "button";
+        collapseBtn.className = "boss-tile__collapse";
+        collapseBtn.textContent = "Свернуть";
+        foot.appendChild(src);
+        foot.appendChild(link);
+        foot.appendChild(collapseBtn);
+        body.appendChild(foot);
+        tile.appendChild(body);
+
+        toggle.addEventListener("click", function () {
+          toggleTile(tile);
+        });
+        close.addEventListener("click", function () {
+          collapseTile(tile, true);
+        });
+        collapseBtn.addEventListener("click", function () {
+          collapseTile(tile, true);
+        });
+
+        bossList.appendChild(tile);
+      });
+      root.appendChild(bossList);
+
+      // Боссы изменились, сетка собрана заново: вернуть развёрнутую плитку без анимации.
+      if (expandedKey) {
+        var again = bossList.querySelector('[data-boss="' + expandedKey + '"]');
+        if (again) expandTile(again, false);
       }
-
-      var aName = document.createElement("a");
-      aName.className = "world-info__boss-link";
-      aName.href = wiki;
-      aName.target = "_blank";
-      aName.rel = "noopener noreferrer";
-      aName.textContent = nm;
-
-      var mark = document.createElement("span");
-      mark.className = "world-info__boss-mark";
-      mark.textContent = done ? "✓" : "✗";
-
-      line.appendChild(aName);
-      line.appendChild(mark);
-      bossList.appendChild(line);
-    });
-    root.appendChild(bossList);
+    }
 
     var evHead = document.createElement("div");
     evHead.className = "world-info__subhead world-info__subhead--spaced";
