@@ -811,9 +811,16 @@
       text-transform: uppercase;
     }
 
+    .boss-tile--placeholder {
+      visibility: hidden !important;
+      pointer-events: none;
+    }
+
     .boss-tile__close {
       display: none;
-      flex: 0 0 auto;
+      position: absolute;
+      top: 0.5rem;
+      right: 0.6rem;
       width: 2rem;
       height: 2rem;
       align-items: center;
@@ -876,7 +883,7 @@
     }
 
     .boss-tile--expanded .world-info__boss-mark {
-      display: none;
+      visibility: hidden;
     }
 
     .boss-tile--expanded .boss-tile__close {

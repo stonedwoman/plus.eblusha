@@ -147,31 +147,35 @@
     return h;
   }
 
-  /** Куда плитке садиться при сворачивании и какой будет высота сетки без неё.
-   *  Ставим в поток свёрнутый клон на её место, пока сама плитка вне потока;
-   *  min-height сетки на время замера снимаем, иначе строки растянуты. */
+  /** Пока плитка развёрнута и вне потока, её место в сетке держит невидимая
+   *  заглушка того же размера — иначе соседи в момент клика съезжают на
+   *  освободившееся место, и всё дёргается. Сворачивается плитка ровно в заглушку. */
+  function placeholderFor(tile) {
+    var ph = tile.cloneNode(true);
+    stripIds(ph);
+    ph.className = "world-info__boss-line boss-tile boss-tile--placeholder";
+    ph.setAttribute("aria-hidden", "true");
+    ph.removeAttribute("role");
+    ph.removeAttribute("data-boss");
+    ph.style.cssText = "visibility:hidden;pointer-events:none;";
+    return ph;
+  }
+
+  function removePlaceholder(tile) {
+    var ph = tile._placeholder;
+    if (ph && ph.parentNode) ph.parentNode.removeChild(ph);
+    tile._placeholder = null;
+  }
+
+  /** Куда плитке садиться и какой будет высота сетки: слот — это заглушка,
+   *  а высоту сетки меряем без inline min-height и без переходов. */
   function measureSlot(grid, tile) {
-    var clone = tile.cloneNode(true);
-    stripIds(clone);
-    clone.classList.remove(
-      "boss-tile--expanded",
-      "boss-tile--animating",
-      "boss-tile--restored"
-    );
-    clone.classList.add("boss-tile--measure");
-    clone.style.cssText = "visibility:hidden;pointer-events:none;";
+    var ph = tile._placeholder;
+    var rect = ph ? tileRect(ph) : tileRect(tile);
     var savedMin = grid.style.minHeight;
     grid.classList.add("world-info__bosses--measure");
     grid.style.minHeight = "";
-    grid.insertBefore(clone, tile);
-    var rect = {
-      top: clone.offsetTop,
-      left: clone.offsetLeft,
-      width: clone.offsetWidth,
-      height: clone.offsetHeight,
-    };
     var naturalH = grid.offsetHeight;
-    grid.removeChild(clone);
     grid.style.minHeight = savedMin;
     void grid.offsetHeight; // пересчёт, пока переходы сетки выключены
     grid.classList.remove("world-info__bosses--measure");
@@ -262,6 +266,10 @@
     grid._naturalH = gridH;
 
     expandedKey = key;
+    removePlaceholder(tile);
+    var placeholder = placeholderFor(tile);
+    grid.insertBefore(placeholder, tile);
+    tile._placeholder = placeholder;
     grid.classList.add("world-info__bosses--has-expanded");
     tile.classList.add("boss-tile--expanded");
     tile.classList.toggle("boss-tile--restored", !animate);
@@ -323,6 +331,7 @@
     setExpandedState(tile, false);
 
     var finish = function () {
+      removePlaceholder(tile);
       tile.classList.remove(
         "boss-tile--animating",
         "boss-tile--expanded",
