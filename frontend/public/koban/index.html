@@ -334,49 +334,49 @@
       opacity: 1;
     }
 
-    .brand__logo--base,
-    .brand__logo--hover {
+    .brand__logo--eyes,
+    .brand__logo--forehead,
+    .brand__logo--glasses {
       position: absolute;
       inset: 0;
     }
 
-    /* Слои: static (z=1) — полный рисунок с надетыми очками, без дыры.
-       Накладка hover (очки подняты, видны глаза; z=2) в покое скрыта, поэтому
-       в покое на экране ровно исходный рисунок без швов. Накладка base
-       (тот же кусок с надетыми очками; z=3) уезжает вверх при наведении и
-       открывает hover. Обе накладки вырезаны одной мягкой маской по зоне
-       различий двух рисунков. При уходе курсора hover гаснет только когда
-       base вернулась на место (задержка = длительность её обратного хода). */
-    .brand__logo--static { z-index: 1; opacity: 1; }
-    .brand__logo--hover  { z-index: 2; opacity: 0; transition: opacity 0s linear 1400ms; }
-    .brand:hover .brand__logo--hover,
-    .brand:focus-within .brand__logo--hover,
-    .brand.is-logo-peeking .brand__logo--hover { opacity: 1; transition: opacity 0s linear 0s; }
-
-    .brand__logo--base {
-      z-index: 3;
+    /* Слои логотипа. static (z=1) — полный рисунок с надетыми очками, без дыры.
+       Двигаются только очки (glasses, z=4): вырезаны с рисунка по цвету, без шерсти.
+       Под ними eyes (z=2) — глаза с рисунка «очки подняты», видны сразу при наведении
+       ровно в полосе, которую очки освобождают. forehead (z=3) — авторский вариант
+       поднятых очков с изменённой шерстью вокруг; проявляется в самом конце, когда
+       очки доехали, и в него же они растворяются. Всё вырезано автоматически по зоне
+       различий двух рисунков, с мягким краем. */
+    .brand__logo--static   { z-index: 1; opacity: 1; }
+    .brand__logo--eyes     { z-index: 2; opacity: 0; transition: opacity 0s linear 1400ms; }
+    .brand__logo--forehead { z-index: 3; opacity: 0; transition: opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1); }
+    .brand__logo--glasses {
+      z-index: 4;
       opacity: 1;
       transform: translate3d(0, 0, 0);
-      /* Un-hover (going back to idle): fade in immediately while the layer
-         slides back down. Translucent for ~280ms at the very start, then
-         solid for the rest of the slide — feels like the glasses swing
-         back into view. */
       transition:
         opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1),
         transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
     }
 
-    .brand:hover .brand__logo--base,
-    .brand:focus-within .brand__logo--base,
-    .brand.is-logo-peeking .brand__logo--base {
+    .brand:hover .brand__logo--eyes,
+    .brand:focus-within .brand__logo--eyes,
+    .brand.is-logo-peeking .brand__logo--eyes { opacity: 1; transition: opacity 0s linear 0s; }
+
+    .brand:hover .brand__logo--forehead,
+    .brand:focus-within .brand__logo--forehead,
+    .brand.is-logo-peeking .brand__logo--forehead {
+      opacity: 1;
+      transition: opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1) 1100ms;
+    }
+
+    .brand:hover .brand__logo--glasses,
+    .brand:focus-within .brand__logo--glasses,
+    .brand.is-logo-peeking .brand__logo--glasses {
       opacity: 0;
-      /* -15% keeps the slid layer inside the brand bounds — no stray hair
-         tufts floating above the logo. */
-      transform: translate3d(0, -15%, 0);
-      /* Hover (going to active): stay fully opaque for 1100ms while sliding
-         (no crossfade!), then fade out over the last 280ms — by then the
-         layer is already mostly out of the frame, so the fade-out reads as
-         "the glasses receding away" rather than dissolving. */
+      /* 7.93% высоты = 28 px в исходнике: верхняя кромка оправы садится на место поднятых очков */
+      transform: translate3d(0, -7.93%, 0);
       transition:
         opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1) 1100ms,
         transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
@@ -1031,9 +1031,10 @@
     <header>
       <h1 class="brand">
         <span class="brand__logo-frame">
-          <img class="brand__logo brand__logo--static" src="/koban/logo-static.png?v=20260921-recut" alt="КОБАНЮК" />
-          <img class="brand__logo brand__logo--base" src="/koban/logo-base-overlay.png?v=20260921-recut" alt="" aria-hidden="true" />
-          <img class="brand__logo brand__logo--hover" src="/koban/logo-hover-overlay.png?v=20260921-recut" alt="" aria-hidden="true" />
+          <img class="brand__logo brand__logo--static" src="/koban/logo-static.png?v=20260921-recut2" alt="КОБАНЮК" />
+          <img class="brand__logo brand__logo--eyes" src="/koban/logo-eyes.png?v=20260921-recut2" alt="" aria-hidden="true" />
+          <img class="brand__logo brand__logo--forehead" src="/koban/logo-forehead.png?v=20260921-recut2" alt="" aria-hidden="true" />
+          <img class="brand__logo brand__logo--glasses" src="/koban/logo-glasses.png?v=20260921-recut2" alt="" aria-hidden="true" />
           <svg class="brand__logo brand__logo-svg-legacy" viewBox="0 0 980 270" role="img" aria-labelledby="brandTitle brandDesc" focusable="false">
             <title id="brandTitle">КОБАНЮК</title>
             <desc id="brandDesc">Лого игровых серверов KOBAN.UK: кабан в растаманской шапке, темных очках, с пивом и дымом. При наведении очки поднимаются и видны красные глаза.</desc>
