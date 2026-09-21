@@ -135,7 +135,7 @@
   function measureExpandedHeight(grid, tile, width) {
     var clone = tile.cloneNode(true);
     stripIds(clone);
-    clone.classList.remove("boss-tile--animating", "boss-tile--collapsing", "boss-tile--restored");
+    clone.classList.remove("boss-tile--animating", "boss-tile--restored");
     clone.classList.add("boss-tile--expanded", "boss-tile--measure");
     clone.style.cssText =
       "position:absolute;top:0;left:0;height:auto;visibility:hidden;pointer-events:none;width:" +
@@ -156,7 +156,6 @@
     clone.classList.remove(
       "boss-tile--expanded",
       "boss-tile--animating",
-      "boss-tile--collapsing",
       "boss-tile--restored"
     );
     clone.classList.add("boss-tile--measure");
@@ -256,7 +255,6 @@
     if (prev && prev !== tile) collapseTile(prev, false);
     cancelPending(tile);
     grid.classList.remove("world-info__bosses--closing");
-    tile.classList.remove("boss-tile--collapsing");
 
     var first = tileRect(tile);
     var gridW = grid.clientWidth;
@@ -328,7 +326,6 @@
       tile.classList.remove(
         "boss-tile--animating",
         "boss-tile--expanded",
-        "boss-tile--collapsing",
         "boss-tile--restored"
       );
       grid.classList.remove("world-info__bosses--has-expanded", "world-info__bosses--closing");
@@ -339,7 +336,7 @@
     if (animate && !REDUCED_MOTION) {
       applyRect(tile, cur);
       void tile.offsetWidth;
-      tile.classList.add("boss-tile--animating", "boss-tile--collapsing");
+      tile.classList.add("boss-tile--animating");
       grid.classList.add("world-info__bosses--closing");
       applyRect(tile, slot.rect);
       // px → px: сетка едет вместе с плиткой, а не падает и не прыгает.
@@ -364,6 +361,10 @@
     if (tile.classList.contains("boss-tile--expanded")) collapseTile(tile, true);
     else expandTile(tile, true);
   }
+
+  // Советы подтягиваем заранее: тогда высота плитки известна до клика,
+  // и анимация идёт сразу к цели, без перенацеливания на полпути.
+  if (typeof fetch === "function") loadTips();
 
   if (typeof document !== "undefined") {
     document.addEventListener("keydown", function (e) {
@@ -709,6 +710,16 @@
 
         toggle.addEventListener("click", function () {
           toggleTile(tile);
+        });
+        // Кликабельна вся плитка, а не только имя. В развёрнутом виде
+        // сворачивает клик по шапке; по тексту советов — нет, чтобы его можно было выделять.
+        tile.addEventListener("click", function (e) {
+          if (e.target.closest("a, button")) return;
+          if (!tile.classList.contains("boss-tile--expanded")) {
+            toggleTile(tile);
+          } else if (e.target.closest(".boss-tile__head")) {
+            collapseTile(tile, true);
+          }
         });
         close.addEventListener("click", function () {
           collapseTile(tile, true);
