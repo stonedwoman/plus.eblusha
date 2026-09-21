@@ -335,54 +335,42 @@
     }
 
     .brand__logo--eyes,
-    .brand__logo--forehead,
     .brand__logo--glasses {
       position: absolute;
       inset: 0;
     }
 
-    /* Слои логотипа. static (z=1) — полный рисунок с надетыми очками, без дыры.
-       Двигаются только очки (glasses, z=4): вырезаны с рисунка по цвету, без шерсти.
-       Под ними eyes (z=2) — глаза с рисунка «очки подняты», видны сразу при наведении
-       ровно в полосе, которую очки освобождают. forehead (z=3) — авторский вариант
-       поднятых очков с изменённой шерстью вокруг; проявляется в самом конце, когда
-       очки доехали, и в него же они растворяются. Всё вырезано автоматически по зоне
-       различий двух рисунков, с мягким краем. */
-    /* logo-body.png — полный рисунок без дыры. Старое имя logo-static.png
-       осталось на диске с дырой под очками: его ещё просят давно открытые
-       вкладки со старым кодом, и подменять его содержимое нельзя. */
-    .brand__logo--static   { z-index: 1; opacity: 1; }
-    .brand__logo--eyes     { z-index: 2; opacity: 0; transition: opacity 0s linear 1400ms; }
-    .brand__logo--forehead { z-index: 3; opacity: 0; transition: opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1); }
-    .brand__logo--glasses {
-      z-index: 4;
-      opacity: 1;
+    /* Слои логотипа. body (z=1) — полный рисунок художника, каким он и был.
+       glasses (z=3) — только сами очки, вырезанные по своим пикселям: оправа,
+       стёкла и блики, ни одного пикселя шерсти. При наведении едут вверх на
+       28 px исходника. eyes (z=2) — глаза из второго рисунка, видны ровно в
+       полосе, которую очки освобождают. Больше ничего не двигается и не
+       подменяется. Старое имя logo-static.png осталось на диске с дырой под
+       очками: его ещё просят давно открытые вкладки со старым кодом. */
+    .brand__logo--static { z-index: 1; opacity: 1; }
+    .brand__logo--eyes   { z-index: 2; opacity: 0; transition: opacity 0s linear 1400ms; }
+    .brand__logo--glasses { z-index: 1; opacity: 1; }
+
+    /* Подъём очков живёт на обёртке, а не на самой картинке: у .brand__logo
+       висит бесконечная анимация покачивания logoFloat, которая задаёт
+       transform каждый кадр и перебила бы любое значение на картинке. */
+    .brand__logo-lift {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
       transform: translate3d(0, 0, 0);
-      transition:
-        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1),
-        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
+      transition: transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
     }
 
     .brand:hover .brand__logo--eyes,
     .brand:focus-within .brand__logo--eyes,
     .brand.is-logo-peeking .brand__logo--eyes { opacity: 1; transition: opacity 0s linear 0s; }
 
-    .brand:hover .brand__logo--forehead,
-    .brand:focus-within .brand__logo--forehead,
-    .brand.is-logo-peeking .brand__logo--forehead {
-      opacity: 1;
-      transition: opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1) 1100ms;
-    }
-
-    .brand:hover .brand__logo--glasses,
-    .brand:focus-within .brand__logo--glasses,
-    .brand.is-logo-peeking .brand__logo--glasses {
-      opacity: 0;
-      /* 7.93% высоты = 28 px в исходнике: верхняя кромка оправы садится на место поднятых очков */
+    .brand:hover .brand__logo-lift,
+    .brand:focus-within .brand__logo-lift,
+    .brand.is-logo-peeking .brand__logo-lift {
+      /* 7.93% высоты = 28 px исходника */
       transform: translate3d(0, -7.93%, 0);
-      transition:
-        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1) 1100ms,
-        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
     }
 
     .brand__logo-svg-legacy {
@@ -999,6 +987,7 @@
         display: none;
       }
 
+      .brand__logo-lift,
       .brand__logo,
       .brand__dread,
       .brand__beer-bubble,
@@ -1036,8 +1025,7 @@
         <span class="brand__logo-frame">
           <img class="brand__logo brand__logo--static" src="/koban/logo-body.png?v=20260921-recut2" alt="КОБАНЮК" />
           <img class="brand__logo brand__logo--eyes" src="/koban/logo-eyes.png?v=20260921-recut2" alt="" aria-hidden="true" />
-          <img class="brand__logo brand__logo--forehead" src="/koban/logo-forehead.png?v=20260921-recut2" alt="" aria-hidden="true" />
-          <img class="brand__logo brand__logo--glasses" src="/koban/logo-glasses.png?v=20260921-recut2" alt="" aria-hidden="true" />
+          <span class="brand__logo-lift"><img class="brand__logo brand__logo--glasses" src="/koban/logo-glasses.png?v=20260921-recut2" alt="" aria-hidden="true" /></span>
           <svg class="brand__logo brand__logo-svg-legacy" viewBox="0 0 980 270" role="img" aria-labelledby="brandTitle brandDesc" focusable="false">
             <title id="brandTitle">КОБАНЮК</title>
             <desc id="brandDesc">Лого игровых серверов KOBAN.UK: кабан в растаманской шапке, темных очках, с пивом и дымом. При наведении очки поднимаются и видны красные глаза.</desc>
