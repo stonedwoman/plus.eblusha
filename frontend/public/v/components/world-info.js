@@ -384,6 +384,16 @@
     });
   }
 
+  // Род имени босса: от него зависит окончание в подписи состояния.
+  // «Масса костей», «Матерь», «Королева» — женский, остальные мужской.
+  var BOSS_FEMININE = { bonemass: true, moder: true, queen: true };
+
+  function bossStatusText(key, done) {
+    var f = BOSS_FEMININE[key];
+    if (done) return f ? "Повержена" : "Повержен";
+    return f ? "Ещё жива" : "Ещё жив";
+  }
+
   function bossName(key) {
     var V = getV();
     var m = (V && V.BOSS_NAMES_RU) || FALLBACK_BOSS_NAMES;
@@ -663,7 +673,7 @@
         nameEl.textContent = nm;
         var status = document.createElement("span");
         status.className = "boss-tile__status";
-        status.textContent = done ? "Повержен" : "Ещё жив";
+        status.textContent = bossStatusText(key, done);
         titleBox.appendChild(nameEl);
         titleBox.appendChild(status);
         head.appendChild(titleBox);

@@ -201,40 +201,41 @@
       height: 100%;
       object-fit: contain;
     }
-    /* Layer order: static (z=1) is the body+text. The "hover" overlay
-       (glasses lifted + eyes visible) sits ABOVE it (z=2) and is permanently
-       at opacity 1. The "base" overlay (glasses-down + hair) covers it (z=3)
-       and slides up on hover to reveal what's beneath — no crossfade, no
-       semi-transparent overlap. */
+    /* Слои логотипа. static — полный рисунок художника (logo-body.png).
+       glasses — только сами очки, вырезанные по своим пикселям, без единого
+       пикселя шерсти; при наведении едут вверх на 28 px исходника (7.93%
+       высоты). eyes — глаза из второго рисунка, видны ровно в полосе, которую
+       очки освобождают. Больше ничего не двигается.
+       Старое имя logo-static.png осталось на диске с дырой под очками: его ещё
+       просят давно открытые вкладки со старым кодом, подменять его нельзя. */
     .home-logo__img--static { z-index: 1; opacity: 1; }
-    .home-logo__img--hover  { z-index: 2; opacity: 1; }
-    .home-logo__img--base {
+
+    .home-logo__img--eyes {
+      z-index: 2;
+      opacity: 0;
+      transition: opacity 0s linear 1400ms;
+    }
+
+    .home-logo:hover .home-logo__img--eyes,
+    .home-logo:focus-visible .home-logo__img--eyes,
+    .home-logo.is-logo-peeking .home-logo__img--eyes {
+      opacity: 1;
+      transition: opacity 0s linear 0s;
+    }
+
+    .home-logo__img--glasses {
       z-index: 3;
       opacity: 1;
       transform: translate3d(0, 0, 0);
-      /* Un-hover (going back to idle): fade in immediately while the layer
-         slides back down. Translucent for ~280ms at the very start, then
-         solid for the rest of the slide — feels like the glasses swing
-         back into view. */
-      transition:
-        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1),
-        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
+      transition: transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
     }
-    .home-logo:hover .home-logo__img--base,
-    .home-logo:focus-visible .home-logo__img--base,
-    .home-logo.is-logo-peeking .home-logo__img--base {
-      opacity: 0;
-      /* -15% keeps the slid layer inside the home-logo bounds — no stray
-         hair tufts floating above the logo. */
-      transform: translate3d(0, -15%, 0);
-      /* Hover (going to active): stay fully opaque for 1100ms while sliding
-         (no crossfade!), then fade out over the last 280ms — by then the
-         layer is already mostly out of the frame, so the fade-out reads as
-         "the glasses receding away" rather than dissolving. */
-      transition:
-        opacity 280ms cubic-bezier(0.2, 0.8, 0.18, 1) 1100ms,
-        transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
+
+    .home-logo:hover .home-logo__img--glasses,
+    .home-logo:focus-visible .home-logo__img--glasses,
+    .home-logo.is-logo-peeking .home-logo__img--glasses {
+      transform: translate3d(0, -7.93%, 0);
     }
+
     .home-logo:focus-visible {
       outline: 2px solid rgba(127, 207, 216, 0.8);
       outline-offset: 0.25rem;
@@ -1456,9 +1457,9 @@
   </script>
 
   <a class="home-logo" href="https://koban.uk/" aria-label="Вернуться на koban.uk">
-    <img class="home-logo__img home-logo__img--static" src="/koban/logo-static.png?v=20260505-glasses" alt="КОБАНЮК" />
-    <img class="home-logo__img home-logo__img--base" src="/koban/logo-base-overlay.png?v=20260505-glasses" alt="" aria-hidden="true" />
-    <img class="home-logo__img home-logo__img--hover" src="/koban/logo-hover-overlay.png?v=20260509-lift" alt="" aria-hidden="true" />
+    <img class="home-logo__img home-logo__img--static" src="/koban/logo-body.png" alt="КОБАНЮК" />
+    <img class="home-logo__img home-logo__img--eyes" src="/koban/logo-eyes.png" alt="" aria-hidden="true" />
+    <img class="home-logo__img home-logo__img--glasses" src="/koban/logo-glasses.png" alt="" aria-hidden="true" />
   </a>
 
   <div class="page" aria-live="polite">
