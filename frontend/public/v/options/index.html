@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="robots" content="noindex" />
+  <title>Настройки мира · Koban</title>
+  <link rel="icon" type="image/png" href="/koban/icon.png?v=20260505" />
+  <link rel="apple-touch-icon" href="/koban/icon.png?v=20260505" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --panel: rgba(8, 16, 15, 0.78);
+      --panel-border: rgba(200, 164, 90, 0.16);
+      --text-main: #ece4d6;
+      --text-muted: #9aa39b;
+      --accent: #c8a45a;
+      --accent-hover: #e0bb6b;
+      --online: #6ee7a8;
+      --radius-lg: 22px;
+      --radius-sm: 12px;
+      --ease: cubic-bezier(0.4, 0, 0.2, 1);
+      --t-fast: 180ms var(--ease);
+      --t-med: 200ms var(--ease);
+      --shadow-panel: 0 12px 48px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.25);
+      --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      --v-cursor: url("/v/assets/sword-cursor.png?v=20260505") 4 4;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      margin: 0;
+      min-height: 100%;
+      background: #071a24;
+      scrollbar-gutter: stable;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Source Sans 3", system-ui, sans-serif;
+      color: var(--text-main);
+      cursor: var(--v-cursor), auto;
+      background:
+        radial-gradient(120% 70% at 50% 0%, rgba(7, 88, 138, 0.55) 0%, rgba(7, 26, 36, 0) 70%),
+        linear-gradient(180deg, #07405e 0%, #072430 45%, #05181f 100%);
+      background-attachment: fixed;
+    }
+
+    a { color: var(--accent-hover); }
+
+    .wrap {
+      max-width: 58rem;
+      margin: 0 auto;
+      padding: clamp(1.1rem, 4vw, 2.4rem) clamp(0.9rem, 4vw, 1.6rem) 3rem;
+    }
+
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: clamp(1rem, 3vw, 1.6rem);
+    }
+
+    .back {
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-decoration: none;
+      opacity: 0.8;
+      transition: opacity var(--t-fast);
+    }
+
+    .back:hover { opacity: 1; }
+
+    .title {
+      font-family: "Cinzel", Georgia, serif;
+      font-weight: 700;
+      font-size: clamp(1.15rem, 3.4vw, 1.6rem);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin: 0;
+      text-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
+    }
+
+    .lead {
+      margin: 0 0 clamp(1rem, 3vw, 1.5rem);
+      font-size: 0.9rem;
+      line-height: 1.5;
+      color: rgba(226, 232, 226, 0.6);
+      max-width: 46rem;
+    }
+
+    .card {
+      background: var(--panel);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--panel-border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-panel), var(--shadow-inset);
+      padding: clamp(1rem, 3vw, 1.5rem);
+    }
+
+    @supports not (backdrop-filter: blur(1px)) {
+      .card { background: rgba(10, 22, 20, 0.93); }
+    }
+
+    .wopts {
+      font-size: 0.875rem;
+      line-height: 1.4;
+    }
+
+    .wopts__bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.6rem;
+    }
+
+    .wopts__status {
+      margin: 0;
+      font-size: 0.75rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: rgba(226, 232, 226, 0.5);
+    }
+
+    .wopts__btn {
+      font: inherit;
+      font-size: 0.8rem;
+      padding: 0.32rem 0.85rem;
+      color: rgba(200, 164, 90, 0.92);
+      background: rgba(200, 164, 90, 0.08);
+      border: 1px solid rgba(200, 164, 90, 0.3);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease;
+    }
+
+    .wopts__btn:hover {
+      background: rgba(200, 164, 90, 0.16);
+      border-color: rgba(200, 164, 90, 0.5);
+    }
+
+    .wopts__note {
+      margin: 0 0 0.6rem;
+      font-size: 0.8rem;
+      color: rgba(150, 205, 160, 0.95);
+    }
+
+    .wopts__note.is-bad { color: rgba(226, 140, 130, 0.95); }
+
+    .wopts__empty,
+    .wopts__foot {
+      margin: 0.6rem 0 0;
+      font-size: 0.78rem;
+      color: rgba(226, 232, 226, 0.45);
+    }
+
+    .wgroup { margin-top: 0.9rem; }
+
+    .wgroup__head {
+      font-family: "Cinzel", serif;
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(200, 164, 90, 0.6);
+      margin: 0 0 0.4rem;
+    }
+
+    .wgroup__body {
+      display: grid;
+      gap: 0.35rem;
+    }
+
+    @media (min-width: 900px) {
+      .wgroup__body { grid-template-columns: 1fr 1fr; gap: 0.35rem 1.6rem; }
+    }
+
+    .wopt {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.9rem;
+      padding: 0.42rem 0;
+      border-bottom: 1px solid rgba(200, 164, 90, 0.07);
+    }
+
+    .wopt.is-busy { opacity: 0.55; }
+
+    .wopt__head { min-width: 0; }
+
+    .wopt__label {
+      display: block;
+      color: rgba(226, 232, 226, 0.92);
+    }
+
+    .wopt__hint {
+      display: block;
+      font-size: 0.72rem;
+      color: rgba(226, 232, 226, 0.4);
+    }
+
+    .wopt__control { flex: 0 0 auto; }
+
+    .wopt--stacked {
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: flex-start;
+      gap: 0.45rem;
+    }
+
+    /* Соседи по строке сетки тянутся под самого высокого; без этого фишки
+       короткой строки уезжали к низу и висели в воздухе. */
+    .wopt--stacked .wchips { margin-top: auto; align-self: flex-start; }
+    .wopt--stacked .wopt__head { margin-bottom: 0; }
+
+    .wopt--stacked .wopt__control { width: 100%; }
+    .wopt--stacked .wchips { justify-content: flex-start; }
+    .wopt--stacked .wopt__hint { max-width: 34rem; }
+
+    .wswitch {
+      position: relative;
+      width: 40px;
+      height: 22px;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid rgba(200, 164, 90, 0.28);
+      background: rgba(10, 22, 20, 0.6);
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease;
+    }
+
+    .wswitch__knob {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: rgba(226, 232, 226, 0.45);
+      transition: transform 160ms ease, background 160ms ease;
+    }
+
+    .wswitch.is-on {
+      background: rgba(200, 164, 90, 0.35);
+      border-color: rgba(200, 164, 90, 0.6);
+    }
+
+    .wswitch.is-on .wswitch__knob {
+      transform: translateX(18px);
+      background: rgba(255, 233, 186, 0.95);
+    }
+
+    .wswitch:disabled { cursor: default; opacity: 0.6; }
+
+    .wchips { display: flex; flex-wrap: wrap; gap: 0.25rem; justify-content: flex-end; }
+
+    .wchip {
+      font: inherit;
+      font-size: 0.74rem;
+      line-height: 1;
+      padding: 0.28rem 0.45rem;
+      min-width: 2.2rem;
+      color: rgba(226, 232, 226, 0.6);
+      background: rgba(10, 22, 20, 0.5);
+      border: 1px solid rgba(200, 164, 90, 0.16);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+    }
+
+    .wchip:hover:not(:disabled) {
+      color: rgba(226, 232, 226, 0.95);
+      border-color: rgba(200, 164, 90, 0.4);
+    }
+
+    .wchip.is-on {
+      color: rgba(255, 233, 186, 0.95);
+      background: rgba(200, 164, 90, 0.2);
+      border-color: rgba(200, 164, 90, 0.55);
+    }
+
+    .wchip:disabled { cursor: default; }
+    .wchip.is-static { cursor: default; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1 class="title">Настройки мира</h1>
+      <a class="back" href="/v/">← к серверу</a>
+    </div>
+
+    <p class="lead">
+      Это настоящие настройки мира Koban, а не косметика: сервер рассылает их всем,
+      кто сейчас в игре, и изменения видны сразу, без перезахода. Они сохраняются
+      в самом мире и переживают перезапуск сервера.
+    </p>
+
+    <div class="card">
+      <div id="worldOptionsRoot" class="wopts"></div>
+    </div>
+  </div>
+
+  <script src="/v/components/world-options.js?v=4" defer></script>
+</body>
+</html>

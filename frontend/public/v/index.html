@@ -320,29 +320,48 @@
       max-width: 100%;
       align-self: stretch;
       margin: 0;
-      padding: clamp(0.85rem, 2.5vw, 1.15rem) clamp(1rem, 3vw, 1.5rem);
-      text-align: center;
+      padding: clamp(1rem, 2.6vw, 1.4rem) clamp(1rem, 3vw, 1.6rem);
       box-sizing: border-box;
     }
 
+    /* Статус — пилюля с точкой: раньше это была просто строка, которая терялась
+       над крупным заголовком. */
     .hero__kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
       font-family: "Source Sans 3", sans-serif;
-      font-size: 0.65rem;
+      font-size: 0.625rem;
       font-weight: 700;
-      letter-spacing: 0.32em;
+      letter-spacing: 0.26em;
       text-transform: uppercase;
-      margin: 0 0 0.2rem;
-      transition: color var(--t-med);
+      padding: 0.26rem 0.75rem 0.26rem 0.62rem;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      margin: 0 0 0.7rem;
+      transition: color var(--t-med), background var(--t-med), border-color var(--t-med);
+    }
+
+    .hero__kicker::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 10px currentColor;
+      flex: 0 0 auto;
     }
 
     .hero__kicker--online {
       color: var(--online);
-      text-shadow: 0 0 24px rgba(110, 231, 168, 0.25);
+      background: rgba(110, 231, 168, 0.08);
+      border-color: rgba(110, 231, 168, 0.28);
     }
 
     .hero__kicker--offline {
       color: #e86868;
-      text-shadow: 0 0 20px rgba(232, 104, 104, 0.2);
+      background: rgba(232, 104, 104, 0.08);
+      border-color: rgba(232, 104, 104, 0.28);
     }
 
     .hero__title {
@@ -377,23 +396,194 @@
       text-align: center;
     }
 
-    .code-block {
-      padding: 0.5rem 0.85rem;
-      border-radius: calc(var(--radius-lg) - 4px);
-      background: linear-gradient(165deg, rgba(6, 15, 14, 0.65) 0%, rgba(12, 24, 22, 0.4) 100%);
-      border: 1px solid rgba(200, 164, 90, 0.1);
-      margin: 0;
-      box-sizing: border-box;
-      width: fit-content;
-      max-width: 100%;
-      margin-left: auto;
-      margin-right: auto;
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
+    /* Панель широкая, а раньше всё жалось в центральную колонку и половина
+       ширины пропадала. Теперь слева — кто мы и код входа, справа — два
+       крупных перехода; «Обновить» ушло наверх, чтобы не спорить с ними. */
+    .hero__top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: clamp(0.8rem, 2vw, 1.15rem);
+    }
+
+    .hero__refresh {
+      font-family: "Source Sans 3", sans-serif;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: none;
+      border: 1px solid rgba(200, 164, 90, 0.16);
+      border-radius: 999px;
+      padding: 0.3rem 0.85rem;
+      cursor: var(--v-cursor), pointer;
+      transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+    }
+
+    .hero__refresh:hover:not(:disabled) {
+      color: var(--accent-hover);
+      border-color: rgba(200, 164, 90, 0.4);
+      background: rgba(200, 164, 90, 0.07);
+    }
+
+    .hero__refresh:disabled { opacity: 0.45; }
+    .hero__refresh.btn-secondary--refreshing:disabled { cursor: var(--v-cursor), wait; opacity: 0.7; }
+
+    .hero__grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: clamp(0.9rem, 2.4vw, 1.5rem);
+      align-items: stretch;
+    }
+
+    @media (min-width: 860px) {
+      .hero__grid { grid-template-columns: minmax(15rem, 0.85fr) 1.6fr; }
+    }
+
+    .hero__id {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 0.35rem;
+      padding: clamp(0.9rem, 2.2vw, 1.2rem) clamp(1rem, 2.6vw, 1.4rem);
+      border: 1px solid rgba(200, 164, 90, 0.2);
+      border-radius: var(--radius-lg);
+      background:
+        radial-gradient(130% 150% at 0% 0%, rgba(200, 164, 90, 0.1) 0%, rgba(200, 164, 90, 0) 62%),
+        linear-gradient(170deg, rgba(7, 17, 16, 0.72) 0%, rgba(10, 22, 20, 0.42) 100%);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }
+
+    .hero__copy {
+      margin-top: 0.55rem;
+      width: 100%;
+      font-size: 0.9375rem;
+      font-weight: 600;
+      padding: 0.62rem 1.2rem;
+      min-height: 2.7rem;
+    }
+
+    .hero__nav {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: clamp(0.6rem, 1.6vw, 0.9rem);
+    }
+
+    @media (min-width: 620px) {
+      .hero__nav { grid-template-columns: 1.15fr 1fr; }
+    }
+
+    .tile {
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 0.75rem;
+      min-height: clamp(8.5rem, 16vw, 11rem);
+      padding: clamp(0.9rem, 2.2vw, 1.25rem);
+      border: 1px solid rgba(200, 164, 90, 0.2);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      text-decoration: none;
+      color: var(--text-main);
+      isolation: isolate;
+      transition: transform var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+    }
+
+    .tile::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      background: linear-gradient(165deg, rgba(9, 26, 24, 0.8) 0%, rgba(6, 16, 15, 0.6) 100%);
+    }
+
+    /* Карта — главный переход, поэтому у неё настоящая картинка мира под текстом. */
+    .tile--map::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -3;
+      background: url("/v/map-thumb.webp?v=2") center / cover no-repeat;
+      opacity: 0.55;
+    }
+
+    .tile--map::before {
+      background: linear-gradient(15deg, rgba(5, 14, 13, 0.92) 8%, rgba(5, 14, 13, 0.55) 52%, rgba(5, 14, 13, 0.2) 100%);
+    }
+
+    .tile--map { border-color: rgba(200, 164, 90, 0.36); }
+
+    .tile--opts::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -3;
+      background:
+        radial-gradient(90% 120% at 100% 0%, rgba(110, 231, 168, 0.16) 0%, rgba(110, 231, 168, 0) 60%),
+        radial-gradient(80% 110% at 0% 100%, rgba(200, 164, 90, 0.14) 0%, rgba(200, 164, 90, 0) 62%);
+    }
+
+    .tile:hover {
+      transform: translateY(-2px);
+      border-color: rgba(200, 164, 90, 0.55);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+    }
+
+    .tile__body { display: block; min-width: 0; }
+
+    .tile__kicker {
+      display: block;
+      font-size: 0.625rem;
+      font-weight: 700;
+      letter-spacing: 0.24em;
+      text-transform: uppercase;
+      color: var(--accent);
+      opacity: 0.85;
+      margin-bottom: 0.3rem;
+    }
+
+    .tile__title {
+      display: block;
+      font-family: "Cinzel", Georgia, serif;
+      font-size: clamp(1.02rem, 2.1vw, 1.32rem);
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-wrap: balance;
+      text-shadow: 0 2px 18px rgba(0, 0, 0, 0.6);
+    }
+
+    .tile__text {
+      display: block;
+      margin-top: 0.3rem;
+      font-size: 0.8125rem;
+      line-height: 1.35;
+      color: rgba(236, 228, 214, 0.72);
+      max-width: 20rem;
+    }
+
+    .tile__go {
+      flex: 0 0 auto;
+      width: 2rem;
+      height: 2rem;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      border: 1px solid rgba(200, 164, 90, 0.35);
+      color: var(--accent-hover);
+      font-size: 0.95rem;
+      transition: transform var(--t-fast), background var(--t-fast);
+    }
+
+    .tile:hover .tile__go {
+      transform: translateX(3px);
+      background: rgba(200, 164, 90, 0.14);
     }
 
     .code {
       font-family: "JetBrains Mono", ui-monospace, monospace;
+      text-align: left;
       font-size: clamp(1.65rem, 6vw, 2.5rem);
       font-weight: 700;
       letter-spacing: 0.12em;
@@ -402,7 +592,6 @@
       text-shadow: 0 0 32px rgba(200, 164, 90, 0.1);
       line-height: 1.05;
       min-height: 0;
-      text-align: center;
     }
 
     .code:not(.muted) {
@@ -420,39 +609,7 @@
       word-break: break-word;
     }
 
-    .hero__actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.55rem;
-      justify-content: center;
-      margin-bottom: 0;
-    }
 
-    .hero__actions button {
-      font-size: 0.9375rem;
-      font-weight: 600;
-      padding: 0.7rem 1.5rem;
-      min-height: 2.85rem;
-    }
-
-    /* Ссылка на живую карту мира: выглядит как соседние кнопки */
-    .hero__actions a.btn-secondary {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-family: "Source Sans 3", sans-serif;
-      font-size: 0.9375rem;
-      font-weight: 600;
-      padding: 0.7rem 1.5rem;
-      min-height: 2.85rem;
-      border-radius: var(--radius-sm);
-      text-decoration: none;
-      transition: transform var(--t-fast), background var(--t-fast), border-color var(--t-fast);
-    }
-
-    .hero__actions a.btn-secondary:hover {
-      transform: translateY(-1px);
-    }
 
     button {
       font-family: "Source Sans 3", sans-serif;
@@ -1098,19 +1255,39 @@
 
   <div class="page" aria-live="polite">
     <article class="hero glass-panel">
-      <p class="hero__kicker hero__kicker--offline" id="heroStatus" aria-live="polite">ОФФЛАЙН</p>
-      <h1 class="hero__title">VALHEIM</h1>
-      <div class="hero__world-code">
-        <p class="hero__world" id="worldLabel">Мир · Koban</p>
-        <div class="code-block">
-          <div id="code" class="code muted" aria-label="Код мира">…</div>
-        </div>
+      <div class="hero__top">
+        <p class="hero__kicker hero__kicker--offline" id="heroStatus" aria-live="polite">ОФФЛАЙН</p>
+        <button type="button" class="hero__refresh" id="refreshBtn" aria-busy="false">Обновить</button>
       </div>
 
-      <div class="hero__actions">
-        <button type="button" class="btn-secondary" id="refreshBtn" aria-busy="false">Обновить</button>
-        <button type="button" class="btn-primary" id="copyBtn" disabled>Скопировать код</button>
-        <a class="btn-secondary" id="mapLink" href="/v/map/" rel="noopener">Карта мира</a>
+      <div class="hero__grid">
+        <div class="hero__id">
+          <h1 class="hero__title">VALHEIM</h1>
+          <p class="hero__world" id="worldLabel">Мир · Koban</p>
+          <div class="code-block">
+            <div id="code" class="code muted" aria-label="Код мира">…</div>
+          </div>
+          <button type="button" class="btn-primary hero__copy" id="copyBtn" disabled>Скопировать код</button>
+        </div>
+
+        <nav class="hero__nav" aria-label="Разделы">
+          <a class="tile tile--map" id="mapLink" href="/v/map/" rel="noopener">
+            <span class="tile__body">
+              <span class="tile__kicker">Вживую</span>
+              <span class="tile__title">Карта мира</span>
+              <span class="tile__text">Игроки, боссы, подземелья и ресурсы — прямо сейчас</span>
+            </span>
+            <span class="tile__go" aria-hidden="true">→</span>
+          </a>
+          <a class="tile tile--opts" href="/v/options/">
+            <span class="tile__body">
+              <span class="tile__kicker">Сервер</span>
+              <span class="tile__title">Настройки мира</span>
+              <span class="tile__text">Сложность, ресурсы, порталы, креатив — меняются на лету</span>
+            </span>
+            <span class="tile__go" aria-hidden="true">→</span>
+          </a>
+        </nav>
       </div>
 
       <p class="toast" id="toast" role="status"></p>
