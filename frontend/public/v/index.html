@@ -708,13 +708,31 @@
       stroke-width: 1;
     }
 
-    .wclock__arc {
-      fill: none;
-      stroke-width: 6;
+    .wclock__plate.is-night {
+      fill: rgba(4, 10, 20, 0.85);
+      stroke: rgba(120, 150, 210, 0.22);
     }
 
-    .wclock__arc.is-yes { stroke: rgba(110, 231, 168, 0.3); }
-    .wclock__arc.is-no { stroke: rgba(226, 140, 130, 0.26); }
+    .wclock__winbg {
+      fill: rgba(4, 10, 12, 0.92);
+      stroke: rgba(200, 164, 90, 0.28);
+      stroke-width: 0.7;
+    }
+
+    .wclock__plate.is-night + * .wclock__winbg,
+    .wclock__window.is-night .wclock__winbg {
+      stroke: rgba(120, 150, 210, 0.3);
+    }
+
+    .wclock__daynight {
+      fill: rgba(200, 164, 90, 0.62);
+      font-family: "Source Sans 3", sans-serif;
+      font-size: 6.5px;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+
+    .wclock__daynight.is-night { fill: rgba(150, 180, 230, 0.7); }
 
     .wclock__tick {
       stroke: rgba(226, 232, 226, 0.28);
@@ -1540,7 +1558,7 @@
   <script src="/v/forest-parallax.js?v=2"></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
-  <script src="/v/components/world-clock.js?v=6" defer></script>
+  <script src="/v/components/world-clock.js?v=9" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";

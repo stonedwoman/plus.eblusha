@@ -43,33 +43,26 @@
     return [50 + r * Math.sin(a), 50 - r * Math.cos(a)];
   }
 
-  // Дуга от доли from до доли to по часовой стрелке.
-  function arcPath(from, to, r) {
-    var span = to - from;
-    if (span <= 0) span += 1;
-    var p0 = onCircle(from, r);
-    var p1 = onCircle(from + span, r);
-    var large = span > 0.5 ? 1 : 0;
-    return "M " + p0[0].toFixed(2) + " " + p0[1].toFixed(2) +
-           " A " + r + " " + r + " 0 " + large + " 1 " +
-           p1[0].toFixed(2) + " " + p1[1].toFixed(2);
-  }
 
-  // Циферблат на 24 часа: часовая стрелка делает оборот за игровые сутки,
-  // минутная — за игровой час. Дуги показывают, когда кровать работает.
+  // Классический циферблат на 12 часов: часовая стрелка делает два оборота за
+  // игровые сутки, минутная — оборот за игровой час.
+  //
+  // Дуг окна сна здесь нет намеренно: на 12-часовом циферблате полдень и
+  // полночь попадают в одну точку, поэтому промежуток «с 12:00 до 06:00»
+  // нарисовать однозначно нельзя. Окно показывает полоса под часами, а
+  // циферблат говорит, день сейчас или ночь.
   function buildFace() {
     var wrap = el("div", "wclock__face");
     var svg = svgEl("svg", { viewBox: "0 0 100 100", "aria-hidden": "true" });
 
-    svg.appendChild(svgEl("circle", { cx: 50, cy: 50, r: 46, class: "wclock__plate" }));
-    svg.appendChild(svgEl("path", { d: arcPath(0.5, 0.25, 42), class: "wclock__arc is-yes" }));
-    svg.appendChild(svgEl("path", { d: arcPath(0.25, 0.5, 42), class: "wclock__arc is-no" }));
+    var plate = svgEl("circle", { cx: 50, cy: 50, r: 46, class: "wclock__plate" });
+    svg.appendChild(plate);
 
-    for (var i = 0; i < 24; i++) {
-      var major = i % 6 === 0;
-      var a = i / 24;
-      var outer = onCircle(a, 35);
-      var inner = onCircle(a, major ? 29 : 32);
+    for (var i = 0; i < 12; i++) {
+      var major = i % 3 === 0;
+      var a = i / 12;
+      var outer = onCircle(a, 40);
+      var inner = onCircle(a, major ? 34 : 37);
       svg.appendChild(svgEl("line", {
         x1: outer[0].toFixed(2), y1: outer[1].toFixed(2),
         x2: inner[0].toFixed(2), y2: inner[1].toFixed(2),
@@ -77,8 +70,8 @@
       }));
     }
 
-    [[0, "0"], [0.25, "6"], [0.5, "12"], [0.75, "18"]].forEach(function (m) {
-      var p = onCircle(m[0], 24);
+    [[0, "12"], [0.25, "3"], [0.5, "6"], [0.75, "9"]].forEach(function (m) {
+      var p = onCircle(m[0], 27);
       var t = svgEl("text", {
         x: p[0].toFixed(2), y: p[1].toFixed(2),
         "text-anchor": "middle", "dominant-baseline": "central",
@@ -88,14 +81,26 @@
       svg.appendChild(t);
     });
 
-    var hour = svgEl("line", { x1: 50, y1: 50, x2: 50, y2: 31, class: "wclock__hhand" });
-    var minute = svgEl("line", { x1: 50, y1: 50, x2: 50, y2: 22, class: "wclock__mhand" });
+    var hour = svgEl("line", { x1: 50, y1: 50, x2: 50, y2: 30, class: "wclock__hhand" });
+    var minute = svgEl("line", { x1: 50, y1: 50, x2: 50, y2: 19, class: "wclock__mhand" });
     svg.appendChild(hour);
     svg.appendChild(minute);
     svg.appendChild(svgEl("circle", { cx: 50, cy: 50, r: 2.6, class: "wclock__pin" }));
 
+    // Окошко «день / ночь» — как на часах. Рисуем последним, поверх стрелок:
+    // иначе минутная перечёркивает надпись и её не прочесть.
+    var win = svgEl("g", { class: "wclock__window" });
+    win.appendChild(svgEl("rect", { x: 34, y: 58.5, width: 32, height: 11, rx: 3, class: "wclock__winbg" }));
+    var mark = svgEl("text", {
+      x: 50, y: 64.3, "text-anchor": "middle", "dominant-baseline": "central",
+      class: "wclock__daynight"
+    });
+    mark.textContent = "—";
+    win.appendChild(mark);
+    svg.appendChild(win);
+
     wrap.appendChild(svg);
-    return { wrap: wrap, hour: hour, minute: minute };
+    return { wrap: wrap, hour: hour, minute: minute, plate: plate, mark: mark, window: win };
   }
 
   function build() {
@@ -155,7 +160,8 @@
     root.appendChild(body);
 
     ui = { day: day, time: time, phase: phase, hand: hand, status: status, note: note,
-           hHand: face.hour, mHand: face.minute };
+           hHand: face.hour, mHand: face.minute,
+           plate: face.plate, dayNight: face.mark, window: face.window };
   }
 
   function fmt(seconds) {
@@ -216,9 +222,16 @@
     ui.phase.textContent = phaseName(f);
 
     ui.hand.style.left = (f * 100) + "%";
-    // Часовая — оборот за сутки, минутная — за игровой час.
-    ui.hHand.setAttribute("transform", "rotate(" + (f * 360).toFixed(2) + " 50 50)");
+    // Часовая — два оборота за игровые сутки, минутная — оборот за игровой час.
+    ui.hHand.setAttribute("transform", "rotate(" + (f * 720 % 360).toFixed(2) + " 50 50)");
     ui.mHand.setAttribute("transform", "rotate(" + ((f * 24 % 1) * 360).toFixed(2) + " 50 50)");
+
+    // День и ночь по границам самой игры: ночь это f <= 0.25 или f >= 0.75.
+    var night = f <= 0.25 || f >= 0.75;
+    ui.dayNight.textContent = night ? "НОЧЬ" : "ДЕНЬ";
+    ui.plate.classList.toggle("is-night", night);
+    ui.dayNight.classList.toggle("is-night", night);
+    ui.window.classList.toggle("is-night", night);
 
     root.classList.toggle("is-sleep", canSleep);
 
