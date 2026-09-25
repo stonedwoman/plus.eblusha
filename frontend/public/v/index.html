@@ -10,7 +10,7 @@
     (function () {
       var KEY = "koban.fx";
       var OFF = ["nosky", "noforest", "noclock"];
-      var VALID = OFF.concat(["glass"]);
+      var VALID = OFF.concat(["glass", "parallax"]);
       var q = null;
       try {
         q = new URLSearchParams(location.search).get("fx");
@@ -30,7 +30,9 @@
       var root = document.documentElement;
       list.forEach(function (x) {
         if (VALID.indexOf(x) < 0) return;
-        root.classList.add(x === "glass" ? "fx-glass" : "fx-" + x.replace("no", "no-"));
+        root.classList.add(
+          x === "glass" || x === "parallax" ? "fx-" + x : "fx-" + x.replace("no", "no-")
+        );
       });
     })();
   </script>
