@@ -44,11 +44,21 @@
   var est = null;           // оценка netTime, с
   var err = 0;              // невязка, с
   var dayLengthSec = 1800;
-  var opens = 0.5;
-  var closes = 0.25;
   // Куда игра будит после сна: EnvMan.SkipToMorning целится в 0.15 суток
-  // следующего дня, то есть 03:36 по нашей шкале, ещё до своего же рассвета.
+  // следующего дня, то есть 03:36 по нашей шкале.
   var WAKE_AT = 0.15;
+
+  // Практическое окно сна: с полудня до 03:36.
+  //
+  // В коде пороги другие — CanSleep = IsAfternoon || IsNight, то есть формально
+  // до рассвета на 0.25. Но кровать сверяется с EnvMan.CanSleep(), а тот считает
+  // фазу по m_smoothDayFraction — сглаженному значению. После сна оно ползёт от
+  // вечернего к 0.15 «коротким путём», то есть сверху вниз, и надолго застревает
+  // в дневном диапазоне 0.25..0.5. Поэтому сразу после подъёма игра в кровать
+  // уже не пускает, что подтверждается и на практике, и полем canSleep с сервера.
+  // Показываем то, что работает, а не то, что написано в порогах.
+  var opens = 0.5;
+  var closes = WAKE_AT;
   var haveData = false;
   var lastServerTime = null;
   var frozen = false;
@@ -202,12 +212,9 @@
 
     // Сегменты подписаны прямо внутри: цветовой код без легенды никто не читает.
     var dial = el("div", "wclock__dial");
-    // Отрезок 0.15..0.25 — между подъёмом и рассветом. Спать там игра
-    // разрешает, но перенесёт на 0.15 следующего дня, то есть съест сутки.
     [
       { cls: "is-yes", left: 0, width: 15, text: "можно", word: true },
-      { cls: "is-waste", left: 15, width: 10, text: "−сутки", word: false },
-      { cls: "is-no", left: 25, width: 25, text: "нельзя", word: true },
+      { cls: "is-no", left: 15, width: 35, text: "нельзя", word: true },
       { cls: "is-yes", left: 50, width: 50, text: "можно", word: true }
     ].forEach(function (seg) {
       var n = el("span", "wclock__seg " + seg.cls);
@@ -312,32 +319,15 @@
       var skipText = skipHours >= 1
         ? Math.round(skipHours) + " ч"
         : Math.round(skipHours * 60) + " мин";
-
-      // Между подъёмом и рассветом сон уносит почти на сутки вперёд. Звать
-      // туда зелёной кнопкой неправильно — предупреждаем.
-      var wasteful = skipHours > 20;
-      if (last.wasteful !== wasteful) {
-        last.wasteful = wasteful;
-        root.classList.toggle("is-waste", wasteful);
-      }
-
-      if (wasteful) {
-        setText(ui.status, "status", "Спать можно, но потеряете сутки");
-        setText(ui.note, "note",
-          "Вы только что встали. Сон снова перенесёт на " + clock(WAKE_AT) +
-          " следующего дня — это " + skipText + " игрового времени. До рассвета " +
-          fmtReal(ahead(f, closes) * dayLengthSec) + ".");
-      } else {
-        setText(ui.status, "status", "Спать можно");
-        setText(ui.note, "note",
-          "Ляжете — проснётесь в " + clock(WAKE_AT) + ", игра промотает " + skipText +
-          " игрового времени. Окно закроется в " + clock(closes) + ", через " +
-          fmtReal(ahead(f, closes) * dayLengthSec) + ".");
-      }
+      setText(ui.status, "status", "Спать можно");
+      setText(ui.note, "note",
+        "Ляжете — проснётесь в " + clock(WAKE_AT) + ", игра промотает " + skipText +
+        " игрового времени. Лечь можно до " + clock(closes) + ", это ещё " +
+        fmtReal(ahead(f, closes) * dayLengthSec) + ".");
     } else {
       setText(ui.status, "status", "До сна " + fmtReal(ahead(f, opens) * dayLengthSec));
-      setText(ui.note, "note", "Кровать заработает в " + clock(opens) +
-        " и будет работать до " + clock(closes) + ".");
+      setText(ui.note, "note", "Кровать работает с " + clock(opens) + " до " +
+        clock(closes) + ". После подъёма игра спать уже не пускает.");
     }
   }
 
@@ -384,7 +374,8 @@
 
         if (typeof d.dayLengthSec === "number" && d.dayLengthSec > 0) dayLengthSec = d.dayLengthSec;
         if (typeof d.sleepOpens === "number") opens = d.sleepOpens;
-        if (typeof d.sleepCloses === "number") closes = d.sleepCloses;
+        // sleepCloses с сервера (0.25) — формальный порог из кода; на деле
+        // кровать перестаёт работать в момент подъёма. См. комментарий выше.
 
         // Плагин отдаёт точное сетевое время. Если попали на старую версию —
         // собираем его из дня и доли: точность хуже, но часы работают.
