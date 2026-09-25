@@ -202,15 +202,18 @@
 
     // Сегменты подписаны прямо внутри: цветовой код без легенды никто не читает.
     var dial = el("div", "wclock__dial");
+    // Отрезок 0.15..0.25 — между подъёмом и рассветом. Спать там игра
+    // разрешает, но перенесёт на 0.15 следующего дня, то есть съест сутки.
     [
-      { cls: "is-yes", left: 0, width: 25, text: "можно" },
-      { cls: "is-no", left: 25, width: 25, text: "нельзя" },
-      { cls: "is-yes", left: 50, width: 50, text: "можно" }
+      { cls: "is-yes", left: 0, width: 15, text: "можно", word: true },
+      { cls: "is-waste", left: 15, width: 10, text: "−сутки", word: false },
+      { cls: "is-no", left: 25, width: 25, text: "нельзя", word: true },
+      { cls: "is-yes", left: 50, width: 50, text: "можно", word: true }
     ].forEach(function (seg) {
       var n = el("span", "wclock__seg " + seg.cls);
       // «спать» отдельным словом: на узком экране оно не влезает в сегмент
-      // шириной в четверть полосы и прячется стилями.
-      n.appendChild(el("span", "wclock__segword", "спать"));
+      // и прячется стилями.
+      if (seg.word) n.appendChild(el("span", "wclock__segword", "спать"));
       n.appendChild(document.createTextNode(seg.text));
       n.style.left = seg.left + "%";
       n.style.width = seg.width + "%";
@@ -306,12 +309,31 @@
     } else if (canSleep) {
       var skip = skipIfSleepNow(est);
       var skipHours = skip / dayLengthSec * 24;
-      setText(ui.status, "status", "Спать можно");
-      setText(ui.note, "note",
-        "Ляжете — проснётесь в " + clock(WAKE_AT) + ", игра промотает " +
-        (skipHours >= 1 ? Math.round(skipHours) + " ч" : Math.round(skipHours * 60) + " мин") +
-        " игрового времени. Окно закроется в " + clock(closes) + ", через " +
-        fmtReal(ahead(f, closes) * dayLengthSec) + ".");
+      var skipText = skipHours >= 1
+        ? Math.round(skipHours) + " ч"
+        : Math.round(skipHours * 60) + " мин";
+
+      // Между подъёмом и рассветом сон уносит почти на сутки вперёд. Звать
+      // туда зелёной кнопкой неправильно — предупреждаем.
+      var wasteful = skipHours > 20;
+      if (last.wasteful !== wasteful) {
+        last.wasteful = wasteful;
+        root.classList.toggle("is-waste", wasteful);
+      }
+
+      if (wasteful) {
+        setText(ui.status, "status", "Спать можно, но потеряете сутки");
+        setText(ui.note, "note",
+          "Вы только что встали. Сон снова перенесёт на " + clock(WAKE_AT) +
+          " следующего дня — это " + skipText + " игрового времени. До рассвета " +
+          fmtReal(ahead(f, closes) * dayLengthSec) + ".");
+      } else {
+        setText(ui.status, "status", "Спать можно");
+        setText(ui.note, "note",
+          "Ляжете — проснётесь в " + clock(WAKE_AT) + ", игра промотает " + skipText +
+          " игрового времени. Окно закроется в " + clock(closes) + ", через " +
+          fmtReal(ahead(f, closes) * dayLengthSec) + ".");
+      }
     } else {
       setText(ui.status, "status", "До сна " + fmtReal(ahead(f, opens) * dayLengthSec));
       setText(ui.note, "note", "Кровать заработает в " + clock(opens) +
