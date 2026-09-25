@@ -685,11 +685,79 @@
     }
 
     .wclock {
-      --wclock-sleep: rgba(91, 127, 224, 0.26);
+      display: flex;
+      align-items: center;
+      gap: clamp(0.9rem, 2.4vw, 1.5rem);
       font-size: 0.875rem;
     }
 
-    .wclock.is-sleep { --wclock-sleep: rgba(110, 231, 168, 0.28); }
+    .wclock__body { flex: 1 1 auto; min-width: 0; }
+
+    /* Циферблат на 24 часа: оборот часовой стрелки — игровые сутки. */
+    .wclock__face {
+      flex: 0 0 auto;
+      width: clamp(6.5rem, 13vw, 8.5rem);
+      aspect-ratio: 1 / 1;
+    }
+
+    .wclock__face svg { width: 100%; height: 100%; display: block; }
+
+    .wclock__plate {
+      fill: rgba(6, 15, 14, 0.72);
+      stroke: rgba(200, 164, 90, 0.2);
+      stroke-width: 1;
+    }
+
+    .wclock__arc {
+      fill: none;
+      stroke-width: 6;
+    }
+
+    .wclock__arc.is-yes { stroke: rgba(110, 231, 168, 0.3); }
+    .wclock__arc.is-no { stroke: rgba(226, 140, 130, 0.26); }
+
+    .wclock__tick {
+      stroke: rgba(226, 232, 226, 0.28);
+      stroke-width: 0.9;
+    }
+
+    .wclock__tick.is-major {
+      stroke: rgba(200, 164, 90, 0.6);
+      stroke-width: 1.6;
+    }
+
+    .wclock__num {
+      fill: rgba(226, 232, 226, 0.5);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 8px;
+      font-weight: 500;
+    }
+
+    .wclock__hhand {
+      stroke: var(--text-main);
+      stroke-width: 3.4;
+      stroke-linecap: round;
+      transition: transform 900ms linear;
+      transform-box: view-box;
+    }
+
+    .wclock__mhand {
+      stroke: var(--accent-hover);
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      transform-box: view-box;
+    }
+
+    .wclock__pin {
+      fill: var(--accent-hover);
+      stroke: rgba(6, 15, 14, 0.9);
+      stroke-width: 1;
+    }
+
+    @media (max-width: 560px) {
+      .wclock { flex-direction: column; align-items: stretch; gap: 0.9rem; }
+      .wclock__face { width: 7.5rem; align-self: center; }
+    }
 
     .wclock__head {
       display: flex;
@@ -705,6 +773,16 @@
       letter-spacing: 0.06em;
       margin: 0;
       color: var(--text-main);
+    }
+
+    .wclock__time {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: clamp(1rem, 2.2vw, 1.25rem);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+      color: var(--accent-hover);
+      text-shadow: 0 0 22px rgba(224, 187, 107, 0.2);
     }
 
     .wclock__phase {
@@ -739,6 +817,12 @@
       overflow: hidden;
     }
 
+    .wclock__segword { margin-right: 0.4em; }
+
+    @media (max-width: 620px) {
+      .wclock__segword { display: none; }
+    }
+
     .wclock__seg.is-yes {
       background: rgba(110, 231, 168, 0.17);
       color: rgba(150, 231, 186, 0.9);
@@ -765,17 +849,34 @@
 
     .wclock__marks {
       position: relative;
-      height: 1.1rem;
-      margin-top: 0.28rem;
-      font-size: 0.68rem;
-      letter-spacing: 0.08em;
+      height: 2.1rem;
+      margin-top: 0.3rem;
       color: rgba(226, 232, 226, 0.4);
     }
 
     .wclock__marks span {
       position: absolute;
       transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      line-height: 1.25;
       white-space: nowrap;
+    }
+
+    .wclock__marks b {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.66rem;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      color: rgba(226, 232, 226, 0.55);
+    }
+
+    .wclock__marks i {
+      font-style: normal;
+      font-size: 0.62rem;
+      letter-spacing: 0.08em;
+      opacity: 0.75;
     }
 
     .wclock__status {
@@ -1439,7 +1540,7 @@
   <script src="/v/forest-parallax.js?v=2"></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
-  <script src="/v/components/world-clock.js?v=2" defer></script>
+  <script src="/v/components/world-clock.js?v=6" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";
