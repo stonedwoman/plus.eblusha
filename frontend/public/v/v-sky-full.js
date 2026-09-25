@@ -182,9 +182,22 @@
       var can = Canvallax({
         parent: document.body,
         className: "bg-canvas",
-        damping: flags.isMobileFixedBg ? 1 : 40,
-        tracking: flags.isMobileFixedBg ? false : "scroll",
-        animating: flags.prefersReducedMotion ? false : true,
+        // Небо закреплено: на прокрутку не реагирует.
+        //
+        // Раньше tracking был "scroll" с damping 40 — Canvallax тянул весь холст
+        // за скроллом и доводил его сорока кадрами плавного затухания, то есть
+        // после каждого движения колеса перерисовывал полноэкранный canvas со
+        // всеми звёздами и облаками ещё десятки кадров. Отсюда и рывки.
+        //
+        // damping 1 — без затухания, tracking false — смещение не считается
+        // вовсе. Облака при этом продолжают плыть сами: у них своя скорость.
+        damping: 1,
+        tracking: false,
+        // Своим циклом Canvallax перерисовывал полноэкранный холст со всеми
+        // звёздами и облаками каждый кадр, всегда. Отключаем и гоняем сами,
+        // вчетверо реже — облака плывут по 0.2-0.4 пикселя за кадр, разницы
+        // на глаз нет, а работы в четыре раза меньше.
+        animating: false,
       });
       if (!can || typeof can.add !== "function") return null;
 
@@ -308,11 +321,28 @@
       syncCanvas();
       safeRender();
 
+      // Рисуем не чаще SKY_FPS и совсем не рисуем, пока идёт прокрутка:
+      // перерисовка фона на каждый тик колеса и была главным тормозом.
+      var SKY_FPS = 15;
+      var lastDraw = 0;
+      var loopId = 0;
+      if (!flags.prefersReducedMotion) {
+        loopId = requestAnimationFrame(function loop(t) {
+          loopId = requestAnimationFrame(loop);
+          if (destroyed) return;
+          if (document.documentElement.classList.contains("is-scrolling")) return;
+          if (t - lastDraw < 1000 / SKY_FPS) return;
+          lastDraw = t;
+          safeRender();
+        });
+      }
+
       return {
         syncCanvas: syncCanvas,
         destroy: function () {
           if (destroyed) return;
           destroyed = true;
+          if (loopId) cancelAnimationFrame(loopId);
           cloudImg.removeEventListener("load", handleCloudLoad);
           can.animating = false;
           can.elements = [];

@@ -74,7 +74,18 @@
       requestTick();
     }
 
+    var lastPx = null;
+    var lastPy = null;
+
     function onPointerMove(ev) {
+      // Прокрутка колесом двигает контент под неподвижным курсором, и браузер
+      // шлёт mousemove с теми же координатами. Настоящего движения мыши нет,
+      // пересчитывать параллакс незачем — иначе каждый тик колеса запускал
+      // затухание на несколько десятков кадров.
+      if (ev.clientX === lastPx && ev.clientY === lastPy) return;
+      lastPx = ev.clientX;
+      lastPy = ev.clientY;
+
       var nx = ev.clientX / Math.max(1, window.innerWidth) - 0.5;
       targetX = nx * 2 * maxX;
       targetY = 0;

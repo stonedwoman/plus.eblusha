@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- v-landing: фон — Canvallax (canvas + scroll), см. v-sky-full.js -->
+<!-- v-landing: фон — Canvallax (canvas, закреплён и прокрутку игнорирует), см. v-sky-full.js -->
 <html lang="ru" data-v-landing="2026-04-14-fullwidth-hero">
 <head>
   <script>
@@ -41,7 +41,6 @@
       --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
       --forest-height: 30vh;
       --forest-bleed: 8vw;
-      --v-cursor: url("/v/assets/sword-cursor.png?v=20260505") 4 4;
     }
 
     * { box-sizing: border-box; }
@@ -82,7 +81,7 @@
       position: relative;
       overflow-x: hidden;
       z-index: 0;
-      cursor: var(--v-cursor), auto;
+      cursor: auto;
     }
 
     html[data-embedded="true"],
@@ -99,7 +98,7 @@
     a,
     button,
     [role="button"] {
-      cursor: var(--v-cursor), pointer;
+      cursor: pointer;
     }
 
     /* Только не-canvallax canvas (если появятся) */
@@ -236,8 +235,9 @@
       z-index: 2;
       overflow: hidden;
       pointer-events: none;
-      -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 72%, rgba(0, 0, 0, 0) 100%);
-      mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 72%, rgba(0, 0, 0, 0) 100%);
+      /* Затухание верхнего края запечено в сами SVG слоёв.
+         CSS-маска здесь пересчитывала прозрачность на каждый кадр прокрутки и
+         держала колесо на 30 fps; в картинке она растеризуется один раз. */
     }
 
     .forest-parallax__layer {
@@ -254,22 +254,22 @@
     }
 
     .forest-parallax__layer--1 {
-      background-image: url("/v/assets/forest-vecteezy-tile-far.svg?v=3");
+      background-image: url("/v/assets/forest-vecteezy-tile-far.svg?v=4");
       filter: blur(1.4px) saturate(0.88);
     }
 
     .forest-parallax__layer--2 {
-      background-image: url("/v/assets/forest-vecteezy-tile-mid.svg?v=3");
+      background-image: url("/v/assets/forest-vecteezy-tile-mid.svg?v=4");
       filter: blur(0.95px) saturate(0.94);
     }
 
     .forest-parallax__layer--3 {
-      background-image: url("/v/assets/forest-vecteezy-tile-mid2.svg?v=3");
+      background-image: url("/v/assets/forest-vecteezy-tile-mid2.svg?v=4");
       filter: blur(0.45px) saturate(1);
     }
 
     .forest-parallax__layer--4 {
-      background-image: url("/v/assets/forest-vecteezy-tile-front.svg?v=3");
+      background-image: url("/v/assets/forest-vecteezy-tile-front.svg?v=4");
       filter: saturate(1.02);
     }
 
@@ -302,11 +302,22 @@
       transition:
         border-color var(--t-med),
         box-shadow var(--t-med),
+        background 220ms var(--ease),
         transform var(--t-fast);
     }
 
     @supports not (backdrop-filter: blur(1px)) {
       .glass-panel { background: rgba(10, 22, 20, 0.92); }
+    }
+
+    /* Замер: backdrop-filter — самая дорогая часть прокрутки. Со стеклом кадр
+       занимал 34.8 мс (30 fps), без него 17.7 мс (60 fps), причём радиус почти
+       не влияет: дорог сам факт фильтра, а не степень размытия. Поэтому на
+       время прокрутки подменяем его непрозрачным фоном, а в покое возвращаем. */
+    html.is-scrolling .glass-panel {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      background: rgba(10, 22, 20, 0.92);
     }
 
     .glass-panel--interactive:hover {
@@ -419,7 +430,7 @@
       border: 1px solid rgba(200, 164, 90, 0.16);
       border-radius: 999px;
       padding: 0.3rem 0.85rem;
-      cursor: var(--v-cursor), pointer;
+      cursor: pointer;
       transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
     }
 
@@ -430,7 +441,7 @@
     }
 
     .hero__refresh:disabled { opacity: 0.45; }
-    .hero__refresh.btn-secondary--refreshing:disabled { cursor: var(--v-cursor), wait; opacity: 0.7; }
+    .hero__refresh.btn-secondary--refreshing:disabled { cursor: wait; opacity: 0.7; }
 
     .hero__grid {
       display: grid;
@@ -621,13 +632,13 @@
       padding: 0.5rem 1rem;
       border: none;
       border-radius: var(--radius-sm);
-      cursor: var(--v-cursor), pointer;
+      cursor: pointer;
       transition: transform var(--t-fast), box-shadow var(--t-fast), background var(--t-fast), opacity var(--t-fast);
     }
 
     button:disabled {
       opacity: 0.4;
-      cursor: var(--v-cursor), not-allowed;
+      cursor: not-allowed;
     }
 
     .btn-primary {
@@ -654,7 +665,7 @@
 
     .btn-secondary.btn-secondary--refreshing:disabled {
       opacity: 0.88;
-      cursor: var(--v-cursor), wait;
+      cursor: wait;
     }
 
     .toast {
@@ -1645,9 +1656,26 @@
     <div class="forest-parallax__layer forest-parallax__layer--4" data-depth-x="-0.90" data-depth-y="-0.24" data-base-y="0"></div>
   </div>
 
+  <script>
+    // Пока идёт прокрутка, html получает класс is-scrolling и стекло панелей
+    // выключается — см. комментарий у .is-scrolling в стилях. Слушатель
+    // пассивный и делает только одну операцию с классом.
+    (function () {
+      var root = document.documentElement;
+      var timer = 0;
+      window.addEventListener("scroll", function () {
+        if (!timer) root.classList.add("is-scrolling");
+        else clearTimeout(timer);
+        timer = setTimeout(function () {
+          timer = 0;
+          root.classList.remove("is-scrolling");
+        }, 140);
+      }, { passive: true });
+    })();
+  </script>
   <script src="/v/canvallax.min.js"></script>
-  <script src="/v/v-sky-full.js?v=7"></script>
-  <script src="/v/forest-parallax.js?v=2"></script>
+  <script src="/v/v-sky-full.js?v=9"></script>
+  <script src="/v/forest-parallax.js?v=3"></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>

@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
-<svg xmlns="http://www.w3.org/2000/svg" width="10996" height="1087" viewBox="0 713 10996 1087" preserveAspectRatio="xMidYMax meet" aria-hidden="true"><defs><clipPath id="clip-13">
+<svg xmlns="http://www.w3.org/2000/svg" width="10996" height="1087" viewBox="0 713 10996 1087" preserveAspectRatio="xMidYMax meet" aria-hidden="true"><defs><linearGradient id="fadeGradKoban" gradientUnits="userSpaceOnUse" x1="0" y1="713.0" x2="0" y2="1017.36"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity="1"/></linearGradient><mask id="fadeTopKoban" maskUnits="userSpaceOnUse" x="0.0" y="713.0" width="10996.0" height="1087.0"><rect x="0.0" y="713.0" width="10996.0" height="1087.0" fill="url(#fadeGradKoban)"/></mask><clipPath id="clip-13">
 <path clip-rule="nonzero" d="M 270 753 L 4664 753 L 4664 1770 L 270 1770 Z M 270 753 " />
 </clipPath>
 <clipPath id="clip-14">
@@ -89,7 +89,7 @@
 <stop offset="0.875" stop-color="rgb(15.596008%, 41.741943%, 28.871155%)" stop-opacity="1" />
 <stop offset="1" stop-color="rgb(15.596008%, 41.741943%, 28.871155%)" stop-opacity="1" />
 </linearGradient>
-</defs><g clip-path="url(#clip-13)">
+</defs><g mask="url(#fadeTopKoban)"><g clip-path="url(#clip-13)">
 <g clip-path="url(#clip-14)">
 <g clip-path="url(#clip-15)">
 <path fill-rule="nonzero" fill="url(#linear-pattern-5)" d="M 4651.226562 519.171875 L 216.578125 756.746094 L 283.386719 2003.875 L 4718.039062 1766.304688 Z M 4651.226562 519.171875 " />
@@ -103,4 +103,4 @@
 </g>
 </g>
 </g>
-</g></svg>
+</g></g></svg>
