@@ -10,7 +10,7 @@
     (function () {
       var KEY = "koban.fx";
       var OFF = ["nosky", "noforest", "noclock"];
-      var VALID = OFF.concat(["glass", "parallax"]);
+      var VALID = OFF.concat(["glass", "parallax", "diag"]);
       var q = null;
       try {
         q = new URLSearchParams(location.search).get("fx");
@@ -31,7 +31,9 @@
       list.forEach(function (x) {
         if (VALID.indexOf(x) < 0) return;
         root.classList.add(
-          x === "glass" || x === "parallax" ? "fx-" + x : "fx-" + x.replace("no", "no-")
+          x === "glass" || x === "parallax" || x === "diag"
+            ? "fx-" + x
+            : "fx-" + x.replace("no", "no-")
         );
       });
     })();
@@ -1696,6 +1698,7 @@
   <script src="/v/components/world-info.js?v=10"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>
   <script src="/v/components/world-farm.js?v=5" defer></script>
+  <script src="/v/components/diag.js?v=1" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";
