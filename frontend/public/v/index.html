@@ -684,6 +684,92 @@
       }
     }
 
+    .wclock {
+      --wclock-sleep: rgba(91, 127, 224, 0.26);
+      font-size: 0.875rem;
+    }
+
+    .wclock.is-sleep { --wclock-sleep: rgba(110, 231, 168, 0.28); }
+
+    .wclock__head {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      margin-bottom: 0.7rem;
+    }
+
+    .wclock__day {
+      font-family: "Cinzel", Georgia, serif;
+      font-size: clamp(1.05rem, 2.4vw, 1.35rem);
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      margin: 0;
+      color: var(--text-main);
+    }
+
+    .wclock__phase {
+      font-size: 0.75rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: rgba(200, 164, 90, 0.7);
+    }
+
+    .wclock__dial {
+      position: relative;
+      height: 12px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(6, 15, 14, 0.7);
+      border: 1px solid rgba(200, 164, 90, 0.16);
+    }
+
+    .wclock__band {
+      position: absolute;
+      inset: 0;
+      transition: background 300ms var(--ease);
+    }
+
+    .wclock__hand {
+      position: absolute;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      margin-left: -1px;
+      border-radius: 2px;
+      background: var(--accent-hover);
+      box-shadow: 0 0 10px rgba(224, 187, 107, 0.7);
+      transition: left 900ms linear;
+    }
+
+    .wclock__marks {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 0.3rem;
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      color: rgba(226, 232, 226, 0.35);
+    }
+
+    /* Отметки стоят под 0.25, 0.5 и 0.75 суток, а не по краям полосы. */
+    .wclock__marks span:first-child { margin-left: 25%; transform: translateX(-50%); }
+    .wclock__marks span:nth-child(2) { transform: translateX(-50%); }
+    .wclock__marks span:last-child { margin-right: 25%; transform: translateX(50%); }
+
+    .wclock__status {
+      margin: 0.75rem 0 0.2rem;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: rgba(226, 232, 226, 0.92);
+    }
+
+    .wclock.is-sleep .wclock__status { color: var(--online); }
+
+    .wclock__note {
+      margin: 0;
+      font-size: 0.78rem;
+      color: rgba(226, 232, 226, 0.45);
+    }
+
     .world-info {
       font-size: 0.875rem;
       line-height: 1.4;
@@ -1294,6 +1380,11 @@
     </article>
 
     <div class="dashboard-grid">
+      <section class="panel panel--world-span glass-panel glass-panel--interactive" aria-label="Время в мире">
+        <h2 class="panel__head">Время в мире</h2>
+        <div id="worldClockRoot" class="wclock"></div>
+      </section>
+
       <section class="panel glass-panel glass-panel--interactive">
         <h2 class="panel__head">Онлайн</h2>
         <ul class="list" id="onlineList"></ul>
@@ -1325,6 +1416,7 @@
   <script src="/v/forest-parallax.js?v=2"></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
+  <script src="/v/components/world-clock.js?v=1" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";
