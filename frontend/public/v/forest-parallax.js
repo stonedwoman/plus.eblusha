@@ -105,16 +105,12 @@
 
     updateBounds();
 
-    // Лес неподвижен, пока параллакс не попросят явно.
-    //
-    // Замер движения мыши без прокрутки: с параллаксом 18.4 мс на кадр и 18
-    // затяжных кадров, без него 16.7 и ни одного. Само по себе движение мыши
-    // ничего не стоит — стоит затухание, которое на каждый mousemove
-    // перезапускается на несколько десятков кадров и пишет transform всем
-    // слоям. Включить обратно: ?fx=parallax
-    var wantParallax = root.classList.contains("fx-parallax");
+    // Слежение за мышью включено. Выключить: ?fx=noparallax — оно заметно
+    // нагружает кадр при движении мыши, но настоящей причиной тормозов
+    // оказался зум браузера, а не параллакс.
+    var noParallax = root.classList.contains("fx-no-parallax");
 
-    if (reduceMotion || coarsePointer || !wantParallax) {
+    if (reduceMotion || coarsePointer || noParallax) {
       renderLayers();
       return;
     }
