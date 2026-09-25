@@ -47,7 +47,8 @@
       background:
         radial-gradient(120% 70% at 50% 0%, rgba(7, 88, 138, 0.55) 0%, rgba(7, 26, 36, 0) 70%),
         linear-gradient(180deg, #07405e 0%, #072430 45%, #05181f 100%);
-      background-attachment: fixed;
+      /* background-attachment: fixed здесь убран: он заставляет браузер
+         перерисовывать фон на каждый кадр прокрутки. */
     }
 
     a { color: var(--accent-hover); }

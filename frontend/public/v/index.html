@@ -9,7 +9,8 @@
     // именно на вашей машине: на сервере без видеокарты узкое место другое.
     (function () {
       var KEY = "koban.fx";
-      var ALL = ["nosky", "noforest", "noglass", "noclock"];
+      var OFF = ["nosky", "noforest", "noclock"];
+      var VALID = OFF.concat(["glass"]);
       var q = null;
       try {
         q = new URLSearchParams(location.search).get("fx");
@@ -17,7 +18,7 @@
 
       var list = null;
       if (q === "on") { try { localStorage.removeItem(KEY); } catch (e) {} list = []; }
-      else if (q === "off") { list = ALL.slice(); }
+      else if (q === "off") { list = OFF.slice(); }
       else if (q) { list = q.split(",").map(function (x) { return x.trim(); }); }
 
       if (list) { try { localStorage.setItem(KEY, list.join(",")); } catch (e) {} }
@@ -28,7 +29,8 @@
 
       var root = document.documentElement;
       list.forEach(function (x) {
-        if (ALL.indexOf(x) >= 0) root.classList.add("fx-" + x.replace("no", "no-"));
+        if (VALID.indexOf(x) < 0) return;
+        root.classList.add(x === "glass" ? "fx-glass" : "fx-" + x.replace("no", "no-"));
       });
     })();
   </script>
@@ -320,10 +322,14 @@
       transform: translateZ(0);
     }
 
+    /* Размытия под панелями больше нет.
+       Замер прокрутки: со стеклом кадр 34.8 мс, без него 17.7 — вдвое, причём
+       радиус почти не влияет, дорог сам факт фильтра. Вместо него плотный фон
+       с лёгким градиентом: на пёстром небе читается не хуже.
+       Вернуть для сравнения: ?fx=glass */
     .glass-panel {
-      background: var(--panel);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
+      background:
+        linear-gradient(165deg, rgba(12, 24, 22, 0.94) 0%, rgba(7, 16, 15, 0.92) 100%);
       border: 1px solid var(--panel-border);
       border-radius: var(--radius-lg);
       box-shadow: var(--shadow-panel), var(--shadow-inset);
@@ -336,27 +342,14 @@
         transform var(--t-fast);
     }
 
-    @supports not (backdrop-filter: blur(1px)) {
-      .glass-panel { background: rgba(10, 22, 20, 0.92); }
-    }
-
-    /* Замер: backdrop-filter — самая дорогая часть прокрутки. Со стеклом кадр
-       занимал 34.8 мс (30 fps), без него 17.7 мс (60 fps), причём радиус почти
-       не влияет: дорог сам факт фильтра, а не степень размытия. Поэтому на
-       время прокрутки подменяем его непрозрачным фоном, а в покое возвращаем. */
     html.fx-no-forest .forest-parallax { display: none; }
 
-    html.fx-no-glass .glass-panel {
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-      background: rgba(10, 22, 20, 0.92);
+    html.fx-glass .glass-panel {
+      background: var(--panel);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
     }
 
-    html.is-scrolling .glass-panel {
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-      background: rgba(10, 22, 20, 0.92);
-    }
 
     .glass-panel--interactive:hover {
       border-color: rgba(200, 164, 90, 0.32);
@@ -1694,23 +1687,6 @@
     <div class="forest-parallax__layer forest-parallax__layer--4" data-depth-x="-0.90" data-depth-y="-0.24" data-base-y="0"></div>
   </div>
 
-  <script>
-    // Пока идёт прокрутка, html получает класс is-scrolling и стекло панелей
-    // выключается — см. комментарий у .is-scrolling в стилях. Слушатель
-    // пассивный и делает только одну операцию с классом.
-    (function () {
-      var root = document.documentElement;
-      var timer = 0;
-      window.addEventListener("scroll", function () {
-        if (!timer) root.classList.add("is-scrolling");
-        else clearTimeout(timer);
-        timer = setTimeout(function () {
-          timer = 0;
-          root.classList.remove("is-scrolling");
-        }, 140);
-      }, { passive: true });
-    })();
-  </script>
   <script src="/v/canvallax.min.js"></script>
   <script src="/v/v-sky-full.js?v=9"></script>
   <script src="/v/forest-parallax.js?v=3"></script>

@@ -327,7 +327,7 @@
     } else {
       setText(ui.status, "status", "До сна " + fmtReal(ahead(f, opens) * dayLengthSec));
       setText(ui.note, "note", "Кровать работает с " + clock(opens) + " до " +
-        clock(closes) + ". После подъёма игра спать уже не пускает.");
+        clock(closes) + ".");
     }
   }
 

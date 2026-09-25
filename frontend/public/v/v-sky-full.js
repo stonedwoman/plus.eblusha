@@ -326,16 +326,15 @@
       syncCanvas();
       safeRender();
 
-      // Рисуем не чаще SKY_FPS и совсем не рисуем, пока идёт прокрутка:
-      // перерисовка фона на каждый тик колеса и была главным тормозом.
-      var SKY_FPS = 15;
+      // Рисуем не чаще SKY_FPS. Пропускать кадры во время прокрутки я
+      // пробовал — облака заметно подмерзали, выигрыша это не дало.
+      var SKY_FPS = 30;
       var lastDraw = 0;
       var loopId = 0;
       if (!flags.prefersReducedMotion) {
         loopId = requestAnimationFrame(function loop(t) {
           loopId = requestAnimationFrame(loop);
           if (destroyed) return;
-          if (document.documentElement.classList.contains("is-scrolling")) return;
           if (t - lastDraw < 1000 / SKY_FPS) return;
           lastDraw = t;
           safeRender();
