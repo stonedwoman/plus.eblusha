@@ -72,6 +72,42 @@
   watch("mousemove");
   watch("scroll");
 
+  // long-animation-frame (Chrome 123+) — единственный API, который делит
+  // затянувшийся кадр на части: сколько ушло в скрипты, сколько в стиль и
+  // раскладку, сколько в саму отрисовку. Именно этого не хватало: longtask
+  // видит только главный поток и молчит, когда время уходит в рендер.
+  var loaf = [];
+  try {
+    new PerformanceObserver(function (list) {
+      list.getEntries().forEach(function (e) {
+        var scriptMs = e.renderStart ? Math.max(0, e.renderStart - e.startTime) : 0;
+        var renderMs = e.renderStart ? Math.max(0, e.startTime + e.duration - e.renderStart) : 0;
+        var slMs = e.styleAndLayoutStart
+          ? Math.max(0, e.startTime + e.duration - e.styleAndLayoutStart)
+          : 0;
+        var worst = "";
+        try {
+          var sc = (e.scripts || []).slice().sort(function (a, b) { return b.duration - a.duration; })[0];
+          if (sc) {
+            worst = Math.round(sc.duration) + "мс " +
+              (sc.sourceFunctionName || sc.invoker || sc.name || "?") + " " +
+              String(sc.sourceURL || "").split("/").pop();
+          }
+        } catch (err) {}
+        loaf.push({
+          ms: Math.round(e.duration),
+          js: Math.round(scriptMs),
+          render: Math.round(renderMs),
+          sl: Math.round(slMs),
+          worst: worst
+        });
+        if (loaf.length > 100) loaf.shift();
+      });
+    }).observe({ type: "long-animation-frame", buffered: true });
+  } catch (err) {
+    loaf.push({ ms: 0, js: 0, render: 0, sl: 0, worst: "LoAF не поддержан" });
+  }
+
   try {
     new PerformanceObserver(function (list) {
       list.getEntries().forEach(function (e) {
@@ -108,6 +144,17 @@
       top.forEach(function (t) {
         lines.push("   " + t.ms + " мс " + (t.src || "(источник не указан)"));
       });
+      var lw = loaf.slice().sort(function (a, b) { return b.ms - a.ms; })[0];
+      if (lw) {
+        lines.push("затянувшийся кадр " + lw.ms + " мс:");
+        lines.push("   скрипты " + lw.js + "   стиль+раскладка " + lw.sl +
+                   "   отрисовка " + lw.render);
+        if (lw.worst) lines.push("   " + lw.worst);
+      } else {
+        lines.push("затянувшихся кадров нет");
+      }
+      lines.push("узлов в DOM " + document.getElementsByTagName("*").length +
+                 "   высота " + document.documentElement.scrollHeight);
       lines.push("за секунду:");
       ["wheel", "mousemove", "scroll"].forEach(function (k) {
         lines.push("   " + k + " " + counts[k] + " шт, " + Math.round(spent[k]) + " мс");
