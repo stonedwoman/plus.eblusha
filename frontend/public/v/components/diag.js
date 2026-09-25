@@ -30,6 +30,24 @@
   ].join(";");
   document.body.appendChild(box);
 
+  // Чем рисует браузер. Если тут SwiftShader, llvmpipe или Software — значит
+  // аппаратное ускорение выключено и всё считает процессор; тогда никакая
+  // правка вёрстки не поможет, чинить надо в настройках браузера.
+  var gpu = "не определился";
+  try {
+    var c = document.createElement("canvas");
+    var gl = c.getContext("webgl") || c.getContext("experimental-webgl");
+    if (gl) {
+      var ext = gl.getExtension("WEBGL_debug_renderer_info");
+      gpu = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : "скрыт браузером";
+    } else {
+      gpu = "WebGL недоступен";
+    }
+  } catch (e) {
+    gpu = "ошибка: " + e.message;
+  }
+  var soft = /swiftshader|llvmpipe|software|microsoft basic/i.test(gpu);
+
   var worstFrame = 0;
   var frames = 0;
   var lastFrame = performance.now();
@@ -78,8 +96,12 @@
 
     if (now - lastReport >= 1000) {
       var top = longTasks.slice().sort(function (a, b) { return b.ms - a.ms; }).slice(0, 3);
+      var sky = document.querySelector("canvas.bg-canvas");
       var lines = [
         "fps " + frames + "   худший кадр " + Math.round(worstFrame) + " мс",
+        (soft ? "!! " : "") + "рисует: " + gpu.slice(0, 46),
+        "экран " + innerWidth + "x" + innerHeight + " dpr " + (devicePixelRatio || 1) +
+          (sky ? "   холст неба " + sky.width + "x" + sky.height : "   холста нет"),
         "долгих задач: " + longTasks.length +
           (top.length ? "  макс " + top[0].ms + " мс" : ""),
       ];
