@@ -171,6 +171,11 @@
 
     function buildSky() {
       var flags = mediaFlags();
+      // ?fx=nosky — небо не строим вовсе, остаётся статичный градиент.
+      if (document.documentElement.classList.contains("fx-no-sky")) {
+        document.documentElement.classList.add("sky-static");
+        return null;
+      }
       if (flags.isPreview) {
         document.documentElement.classList.add("sky-static");
         return null;

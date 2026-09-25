@@ -353,7 +353,8 @@
     }
     if (haveData) draw();
 
-    requestAnimationFrame(frame);
+    if (CHEAP) setTimeout(function () { frame(performance.now()); }, 1000);
+    else requestAnimationFrame(frame);
   }
 
   function now() {
@@ -416,13 +417,18 @@
       });
   }
 
+  // ?fx=noclock — стрелки не пересчитываются каждый кадр, обновление раз в
+  // секунду. Нужно, чтобы проверить, сколько стоит плавный ход.
+  var CHEAP = document.documentElement.classList.contains("fx-no-clock");
+
   build();
   draw();
   // Второй опрос вскоре после первого: так факт остановки виден сразу,
   // а не через POLL_MS ошибочного хода стрелок.
   load().then(function () { setTimeout(load, 2500); });
   setInterval(load, POLL_MS);
-  requestAnimationFrame(frame);
+  if (CHEAP) setTimeout(function () { frame(performance.now()); }, 1000);
+  else requestAnimationFrame(frame);
 
   // В фоне кадров нет и часы отстают — вернулись во вкладку, сразу сверяемся.
   document.addEventListener("visibilitychange", function () {
