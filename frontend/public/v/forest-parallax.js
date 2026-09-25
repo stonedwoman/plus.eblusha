@@ -29,6 +29,15 @@
     var maxY = 14;
     var raf = 0;
 
+    // Во время прокрутки параллакс не считаем вовсе.
+    //
+    // Если вести мышь и одновременно крутить колесо, на каждый mousemove
+    // запускалось затухание на несколько десятков кадров, и оно писало
+    // transform всем слоям поверх и без того идущей прокрутки. Это и было
+    // самым дорогим. Пока страница едет — слои стоят там, где стояли.
+    var scrolling = false;
+    var scrollTimer = 0;
+
     function parseNum(v) {
       var n = parseFloat(v);
       return isFinite(n) ? n : 0;
@@ -53,6 +62,7 @@
 
     function tick() {
       raf = 0;
+      if (scrolling) return;
       currentX += (targetX - currentX) * 0.08;
       currentY += (targetY - currentY) * 0.08;
       renderLayers();
@@ -82,6 +92,7 @@
       // шлёт mousemove с теми же координатами. Настоящего движения мыши нет,
       // пересчитывать параллакс незачем — иначе каждый тик колеса запускал
       // затухание на несколько десятков кадров.
+      if (scrolling) return;
       if (ev.clientX === lastPx && ev.clientY === lastPy) return;
       lastPx = ev.clientX;
       lastPy = ev.clientY;
@@ -104,6 +115,28 @@
       updateBounds();
       requestTick();
     });
+    function markScrolling() {
+      scrolling = true;
+      // Текущее затухание обрываем: досчитывать его во время прокрутки
+      // незачем, оно доедет после.
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      if (scrollTimer) clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(function () {
+        scrollTimer = 0;
+        scrolling = false;
+        // Мышь за время прокрутки могла уехать — доводим слои плавно.
+        requestTick();
+      }, 160);
+    }
+
+    // Колесо слушаем отдельно от scroll: событие wheel приходит раньше, и без
+    // него первые кадры движения мыши успевали проскочить до того, как
+    // страница сообщит о прокрутке.
+    window.addEventListener("wheel", markScrolling, { passive: true });
+    window.addEventListener("scroll", markScrolling, { passive: true });
     window.addEventListener("mousemove", onPointerMove, { passive: true });
     window.addEventListener("mouseleave", resetParallax);
     window.addEventListener("blur", resetParallax);
