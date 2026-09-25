@@ -1,26 +1,59 @@
 /* Игровые часы мира Koban.
  *
- * Данные берёт из /v/api/time — это значения самой игры (EnvMan.GetDay,
- * GetDayFraction, EnvMan.CanSleep), а не наш параллельный отсчёт.
+ * Сервер — источник истины, но дёргать его ради каждого кадра незачем. Поэтому
+ * здесь свои часы, которые идут сами, а ответы сервера служат опорными точками:
+ * раз в POLL_MS считается невязка и выбирается постепенно, а не подставляется
+ * скачком. Отсюда непрерывный ровный ход стрелок.
  *
- * Между опросами стрелка идёт локально: игровая секунда равна реальной, так что
- * достаточно прибавлять прошедшее время к последнему снимку. Замер показал, что
- * время идёт и на пустом сервере, поэтому отсчёт не замораживаем. Исключение —
- * сон игроков: игра ускоренно мотает время до утра, и стрелка на сайте в этот
- * момент отстаёт, но следующий опрос (раз в 15 с) её подтягивает.
+ * Дисциплина часов (по образцу NTP):
+ *   est   — наша оценка сетевого времени сервера, в секундах;
+ *   err   — невязка, которую ещё предстоит выбрать;
+ *   slew  — выбираем её не быстрее MAX_SLEW от хода реального времени, то есть
+ *           часы чуть спешат или чуть отстают, но никогда не прыгают;
+ *   step  — исключение: расхождение больше STEP_THRESHOLD ставится мгновенно.
+ *           Так бывает, когда игроки легли спать и игра промотала время вперёд.
+ *
+ * Запрос учитывает задержку сети: ответ описывает момент примерно rtt/2 назад,
+ * на столько и поправляем.
+ *
+ * Берём у сервера netTime (ZNet.GetTimeSeconds) — точное сетевое время.
+ * GetDayFraction() для этого не годится: это m_smoothDayFraction, сглаженное
+ * значение, которое игра лерпит к истинному по 1% за кадр, оно отстаёт и дрожит.
+ *
+ * Отрисовка — в requestAnimationFrame, а не по таймеру. Минутная стрелка делает
+ * оборот за игровой час, это 75 секунд реального времени, её ход виден глазом.
+ *
+ * Отдельный случай — остановка. Пустой сервер время не крутит: netTime стоит на
+ * месте. Если при этом гнать свои часы вперёд, каждый опрос будет откидывать
+ * стрелку назад на POLL_MS — именно это и выглядело как циклический рывок.
+ * Поэтому остановку определяем по факту: сравниваем netTime соседних опросов и,
+ * если он не сдвинулся, замираем вместе с сервером. Подсказку running (игроки
+ * на сервере) используем только чтобы понять это сразу, а не со второго опроса.
  */
 (function () {
   "use strict";
 
   var ENDPOINT = "/v/api/time";
   var POLL_MS = 15000;
-  var TICK_MS = 1000;
+  var MAX_SLEW = 0.25;      // не быстрее четверти хода реального времени
+  var STEP_THRESHOLD = 5;   // секунд: больше — ставим мгновенно
 
   var root = document.getElementById("worldClockRoot");
   if (!root) return;
 
-  var anchor = null; // { day, fraction, dayLengthSec, opens, closes, atMs }
+  var est = null;           // оценка netTime, с
+  var err = 0;              // невязка, с
+  var dayLengthSec = 1800;
+  var opens = 0.5;
+  var closes = 0.25;
+  var haveData = false;
+  var lastServerTime = null;
+  var frozen = false;
+  var lastFrame = 0;
+  var last = {};            // что уже отрисовано, чтобы не трогать DOM зря
   var ui = null;
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -29,20 +62,54 @@
     return n;
   }
 
-  var SVG_NS = "http://www.w3.org/2000/svg";
-
   function svgEl(tag, attrs) {
     var n = document.createElementNS(SVG_NS, tag);
     for (var k in attrs) if (attrs.hasOwnProperty(k)) n.setAttribute(k, attrs[k]);
     return n;
   }
 
-  // Точка на окружности: доля суток 0 — наверху (полночь), дальше по часовой.
+  // Точка на окружности: доля 0 — наверху, дальше по часовой.
   function onCircle(f, r) {
     var a = f * Math.PI * 2;
     return [50 + r * Math.sin(a), 50 - r * Math.cos(a)];
   }
 
+  // Доля суток линейно переводится в часы: 0 — полночь, 0.25 — рассвет,
+  // 0.5 — полдень, 0.75 — закат. Своих часов игра не показывает, это наша
+  // подача её же числа, но перевод однозначный.
+  function clock(f) {
+    var total = Math.round(((f % 1) + 1) % 1 * 24 * 60);
+    var h = Math.floor(total / 60) % 24;
+    var m = total % 60;
+    return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;
+  }
+
+  function fmt(seconds) {
+    var s = Math.max(0, Math.round(seconds));
+    var m = Math.floor(s / 60);
+    var r = s % 60;
+    if (m <= 0) return r + " с";
+    return m + " мин " + (r < 10 ? "0" : "") + r + " с";
+  }
+
+  // Игровая секунда равна реальной, поэтому обратный отсчёт — это ровно столько
+  // же реального ожидания. Подписываем явно, иначе «6 мин» читается как игровые.
+  function fmtReal(seconds) {
+    return fmt(seconds) + " реального времени";
+  }
+
+  // Сколько долей суток вперёд по кругу от f до target.
+  function ahead(f, target) {
+    var d = target - f;
+    if (d <= 0) d += 1;
+    return d;
+  }
+
+  function phaseName(f) {
+    if (f <= 0.25 || f >= 0.75) return "ночь";
+    if (f >= 0.5) return "день";
+    return "утро";
+  }
 
   // Классический циферблат на 12 часов: часовая стрелка делает два оборота за
   // игровые сутки, минутная — оборот за игровой час.
@@ -123,8 +190,8 @@
     // Сегменты подписаны прямо внутри: цветовой код без легенды никто не читает.
     var dial = el("div", "wclock__dial");
     [
-      { cls: "is-yes", left: 0,  width: 25, text: "можно" },
-      { cls: "is-no",  left: 25, width: 25, text: "нельзя" },
+      { cls: "is-yes", left: 0, width: 25, text: "можно" },
+      { cls: "is-no", left: 25, width: 25, text: "нельзя" },
       { cls: "is-yes", left: 50, width: 50, text: "можно" }
     ].forEach(function (seg) {
       var n = el("span", "wclock__seg " + seg.cls);
@@ -157,102 +224,109 @@
 
     var note = el("p", "wclock__note", "");
     body.appendChild(note);
+
     root.appendChild(body);
 
-    ui = { day: day, time: time, phase: phase, hand: hand, status: status, note: note,
-           hHand: face.hour, mHand: face.minute,
-           plate: face.plate, dayNight: face.mark, window: face.window };
+    ui = {
+      day: day, time: time, phase: phase, hand: hand, status: status, note: note,
+      hHand: face.hour, mHand: face.minute, plate: face.plate,
+      dayNight: face.mark, window: face.window
+    };
   }
 
-  function fmt(seconds) {
-    var s = Math.max(0, Math.round(seconds));
-    var m = Math.floor(s / 60);
-    var r = s % 60;
-    if (m <= 0) return r + " с";
-    return m + " мин " + (r < 10 ? "0" : "") + r + " с";
+  // DOM трогаем только когда значение реально изменилось: иначе на каждом кадре
+  // шла бы перерисовка текста.
+  function setText(node, key, value) {
+    if (last[key] === value) return;
+    last[key] = value;
+    node.textContent = value;
   }
 
-  // Игровая секунда равна реальной, поэтому обратный отсчёт — это ровно столько
-  // же реального ожидания. Подписываем явно, иначе «6 мин» читается как игровые.
-  function fmtReal(seconds) {
-    return fmt(seconds) + " реального времени";
-  }
-
-  // Сколько долей суток вперёд по кругу от f до target.
-  function ahead(f, target) {
-    var d = target - f;
-    if (d <= 0) d += 1;
-    return d;
-  }
-
-  // Доля суток линейно переводится в часы: 0 — полночь, 0.25 — рассвет,
-  // 0.5 — полдень, 0.75 — закат. Своих часов игра не показывает, это наша
-  // подача её же числа, но перевод однозначный.
-  function clock(f) {
-    var total = Math.round(((f % 1) + 1) % 1 * 24 * 60);
-    var h = Math.floor(total / 60) % 24;
-    var m = total % 60;
-    return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;
-  }
-
-  function phaseName(f) {
-    if (f <= 0.25 || f >= 0.75) return "ночь";
-    if (f >= 0.5) return "день";
-    return "утро";
-  }
-
-  function render() {
+  function draw() {
     if (!ui) return;
 
-    if (!anchor) {
-      ui.status.textContent = "Сервер не отдаёт время";
-      ui.note.textContent = "";
+    if (!haveData) {
+      setText(ui.status, "status", "Сервер не отдаёт время");
+      setText(ui.note, "note", "");
       return;
     }
 
-    var f = anchor.fraction;
-    var day = anchor.day;
+    var total = est / dayLengthSec;
+    var day = Math.floor(total);
+    var f = total - day;
 
-    // Время идёт всегда, в том числе на пустом сервере — проверено замером.
-    // Сон игроков игра ускоренно мотает время вперёд, но опрос раз в 15 с
-    // подтягивает стрелку обратно к серверной.
-    var elapsed = (Date.now() - anchor.atMs) / 1000;
-    var advanced = f + elapsed / anchor.dayLengthSec;
-    day += Math.floor(advanced);
-    f = advanced - Math.floor(advanced);
+    // Стрелки считаются каждый кадр, поэтому переходов в CSS у них нет:
+    // они боролись бы с покадровым пересчётом и давали рывки.
+    ui.hHand.setAttribute("transform", "rotate(" + (f * 720 % 360).toFixed(3) + " 50 50)");
+    ui.mHand.setAttribute("transform", "rotate(" + ((f * 24 % 1) * 360).toFixed(3) + " 50 50)");
+    ui.hand.style.left = (f * 100).toFixed(3) + "%";
 
-    var canSleep = f >= anchor.opens || f <= anchor.closes;
-
-    ui.day.textContent = "День " + day;
-    ui.time.textContent = clock(f);
-    ui.phase.textContent = phaseName(f);
-
-    ui.hand.style.left = (f * 100) + "%";
-    // Часовая — два оборота за игровые сутки, минутная — оборот за игровой час.
-    ui.hHand.setAttribute("transform", "rotate(" + (f * 720 % 360).toFixed(2) + " 50 50)");
-    ui.mHand.setAttribute("transform", "rotate(" + ((f * 24 % 1) * 360).toFixed(2) + " 50 50)");
-
-    // День и ночь по границам самой игры: ночь это f <= 0.25 или f >= 0.75.
     var night = f <= 0.25 || f >= 0.75;
-    ui.dayNight.textContent = night ? "НОЧЬ" : "ДЕНЬ";
-    ui.plate.classList.toggle("is-night", night);
-    ui.dayNight.classList.toggle("is-night", night);
-    ui.window.classList.toggle("is-night", night);
+    setText(ui.dayNight, "dn", night ? "НОЧЬ" : "ДЕНЬ");
+    if (last.night !== night) {
+      last.night = night;
+      ui.plate.classList.toggle("is-night", night);
+      ui.dayNight.classList.toggle("is-night", night);
+      ui.window.classList.toggle("is-night", night);
+    }
 
-    root.classList.toggle("is-sleep", canSleep);
+    setText(ui.day, "day", "День " + day);
+    setText(ui.time, "time", clock(f));
+    setText(ui.phase, "phase", phaseName(f));
 
-    if (canSleep) {
-      ui.status.textContent = "Спать можно";
-      ui.note.textContent = "Окно закроется в " + clock(anchor.closes) + " — через " +
-        fmtReal(ahead(f, anchor.closes) * anchor.dayLengthSec) + ".";
+    var canSleep = f >= opens || f <= closes;
+    if (last.canSleep !== canSleep) {
+      last.canSleep = canSleep;
+      root.classList.toggle("is-sleep", canSleep);
+    }
+
+    if (frozen) {
+      setText(ui.status, "status", "Время стоит");
+      setText(ui.note, "note", canSleep
+        ? "На сервере никого — игра не крутит часы. Сейчас спать можно."
+        : "На сервере никого — игра не крутит часы. Отсчёт пойдёт, когда кто-то зайдёт.");
+    } else if (canSleep) {
+      setText(ui.status, "status", "Спать можно");
+      setText(ui.note, "note", "Окно закроется в " + clock(closes) + " — через " +
+        fmtReal(ahead(f, closes) * dayLengthSec) + ".");
     } else {
-      ui.status.textContent = "До сна " + fmtReal(ahead(f, anchor.opens) * anchor.dayLengthSec);
-      ui.note.textContent = "Кровать заработает в " + clock(anchor.opens) +
-        " и будет работать до " + clock(anchor.closes) + ".";
+      setText(ui.status, "status", "До сна " + fmtReal(ahead(f, opens) * dayLengthSec));
+      setText(ui.note, "note", "Кровать заработает в " + clock(opens) +
+        " и будет работать до " + clock(closes) + ".");
     }
   }
 
+  function frame(nowMs) {
+    if (!lastFrame) lastFrame = nowMs;
+    var dt = (nowMs - lastFrame) / 1000;
+    lastFrame = nowMs;
+
+    // Вкладка могла уйти в фон: кадров там нет, и dt приходит огромным.
+    // Ограничиваем — всё равно поправимся ближайшим опросом.
+    if (!(dt > 0)) dt = 0;
+    if (dt > 5) dt = 5;
+
+    if (haveData && !frozen) {
+      est += dt;
+      if (err !== 0) {
+        var limit = MAX_SLEW * dt;
+        var size = Math.min(Math.abs(err), limit);
+        var move = err > 0 ? size : -size;
+        est += move;
+        err -= move;
+      }
+    }
+    if (haveData) draw();
+
+    requestAnimationFrame(frame);
+  }
+
+  function now() {
+    return (window.performance && performance.now) ? performance.now() : Date.now();
+  }
+
   function load() {
+    var t0 = now();
     return fetch(ENDPOINT, { cache: "no-store" })
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
@@ -260,24 +334,65 @@
       })
       .then(function (d) {
         if (!d || d.ok !== true) throw new Error("нет данных");
-        anchor = {
-          day: d.day,
-          fraction: d.fraction,
-          dayLengthSec: d.dayLengthSec,
-          opens: typeof d.sleepOpens === "number" ? d.sleepOpens : 0.5,
-          closes: typeof d.sleepCloses === "number" ? d.sleepCloses : 0.25,
-          atMs: Date.now()
-        };
-        render();
+
+        var rtt = Math.max(0, (now() - t0) / 1000);
+
+        if (typeof d.dayLengthSec === "number" && d.dayLengthSec > 0) dayLengthSec = d.dayLengthSec;
+        if (typeof d.sleepOpens === "number") opens = d.sleepOpens;
+        if (typeof d.sleepCloses === "number") closes = d.sleepCloses;
+
+        // Плагин отдаёт точное сетевое время. Если попали на старую версию —
+        // собираем его из дня и доли: точность хуже, но часы работают.
+        var serverTime = (typeof d.netTime === "number")
+          ? d.netTime
+          : (d.day + d.fraction) * dayLengthSec;
+
+        // Остановка определяется по факту: netTime не сдвинулся между опросами.
+        // На первом ответе факта ещё нет, поэтому верим подсказке про игроков.
+        if (lastServerTime !== null) {
+          frozen = Math.abs(serverTime - lastServerTime) < 0.001;
+        } else if (d.running === false) {
+          frozen = true;
+        }
+        lastServerTime = serverTime;
+
+        if (frozen) {
+          // Стоим ровно там же, где сервер: поправка на задержку тут не нужна.
+          est = serverTime;
+          err = 0;
+        } else {
+          // Ответ описывает момент примерно rtt/2 назад.
+          var target = serverTime + rtt / 2;
+          if (!haveData || Math.abs(target - est) > STEP_THRESHOLD) {
+            // Первый запуск или скачок: игроки легли спать и время промотали.
+            est = target;
+            err = 0;
+          } else {
+            err = target - est;
+          }
+        }
+        haveData = true;
+        draw();
       })
       .catch(function () {
-        if (!anchor) render();
+        // Связь пропала — свои часы идут дальше, это лучше пустого экрана.
+        if (!haveData) draw();
       });
   }
 
   build();
-  render();
-  load();
+  draw();
+  // Второй опрос вскоре после первого: так факт остановки виден сразу,
+  // а не через POLL_MS ошибочного хода стрелок.
+  load().then(function () { setTimeout(load, 2500); });
   setInterval(load, POLL_MS);
-  setInterval(render, TICK_MS);
+  requestAnimationFrame(frame);
+
+  // В фоне кадров нет и часы отстают — вернулись во вкладку, сразу сверяемся.
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) {
+      lastFrame = 0;
+      load();
+    }
+  });
 })();

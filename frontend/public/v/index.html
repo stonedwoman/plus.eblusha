@@ -708,6 +708,8 @@
       stroke-width: 1;
     }
 
+    /* Переходов у стрелок и маркера нет намеренно: положение пересчитывается
+       каждый кадр, и CSS-переход боролся бы с ним, давая рывки. */
     .wclock__plate.is-night {
       fill: rgba(4, 10, 20, 0.85);
       stroke: rgba(120, 150, 210, 0.22);
@@ -755,7 +757,6 @@
       stroke: var(--text-main);
       stroke-width: 3.4;
       stroke-linecap: round;
-      transition: transform 900ms linear;
       transform-box: view-box;
     }
 
@@ -862,7 +863,6 @@
       border-radius: 2px;
       background: var(--accent-hover);
       box-shadow: 0 0 10px rgba(224, 187, 107, 0.85);
-      transition: left 900ms linear;
     }
 
     .wclock__marks {
@@ -1558,7 +1558,7 @@
   <script src="/v/forest-parallax.js?v=2"></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
-  <script src="/v/components/world-clock.js?v=10" defer></script>
+  <script src="/v/components/world-clock.js?v=12" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";
