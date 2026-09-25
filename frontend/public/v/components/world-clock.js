@@ -172,6 +172,12 @@
     return m + " мин " + (r < 10 ? "0" : "") + r + " с";
   }
 
+  // Игровая секунда равна реальной, поэтому обратный отсчёт — это ровно столько
+  // же реального ожидания. Подписываем явно, иначе «6 мин» читается как игровые.
+  function fmtReal(seconds) {
+    return fmt(seconds) + " реального времени";
+  }
+
   // Сколько долей суток вперёд по кругу от f до target.
   function ahead(f, target) {
     var d = target - f;
@@ -237,10 +243,10 @@
 
     if (canSleep) {
       ui.status.textContent = "Спать можно";
-      ui.note.textContent = "Окно закроется в " + clock(anchor.closes) + ", через " +
-        fmt(ahead(f, anchor.closes) * anchor.dayLengthSec) + ".";
+      ui.note.textContent = "Окно закроется в " + clock(anchor.closes) + " — через " +
+        fmtReal(ahead(f, anchor.closes) * anchor.dayLengthSec) + ".";
     } else {
-      ui.status.textContent = "До сна " + fmt(ahead(f, anchor.opens) * anchor.dayLengthSec);
+      ui.status.textContent = "До сна " + fmtReal(ahead(f, anchor.opens) * anchor.dayLengthSec);
       ui.note.textContent = "Кровать заработает в " + clock(anchor.opens) +
         " и будет работать до " + clock(anchor.closes) + ".";
     }
