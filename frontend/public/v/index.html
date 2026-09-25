@@ -276,6 +276,12 @@
          держала колесо на 30 fps; в картинке она растеризуется один раз. */
     }
 
+    /* Слои — готовые WebP, а не SVG.
+       Исходники весили 5.2 МБ векторных путей на четыре штуки, и браузер
+       растеризовал их сам. По диагностике на живой машине: fps 8, худший кадр
+       250 мс, при этом долгих задач ноль и обработчики по 0 мс — то есть
+       JavaScript ни при чём, время уходило в отрисовку. Готовые текстуры
+       весят 308 КБ и растеризации не требуют. */
     .forest-parallax__layer {
       position: absolute;
       top: 0;
@@ -290,22 +296,22 @@
     }
 
     .forest-parallax__layer--1 {
-      background-image: url("/v/assets/forest-vecteezy-tile-far.svg?v=4");
+      background-image: url("/v/assets/forest-tile-far.webp");
       filter: blur(1.4px) saturate(0.88);
     }
 
     .forest-parallax__layer--2 {
-      background-image: url("/v/assets/forest-vecteezy-tile-mid.svg?v=4");
+      background-image: url("/v/assets/forest-tile-mid.webp");
       filter: blur(0.95px) saturate(0.94);
     }
 
     .forest-parallax__layer--3 {
-      background-image: url("/v/assets/forest-vecteezy-tile-mid2.svg?v=4");
+      background-image: url("/v/assets/forest-tile-mid2.webp");
       filter: blur(0.45px) saturate(1);
     }
 
     .forest-parallax__layer--4 {
-      background-image: url("/v/assets/forest-vecteezy-tile-front.svg?v=4");
+      background-image: url("/v/assets/forest-tile-front.webp");
       filter: saturate(1.02);
     }
 
