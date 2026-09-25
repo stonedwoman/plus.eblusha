@@ -4,9 +4,10 @@
  * GetDayFraction, EnvMan.CanSleep), а не наш параллельный отсчёт.
  *
  * Между опросами стрелка идёт локально: игровая секунда равна реальной, так что
- * достаточно прибавлять прошедшее время к последнему снимку. Но только если
- * сервер сообщил running=true — на пустом сервере игра время не крутит, и
- * крутить его на сайте было бы враньём.
+ * достаточно прибавлять прошедшее время к последнему снимку. Замер показал, что
+ * время идёт и на пустом сервере, поэтому отсчёт не замораживаем. Исключение —
+ * сон игроков: игра ускоренно мотает время до утра, и стрелка на сайте в этот
+ * момент отстаёт, но следующий опрос (раз в 15 с) её подтягивает.
  */
 (function () {
   "use strict";
@@ -18,7 +19,7 @@
   var root = document.getElementById("worldClockRoot");
   if (!root) return;
 
-  var anchor = null; // { day, fraction, dayLengthSec, running, canSleep, opens, closes, atMs }
+  var anchor = null; // { day, fraction, dayLengthSec, opens, closes, atMs }
   var ui = null;
 
   function el(tag, cls, text) {
@@ -38,16 +39,29 @@
     head.appendChild(phase);
     root.appendChild(head);
 
+    // Сегменты подписаны прямо внутри: цветовой код без легенды никто не читает.
     var dial = el("div", "wclock__dial");
-    var sleepBand = el("span", "wclock__band");
+    [
+      { cls: "is-yes", left: 0,  width: 25, text: "можно" },
+      { cls: "is-no",  left: 25, width: 25, text: "нельзя" },
+      { cls: "is-yes", left: 50, width: 50, text: "можно" }
+    ].forEach(function (seg) {
+      var n = el("span", "wclock__seg " + seg.cls, seg.text);
+      n.style.left = seg.left + "%";
+      n.style.width = seg.width + "%";
+      dial.appendChild(n);
+    });
     var hand = el("span", "wclock__hand");
-    dial.appendChild(sleepBand);
     dial.appendChild(hand);
     root.appendChild(dial);
 
+    // Отметки стоят ровно на 0.25 / 0.5 / 0.75, поэтому позиционируем их явно,
+    // а не раскладкой: space-between ставил «полдень» на 48.2% вместо 50.
     var marks = el("div", "wclock__marks");
-    ["рассвет", "полдень", "закат"].forEach(function (t) {
-      marks.appendChild(el("span", null, t));
+    [[25, "рассвет"], [50, "полдень"], [75, "закат"]].forEach(function (m) {
+      var n = el("span", null, m[1]);
+      n.style.left = m[0] + "%";
+      marks.appendChild(n);
     });
     root.appendChild(marks);
 
@@ -57,7 +71,7 @@
     var note = el("p", "wclock__note", "");
     root.appendChild(note);
 
-    ui = { day: day, phase: phase, band: sleepBand, hand: hand, status: status, note: note };
+    ui = { day: day, phase: phase, hand: hand, status: status, note: note };
   }
 
   function fmt(seconds) {
@@ -93,36 +107,22 @@
     var f = anchor.fraction;
     var day = anchor.day;
 
-    if (anchor.running) {
-      var elapsed = (Date.now() - anchor.atMs) / 1000;
-      var advanced = f + elapsed / anchor.dayLengthSec;
-      day += Math.floor(advanced);
-      f = advanced - Math.floor(advanced);
-    }
+    // Время идёт всегда, в том числе на пустом сервере — проверено замером.
+    // Сон игроков игра ускоренно мотает время вперёд, но опрос раз в 15 с
+    // подтягивает стрелку обратно к серверной.
+    var elapsed = (Date.now() - anchor.atMs) / 1000;
+    var advanced = f + elapsed / anchor.dayLengthSec;
+    day += Math.floor(advanced);
+    f = advanced - Math.floor(advanced);
 
     var canSleep = f >= anchor.opens || f <= anchor.closes;
 
     ui.day.textContent = "День " + day;
     ui.phase.textContent = phaseName(f);
 
-    // Полоса суток: окно сна закрашено, стрелка — текущий момент.
-    // Окно идёт через полночь, поэтому рисуем его двумя кусками через градиент.
-    var a = anchor.opens * 100;
-    var b = anchor.closes * 100;
-    ui.band.style.background =
-      "linear-gradient(to right," +
-      " var(--wclock-sleep) 0 " + b + "%," +
-      " transparent " + b + "% " + a + "%," +
-      " var(--wclock-sleep) " + a + "% 100%)";
     ui.hand.style.left = (f * 100) + "%";
 
     root.classList.toggle("is-sleep", canSleep);
-
-    if (!anchor.running) {
-      ui.status.textContent = "Время стоит";
-      ui.note.textContent = "На сервере никого — игра не крутит часы, пока никто не зашёл.";
-      return;
-    }
 
     if (canSleep) {
       ui.status.textContent = "Спать можно";
@@ -146,7 +146,6 @@
           day: d.day,
           fraction: d.fraction,
           dayLengthSec: d.dayLengthSec,
-          running: d.running !== false,
           opens: typeof d.sleepOpens === "number" ? d.sleepOpens : 0.5,
           closes: typeof d.sleepCloses === "number" ? d.sleepCloses : 0.25,
           atMs: Date.now()
