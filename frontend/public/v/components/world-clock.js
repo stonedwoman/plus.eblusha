@@ -46,6 +46,9 @@
   var dayLengthSec = 1800;
   var opens = 0.5;
   var closes = 0.25;
+  // Куда игра будит после сна: EnvMan.SkipToMorning целится в 0.15 суток
+  // следующего дня, то есть 03:36 по нашей шкале, ещё до своего же рассвета.
+  var WAKE_AT = 0.15;
   var haveData = false;
   var lastServerTime = null;
   var frozen = false;
@@ -103,6 +106,16 @@
     var d = target - f;
     if (d <= 0) d += 1;
     return d;
+  }
+
+  // Сон всегда переносит на 0.15 суток СЛЕДУЮЩЕГО дня, считая от момента
+  // за 0.15 суток до текущего. Поэтому лечь сразу после подъёма — значит
+  // потерять почти целые сутки, и это стоит показать заранее.
+  function skipIfSleepNow(netTime) {
+    var from = netTime - WAKE_AT * dayLengthSec;
+    var d = Math.floor(from / dayLengthSec);
+    var wakeAt = (d + 1 + WAKE_AT) * dayLengthSec;
+    return wakeAt - netTime;
   }
 
   function phaseName(f) {
@@ -203,6 +216,11 @@
       n.style.width = seg.width + "%";
       dial.appendChild(n);
     });
+    var wake = el("span", "wclock__wake");
+    wake.style.left = (WAKE_AT * 100) + "%";
+    wake.title = "После сна игра будит в " + clock(WAKE_AT);
+    dial.appendChild(wake);
+
     var hand = el("span", "wclock__hand");
     dial.appendChild(hand);
     body.appendChild(dial);
@@ -286,8 +304,13 @@
         ? "На сервере никого — игра не крутит часы. Сейчас спать можно."
         : "На сервере никого — игра не крутит часы. Отсчёт пойдёт, когда кто-то зайдёт.");
     } else if (canSleep) {
+      var skip = skipIfSleepNow(est);
+      var skipHours = skip / dayLengthSec * 24;
       setText(ui.status, "status", "Спать можно");
-      setText(ui.note, "note", "Окно закроется в " + clock(closes) + " — через " +
+      setText(ui.note, "note",
+        "Ляжете — проснётесь в " + clock(WAKE_AT) + ", игра промотает " +
+        (skipHours >= 1 ? Math.round(skipHours) + " ч" : Math.round(skipHours * 60) + " мин") +
+        " игрового времени. Окно закроется в " + clock(closes) + ", через " +
         fmtReal(ahead(f, closes) * dayLengthSec) + ".");
     } else {
       setText(ui.status, "status", "До сна " + fmtReal(ahead(f, opens) * dayLengthSec));

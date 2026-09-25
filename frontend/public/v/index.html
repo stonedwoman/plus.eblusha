@@ -854,6 +854,17 @@
       box-shadow: inset 0 0 0 1px rgba(226, 140, 130, 0.12);
     }
 
+    /* Куда игра будит после сна — 0.15 суток. Отметка тонкая и пунктирная,
+       чтобы не спорить со стрелкой текущего момента. */
+    .wclock__wake {
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      width: 0;
+      border-left: 1px dashed rgba(226, 232, 226, 0.5);
+      pointer-events: none;
+    }
+
     .wclock__hand {
       position: absolute;
       top: -4px;
@@ -1558,7 +1569,7 @@
   <script src="/v/forest-parallax.js?v=2"></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
-  <script src="/v/components/world-clock.js?v=12" defer></script>
+  <script src="/v/components/world-clock.js?v=13" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";
