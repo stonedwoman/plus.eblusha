@@ -97,18 +97,35 @@
     return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;
   }
 
+  // «сек» полностью: одинокое «с» после числа не читается как секунды.
   function fmt(seconds) {
     var s = Math.max(0, Math.round(seconds));
     var m = Math.floor(s / 60);
     var r = s % 60;
-    if (m <= 0) return r + " с";
-    return m + " мин " + (r < 10 ? "0" : "") + r + " с";
+    if (m <= 0) return r + " сек";
+    return m + " мин " + (r < 10 ? "0" : "") + r + " сек";
   }
 
   // Игровая секунда равна реальной, поэтому обратный отсчёт — это ровно столько
   // же реального ожидания. Подписываем явно, иначе «6 мин» читается как игровые.
   function fmtReal(seconds) {
     return fmt(seconds) + " реального времени";
+  }
+
+  // Табло обратного отсчёта: 6:05, 0:17.
+  function fmtCount(seconds) {
+    var s = Math.max(0, Math.round(seconds));
+    var m = Math.floor(s / 60);
+    var r = s % 60;
+    return m + ":" + (r < 10 ? "0" : "") + r;
+  }
+
+  // Когда это наступит по часам того, кто смотрит, — до минуты.
+  function wallClock(seconds) {
+    var d = new Date(Date.now() + Math.max(0, seconds) * 1000);
+    var h = d.getHours();
+    var m = d.getMinutes();
+    return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;
   }
 
   // Сколько долей суток вперёд по кругу от f до target.
@@ -208,6 +225,15 @@
     head.appendChild(day);
     head.appendChild(time);
     head.appendChild(phase);
+    // Табло «до сна 6:05» справа в строке заголовка: главный ответ панели
+    // должен читаться с первого взгляда, а не из строки под полосой.
+    var count = el("span", "wclock__count");
+    count.hidden = true;
+    var countLabel = el("small", null, "");
+    var countValue = el("b", null, "");
+    count.appendChild(countLabel);
+    count.appendChild(countValue);
+    head.appendChild(count);
     body.appendChild(head);
 
     // Сегменты подписаны прямо внутри: цветовой код без легенды никто не читает.
@@ -258,6 +284,7 @@
 
     ui = {
       day: day, time: time, phase: phase, hand: hand, status: status, note: note,
+      count: count, countLabel: countLabel, countValue: countValue,
       hHand: face.hour, mHand: face.minute, plate: face.plate,
       dayNight: face.mark, window: face.window
     };
@@ -309,6 +336,22 @@
       root.classList.toggle("is-sleep", canSleep);
     }
 
+    // Табло: сколько реальных минут ждать до кровати или сколько ещё можно лечь.
+    var countShown = !frozen;
+    if (last.countShown !== countShown) {
+      last.countShown = countShown;
+      ui.count.hidden = !countShown;
+    }
+    if (countShown) {
+      var left = ahead(f, canSleep ? closes : opens) * dayLengthSec;
+      setText(ui.countLabel, "countLabel", canSleep ? "лечь можно ещё" : "до сна");
+      setText(ui.countValue, "countValue", fmtCount(left));
+      var tip = canSleep
+        ? "Лечь можно ещё " + fmt(left) + " реального времени, по вашим часам до " + wallClock(left)
+        : "Спать можно через " + fmt(left) + " реального времени, по вашим часам около " + wallClock(left);
+      if (last.countTip !== tip) { last.countTip = tip; ui.count.title = tip; }
+    }
+
     if (frozen) {
       setText(ui.status, "status", "Время стоит");
       setText(ui.note, "note", canSleep
@@ -326,9 +369,10 @@
         " игрового времени. Лечь можно до " + clock(closes) + ", это ещё " +
         fmtReal(ahead(f, closes) * dayLengthSec) + ".");
     } else {
-      setText(ui.status, "status", "До сна " + fmtReal(ahead(f, opens) * dayLengthSec));
-      setText(ui.note, "note", "Кровать работает с " + clock(opens) + " до " +
-        clock(closes) + ".");
+      var wait = ahead(f, opens) * dayLengthSec;
+      setText(ui.status, "status", "Спать можно через " + fmt(wait));
+      setText(ui.note, "note", "Это реальное время: по вашим часам около " + wallClock(wait) +
+        ". Кровать работает с " + clock(opens) + " до " + clock(closes) + " по игровым часам.");
     }
   }
 

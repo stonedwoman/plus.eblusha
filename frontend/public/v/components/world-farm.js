@@ -10,12 +10,25 @@
  * На каждый вид показываем: сколько всего, сколько взрослых и молодняка,
  * сколько со звёздами и какие клички дали игроки. Виды, которых ещё нет,
  * просто не выводятся — появятся сами, как только кого-то приручат.
+ *
+ * Сытость. Плагин считает её так же, как игра (Tameable.IsHungry): время
+ * последней кормёжки из ZDO против сытости вида. Голодный зверь ищет корм на
+ * земле рядом и не размножается, умереть от голода не может. Поля у зверя:
+ *   a — 1, если рядом игрок и зона живёт; 0 — зона стоит;
+ *   w — сколько секунд назад зону держали (тогда сытость — на тот момент);
+ *   h — 1 голоден, 0 сыт; g — сколько уже голоден; s — сколько ещё сыт.
+ * Без игрока рядом мир на ферме стоит, и «сытость сейчас» там смысла не имеет:
+ * вернёшься — звери проголодаются сразу. Поэтому для стоящей зоны показываем,
+ * были ли звери голодны, когда там в последний раз кто-то был: долгий голод
+ * при живой зоне значит, что корма в досягаемости нет.
  */
 (function () {
   "use strict";
 
   var ENDPOINT = "/v/api/animals";
   var POLL_MS = 10000;
+  // Столько голода при живой зоне уже не случайность: корма рядом нет.
+  var NO_FOOD_SEC = 120;
   var lastJson = null;
   var lastCounts = {};
 
@@ -61,6 +74,61 @@
     return many;
   }
 
+  // «8 мин», «2 ч», «3 дня»; меньше минуты — «меньше минуты».
+  function dur(sec) {
+    var m = Math.floor(Math.max(0, sec) / 60);
+    if (m < 1) return "меньше минуты";
+    if (m < 60) return m + "\u00a0мин";
+    var h = Math.floor(m / 60);
+    if (h < 48) return h + "\u00a0ч";
+    var d = Math.floor(h / 24);
+    return d + "\u00a0" + plural(d, "день", "дня", "дней");
+  }
+
+  // Сытость вида по тем, про кого она известна. null — узнать не из чего.
+  function hungerOf(list) {
+    var known = 0, hungry = 0, live = 0, maxG = -1, minS = Infinity, minW = Infinity;
+    list.forEach(function (it) {
+      if (it.h !== 0 && it.h !== 1) return;
+      known++;
+      if (it.a === 1) live++;
+      else if (typeof it.w === "number") minW = Math.min(minW, it.w);
+      if (it.h === 1) {
+        hungry++;
+        if (typeof it.g === "number") maxG = Math.max(maxG, it.g);
+      } else if (it.a === 1 && typeof it.s === "number") {
+        minS = Math.min(minS, it.s);
+      }
+    });
+    if (!known) return null;
+    return { known: known, hungry: hungry, live: live > 0, maxG: maxG, minS: minS, minW: minW };
+  }
+
+  function hungerLine(h) {
+    var cls = h.hungry === 0 ? "is-fed" : "is-hungry";
+    var text;
+    if (h.hungry === 0) {
+      text = "сыты все";
+      if (h.live && isFinite(h.minS)) text += " · хватит ещё на " + dur(h.minS);
+    } else {
+      text = h.hungry === h.known ? "голодны все" : "голодных " + h.hungry + " из " + h.known;
+      if (h.maxG >= 60) text += " · до " + dur(h.maxG) + " без еды";
+      if (h.maxG >= NO_FOOD_SEC) text += " — корма рядом нет?";
+    }
+    var line = el("p", "farm__hunger " + cls);
+    line.appendChild(el("span", "farm__dot"));
+    line.appendChild(el("span", null, text));
+    if (!h.live && isFinite(h.minW)) {
+      line.classList.add("is-past");
+      line.appendChild(el("small", null, "так было " + dur(h.minW) + " назад"));
+    }
+    line.title = "Голодный зверь ищет корм на земле в паре шагов и не размножается. " +
+      "От голода звери не умирают." +
+      (h.live ? "" : " Рядом с фермой сейчас никого, мир там стоит — показано, как было, " +
+        "когда там в последний раз кто-то был.");
+    return line;
+  }
+
   function render(items) {
     root.textContent = "";
 
@@ -71,11 +139,18 @@
 
     // Группируем по префабу: счёт, звёздные и клички.
     var by = {};
+    var hungerKnown = false;   // плагин вообще умеет сытость (есть поле a)
+    var anyLive = false;
+    var anyPast = false;
     items.forEach(function (it) {
-      var g = by[it.n] || (by[it.n] = { n: 0, stars: 0, names: [] });
+      var g = by[it.n] || (by[it.n] = { n: 0, stars: 0, names: [], all: [] });
       g.n++;
+      g.all.push(it);
       if (it.l > 1) g.stars++;
       if (it.t) g.names.push(it.t);
+      if (it.a === 0 || it.a === 1) hungerKnown = true;
+      if (it.a === 1) anyLive = true;
+      if (it.h === 0 || it.h === 1) anyPast = true;
     });
 
     var list = el("div", "farm__list");
@@ -116,6 +191,11 @@
 
       row.appendChild(el("p", "farm__facts", facts.join(" · ")));
 
+      var hunger = hungerOf(kinds.reduce(function (a, k) {
+        return by[k.key] ? a.concat(by[k.key].all) : a;
+      }, []));
+      if (hunger) row.appendChild(hungerLine(hunger));
+
       var names = [];
       kinds.forEach(function (k) {
         var g = by[k.key];
@@ -139,6 +219,12 @@
     var foot = "Всего " + total + " " + plural(total, "голова", "головы", "голов");
     if (totalStars) foot += ", из них " + totalStars + " со звёздами";
     root.appendChild(el("p", "farm__foot", foot + "."));
+
+    // Про сытость, когда рядом с фермой никого нет и её неоткуда взять.
+    if (hungerKnown && !anyLive && !anyPast) {
+      root.appendChild(el("p", "farm__foot",
+        "Сытость видна, пока рядом с фермой кто-то есть: без игрока мир там стоит."));
+    }
   }
 
   function load() {

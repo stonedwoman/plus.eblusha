@@ -439,6 +439,39 @@
       color: rgba(200, 164, 90, 0.62);
     }
 
+    /* Сытость вида: зелёная точка — сыты, янтарная — есть голодные. */
+    .farm__hunger {
+      position: relative;
+      margin: 0.2rem 0 0;
+      padding-left: 0.85rem;
+      font-size: 0.76rem;
+      line-height: 1.4;
+      cursor: default;
+    }
+
+    /* Точка висит слева от первой строки: текст может переноситься, а она
+       остаётся на месте и не отрывается от него. */
+    .farm__dot {
+      position: absolute;
+      left: 0;
+      top: calc(0.7em - 0.225rem);
+      width: 0.45rem;
+      height: 0.45rem;
+      border-radius: 50%;
+    }
+
+    .farm__hunger.is-fed { color: rgba(150, 222, 180, 0.85); }
+    .farm__hunger.is-fed .farm__dot { background: #6fd39b; box-shadow: 0 0 6px rgba(111, 211, 155, 0.6); }
+    .farm__hunger.is-hungry { color: #e7b465; }
+    .farm__hunger.is-hungry .farm__dot { background: #e7a13d; box-shadow: 0 0 6px rgba(231, 161, 61, 0.65); }
+    .farm__hunger.is-past .farm__dot { box-shadow: none; opacity: 0.7; }
+
+    .farm__hunger small {
+      display: block;
+      font-size: 0.7rem;
+      color: rgba(226, 232, 226, 0.4);
+    }
+
     .farm__foot {
       margin: 0.7rem 0 0;
       font-size: 0.78rem;
@@ -578,6 +611,46 @@
       text-transform: uppercase;
       color: rgba(200, 164, 90, 0.7);
     }
+
+    /* Табло обратного отсчёта до кровати — справа в строке заголовка. */
+    .wclock__head { flex-wrap: wrap; row-gap: 0.4rem; }
+
+    .wclock__count {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0.5rem;
+      padding: 0.3rem 0.75rem 0.32rem;
+      border-radius: 8px;
+      border: 1px solid rgba(214, 120, 104, 0.34);
+      background: rgba(120, 38, 30, 0.22);
+      cursor: default;
+    }
+
+    .wclock__count[hidden] { display: none; }
+
+    .wclock__count small {
+      font-size: 0.68rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(236, 170, 156, 0.8);
+    }
+
+    .wclock__count b {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: clamp(1.05rem, 2.3vw, 1.3rem);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: #f1c2b6;
+    }
+
+    .wclock.is-sleep .wclock__count {
+      border-color: rgba(110, 200, 150, 0.36);
+      background: rgba(34, 96, 66, 0.26);
+    }
+
+    .wclock.is-sleep .wclock__count small { color: rgba(150, 222, 180, 0.8); }
+    .wclock.is-sleep .wclock__count b { color: var(--online); }
 
     .wclock__dial {
       position: relative;

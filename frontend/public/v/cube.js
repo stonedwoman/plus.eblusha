@@ -613,7 +613,15 @@
     var to = e.relatedTarget;
     if (e.target.closest && e.target.closest(INTENT) && !(to && to.closest && to.closest(INTENT))) coolLater(1500);
   });
+  // Фокус от касания (Chromium фокусирует ссылку при тапе) — не повод
+  // готовить грани; фокус с клавиатуры и от мыши — повод.
+  var lastPointer = "";
+  document.addEventListener("pointerdown", function (e) {
+    lastPointer = e.pointerType;
+  }, { capture: true, passive: true });
+  document.addEventListener("keydown", function () { lastPointer = ""; }, true);
   document.addEventListener("focusin", function (e) {
+    if (lastPointer === "touch") return;
     if (e.target.closest && e.target.closest(INTENT)) { warmSoon(); coolLater(4000); }
   });
   // На сенсорных экранах подготовки нет: там она клала соседние грани (и
