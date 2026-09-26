@@ -1,116 +1,16 @@
 /* Koban · Valheim — общее поведение трёх страниц.
  *
- * 1. Переходы между страницами: ссылки внутри раздела /v перелистывают
- *    страницу как лист (см. .k-stage в theme.css). Уходящая страница
- *    запоминает направление в sessionStorage, приходящая его читает и
- *    въезжает с той же стороны. Инлайновый скрипт в <head> по этому же ключу
- *    закрывает окно занавесом до первого кадра, чтобы не мигало белым.
- *
- * 2. Наклон плиток за курсором ([data-tilt]) — только для мыши.
+ * Переходы между страницами делает сам браузер (View Transitions, см.
+ * «переходы между страницами» в theme.css), а направление ставит инлайновый
+ * скрипт в <head> каждой страницы. Здесь остался только наклон плиток за
+ * курсором ([data-tilt]) — для мыши.
  */
 (function () {
   "use strict";
 
-  var KEY = "koban.transit";
-  var LEAVE_MS = 380;
-  var root = document.documentElement;
   var reduceMotion =
     typeof window.matchMedia === "function" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-  function readTransit() {
-    try {
-      var raw = sessionStorage.getItem(KEY);
-      sessionStorage.removeItem(KEY);
-      if (!raw) return null;
-      var data = JSON.parse(raw);
-      if (!data || Date.now() - data.t > 8000) return null;
-      return data.dir === "back" ? "back" : "fwd";
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function writeTransit(dir) {
-    try {
-      sessionStorage.setItem(KEY, JSON.stringify({ dir: dir, t: Date.now() }));
-    } catch (e) {}
-  }
-
-  function clearClasses() {
-    root.classList.remove(
-      "k-pre", "k-enter-fwd", "k-enter-back", "k-enter-first",
-      "k-leave-fwd", "k-leave-back"
-    );
-  }
-
-  // ---------- вход ----------
-
-  function enter() {
-    var dir = readTransit();
-    root.classList.remove("k-pre");
-    if (reduceMotion) return;
-    root.classList.add(dir ? "k-enter-" + dir : "k-enter-first");
-    // Снимаем классы после анимации: иначе fill-mode держит transform и
-    // мешает hover-эффектам и наклону плиток.
-    setTimeout(function () {
-      root.classList.remove("k-enter-fwd", "k-enter-back", "k-enter-first");
-    }, 800);
-  }
-
-  // ---------- выход ----------
-
-  function pageDepth(path) {
-    // Главная — корень раздела, всё остальное глубже.
-    var p = path.replace(/\/+$/, "");
-    return p === "/v" || p === "" ? 0 : 1;
-  }
-
-  function onClick(ev) {
-    if (ev.defaultPrevented || ev.button !== 0) return;
-    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
-    var a = ev.target && ev.target.closest ? ev.target.closest("a[href]") : null;
-    if (!a) return;
-    if (a.target && a.target !== "_self") return;
-    if (a.hasAttribute("download") || a.dataset.transit === "none") return;
-
-    var url;
-    try { url = new URL(a.href, location.href); } catch (e) { return; }
-    if (url.origin !== location.origin) return;
-    if (!/^\/v(\/|$)/.test(url.pathname)) return;
-    if (url.pathname === location.pathname && url.hash) return;
-
-    var dir = a.dataset.transit;
-    if (dir !== "back" && dir !== "fwd") {
-      dir = pageDepth(url.pathname) < pageDepth(location.pathname) ? "back" : "fwd";
-    }
-
-    ev.preventDefault();
-    writeTransit(dir);
-    if (reduceMotion) {
-      location.href = url.href;
-      return;
-    }
-    clearClasses();
-    root.classList.add("k-leave-" + dir);
-    setTimeout(function () { location.href = url.href; }, LEAVE_MS);
-  }
-
-  document.addEventListener("click", onClick);
-
-  // Возврат из кэша «назад»: страница приходит с классом ухода и невидима.
-  window.addEventListener("pageshow", function (ev) {
-    if (ev.persisted) {
-      clearClasses();
-      try { sessionStorage.removeItem(KEY); } catch (e) {}
-    }
-  });
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", enter);
-  } else {
-    enter();
-  }
 
   // ---------- наклон плиток ----------
 

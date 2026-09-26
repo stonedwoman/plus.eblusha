@@ -84,13 +84,18 @@ canvas:not(.bg-canvas) {
   pointer-events: none;
 }
 
+/* Логотип стоит над страницей, в потоке, на любой ширине.
+   Раньше на широких экранах он висел закреплённым в правом верхнем углу —
+   пока страница была узкой колонкой по центру, там было пусто. Теперь
+   страница на всю ширину, и закреплённый логотип закрывал «Обновить» и
+   «Изменить». Снизу оставлен запас под подпись POWERED BY. */
 .home-logo {
-  position: fixed;
-  top: clamp(0.55rem, 1.8vw, 1rem);
-  right: clamp(0.55rem, 1.8vw, 1rem);
+  --logo-caption: clamp(0.72rem, 1.55vw, 1.08rem);
+  position: relative;
   z-index: 40;
   display: block;
-  width: clamp(14.4rem, 36vw, 25rem);
+  width: clamp(11rem, 30vw, 19rem);
+  margin: clamp(0.55rem, 1.4vw, 1rem) auto calc(var(--logo-caption) * 1.35 + 0.35rem);
   aspect-ratio: 900 / 353;
   filter:
     drop-shadow(0 12px 32px rgba(0, 0, 0, 0.5))
@@ -102,11 +107,12 @@ canvas:not(.bg-canvas) {
 .home-logo::after {
   content: "POWERED BY";
   position: absolute;
-  top: calc(100% - 0.1rem);
+  top: calc(100% + 0.1rem);
   left: 0;
   right: 0;
   color: rgba(236, 228, 214, 0.94);
-  font: 900 clamp(0.72rem, 1.55vw, 1.08rem) "Cinzel", Georgia, serif;
+  font: 900 var(--logo-caption) "Cinzel", Georgia, serif;
+  line-height: 1.2;
   letter-spacing: 0.26em;
   text-align: center;
   text-shadow:
@@ -169,27 +175,6 @@ canvas:not(.bg-canvas) {
   50% { transform: translate3d(0, -0.72rem, 0) rotate(0.55deg); }
 }
 
-/* Below this width the .page (max 1040px, centered) and the floating logo
-   (up to 25rem wide, pinned top-right) start overlapping the hero panel.
-   Drop the logo into the normal flow at the very top so it sits ABOVE the
-   hero instead of crashing into it. The logo element already comes before
-   .page in the DOM, so flipping to position: relative is enough — the
-   absolutely-positioned <img>s inside it stay anchored to it. */
-@media (max-width: 1840px) {
-  .home-logo {
-    position: relative;
-    top: auto;
-    right: auto;
-    margin: clamp(0.55rem, 1.4vw, 1rem) auto 0;
-    width: clamp(11rem, 38vw, 19rem);
-  }
-  .home-logo::after {
-    position: static;
-    top: auto;
-    display: block;
-    margin-top: 0.4rem;
-  }
-}
 
 .forest-parallax {
   position: fixed;

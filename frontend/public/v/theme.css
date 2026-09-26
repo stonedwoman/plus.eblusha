@@ -43,6 +43,10 @@
 
 * { box-sizing: border-box; }
 
+/* Атрибут hidden прячет всегда: иначе его перебивает любой display из
+   класса (счётчик «0» у чата на карте был виден при hidden). */
+[hidden] { display: none !important; }
+
 /* ---------- стекло ---------- */
 
 .glass-panel {
@@ -471,77 +475,95 @@ html.k-enter-first .k-rise {
   animation-delay: calc(var(--i, 0) * 70ms);
 }
 
-/* ---------- переходы между страницами: псевдо-3D разворот ----------
+/* ---------- переходы между страницами: куб ----------
  *
- * Страница — лист, который перелистывают. Вперёд (главная → карта, настройки)
- * лист уходит влево, назад — вправо. Пока грузится следующая страница, окно
- * закрыто тёмным занавесом, чтобы не мигало белым.
+ * Делает браузер (View Transitions между документами: Chrome/Edge 126+,
+ * Safari 18.2+). Он снимает уходящую страницу, ждёт первый кадр новой и
+ * поворачивает обе как грани куба — одновременно и целиком, вместе с небом,
+ * лесом и логотипом. Пустого кадра между ними нет: пока новая грузится,
+ * на экране стоит старая.
+ *
+ * Направление ставит инлайновый скрипт в <head> каждой страницы (событие
+ * pagereveal): вглубь раздела — вперёд, куб едет влево; к главной — назад.
+ * Где браузер этого не умеет, страница просто открывается, а панели
+ * всплывают (.k-rise).
  */
 
-/* Перспектива задаётся внутри transform: perspective на body сделал бы
-   его containing block для fixed-элементов, и закреплённые небо и лес
-   поехали бы вместе с прокруткой. */
+@view-transition { navigation: auto; }
 
-.k-stage {
-  transform-origin: 50% 50%;
+/* Что видно по углам, пока грани повёрнуты: небо, а не чёрная дыра. */
+::view-transition {
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(20, 110, 160, 0.9) 0%, rgba(20, 110, 160, 0) 70%),
+    linear-gradient(180deg, #07405e 0%, #062a3a 55%, #04161d 100%);
+}
+
+::view-transition-group(root) {
+  animation-duration: 720ms;
+}
+
+/* Общая точка схода для обеих граней — центр экрана. */
+::view-transition-image-pair(root) {
+  perspective: 120vw;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  /* По умолчанию браузер складывает снимки (plus-lighter) — для
+     перекрёстного затухания. У куба грани не накладываются. */
+  mix-blend-mode: normal;
+  animation-duration: 720ms;
+  animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  animation-fill-mode: both;
   backface-visibility: hidden;
 }
 
-@keyframes kLeaveFwd {
-  to { opacity: 0; transform: perspective(1600px) rotateY(-26deg) translateX(-10%) translateZ(-140px); }
+/* Вперёд: старая грань уходит влево, новая приходит справа. */
+::view-transition-old(root) {
+  transform-origin: 100% 50%;
+  animation-name: kCubeOutLeft;
 }
 
-@keyframes kLeaveBack {
-  to { opacity: 0; transform: perspective(1600px) rotateY(26deg) translateX(10%) translateZ(-140px); }
+::view-transition-new(root) {
+  transform-origin: 0% 50%;
+  animation-name: kCubeInRight;
 }
 
-@keyframes kEnterFwd {
-  from { opacity: 0; transform: perspective(1600px) rotateY(24deg) translateX(9%) translateZ(-120px); }
-  to { opacity: 1; transform: perspective(1600px) rotateY(0) translateX(0) translateZ(0); }
+/* Назад — зеркально. */
+html:active-view-transition-type(back)::view-transition-old(root) {
+  transform-origin: 0% 50%;
+  animation-name: kCubeOutRight;
 }
 
-@keyframes kEnterBack {
-  from { opacity: 0; transform: perspective(1600px) rotateY(-24deg) translateX(-9%) translateZ(-120px); }
-  to { opacity: 1; transform: perspective(1600px) rotateY(0) translateX(0) translateZ(0); }
+html:active-view-transition-type(back)::view-transition-new(root) {
+  transform-origin: 100% 50%;
+  animation-name: kCubeInLeft;
 }
 
-html.k-leave-fwd .k-stage { animation: kLeaveFwd 380ms var(--ease) both; pointer-events: none; }
-html.k-leave-back .k-stage { animation: kLeaveBack 380ms var(--ease) both; pointer-events: none; }
-html.k-enter-fwd .k-stage { animation: kEnterFwd 560ms var(--ease-out) both; }
-html.k-enter-back .k-stage { animation: kEnterBack 560ms var(--ease-out) both; }
-
-/* Занавес. Уходящая страница его опускает, приходящая — поднимает. */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  pointer-events: none;
-  background: var(--bg-deep);
-  opacity: 0;
-  transition: opacity 340ms var(--ease);
+/* Грань, отвернувшаяся от нас, темнеет — так поворот читается объёмным. */
+@keyframes kCubeOutLeft {
+  from { transform: translateX(0) rotateY(0deg); filter: brightness(1); }
+  to { transform: translateX(-100%) rotateY(-90deg); filter: brightness(0.5); }
 }
 
-html.k-leave-fwd body::after,
-html.k-leave-back body::after { opacity: 0.92; }
-
-/* До первого кадра: занавес закрыт (ставится инлайновым скриптом в head). */
-html.k-pre body::after { opacity: 1; transition: none; }
-
-@keyframes kCurtainUp {
-  from { opacity: 1; }
-  to { opacity: 0; }
+@keyframes kCubeInRight {
+  from { transform: translateX(100%) rotateY(90deg); filter: brightness(0.5); }
+  to { transform: translateX(0) rotateY(0deg); filter: brightness(1); }
 }
 
-html.k-enter-fwd body::after,
-html.k-enter-back body::after {
-  animation: kCurtainUp 420ms var(--ease-out) both;
+@keyframes kCubeOutRight {
+  from { transform: translateX(0) rotateY(0deg); filter: brightness(1); }
+  to { transform: translateX(100%) rotateY(90deg); filter: brightness(0.5); }
+}
+
+@keyframes kCubeInLeft {
+  from { transform: translateX(-100%) rotateY(-90deg); filter: brightness(0.5); }
+  to { transform: translateX(0) rotateY(0deg); filter: brightness(1); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .k-stage,
+  @view-transition { navigation: none; }
   .k-rise,
   html.k-enter-first .k-rise { animation: none !important; }
-  body::after { display: none; }
   [data-tilt] { transform: none !important; }
 }

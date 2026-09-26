@@ -2,15 +2,40 @@
 <!-- v-landing: фон — Canvallax (canvas, закреплён и прокрутку игнорирует), см. v-sky-full.js -->
 <html lang="ru" data-v-landing="2026-09-26-unified-ui">
 <head>
+  <meta charset="utf-8" />
   <script>
-    // Занавес до первого кадра, если мы пришли с соседней страницы раздела
-    // (см. koban-ui.js). Страховка снимает его, даже если скрипт не загрузился.
-    try {
-      if (sessionStorage.getItem("koban.transit")) {
-        document.documentElement.classList.add("k-pre");
-        setTimeout(function () { document.documentElement.classList.remove("k-pre"); }, 1500);
+    // Переход между страницами раздела делает браузер (View Transitions,
+    // см. /v/theme.css). Здесь только направление поворота куба: вглубь
+    // раздела — вперёд, к главной — назад. Если перехода нет (пришли извне,
+    // обновили страницу, браузер не умеет), панели просто всплывают.
+    (function () {
+      var root = document.documentElement;
+      var first = true;
+      function depth(url) {
+        try {
+          var p = new URL(url, location.href).pathname.replace(/\/+$/, "");
+          return p === "" || p === "/v" ? 0 : 1;
+        } catch (e) { return 1; }
       }
-    } catch (e) {}
+      function rise() {
+        if (!first) return;
+        first = false;
+        root.classList.add("k-enter-first");
+        setTimeout(function () { root.classList.remove("k-enter-first"); }, 1600);
+      }
+      if (!("onpagereveal" in window)) { rise(); return; }
+      window.addEventListener("pagereveal", function (e) {
+        var vt = e.viewTransition;
+        if (!vt) { rise(); return; }
+        first = false;
+        var dir = "fwd";
+        try {
+          var a = window.navigation && window.navigation.activation;
+          if (a && a.from && a.entry && depth(a.entry.url) < depth(a.from.url)) dir = "back";
+        } catch (err) {}
+        try { vt.types.add(dir); } catch (err) {}
+      });
+    })();
   </script>
   <script>
     // Переключатели украшений: ?fx=nosky,noforest,noglass,noparallax,noclock
@@ -55,7 +80,6 @@
       document.documentElement.dataset.embedded = "true";
     }
   </script>
-  <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -65,8 +89,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/v/theme.css?v=1" />
-  <link rel="stylesheet" href="/v/scene.css?v=1" />
+  <link rel="stylesheet" href="/v/theme.css?v=2" />
+  <link rel="stylesheet" href="/v/scene.css?v=2" />
+  <!-- Первый кадр — только когда нарисовано небо (#k-ready стоит после его
+       скрипта): иначе куб повернётся на пустой бледный фон. -->
+  <link rel="expect" href="#k-ready" blocking="render" />
   <style>
     /* Общие цвета, стекло и кнопки — в /v/theme.css. Здесь только своё. */
 
@@ -1241,7 +1268,7 @@
     <img class="home-logo__img home-logo__img--glasses" src="/koban/logo-glasses.png" alt="" aria-hidden="true" />
   </a>
 
-  <div class="page k-stage" aria-live="polite">
+  <div class="page" aria-live="polite">
     <article class="hero glass-panel k-rise" style="--i: 0">
       <div class="hero__top">
         <p class="hero__kicker hero__kicker--offline" id="heroStatus" aria-live="polite">ОФФЛАЙН</p>
@@ -1315,7 +1342,8 @@
   <script src="/v/canvallax.min.js"></script>
   <script src="/v/v-sky-full.js?v=9"></script>
   <script src="/v/forest-parallax.js?v=3"></script>
-  <script src="/v/koban-ui.js?v=1" defer></script>
+  <i id="k-ready" hidden></i>
+  <script src="/v/koban-ui.js?v=2" defer></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>
