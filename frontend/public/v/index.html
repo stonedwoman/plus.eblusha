@@ -1,40 +1,19 @@
 <!DOCTYPE html>
 <!-- v-landing: фон — Canvallax (canvas, закреплён и прокрутку игнорирует), см. v-sky-full.js -->
-<html lang="ru" data-v-landing="2026-09-26-unified-ui">
+<html lang="ru" data-v-landing="2026-09-26-cube">
 <head>
   <meta charset="utf-8" />
   <script>
-    // Переход между страницами раздела делает браузер (View Transitions,
-    // см. /v/theme.css). Здесь только направление поворота куба: вглубь
-    // раздела — вперёд, к главной — назад. Если перехода нет (пришли извне,
-    // обновили страницу, браузер не умеет), панели просто всплывают.
+    // Какая грань куба открыта — по адресу (#map, #settings), до первого
+    // кадра, чтобы не мигнуть главной. Панели при первом входе всплывают.
     (function () {
-      var root = document.documentElement;
-      var first = true;
-      function depth(url) {
-        try {
-          var p = new URL(url, location.href).pathname.replace(/\/+$/, "");
-          return p === "" || p === "/v" ? 0 : 1;
-        } catch (e) { return 1; }
-      }
-      function rise() {
-        if (!first) return;
-        first = false;
-        root.classList.add("k-enter-first");
-        setTimeout(function () { root.classList.remove("k-enter-first"); }, 1600);
-      }
-      if (!("onpagereveal" in window)) { rise(); return; }
-      window.addEventListener("pagereveal", function (e) {
-        var vt = e.viewTransition;
-        if (!vt) { rise(); return; }
-        first = false;
-        var dir = "fwd";
-        try {
-          var a = window.navigation && window.navigation.activation;
-          if (a && a.from && a.entry && depth(a.entry.url) < depth(a.from.url)) dir = "back";
-        } catch (err) {}
-        try { vt.types.add(dir); } catch (err) {}
-      });
+      var r = document.documentElement;
+      var h = (location.hash || "").replace(/^#/, "");
+      var f = h === "map" ? "map" : (h === "settings" || h === "options") ? "options" : "main";
+      r.dataset.face = f;
+      r.dataset.nav = f;
+      r.classList.add("nr", "k-enter-first");
+      setTimeout(function () { r.classList.remove("k-enter-first"); }, 1600);
     })();
   </script>
   <script>
@@ -88,9 +67,12 @@
   <link rel="apple-touch-icon" href="/koban/icon.png?v=20260505" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Vollkorn+SC:wght@400;600;700;900&family=Alegreya+Sans:ital,wght@0,400;0,500;0,700;0,800;1,400&family=Noto+Sans+Runic&family=Cinzel:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/v/theme.css?v=6" />
-  <link rel="stylesheet" href="/v/scene.css?v=2" />
+  <link rel="stylesheet" href="/v/scene.css?v=3" />
+  <link rel="stylesheet" href="/v/norse.css?v=1" />
+  <link rel="stylesheet" href="/v/cube.css?v=1" />
+  <link rel="stylesheet" href="/v/options.css?v=1" />
   <!-- Первый кадр — только когда нарисовано небо (#k-ready стоит после его
        скрипта): иначе куб повернётся на пустой бледный фон. -->
   <link rel="expect" href="#k-ready" blocking="render" />
@@ -122,18 +104,30 @@
 
 
 
-    /* Статус и «Обновить» живут в общей шапке (theme.css), как на карте и в
-       настройках. В карточке — код входа слева и два крупных перехода справа. */
-
+    /* Три блока героя в том же порядке, что щиты на балке и грани куба:
+       карта слева, код входа по центру, настройки справа. На узком экране
+       код наверху, а карта и настройки под ним — всё так же слева и справа. */
     .hero__grid {
       display: grid;
-      grid-template-columns: 1fr;
-      gap: clamp(0.9rem, 2.4vw, 1.5rem);
+      grid-template-columns: 1fr 1fr;
+      grid-template-areas: "code code" "map opts";
+      gap: clamp(0.8rem, 2.2vw, 1.4rem);
       align-items: stretch;
     }
 
-    @media (min-width: 860px) {
-      .hero__grid { grid-template-columns: minmax(15rem, 0.85fr) 1.6fr; }
+    .hero__grid > .tile--map { grid-area: map; }
+    .hero__grid > .hero__id { grid-area: code; }
+    .hero__grid > .tile--opts { grid-area: opts; }
+
+    @media (min-width: 980px) {
+      .hero__grid {
+        grid-template-columns: minmax(0, 1fr) minmax(20rem, 1.1fr) minmax(0, 1fr);
+        grid-template-areas: "map code opts";
+      }
+    }
+
+    @media (max-width: 460px) {
+      .hero__grid .tile__text { display: none; }
     }
 
     .hero__id {
@@ -158,16 +152,6 @@
       font-weight: 600;
       padding: 0.62rem 1.2rem;
       min-height: 2.7rem;
-    }
-
-    .hero__nav {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: clamp(0.6rem, 1.6vw, 0.9rem);
-    }
-
-    @media (min-width: 620px) {
-      .hero__nav { grid-template-columns: 1.15fr 1fr; }
     }
 
     .tile {
@@ -1212,104 +1196,209 @@
 
   </style>
 </head>
-<body class="has-topbar">
-  <header class="topbar">
-    <div class="topbar__group glass-panel">
-      <div class="topbar__title">
-        <span class="kicker kicker--offline topbar__kicker" id="heroStatus" aria-live="polite"><span class="topbar__kicker-text">Оффлайн</span></span>
-        <h1 class="k-title topbar__h1">Valheim</h1>
+<body>
+  <!-- Балка: неподвижна, управляет кубом. Щиты — обычные ссылки на грани. -->
+  <header class="nr-bar k-ui" id="nrBar">
+    <div class="nr-bar__wood" aria-hidden="true"></div>
+    <div class="nr-bar__side nr-bar__side--left">
+      <div class="nr-crest">
+        <span class="nr-medal" aria-hidden="true"><img src="/koban/icon.png?v=20260505" alt=""></span>
+        <span class="nr-crest__text">
+          <span class="nr-crest__name">Koban</span>
+          <span class="nr-crest__status"><span class="kicker kicker--offline topbar__kicker" id="heroStatus" aria-live="polite"><span class="topbar__kicker-text">Связь</span></span></span>
+        </span>
+      </div>
+      <div class="nr-actions" data-face="map">
+        <span class="nr-divider" aria-hidden="true"></span>
+        <button type="button" class="tbtn nr-layers" data-map-panel="layers" aria-pressed="false" title="Слои и фильтры карты">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
+          <span class="tbtn__label">Слои</span>
+        </button>
       </div>
     </div>
-    <nav class="topbar__group glass-panel" aria-label="Действия">
-      <button type="button" class="tbtn tbtn--labeled" id="refreshBtn" aria-busy="false" title="Обновить код, игроков и мир">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
-        <span class="tbtn__label" id="refreshLabel">Обновить</span>
-      </button>
+    <nav class="nr-nav" aria-label="Разделы">
+      <a class="nr-tab" data-face="map" href="#map" title="Карта (клавиша 1)">
+        <span class="nr-shield" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2.3 14.2 9.8 21.7 12 14.2 14.2 12 21.7 9.8 14.2 2.3 12 9.8 9.8z"/><path d="M12 2.3 14.2 9.8 12 12 9.8 9.8z" fill="currentColor"/><path d="M5.6 5.6 9.8 9.8M18.4 5.6l-4.2 4.2M5.6 18.4l4.2-4.2M18.4 18.4l-4.2-4.2" stroke-width="1.2" opacity=".65"/></svg></span>
+        <span class="nr-tab__label">Карта</span>
+        <span class="nr-sparks" aria-hidden="true"><i></i><i></i><i></i></span>
+      </a>
+      <a class="nr-tab" data-face="main" href="#main" title="Главная (клавиша 2)">
+        <span class="nr-shield" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 12.4 12 5.3l9.2 7.1"/><path d="M8.8 2.9 12 5.3l3.2-2.4"/><path d="M5.3 10.7V20h13.4v-9.3"/><path d="M10.2 20v-4.7h3.6V20"/></svg></span>
+        <span class="nr-tab__label">Главная</span>
+        <span class="nr-sparks" aria-hidden="true"><i></i><i></i><i></i></span>
+      </a>
+      <a class="nr-tab" data-face="options" href="#settings" title="Настройки (клавиша 3)">
+        <span class="nr-shield" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13.4 2.8 21.2 10.6 17.6 14.2 9.8 6.4z" fill="currentColor" fill-opacity=".22"/><path d="M13.6 10.4 4.2 19.8" stroke-width="2.7"/><path d="m16.2 5.6-2.2 2.2M18.4 7.8l-2.2 2.2" stroke-width="1.2" opacity=".7"/></svg></span>
+        <span class="nr-tab__label">Настройки</span>
+        <span class="nr-sparks" aria-hidden="true"><i></i><i></i><i></i></span>
+      </a>
     </nav>
+    <div class="nr-bar__side nr-bar__side--right">
+      <div class="nr-actions" data-face="main">
+        <button type="button" class="tbtn tbtn--labeled" id="refreshBtn" aria-busy="false" title="Обновить код, игроков и мир">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+          <span class="tbtn__label" id="refreshLabel">Обновить</span>
+        </button>
+      </div>
+      <div class="nr-actions" data-face="options">
+        <button type="button" class="tbtn tbtn--labeled" id="optsEdit" aria-pressed="false" title="Изменить настройки">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
+          <span class="tbtn__label" id="optsEditLabel">Изменить</span>
+        </button>
+      </div>
+      <div class="nr-actions" data-face="map">
+        <button type="button" class="tbtn" data-map-panel="players" aria-pressed="false" title="Игроки в мире">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5a5 5 0 0 1 6 5"/></svg>
+          <span class="tbtn__label">Игроки</span>
+          <b class="k-badge tbtn__badge" id="mapPlayersCount">0</b>
+        </button>
+        <button type="button" class="tbtn" data-map-panel="chat" aria-pressed="false" title="Чат мира">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg>
+          <span class="tbtn__label">Чат</span>
+          <b class="k-badge tbtn__badge is-live" id="mapChatCount" hidden>0</b>
+        </button>
+      </div>
+    </div>
   </header>
 
   <div class="k-toast" id="toast" role="status"></div>
+  <div class="k-toast" id="optsNote" role="status"></div>
 
-  <a class="home-logo" href="https://koban.uk/" aria-label="Вернуться на koban.uk">
-    <img class="home-logo__img home-logo__img--static" src="/koban/logo-body.png" alt="КОБАНЮК" />
-    <img class="home-logo__img home-logo__img--eyes" src="/koban/logo-eyes.png" alt="" aria-hidden="true" />
-    <img class="home-logo__img home-logo__img--glasses" src="/koban/logo-glasses.png" alt="" aria-hidden="true" />
-  </a>
+  <!-- Куб: слева карта, спереди главная, справа настройки (cube.js). -->
+  <main class="cube-viewport" id="cubeViewport">
+    <div class="cube" id="cube">
+      <section class="face face--map" aria-label="Карта мира">
+        <iframe class="face__frame" id="mapFrame" title="Живая карта мира" allow="clipboard-write"></iframe>
+      </section>
 
-  <div class="page" aria-live="polite">
-    <article class="hero glass-panel k-rise" style="--i: 0">
-      <div class="hero__grid">
-        <div class="hero__id">
-          <span class="tile__kicker">Код для входа</span>
-          <h2 class="hero__title" id="worldLabel">Мир · Koban</h2>
-          <div class="code-block">
-            <div id="code" class="code muted" aria-label="Код мира">…</div>
-          </div>
-          <button type="button" class="btn-primary hero__copy" id="copyBtn" disabled>Скопировать код</button>
+      <section class="face face--main" aria-label="Главная">
+        <div class="face__sky" data-sky="main"></div>
+        <div class="forest-parallax" aria-hidden="true">
+          <div class="forest-parallax__layer forest-parallax__layer--1" data-depth-x="-0.18" data-depth-y="-0.06" data-base-y="0"></div>
+          <div class="forest-parallax__layer forest-parallax__layer--2" data-depth-x="-0.34" data-depth-y="-0.10" data-base-y="0"></div>
+          <div class="forest-parallax__layer forest-parallax__layer--3" data-depth-x="-0.60" data-depth-y="-0.16" data-base-y="0"></div>
+          <div class="forest-parallax__layer forest-parallax__layer--4" data-depth-x="-0.90" data-depth-y="-0.24" data-base-y="0"></div>
         </div>
-
-        <nav class="hero__nav" aria-label="Разделы">
-          <a class="tile tile--map" id="mapLink" href="/v/map/" rel="noopener" data-tilt>
-            <span class="tile__body">
-              <span class="tile__kicker">Вживую</span>
-              <span class="tile__title">Карта мира</span>
-              <span class="tile__text">Игроки, боссы, подземелья и ресурсы — прямо сейчас</span>
-            </span>
-            <span class="tile__go" aria-hidden="true">→</span>
+        <div class="face__scroll">
+          <a class="home-logo" href="https://koban.uk/" aria-label="Вернуться на koban.uk">
+            <img class="home-logo__img home-logo__img--static" src="/koban/logo-body.png" alt="КОБАНЮК" />
+            <img class="home-logo__img home-logo__img--eyes" src="/koban/logo-eyes.png" alt="" aria-hidden="true" />
+            <img class="home-logo__img home-logo__img--glasses" src="/koban/logo-glasses.png" alt="" aria-hidden="true" />
           </a>
-          <a class="tile tile--opts" href="/v/options/" data-tilt>
-            <span class="tile__body">
-              <span class="tile__kicker">Сервер</span>
-              <span class="tile__title">Настройки мира</span>
-              <span class="tile__text">Сложность, ресурсы, порталы, креатив — меняются на лету</span>
-            </span>
-            <span class="tile__go" aria-hidden="true">→</span>
-          </a>
-        </nav>
-      </div>
 
-    </article>
+          <div class="page" aria-live="polite">
+            <article class="hero glass-panel k-rise" style="--i: 0">
+              <div class="hero__grid">
+                <a class="tile tile--map" id="mapLink" href="#map" data-tilt>
+                  <span class="tile__body">
+                    <span class="tile__kicker">Вживую</span>
+                    <span class="tile__title">Карта мира</span>
+                    <span class="tile__text">Игроки, боссы, подземелья и ресурсы — прямо сейчас</span>
+                  </span>
+                  <span class="tile__go" aria-hidden="true">←</span>
+                  <span class="nr-tile-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2.3 14.2 9.8 21.7 12 14.2 14.2 12 21.7 9.8 14.2 2.3 12 9.8 9.8z"/><path d="M12 2.3 14.2 9.8 12 12 9.8 9.8z" fill="currentColor"/><path d="M5.6 5.6 9.8 9.8M18.4 5.6l-4.2 4.2M5.6 18.4l4.2-4.2M18.4 18.4l-4.2-4.2" stroke-width="1.2" opacity=".65"/></svg></span>
+                </a>
+              <div class="hero__id">
+                <span class="nr-stone-runes" aria-hidden="true">ᚲᛟᛒᚨᚾ ᛫ ᚹᚨᛚᚺᛖᛁᛗ ᛫ ᚲᛟᛒᚨᚾ ᛫ ᚹᚨᛚᚺᛖᛁᛗ</span>
+                <span class="tile__kicker">Код для входа</span>
+                <h2 class="hero__title" id="worldLabel">Мир · Koban</h2>
+                <div class="code-block">
+                  <div id="code" class="code muted" aria-label="Код мира">…</div>
+                </div>
+                <button type="button" class="btn-primary hero__copy" id="copyBtn" disabled>Скопировать код</button>
+              </div>
+                <a class="tile tile--opts" href="#settings" data-tilt>
+                  <span class="tile__body">
+                    <span class="tile__kicker">Сервер</span>
+                    <span class="tile__title">Настройки мира</span>
+                    <span class="tile__text">Сложность, ресурсы, порталы, креатив — меняются на лету</span>
+                  </span>
+                  <span class="tile__go" aria-hidden="true">→</span>
+                  <span class="nr-tile-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13.4 2.8 21.2 10.6 17.6 14.2 9.8 6.4z" fill="currentColor" fill-opacity=".22"/><path d="M13.6 10.4 4.2 19.8" stroke-width="2.7"/><path d="m16.2 5.6-2.2 2.2M18.4 7.8l-2.2 2.2" stroke-width="1.2" opacity=".7"/></svg></span>
+                </a>
+              </div>
+            </article>
 
-    <div class="dashboard-grid">
-      <section class="panel glass-panel glass-panel--interactive k-rise" style="--i: 1">
-        <h2 class="panel__head">Игроки</h2>
-        <ul class="list" id="recentList"></ul>
-        <p class="empty" id="recentEmpty" hidden>Пока никто не заходил</p>
+          <div class="dashboard-grid">
+            <section class="panel glass-panel glass-panel--interactive k-rise" style="--i: 1">
+              <h2 class="panel__head">Игроки</h2>
+              <ul class="list" id="recentList"></ul>
+              <p class="empty" id="recentEmpty" hidden>Пока никто не заходил</p>
+            </section>
+
+            <section class="panel panel--wide glass-panel glass-panel--interactive k-rise" style="--i: 2" aria-label="Время в мире">
+              <h2 class="panel__head">Время в мире</h2>
+              <div id="worldClockRoot" class="wclock"></div>
+            </section>
+
+            <section class="panel panel--farm glass-panel glass-panel--interactive k-rise" style="--i: 3" aria-label="Ферма">
+              <h2 class="panel__head">Ферма</h2>
+              <div id="worldFarmRoot" class="farm"></div>
+            </section>
+
+            <section class="panel panel--world-span glass-panel glass-panel--interactive k-rise" style="--i: 4" aria-label="Информация о мире">
+              <h2 class="panel__head">Мир</h2>
+              <div id="worldInfoRoot" class="world-info"></div>
+            </section>
+          </div>
+          </div>
+        </div>
       </section>
 
-      <section class="panel panel--wide glass-panel glass-panel--interactive k-rise" style="--i: 2" aria-label="Время в мире">
-        <h2 class="panel__head">Время в мире</h2>
-        <div id="worldClockRoot" class="wclock"></div>
-      </section>
+      <section class="face face--options" aria-label="Настройки мира">
+        <div class="face__sky" data-sky="options"></div>
+        <div class="forest-parallax" aria-hidden="true">
+          <div class="forest-parallax__layer forest-parallax__layer--1" data-depth-x="-0.18" data-depth-y="-0.06" data-base-y="0"></div>
+          <div class="forest-parallax__layer forest-parallax__layer--2" data-depth-x="-0.34" data-depth-y="-0.10" data-base-y="0"></div>
+          <div class="forest-parallax__layer forest-parallax__layer--3" data-depth-x="-0.60" data-depth-y="-0.16" data-base-y="0"></div>
+          <div class="forest-parallax__layer forest-parallax__layer--4" data-depth-x="-0.90" data-depth-y="-0.24" data-base-y="0"></div>
+        </div>
+        <div class="face__scroll">
+          <div class="page">
+            <div class="nr-pagehead k-rise">
+              <span class="nr-pagehead__mark" aria-hidden="true"><span class="nr-shield"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13.4 2.8 21.2 10.6 17.6 14.2 9.8 6.4z" fill="currentColor" fill-opacity=".22"/><path d="M13.6 10.4 4.2 19.8" stroke-width="2.7"/><path d="m16.2 5.6-2.2 2.2M18.4 7.8l-2.2 2.2" stroke-width="1.2" opacity=".7"/></svg></span></span>
+              <h1 class="nr-pagehead__title">Настройки мира</h1>
+              <p class="nr-pagehead__sub">Правила Koban — меняются на лету, сразу у всех в игре</p>
+            </div>
+            <section class="panel glass-panel ointro k-rise" style="--i: 0">
+              <h2 class="panel__head">Как это работает</h2>
+              <p>
+                Это настоящие настройки мира Koban, а не косметика: сервер рассылает их всем,
+                кто сейчас в игре, и изменения видны сразу, без перезахода. Они сохраняются
+                в самом мире и переживают перезапуск сервера.
+              </p>
+              <p class="ointro__mode" id="optsStatus"><b>Только просмотр.</b> Чтобы менять, нажми «Изменить» наверху — понадобится пароль.</p>
+            </section>
 
-      <section class="panel panel--farm glass-panel glass-panel--interactive k-rise" style="--i: 3" aria-label="Ферма">
-        <h2 class="panel__head">Ферма</h2>
-        <div id="worldFarmRoot" class="farm"></div>
-      </section>
-
-      <section class="panel panel--world-span glass-panel glass-panel--interactive k-rise" style="--i: 4" aria-label="Информация о мире">
-        <h2 class="panel__head">Мир</h2>
-        <div id="worldInfoRoot" class="world-info"></div>
+            <div id="worldOptionsRoot" class="ogrid" aria-live="polite"></div>
+          </div>
+        </div>
+        <dialog class="k-dialog" id="passDialog">
+          <form method="dialog">
+            <h2>Правка настроек</h2>
+            <p>Пароль тот же, что для входа в мир. Держим его только в этой вкладке.</p>
+            <input class="k-input" id="passInput" type="password" autocomplete="current-password" placeholder="Пароль" />
+            <div class="k-dialog__actions">
+              <button type="button" class="btn-ghost" id="passCancel">Отмена</button>
+              <button type="submit" class="btn-primary" id="passOk">Включить правку</button>
+            </div>
+          </form>
+        </dialog>
       </section>
     </div>
-  </div>
-
-  <div class="forest-parallax" id="forestParallax" aria-hidden="true">
-    <div class="forest-parallax__layer forest-parallax__layer--1" data-depth-x="-0.18" data-depth-y="-0.06" data-base-y="0"></div>
-    <div class="forest-parallax__layer forest-parallax__layer--2" data-depth-x="-0.34" data-depth-y="-0.10" data-base-y="0"></div>
-    <div class="forest-parallax__layer forest-parallax__layer--3" data-depth-x="-0.60" data-depth-y="-0.16" data-base-y="0"></div>
-    <div class="forest-parallax__layer forest-parallax__layer--4" data-depth-x="-0.90" data-depth-y="-0.24" data-base-y="0"></div>
-  </div>
+  </main>
 
   <script src="/v/canvallax.min.js"></script>
-  <script src="/v/v-sky-full.js?v=9"></script>
-  <script src="/v/forest-parallax.js?v=3"></script>
+  <script src="/v/v-sky-full.js?v=10"></script>
+  <script src="/v/forest-parallax.js?v=4"></script>
   <i id="k-ready" hidden></i>
-  <script src="/v/koban-ui.js?v=2" defer></script>
+  <script src="/v/cube.js?v=1"></script>
+  <script src="/v/koban-ui.js?v=3" defer></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>
   <script src="/v/components/world-farm.js?v=6" defer></script>
+  <script src="/v/components/world-options.js?v=7" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";

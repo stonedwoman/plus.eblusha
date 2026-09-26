@@ -1,8 +1,9 @@
 (function initForestParallax() {
   try {
     var root = document.documentElement;
-    var container = document.getElementById("forestParallax");
-    if (!container) return;
+    // Лес может стоять в нескольких гранях куба — двигаем все слои разом.
+    var containers = document.querySelectorAll(".forest-parallax");
+    if (!containers.length) return;
     if (
       root.dataset.embedded === "true" ||
       /(?:^|[?&])preview=1(?:&|$)/.test(window.location.search)
@@ -17,7 +18,7 @@
       typeof window.matchMedia === "function" &&
       window.matchMedia("(hover: none) and (pointer: coarse)").matches;
     var layers = Array.prototype.slice.call(
-      container.querySelectorAll(".forest-parallax__layer")
+      document.querySelectorAll(".forest-parallax .forest-parallax__layer")
     );
     if (!layers.length) return;
 
@@ -141,7 +142,9 @@
     // него первые кадры движения мыши успевали проскочить до того, как
     // страница сообщит о прокрутке.
     window.addEventListener("wheel", markScrolling, { passive: true });
-    window.addEventListener("scroll", markScrolling, { passive: true });
+    // Прокручиваются грани куба, а не окно; scroll не всплывает, поэтому
+    // ловим его на перехвате.
+    document.addEventListener("scroll", markScrolling, { passive: true, capture: true });
     window.addEventListener("mousemove", onPointerMove, { passive: true });
     window.addEventListener("mouseleave", resetParallax);
     window.addEventListener("blur", resetParallax);

@@ -1,0 +1,162 @@
+/* =====================================================================
+   Koban · Valheim — куб разделов.
+
+   Весь раздел — одна страница. Под неподвижной балкой (norse.css) стоит
+   куб: карта на левой грани, главная — на передней, настройки — на правой.
+   Щиты балки, свайп и клавиши поворачивают куб (cube.js).
+
+   В покое куб плоский: видна только текущая грань, без всяких 3D-трансформ,
+   поэтому текст и карта остаются чёткими до пикселя. На время поворота
+   cube.js расставляет грани по сторонам куба (html.cube-3d) и крутит его.
+   ===================================================================== */
+
+html.nr,
+html.nr body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Окно больше не прокручивается — прокручиваются грани. Резерв под полосу
+   прокрутки (scene.css) дал бы пустую полосу справа. */
+html.nr { scrollbar-gutter: auto; }
+
+html.nr body {
+  overscroll-behavior: none;
+  background: #041318;
+}
+
+/* Сцена под балкой. На телефоне снизу ещё рейка со щитами. */
+.cube-viewport {
+  position: fixed;
+  z-index: 1;
+  left: 0;
+  right: 0;
+  top: calc(var(--nr-bar-h) + var(--nr-top));
+  bottom: 0;
+  overflow: hidden;
+  perspective: var(--cube-p, 1600px);
+  perspective-origin: 50% 50%;
+  /* Что видно вокруг куба, пока он повёрнут: ночное небо, а не пустота. */
+  background:
+    radial-gradient(1.4px 1.4px at 12% 18%, rgba(255, 255, 255, 0.8) 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 27% 72%, rgba(255, 255, 255, 0.6) 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 44% 30%, rgba(255, 236, 190, 0.8) 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 63% 84%, rgba(255, 255, 255, 0.55) 50%, transparent 51%),
+    radial-gradient(1.4px 1.4px at 78% 22%, rgba(255, 255, 255, 0.75) 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 91% 61%, rgba(255, 255, 255, 0.6) 50%, transparent 51%),
+    radial-gradient(1px 1px at 55% 50%, rgba(255, 255, 255, 0.5) 50%, transparent 51%),
+    radial-gradient(1px 1px at 6% 90%, rgba(255, 255, 255, 0.5) 50%, transparent 51%),
+    radial-gradient(120% 90% at 50% 0%, rgba(20, 110, 160, 0.85) 0%, rgba(20, 110, 160, 0) 70%),
+    linear-gradient(180deg, #07405e 0%, #062a3a 55%, #04161d 100%);
+}
+
+@media (max-width: 720px) {
+  .cube-viewport { bottom: calc(var(--nr-rail-h) + var(--nr-bottom)); }
+}
+
+.cube {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+
+.face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* Грань — рамка для всего, что в ней закреплено (небо, лес): fixed внутри
+     неё отсчитывается от грани, а не от окна. */
+  contain: layout paint;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  visibility: hidden;
+}
+
+/* В покое — только текущая грань. */
+html[data-face="map"]:not(.cube-3d) .face--map,
+html[data-face="main"]:not(.cube-3d) .face--main,
+html[data-face="options"]:not(.cube-3d) .face--options,
+html.cube-3d .face.is-in {
+  visibility: visible;
+}
+
+/* Грань, отвернувшаяся от нас, темнеет — так поворот читается объёмным. */
+.face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  background: #000;
+  opacity: var(--shade, 0);
+}
+
+html.cube-3d .face { pointer-events: none; }
+
+/* Грани с небом. Пока холст неба не нарисован — тот же градиент, что у него. */
+.face--main,
+.face--options {
+  background: linear-gradient(to top, #e1f6f4 40%, #07588a 100%);
+}
+
+.face__sky {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+/* Содержимое грани прокручивается внутри неё. */
+.face__scroll {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  /* Вертикаль — прокрутка, горизонталь — поворот куба пальцем (cube.js). */
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(214, 170, 96, 0.4) transparent;
+}
+
+.face__scroll::-webkit-scrollbar { width: 8px; }
+.face__scroll::-webkit-scrollbar-thumb { background: rgba(214, 170, 96, 0.35); border-radius: 8px; }
+.face__scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* Карта — во встроенном окне на всю грань. */
+.face--map { background: #06080d url("/v/map/tile.webp") repeat; }
+
+.face__frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: transparent;
+}
+
+/* Кнопки балки, которые относятся к одной грани, видны только на ней. */
+.nr-actions {
+  display: none;
+  align-items: center;
+  gap: 10px;
+}
+
+html[data-nav="map"] .nr-actions[data-face="map"],
+html[data-nav="main"] .nr-actions[data-face="main"],
+html[data-nav="options"] .nr-actions[data-face="options"] {
+  display: flex;
+  animation: nrActionsIn 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes nrActionsIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-nav] .nr-actions[data-face] { animation: none; }
+}

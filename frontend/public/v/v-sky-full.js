@@ -1,4 +1,9 @@
-/* Valheim /v: Canvallax — небо, звёзды, облака. Любая ошибка не должна ломать страницу. */
+/* Valheim /v: Canvallax — небо, звёзды, облака. Любая ошибка не должна ломать страницу.
+ *
+ * Небо рисуется в каждый контейнер [data-sky] — на главной и в настройках
+ * это свои грани куба. Рисует только то небо, чья грань видна: cube.js
+ * сообщает об этом через window.KobanSky.setActive(["main", ...]).
+ * Без куба (обычная страница) небо монтируется в body, как раньше. */
 (function initValheimSky() {
   try {
     if (typeof window.Canvallax !== "function") return;
@@ -69,8 +74,8 @@
       return Math.random() * (max - min) + min;
     }
 
-    function removeBgCanvases() {
-      var canvases = document.querySelectorAll("canvas.bg-canvas");
+    function removeBgCanvases(parent) {
+      var canvases = (parent || document).querySelectorAll("canvas.bg-canvas");
       Array.prototype.forEach.call(canvases, function (canvas) {
         if (canvas && canvas.parentNode) {
           canvas.parentNode.removeChild(canvas);
@@ -169,7 +174,7 @@
       return canvas;
     }
 
-    function buildSky() {
+    function buildSky(parent, inst) {
       var flags = mediaFlags();
       // ?fx=nosky — небо не строим вовсе, остаётся статичный градиент.
       if (document.documentElement.classList.contains("fx-no-sky")) {
@@ -185,7 +190,7 @@
       var width = view.width;
       var height = view.height;
       var can = Canvallax({
-        parent: document.body,
+        parent: parent || document.body,
         className: "bg-canvas",
         // Небо закреплено: на прокрутку не реагирует.
         //
@@ -335,6 +340,8 @@
         loopId = requestAnimationFrame(function loop(t) {
           loopId = requestAnimationFrame(loop);
           if (destroyed) return;
+          // Грань не видна — не рисуем вовсе.
+          if (inst && !inst.active) return;
           if (t - lastDraw < 1000 / SKY_FPS) return;
           lastDraw = t;
           safeRender();
@@ -363,14 +370,39 @@
       };
     }
 
-    function mountSky() {
-      if (state.activeSky && typeof state.activeSky.destroy === "function") {
-        state.activeSky.destroy();
-      }
-      removeBgCanvases();
+    // Контейнеры неба: [data-sky="имя"]; если их нет — одно небо в body.
+    var hosts = Array.prototype.slice.call(document.querySelectorAll("[data-sky]"));
+    if (!hosts.length) hosts = [document.body];
+    var instances = state.instances || (state.instances = []);
+
+    function mountAll() {
+      instances.forEach(function (inst) {
+        if (inst.sky && typeof inst.sky.destroy === "function") inst.sky.destroy();
+      });
+      instances.length = 0;
       document.documentElement.classList.remove("sky-static");
-      state.activeSky = buildSky();
+      hosts.forEach(function (host) {
+        removeBgCanvases(host === document.body ? document : host);
+        var inst = {
+          name: host.getAttribute && host.getAttribute("data-sky") || "page",
+          host: host,
+          active: true,
+          sky: null
+        };
+        inst.sky = buildSky(host, inst);
+        instances.push(inst);
+      });
+      if (state.activeNames) setActive(state.activeNames);
     }
+
+    function setActive(names) {
+      state.activeNames = names;
+      instances.forEach(function (inst) {
+        inst.active = inst.name === "page" || names.indexOf(inst.name) >= 0;
+      });
+    }
+
+    window.KobanSky = { setActive: setActive };
 
     if (state.resizeHandler) {
       window.removeEventListener("resize", state.resizeHandler);
@@ -378,23 +410,17 @@
     if (state.resizeTimer) {
       clearTimeout(state.resizeTimer);
     }
-    if (state.activeSky && typeof state.activeSky.destroy === "function") {
-      state.activeSky.destroy();
-    }
-    removeBgCanvases();
 
     state.resizeHandler = function () {
-      if (state.activeSky && typeof state.activeSky.syncCanvas === "function") {
-        state.activeSky.syncCanvas();
-      }
+      instances.forEach(function (inst) {
+        if (inst.sky && typeof inst.sky.syncCanvas === "function") inst.sky.syncCanvas();
+      });
       clearTimeout(state.resizeTimer);
-      state.resizeTimer = window.setTimeout(function () {
-        mountSky();
-      }, REBUILD_DELAY_MS);
+      state.resizeTimer = window.setTimeout(mountAll, REBUILD_DELAY_MS);
     };
 
     window.addEventListener("resize", state.resizeHandler);
-    mountSky();
+    mountAll();
   } catch (err) {
     if (typeof console !== "undefined" && console.warn) {
       console.warn("[v-sky-full]", err);

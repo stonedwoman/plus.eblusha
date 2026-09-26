@@ -1,0 +1,125 @@
+/* Koban · Valheim — грань «Настройки мира» (правая грань куба).
+ *
+ * Общие компоненты — theme.css, нордический вид — norse.css. Здесь только
+ * раскладка настроек: вводная панель, сетка групп, строки опций, окно пароля.
+ */
+
+/* Вводная панель — как панели главной. */
+.ointro { font-size: 0.9rem; line-height: 1.5; }
+
+.ointro p { margin: 0; color: rgba(226, 232, 226, 0.68); max-width: 60rem; }
+
+.ointro__mode {
+  margin-top: 0.6rem !important;
+  font-size: 0.85rem;
+  color: var(--text-dim) !important;
+}
+
+.ointro__mode b { color: var(--accent-hover); font-weight: 600; }
+.ointro__mode.is-editing b { color: var(--online); }
+
+/* Группы настроек — карточки в сетке, как панели на главной. */
+.ogrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: clamp(0.75rem, 2vw, 1.1rem);
+  align-items: start;
+}
+
+.ogroup { font-size: 0.875rem; line-height: 1.4; }
+
+.ogroup__body { display: grid; gap: 0.25rem; }
+
+.wopt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9rem;
+  padding: 0.5rem 0.4rem;
+  margin: 0 -0.4rem;
+  border-radius: var(--radius-xs);
+  border-bottom: 1px solid rgba(200, 164, 90, 0.07);
+  transition: background var(--t-fast), opacity var(--t-fast);
+}
+
+.wopt:last-child { border-bottom: none; }
+.wopt:hover { background: rgba(255, 255, 255, 0.025); }
+.wopt.is-busy { opacity: 0.55; }
+
+/* Вспышка после применения: видно, что именно изменилось. */
+@keyframes woptFlash {
+  0% { background: rgba(200, 164, 90, 0.28); }
+  100% { background: transparent; }
+}
+
+.wopt.is-flash { animation: woptFlash 1.2s ease-out both; }
+
+.wopt__head { min-width: 0; }
+
+.wopt__label {
+  display: block;
+  color: rgba(226, 232, 226, 0.92);
+}
+
+.wopt__hint {
+  display: block;
+  font-size: 0.72rem;
+  color: rgba(226, 232, 226, 0.4);
+}
+
+.wopt__control { flex: 0 0 auto; }
+
+.wopt--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0.45rem;
+}
+
+.wopt--stacked .wopt__control { width: 100%; }
+.wopt--stacked .wchips { justify-content: flex-start; }
+
+.wchips { display: flex; flex-wrap: wrap; gap: 0.3rem; justify-content: flex-end; }
+
+/* Пароль спрашиваем своим окном, а не браузерным prompt. */
+.k-dialog {
+  width: min(92vw, 24rem);
+  padding: clamp(1.1rem, 3vw, 1.5rem);
+  color: var(--text-main);
+  background: rgba(10, 20, 19, 0.96);
+  border: 1px solid var(--panel-border-hover);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+.k-dialog::backdrop {
+  background: rgba(4, 10, 9, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.k-dialog[open] { animation: kRise 320ms var(--ease-out) both; }
+
+.k-dialog h2 {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(200, 164, 90, 0.85);
+  margin: 0 0 0.35rem;
+}
+
+.k-dialog p {
+  margin: 0 0 0.9rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.k-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.k-dialog__actions button { min-height: 2.5rem; }

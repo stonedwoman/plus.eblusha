@@ -664,94 +664,10 @@ html.k-enter-first .k-rise {
   animation-delay: calc(var(--i, 0) * 70ms);
 }
 
-/* ---------- переходы между страницами: куб ----------
- *
- * Делает браузер (View Transitions между документами: Chrome/Edge 126+,
- * Safari 18.2+). Он снимает уходящую страницу, ждёт первый кадр новой и
- * поворачивает обе как грани куба — одновременно и целиком, вместе с небом,
- * лесом и логотипом. Пустого кадра между ними нет: пока новая грузится,
- * на экране стоит старая.
- *
- * Направление ставит инлайновый скрипт в <head> каждой страницы (событие
- * pagereveal): вглубь раздела — вперёд, куб едет влево; к главной — назад.
- * Где браузер этого не умеет, страница просто открывается, а панели
- * всплывают (.k-rise).
- */
-
-@view-transition { navigation: auto; }
-
-/* Что видно по углам, пока грани повёрнуты: небо, а не чёрная дыра. */
-::view-transition {
-  background:
-    radial-gradient(120% 90% at 50% 0%, rgba(20, 110, 160, 0.9) 0%, rgba(20, 110, 160, 0) 70%),
-    linear-gradient(180deg, #07405e 0%, #062a3a 55%, #04161d 100%);
-}
-
-::view-transition-group(root) {
-  animation-duration: 720ms;
-}
-
-/* Общая точка схода для обеих граней — центр экрана. */
-::view-transition-image-pair(root) {
-  perspective: 120vw;
-}
-
-::view-transition-old(root),
-::view-transition-new(root) {
-  /* По умолчанию браузер складывает снимки (plus-lighter) — для
-     перекрёстного затухания. У куба грани не накладываются. */
-  mix-blend-mode: normal;
-  animation-duration: 720ms;
-  animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
-  animation-fill-mode: both;
-  backface-visibility: hidden;
-}
-
-/* Вперёд: старая грань уходит влево, новая приходит справа. */
-::view-transition-old(root) {
-  transform-origin: 100% 50%;
-  animation-name: kCubeOutLeft;
-}
-
-::view-transition-new(root) {
-  transform-origin: 0% 50%;
-  animation-name: kCubeInRight;
-}
-
-/* Назад — зеркально. */
-html:active-view-transition-type(back)::view-transition-old(root) {
-  transform-origin: 0% 50%;
-  animation-name: kCubeOutRight;
-}
-
-html:active-view-transition-type(back)::view-transition-new(root) {
-  transform-origin: 100% 50%;
-  animation-name: kCubeInLeft;
-}
-
-/* Грань, отвернувшаяся от нас, темнеет — так поворот читается объёмным. */
-@keyframes kCubeOutLeft {
-  from { transform: translateX(0) rotateY(0deg); filter: brightness(1); }
-  to { transform: translateX(-100%) rotateY(-90deg); filter: brightness(0.5); }
-}
-
-@keyframes kCubeInRight {
-  from { transform: translateX(100%) rotateY(90deg); filter: brightness(0.5); }
-  to { transform: translateX(0) rotateY(0deg); filter: brightness(1); }
-}
-
-@keyframes kCubeOutRight {
-  from { transform: translateX(0) rotateY(0deg); filter: brightness(1); }
-  to { transform: translateX(100%) rotateY(90deg); filter: brightness(0.5); }
-}
-
-@keyframes kCubeInLeft {
-  from { transform: translateX(-100%) rotateY(-90deg); filter: brightness(0.5); }
-  to { transform: translateX(0) rotateY(0deg); filter: brightness(1); }
-}
+/* Переходы между разделами — поворот куба на одной странице: cube.css,
+   cube.js. Панели при первом входе всплывают (.k-rise выше). */
 
 @media (prefers-reduced-motion: reduce) {
-  @view-transition { navigation: none; }
   .k-rise,
   html.k-enter-first .k-rise { animation: none !important; }
   [data-tilt] { transform: none !important; }
