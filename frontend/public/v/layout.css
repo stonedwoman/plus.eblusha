@@ -1,0 +1,115 @@
+/* Koban · Valheim — как выглядит раскладка, заданная в админ-режиме.
+ *
+ * Подключается у всех. Все правила срабатывают только от атрибутов и классов,
+ * которые ставит layout.js по сохранённой раскладке, так что без неё страница
+ * выглядит ровно как свёрстана.
+ */
+
+/* ---------- ширина: шестые доли строки, на широком экране ---------- */
+
+@media (min-width: 1240px) {
+  .dashboard-grid > [data-layout-key].has-span {
+    grid-column: span var(--span) !important;
+  }
+
+  /* Сетку настроек переводим на шесть колонок, только если кому-то задана
+     ширина: иначе она остаётся резиновой, как свёрстана. */
+  #worldOptionsRoot.has-spans {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  #worldOptionsRoot.has-spans > .ogroup { grid-column: span 2; }
+  #worldOptionsRoot.has-spans > .ogroup.has-span { grid-column: span var(--span); }
+}
+
+.dashboard-grid > .is-stretch { align-self: stretch; }
+
+/* ---------- выравнивание заголовков панелей ----------
+   Нордический заголовок: ромб, текст, затухающая линия. По центру — линия
+   уходит, справа — всё зеркально. */
+
+[data-head="center"] > .panel__head {
+  justify-content: center;
+  text-align: center;
+}
+
+[data-head="center"] > .panel__head::after { display: none; }
+
+[data-head="right"] > .panel__head {
+  flex-direction: row-reverse;
+  text-align: right;
+}
+
+[data-head="right"] > .panel__head::after {
+  background: linear-gradient(270deg, rgba(214, 170, 96, 0.5), rgba(214, 170, 96, 0));
+}
+
+/* ---------- плитки «Карта мира» и «Настройки мира» ---------- */
+
+.hero__grid > .tile > .tile__body { flex: 1 1 auto; }
+
+/* Стрелка в любом углу. Справа снизу — как свёрстано (обычный поток). */
+.tile[data-arrow] > .tile__go,
+.tile[data-valign]:not([data-arrow]) > .tile__go {
+  position: absolute;
+  margin: 0;
+}
+
+.tile[data-arrow="tl"] > .tile__go { top: clamp(0.9rem, 2.2vw, 1.25rem); left: clamp(0.9rem, 2.2vw, 1.25rem); }
+.tile[data-arrow="tr"] > .tile__go { top: clamp(0.9rem, 2.2vw, 1.25rem); right: clamp(0.9rem, 2.2vw, 1.25rem); }
+.tile[data-arrow="bl"] > .tile__go { bottom: clamp(0.9rem, 2.2vw, 1.25rem); left: clamp(0.9rem, 2.2vw, 1.25rem); }
+.tile[data-valign]:not([data-arrow]) > .tile__go { bottom: clamp(0.9rem, 2.2vw, 1.25rem); right: clamp(0.9rem, 2.2vw, 1.25rem); }
+
+/* Текст не заходит под стрелку. */
+.tile[data-arrow="bl"] > .tile__body { padding-left: 3.2rem; }
+.tile[data-valign]:not([data-arrow]) > .tile__body { padding-right: 3.2rem; }
+.tile[data-arrow="tl"][data-valign="top"] > .tile__body,
+.tile[data-arrow="tr"][data-valign="top"] > .tile__body { padding-top: 3.3rem; }
+
+/* Текст по вертикали. Снизу — как свёрстано. */
+.tile[data-valign="top"] { align-items: flex-start; }
+.tile[data-valign="center"] { align-items: center; }
+
+/* Каждый элемент — отдельно. */
+.tile[data-a-kicker="center"] .tile__kicker,
+.tile[data-a-title="center"] .tile__title,
+.tile[data-a-text="center"] .tile__text { text-align: center; }
+
+.tile[data-a-kicker="right"] .tile__kicker,
+.tile[data-a-title="right"] .tile__title,
+.tile[data-a-text="right"] .tile__text { text-align: right; }
+
+/* У описания ограничена ширина — двигаем сам блок. */
+.tile[data-a-text="center"] .tile__text { margin-left: auto; margin-right: auto; }
+.tile[data-a-text="right"] .tile__text { margin-left: auto; }
+
+.tile[data-desc="off"] .tile__text { display: none; }
+.tile[data-kicker="off"] .tile__kicker { display: none; }
+
+/* ---------- рунный камень с кодом ---------- */
+
+.hero__id[data-valign="top"] { justify-content: flex-start; }
+.hero__id[data-valign="bottom"] { justify-content: flex-end; }
+
+.hero__id[data-a-kicker="center"] > .tile__kicker,
+.hero__id[data-a-title="center"] > .hero__title,
+.hero__id[data-a-code="center"] > .code-block { align-self: center; text-align: center; }
+
+.hero__id[data-a-kicker="right"] > .tile__kicker,
+.hero__id[data-a-title="right"] > .hero__title,
+.hero__id[data-a-code="right"] > .code-block { align-self: flex-end; text-align: right; }
+
+.hero__id[data-button="auto"] > .hero__copy {
+  width: auto;
+  padding-left: 1.8rem;
+  padding-right: 1.8rem;
+}
+
+/* Кнопка по тексту: по умолчанию — по центру камня. */
+.hero__id[data-button="auto"] > .hero__copy { align-self: center; }
+.hero__id[data-button="auto"][data-a-button="left"] > .hero__copy { align-self: flex-start; }
+.hero__id[data-button="auto"][data-a-button="right"] > .hero__copy { align-self: flex-end; }
+
+/* Кнопка во всю ширину: выравнивается её надпись. */
+.hero__id:not([data-button="auto"])[data-a-button="left"] > .hero__copy { text-align: left; }
+.hero__id:not([data-button="auto"])[data-a-button="right"] > .hero__copy { text-align: right; }

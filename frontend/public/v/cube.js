@@ -239,6 +239,8 @@
 
   viewport.addEventListener("pointerdown", function (e) {
     if (e.pointerType !== "touch" || !e.isPrimary || raf) return;
+    // Ручки админ-режима и его панели — не повод крутить куб.
+    if (e.target && e.target.closest && e.target.closest("[data-noswipe]")) return;
     // На карте палец двигает карту, а не куб.
     if (current === "map") return;
     drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, a0: angle, on: false, lastX: e.clientX, lastT: e.timeStamp, v: 0 };

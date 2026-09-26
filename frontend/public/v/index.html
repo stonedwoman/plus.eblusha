@@ -13,6 +13,15 @@
       r.dataset.face = f;
       r.dataset.nav = f;
       r.classList.add("nr", "k-enter-first");
+      // Админ-режим раскладки — только по ссылке /v/admin/ (→ ?admin).
+      // Без неё ни его стилей, ни скрипта на странице нет.
+      if (/(?:^|[?&])admin(?:[=&]|$)/.test(location.search)) {
+        r.classList.add("nr-admin");
+        var l = document.createElement("link");
+        l.rel = "stylesheet";
+        l.href = "/v/admin.css?v=3";
+        document.head.appendChild(l);
+      }
       setTimeout(function () { r.classList.remove("k-enter-first"); }, 1600);
     })();
   </script>
@@ -73,6 +82,7 @@
   <link rel="stylesheet" href="/v/norse.css?v=1" />
   <link rel="stylesheet" href="/v/cube.css?v=1" />
   <link rel="stylesheet" href="/v/options.css?v=1" />
+  <link rel="stylesheet" href="/v/layout.css?v=1" />
   <!-- Первый кадр — только когда нарисовано небо (#k-ready стоит после его
        скрипта): иначе куб повернётся на пустой бледный фон. -->
   <link rel="expect" href="#k-ready" blocking="render" />
@@ -1289,7 +1299,7 @@
           <div class="page" aria-live="polite">
             <article class="hero glass-panel k-rise" style="--i: 0">
               <div class="hero__grid">
-                <a class="tile tile--map" id="mapLink" href="#map" data-tilt>
+                <a class="tile tile--map" id="mapLink" href="#map" data-tilt data-layout-key="map">
                   <span class="tile__body">
                     <span class="tile__kicker">Вживую</span>
                     <span class="tile__title">Карта мира</span>
@@ -1298,7 +1308,7 @@
                   <span class="tile__go" aria-hidden="true">←</span>
                   <span class="nr-tile-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2.3 14.2 9.8 21.7 12 14.2 14.2 12 21.7 9.8 14.2 2.3 12 9.8 9.8z"/><path d="M12 2.3 14.2 9.8 12 12 9.8 9.8z" fill="currentColor"/><path d="M5.6 5.6 9.8 9.8M18.4 5.6l-4.2 4.2M5.6 18.4l4.2-4.2M18.4 18.4l-4.2-4.2" stroke-width="1.2" opacity=".65"/></svg></span>
                 </a>
-              <div class="hero__id">
+              <div class="hero__id" data-layout-key="code">
                 <span class="nr-stone-runes" aria-hidden="true">ᚲᛟᛒᚨᚾ ᛫ ᚹᚨᛚᚺᛖᛁᛗ ᛫ ᚲᛟᛒᚨᚾ ᛫ ᚹᚨᛚᚺᛖᛁᛗ</span>
                 <span class="tile__kicker">Код для входа</span>
                 <h2 class="hero__title" id="worldLabel">Мир · Koban</h2>
@@ -1307,7 +1317,7 @@
                 </div>
                 <button type="button" class="btn-primary hero__copy" id="copyBtn" disabled>Скопировать код</button>
               </div>
-                <a class="tile tile--opts" href="#settings" data-tilt>
+                <a class="tile tile--opts" href="#settings" data-tilt data-layout-key="opts">
                   <span class="tile__body">
                     <span class="tile__kicker">Сервер</span>
                     <span class="tile__title">Настройки мира</span>
@@ -1320,23 +1330,23 @@
             </article>
 
           <div class="dashboard-grid">
-            <section class="panel glass-panel glass-panel--interactive k-rise" style="--i: 1">
+            <section class="panel glass-panel glass-panel--interactive k-rise" style="--i: 1" data-layout-key="players">
               <h2 class="panel__head">Игроки</h2>
               <ul class="list" id="recentList"></ul>
               <p class="empty" id="recentEmpty" hidden>Пока никто не заходил</p>
             </section>
 
-            <section class="panel panel--wide glass-panel glass-panel--interactive k-rise" style="--i: 2" aria-label="Время в мире">
+            <section class="panel panel--wide glass-panel glass-panel--interactive k-rise" style="--i: 2" aria-label="Время в мире" data-layout-key="clock">
               <h2 class="panel__head">Время в мире</h2>
               <div id="worldClockRoot" class="wclock"></div>
             </section>
 
-            <section class="panel panel--farm glass-panel glass-panel--interactive k-rise" style="--i: 3" aria-label="Ферма">
+            <section class="panel panel--farm glass-panel glass-panel--interactive k-rise" style="--i: 3" aria-label="Ферма" data-layout-key="farm">
               <h2 class="panel__head">Ферма</h2>
               <div id="worldFarmRoot" class="farm"></div>
             </section>
 
-            <section class="panel panel--world-span glass-panel glass-panel--interactive k-rise" style="--i: 4" aria-label="Информация о мире">
+            <section class="panel panel--world-span glass-panel glass-panel--interactive k-rise" style="--i: 4" aria-label="Информация о мире" data-layout-key="world">
               <h2 class="panel__head">Мир</h2>
               <div id="worldInfoRoot" class="world-info"></div>
             </section>
@@ -1392,13 +1402,14 @@
   <script src="/v/v-sky-full.js?v=10"></script>
   <script src="/v/forest-parallax.js?v=4"></script>
   <i id="k-ready" hidden></i>
-  <script src="/v/cube.js?v=1"></script>
+  <script src="/v/cube.js?v=2"></script>
+  <script src="/v/layout.js?v=1"></script>
   <script src="/v/koban-ui.js?v=3" defer></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>
   <script src="/v/components/world-farm.js?v=6" defer></script>
-  <script src="/v/components/world-options.js?v=7" defer></script>
+  <script src="/v/components/world-options.js?v=8" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";
@@ -1830,6 +1841,14 @@
       });
       window.addEventListener("pageshow", schedulePeek);
     })();
+  </script>
+  <script>
+    // Админ-режим раскладки: скрипт грузится только по ссылке /v/admin/.
+    if (document.documentElement.classList.contains("nr-admin")) {
+      var adm = document.createElement("script");
+      adm.src = "/v/admin.js?v=3";
+      document.body.appendChild(adm);
+    }
   </script>
 </body>
 </html>

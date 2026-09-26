@@ -1,0 +1,657 @@
+/* Koban · Valheim — админ-режим раскладки (только по ссылке /v/admin/).
+ *
+ * Плитки под правкой обведены пунктиром, у каждой в правом верхнем углу —
+ * ручка ⠿ и «Формат», у правой кромки — рукоять ширины. Внизу — доска
+ * «Раскладка» с сохранением. Вид — в тон балке: дуб, железо, золото.
+ */
+
+html.nr-admin {
+  --adm-gold: #ecc77c;
+  --adm-gold-2: #d4a95c;
+  --adm-ink: #1b1208;
+  --adm-bar-h: 64px;
+}
+
+/* ---------- метки на плитках ---------- */
+
+html.adm-on .adm-item {
+  position: relative;
+  outline: 2px dashed rgba(236, 199, 124, 0.45);
+  outline-offset: 5px;
+  transition: outline-color 160ms ease, box-shadow 200ms ease;
+}
+
+html.adm-on .adm-item:hover { outline-color: rgba(236, 199, 124, 0.85); }
+
+.adm-ctrl {
+  position: absolute;
+  z-index: 30;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.adm-item--tile > .adm-ctrl { top: 10px; right: 10px; }
+
+/* Стрелка плитки в правом верхнем углу — кнопки уходят влево. */
+.tile[data-arrow="tr"] > .adm-ctrl { right: auto; left: 10px; }
+
+.adm-grip,
+.adm-fmt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  min-width: 34px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(214, 170, 96, 0.55);
+  color: var(--nr-parch, #f1e5cb);
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #4b3420 0%, #2c1d11 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 220, 160, 0.18), 0 3px 10px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.adm-grip { padding: 0; width: 34px; cursor: grab; }
+.adm-grip svg { width: 18px; height: 18px; }
+.adm-fmt svg { width: 16px; height: 16px; }
+
+.adm-grip:hover,
+.adm-fmt:hover,
+.adm-fmt[aria-expanded="true"] {
+  color: var(--adm-gold);
+  border-color: rgba(240, 205, 132, 0.9);
+  box-shadow: inset 0 0 12px rgba(255, 150, 50, 0.25), 0 0 14px rgba(255, 150, 50, 0.25);
+}
+
+.adm-fmt:focus-visible,
+.adm-grip:focus-visible {
+  outline: 2px solid rgba(240, 205, 132, 0.9);
+  outline-offset: 2px;
+}
+
+/* Заголовок панели уступает место кнопкам. В узкой панели «Формат» —
+   только значок. */
+html.adm-on .adm-item > .panel__head { padding-right: 150px; }
+
+@container (max-width: 360px) {
+  html.adm-on .adm-item > .panel__head { padding-right: 84px; }
+  .adm-fmt { width: 34px; padding: 0; }
+  .adm-fmt span { display: none; }
+}
+
+/* Рукоять ширины у правой кромки. */
+.adm-resize {
+  position: absolute;
+  z-index: 29;
+  top: 18%;
+  bottom: 18%;
+  right: -9px;
+  width: 14px;
+  border-radius: 7px;
+  cursor: ew-resize;
+  touch-action: none;
+  background:
+    radial-gradient(circle at 50% 50%, var(--adm-gold) 0 1.6px, transparent 2.2px) 50% 50% / 14px 10px repeat-y,
+    linear-gradient(180deg, #5a3c22, #2f1e11);
+  border: 1px solid rgba(214, 170, 96, 0.6);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+html.adm-on .adm-item:hover > .adm-resize,
+.adm-item.is-resizing > .adm-resize { opacity: 1; }
+
+@media (max-width: 1239px) {
+  .adm-resize { display: none; }
+}
+
+.adm-span-badge {
+  position: absolute;
+  z-index: 31;
+  top: 50%;
+  right: 16px;
+  transform: translateY(-50%);
+  padding: 6px 12px;
+  border-radius: 7px;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 20px;
+  letter-spacing: 0.08em;
+  color: var(--adm-ink);
+  background: linear-gradient(180deg, #f5d894, #c9a052);
+  box-shadow: 0 0 20px rgba(255, 170, 60, 0.5);
+  pointer-events: none;
+}
+
+.adm-item.is-resizing { outline-color: var(--adm-gold); }
+
+/* Скрытое для всех — админ видит его полупрозрачным. */
+.adm-hidden { display: none; }
+
+html.adm-on [data-layout-hidden] {
+  opacity: 0.5;
+  filter: grayscale(0.6);
+  background-image: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.18) 0 12px, rgba(0, 0, 0, 0) 12px 24px) !important;
+}
+
+html.adm-on [data-layout-hidden] > .adm-hidden {
+  display: block;
+  position: absolute;
+  z-index: 30;
+  left: 12px;
+  top: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #f29a8c;
+  background: rgba(20, 12, 6, 0.85);
+  border: 1px solid rgba(242, 154, 140, 0.5);
+}
+
+/* ---------- перетаскивание ---------- */
+
+html.adm-dragging,
+html.adm-dragging * { cursor: grabbing !important; user-select: none !important; }
+
+.adm-item.is-dragging {
+  z-index: 60;
+  transition: none !important;
+  outline: 2px solid var(--adm-gold);
+  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.6), 0 0 34px rgba(255, 160, 60, 0.3) !important;
+  pointer-events: none;
+}
+
+/* ---------- доска «Раскладка» внизу ---------- */
+
+.adm-bar {
+  position: fixed;
+  z-index: 70;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+  transform: translateX(-50%);
+  width: min(900px, calc(100vw - 24px));
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "title actions" "hint hint";
+  align-items: center;
+  gap: 6px 16px;
+  padding: 10px 12px 9px 16px;
+  border-radius: 10px;
+  color: var(--nr-parch, #f1e5cb);
+  border: 1px solid rgba(214, 170, 96, 0.55);
+  background:
+    radial-gradient(60% 160% at 50% 130%, rgba(255, 150, 60, 0.14) 0%, rgba(255, 150, 60, 0) 60%),
+    var(--nr-grain, none) 0 0 / 900px 100%,
+    linear-gradient(180deg, #3d2a19 0%, #2c1d11 45%, #1c1209 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 214, 150, 0.16),
+    inset 0 0 0 3px rgba(0, 0, 0, 0.35),
+    0 18px 44px rgba(0, 0, 0, 0.6);
+}
+
+/* Железная полоса с заклёпками по верхней кромке — как у балки. */
+.adm-bar::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: -4px;
+  height: 7px;
+  border-radius: 3px;
+  background:
+    radial-gradient(circle at 50% 50%, #fbe2a4 0 0.9px, #c9a052 1.3px, #6a4c1e 2.2px, rgba(0, 0, 0, 0.55) 2.9px, transparent 3.4px) 12px 0 / 40px 7px repeat-x,
+    linear-gradient(180deg, #8b9095 0%, #4b4f54 38%, #25282b 80%, #111315 100%);
+  pointer-events: none;
+}
+
+.adm-bar__title {
+  grid-area: title;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.adm-bar__mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: #ffd98f;
+  background:
+    radial-gradient(circle at 42% 38%, #3d2a17 0 30%, #170e07 60%) padding-box,
+    conic-gradient(from 200deg, #fbe2a4, #8f6a31 22%, #f0cd84 45%, #6d4f22 70%, #fbe2a4) border-box;
+  border: 2px solid transparent;
+  box-shadow: 0 0 14px rgba(255, 154, 60, 0.35);
+}
+
+.adm-bar__mark svg { width: 17px; height: 17px; }
+
+.adm-bar__name {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--adm-gold);
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6);
+}
+
+.adm-bar__status {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(127, 237, 178, 0.9);
+}
+
+.adm-bar.is-dirty .adm-bar__status { color: #ffc766; }
+
+.adm-bar__hint {
+  grid-area: hint;
+  margin: 0;
+  padding-top: 6px;
+  border-top: 1px solid rgba(214, 170, 96, 0.16);
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.3;
+  color: rgba(241, 229, 203, 0.6);
+}
+
+.adm-bar__actions {
+  grid-area: actions;
+  display: flex;
+  gap: 8px;
+}
+
+.adm-btn {
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 7px;
+  border: 1px solid rgba(214, 170, 96, 0.45);
+  color: var(--nr-parch, #f1e5cb);
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #4b3420 0%, #2c1d11 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 220, 160, 0.16), 0 2px 0 rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+}
+
+.adm-btn:hover:not(:disabled) {
+  color: var(--adm-gold);
+  border-color: rgba(240, 205, 132, 0.85);
+}
+
+.adm-btn--primary {
+  color: var(--adm-ink);
+  border-color: #5c3f16;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0) 45%),
+    linear-gradient(180deg, #f5d894 0%, #d9ae5e 50%, #a57a34 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 245, 210, 0.7), 0 2px 0 #3a260d;
+}
+
+.adm-btn--primary:hover:not(:disabled) {
+  color: var(--adm-ink);
+  box-shadow: inset 0 1px 0 rgba(255, 245, 210, 0.8), 0 2px 0 #3a260d, 0 0 20px rgba(255, 170, 60, 0.45);
+}
+
+.adm-btn--ghost { background: transparent; box-shadow: none; }
+
+.adm-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* Под доской ничего не должно прятаться: грани получают запас снизу. */
+html.nr-admin .face__scroll { padding-bottom: calc(var(--adm-bar-h) + 40px); }
+
+html.nr-admin { --adm-bar-h: 104px; }
+
+@media (max-width: 900px) {
+  .adm-bar { gap: 6px 10px; }
+  .adm-bar__status { display: none; }
+  .adm-bar.is-dirty .adm-bar__status { display: inline; }
+}
+
+@media (max-width: 720px) {
+  .adm-bar {
+    bottom: calc(var(--nr-rail-h, 70px) + env(safe-area-inset-bottom, 0px) + 12px);
+    grid-template-columns: 1fr;
+    grid-template-areas: "title" "actions" "hint";
+    padding: 10px 10px 8px;
+  }
+  .adm-bar__actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .adm-btn { height: 38px; padding: 0 6px; font-size: 12px; letter-spacing: 0.05em; }
+  .adm-bar__name { font-size: 15px; }
+  html.nr-admin { --adm-bar-h: 196px; }
+
+  /* На маленьких плитках «Формат» — только значок. */
+  .adm-item--tile .adm-fmt { width: 34px; padding: 0; }
+  .adm-item--tile .adm-fmt span { display: none; }
+}
+
+/* ---------- «Формат»: панель под своей кнопкой ---------- */
+
+.adm-pop {
+  position: fixed;
+  z-index: 80;
+  width: min(340px, calc(100vw - 20px));
+  padding: 0 0 14px;
+  border-radius: 10px;
+  color: var(--nr-parch, #f1e5cb);
+  border: 1px solid rgba(214, 170, 96, 0.6);
+  background:
+    var(--nr-grain, none) 0 0 / 900px 260px,
+    linear-gradient(180deg, #33231a 0%, #1b120b 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 220, 160, 0.12),
+    inset 0 0 0 3px rgba(0, 0, 0, 0.35),
+    0 22px 50px rgba(0, 0, 0, 0.6);
+  animation: admPopIn 280ms cubic-bezier(0.34, 1.45, 0.64, 1) both;
+  transform-origin: var(--adm-notch, 50%) 0;
+}
+
+.adm-pop.is-above { transform-origin: var(--adm-notch, 50%) 100%; }
+
+@keyframes admPopIn {
+  from { opacity: 0; transform: perspective(900px) rotateX(-40deg); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Ромб на кнопку, которая открыла панель. */
+.adm-pop::before {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  top: -8px;
+  left: var(--adm-notch, 50%);
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  transform: rotate(45deg);
+  background: linear-gradient(135deg, #fbe2a4, #b8893e);
+  border: 1px solid #5c3f16;
+  box-shadow: 0 0 12px rgba(255, 170, 60, 0.55);
+}
+
+.adm-pop.is-above::before { top: auto; bottom: -8px; }
+
+.adm-pop__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 10px 6px 18px;
+}
+
+.adm-pop__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: 15.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--adm-gold);
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.adm-pop__close {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  color: rgba(241, 229, 203, 0.7);
+  background: none;
+}
+
+.adm-pop__close:hover { color: var(--adm-gold); background: rgba(255, 255, 255, 0.06); }
+.adm-pop__close svg { width: 18px; height: 18px; }
+
+.adm-pop__body {
+  display: grid;
+  gap: 12px;
+  max-height: calc(100vh - 200px);
+  overflow: auto;
+  padding: 4px 16px 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(214, 170, 96, 0.4) transparent;
+}
+
+.adm-sec {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--adm-gold);
+}
+
+.adm-sec::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(214, 170, 96, 0.45), rgba(214, 170, 96, 0));
+}
+
+.adm-sec:first-child { margin-top: 0; }
+
+.adm-row { display: grid; gap: 6px; }
+
+.adm-row--inline {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.adm-row--inline .adm-row__label {
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: rgba(241, 229, 203, 0.86);
+}
+
+.adm-row--inline .adm-seg { flex-wrap: nowrap; }
+
+.adm-note {
+  margin: -4px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(241, 229, 203, 0.5);
+}
+
+.adm-row__label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(241, 229, 203, 0.62);
+}
+
+/* Переключатель вариантов — резные дощечки в ряд. */
+.adm-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.adm-seg__btn {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  color: rgba(241, 229, 203, 0.78);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  background: linear-gradient(180deg, #3a291a, #231710);
+  box-shadow: inset 0 1px 0 rgba(255, 220, 160, 0.1), 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+
+.adm-seg__btn:hover { color: var(--nr-parch, #f1e5cb); border-color: rgba(214, 170, 96, 0.5); }
+
+.adm-seg__btn.is-on {
+  color: var(--adm-ink);
+  border-color: #5c3f16;
+  background: linear-gradient(180deg, #f5d894 0%, #c9a052 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 245, 210, 0.7), 0 0 12px rgba(255, 170, 60, 0.3);
+}
+
+.adm-seg--icons .adm-seg__btn { flex: 0 0 auto; width: 40px; min-height: 32px; padding: 0; }
+.adm-seg__btn svg { width: 18px; height: 18px; }
+
+/* Ширина: число колонок и полоска из шести долей — ровно в один ряд. */
+.adm-seg--spans {
+  display: grid;
+  grid-template-columns: 1.35fr repeat(6, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.adm-seg--spans.adm-seg--5 { grid-template-columns: 1.35fr repeat(4, minmax(0, 1fr)); }
+
+.adm-seg--spans .adm-seg__btn {
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 5px 2px;
+}
+
+.adm-seg--spans .adm-seg__text { font-size: 12px; line-height: 1; }
+
+.adm-bars { display: flex; gap: 1.5px; }
+
+.adm-bars i {
+  width: 4px;
+  height: 9px;
+  border-radius: 1px;
+  background: rgba(241, 229, 203, 0.2);
+}
+
+.adm-bars i.on { background: currentColor; }
+
+/* Угол стрелки — прямо на уменьшенной плитке. */
+.adm-corners {
+  position: relative;
+  height: 104px;
+  border-radius: 8px;
+  border: 1px solid rgba(214, 170, 96, 0.45);
+  background:
+    linear-gradient(12deg, rgba(20, 12, 6, 0.9) 10%, rgba(20, 12, 6, 0.5) 60%, rgba(20, 12, 6, 0.2) 100%),
+    linear-gradient(180deg, #4a3320, #20150c);
+  box-shadow: inset 0 0 0 3px rgba(0, 0, 0, 0.45);
+}
+
+.adm-corners__name {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(241, 229, 203, 0.5);
+  pointer-events: none;
+}
+
+.adm-corner {
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(255, 217, 143, 0.55);
+  border: 2px dashed rgba(214, 170, 96, 0.45);
+  background: rgba(20, 13, 7, 0.6);
+}
+
+.adm-corner--tl { top: 8px; left: 8px; }
+.adm-corner--tr { top: 8px; right: 8px; }
+.adm-corner--bl { bottom: 8px; left: 8px; }
+.adm-corner--br { bottom: 8px; right: 8px; }
+
+.adm-corner:hover { color: #ffd98f; border-color: rgba(240, 205, 132, 0.9); }
+
+.adm-corner.is-on {
+  color: #ffd98f;
+  border: 2px solid transparent;
+  background:
+    radial-gradient(circle, #20150c 0 55%, rgba(0, 0, 0, 0) 57%) padding-box,
+    repeating-linear-gradient(90deg, #6b4a2b 0 5px, #3b2615 5px 6px) padding-box,
+    conic-gradient(from 200deg, #fbe2a4, #8f6a31 25%, #f0cd84 50%, #6d4f22 75%, #fbe2a4) border-box;
+  box-shadow: 0 0 16px rgba(255, 160, 60, 0.55);
+}
+
+.adm-pop__reset {
+  justify-self: start;
+  height: 34px;
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+/* ---------- вход ---------- */
+
+.adm-login {
+  border-radius: 10px;
+  border: 1px solid rgba(214, 170, 96, 0.6);
+  color: var(--nr-parch, #f1e5cb);
+  background:
+    var(--nr-grain, none) 0 0 / 900px 260px,
+    linear-gradient(180deg, #33231a, #1b120b);
+  box-shadow: inset 0 0 0 3px rgba(0, 0, 0, 0.35), 0 22px 50px rgba(0, 0, 0, 0.6);
+}
+
+.adm-login h2 {
+  margin-bottom: 0.35rem;
+  font-family: var(--font-display);
+  font-size: 18px;
+  color: var(--adm-gold);
+}
+
+.adm-login p { color: rgba(241, 229, 203, 0.7); }
+
+.adm-login__err {
+  margin: 0.6rem 0 0 !important;
+  color: #f29a8c !important;
+  font-weight: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .adm-pop { animation: none; }
+}

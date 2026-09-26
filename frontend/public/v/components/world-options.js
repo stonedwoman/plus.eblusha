@@ -294,6 +294,8 @@
     (state.groups || []).forEach(function (group, index) {
       var section = el("section", "panel glass-panel glass-panel--interactive ogroup k-rise");
       section.style.setProperty("--i", String(index + 1));
+      // Ключ для раскладки из админ-режима (layout.js, admin.js).
+      section.setAttribute("data-layout-key", group.name);
       section.appendChild(el("h2", "panel__head", group.name));
       var body = el("div", "ogroup__body");
       (group.items || []).forEach(function (item) {
@@ -302,6 +304,8 @@
       section.appendChild(body);
       root.appendChild(section);
     });
+
+    try { window.dispatchEvent(new CustomEvent("koban:options-rendered")); } catch (e) {}
   }
 
   if (editBtn) {
