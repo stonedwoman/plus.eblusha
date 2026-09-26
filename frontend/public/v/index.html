@@ -11,7 +11,7 @@
     (function () {
       var KEY = "koban.fx";
       var OFF = ["nosky", "noforest", "noclock", "noglass", "noparallax"];
-      var VALID = OFF.concat(["diag"]);
+      var VALID = OFF.slice();
       var q = null;
       try {
         q = new URLSearchParams(location.search).get("fx");
@@ -31,7 +31,7 @@
       var root = document.documentElement;
       list.forEach(function (x) {
         if (VALID.indexOf(x) < 0) return;
-        root.classList.add(x === "diag" ? "fx-diag" : "fx-" + x.replace("no", "no-"));
+        root.classList.add("fx-" + x.replace("no", "no-"));
       });
     })();
   </script>
@@ -746,9 +746,23 @@
         grid-column: span 6;
       }
 
-      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span) {
-        grid-column: span 2;
+      /* Панелей-списков теперь две, а не три: по три колонки каждой, чтобы
+         ряд заполнялся без дыры. Ферму исключаем явно — иначе это правило
+         перебивает её собственное по специфичности. */
+      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm) {
+        grid-column: span 3;
       }
+
+      .dashboard-grid > .panel--farm {
+        grid-column: span 3;
+      }
+
+      /* На средних ширинах «Время» занимает весь ряд, поэтому списки ставим
+         подряд — иначе «Игроки» остаются в ряду одни, с дырой сбоку. */
+      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm) { order: 1; }
+      .dashboard-grid > .panel--farm { order: 2; }
+      .panel--wide { order: 3; }
+      .panel--world-span { order: 4; }
     }
 
     /* С этой ширины «Время» и три списка помещаются в один ряд. */
@@ -757,48 +771,69 @@
         grid-column: span 3;
       }
 
-      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span) {
+      /* Ферме отдельная ширина: там теперь разбивка по видам и клички. */
+      .dashboard-grid > .panel--farm {
+        grid-column: span 2;
+      }
+
+      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm) {
         grid-column: span 1;
       }
+
+      /* Порядок в ряду: игроки, время, ферма. */
+      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm) { order: 1; }
+      .panel--wide { order: 2; }
+      .dashboard-grid > .panel--farm { order: 3; }
+      .panel--world-span { order: 4; }
     }
 
     .farm { font-size: 0.875rem; }
 
-    .farm__kind {
+    .farm__list { display: grid; gap: 0.7rem; }
+
+    @container (min-width: 480px) {
+      .farm__list { grid-template-columns: 1fr 1fr; gap: 0.7rem 1.4rem; }
+    }
+
+    .farm__row {
+      padding-bottom: 0.55rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .farm__head {
       display: flex;
-      align-items: flex-start;
-      gap: 0.6rem;
-      min-width: 0;
+      align-items: baseline;
+      gap: 0.5rem;
     }
 
-    .farm__icon {
-      font-size: 1.05rem;
-      line-height: 1.35;
-      flex: 0 0 auto;
-    }
-
-    .farm__text { display: flex; flex-direction: column; min-width: 0; }
+    .farm__icon { font-size: 1.05rem; line-height: 1; flex: 0 0 auto; }
 
     .farm__name { color: rgba(226, 232, 226, 0.92); }
 
-    /* Расшифровка уходит под название: справа она вылезала за край панели. */
-    .farm__split {
-      font-size: 0.72rem;
-      color: rgba(226, 232, 226, 0.42);
-    }
-
     .farm__count {
-      flex: 0 0 auto;
+      margin-left: auto;
       font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 1rem;
       font-variant-numeric: tabular-nums;
       color: var(--accent-hover);
     }
 
+    .farm__facts {
+      margin: 0.15rem 0 0;
+      font-size: 0.76rem;
+      color: rgba(226, 232, 226, 0.5);
+    }
+
+    .farm__names {
+      margin: 0.1rem 0 0;
+      font-size: 0.74rem;
+      font-style: italic;
+      color: rgba(200, 164, 90, 0.62);
+    }
+
     .farm__foot {
-      margin: 0.6rem 0 0;
+      margin: 0.7rem 0 0;
       font-size: 0.78rem;
-      line-height: 1.4;
       color: rgba(226, 232, 226, 0.45);
     }
 
@@ -1553,6 +1588,8 @@
       white-space: nowrap;
     }
 
+    .list li.is-online .player-row__name { color: var(--online); }
+
     .dot-online {
       width: 7px;
       height: 7px;
@@ -1661,26 +1698,20 @@
     </article>
 
     <div class="dashboard-grid">
+      <section class="panel glass-panel glass-panel--interactive">
+        <h2 class="panel__head">Игроки</h2>
+        <ul class="list" id="recentList"></ul>
+        <p class="empty" id="recentEmpty" hidden>Пока никто не заходил</p>
+      </section>
+
       <section class="panel panel--wide glass-panel glass-panel--interactive" aria-label="Время в мире">
         <h2 class="panel__head">Время в мире</h2>
         <div id="worldClockRoot" class="wclock"></div>
       </section>
 
-      <section class="panel glass-panel glass-panel--interactive">
-        <h2 class="panel__head">Онлайн</h2>
-        <ul class="list" id="onlineList"></ul>
-        <p class="empty" id="onlineEmpty" hidden>Никого в мире</p>
-      </section>
-
-      <section class="panel glass-panel glass-panel--interactive" aria-label="Ферма">
+      <section class="panel panel--farm glass-panel glass-panel--interactive" aria-label="Ферма">
         <h2 class="panel__head">Ферма</h2>
         <div id="worldFarmRoot" class="farm"></div>
-      </section>
-
-      <section class="panel glass-panel glass-panel--interactive">
-        <h2 class="panel__head">Недавние</h2>
-        <ul class="list" id="recentList"></ul>
-        <p class="empty" id="recentEmpty" hidden>Нет записей</p>
       </section>
 
       <section class="panel panel--world-span glass-panel glass-panel--interactive" aria-label="Информация о мире">
@@ -1703,8 +1734,7 @@
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>
-  <script src="/v/components/world-farm.js?v=5" defer></script>
-  <script src="/v/components/diag.js?v=4" defer></script>
+  <script src="/v/components/world-farm.js?v=6" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";
@@ -1717,8 +1747,6 @@
       var toast = document.getElementById("toast");
       var worldLabel = document.getElementById("worldLabel");
       var heroStatus = document.getElementById("heroStatus");
-      var onlineList = document.getElementById("onlineList");
-      var onlineEmpty = document.getElementById("onlineEmpty");
       var recentList = document.getElementById("recentList");
       var recentEmpty = document.getElementById("recentEmpty");
       var worldInfoRoot = document.getElementById("worldInfoRoot");
@@ -1878,26 +1906,16 @@
         heroStatus.className = "hero__kicker " + (online ? "hero__kicker--online" : "hero__kicker--offline");
       }
 
-      function renderOnline(players) {
-        onlineList.innerHTML = "";
-        if (!players || !players.length) {
-          onlineEmpty.hidden = false;
-          return;
-        }
-        onlineEmpty.hidden = true;
-        players.forEach(function (p) {
-          var li = document.createElement("li");
-          var left = document.createElement("div");
-          left.className = "player-row";
-          left.innerHTML = '<span class="dot-online" aria-hidden="true"></span><span class="player-row__name">' + escapeHtml(p.name) + "</span>";
-          var right = document.createElement("div");
-          right.className = "meta-small";
-          right.innerHTML =
-            "<span>В игре</span><span class=\"sub\">" + formatDuration(p.onlineSince) + "</span>";
-          li.appendChild(left);
-          li.appendChild(right);
-          onlineList.appendChild(li);
-        });
+      // Ники в игре и имена, под которыми мы друг друга знаем.
+      var PLAYER_NAMES = {
+        "РомаH": "Роман",
+        "IiApaCiOxa": "Васян",
+        "Парасюха": "Васян",
+        "Куралеска": "Валян"
+      };
+
+      function displayName(name) {
+        return PLAYER_NAMES[name] || name;
       }
 
       function renderRecent(players) {
@@ -1911,7 +1929,13 @@
           var li = document.createElement("li");
           var left = document.createElement("div");
           left.className = "player-row";
-          left.innerHTML = "<span class=\"player-row__name\">" + escapeHtml(p.name) + "</span>";
+          // Отдельного списка «Онлайн» больше нет: кто в мире — помечен точкой
+          // прямо здесь.
+          left.innerHTML =
+            (p.online === true ? '<span class="dot-online" aria-hidden="true"></span>' : "") +
+            "<span class=\"player-row__name\" title=\"" + escapeHtml(p.name) + "\">" +
+            escapeHtml(displayName(p.name)) + "</span>";
+          if (p.online === true) li.className = "is-online";
           var right = document.createElement("div");
           right.className = "meta-small";
           if (p.online === true) {
@@ -1972,7 +1996,6 @@
         renderRecent(cachedRecent);
 
         cachedOnline = online.slice();
-        renderOnline(online);
 
         setHeroStatus(isPayloadOnline(data));
 
@@ -2048,7 +2071,6 @@
           copyBtn.disabled = true;
           lastCode = null;
           setHeroStatus(false);
-          renderOnline(cachedOnline);
           renderRecent(cachedRecent);
           if (typeof renderWorldInfo === "function" && cachedWorld) {
             renderWorldInfo(worldInfoRoot, cachedWorld);
@@ -2114,7 +2136,6 @@
       updateRefreshButtonState();
 
       setInterval(function () {
-        if (cachedOnline.length) renderOnline(cachedOnline);
         if (cachedRecent.length) renderRecent(cachedRecent);
       }, 30000);
     })();

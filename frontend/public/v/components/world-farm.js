@@ -4,8 +4,9 @@
  * стоит флаг tamed. Дикие того же префаба в мире встречаются постоянно и в
  * подсчёт не идут.
  *
- * Взрослые и молодняк считаются раздельно: понятно, кто уже несёт яйца, а кто
- * ещё растёт. Клички (TamedName) показываем, если игроки их давали.
+ * На каждый вид показываем: сколько всего, сколько взрослых и молодняка,
+ * сколько со звёздами и какие клички дали игроки. Виды, которых ещё нет,
+ * просто не выводятся — появятся сами, как только кого-то приручат.
  */
 (function () {
   "use strict";
@@ -46,7 +47,6 @@
     return n;
   }
 
-  // «21 взрослая», «11 цыплят» — без склонений не обойтись.
   function plural(n, one, few, many) {
     var a = Math.abs(n) % 100;
     var b = a % 10;
@@ -64,61 +64,71 @@
       return;
     }
 
-    var byKey = {};
-    var names = [];
+    // Группируем по префабу: счёт, звёздные и клички.
+    var by = {};
     items.forEach(function (it) {
-      byKey[it.n] = (byKey[it.n] || 0) + 1;
-      if (it.t) names.push(it.t);
+      var g = by[it.n] || (by[it.n] = { n: 0, stars: 0, names: [] });
+      g.n++;
+      if (it.l > 1) g.stars++;
+      if (it.t) g.names.push(it.t);
     });
 
-    var list = el("ul", "list");
+    var list = el("div", "farm__list");
     var total = 0;
+    var totalStars = 0;
+    var shown = 0;
 
     SPECIES.forEach(function (sp) {
       var kinds = KINDS.filter(function (k) { return k.species === sp.id; });
-      var sum = kinds.reduce(function (a, k) { return a + (byKey[k.key] || 0); }, 0);
+      var sum = kinds.reduce(function (a, k) { return a + ((by[k.key] || {}).n || 0); }, 0);
       if (sum === 0) return;
+      shown++;
       total += sum;
 
-      var li = document.createElement("li");
+      var row = el("div", "farm__row");
 
-      var left = el("span", "farm__kind");
-      left.appendChild(el("span", "farm__icon", sp.icon));
+      var head = el("div", "farm__head");
+      head.appendChild(el("span", "farm__icon", sp.icon));
+      head.appendChild(el("span", "farm__name", sp.label));
+      head.appendChild(el("b", "farm__count", String(sum)));
+      row.appendChild(head);
 
-      var text = el("span", "farm__text");
-      text.appendChild(el("span", "farm__name", sp.label));
+      var facts = [];
+      kinds.forEach(function (k) {
+        var g = by[k.key];
+        if (!g) return;
+        facts.push(g.n + " " + plural(g.n, k.forms[0], k.forms[1], k.forms[2]));
+      });
 
-      var parts = kinds
-        .filter(function (k) { return byKey[k.key]; })
-        .map(function (k) {
-          var n = byKey[k.key];
-          return n + " " + plural(n, k.forms[0], k.forms[1], k.forms[2]);
-        });
-      // Расшифровка нужна только когда есть и взрослые, и молодняк.
-      if (parts.length > 1) text.appendChild(el("span", "farm__split", parts.join(" · ")));
-      left.appendChild(text);
+      var stars = kinds.reduce(function (a, k) { return a + ((by[k.key] || {}).stars || 0); }, 0);
+      totalStars += stars;
+      if (stars) facts.push("★ " + stars + " со " + plural(stars, "звездой", "звёздами", "звёздами"));
 
-      var right = el("b", "farm__count", String(sum));
+      row.appendChild(el("p", "farm__facts", facts.join(" · ")));
 
-      li.appendChild(left);
-      li.appendChild(right);
-      list.appendChild(li);
+      var names = [];
+      kinds.forEach(function (k) {
+        var g = by[k.key];
+        if (g) names = names.concat(g.names);
+      });
+      if (names.length) {
+        row.appendChild(el("p", "farm__names",
+          names.slice(0, 10).join(", ") + (names.length > 10 ? " и ещё " + (names.length - 10) : "")));
+      }
+
+      list.appendChild(row);
     });
 
-    if (total === 0) {
+    if (!shown) {
       root.appendChild(el("p", "empty", "Прирученных пока нет"));
       return;
     }
 
     root.appendChild(list);
 
-    var foot = el("p", "farm__foot",
-      "Всего " + total + " " + plural(total, "голова", "головы", "голов") + ".");
-    if (names.length) {
-      foot.textContent += " С кличками: " + names.slice(0, 8).join(", ") +
-        (names.length > 8 ? " и ещё " + (names.length - 8) : "") + ".";
-    }
-    root.appendChild(foot);
+    var foot = "Всего " + total + " " + plural(total, "голова", "головы", "голов");
+    if (totalStars) foot += ", из них " + totalStars + " со звёздами";
+    root.appendChild(el("p", "farm__foot", foot + "."));
   }
 
   function load() {
