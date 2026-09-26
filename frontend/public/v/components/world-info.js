@@ -251,6 +251,30 @@
     }
   }
 
+  // После сворачивания: если свёрнутая плитка ушла из виду, чуть докрутить
+  // ближайшие прокрутки — панель (у неё может быть задана высота) и грань.
+  // Раньше тут был scrollIntoView прямо в начале сворачивания: плитка ещё
+  // стояла во весь развёрнутый рост, браузер «доводил» до видимости её низ и
+  // кидал страницу вниз, заодно прокручивая и контейнеры с overflow:hidden.
+  function revealGently(tile) {
+    var boxes = [];
+    var panel = tile.closest && tile.closest(".is-placed");
+    if (panel) boxes.push(panel);
+    var face = tile.closest && tile.closest(".face__scroll");
+    if (face) boxes.push(face);
+    boxes.forEach(function (box) {
+      if (box.scrollHeight <= box.clientHeight + 1) return;
+      var b = box.getBoundingClientRect();
+      var t = tile.getBoundingClientRect();
+      var pad = 16;
+      if (t.top < b.top + pad) {
+        box.scrollTop -= b.top + pad - t.top;
+      } else if (t.bottom > b.bottom - pad && t.height < b.height - 2 * pad) {
+        box.scrollTop += t.bottom - (b.bottom - pad);
+      }
+    });
+  }
+
   function expandTile(tile, animate) {
     var grid = tile.parentNode;
     if (!grid) return;
@@ -341,7 +365,9 @@
       grid.classList.remove("world-info__bosses--has-expanded", "world-info__bosses--closing");
       clearRect(tile);
       grid.style.minHeight = "";
+      if (reveal) revealGently(tile);
     };
+    var reveal = !!animate;
 
     if (animate && !REDUCED_MOTION) {
       applyRect(tile, cur, grid.clientWidth);
@@ -356,14 +382,7 @@
       finish();
     }
 
-    if (animate) {
-      focusQuiet(tile);
-      try {
-        tile.scrollIntoView({ block: "nearest" });
-      } catch (e) {
-        // старые браузеры — не критично
-      }
-    }
+    if (animate) focusQuiet(tile);
   }
 
   function toggleTile(tile) {
