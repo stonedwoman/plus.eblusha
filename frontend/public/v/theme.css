@@ -116,7 +116,6 @@ html.fx-no-glass .glass-panel {
 
 /* ---------- пилюля статуса ---------- */
 
-.hero__kicker,
 .kicker {
   display: inline-flex;
   align-items: center;
@@ -136,7 +135,6 @@ html.fx-no-glass .glass-panel {
   transition: color var(--t-med), background var(--t-med), border-color var(--t-med);
 }
 
-.hero__kicker::before,
 .kicker::before {
   content: "";
   width: 6px;
@@ -147,14 +145,12 @@ html.fx-no-glass .glass-panel {
   flex: 0 0 auto;
 }
 
-.hero__kicker--online,
 .kicker--online {
   color: var(--online);
   background: rgba(110, 231, 168, 0.08);
   border-color: rgba(110, 231, 168, 0.28);
 }
 
-.hero__kicker--offline,
 .kicker--offline {
   color: var(--bad);
   background: rgba(232, 104, 104, 0.08);
@@ -426,18 +422,211 @@ input:focus-visible {
   text-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
 }
 
-/* ---------- всплывающее уведомление ---------- */
+/* ---------- шапка: одна на все три страницы ----------
+ *
+ * Закреплена сверху, две стеклянные группы. Слева: «‹ Главная» (на карте и в
+ * настройках — всегда на одном месте и всегда с подписью), статус связи с
+ * сервером и название страницы. Справа — кнопки этой страницы: «Обновить» на
+ * главной, «Изменить» в настройках, «Игроки» и «Чат» на карте.
+ * Страницам, которые прокручиваются, нужен body.has-topbar — отступ под шапку.
+ *
+ * Размеры здесь в пикселях, а не в rem: у карты корневой шрифт 14px, у
+ * главной и настроек 16px, а шапка должна совпадать до пикселя.
+ */
 
-.toast {
-  text-align: center;
-  font-size: 0.75rem;
-  min-height: 1.15em;
-  opacity: 0;
-  transition: opacity 0.3s var(--ease);
-  margin-top: 0.4rem;
+.topbar {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 12px;
+  right: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  pointer-events: none;
 }
 
-.toast.show { opacity: 1; }
+.topbar__group {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  /* Одна высота у всех групп, даже где нет кнопок (главная слева). */
+  min-height: 58px;
+  padding: 6px;
+  border-radius: 999px;
+}
+
+.topbar__title {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 14px 0 8px;
+}
+
+/* Разделители: после «Главной» и перед кнопкой, идущей за названием. */
+.topbar__home + .topbar__title {
+  padding-left: 12px;
+  border-left: 1px solid rgba(200, 164, 90, 0.14);
+}
+
+.topbar__title:not(:last-child) {
+  margin-right: 2px;
+  border-right: 1px solid rgba(200, 164, 90, 0.14);
+}
+
+.topbar__kicker { font-size: 9px; gap: 7px; padding: 3px 10px 3px 8px; }
+
+.topbar__h1 {
+  max-width: 100%;
+  font-size: 15px;
+  letter-spacing: 0.14em;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Кнопка шапки: иконка, подпись и, если нужно, счётчик. */
+.tbtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: none;
+  min-width: var(--tap);
+  min-height: var(--tap);
+  padding: 0 14px 0 12px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid transparent;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.tbtn svg { width: 20px; height: 20px; flex: none; }
+
+.tbtn:hover:not(:disabled) {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.tbtn[aria-pressed="true"] {
+  color: var(--accent-hover);
+  background: rgba(200, 164, 90, 0.14);
+  border-color: rgba(200, 164, 90, 0.4);
+}
+
+.tbtn:disabled { opacity: 0.55; cursor: default; }
+
+.tbtn__badge {
+  margin-left: 2px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+/* «‹ Главная» — главный выход со страницы, поэтому светлее соседей. */
+.topbar__home {
+  color: var(--text-main);
+  padding-left: 8px;
+}
+
+.topbar__home svg { width: 18px; height: 18px; }
+
+.topbar__home:hover:not(:disabled) { color: var(--accent-hover); }
+
+/* Круглая кнопка без подложки — «закрыть» в панелях. */
+.btn-icon--flat {
+  background: none;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.btn-icon--flat:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
+  transform: none;
+}
+
+body.has-topbar {
+  padding-top: calc(max(12px, env(safe-area-inset-top)) + 58px);
+}
+
+/* Уведомление под шапкой: «Скопировано», «Применено», «Следим за …». */
+.k-toast {
+  position: fixed;
+  top: calc(max(12px, env(safe-area-inset-top)) + 66px);
+  left: 50%;
+  z-index: 45;
+  max-width: min(90vw, 36rem);
+  padding: 0.45rem 1.1rem;
+  border-radius: 999px;
+  background: rgba(8, 16, 15, 0.9);
+  border: 1px solid var(--accent-line);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.4);
+  color: var(--accent-hover);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -6px);
+  transition: opacity 240ms var(--ease), transform 280ms var(--ease-out);
+}
+
+.k-toast.is-on { opacity: 1; transform: translate(-50%, 0); }
+.k-toast.is-good { color: var(--online); border-color: rgba(110, 231, 168, 0.35); }
+.k-toast.is-bad { color: #f0a08f; border-color: rgba(232, 104, 104, 0.4); }
+
+@media (max-width: 720px) {
+  .topbar { left: 8px; right: 8px; gap: 6px; }
+  .topbar__group { min-height: 54px; padding: 4px; gap: 2px; }
+  .topbar__title { padding: 0 10px 0 6px; }
+  .topbar__home + .topbar__title { padding-left: 10px; }
+  .topbar__h1 { font-size: 12.5px; letter-spacing: 0.06em; }
+  .topbar__kicker { padding: 3px; gap: 0; }
+  .topbar__kicker-text { display: none; }
+  .tbtn { padding: 0 8px; }
+  .topbar__home { padding: 0 12px 0 6px; gap: 4px; }
+  /* На телефоне подписи у кнопок остаются только там, где без них непонятно:
+     «Главная» и кнопки с классом tbtn--labeled. */
+  .tbtn__label { display: none; }
+  .topbar__home .tbtn__label,
+  .tbtn--labeled .tbtn__label { display: inline; }
+  .tbtn__badge {
+    position: absolute;
+    top: 3px;
+    right: 1px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    margin: 0;
+    font-size: 9px;
+  }
+  /* Ноль на уголке — шум. */
+  .tbtn__badge:not(.is-live) { display: none; }
+  body.has-topbar { padding-top: calc(max(12px, env(safe-area-inset-top)) + 52px); }
+  .k-toast { top: calc(max(12px, env(safe-area-inset-top)) + 60px); font-size: 12.8px; }
+}
+
+@media (max-width: 340px) {
+  .topbar__h1 { display: none; }
+}
 
 /* ---------- наклон плитки за курсором ---------- */
 

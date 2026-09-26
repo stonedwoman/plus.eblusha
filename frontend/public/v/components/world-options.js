@@ -9,8 +9,9 @@
  * рассылает ключи целиком (ZoneSystem.SendGlobalKeys).
  *
  * Разметка: группы настроек — отдельные стеклянные панели в сетке
- * #worldOptionsRoot, кнопка правки и статус живут в шапке страницы
- * (#optsEdit, #optsStatus, #optsNote), пароль спрашивает <dialog id="passDialog">.
+ * #worldOptionsRoot. В общей шапке — статус связи (#optsLink) и кнопка правки
+ * (#optsEdit); режим описан во вводной панели (#optsStatus); уведомления —
+ * общая пилюля под шапкой (#optsNote); пароль спрашивает <dialog id="passDialog">.
  */
 (function () {
   "use strict";
@@ -23,9 +24,10 @@
   if (!root) return;
 
   var statusEl = document.getElementById("optsStatus");
+  var linkEl = document.getElementById("optsLink");
   var editBtn = document.getElementById("optsEdit");
+  var editLabel = document.getElementById("optsEditLabel");
   var noteEl = document.getElementById("optsNote");
-  var footEl = document.getElementById("optsFoot");
   var dialog = document.getElementById("passDialog");
   var passInput = document.getElementById("passInput");
 
@@ -74,9 +76,11 @@
       })
       .then(function (data) {
         state = data;
+        setLink(true);
         render();
       })
       .catch(function () {
+        setLink(false);
         if (!state) {
           root.textContent = "";
           root.appendChild(emptyPanel("Сервер сейчас недоступен"));
@@ -127,14 +131,23 @@
       .then(load);
   }
 
+  // Статус связи в шапке — как на главной и на карте.
+  function setLink(online) {
+    if (!linkEl) return;
+    linkEl.className = "kicker topbar__kicker " + (online ? "kicker--online" : "kicker--offline");
+    var text = linkEl.querySelector(".topbar__kicker-text");
+    if (text) text.textContent = online ? "Онлайн" : "Нет связи";
+  }
+
   var noteTimer = null;
   function note(text, bad) {
     if (!noteEl) return;
     noteEl.textContent = text;
     noteEl.classList.toggle("is-bad", !!bad);
-    noteEl.hidden = false;
+    noteEl.classList.toggle("is-good", !bad);
+    noteEl.classList.add("is-on");
     if (noteTimer) clearTimeout(noteTimer);
-    noteTimer = setTimeout(function () { noteEl.hidden = true; }, 4000);
+    noteTimer = setTimeout(function () { noteEl.classList.remove("is-on"); }, 4000);
   }
 
   function startEditing(typed) {
@@ -257,13 +270,16 @@
 
   function renderBar() {
     if (statusEl) {
-      statusEl.textContent = editing ? "Правка включена" : "Только просмотр";
+      statusEl.innerHTML = editing
+        ? "<b>Правка включена.</b> Нажми на переключатель или значение — изменится сразу у всех. Закончил — «Готово» наверху."
+        : "<b>Только просмотр.</b> Чтобы менять, нажми «Изменить» наверху — понадобится пароль.";
       statusEl.classList.toggle("is-editing", editing);
     }
     if (editBtn) {
-      editBtn.textContent = editing ? "Выйти из правки" : "Изменить";
-      editBtn.classList.toggle("is-on", editing);
+      editBtn.setAttribute("aria-pressed", editing ? "true" : "false");
+      editBtn.title = editing ? "Выйти из правки" : "Изменить настройки";
     }
+    if (editLabel) editLabel.textContent = editing ? "Готово" : "Изменить";
   }
 
   function render() {
@@ -272,7 +288,6 @@
 
     if (!state || !state.ready) {
       root.appendChild(emptyPanel("Сервер ещё не отдал настройки"));
-      if (footEl) footEl.hidden = true;
       return;
     }
 
@@ -287,8 +302,6 @@
       section.appendChild(body);
       root.appendChild(section);
     });
-
-    if (footEl) footEl.hidden = false;
   }
 
   if (editBtn) {

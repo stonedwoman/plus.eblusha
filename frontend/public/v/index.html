@@ -89,7 +89,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/v/theme.css?v=2" />
+  <link rel="stylesheet" href="/v/theme.css?v=6" />
   <link rel="stylesheet" href="/v/scene.css?v=2" />
   <!-- Первый кадр — только когда нарисовано небо (#k-ready стоит после его
        скрипта): иначе куб повернётся на пустой бледный фон. -->
@@ -112,67 +112,18 @@
     .hero__title {
       font-family: "Cinzel", Georgia, serif;
       font-weight: 700;
-      font-size: clamp(1.45rem, 4.5vw, 2.1rem);
-      letter-spacing: 0.18em;
-      margin: 0 0 0.3rem;
+      font-size: clamp(1.2rem, 3.4vw, 1.7rem);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin: 0 0 0.35rem;
       color: var(--text-main);
       text-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
     }
 
-    .hero__world-code {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      margin: 0 auto 0.6rem;
-      max-width: 100%;
-    }
 
-    .hero__world {
-      font-family: "Cinzel", serif;
-      font-size: 0.875rem;
-      font-weight: 500;
-      letter-spacing: 0.12em;
-      color: var(--accent);
-      margin: 0 0 0.55rem;
-      opacity: 0.92;
-      display: inline-block;
-      width: max-content;
-      max-width: 100%;
-      text-align: center;
-    }
 
-    /* Панель широкая, а раньше всё жалось в центральную колонку и половина
-       ширины пропадала. Теперь слева — кто мы и код входа, справа — два
-       крупных перехода; «Обновить» ушло наверх, чтобы не спорить с ними. */
-    .hero__top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      margin-bottom: clamp(0.8rem, 2vw, 1.15rem);
-    }
-
-    .hero__refresh {
-      font-family: "Source Sans 3", sans-serif;
-      font-size: 0.8125rem;
-      font-weight: 600;
-      color: var(--text-muted);
-      background: none;
-      border: 1px solid rgba(200, 164, 90, 0.16);
-      border-radius: 999px;
-      padding: 0.3rem 0.85rem;
-      cursor: pointer;
-      transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
-    }
-
-    .hero__refresh:hover:not(:disabled) {
-      color: var(--accent-hover);
-      border-color: rgba(200, 164, 90, 0.4);
-      background: rgba(200, 164, 90, 0.07);
-    }
-
-    .hero__refresh:disabled { opacity: 0.45; }
-    .hero__refresh.btn-secondary--refreshing:disabled { cursor: wait; opacity: 0.7; }
+    /* Статус и «Обновить» живут в общей шапке (theme.css), как на карте и в
+       настройках. В карточке — код входа слева и два крупных перехода справа. */
 
     .hero__grid {
       display: grid;
@@ -1261,7 +1212,24 @@
 
   </style>
 </head>
-<body>
+<body class="has-topbar">
+  <header class="topbar">
+    <div class="topbar__group glass-panel">
+      <div class="topbar__title">
+        <span class="kicker kicker--offline topbar__kicker" id="heroStatus" aria-live="polite"><span class="topbar__kicker-text">Оффлайн</span></span>
+        <h1 class="k-title topbar__h1">Valheim</h1>
+      </div>
+    </div>
+    <nav class="topbar__group glass-panel" aria-label="Действия">
+      <button type="button" class="tbtn tbtn--labeled" id="refreshBtn" aria-busy="false" title="Обновить код, игроков и мир">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+        <span class="tbtn__label" id="refreshLabel">Обновить</span>
+      </button>
+    </nav>
+  </header>
+
+  <div class="k-toast" id="toast" role="status"></div>
+
   <a class="home-logo" href="https://koban.uk/" aria-label="Вернуться на koban.uk">
     <img class="home-logo__img home-logo__img--static" src="/koban/logo-body.png" alt="КОБАНЮК" />
     <img class="home-logo__img home-logo__img--eyes" src="/koban/logo-eyes.png" alt="" aria-hidden="true" />
@@ -1270,15 +1238,10 @@
 
   <div class="page" aria-live="polite">
     <article class="hero glass-panel k-rise" style="--i: 0">
-      <div class="hero__top">
-        <p class="hero__kicker hero__kicker--offline" id="heroStatus" aria-live="polite">ОФФЛАЙН</p>
-        <button type="button" class="hero__refresh" id="refreshBtn" aria-busy="false">Обновить</button>
-      </div>
-
       <div class="hero__grid">
         <div class="hero__id">
-          <h1 class="hero__title">VALHEIM</h1>
-          <p class="hero__world" id="worldLabel">Мир · Koban</p>
+          <span class="tile__kicker">Код для входа</span>
+          <h2 class="hero__title" id="worldLabel">Мир · Koban</h2>
           <div class="code-block">
             <div id="code" class="code muted" aria-label="Код мира">…</div>
           </div>
@@ -1305,7 +1268,6 @@
         </nav>
       </div>
 
-      <p class="toast" id="toast" role="status"></p>
     </article>
 
     <div class="dashboard-grid">
@@ -1357,6 +1319,7 @@
       var codeEl = document.getElementById("code");
       var copyBtn = document.getElementById("copyBtn");
       var refreshBtn = document.getElementById("refreshBtn");
+      var refreshLabel = document.getElementById("refreshLabel") || refreshBtn;
       var toast = document.getElementById("toast");
       var worldLabel = document.getElementById("worldLabel");
       var heroStatus = document.getElementById("heroStatus");
@@ -1409,14 +1372,14 @@
         refreshBtn.setAttribute("aria-busy", refreshBusy ? "true" : "false");
         refreshBtn.classList.toggle("btn-secondary--refreshing", refreshBusy);
         if (refreshBusy) {
-          refreshBtn.textContent = REFRESH_LABEL_BUSY;
+          refreshLabel.textContent = REFRESH_LABEL_BUSY;
           return;
         }
         if (cooldownMs > 0) {
-          refreshBtn.textContent = "Подождать " + Math.max(1, Math.ceil(cooldownMs / 1000)) + "с";
+          refreshLabel.textContent = "Подождать " + Math.max(1, Math.ceil(cooldownMs / 1000)) + "с";
           return;
         }
-        refreshBtn.textContent = REFRESH_LABEL_IDLE;
+        refreshLabel.textContent = REFRESH_LABEL_IDLE;
       }
 
       function setRefreshBusy(busy) {
@@ -1439,14 +1402,13 @@
         }, 250);
       }
 
+      // Общая пилюля под шапкой — та же, что на карте и в настройках.
       function setToast(msg, ok) {
         toast.textContent = msg;
-        toast.className = "toast show";
-        toast.style.color = ok ? "var(--online)" : "var(--danger)";
+        toast.className = "k-toast is-on " + (ok ? "is-good" : "is-bad");
         clearTimeout(setToast._t);
         setToast._t = setTimeout(function () {
-          toast.className = "toast";
-          toast.textContent = "";
+          toast.classList.remove("is-on");
         }, 2500);
       }
 
@@ -1515,8 +1477,9 @@
 
       function setHeroStatus(online) {
         if (!heroStatus) return;
-        heroStatus.textContent = online ? "ОНЛАЙН" : "ОФФЛАЙН";
-        heroStatus.className = "hero__kicker " + (online ? "hero__kicker--online" : "hero__kicker--offline");
+        heroStatus.className = "kicker topbar__kicker " + (online ? "kicker--online" : "kicker--offline");
+        var statusText = heroStatus.querySelector(".topbar__kicker-text");
+        if (statusText) statusText.textContent = online ? "Онлайн" : "Оффлайн";
       }
 
       // Ники в игре и имена, под которыми мы друг друга знаем.

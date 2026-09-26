@@ -70,72 +70,26 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/v/theme.css?v=2" />
+  <link rel="stylesheet" href="/v/theme.css?v=6" />
   <link rel="stylesheet" href="/v/scene.css?v=2" />
   <!-- Первый кадр — только когда нарисовано небо, см. главную. -->
   <link rel="expect" href="#k-ready" blocking="render" />
   <style>
     /* Общее — в theme.css и scene.css. Здесь только настройки. */
 
-    .ohero {
-      padding: clamp(1rem, 2.6vw, 1.4rem) clamp(1rem, 3vw, 1.6rem);
-    }
+    /* Вводная панель — как панели главной. */
+    .ointro { font-size: 0.9rem; line-height: 1.5; }
 
-    .ohero__top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.75rem;
-      flex-wrap: wrap;
-      margin-bottom: clamp(0.7rem, 2vw, 1rem);
-    }
+    .ointro p { margin: 0; color: rgba(226, 232, 226, 0.68); max-width: 60rem; }
 
-    .ohero__left {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      flex-wrap: wrap;
-    }
-
-    .ohero__title {
-      font-size: clamp(1.25rem, 3.6vw, 1.9rem);
-      margin: 0 0 0.35rem;
-    }
-
-    .ohero__lead {
-      margin: 0;
-      font-size: 0.9rem;
-      line-height: 1.5;
-      color: rgba(226, 232, 226, 0.62);
-      max-width: 52rem;
-    }
-
-    .ohero__bar {
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-      flex-wrap: wrap;
-    }
-
-    .ohero__status {
-      margin: 0;
-      font-size: 0.72rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--text-dim);
-    }
-
-    .ohero__status.is-editing { color: var(--online); }
-
-    .ohero__note {
-      margin: 0.75rem 0 0;
+    .ointro__mode {
+      margin-top: 0.6rem !important;
       font-size: 0.85rem;
-      color: rgba(150, 205, 160, 0.95);
-      transition: opacity var(--t-med);
+      color: var(--text-dim) !important;
     }
 
-    .ohero__note[hidden] { display: none; }
-    .ohero__note.is-bad { color: rgba(226, 140, 130, 0.95); }
+    .ointro__mode b { color: var(--accent-hover); font-weight: 600; }
+    .ointro__mode.is-editing b { color: var(--online); }
 
     /* Группы настроек — карточки в сетке, как панели на главной. */
     .ogrid {
@@ -200,13 +154,6 @@
 
     .wchips { display: flex; flex-wrap: wrap; gap: 0.3rem; justify-content: flex-end; }
 
-    .ofoot {
-      margin: 0;
-      padding: 0 0.25rem;
-      font-size: 0.8rem;
-      color: rgba(226, 232, 226, 0.45);
-    }
-
     /* Пароль спрашиваем своим окном, а не браузерным prompt. */
     .k-dialog {
       width: min(92vw, 24rem);
@@ -251,36 +198,40 @@
     .k-dialog__actions button { min-height: 2.5rem; }
   </style>
 </head>
-<body>
-  <a class="home-logo" href="https://koban.uk/" aria-label="Вернуться на koban.uk">
-    <img class="home-logo__img home-logo__img--static" src="/koban/logo-body.png" alt="КОБАНЮК" />
-    <img class="home-logo__img home-logo__img--eyes" src="/koban/logo-eyes.png" alt="" aria-hidden="true" />
-    <img class="home-logo__img home-logo__img--glasses" src="/koban/logo-glasses.png" alt="" aria-hidden="true" />
-  </a>
+<body class="has-topbar">
+  <header class="topbar">
+    <div class="topbar__group glass-panel">
+      <a class="tbtn topbar__home" href="/v/" title="На главную">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+        <span class="tbtn__label">Главная</span>
+      </a>
+      <div class="topbar__title">
+        <span class="kicker kicker--offline topbar__kicker" id="optsLink" title="Связь с сервером"><span class="topbar__kicker-text">Связь</span></span>
+        <h1 class="k-title topbar__h1">Настройки мира</h1>
+      </div>
+    </div>
+    <nav class="topbar__group glass-panel" aria-label="Действия">
+      <button type="button" class="tbtn" id="optsEdit" aria-pressed="false" title="Изменить настройки">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
+        <span class="tbtn__label" id="optsEditLabel">Изменить</span>
+      </button>
+    </nav>
+  </header>
+
+  <div class="k-toast" id="optsNote" role="status"></div>
 
   <div class="page">
-    <article class="ohero glass-panel k-rise" style="--i: 0">
-      <div class="ohero__top">
-        <div class="ohero__left">
-          <a class="btn-ghost" href="/v/">← К серверу</a>
-          <p class="kicker">Сервер</p>
-        </div>
-        <div class="ohero__bar" id="optsBar">
-          <p class="ohero__status" id="optsStatus">Только просмотр</p>
-          <button type="button" class="btn-ghost" id="optsEdit">Изменить</button>
-        </div>
-      </div>
-      <h1 class="k-title ohero__title">Настройки мира</h1>
-      <p class="ohero__lead">
+    <section class="panel glass-panel ointro k-rise" style="--i: 0">
+      <h2 class="panel__head">Как это работает</h2>
+      <p>
         Это настоящие настройки мира Koban, а не косметика: сервер рассылает их всем,
         кто сейчас в игре, и изменения видны сразу, без перезахода. Они сохраняются
         в самом мире и переживают перезапуск сервера.
       </p>
-      <p class="ohero__note" id="optsNote" hidden></p>
-    </article>
+      <p class="ointro__mode" id="optsStatus"><b>Только просмотр.</b> Чтобы менять, нажми «Изменить» наверху — понадобится пароль.</p>
+    </section>
 
     <div id="worldOptionsRoot" class="ogrid" aria-live="polite"></div>
-    <p class="ofoot" id="optsFoot" hidden>Меняется сразу у всех, кто в игре. Настройки сохраняются в мире и переживают перезапуск.</p>
   </div>
 
   <dialog class="k-dialog" id="passDialog">
@@ -307,6 +258,6 @@
   <script src="/v/forest-parallax.js?v=3"></script>
   <i id="k-ready" hidden></i>
   <script src="/v/koban-ui.js?v=2" defer></script>
-  <script src="/v/components/world-options.js?v=5" defer></script>
+  <script src="/v/components/world-options.js?v=6" defer></script>
 </body>
 </html>
