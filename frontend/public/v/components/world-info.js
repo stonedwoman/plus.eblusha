@@ -602,26 +602,16 @@
         ? root.querySelector(".world-info__bosses")
         : null;
     lastBossesJson = bossesJson;
-    var rawEvents = Array.isArray(w.events) ? w.events : [];
-    var events = rawEvents.map(normalizeEventEntry);
 
     root.innerHTML = "";
 
-    var meta = document.createElement("div");
-    meta.className = "world-info__meta";
-    meta.innerHTML =
-      '<div class="world-info__kv"><span class="world-info__k">Сид</span> <span class="world-info__v">' +
-      esc(fmtUnknown(w.seed)) +
-      "</span></div>" +
-      '<div class="world-info__kv"><span class="world-info__k">День</span> <span class="world-info__v">' +
-      esc(fmtUnknown(w.day)) +
-      "</span></div>";
-    root.appendChild(meta);
-
-    var bossHead = document.createElement("div");
-    bossHead.className = "world-info__subhead";
-    bossHead.textContent = "Боссы";
-    root.appendChild(bossHead);
+    // Панель теперь «Боссы»: только плитки боссов. Сид мира стоит на камне
+    // с кодом (#worldSeed), день — в часах, набеги — своя панель (world-raids.js).
+    var seedEl = document.getElementById("worldSeed");
+    if (seedEl) {
+      var seed = fmtUnknown(w.seed);
+      seedEl.textContent = seed === "неизвестно" ? "" : "сид " + seed;
+    }
 
     if (keepGrid) {
       root.appendChild(keepGrid);
@@ -734,46 +724,13 @@
       }
     }
 
-    var evHead = document.createElement("div");
-    evHead.className = "world-info__subhead world-info__subhead--spaced";
-    evHead.textContent = "Последние события";
-    root.appendChild(evHead);
-
-    var evBox = document.createElement("div");
-    evBox.className = "world-info__events";
-    if (!events.length) {
-      evBox.innerHTML = '<span class="world-info__muted">нет данных в логе</span>';
-    } else {
-      events
-        .slice()
-        .reverse()
-        .forEach(function (entry, idx) {
-          var chip = document.createElement("span");
-          var isLatest = idx === 0;
-          chip.className =
-            "world-info__event-chip" +
-            (entry.unknown ? " world-info__event-chip--unknown" : "") +
-            (isLatest ? " world-info__event-chip--latest" : "");
-          var label = entry.nameRu || entry.id;
-          if (isLatest) {
-            var ago =
-              entry.secondsAgo != null
-                ? formatRealAgo(entry.secondsAgo)
-                : entry.gameDaysAgo != null
-                  ? formatGameDaysAgo(entry.gameDaysAgo)
-                  : "";
-            if (ago) label += " · " + ago;
-          }
-          chip.textContent = label;
-          chip.setAttribute("title", eventTooltip(entry));
-          if (entry.unknown) {
-            chip.setAttribute("data-event-id", esc(entry.id));
-          }
-          evBox.appendChild(chip);
-        });
-    }
-    root.appendChild(evBox);
   }
 
   global.renderWorldInfo = renderWorldInfo;
+  // Разбор набегов нужен и панели «Набеги» (world-raids.js).
+  global.ValheimEvents = {
+    normalize: normalizeEventEntry,
+    formatRealAgo: formatRealAgo,
+    tooltip: eventTooltip
+  };
 })(typeof window !== "undefined" ? window : this);

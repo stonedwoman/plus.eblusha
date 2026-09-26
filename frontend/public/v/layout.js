@@ -106,6 +106,18 @@
     grid.classList.add("is-free");
     grid.style.setProperty("--cols", String(n));
     grid.style.setProperty("--rows", String(Math.max(1, bottom)));
+    // Панели, которых ещё нет в сетке (добавили новую), встают в первое
+    // свободное место от трёх колонок шириной; нет такого — вниз во всю ширину.
+    var taken = Object.keys(pos).map(function (k) { return pos[k]; });
+    items.forEach(function (el) {
+      var key = el.getAttribute("data-layout-key");
+      if (pos[key] || el.hidden) return;
+      var spot = freeSpot(taken, n, bottom);
+      if (spot) {
+        pos[key] = spot;
+        taken.push(spot);
+      }
+    });
     var extra = 0;
     items.forEach(function (el) {
       var p = pos[el.getAttribute("data-layout-key")];
@@ -123,6 +135,33 @@
         el.classList.remove("is-placed");
       }
     });
+  }
+
+  // Первая сверху-слева пустота в пределах сетки: от 3 до 4 колонок шириной и
+  // не ниже 12 строк; высота — до ближайшей панели снизу или до низа сетки.
+  function freeSpot(taken, n, bottom) {
+    function busy(x, y) {
+      for (var i = 0; i < taken.length; i++) {
+        var t = taken[i];
+        if (x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h) return true;
+      }
+      return false;
+    }
+    for (var y = 0; y < bottom; y++) {
+      for (var x = 0; x + 3 <= n; x++) {
+        if (busy(x, y) || (x > 0 && !busy(x - 1, y) && y > 0 && !busy(x, y - 1))) continue;
+        var w = 0;
+        while (x + w < n && w < 4 && !busy(x + w, y)) w++;
+        if (w < 3) continue;
+        var h = 0;
+        for (var free = true; free && y + h < bottom; ) {
+          for (var c = x; c < x + w; c++) if (busy(c, y + h)) { free = false; break; }
+          if (free) h++;
+        }
+        if (h >= 12) return { x: x, y: y, w: w, h: h };
+      }
+    }
+    return null;
   }
 
   function clearFree(grid, items) {

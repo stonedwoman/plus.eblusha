@@ -129,11 +129,13 @@
 
 .hero__id[data-a-kicker="center"] > .tile__kicker,
 .hero__id[data-a-title="center"] > .hero__title,
-.hero__id[data-a-code="center"] > .code-block { align-self: center; text-align: center; }
+.hero__id[data-a-code="center"] > .code-block,
+.hero__id[data-a-code="center"] > .hero__seed { align-self: center; text-align: center; }
 
 .hero__id[data-a-kicker="right"] > .tile__kicker,
 .hero__id[data-a-title="right"] > .hero__title,
-.hero__id[data-a-code="right"] > .code-block { align-self: flex-end; text-align: right; }
+.hero__id[data-a-code="right"] > .code-block,
+.hero__id[data-a-code="right"] > .hero__seed { align-self: flex-end; text-align: right; }
 
 .hero__id[data-button="auto"] > .hero__copy {
   width: auto;

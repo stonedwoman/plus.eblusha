@@ -335,7 +335,7 @@
       /* Панелей-списков теперь две, а не три: по три колонки каждой, чтобы
          ряд заполнялся без дыры. Ферму исключаем явно — иначе это правило
          перебивает её собственное по специфичности. */
-      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm) {
+      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm):not(.panel--raids) {
         grid-column: span 3;
       }
 
@@ -345,10 +345,13 @@
 
       /* На средних ширинах «Время» занимает весь ряд, поэтому списки ставим
          подряд — иначе «Игроки» остаются в ряду одни, с дырой сбоку. */
-      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm) { order: 1; }
+      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm):not(.panel--raids) { order: 1; }
       .dashboard-grid > .panel--farm { order: 2; }
       .panel--wide { order: 3; }
       .panel--world-span { order: 4; }
+
+      /* Набеги — отдельной панелью под боссами, на всю ширину. */
+      .dashboard-grid > .panel--raids { grid-column: 1 / -1; order: 5; }
     }
 
     /* С этой ширины «Время» и три списка помещаются в один ряд. */
@@ -362,15 +365,19 @@
         grid-column: span 2;
       }
 
-      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm) {
+      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm):not(.panel--raids) {
         grid-column: span 1;
       }
 
       /* Порядок в ряду: игроки, время, ферма. */
-      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm) { order: 1; }
+      .dashboard-grid > .panel:not(.panel--wide):not(.panel--world-span):not(.panel--farm):not(.panel--raids) { order: 1; }
       .panel--wide { order: 2; }
       .dashboard-grid > .panel--farm { order: 3; }
       .panel--world-span { order: 4; }
+
+      /* Второй ряд: боссы — две трети, набеги — треть. */
+      .panel--world-span { grid-column: span 4; }
+      .dashboard-grid > .panel--raids { grid-column: span 2; order: 5; }
     }
 
     .farm { font-size: 0.875rem; }
@@ -703,6 +710,179 @@
       margin-top: 0.5rem;
     }
 
+    /* ---- Набеги ---- */
+    .raids { display: flex; flex-direction: column; gap: 0.9rem; font-size: 0.875rem; }
+
+    .raids__last {
+      position: relative;
+      padding: 0.85rem 1rem 0.9rem;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 150, 60, 0.35);
+      background:
+        radial-gradient(120% 140% at 0% 0%, rgba(255, 130, 40, 0.18) 0%, rgba(255, 130, 40, 0) 60%),
+        rgba(0, 0, 0, 0.22);
+      box-shadow: inset 0 0 22px rgba(255, 120, 30, 0.08);
+    }
+
+    .raids__kicker {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(255, 190, 120, 0.85);
+    }
+
+    .raids__dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ff8a3c;
+      box-shadow: 0 0 10px rgba(255, 138, 60, 0.9);
+      animation: raidsEmber 2.4s ease-in-out infinite;
+    }
+
+    @keyframes raidsEmber {
+      0%, 100% { opacity: 0.75; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.25); }
+    }
+
+    .raids__ago {
+      margin-left: auto;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: none;
+      color: rgba(241, 229, 203, 0.7);
+    }
+
+    .raids__name {
+      margin: 0.35rem 0 0.5rem;
+      font-family: var(--font-display);
+      font-size: clamp(1.15rem, 2vw, 1.4rem);
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      line-height: 1.2;
+      color: var(--text-main);
+      text-shadow: 0 2px 0 rgba(0, 0, 0, 0.55), 0 0 18px rgba(255, 140, 40, 0.25);
+    }
+
+    .raids__facts {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.2rem 0.75rem;
+      margin: 0;
+      font-size: 0.8rem;
+    }
+
+    .raids__facts dt {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(214, 170, 96, 0.75);
+      padding-top: 0.12rem;
+    }
+
+    .raids__facts dd { margin: 0; color: rgba(241, 229, 203, 0.82); }
+
+    .raids__stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+      gap: 0.5rem;
+    }
+
+    .raids__stat {
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+      padding: 0.5rem 0.65rem;
+      border-radius: 8px;
+      border: 1px solid rgba(214, 170, 96, 0.18);
+      background: rgba(0, 0, 0, 0.18);
+      min-width: 0;
+    }
+
+    .raids__stat b {
+      font-family: var(--font-display);
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--accent-hover);
+      line-height: 1.1;
+    }
+
+    .raids__stat span {
+      font-size: 0.72rem;
+      color: rgba(241, 229, 203, 0.6);
+      overflow-wrap: anywhere;
+    }
+
+    .raids__list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .raids__item {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.45rem 0.1rem;
+      border-bottom: 1px dashed rgba(214, 170, 96, 0.14);
+    }
+
+    .raids__item:last-child { border-bottom: none; }
+
+    .raids__mark {
+      width: 7px;
+      height: 7px;
+      transform: rotate(45deg);
+      background: linear-gradient(135deg, #fbe2a4, #8f6a31);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+    }
+
+    .raids__item.is-unknown .raids__mark { background: rgba(241, 229, 203, 0.3); }
+
+    .raids__item-name { color: rgba(241, 229, 203, 0.9); min-width: 0; }
+
+    .raids__item-when {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      font-size: 0.78rem;
+      color: rgba(241, 229, 203, 0.65);
+      white-space: nowrap;
+      line-height: 1.25;
+    }
+
+    .raids__item-when small {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.68rem;
+      color: rgba(241, 229, 203, 0.42);
+    }
+
+    .raids__more { margin: 0; font-size: 0.75rem; color: rgba(241, 229, 203, 0.45); }
+
+    /* Сид мира — мелко под кодом на камне. */
+    .hero__seed {
+      margin-top: -0.2rem;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      color: rgba(241, 229, 203, 0.5);
+      text-shadow: 0 -1px 0 rgba(0, 0, 0, 0.6);
+    }
+
+    .hero__seed:empty { display: none; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .raids__dot { animation: none; }
+    }
+
     .world-info__namelist {
       font-size: 0.8125rem;
       line-height: 1.45;
@@ -756,9 +936,11 @@
       font-size: 0.8125rem;
     }
 
+    /* Плиток столько в ряд, сколько влезает по ширине панели: её можно
+       сделать узкой в админ-режиме, и три жёсткие колонки ломали имена. */
     .world-info__bosses {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, 12.5rem), 1fr));
       gap: 0.5rem;
       line-height: 1.35;
       margin-bottom: 0.35rem;
@@ -772,19 +954,9 @@
       transition: none !important;
     }
 
-    @media (max-width: 900px) {
-      .world-info__bosses {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-    }
-
     @media (max-width: 420px) {
       :root {
         --forest-bleed: 5vw;
-      }
-
-      .world-info__bosses {
-        grid-template-columns: 1fr;
       }
 
       .world-info__boss-thumb img {
@@ -1315,6 +1487,7 @@
                 <div class="code-block">
                   <div id="code" class="code muted" aria-label="Код мира">…</div>
                 </div>
+                <span class="hero__seed" id="worldSeed"></span>
                 <button type="button" class="btn-primary hero__copy" id="copyBtn" disabled>Скопировать код</button>
               </div>
                 <a class="tile tile--opts" href="#settings" data-tilt data-layout-key="opts">
@@ -1346,9 +1519,14 @@
               <div id="worldFarmRoot" class="farm"></div>
             </section>
 
-            <section class="panel panel--world-span glass-panel glass-panel--interactive k-rise" style="--i: 4" aria-label="Информация о мире" data-layout-key="world">
-              <h2 class="panel__head">Мир</h2>
+            <section class="panel panel--world-span glass-panel glass-panel--interactive k-rise" style="--i: 4" aria-label="Боссы" data-layout-key="world">
+              <h2 class="panel__head">Боссы</h2>
               <div id="worldInfoRoot" class="world-info"></div>
+            </section>
+
+            <section class="panel panel--raids glass-panel glass-panel--interactive k-rise" style="--i: 5" aria-label="Набеги" data-layout-key="raids">
+              <h2 class="panel__head">Набеги</h2>
+              <div id="worldRaidsRoot" class="raids"></div>
             </section>
           </div>
           </div>
@@ -1403,10 +1581,11 @@
   <script src="/v/forest-parallax.js?v=4"></script>
   <i id="k-ready" hidden></i>
   <script src="/v/cube.js?v=2"></script>
-  <script src="/v/layout.js?v=3"></script>
+  <script src="/v/layout.js?v=4"></script>
   <script src="/v/koban-ui.js?v=3" defer></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
-  <script src="/v/components/world-info.js?v=10"></script>
+  <script src="/v/components/world-info.js?v=11"></script>
+  <script src="/v/components/world-raids.js?v=1"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>
   <script src="/v/components/world-farm.js?v=6" defer></script>
   <script src="/v/components/world-options.js?v=8" defer></script>
@@ -1426,6 +1605,7 @@
       var recentList = document.getElementById("recentList");
       var recentEmpty = document.getElementById("recentEmpty");
       var worldInfoRoot = document.getElementById("worldInfoRoot");
+      var worldRaidsRoot = document.getElementById("worldRaidsRoot");
 
       var lastCode = null;
       var pollTimer = null;
@@ -1700,11 +1880,10 @@
         }
         if (data.world != null && typeof data.world === "object") {
           cachedWorld = data.world;
-          renderWorldInfo(worldInfoRoot, cachedWorld);
-          return;
         }
         if (cachedWorld) {
           renderWorldInfo(worldInfoRoot, cachedWorld);
+          if (typeof renderWorldRaids === "function") renderWorldRaids(worldRaidsRoot, cachedWorld);
         }
       }
 
@@ -1750,6 +1929,7 @@
           renderRecent(cachedRecent);
           if (typeof renderWorldInfo === "function" && cachedWorld) {
             renderWorldInfo(worldInfoRoot, cachedWorld);
+            if (typeof renderWorldRaids === "function") renderWorldRaids(worldRaidsRoot, cachedWorld);
           }
           return;
         }
