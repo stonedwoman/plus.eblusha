@@ -344,6 +344,8 @@
   // повороту на неё она будет готова. На неё же сразу — если открыли #map.
   if (current === "map") {
     ensureMap();
+  } else if (root.classList.contains("nr-admin")) {
+    // В админ-режиме карта не нужна, пока на неё не повернули.
   } else {
     var later = function () {
       if (window.requestIdleCallback) window.requestIdleCallback(ensureMap, { timeout: 4000 });

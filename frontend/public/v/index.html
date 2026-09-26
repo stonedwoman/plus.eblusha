@@ -19,7 +19,7 @@
         r.classList.add("nr-admin");
         var l = document.createElement("link");
         l.rel = "stylesheet";
-        l.href = "/v/admin.css?v=3";
+        l.href = "/v/admin.css?v=7";
         document.head.appendChild(l);
       }
       setTimeout(function () { r.classList.remove("k-enter-first"); }, 1600);
@@ -1403,7 +1403,7 @@
   <script src="/v/forest-parallax.js?v=4"></script>
   <i id="k-ready" hidden></i>
   <script src="/v/cube.js?v=2"></script>
-  <script src="/v/layout.js?v=1"></script>
+  <script src="/v/layout.js?v=2"></script>
   <script src="/v/koban-ui.js?v=3" defer></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
@@ -1846,7 +1846,7 @@
     // Админ-режим раскладки: скрипт грузится только по ссылке /v/admin/.
     if (document.documentElement.classList.contains("nr-admin")) {
       var adm = document.createElement("script");
-      adm.src = "/v/admin.js?v=3";
+      adm.src = "/v/admin.js?v=8";
       document.body.appendChild(adm);
     }
   </script>

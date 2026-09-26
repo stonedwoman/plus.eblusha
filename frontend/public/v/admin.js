@@ -16,6 +16,13 @@
  *  - «Сохранить» кладёт раскладку на сервер (/v/api/layout) — её видят все;
  *    «Отменить» возвращает сохранённую, «По умолчанию» — свёрстанную.
  *
+ * Раскладок две — для компьютера и для телефона (до 720 px). Админ-режим на
+ * компьютере правит компьютерную, а кнопка «Телефон» открывает посреди экрана
+ * рамку телефона со страницей в телефонной ширине (/v/?admin=phone) — там
+ * правится телефонная, ровно в том виде, в каком её увидят. С телефона
+ * режим сразу правит телефонную; «Как на компьютере» берёт компьютерную за
+ * основу. Сохраняется только своя раскладка, вторая не затирается.
+ *
  * Пароль тот же, что для правки настроек мира; держим его в sessionStorage.
  * Сама раскладка применяется у всех через layout.js (KobanLayout).
  */
@@ -30,6 +37,12 @@
   var ENDPOINT = "/v/api/layout";
   var PASS_KEY = "koban.valheim.pass";
   var WIDE = window.matchMedia("(min-width: 1240px)");
+  var PHONE = window.matchMedia("(max-width: 720px)");
+  var PROFILE = PHONE.matches ? "phone" : "desktop";
+  var framed = true;
+  try { framed = window.self !== window.top; } catch (e) {}
+  // Рамка телефона внутри админ-режима компьютера.
+  var PREVIEW = framed && /(?:^|[?&])admin=phone(?:&|$)/.test(location.search);
 
   var saved = null;
   var draft = {};
@@ -146,9 +159,11 @@
     return t[key] || (t[key] = {});
   }
 
+  function savedProfile() { return clone((saved || {})[PROFILE] || {}); }
+
   function commit() {
     prune(draft);
-    L.set(clone(draft), false);
+    L.setProfile(PROFILE, clone(draft));
     refreshBar();
     decorate();
     if (pop) pop.refresh();
@@ -160,22 +175,52 @@
   bar.setAttribute("role", "toolbar");
   bar.setAttribute("aria-label", "Раскладка");
   bar.setAttribute("data-noswipe", "");
+  // Компьютер: переключатель «Компьютер / Телефон». Телефон: пометка и
+  // «Как на компьютере».
+  var deviceHtml = PROFILE === "desktop"
+    ? '<div class="adm-device" role="group" aria-label="Чья раскладка">' +
+        '<button type="button" class="adm-device__btn is-on" aria-pressed="true" data-act="desktop">Компьютер</button>' +
+        '<button type="button" class="adm-device__btn" aria-pressed="false" data-act="phone">Телефон</button>' +
+      '</div>'
+    : '<span class="adm-device adm-device--static">Телефон</span>';
   bar.innerHTML =
     '<div class="adm-bar__title"><span class="adm-bar__mark" aria-hidden="true">' + ICON.brush + '</span>' +
-    '<span class="adm-bar__name">Раскладка</span><span class="adm-bar__status" aria-live="polite"></span></div>' +
-    '<p class="adm-bar__hint"></p>' +
+    '<span class="adm-bar__name">Раскладка</span>' + deviceHtml + '</div>' +
+    '<p class="adm-bar__hint"><span class="adm-bar__status" aria-live="polite"></span>' +
+    '<span class="adm-bar__hinttext"></span></p>' +
     '<div class="adm-bar__actions">' +
       '<button type="button" class="adm-btn adm-btn--primary" data-act="save">Сохранить</button>' +
       '<button type="button" class="adm-btn" data-act="revert">Отменить</button>' +
+      (PROFILE === "phone" ? '<button type="button" class="adm-btn" data-act="copy">Как на компьютере</button>' : "") +
       '<button type="button" class="adm-btn" data-act="reset">По умолчанию</button>' +
-      '<button type="button" class="adm-btn adm-btn--ghost" data-act="exit">Выйти</button>' +
+      '<button type="button" class="adm-btn adm-btn--ghost" data-act="exit">' + (PREVIEW ? "Закрыть" : "Выйти") + '</button>' +
     '</div>';
+  bar.classList.toggle("adm-bar--phone", PROFILE === "phone");
+
+  // На телефоне доска сворачивается в полоску — касанием по заголовку.
+  if (PROFILE === "phone") {
+    var titleEl = bar.querySelector(".adm-bar__title");
+    titleEl.setAttribute("role", "button");
+    titleEl.setAttribute("tabindex", "0");
+    titleEl.setAttribute("aria-expanded", "true");
+    titleEl.appendChild(el("span", "adm-bar__fold", "свернуть"));
+    var fold = function () {
+      var min = bar.classList.toggle("is-min");
+      titleEl.setAttribute("aria-expanded", min ? "false" : "true");
+      titleEl.querySelector(".adm-bar__fold").textContent = min ? "развернуть" : "свернуть";
+      root.classList.toggle("adm-bar-min", min);
+    };
+    titleEl.addEventListener("click", fold);
+    titleEl.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fold(); }
+    });
+  }
   document.body.appendChild(bar);
 
   var statusEl = bar.querySelector(".adm-bar__status");
-  var hintEl = bar.querySelector(".adm-bar__hint");
+  var hintEl = bar.querySelector(".adm-bar__hinttext");
 
-  function dirty() { return !sameLayout(draft, saved || {}); }
+  function dirty() { return !sameLayout(draft, savedProfile()); }
 
   function refreshBar() {
     var d = unlocked && dirty();
@@ -183,13 +228,16 @@
     bar.querySelector('[data-act="save"]').disabled = !unlocked || !d || busy;
     bar.querySelector('[data-act="revert"]').disabled = !unlocked || !d || busy;
     bar.querySelector('[data-act="reset"]').disabled = !unlocked || busy;
+    var copyBtn = bar.querySelector('[data-act="copy"]');
+    if (copyBtn) copyBtn.disabled = !unlocked || busy || !(saved && saved.desktop);
     if (!unlocked) statusEl.textContent = "нужен пароль";
     else if (busy) statusEl.textContent = "сохраняю…";
     else statusEl.textContent = d ? "есть несохранённое" : "сохранено";
     var face = window.KobanCube ? window.KobanCube.current() : "main";
     if (face === "map") hintEl.textContent = "На карте нечего раскладывать — поверни куб на главную или настройки.";
-    else if (!WIDE.matches) hintEl.textContent = "Ширина панелей задаётся на экране от 1240 px. Здесь — порядок и оформление.";
-    else hintEl.textContent = "Тащи за ⠿, ширину — за правую кромку, оформление — «Формат».";
+    else if (PROFILE === "phone") hintEl.textContent = "Раскладка для телефона: тащи за ⠿, оформление и ширину (половина или вся строка) — в «Формате».";
+    else if (!WIDE.matches) hintEl.textContent = "Раскладка для компьютера. Ширина панелей задаётся на экране от 1240 px — здесь порядок и оформление.";
+    else hintEl.textContent = "Раскладка для компьютера: тащи за ⠿, ширину — за правую кромку, оформление — «Формат».";
   }
 
   var toastTimer = 0;
@@ -207,8 +255,18 @@
     if (!b || b.disabled) return;
     var act = b.getAttribute("data-act");
     if (act === "save") save();
-    else if (act === "revert") {
-      draft = clone(saved);
+    else if (act === "phone") openPhone();
+    else if (act === "desktop") return;
+    else if (act === "copy") {
+      // Компьютерная раскладка за основу: порядок и оформление, без ширины.
+      var d = clone((saved || {}).desktop || {});
+      if (d.main && d.main.items) Object.keys(d.main.items).forEach(function (k) { delete d.main.items[k].span; });
+      if (d.options && d.options.items) Object.keys(d.options.items).forEach(function (k) { delete d.options.items[k].span; });
+      draft = d;
+      commit();
+      toast("Взял раскладку компьютера — ширину выстави заново");
+    } else if (act === "revert") {
+      draft = savedProfile();
       commit();
       toast("Вернул сохранённую раскладку");
     } else if (act === "reset") {
@@ -218,6 +276,10 @@
     } else if (act === "exit") {
       if (dirty() && !window.confirm("Есть несохранённые изменения. Выйти без сохранения?")) return;
       window.removeEventListener("beforeunload", onUnload);
+      if (PREVIEW) {
+        try { window.parent.postMessage({ type: "koban-admin-phone-close" }, location.origin); } catch (e) {}
+        return;
+      }
       location.href = "/v/" + (location.hash || "");
     }
   });
@@ -246,7 +308,7 @@
     busy = true;
     refreshBar();
     prune(draft);
-    request({ layout: Object.keys(draft).length ? draft : null })
+    request({ profile: PROFILE, layout: Object.keys(draft).length ? draft : null })
       .then(function (res) {
         if (res.status === 403) {
           setPass("");
@@ -258,9 +320,9 @@
           return;
         }
         saved = res.body.layout || {};
-        draft = clone(saved);
+        draft = savedProfile();
         L.set(clone(saved), true);
-        toast("Сохранено — раскладку видят все");
+        toast(PROFILE === "phone" ? "Сохранено — так увидят на телефонах" : "Сохранено — так увидят на компьютерах");
       })
       .catch(function () { toast("Сервер не ответил", true); })
       .then(function () {
@@ -684,10 +746,17 @@
 
     if (kind === "panel") {
       wrap.appendChild(heading("Размер"));
-      var opts = [{ value: null, text: "Авто", title: "Как свёрстано" }];
-      for (var i = 1; i <= 6; i++) opts.push({ value: i, html: spanBars(i), text: String(i), title: i + " из 6 колонок" });
-      wrap.appendChild(seg("Ширина", opts, c.span || null, function (v) { set("span", v); }, "adm-seg--spans"));
-      if (narrow) wrap.appendChild(el("p", "adm-note", "Ширина действует на экране от 1240 px — здесь панели идут одна под другой."));
+      if (PROFILE === "phone") {
+        wrap.appendChild(seg("Ширина", [
+          { value: null, text: "Вся строка", title: "Как свёрстано" },
+          { value: 1, text: "Половина", title: "Две такие панели встанут рядом" }
+        ], c.span === 1 ? 1 : null, function (v) { set("span", v); }));
+      } else {
+        var opts = [{ value: null, text: "Авто", title: "Как свёрстано" }];
+        for (var i = 1; i <= 6; i++) opts.push({ value: i, html: spanBars(i), text: String(i), title: i + " из 6 колонок" });
+        wrap.appendChild(seg("Ширина", opts, c.span || null, function (v) { set("span", v); }, "adm-seg--spans"));
+        if (narrow) wrap.appendChild(el("p", "adm-note", "Ширина действует на экране от 1240 px — здесь панели идут одна под другой."));
+      }
       wrap.appendChild(seg("Высота", [
         { value: false, text: "По содержимому" },
         { value: true, text: "По высоте ряда" }
@@ -696,6 +765,9 @@
       wrap.appendChild(alignRow("Заголовок", c.head, function (v) { set("head", v === "left" ? null : v); }));
       wrap.appendChild(heading("Показывать"));
       wrap.appendChild(toggle("Панель на странице", c.hidden !== true, function (v) { set("hidden", v ? null : true); }));
+    } else if (kind === "group" && PROFILE === "phone") {
+      wrap.appendChild(heading("Выравнивание"));
+      wrap.appendChild(alignRow("Заголовок", c.head, function (v) { set("head", v === "left" ? null : v); }));
     } else if (kind === "group") {
       wrap.appendChild(heading("Размер"));
       var gopts = [{ value: null, text: "Авто", title: "Как свёрстано" }].concat(GROUP_SPANS.map(function (g) {
@@ -822,10 +894,92 @@
 
   // ---------- старт ----------
 
+  // ---------- рамка телефона (только на компьютере) ----------
+
+  var phoneBox = null;
+
+  function fitPhone() {
+    if (!phoneBox) return;
+    var frame = phoneBox.querySelector(".adm-phone__device");
+    var scale = Math.min(1, (window.innerHeight - 120) / 872, (window.innerWidth - 40) / 418);
+    frame.style.transform = "scale(" + scale.toFixed(3) + ")";
+    // Масштаб не двигает поток — подтягиваем подпись и кнопку под рамку.
+    frame.style.marginBottom = Math.round(872 * scale - 872) + "px";
+    frame.style.marginLeft = frame.style.marginRight = Math.round((418 * scale - 418) / 2) + "px";
+  }
+
+  function openPhone() {
+    if (phoneBox) return;
+    closePop();
+    phoneBox = el("div", "adm-phone");
+    phoneBox.setAttribute("data-noswipe", "");
+    phoneBox.setAttribute("role", "dialog");
+    phoneBox.setAttribute("aria-label", "Раскладка для телефона");
+    var face = location.hash === "#settings" ? "#settings" : "#main";
+    phoneBox.innerHTML =
+      '<div class="adm-phone__device">' +
+        '<span class="adm-phone__speaker" aria-hidden="true"></span>' +
+        '<iframe class="adm-phone__screen" title="Страница на телефоне" src="/v/?admin=phone' + face + '"></iframe>' +
+      '</div>' +
+      '<p class="adm-phone__hint">Телефонная раскладка: правь прямо в рамке, сохраняй там же. Ширина экрана — 390 px.</p>' +
+      '<button type="button" class="adm-btn adm-phone__close">Вернуться к компьютеру</button>';
+    document.body.appendChild(phoneBox);
+    phoneBox.querySelector(".adm-phone__close").addEventListener("click", closePhone);
+    root.classList.add("adm-phone-open");
+    bar.querySelector('[data-act="phone"]').classList.add("is-on");
+    bar.querySelector('[data-act="phone"]').setAttribute("aria-pressed", "true");
+    bar.querySelector('[data-act="desktop"]').classList.remove("is-on");
+    bar.querySelector('[data-act="desktop"]').setAttribute("aria-pressed", "false");
+    fitPhone();
+  }
+
+  function closePhone() {
+    if (!phoneBox) return;
+    phoneBox.remove();
+    phoneBox = null;
+    root.classList.remove("adm-phone-open");
+    bar.querySelector('[data-act="phone"]').classList.remove("is-on");
+    bar.querySelector('[data-act="phone"]').setAttribute("aria-pressed", "false");
+    bar.querySelector('[data-act="desktop"]').classList.add("is-on");
+    bar.querySelector('[data-act="desktop"]').setAttribute("aria-pressed", "true");
+    // Телефонную могли сохранить — подтягиваем, компьютерный черновик не теряем.
+    L.load().then(function (d) {
+      saved = clone(d || {});
+      commit();
+    });
+  }
+
+  window.addEventListener("resize", fitPhone);
+  window.addEventListener("message", function (e) {
+    if (e.origin === location.origin && e.data && e.data.type === "koban-admin-phone-close") closePhone();
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && phoneBox && !pop) closePhone(); });
+
+  // Экран сменил ширину через границу телефона — это уже другая раскладка.
+  // Ждём, пока новая ширина устоится (окно могли просто протащить), и не
+  // теряем несохранённое: тогда только просим сохранить или отменить.
+  var profileTimer = 0;
+  if (PHONE.addEventListener) {
+    PHONE.addEventListener("change", function () {
+      if (PREVIEW) return;
+      clearTimeout(profileTimer);
+      profileTimer = setTimeout(function () {
+        var now = PHONE.matches ? "phone" : "desktop";
+        if (now === PROFILE) return;
+        if (unlocked && dirty()) {
+          toast("Экран стал " + (now === "phone" ? "телефонным" : "широким") + ". Сохрани или отмени правки и обнови страницу — откроется другая раскладка.", true);
+          return;
+        }
+        window.removeEventListener("beforeunload", onUnload);
+        location.reload();
+      }, 1500);
+    });
+  }
+
   function start() {
     L.load().then(function (d) {
       saved = clone(d || {});
-      draft = clone(saved);
+      draft = savedProfile();
       check();
       refreshBar();
     });
