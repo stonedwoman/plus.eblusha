@@ -89,31 +89,113 @@ html.adm-on .adm-item > .panel__head { padding-right: 150px; }
   .adm-fmt span { display: none; }
 }
 
-/* Рукоять ширины у правой кромки. */
+/* Ручки размера: правая кромка — ширина, нижняя — высота, угол — оба. */
 .adm-resize {
   position: absolute;
   z-index: 29;
-  top: 18%;
-  bottom: 18%;
-  right: -9px;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+/* Ручки внутри кромки: панель в сетке обрезает всё, что за её краем. */
+.adm-resize--x {
+  top: 22%;
+  bottom: 22%;
+  right: 3px;
   width: 14px;
   border-radius: 7px;
   cursor: ew-resize;
-  touch-action: none;
   background:
     radial-gradient(circle at 50% 50%, var(--adm-gold) 0 1.6px, transparent 2.2px) 50% 50% / 14px 10px repeat-y,
     linear-gradient(180deg, #5a3c22, #2f1e11);
   border: 1px solid rgba(214, 170, 96, 0.6);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  transition: opacity 160ms ease;
+}
+
+.adm-resize--y {
+  left: 26%;
+  right: 26%;
+  bottom: 3px;
+  height: 14px;
+  border-radius: 7px;
+  cursor: ns-resize;
+  background:
+    radial-gradient(circle at 50% 50%, var(--adm-gold) 0 1.6px, transparent 2.2px) 50% 50% / 10px 14px repeat-x,
+    linear-gradient(90deg, #5a3c22, #2f1e11);
+  border: 1px solid rgba(214, 170, 96, 0.6);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.adm-resize--xy {
+  right: 2px;
+  bottom: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  cursor: nwse-resize;
+  border: 2px solid transparent;
+  background:
+    radial-gradient(circle, #f0cd84 0 28%, #6d4f22 32%, #20150c 36% 55%, rgba(0, 0, 0, 0) 57%) padding-box,
+    conic-gradient(from 200deg, #fbe2a4, #8f6a31 25%, #f0cd84 50%, #6d4f22 75%, #fbe2a4) border-box;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
 }
 
 html.adm-on .adm-item:hover > .adm-resize,
 .adm-item.is-resizing > .adm-resize { opacity: 1; }
 
-@media (max-width: 1239px) {
-  .adm-resize { display: none; }
+/* На пальце ручки видны всегда — наведения нет. */
+@media (hover: none) {
+  html.adm-on .adm-item > .adm-resize { opacity: 0.9; }
+}
+
+html.adm-resizing-x,
+html.adm-resizing-x * { cursor: ew-resize !important; user-select: none !important; }
+html.adm-resizing-y,
+html.adm-resizing-y * { cursor: ns-resize !important; user-select: none !important; }
+html.adm-resizing-xy,
+html.adm-resizing-xy * { cursor: nwse-resize !important; user-select: none !important; }
+
+/* Сетка под правкой: видны колонки, куда можно ставить. */
+.dashboard-grid.is-free,
+#worldOptionsRoot.is-free { --adm-gap: clamp(0.75rem, 2vw, 1.1rem); }
+
+/* В правке панель не прокручивается: ручки стоят на её видимых кромках, а
+   что не влезло — видно по затуханию снизу. */
+html.adm-on .is-free > .is-placed { overflow: hidden; }
+
+html.adm-on .is-free > .is-placed.is-clipped::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 46px;
+  border-radius: 0 0 var(--radius-lg, 9px) var(--radius-lg, 9px);
+  background: linear-gradient(180deg, rgba(20, 12, 6, 0), rgba(20, 12, 6, 0.92));
+  pointer-events: none;
+  z-index: 20;
+}
+
+html.adm-on .is-free {
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(236, 199, 124, 0.07) 0,
+    rgba(236, 199, 124, 0.07) calc((100% - (var(--cols, 12) - 1) * var(--adm-gap, 16px)) / var(--cols, 12)),
+    transparent calc((100% - (var(--cols, 12) - 1) * var(--adm-gap, 16px)) / var(--cols, 12)),
+    transparent calc((100% - (var(--cols, 12) - 1) * var(--adm-gap, 16px)) / var(--cols, 12) + var(--adm-gap, 16px))
+  );
+  border-radius: 10px;
+}
+
+/* Куда встанет панель. */
+.adm-ghost {
+  z-index: 0;
+  border-radius: 10px;
+  border: 2px dashed rgba(236, 199, 124, 0.85);
+  background: rgba(255, 170, 60, 0.12);
+  box-shadow: inset 0 0 30px rgba(255, 170, 60, 0.18);
+  pointer-events: none;
 }
 
 .adm-span-badge {
@@ -306,7 +388,7 @@ html.adm-dragging * { cursor: grabbing !important; user-select: none !important;
 .adm-bar__hint {
   grid-area: hint;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   margin: 0;
   padding-top: 6px;
@@ -359,6 +441,14 @@ html.adm-dragging * { cursor: grabbing !important; user-select: none !important;
 }
 
 .adm-btn--ghost { background: transparent; box-shadow: none; }
+
+.adm-bar__compact {
+  flex: none;
+  margin-left: auto;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
 
 .adm-btn:disabled { opacity: 0.45; cursor: default; }
 
@@ -685,6 +775,47 @@ html.nr-admin { --adm-bar-h: 104px; }
     conic-gradient(from 200deg, #fbe2a4, #8f6a31 25%, #f0cd84 50%, #6d4f22 75%, #fbe2a4) border-box;
   box-shadow: 0 0 16px rgba(255, 160, 60, 0.55);
 }
+
+.adm-seg--widths .adm-seg__btn { flex: 1 1 0; min-width: 0; padding: 0 4px; }
+
+.adm-step {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  background: linear-gradient(180deg, #231710, #3a291a);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+.adm-step__btn {
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  border-radius: 5px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--adm-gold);
+  background: none;
+}
+
+.adm-step__btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); }
+.adm-step__btn:disabled { opacity: 0.35; }
+
+.adm-step__val {
+  min-width: 84px;
+  display: grid;
+  place-items: center;
+  padding: 0 6px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--nr-parch, #f1e5cb);
+  border-left: 1px solid rgba(0, 0, 0, 0.5);
+  border-right: 1px solid rgba(0, 0, 0, 0.5);
+}
+
+.adm-fit { justify-self: stretch; height: 34px; font-size: 12px; }
 
 .adm-pop__reset {
   justify-self: start;

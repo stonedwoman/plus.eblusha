@@ -5,11 +5,13 @@
  * лишь с ?admin в адресе.
  *
  * Что умеет:
- *  - панели главной и группы настроек: перетаскивание за ручку (остальные
- *    расступаются, у края грани страница сама прокручивается), ширина —
- *    за правую кромку с прилипанием к шестым долям строки;
+ *  - панели главной и группы настроек стоят в свободной сетке (12 колонок на
+ *    компьютере, 2 на телефоне): за ручку ⠿ панель ставится в любую клетку,
+ *    кого накрыла — съезжает вниз; ширина и высота — за правую и нижнюю
+ *    кромку или угол, с прилипанием к клеткам;
  *  - «Формат» у каждой плитки — панель оформления прямо под своей кнопкой:
- *    ширина, высота, видимость, выравнивание заголовка; у плиток «Карта мира»
+ *    ширина (колонки), высота (пиксели, «по содержимому»), видимость,
+ *    выравнивание заголовка; у плиток «Карта мира»
  *    и «Настройки мира» — угол стрелки, показ описания и надписи, выравнивание
  *    каждого элемента и положение текста по вертикали; у рунного камня —
  *    выравнивание каждого элемента и ширина кнопки;
@@ -36,7 +38,6 @@
 
   var ENDPOINT = "/v/api/layout";
   var PASS_KEY = "koban.valheim.pass";
-  var WIDE = window.matchMedia("(min-width: 1240px)");
   var PHONE = window.matchMedia("(max-width: 720px)");
   var PROFILE = PHONE.matches ? "phone" : "desktop";
   var framed = true;
@@ -59,12 +60,6 @@
     button: "Кнопка"
   };
   var CORNER_LABEL = { tl: "Слева сверху", tr: "Справа сверху", bl: "Слева снизу", br: "Справа снизу" };
-  var GROUP_SPANS = [
-    { span: 2, label: "⅓", title: "Треть строки" },
-    { span: 3, label: "½", title: "Половина строки" },
-    { span: 4, label: "⅔", title: "Две трети строки" },
-    { span: 6, label: "Вся", title: "Вся строка" }
-  ];
 
   var ICON = {
     grip: '<svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><circle cx="9" cy="6" r="1.7"/><circle cx="15" cy="6" r="1.7"/><circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/><circle cx="9" cy="18" r="1.7"/><circle cx="15" cy="18" r="1.7"/></g></svg>',
@@ -187,7 +182,8 @@
     '<div class="adm-bar__title"><span class="adm-bar__mark" aria-hidden="true">' + ICON.brush + '</span>' +
     '<span class="adm-bar__name">Раскладка</span>' + deviceHtml + '</div>' +
     '<p class="adm-bar__hint"><span class="adm-bar__status" aria-live="polite"></span>' +
-    '<span class="adm-bar__hinttext"></span></p>' +
+    '<span class="adm-bar__hinttext"></span>' +
+    '<button type="button" class="adm-btn adm-btn--ghost adm-bar__compact" data-act="compact" title="Убрать пустые строки: каждая панель поднимается, пока не упрётся">Подтянуть вверх</button></p>' +
     '<div class="adm-bar__actions">' +
       '<button type="button" class="adm-btn adm-btn--primary" data-act="save">Сохранить</button>' +
       '<button type="button" class="adm-btn" data-act="revert">Отменить</button>' +
@@ -228,6 +224,10 @@
     bar.querySelector('[data-act="save"]').disabled = !unlocked || !d || busy;
     bar.querySelector('[data-act="revert"]').disabled = !unlocked || !d || busy;
     bar.querySelector('[data-act="reset"]').disabled = !unlocked || busy;
+    var face0 = window.KobanCube ? window.KobanCube.current() : "main";
+    var compactBtn = bar.querySelector('[data-act="compact"]');
+    compactBtn.hidden = face0 === "map";
+    compactBtn.disabled = !unlocked || busy || !gridItems(face0 === "options" ? "group" : "panel");
     var copyBtn = bar.querySelector('[data-act="copy"]');
     if (copyBtn) copyBtn.disabled = !unlocked || busy || !(saved && saved.desktop);
     if (!unlocked) statusEl.textContent = "нужен пароль";
@@ -235,9 +235,8 @@
     else statusEl.textContent = d ? "есть несохранённое" : "сохранено";
     var face = window.KobanCube ? window.KobanCube.current() : "main";
     if (face === "map") hintEl.textContent = "На карте нечего раскладывать — поверни куб на главную или настройки.";
-    else if (PROFILE === "phone") hintEl.textContent = "Раскладка для телефона: тащи за ⠿, оформление и ширину (половина или вся строка) — в «Формате».";
-    else if (!WIDE.matches) hintEl.textContent = "Раскладка для компьютера. Ширина панелей задаётся на экране от 1240 px — здесь порядок и оформление.";
-    else hintEl.textContent = "Раскладка для компьютера: тащи за ⠿, ширину — за правую кромку, оформление — «Формат».";
+    else if (PROFILE === "phone") hintEl.textContent = "Телефон: тащи за ⠿ в любую клетку (2 колонки), размер — за правую и нижнюю кромку или угол, оформление — «Формат».";
+    else hintEl.textContent = "Компьютер: тащи за ⠿ в любую клетку (12 колонок), размер — за правую и нижнюю кромку или угол, оформление — «Формат».";
   }
 
   var toastTimer = 0;
@@ -256,12 +255,15 @@
     var act = b.getAttribute("data-act");
     if (act === "save") save();
     else if (act === "phone") openPhone();
+    else if (act === "compact") compactAll();
     else if (act === "desktop") return;
     else if (act === "copy") {
       // Компьютерная раскладка за основу: порядок и оформление, без ширины.
       var d = clone((saved || {}).desktop || {});
       if (d.main && d.main.items) Object.keys(d.main.items).forEach(function (k) { delete d.main.items[k].span; });
       if (d.options && d.options.items) Object.keys(d.options.items).forEach(function (k) { delete d.options.items[k].span; });
+      if (d.main) delete d.main.grid;
+      if (d.options) delete d.options.grid;
       draft = d;
       commit();
       toast("Взял раскладку компьютера — ширину выстави заново");
@@ -430,7 +432,9 @@
       grip.title = "Перетащить";
       grip.setAttribute("aria-label", "Перетащить «" + titleOf(n) + "»");
       grip.innerHTML = ICON.grip;
+      grip.title = "Перетащить куда угодно. Стрелки — на клетку, Shift+стрелки — размер";
       grip.addEventListener("pointerdown", function (e) { startDrag(e, n, kind); });
+      grip.addEventListener("keydown", function (e) { onGripKey(e, n, kind); });
       ctrl.appendChild(grip);
     }
     var fmt = el("button", "adm-fmt");
@@ -447,11 +451,15 @@
     n.appendChild(ctrl);
 
     if (kind !== "tile") {
-      var rz = el("span", "adm-resize");
-      rz.setAttribute("data-noswipe", "");
-      rz.title = "Потяни, чтобы изменить ширину";
-      rz.addEventListener("pointerdown", function (e) { startResize(e, n, kind); });
-      n.appendChild(rz);
+      [["x", "adm-resize adm-resize--x", "Потяни — ширина"],
+       ["y", "adm-resize adm-resize--y", "Потяни — высота"],
+       ["xy", "adm-resize adm-resize--xy", "Потяни — ширина и высота"]].forEach(function (h) {
+        var rz = el("span", h[1]);
+        rz.setAttribute("data-noswipe", "");
+        rz.title = h[2];
+        rz.addEventListener("pointerdown", function (e) { startResize(e, n, kind, h[0]); });
+        n.appendChild(rz);
+      });
     }
     if (kind === "panel") {
       var hid = el("span", "adm-hidden", "Скрыто для всех");
@@ -472,19 +480,158 @@
   window.addEventListener("koban:options-rendered", function () { decorate(); });
   window.addEventListener("koban:layout-applied", function () { decorate(); });
   window.addEventListener("koban:face", function () { closePop(); refreshBar(); });
-  WIDE.addEventListener("change", refreshBar);
 
-  // ---------- перетаскивание ----------
 
-  function visualOrder(container) {
-    var kids = Array.prototype.slice.call(container.querySelectorAll(":scope > [data-layout-key]"));
-    return kids
-      .map(function (n, i) { return { n: n, o: parseInt(getComputedStyle(n).order, 10) || 0, i: i }; })
-      .sort(function (a, b) { return a.o - b.o || a.i - b.i; })
-      .map(function (x) { return x.n; });
+  // ---------- свободная сетка ----------
+  //
+  // Панели и группы стоят в клетках: 12 колонок на компьютере, 2 на телефоне,
+  // строка — 8 px плюс зазор. Пока раскладку не трогали, страница свёрстана
+  // потоком; первое же перетаскивание или изменение размера снимает текущие
+  // места в клетки (ничего не сдвигается), и дальше всё — по сетке.
+  // Встаёт панель куда угодно; кого она накрыла — съезжает вниз, пустоты
+  // остаются.
+
+  function area(kind) { return kind === "group" ? "options" : "main"; }
+
+  function gridEl(kind) {
+    return kind === "group" ? document.getElementById("worldOptionsRoot") : document.querySelector(".dashboard-grid");
+  }
+
+  function kids(grid) {
+    return Array.prototype.slice.call(grid.querySelectorAll(":scope > [data-layout-key]"));
+  }
+
+  function clampN(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function metrics(grid) {
+    var cs = getComputedStyle(grid);
+    var r = grid.getBoundingClientRect();
+    var n = L.cols();
+    var gapX = parseFloat(cs.columnGap) || 0;
+    var gapY = parseFloat(cs.rowGap) || 0;
+    var padL = parseFloat(cs.paddingLeft) || 0;
+    var padR = parseFloat(cs.paddingRight) || 0;
+    var padT = parseFloat(cs.paddingTop) || 0;
+    var rowH = parseFloat(cs.getPropertyValue("--k-row")) || 8;
+    var colW = (r.width - padL - padR - gapX * (n - 1)) / n;
+    return {
+      n: n, left: r.left + padL, top: r.top + padT,
+      colW: colW, gapX: gapX, rowH: rowH, gapY: gapY,
+      stepX: colW + gapX, stepY: rowH + gapY
+    };
+  }
+
+  function rowsFor(px, m) { return Math.max(1, Math.round((px + m.gapY) / m.stepY)); }
+  function pxFor(h, m) { return Math.round(h * m.stepY - m.gapY); }
+
+  function gridItems(kind) {
+    var sec = section(area(kind));
+    return sec.grid && sec.grid.items ? sec.grid.items : null;
+  }
+
+  // Снимаем текущие места в клетки. Ничего не двигается.
+  function ensureFree(kind) {
+    var have = gridItems(kind);
+    if (have && Object.keys(have).length) return have;
+    var grid = gridEl(kind);
+    var m = metrics(grid);
+    var out = {};
+    kids(grid).forEach(function (n) {
+      var r = n.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      var x = clampN(Math.round((r.left - m.left) / m.stepX), 0, m.n - 1);
+      var w = clampN(Math.round((r.width + m.gapX) / m.stepX), 1, m.n - x);
+      var y = Math.max(0, Math.round((r.top - m.top) / m.stepY));
+      out[n.getAttribute("data-layout-key")] = { x: x, y: y, w: w, h: rowsFor(r.height, m) };
+    });
+    var sec = section(area(kind));
+    delete sec.order;
+    if (sec.items) Object.keys(sec.items).forEach(function (k) {
+      delete sec.items[k].span;
+      delete sec.items[k].stretch;
+    });
+    sec.grid = { items: settle(out, null) };
+    return sec.grid.items;
+  }
+
+  function overlap(a, b) {
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  }
+
+  // Ставим key на место p; кого накрыли — вниз, под того, кто мешает.
+  function settle(items, key, p) {
+    var out = clone(items);
+    if (key) out[key] = { x: p.x, y: p.y, w: p.w, h: p.h };
+    for (var guard = 0; guard < 300; guard++) {
+      var keys = Object.keys(out).sort(function (a, b) { return out[a].y - out[b].y || out[a].x - out[b].x; });
+      var moved = false;
+      for (var i = 0; i < keys.length && !moved; i++) {
+        for (var j = 0; j < keys.length && !moved; j++) {
+          if (i === j) continue;
+          var a = keys[i], b = keys[j];
+          if (!overlap(out[a], out[b])) continue;
+          var fixed, mover;
+          if (a === key) { fixed = a; mover = b; }
+          else if (b === key) { fixed = b; mover = a; }
+          else if (out[a].y < out[b].y || (out[a].y === out[b].y && out[a].x <= out[b].x)) { fixed = a; mover = b; }
+          else { fixed = b; mover = a; }
+          out[mover].y = out[fixed].y + out[fixed].h;
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+    return out;
+  }
+
+  // Соседи плавно доезжают до новых мест (FLIP).
+  function withFlip(grid, skip, fn) {
+    var before = new Map();
+    kids(grid).forEach(function (x) { if (x !== skip) before.set(x, x.getBoundingClientRect()); });
+    fn();
+    before.forEach(function (a, x) {
+      var b = x.getBoundingClientRect();
+      var dx = a.left - b.left, dy = a.top - b.top;
+      var sx = a.width / (b.width || 1), sy = a.height / (b.height || 1);
+      if (Math.abs(dx) + Math.abs(dy) < 1 && Math.abs(sx - 1) < 0.01 && Math.abs(sy - 1) < 0.01) return;
+      x.animate(
+        [{ transformOrigin: "0 0", transform: "translate(" + dx + "px," + dy + "px) scale(" + sx + "," + sy + ")" },
+         { transformOrigin: "0 0", transform: "none" }],
+        { duration: 220, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" }
+      );
+    });
+  }
+
+  // Поставить панель на место (с вытеснением соседей) от раскладки base.
+  function putAt(kind, key, p, base, skip) {
+    var grid = gridEl(kind);
+    var items = settle(base, key, p);
+    withFlip(grid, skip, function () {
+      section(area(kind)).grid = { items: items };
+      commit();
+    });
+  }
+
+  // Ячейка-призрак: куда встанет панель.
+  function ghostFor(grid) {
+    var g = grid.querySelector(":scope > .adm-ghost");
+    if (!g) {
+      g = el("div", "adm-ghost");
+      g.setAttribute("aria-hidden", "true");
+      grid.appendChild(g);
+    }
+    return g;
+  }
+
+  function showGhost(grid, p) {
+    var g = ghostFor(grid);
+    g.style.gridColumn = (p.x + 1) + " / span " + p.w;
+    g.style.gridRow = (p.y + 1) + " / span " + p.h;
   }
 
   function scroller(n) { return n.closest(".face__scroll"); }
+
+  // ---------- перетаскивание ----------
 
   var drag = null;
 
@@ -493,18 +640,21 @@
     e.preventDefault();
     e.stopPropagation();
     closePop();
-    var list = visualOrder(n.parentElement);
-    list.forEach(function (x, i) { x.style.order = String(i); });
+    var key = n.getAttribute("data-layout-key");
+    var base = clone(ensureFree(kind));
+    commit();
     var r = n.getBoundingClientRect();
     drag = {
-      n: n, kind: kind, list: list, id: e.pointerId,
+      n: n, kind: kind, key: key, id: e.pointerId, base: base,
+      cur: base[key] || { x: 0, y: 0, w: L.cols(), h: 20 },
       gx: e.clientX - r.left, gy: e.clientY - r.top,
-      x: e.clientX, y: e.clientY, over: null,
-      sc: scroller(n), raf: 0
+      x: e.clientX, y: e.clientY,
+      grid: gridEl(kind), sc: scroller(n), raf: 0, target: e.currentTarget
     };
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
     n.classList.add("is-dragging");
     root.classList.add("adm-dragging");
+    showGhost(drag.grid, drag.cur);
     follow();
     drag.raf = requestAnimationFrame(autoscroll);
     e.currentTarget.addEventListener("pointermove", onDragMove);
@@ -520,43 +670,32 @@
       "translate(" + (drag.x - drag.gx - r.left).toFixed(1) + "px," + (drag.y - drag.gy - r.top).toFixed(1) + "px) rotate(-0.6deg) scale(1.015)";
   }
 
-  function inside(r, x, y) { return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; }
+  function dragTarget() {
+    var m = metrics(drag.grid);
+    var p = drag.cur;
+    var x = clampN(Math.round((drag.x - drag.gx - m.left) / m.stepX), 0, m.n - p.w);
+    var bottom = 0;
+    Object.keys(drag.base).forEach(function (k) {
+      if (k !== drag.key) bottom = Math.max(bottom, drag.base[k].y + drag.base[k].h);
+    });
+    var y = clampN(Math.round((drag.y - drag.gy - m.top) / m.stepY), 0, bottom + 4);
+    return { x: x, y: y, w: p.w, h: p.h };
+  }
+
+  function relayout() {
+    var t = dragTarget();
+    if (drag.last && drag.last.x === t.x && drag.last.y === t.y) return;
+    drag.last = t;
+    putAt(drag.kind, drag.key, t, drag.base, drag.n);
+    showGhost(drag.grid, t);
+  }
 
   function onDragMove(e) {
     if (!drag || e.pointerId !== drag.id) return;
     drag.x = e.clientX;
     drag.y = e.clientY;
-    var over = null;
-    for (var i = 0; i < drag.list.length; i++) {
-      var o = drag.list[i];
-      if (o === drag.n) continue;
-      if (inside(o.getBoundingClientRect(), drag.x, drag.y)) { over = o; break; }
-    }
-    if (over && over !== drag.over) move(over);
-    drag.over = over;
+    relayout();
     follow();
-  }
-
-  // Переставляем, а соседи плавно едут на новые места (FLIP).
-  function move(over) {
-    var list = drag.list;
-    var before = new Map();
-    list.forEach(function (x) { if (x !== drag.n) before.set(x, x.getBoundingClientRect()); });
-    var from = list.indexOf(drag.n);
-    var to = list.indexOf(over);
-    list.splice(from, 1);
-    list.splice(to, 0, drag.n);
-    list.forEach(function (x, i) { x.style.order = String(i); });
-    before.forEach(function (a, x) {
-      var b = x.getBoundingClientRect();
-      var dx = a.left - b.left;
-      var dy = a.top - b.top;
-      if (Math.abs(dx) + Math.abs(dy) < 1) return;
-      x.animate(
-        [{ transform: "translate(" + dx + "px," + dy + "px)" }, { transform: "translate(0,0)" }],
-        { duration: 240, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" }
-      );
-    });
   }
 
   // У верхнего и нижнего края грани прокручиваем сами.
@@ -567,10 +706,12 @@
       var r = sc.getBoundingClientRect();
       var edge = 70;
       var v = 0;
+      var barTop = bar.getBoundingClientRect().top;
       if (drag.y < r.top + edge) v = -Math.ceil((r.top + edge - drag.y) / 5);
-      else if (drag.y > r.bottom - edge - 80) v = Math.ceil((drag.y - (r.bottom - edge - 80)) / 5);
+      else if (drag.y > barTop - edge) v = Math.ceil((drag.y - (barTop - edge)) / 5);
       if (v) {
         sc.scrollTop += v;
+        relayout();
         follow();
       }
     }
@@ -582,69 +723,145 @@
     var d = drag;
     drag = null;
     cancelAnimationFrame(d.raf);
-    e.currentTarget.removeEventListener("pointermove", onDragMove);
-    e.currentTarget.removeEventListener("pointerup", endDrag);
-    e.currentTarget.removeEventListener("pointercancel", endDrag);
+    d.target.removeEventListener("pointermove", onDragMove);
+    d.target.removeEventListener("pointerup", endDrag);
+    d.target.removeEventListener("pointercancel", endDrag);
     var n = d.n;
     var cur = n.style.transform;
     n.style.transform = "none";
-    n.animate([{ transform: cur }, { transform: "none" }], { duration: 220, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
+    n.animate([{ transform: cur }, { transform: "none" }], { duration: 200, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
     n.style.transform = "";
     n.classList.remove("is-dragging");
     root.classList.remove("adm-dragging");
-    var keys = d.list.map(function (x) { return x.getAttribute("data-layout-key"); });
-    section(d.kind === "group" ? "options" : "main").order = keys;
+    var g = d.grid.querySelector(":scope > .adm-ghost");
+    if (g) g.remove();
     commit();
   }
 
-  // ---------- ширина ----------
+  // ---------- размер: правая кромка, нижняя кромка, угол ----------
 
-  function startResize(e, n, kind) {
+  function startResize(e, n, kind, axis) {
     e.preventDefault();
     e.stopPropagation();
-    if (!WIDE.matches) {
-      toast("Ширину задают на экране от 1240 px", true);
-      return;
-    }
     closePop();
-    var grid = n.parentElement;
-    var cs = getComputedStyle(grid);
-    var gap = parseFloat(cs.columnGap) || 0;
-    var gr = grid.getBoundingClientRect();
-    var col = (gr.width - parseFloat(cs.paddingLeft || 0) - parseFloat(cs.paddingRight || 0) - gap * 5) / 6;
-    var left = n.getBoundingClientRect().left;
-    var min = kind === "group" ? 2 : 1;
+    var key = n.getAttribute("data-layout-key");
+    var base = clone(ensureFree(kind));
+    commit();
+    var grid = gridEl(kind);
+    var start = base[key];
+    if (!start) return;
     var badge = el("span", "adm-span-badge");
     n.appendChild(badge);
     n.classList.add("is-resizing");
+    root.classList.add("adm-resizing-" + axis);
     var target = e.currentTarget;
     try { target.setPointerCapture(e.pointerId); } catch (err) {}
-    var span = null;
+    var last = null;
 
-    function at(x) {
-      return Math.max(min, Math.min(6, Math.round((x - left + gap) / (col + gap))));
+    function at(ev) {
+      var m = metrics(grid);
+      var left = m.left + start.x * m.stepX;
+      var top = m.top + start.y * m.stepY;
+      var w = start.w, h = start.h;
+      if (axis !== "y") w = clampN(Math.round((ev.clientX - left + m.gapX) / m.stepX), 1, m.n - start.x);
+      if (axis !== "x") h = clampN(Math.round((ev.clientY - top + m.gapY) / m.stepY), 3, 400);
+      return { x: start.x, y: start.y, w: w, h: h, m: m };
     }
-    function show(s) {
-      span = s;
-      n.style.setProperty("--span", String(s));
-      n.classList.add("has-span");
-      badge.textContent = s + " / 6";
+    function show(p) {
+      badge.textContent = (axis === "y" ? "" : p.w + " из " + p.m.n) + (axis === "xy" ? " · " : "") + (axis === "x" ? "" : pxFor(p.h, p.m) + " px");
+      if (last && last.w === p.w && last.h === p.h) return;
+      last = p;
+      putAt(kind, key, { x: p.x, y: p.y, w: p.w, h: p.h }, base, null);
     }
-    show(at(e.clientX));
+    show(at(e));
 
-    function onMove(ev) { show(at(ev.clientX)); }
+    function onMove(ev) { show(at(ev)); }
     function onUp() {
       target.removeEventListener("pointermove", onMove);
       target.removeEventListener("pointerup", onUp);
       target.removeEventListener("pointercancel", onUp);
       badge.remove();
       n.classList.remove("is-resizing");
-      conf(kind, n.getAttribute("data-layout-key")).span = span;
+      root.classList.remove("adm-resizing-" + axis);
       commit();
     }
     target.addEventListener("pointermove", onMove);
     target.addEventListener("pointerup", onUp);
     target.addEventListener("pointercancel", onUp);
+  }
+
+  // Клавиатура на ручке ⠿: стрелки двигают на клетку, с Shift — меняют размер.
+  function onGripKey(e, n, kind) {
+    var d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (!d) return;
+    e.preventDefault();
+    var key = n.getAttribute("data-layout-key");
+    var base = clone(ensureFree(kind));
+    var p = clone(base[key]);
+    if (!p || !p.w) return;
+    var cols = L.cols();
+    if (e.shiftKey) {
+      p.w = clampN(p.w + d[0], 1, cols - p.x);
+      p.h = clampN(p.h + d[1] * 3, 3, 400);
+    } else {
+      p.x = clampN(p.x + d[0], 0, cols - p.w);
+      p.y = Math.max(0, p.y + d[1] * 3);
+    }
+    putAt(kind, key, p, base, null);
+  }
+
+  // Подтянуть вверх: каждая панель поднимается, пока не упрётся в соседа.
+  function compact(items) {
+    var out = clone(items);
+    Object.keys(out).sort(function (a, b) { return out[a].y - out[b].y || out[a].x - out[b].x; }).forEach(function (k) {
+      var p = out[k];
+      while (p.y > 0) {
+        var up = { x: p.x, y: p.y - 1, w: p.w, h: p.h };
+        var hit = Object.keys(out).some(function (o) { return o !== k && overlap(up, out[o]); });
+        if (hit) break;
+        p.y -= 1;
+      }
+    });
+    return out;
+  }
+
+  function compactAll() {
+    var face = window.KobanCube ? window.KobanCube.current() : "main";
+    var kind = face === "options" ? "group" : "panel";
+    var items = gridItems(kind);
+    if (!items) return;
+    withFlip(gridEl(kind), null, function () {
+      section(area(kind)).grid = { items: compact(items) };
+      commit();
+    });
+  }
+
+  // Что не влезло в заданную высоту — отмечаем затуханием снизу.
+  function markClipped() {
+    Array.prototype.forEach.call(document.querySelectorAll(".is-free > .is-placed"), function (n) {
+      n.classList.toggle("is-clipped", n.scrollHeight > n.clientHeight + 2);
+    });
+  }
+  window.addEventListener("koban:layout-applied", function () { requestAnimationFrame(markClipped); });
+
+  // Высота «по содержимому»: сколько клеток нужно, чтобы ничего не прокручивалось.
+  function fitHeight(kind, n) {
+    var key = n.getAttribute("data-layout-key");
+    var base = clone(ensureFree(kind));
+    var p = clone(base[key]);
+    if (!p || !p.w) return;
+    var m = metrics(gridEl(kind));
+    var keep = { alignSelf: n.style.alignSelf, height: n.style.height, overflow: n.style.overflow };
+    n.style.alignSelf = "start";
+    n.style.height = "auto";
+    n.style.overflow = "visible";
+    n.classList.remove("is-clipped");
+    var need = n.offsetHeight;
+    n.style.alignSelf = keep.alignSelf;
+    n.style.height = keep.height;
+    n.style.overflow = keep.overflow;
+    p.h = clampN(rowsFor(need, m), 3, 400);
+    putAt(kind, key, p, base, null);
   }
 
   // ---------- панель «Формат» ----------
@@ -715,10 +932,70 @@
     }), current, onPick, "adm-seg--icons", true);
   }
 
-  function spanBars(n) {
-    var s = '<span class="adm-bars" aria-hidden="true">';
-    for (var i = 1; i <= 6; i++) s += '<i class="' + (i <= n ? "on" : "") + '"></i>';
-    return s + "</span>";
+  function stepper(label, text, onMinus, onPlus, minusOff, plusOff) {
+    var row = el("div", "adm-row adm-row--inline");
+    row.appendChild(el("div", "adm-row__label", label));
+    var st = el("div", "adm-step");
+    var minus = el("button", "adm-step__btn", "−");
+    minus.type = "button";
+    minus.setAttribute("aria-label", label + ": меньше");
+    minus.disabled = !!minusOff;
+    minus.addEventListener("click", onMinus);
+    var val = el("span", "adm-step__val", text);
+    var plus = el("button", "adm-step__btn", "+");
+    plus.type = "button";
+    plus.setAttribute("aria-label", label + ": больше");
+    plus.disabled = !!plusOff;
+    plus.addEventListener("click", onPlus);
+    st.appendChild(minus);
+    st.appendChild(val);
+    st.appendChild(plus);
+    row.appendChild(st);
+    return row;
+  }
+
+  // Размер в клетках сетки: ширина — колонки, высота — пиксели (шаг — строка).
+  function sizeBlock(wrap, kind, n) {
+    var key = n.getAttribute("data-layout-key");
+    var cols = L.cols();
+    var grid = gridEl(kind);
+    var m = metrics(grid);
+    var items = gridItems(kind);
+    var p = items && items[key];
+    var r = n.getBoundingClientRect();
+    var w = p ? p.w : clampN(Math.round((r.width + m.gapX) / m.stepX), 1, cols);
+    var h = p ? p.h : rowsFor(r.height, m);
+
+    function setSize(nw, nh) {
+      var base = clone(ensureFree(kind));
+      var q = clone(base[key]);
+      if (!q || !q.w) return;
+      if (nw) {
+        q.w = clampN(nw, 1, cols);
+        q.x = Math.min(q.x, cols - q.w);
+      }
+      if (nh) q.h = clampN(nh, 3, 400);
+      putAt(kind, key, q, base, null);
+    }
+
+    wrap.appendChild(heading("Размер"));
+    var presets = PROFILE === "phone"
+      ? [{ w: 1, text: "Половина" }, { w: 2, text: "Вся строка" }]
+      : [{ w: 3, text: "¼" }, { w: 4, text: "⅓" }, { w: 6, text: "½" }, { w: 8, text: "⅔" }, { w: 9, text: "¾" }, { w: 12, text: "Вся" }];
+    wrap.appendChild(seg("Ширина", presets.map(function (o) {
+      return { value: o.w, text: o.text, title: o.w + " из " + cols + " колонок" };
+    }), w, function (v) { setSize(v, null); }, "adm-seg--widths"));
+    if (PROFILE !== "phone") {
+      wrap.appendChild(stepper("Колонок", w + " из " + cols,
+        function () { setSize(w - 1, null); }, function () { setSize(w + 1, null); }, w <= 1, w >= cols));
+    }
+    var stepRows = 2;
+    wrap.appendChild(stepper("Высота", "≈ " + pxFor(h, m) + " px",
+      function () { setSize(null, h - stepRows); }, function () { setSize(null, h + stepRows); }, h <= 3, h >= 400));
+    var fit = el("button", "adm-btn adm-btn--ghost adm-fit", "Высота по содержимому");
+    fit.type = "button";
+    fit.addEventListener("click", function () { fitHeight(kind, n); });
+    wrap.appendChild(fit);
   }
 
   function build(n, kind) {
@@ -742,39 +1019,14 @@
       commit();
     }
 
-    var narrow = !WIDE.matches;
-
     if (kind === "panel") {
-      wrap.appendChild(heading("Размер"));
-      if (PROFILE === "phone") {
-        wrap.appendChild(seg("Ширина", [
-          { value: null, text: "Вся строка", title: "Как свёрстано" },
-          { value: 1, text: "Половина", title: "Две такие панели встанут рядом" }
-        ], c.span === 1 ? 1 : null, function (v) { set("span", v); }));
-      } else {
-        var opts = [{ value: null, text: "Авто", title: "Как свёрстано" }];
-        for (var i = 1; i <= 6; i++) opts.push({ value: i, html: spanBars(i), text: String(i), title: i + " из 6 колонок" });
-        wrap.appendChild(seg("Ширина", opts, c.span || null, function (v) { set("span", v); }, "adm-seg--spans"));
-        if (narrow) wrap.appendChild(el("p", "adm-note", "Ширина действует на экране от 1240 px — здесь панели идут одна под другой."));
-      }
-      wrap.appendChild(seg("Высота", [
-        { value: false, text: "По содержимому" },
-        { value: true, text: "По высоте ряда" }
-      ], c.stretch === true, function (v) { set("stretch", v ? true : null); }));
+      sizeBlock(wrap, kind, n);
       wrap.appendChild(heading("Выравнивание"));
       wrap.appendChild(alignRow("Заголовок", c.head, function (v) { set("head", v === "left" ? null : v); }));
       wrap.appendChild(heading("Показывать"));
       wrap.appendChild(toggle("Панель на странице", c.hidden !== true, function (v) { set("hidden", v ? null : true); }));
-    } else if (kind === "group" && PROFILE === "phone") {
-      wrap.appendChild(heading("Выравнивание"));
-      wrap.appendChild(alignRow("Заголовок", c.head, function (v) { set("head", v === "left" ? null : v); }));
     } else if (kind === "group") {
-      wrap.appendChild(heading("Размер"));
-      var gopts = [{ value: null, text: "Авто", title: "Как свёрстано" }].concat(GROUP_SPANS.map(function (g) {
-        return { value: g.span, html: spanBars(g.span), text: g.label, title: g.title };
-      }));
-      wrap.appendChild(seg("Ширина", gopts, c.span || null, function (v) { set("span", v); }, "adm-seg--spans adm-seg--5"));
-      if (narrow) wrap.appendChild(el("p", "adm-note", "Ширина действует на экране от 1240 px."));
+      sizeBlock(wrap, kind, n);
       wrap.appendChild(heading("Выравнивание"));
       wrap.appendChild(alignRow("Заголовок", c.head, function (v) { set("head", v === "left" ? null : v); }));
     } else if (key === "code") {

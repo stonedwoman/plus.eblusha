@@ -5,6 +5,35 @@
  * выглядит ровно как свёрстана.
  */
 
+/* ---------- свободная сетка ----------
+   Панели стоят в своих клетках: 12 колонок на компьютере, 2 на телефоне,
+   строка — 8 px плюс зазор сетки. Высота задана — лишнее содержимое
+   прокручивается внутри панели. */
+
+:root { --k-row: 8px; }
+
+.dashboard-grid.is-free,
+#worldOptionsRoot.is-free {
+  grid-template-columns: repeat(var(--cols, 12), minmax(0, 1fr)) !important;
+  grid-template-rows: repeat(var(--rows, 1), var(--k-row));
+  grid-auto-rows: auto;
+  align-items: stretch;
+}
+
+.is-free > [data-layout-key] {
+  order: 0 !important;
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+}
+
+.is-free > .is-placed {
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(214, 170, 96, 0.4) transparent;
+}
+
 /* ---------- ширина: шестые доли строки, на широком экране ---------- */
 
 @media (min-width: 1240px) {

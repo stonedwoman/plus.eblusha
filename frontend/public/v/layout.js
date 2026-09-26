@@ -18,6 +18,12 @@
  *                         align: { kicker, title, text: "left"|"center"|"right" } }
  *   tiles.code        — рунный камень с кодом: { valign, button: "full"|"auto",
  *                         align: { kicker, title, code, button } }
+ *   main.grid         — свободная сетка: { items: { key: { x, y, w, h } } }.
+ *                       Колонок 12 на компьютере и 2 на телефоне, строка —
+ *                       --k-row (8px) плюс зазор сетки. Если сетка задана,
+ *                       порядок и ширина из order/span не действуют: каждая
+ *                       панель стоит ровно в своих клетках, пустоты остаются.
+ *   options.grid      — то же для групп настроек.
  *   options.order     — названия групп настроек по порядку
  *   options.items[..] — { span: 2..6, head: выравнивание заголовка }
  * На компьютере ширина — шестые доли строки и действует от 1240 px; на
@@ -62,6 +68,75 @@
 
   function current() { return obj(obj(data)[profileName()]); }
 
+  // ---------- свободная сетка ----------
+
+  var COLS = { desktop: 12, phone: 2 };
+  function cols() { return COLS[profileName()]; }
+
+  function int(v) { return typeof v === "number" && isFinite(v) && Math.floor(v) === v ? v : null; }
+
+  // Проверенная позиция в клетках или null.
+  function cell(p, n) {
+    p = obj(p);
+    var x = int(p.x), y = int(p.y), w = int(p.w), h = int(p.h);
+    if (x === null || y === null || w === null || h === null) return null;
+    if (x < 0 || y < 0 || w < 1 || h < 1) return null;
+    x = Math.min(x, n - 1);
+    w = Math.min(w, n - x);
+    return { x: x, y: y, w: w, h: Math.min(h, 400) };
+  }
+
+  function hasGrid(area) {
+    var g = obj(obj(area).grid);
+    return Object.keys(obj(g.items)).length > 0;
+  }
+
+  function applyFree(grid, items, area) {
+    var n = cols();
+    var placed = obj(obj(area.grid).items);
+    var bottom = 0;
+    var pos = {};
+    items.forEach(function (el) {
+      var p = cell(placed[el.getAttribute("data-layout-key")], n);
+      if (p) {
+        pos[el.getAttribute("data-layout-key")] = p;
+        bottom = Math.max(bottom, p.y + p.h);
+      }
+    });
+    grid.classList.add("is-free");
+    grid.style.setProperty("--cols", String(n));
+    grid.style.setProperty("--rows", String(Math.max(1, bottom)));
+    var extra = 0;
+    items.forEach(function (el) {
+      var p = pos[el.getAttribute("data-layout-key")];
+      el.style.order = "";
+      el.classList.remove("has-span");
+      el.style.removeProperty("--span");
+      if (p) {
+        el.style.gridColumn = (p.x + 1) + " / span " + p.w;
+        el.style.gridRow = (p.y + 1) + " / span " + p.h;
+        el.classList.add("is-placed");
+      } else {
+        // Новая панель, которой ещё нет в сетке, — во всю ширину под ней.
+        el.style.gridColumn = "1 / -1";
+        el.style.gridRow = String(Math.max(1, bottom) + 1 + extra++);
+        el.classList.remove("is-placed");
+      }
+    });
+  }
+
+  function clearFree(grid, items) {
+    if (!grid.classList.contains("is-free")) return;
+    grid.classList.remove("is-free");
+    grid.style.removeProperty("--cols");
+    grid.style.removeProperty("--rows");
+    items.forEach(function (el) {
+      el.style.gridColumn = "";
+      el.style.gridRow = "";
+      el.classList.remove("is-placed");
+    });
+  }
+
   function readCache() {
     try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch (e) { return null; }
   }
@@ -102,11 +177,16 @@
     var items = Array.prototype.slice.call(grid.querySelectorAll(":scope > [data-layout-key]"));
     var main = obj(d.main);
     var conf = obj(main.items);
-    if (Array.isArray(main.order)) applyOrder(items, main.order);
-    else items.forEach(function (el) { el.style.order = ""; });
+    var free = hasGrid(main);
+    if (free) applyFree(grid, items, main);
+    else {
+      clearFree(grid, items);
+      if (Array.isArray(main.order)) applyOrder(items, main.order);
+      else items.forEach(function (el) { el.style.order = ""; });
+    }
     items.forEach(function (el) {
       var c = obj(conf[el.getAttribute("data-layout-key")]);
-      var span = clampSpan(c.span, 1, spanHi);
+      var span = free ? null : clampSpan(c.span, 1, spanHi);
       if (span) {
         anySpan = true;
         el.style.setProperty("--span", String(span));
@@ -115,7 +195,7 @@
         el.style.removeProperty("--span");
         el.classList.remove("has-span");
       }
-      el.classList.toggle("is-stretch", c.stretch === true);
+      el.classList.toggle("is-stretch", !free && c.stretch === true);
       setAttr(el, "data-head", pick(c.head, ALIGNS));
       if (c.hidden === true) el.setAttribute("data-layout-hidden", "");
       else el.removeAttribute("data-layout-hidden");
@@ -123,7 +203,7 @@
       el.hidden = c.hidden === true && !document.documentElement.classList.contains("nr-admin");
     });
     // Телефон: сетка в две колонки, только если кому-то задана половина.
-    grid.classList.toggle("has-phone-spans", phone && anySpan);
+    grid.classList.toggle("has-phone-spans", !free && phone && anySpan);
   }
 
   function applyTiles(d) {
@@ -156,15 +236,20 @@
     var opt = obj(d.options);
     var conf = obj(opt.items);
     var phone = profileName() === "phone";
-    if (Array.isArray(opt.order)) applyOrder(items, opt.order);
-    else items.forEach(function (el) { el.style.order = ""; });
+    var free = hasGrid(opt);
+    if (free) applyFree(grid, items, opt);
+    else {
+      clearFree(grid, items);
+      if (Array.isArray(opt.order)) applyOrder(items, opt.order);
+      else items.forEach(function (el) { el.style.order = ""; });
+    }
     // Сетка переходит на шесть колонок, только если кому-то задана ширина.
-    grid.classList.toggle("has-spans", !phone && items.some(function (el) {
+    grid.classList.toggle("has-spans", !free && !phone && items.some(function (el) {
       return !!clampSpan(obj(conf[el.getAttribute("data-layout-key")]).span, 1, 6);
     }));
     items.forEach(function (el) {
       var c = obj(conf[el.getAttribute("data-layout-key")]);
-      var span = phone ? null : clampSpan(c.span, 1, 6);
+      var span = phone || free ? null : clampSpan(c.span, 1, 6);
       if (span) {
         el.style.setProperty("--span", String(span));
         el.classList.add("has-span");
@@ -223,7 +308,9 @@
     ARROWS: ARROWS.slice(),
     ALIGNS: ALIGNS.slice(),
     VALIGNS: VALIGNS.slice(),
-    ELEMENTS: JSON.parse(JSON.stringify(ELEMENTS))
+    ELEMENTS: JSON.parse(JSON.stringify(ELEMENTS)),
+    cols: cols,
+    cell: cell
   };
 
   // Группы настроек рисует world-options.js — применяем, когда они появятся.
