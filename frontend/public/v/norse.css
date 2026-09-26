@@ -1359,25 +1359,34 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
 
   html.nr .nr-tab + .nr-tab::before { top: 22px; margin-top: 0; height: 30px; left: -1px; }
 
+  /* Железная полоса с заклёпками — позади щитов: текущий щит поднимается
+     перед ней, а не прячется за неё (раньше полоса резала его пополам). */
+  html.nr .nr-nav::after { z-index: 0; }
+  html.nr .nr-tab { z-index: 1; }
+  html.nr .nr-tab .nr-shield { z-index: 2; }
+
   html.nr .nr-tab[aria-current="page"] .nr-shield {
     --s: 48px;
-    transform: translateY(-15px);
+    transform: translateY(-20px);
     /* 8px taller than its siblings: pull the label back into line */
     margin-bottom: -8px;
     margin-top: 0;
+    filter: drop-shadow(0 6px 6px rgba(0, 0, 0, 0.55));
   }
 
   html.nr .nr-tab:hover .nr-shield { transform: none; }
-  html.nr .nr-tab[aria-current="page"]:hover .nr-shield { transform: translateY(-15px); }
+  html.nr .nr-tab[aria-current="page"]:hover .nr-shield { transform: translateY(-20px); }
 
+  /* Раскалённый металл — на полосе, под поднятым щитом. */
   html.nr .nr-tab[aria-current="page"]::after {
+    z-index: 1;
     top: -4px;
     bottom: auto;
     left: 18%;
     right: 18%;
   }
 
-  html.nr .nr-sparks { left: 50%; top: -6px; }
+  html.nr .nr-sparks { left: 50%; top: -10px; z-index: 3; }
   html.nr .nr-tab:hover:not([aria-current]) .nr-sparks i { animation: none; }
 
   html.nr .k-toast { top: calc(var(--nr-bar-h) + var(--nr-top) + 12px); }
