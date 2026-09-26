@@ -7,6 +7,10 @@
  *
  * Правка применяется у всех, кто сейчас в игре, без перезахода: сервер
  * рассылает ключи целиком (ZoneSystem.SendGlobalKeys).
+ *
+ * Разметка: группы настроек — отдельные стеклянные панели в сетке
+ * #worldOptionsRoot, кнопка правки и статус живут в шапке страницы
+ * (#optsEdit, #optsStatus, #optsNote), пароль спрашивает <dialog id="passDialog">.
  */
 (function () {
   "use strict";
@@ -18,10 +22,19 @@
   var root = document.getElementById("worldOptionsRoot");
   if (!root) return;
 
+  var statusEl = document.getElementById("optsStatus");
+  var editBtn = document.getElementById("optsEdit");
+  var noteEl = document.getElementById("optsNote");
+  var footEl = document.getElementById("optsFoot");
+  var dialog = document.getElementById("passDialog");
+  var passInput = document.getElementById("passInput");
+
   var state = null;
   var editing = false;
   var busy = false;
   var pollTimer = null;
+  // Ключ, который только что изменили: его строка вспыхнет после перерисовки.
+  var flashKey = null;
 
   function pass() {
     try {
@@ -66,12 +79,12 @@
       .catch(function () {
         if (!state) {
           root.textContent = "";
-          root.appendChild(el("p", "wopts__empty", "Сервер сейчас недоступен"));
+          root.appendChild(emptyPanel("Сервер сейчас недоступен"));
         }
       });
   }
 
-  function send(lines) {
+  function send(lines, key) {
     if (busy) return Promise.resolve();
     busy = true;
     render();
@@ -100,6 +113,7 @@
           note((res.body && res.body.error) || "Не применилось", true);
           return;
         }
+        flashKey = key || null;
         note("Применено — уже действует в игре", false);
       })
       .catch(function () {
@@ -115,19 +129,16 @@
 
   var noteTimer = null;
   function note(text, bad) {
-    var box = root.querySelector(".wopts__note");
-    if (!box) return;
-    box.textContent = text;
-    box.classList.toggle("is-bad", !!bad);
-    box.hidden = false;
+    if (!noteEl) return;
+    noteEl.textContent = text;
+    noteEl.classList.toggle("is-bad", !!bad);
+    noteEl.hidden = false;
     if (noteTimer) clearTimeout(noteTimer);
-    noteTimer = setTimeout(function () { box.hidden = true; }, 4000);
+    noteTimer = setTimeout(function () { noteEl.hidden = true; }, 4000);
   }
 
-  function askPassword() {
-    var typed = window.prompt("Пароль для правки настроек мира:");
-    if (typed == null) return;
-    typed = typed.trim();
+  function startEditing(typed) {
+    typed = (typed || "").trim();
     if (!typed) return;
     setPass(typed);
     editing = true;
@@ -135,18 +146,39 @@
     note("Режим правки включён. Пароль проверится при первом изменении", false);
   }
 
+  function askPassword() {
+    if (dialog && typeof dialog.showModal === "function") {
+      if (passInput) passInput.value = "";
+      dialog.showModal();
+      if (passInput) passInput.focus();
+      return;
+    }
+    startEditing(window.prompt("Пароль для правки настроек мира:"));
+  }
+
+  if (dialog) {
+    var form = dialog.querySelector("form");
+    if (form) {
+      form.addEventListener("submit", function () {
+        startEditing(passInput ? passInput.value : "");
+      });
+    }
+    var cancel = document.getElementById("passCancel");
+    if (cancel) cancel.addEventListener("click", function () { dialog.close(); });
+  }
+
   function onFlag(item) {
-    send([(item.on ? "unset " : "set ") + item.key]);
+    send([(item.on ? "unset " : "set ") + item.key], item.key);
   }
 
   function onScale(item, value) {
     // Единица — это значение по умолчанию, ключ тогда просто снимаем,
     // чтобы не засорять список ключей мира.
-    send([value === 1 ? "unset " + item.key : "set " + item.key + " " + value]);
+    send([value === 1 ? "unset " + item.key : "set " + item.key + " " + value], item.key);
   }
 
   function onInt(item, value) {
-    send([value === 0 ? "unset " + item.key : "set " + item.key + " " + value]);
+    send([value === 0 ? "unset " + item.key : "set " + item.key + " " + value], item.key);
   }
 
   function renderItem(item) {
@@ -156,6 +188,10 @@
     // Поэтому всё, кроме флажков, кладём под подпись на всю ширину.
     if (item.kind !== "flag") row.classList.add("wopt--stacked");
     if (busy) row.classList.add("is-busy");
+    if (flashKey && item.key === flashKey) {
+      row.classList.add("is-flash");
+      flashKey = null;
+    }
 
     var head = el("div", "wopt__head");
     head.appendChild(el("span", "wopt__label", item.label));
@@ -165,13 +201,12 @@
     var control = el("div", "wopt__control");
 
     if (item.kind === "flag") {
-      var toggle = el("button", "wswitch", null);
+      var toggle = el("button", "k-switch", null);
       toggle.type = "button";
       toggle.setAttribute("role", "switch");
       toggle.setAttribute("aria-checked", item.on ? "true" : "false");
       toggle.setAttribute("aria-label", item.label);
       toggle.classList.toggle("is-on", !!item.on);
-      toggle.appendChild(el("span", "wswitch__knob"));
       if (!editing || busy) toggle.disabled = true;
       else toggle.addEventListener("click", function () { onFlag(item); });
       control.appendChild(toggle);
@@ -179,7 +214,7 @@
       var group = el("div", "wchips");
       for (var v = item.min; v <= item.max; v++) {
         (function (value) {
-          var chip = el("button", "wchip", String(value));
+          var chip = el("button", "k-chip", String(value));
           chip.type = "button";
           if (value === item.value) chip.classList.add("is-on");
           if (!editing || busy) chip.disabled = true;
@@ -191,7 +226,7 @@
     } else {
       var chips = el("div", "wchips");
       (item.choices || []).forEach(function (choice) {
-        var chip = el("button", "wchip", "×" + fmt(choice));
+        var chip = el("button", "k-chip", "×" + fmt(choice));
         chip.type = "button";
         if (Math.abs(choice - item.value) < 0.0005) chip.classList.add("is-on");
         if (!editing || busy) chip.disabled = true;
@@ -203,7 +238,7 @@
         return Math.abs(c - item.value) < 0.0005;
       });
       if (!known) {
-        var odd = el("span", "wchip is-on is-static", "×" + fmt(item.value));
+        var odd = el("span", "k-chip is-on is-static", "×" + fmt(item.value));
         chips.insertBefore(odd, chips.firstChild);
       }
       control.appendChild(chips);
@@ -213,18 +248,51 @@
     return row;
   }
 
+  function emptyPanel(text) {
+    var section = el("section", "panel glass-panel ogroup k-rise");
+    section.style.setProperty("--i", "1");
+    section.appendChild(el("p", "empty", text));
+    return section;
+  }
+
+  function renderBar() {
+    if (statusEl) {
+      statusEl.textContent = editing ? "Правка включена" : "Только просмотр";
+      statusEl.classList.toggle("is-editing", editing);
+    }
+    if (editBtn) {
+      editBtn.textContent = editing ? "Выйти из правки" : "Изменить";
+      editBtn.classList.toggle("is-on", editing);
+    }
+  }
+
   function render() {
+    renderBar();
     root.textContent = "";
 
-    var bar = el("div", "wopts__bar");
-    var status = el("p", "wopts__status", editing
-      ? "Правка включена"
-      : "Только просмотр");
-    bar.appendChild(status);
+    if (!state || !state.ready) {
+      root.appendChild(emptyPanel("Сервер ещё не отдал настройки"));
+      if (footEl) footEl.hidden = true;
+      return;
+    }
 
-    var btn = el("button", "wopts__btn", editing ? "Выйти из правки" : "Изменить");
-    btn.type = "button";
-    btn.addEventListener("click", function () {
+    (state.groups || []).forEach(function (group, index) {
+      var section = el("section", "panel glass-panel glass-panel--interactive ogroup k-rise");
+      section.style.setProperty("--i", String(index + 1));
+      section.appendChild(el("h2", "panel__head", group.name));
+      var body = el("div", "ogroup__body");
+      (group.items || []).forEach(function (item) {
+        body.appendChild(renderItem(item));
+      });
+      section.appendChild(body);
+      root.appendChild(section);
+    });
+
+    if (footEl) footEl.hidden = false;
+  }
+
+  if (editBtn) {
+    editBtn.addEventListener("click", function () {
       if (editing) {
         editing = false;
         setPass("");
@@ -233,32 +301,6 @@
         askPassword();
       }
     });
-    bar.appendChild(btn);
-    root.appendChild(bar);
-
-    var noteBox = el("p", "wopts__note");
-    noteBox.hidden = true;
-    root.appendChild(noteBox);
-
-    if (!state || !state.ready) {
-      root.appendChild(el("p", "wopts__empty", "Сервер ещё не отдал настройки"));
-      return;
-    }
-
-    (state.groups || []).forEach(function (group) {
-      var section = el("div", "wgroup");
-      section.appendChild(el("h3", "wgroup__head", group.name));
-      var body = el("div", "wgroup__body");
-      (group.items || []).forEach(function (item) {
-        body.appendChild(renderItem(item));
-      });
-      section.appendChild(body);
-      root.appendChild(section);
-    });
-
-    var foot = el("p", "wopts__foot",
-      "Меняется сразу у всех, кто в игре. Настройки сохраняются в мире и переживают перезапуск.");
-    root.appendChild(foot);
   }
 
   render();

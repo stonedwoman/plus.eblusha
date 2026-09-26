@@ -1,7 +1,17 @@
 <!DOCTYPE html>
 <!-- v-landing: фон — Canvallax (canvas, закреплён и прокрутку игнорирует), см. v-sky-full.js -->
-<html lang="ru" data-v-landing="2026-04-14-fullwidth-hero">
+<html lang="ru" data-v-landing="2026-09-26-unified-ui">
 <head>
+  <script>
+    // Занавес до первого кадра, если мы пришли с соседней страницы раздела
+    // (см. koban-ui.js). Страховка снимает его, даже если скрипт не загрузился.
+    try {
+      if (sessionStorage.getItem("koban.transit")) {
+        document.documentElement.classList.add("k-pre");
+        setTimeout(function () { document.documentElement.classList.remove("k-pre"); }, 1500);
+      }
+    } catch (e) {}
+  </script>
   <script>
     // Переключатели украшений: ?fx=nosky,noforest,noglass,noparallax,noclock
     // или ?fx=off,
@@ -55,319 +65,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/v/theme.css?v=1" />
+  <link rel="stylesheet" href="/v/scene.css?v=1" />
   <style>
-    :root {
-      --panel: rgba(8, 16, 15, 0.78);
-      --panel-border: rgba(200, 164, 90, 0.16);
-      --text-main: #ece4d6;
-      --text-muted: #9aa39b;
-      --accent: #c8a45a;
-      --accent-hover: #e0bb6b;
-      --online: #6ee7a8;
-      --danger: #c45c2a;
-      --radius-lg: 22px;
-      --radius-sm: 12px;
-      --ease: cubic-bezier(0.4, 0, 0.2, 1);
-      --t-fast: 180ms var(--ease);
-      --t-med: 200ms var(--ease);
-      --shadow-panel: 0 12px 48px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.25);
-      --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-      --forest-height: 30vh;
-      --forest-bleed: 8vw;
-    }
+    /* Общие цвета, стекло и кнопки — в /v/theme.css. Здесь только своё. */
 
-    * { box-sizing: border-box; }
-
-    /* Полоса прокрутки появляется, когда страница вырастает при раскрытии плитки;
-       без резерва под неё вся страница сдвигается на её ширину и дёргается. */
-    html { scrollbar-gutter: stable; }
-    html {
-      margin: 0;
-      min-height: 100%;
-      /* Цвет, которым заканчивается градиент неба (#E1F6F4 в v-sky-full.js).
-         Холст неба закрывает не всю высоту окна, и ниже видно этот фон;
-         раньше он был заметно темнее и давал резкую горизонтальную границу. */
-      background: #e1f6f4;
-    }
-
-    /* Static sky is used for embedded previews and reduced-power fallbacks. */
-    html.sky-static body,
-    html.sky-error body {
-      background-image: linear-gradient(to top, #e1f6f4 40%, #07588a 100%);
-      background-size: cover;
-    }
-
-    /*
-      Не 400vw/400vh: в демо CodePen так «раздвигали» скролл для параллакса.
-      У нас margin: 0 auto на .page центрировал в 400vw — контент уезжал в ~200vw от левого края.
-    */
-    body {
-      margin: 0;
-      font-family: "Source Sans 3", system-ui, sans-serif;
-      font-size: 16px;
-      line-height: 1.5;
-      color: var(--text-main);
-      background: transparent;
-      width: 100%;
-      max-width: 100%;
-      min-height: 100vh;
-      position: relative;
-      overflow-x: hidden;
-      z-index: 0;
-      cursor: auto;
-    }
-
-    html[data-embedded="true"],
-    html[data-embedded="true"] body {
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-    }
-
-    html[data-embedded="true"] .home-logo {
-      display: none;
-    }
-
-    a,
-    button,
-    [role="button"] {
-      cursor: pointer;
-    }
-
-    /* Только не-canvallax canvas (если появятся) */
-    canvas:not(.bg-canvas) {
-      display: block;
-      margin: 2em;
-    }
-
-    .bg-canvas {
-      position: fixed;
-      top: 0;
-      left: 0;
-      z-index: 0;
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      display: block;
-      pointer-events: none;
-    }
-
-    .home-logo {
-      position: fixed;
-      top: clamp(0.55rem, 1.8vw, 1rem);
-      right: clamp(0.55rem, 1.8vw, 1rem);
-      z-index: 40;
-      display: block;
-      width: clamp(14.4rem, 36vw, 25rem);
-      aspect-ratio: 900 / 353;
-      filter:
-        drop-shadow(0 12px 32px rgba(0, 0, 0, 0.5))
-        drop-shadow(0 0 18px rgba(200, 164, 90, 0.16));
-      transform: translate3d(0, 0, 0);
-      animation: homeLogoFloat 4.8s ease-in-out infinite;
-    }
-
-    .home-logo::after {
-      content: "POWERED BY";
-      position: absolute;
-      top: calc(100% - 0.1rem);
-      left: 0;
-      right: 0;
-      color: rgba(236, 228, 214, 0.94);
-      font: 900 clamp(0.72rem, 1.55vw, 1.08rem) "Cinzel", Georgia, serif;
-      letter-spacing: 0.26em;
-      text-align: center;
-      text-shadow:
-        0 2px 14px rgba(0, 0, 0, 0.72),
-        0 0 18px rgba(200, 164, 90, 0.24);
-    }
-
-    .home-logo__img {
-      position: absolute;
-      inset: 0;
-      display: block;
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-    }
-
-    /* Слои логотипа. static — полный рисунок художника (logo-body.png).
-       glasses — только сами очки, вырезанные по своим пикселям, без единого
-       пикселя шерсти; при наведении едут вверх на 28 px исходника (7.93%
-       высоты). eyes — глаза из второго рисунка, видны ровно в полосе, которую
-       очки освобождают. Больше ничего не двигается.
-       Старое имя logo-static.png осталось на диске с дырой под очками: его ещё
-       просят давно открытые вкладки со старым кодом, подменять его нельзя. */
-    .home-logo__img--static { z-index: 1; opacity: 1; }
-
-    .home-logo__img--eyes {
-      z-index: 2;
-      opacity: 0;
-      transition: opacity 0s linear 1400ms;
-    }
-
-    .home-logo:hover .home-logo__img--eyes,
-    .home-logo:focus-visible .home-logo__img--eyes,
-    .home-logo.is-logo-peeking .home-logo__img--eyes {
-      opacity: 1;
-      transition: opacity 0s linear 0s;
-    }
-
-    .home-logo__img--glasses {
-      z-index: 3;
-      opacity: 1;
-      transform: translate3d(0, 0, 0);
-      transition: transform 1400ms cubic-bezier(0.2, 0.8, 0.18, 1);
-    }
-
-    .home-logo:hover .home-logo__img--glasses,
-    .home-logo:focus-visible .home-logo__img--glasses,
-    .home-logo.is-logo-peeking .home-logo__img--glasses {
-      transform: translate3d(0, -7.93%, 0);
-    }
-
-    .home-logo:focus-visible {
-      outline: 2px solid rgba(224, 187, 107, 0.74);
-      outline-offset: 0.25rem;
-      border-radius: 0.75rem;
-    }
-
-    @keyframes homeLogoFloat {
-      0%, 100% { transform: translate3d(0, 0, 0) rotate(-0.45deg); }
-      50% { transform: translate3d(0, -0.72rem, 0) rotate(0.55deg); }
-    }
-
-    /* Below this width the .page (max 1040px, centered) and the floating logo
-       (up to 25rem wide, pinned top-right) start overlapping the hero panel.
-       Drop the logo into the normal flow at the very top so it sits ABOVE the
-       hero instead of crashing into it. The logo element already comes before
-       .page in the DOM, so flipping to position: relative is enough — the
-       absolutely-positioned <img>s inside it stay anchored to it. */
-    @media (max-width: 1840px) {
-      .home-logo {
-        position: relative;
-        top: auto;
-        right: auto;
-        margin: clamp(0.55rem, 1.4vw, 1rem) auto 0;
-        width: clamp(11rem, 38vw, 19rem);
-      }
-      .home-logo::after {
-        position: static;
-        top: auto;
-        display: block;
-        margin-top: 0.4rem;
-      }
-    }
-
-    .forest-parallax {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: -12px;
-      height: var(--forest-height);
-      z-index: 2;
-      overflow: hidden;
-      pointer-events: none;
-      /* Затухание верхнего края запечено в сами SVG слоёв.
-         CSS-маска здесь пересчитывала прозрачность на каждый кадр прокрутки и
-         держала колесо на 30 fps; в картинке она растеризуется один раз. */
-    }
-
-    /* Слои — готовые WebP, а не SVG.
-       Исходники весили 5.2 МБ векторных путей на четыре штуки, и браузер
-       растеризовал их сам. По диагностике на живой машине: fps 8, худший кадр
-       250 мс, при этом долгих задач ноль и обработчики по 0 мс — то есть
-       JavaScript ни при чём, время уходило в отрисовку. Готовые текстуры
-       весят 308 КБ и растеризации не требуют. */
-    .forest-parallax__layer {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      left: calc(-1 * var(--forest-bleed));
-      right: calc(-1 * var(--forest-bleed));
-      background-repeat: repeat-x;
-      background-position: left bottom;
-      background-size: auto 100%;
-      will-change: transform;
-      transform: translate3d(0, 0, 0);
-    }
-
-    .forest-parallax__layer--1 {
-      background-image: url("/v/assets/forest-tile-far.webp");
-      filter: blur(1.4px) saturate(0.88);
-    }
-
-    .forest-parallax__layer--2 {
-      background-image: url("/v/assets/forest-tile-mid.webp");
-      filter: blur(0.95px) saturate(0.94);
-    }
-
-    .forest-parallax__layer--3 {
-      background-image: url("/v/assets/forest-tile-mid2.webp");
-      filter: blur(0.45px) saturate(1);
-    }
-
-    .forest-parallax__layer--4 {
-      background-image: url("/v/assets/forest-tile-front.webp");
-      filter: saturate(1.02);
-    }
-
-    /* —— Page —— */
-    .page {
-      position: relative;
-      z-index: 10;
-      /* Раньше страница была зажата в 1040px и на широком мониторе висела
-         узкой колонкой посередине. Теперь тянется до краёв; предел стоит лишь
-         затем, чтобы на очень больших экранах строки не уезжали в бесконечность. */
-      max-width: 2000px;
-      margin: 0 auto;
-      padding: clamp(0.85rem, 2.5vw, 1.35rem) clamp(1rem, 2.5vw, 2.5rem) clamp(1.25rem, 3vw, 2rem);
-      display: flex;
-      flex-direction: column;
-      align-items: stretch;
-      gap: clamp(0.9rem, 2.5vw, 1.35rem);
-      transform: translateZ(0);
-    }
-
-    .glass-panel {
-      background: var(--panel);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid var(--panel-border);
-      border-radius: var(--radius-lg);
-      box-shadow: var(--shadow-panel), var(--shadow-inset);
-      transform: translateZ(0);
-      backface-visibility: hidden;
-      transition:
-        border-color var(--t-med),
-        box-shadow var(--t-med),
-        background 220ms var(--ease),
-        transform var(--t-fast);
-    }
-
-    html.fx-no-forest .forest-parallax { display: none; }
-
-    @supports not (backdrop-filter: blur(1px)) {
-      .glass-panel { background: rgba(10, 22, 20, 0.92); }
-    }
-
-    /* Выключить размытие: ?fx=noglass. Оно заметно дороже при прокрутке, но
-       настоящей причиной тормозов оказался зум браузера, а не оно. */
-    html.fx-no-glass .glass-panel {
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-      background:
-        linear-gradient(165deg, rgba(12, 24, 22, 0.94) 0%, rgba(7, 16, 15, 0.92) 100%);
-    }
-
-
-    .glass-panel--interactive:hover {
-      border-color: rgba(200, 164, 90, 0.32);
-      box-shadow:
-        var(--shadow-panel),
-        var(--shadow-inset),
-        0 0 32px rgba(200, 164, 90, 0.06);
-    }
 
     /* Hero — та же ширина колонки, что и панели «Онлайн» / «Мир» (вся .page) */
     .hero {
@@ -379,45 +81,6 @@
       box-sizing: border-box;
     }
 
-    /* Статус — пилюля с точкой: раньше это была просто строка, которая терялась
-       над крупным заголовком. */
-    .hero__kicker {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.45rem;
-      font-family: "Source Sans 3", sans-serif;
-      font-size: 0.625rem;
-      font-weight: 700;
-      letter-spacing: 0.26em;
-      text-transform: uppercase;
-      padding: 0.26rem 0.75rem 0.26rem 0.62rem;
-      border: 1px solid transparent;
-      border-radius: 999px;
-      margin: 0 0 0.7rem;
-      transition: color var(--t-med), background var(--t-med), border-color var(--t-med);
-    }
-
-    .hero__kicker::before {
-      content: "";
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: currentColor;
-      box-shadow: 0 0 10px currentColor;
-      flex: 0 0 auto;
-    }
-
-    .hero__kicker--online {
-      color: var(--online);
-      background: rgba(110, 231, 168, 0.08);
-      border-color: rgba(110, 231, 168, 0.28);
-    }
-
-    .hero__kicker--offline {
-      color: #e86868;
-      background: rgba(232, 104, 104, 0.08);
-      border-color: rgba(232, 104, 104, 0.28);
-    }
 
     .hero__title {
       font-family: "Cinzel", Georgia, serif;
@@ -665,60 +328,11 @@
     }
 
 
-
-    button {
-      font-family: "Source Sans 3", sans-serif;
-      font-size: 0.8125rem;
-      font-weight: 600;
-      padding: 0.5rem 1rem;
-      border: none;
-      border-radius: var(--radius-sm);
-      cursor: pointer;
-      transition: transform var(--t-fast), box-shadow var(--t-fast), background var(--t-fast), opacity var(--t-fast);
-    }
-
-    button:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-
-    .btn-primary {
-      color: #0a0f0e;
-      background: linear-gradient(180deg, var(--accent-hover) 0%, var(--accent) 50%, #9a7a3a 100%);
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
-    }
-
-    .btn-primary:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
-    }
-
-    .btn-secondary {
-      background: rgba(200, 164, 90, 0.06);
-      color: var(--accent-hover);
-      border: 1px solid rgba(200, 164, 90, 0.28);
-    }
-
-    .btn-secondary:hover:not(:disabled) {
-      background: rgba(200, 164, 90, 0.1);
-      border-color: rgba(200, 164, 90, 0.4);
-    }
-
     .btn-secondary.btn-secondary--refreshing:disabled {
       opacity: 0.88;
       cursor: wait;
     }
 
-    .toast {
-      text-align: center;
-      font-size: 0.75rem;
-      min-height: 1.15em;
-      opacity: 0;
-      transition: opacity 0.3s var(--ease);
-      margin-top: 0.4rem;
-    }
-
-    .toast.show { opacity: 1; }
 
     /* Онлайн | Недавние в один ряд; «Мир» на всю ширину под ними */
     .dashboard-grid {
@@ -1009,7 +623,6 @@
       color: rgba(232, 160, 150, 0.85);
       box-shadow: inset 0 0 0 1px rgba(226, 140, 130, 0.12);
     }
-
 
 
     .wclock__hand {
@@ -1357,7 +970,6 @@
     }
 
 
-
     /* Развёрнутая плитка накрывает сетку целиком */
     .boss-tile--expanded {
       display: block;
@@ -1514,33 +1126,11 @@
       color: var(--text-main);
     }
 
-    .panel {
-      /* Ширину теперь диктует не окно, а сама панель: в сетке она может быть
-         узкой и на широком мониторе. Поэтому внутренние перестроения вешаем на
-         контейнерные запросы, а не на медиазапросы по вьюпорту. */
-      container-type: inline-size;
-      display: flex;
-      flex-direction: column;
-      padding: clamp(0.9rem, 2.2vw, 1.2rem);
-      min-height: 0;
-      height: 100%;
-    }
 
     .panel .list {
       flex: 1 1 auto;
     }
 
-    .panel__head {
-      font-family: "Cinzel", serif;
-      font-size: 0.75rem;
-      font-weight: 600;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: rgba(200, 164, 90, 0.75);
-      margin: 0 0 0.55rem;
-      padding-bottom: 0.45rem;
-      border-bottom: 1px solid rgba(200, 164, 90, 0.12);
-    }
 
     .list {
       list-style: none;
@@ -1620,12 +1210,6 @@
       margin-top: 0.15rem;
     }
 
-    .empty {
-      color: var(--text-muted);
-      font-size: 0.875rem;
-      margin: 0;
-      font-style: italic;
-    }
 
     @media (prefers-reduced-motion: reduce) {
       .dot-online {
@@ -1657,8 +1241,8 @@
     <img class="home-logo__img home-logo__img--glasses" src="/koban/logo-glasses.png" alt="" aria-hidden="true" />
   </a>
 
-  <div class="page" aria-live="polite">
-    <article class="hero glass-panel">
+  <div class="page k-stage" aria-live="polite">
+    <article class="hero glass-panel k-rise" style="--i: 0">
       <div class="hero__top">
         <p class="hero__kicker hero__kicker--offline" id="heroStatus" aria-live="polite">ОФФЛАЙН</p>
         <button type="button" class="hero__refresh" id="refreshBtn" aria-busy="false">Обновить</button>
@@ -1675,7 +1259,7 @@
         </div>
 
         <nav class="hero__nav" aria-label="Разделы">
-          <a class="tile tile--map" id="mapLink" href="/v/map/" rel="noopener">
+          <a class="tile tile--map" id="mapLink" href="/v/map/" rel="noopener" data-tilt>
             <span class="tile__body">
               <span class="tile__kicker">Вживую</span>
               <span class="tile__title">Карта мира</span>
@@ -1683,7 +1267,7 @@
             </span>
             <span class="tile__go" aria-hidden="true">→</span>
           </a>
-          <a class="tile tile--opts" href="/v/options/">
+          <a class="tile tile--opts" href="/v/options/" data-tilt>
             <span class="tile__body">
               <span class="tile__kicker">Сервер</span>
               <span class="tile__title">Настройки мира</span>
@@ -1698,23 +1282,23 @@
     </article>
 
     <div class="dashboard-grid">
-      <section class="panel glass-panel glass-panel--interactive">
+      <section class="panel glass-panel glass-panel--interactive k-rise" style="--i: 1">
         <h2 class="panel__head">Игроки</h2>
         <ul class="list" id="recentList"></ul>
         <p class="empty" id="recentEmpty" hidden>Пока никто не заходил</p>
       </section>
 
-      <section class="panel panel--wide glass-panel glass-panel--interactive" aria-label="Время в мире">
+      <section class="panel panel--wide glass-panel glass-panel--interactive k-rise" style="--i: 2" aria-label="Время в мире">
         <h2 class="panel__head">Время в мире</h2>
         <div id="worldClockRoot" class="wclock"></div>
       </section>
 
-      <section class="panel panel--farm glass-panel glass-panel--interactive" aria-label="Ферма">
+      <section class="panel panel--farm glass-panel glass-panel--interactive k-rise" style="--i: 3" aria-label="Ферма">
         <h2 class="panel__head">Ферма</h2>
         <div id="worldFarmRoot" class="farm"></div>
       </section>
 
-      <section class="panel panel--world-span glass-panel glass-panel--interactive" aria-label="Информация о мире">
+      <section class="panel panel--world-span glass-panel glass-panel--interactive k-rise" style="--i: 4" aria-label="Информация о мире">
         <h2 class="panel__head">Мир</h2>
         <div id="worldInfoRoot" class="world-info"></div>
       </section>
@@ -1731,6 +1315,7 @@
   <script src="/v/canvallax.min.js"></script>
   <script src="/v/v-sky-full.js?v=9"></script>
   <script src="/v/forest-parallax.js?v=3"></script>
+  <script src="/v/koban-ui.js?v=1" defer></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
   <script src="/v/components/world-info.js?v=10"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>

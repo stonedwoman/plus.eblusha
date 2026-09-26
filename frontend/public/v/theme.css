@@ -1,0 +1,547 @@
+/* Koban · Valheim — общая тема для главной, настроек и карты.
+ *
+ * Здесь живёт всё, что должно выглядеть одинаково на трёх страницах: цвета,
+ * шрифты, стекло панелей, кнопки, переключатели, фишки и переходы между
+ * страницами. Страницы подключают этот файл первым и поверх дописывают
+ * только своё.
+ */
+
+:root {
+  --bg-deep: #07110f;
+  --panel: rgba(8, 16, 15, 0.78);
+  --panel-solid: #0f1d1b;
+  --panel-border: rgba(200, 164, 90, 0.16);
+  --panel-border-hover: rgba(200, 164, 90, 0.34);
+  --text-main: #ece4d6;
+  --text-muted: #9aa39b;
+  --text-dim: rgba(226, 232, 226, 0.5);
+  --accent: #c8a45a;
+  --accent-hover: #e0bb6b;
+  --accent-soft: rgba(200, 164, 90, 0.1);
+  --accent-line: rgba(200, 164, 90, 0.28);
+  --online: #6ee7a8;
+  --danger: #c45c2a;
+  --bad: #e86868;
+  --radius-lg: 22px;
+  --radius-md: 16px;
+  --radius-sm: 12px;
+  --radius-xs: 8px;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --t-fast: 180ms var(--ease);
+  --t-med: 200ms var(--ease);
+  --t-slow: 420ms var(--ease-out);
+  --shadow-panel: 0 12px 48px rgba(0, 0, 0, 0.45), 0 2px 12px rgba(0, 0, 0, 0.25);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --font-display: "Cinzel", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-body: "Source Sans 3", system-ui, sans-serif;
+  /* Минимальная цель для пальца. */
+  --tap: 44px;
+}
+
+* { box-sizing: border-box; }
+
+/* ---------- стекло ---------- */
+
+.glass-panel {
+  background: var(--panel);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel), var(--shadow-inset);
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  transition:
+    border-color var(--t-med),
+    box-shadow var(--t-med),
+    background 220ms var(--ease),
+    transform var(--t-fast);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .glass-panel { background: rgba(10, 22, 20, 0.92); }
+}
+
+/* Выключить размытие: ?fx=noglass. */
+html.fx-no-glass .glass-panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: linear-gradient(165deg, rgba(12, 24, 22, 0.94) 0%, rgba(7, 16, 15, 0.92) 100%);
+}
+
+.glass-panel--interactive:hover {
+  border-color: var(--panel-border-hover);
+  box-shadow:
+    var(--shadow-panel),
+    var(--shadow-inset),
+    0 0 32px rgba(200, 164, 90, 0.06);
+}
+
+/* ---------- панель с заголовком ---------- */
+
+.panel {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(0.9rem, 2.2vw, 1.2rem);
+  min-height: 0;
+  height: 100%;
+}
+
+.panel__head {
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(200, 164, 90, 0.75);
+  margin: 0 0 0.55rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid rgba(200, 164, 90, 0.12);
+}
+
+.empty {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  margin: 0;
+  font-style: italic;
+}
+
+/* ---------- пилюля статуса ---------- */
+
+.hero__kicker,
+.kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-family: var(--font-body);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  padding: 0.26rem 0.75rem 0.26rem 0.62rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  margin: 0;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  transition: color var(--t-med), background var(--t-med), border-color var(--t-med);
+}
+
+.hero__kicker::before,
+.kicker::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+  flex: 0 0 auto;
+}
+
+.hero__kicker--online,
+.kicker--online {
+  color: var(--online);
+  background: rgba(110, 231, 168, 0.08);
+  border-color: rgba(110, 231, 168, 0.28);
+}
+
+.hero__kicker--offline,
+.kicker--offline {
+  color: var(--bad);
+  background: rgba(232, 104, 104, 0.08);
+  border-color: rgba(232, 104, 104, 0.28);
+}
+
+/* ---------- кнопки ---------- */
+
+button {
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: inherit;
+  background: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform var(--t-fast), box-shadow var(--t-fast), background var(--t-fast), opacity var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 2px solid rgba(224, 187, 107, 0.7);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  color: #0a0f0e;
+  background: linear-gradient(180deg, var(--accent-hover) 0%, var(--accent) 50%, #9a7a3a 100%);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.btn-secondary {
+  background: rgba(200, 164, 90, 0.06);
+  color: var(--accent-hover);
+  border: 1px solid var(--accent-line);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: rgba(200, 164, 90, 0.1);
+  border-color: rgba(200, 164, 90, 0.4);
+}
+
+/* Пилюля второго плана: «Обновить», «← к серверу», «Изменить». */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 0.3rem 0.85rem;
+  min-height: 2rem;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  color: var(--accent-hover);
+  border-color: rgba(200, 164, 90, 0.4);
+  background: rgba(200, 164, 90, 0.07);
+}
+
+.btn-ghost.is-on {
+  color: var(--accent-hover);
+  background: rgba(200, 164, 90, 0.14);
+  border-color: rgba(200, 164, 90, 0.5);
+}
+
+/* Круглая кнопка под палец: масштаб карты, закрыть, назад. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--text-main);
+  font-size: 1.1rem;
+  line-height: 1;
+  text-decoration: none;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  transition: transform var(--t-fast), border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+
+.btn-icon:hover:not(:disabled) {
+  color: var(--accent-hover);
+  border-color: var(--panel-border-hover);
+  transform: translateY(-1px);
+}
+
+.btn-icon:active:not(:disabled) { transform: scale(0.94); }
+
+.btn-icon svg { width: 20px; height: 20px; display: block; }
+
+/* ---------- переключатель ---------- */
+
+.k-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--accent-line);
+  background: rgba(10, 22, 20, 0.6);
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.k-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(226, 232, 226, 0.45);
+  transition: transform 200ms var(--ease-spring), background 160ms ease, box-shadow 160ms ease;
+}
+
+.k-switch.is-on {
+  background: rgba(200, 164, 90, 0.35);
+  border-color: rgba(200, 164, 90, 0.6);
+  box-shadow: 0 0 14px rgba(200, 164, 90, 0.18);
+}
+
+.k-switch.is-on::after {
+  transform: translateX(20px);
+  background: rgba(255, 233, 186, 0.95);
+  box-shadow: 0 0 8px rgba(255, 233, 186, 0.6);
+}
+
+/* Часть вложенных включена: ползунок посередине. */
+.k-switch.is-mixed::after {
+  transform: translateX(10px);
+  background: rgba(224, 187, 107, 0.7);
+}
+
+.k-switch.is-mixed {
+  background: rgba(200, 164, 90, 0.16);
+  border-color: rgba(200, 164, 90, 0.4);
+}
+
+.k-switch:disabled { cursor: default; opacity: 0.6; }
+
+.k-switch--sm { width: 38px; height: 22px; }
+.k-switch--sm::after { width: 14px; height: 14px; }
+.k-switch--sm.is-on::after { transform: translateX(16px); }
+.k-switch--sm.is-mixed::after { transform: translateX(8px); }
+
+/* ---------- фишки ---------- */
+
+.k-chip {
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.38rem 0.6rem;
+  min-width: 2.2rem;
+  min-height: 2rem;
+  color: rgba(226, 232, 226, 0.6);
+  background: rgba(10, 22, 20, 0.5);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.k-chip:hover:not(:disabled) {
+  color: rgba(226, 232, 226, 0.95);
+  border-color: rgba(200, 164, 90, 0.4);
+}
+
+.k-chip.is-on {
+  color: rgba(255, 233, 186, 0.95);
+  background: rgba(200, 164, 90, 0.2);
+  border-color: rgba(200, 164, 90, 0.55);
+}
+
+.k-chip:disabled { cursor: default; }
+.k-chip.is-static { cursor: default; }
+
+/* Счётчик. */
+.k-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: rgba(226, 232, 226, 0.6);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  line-height: 1;
+}
+
+.k-badge.is-live {
+  color: var(--online);
+  background: rgba(110, 231, 168, 0.1);
+  border-color: rgba(110, 231, 168, 0.3);
+}
+
+/* Поле ввода. */
+.k-input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text-main);
+  background: rgba(6, 15, 14, 0.7);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 0.55rem 1rem;
+  min-height: 2.5rem;
+  outline: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+
+.k-input::placeholder { color: rgba(226, 232, 226, 0.35); }
+
+.k-input:focus {
+  border-color: rgba(200, 164, 90, 0.5);
+  box-shadow: 0 0 0 3px rgba(200, 164, 90, 0.12);
+}
+
+/* Тонкие полосы прокрутки внутри панелей. */
+.k-scroll { scrollbar-width: thin; scrollbar-color: rgba(200, 164, 90, 0.3) transparent; }
+.k-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.k-scroll::-webkit-scrollbar-thumb { background: rgba(200, 164, 90, 0.3); border-radius: 6px; }
+.k-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- заголовки ---------- */
+
+.k-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin: 0;
+  color: var(--text-main);
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
+}
+
+/* ---------- всплывающее уведомление ---------- */
+
+.toast {
+  text-align: center;
+  font-size: 0.75rem;
+  min-height: 1.15em;
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+  margin-top: 0.4rem;
+}
+
+.toast.show { opacity: 1; }
+
+/* ---------- наклон плитки за курсором ---------- */
+
+[data-tilt] {
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+[data-tilt] .tilt-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: inherit;
+  opacity: 0;
+  background: radial-gradient(
+    60% 60% at var(--mx, 50%) var(--my, 50%),
+    rgba(255, 240, 200, 0.16) 0%,
+    rgba(255, 240, 200, 0) 70%
+  );
+  transition: opacity 260ms ease;
+}
+
+[data-tilt]:hover .tilt-sheen { opacity: 1; }
+
+/* ---------- появление панелей ---------- */
+
+@keyframes kRise {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+html.k-enter-first .k-rise {
+  animation: kRise 560ms var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+
+/* ---------- переходы между страницами: псевдо-3D разворот ----------
+ *
+ * Страница — лист, который перелистывают. Вперёд (главная → карта, настройки)
+ * лист уходит влево, назад — вправо. Пока грузится следующая страница, окно
+ * закрыто тёмным занавесом, чтобы не мигало белым.
+ */
+
+/* Перспектива задаётся внутри transform: perspective на body сделал бы
+   его containing block для fixed-элементов, и закреплённые небо и лес
+   поехали бы вместе с прокруткой. */
+
+.k-stage {
+  transform-origin: 50% 50%;
+  backface-visibility: hidden;
+}
+
+@keyframes kLeaveFwd {
+  to { opacity: 0; transform: perspective(1600px) rotateY(-26deg) translateX(-10%) translateZ(-140px); }
+}
+
+@keyframes kLeaveBack {
+  to { opacity: 0; transform: perspective(1600px) rotateY(26deg) translateX(10%) translateZ(-140px); }
+}
+
+@keyframes kEnterFwd {
+  from { opacity: 0; transform: perspective(1600px) rotateY(24deg) translateX(9%) translateZ(-120px); }
+  to { opacity: 1; transform: perspective(1600px) rotateY(0) translateX(0) translateZ(0); }
+}
+
+@keyframes kEnterBack {
+  from { opacity: 0; transform: perspective(1600px) rotateY(-24deg) translateX(-9%) translateZ(-120px); }
+  to { opacity: 1; transform: perspective(1600px) rotateY(0) translateX(0) translateZ(0); }
+}
+
+html.k-leave-fwd .k-stage { animation: kLeaveFwd 380ms var(--ease) both; pointer-events: none; }
+html.k-leave-back .k-stage { animation: kLeaveBack 380ms var(--ease) both; pointer-events: none; }
+html.k-enter-fwd .k-stage { animation: kEnterFwd 560ms var(--ease-out) both; }
+html.k-enter-back .k-stage { animation: kEnterBack 560ms var(--ease-out) both; }
+
+/* Занавес. Уходящая страница его опускает, приходящая — поднимает. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background: var(--bg-deep);
+  opacity: 0;
+  transition: opacity 340ms var(--ease);
+}
+
+html.k-leave-fwd body::after,
+html.k-leave-back body::after { opacity: 0.92; }
+
+/* До первого кадра: занавес закрыт (ставится инлайновым скриптом в head). */
+html.k-pre body::after { opacity: 1; transition: none; }
+
+@keyframes kCurtainUp {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+html.k-enter-fwd body::after,
+html.k-enter-back body::after {
+  animation: kCurtainUp 420ms var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .k-stage,
+  .k-rise,
+  html.k-enter-first .k-rise { animation: none !important; }
+  body::after { display: none; }
+  [data-tilt] { transform: none !important; }
+}
