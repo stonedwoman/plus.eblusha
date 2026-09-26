@@ -261,12 +261,15 @@
     var fps = Math.round(((frames.length - 1) * 1000) / total);
     var worst = Math.round(Math.max.apply(null, gaps));
     var slow = gaps.filter(function (g) { return g > 25; }).length;
+    // Где был худший кадр — в процентах времени поворота.
+    var wi = gaps.indexOf(Math.max.apply(null, gaps));
+    var at = Math.round(((frames[wi + 1] - frames[0]) / total) * 100);
     if (!fpsBox) {
       fpsBox = document.createElement("div");
       fpsBox.className = "cube-fps";
       document.body.appendChild(fpsBox);
     }
-    fpsBox.textContent = "поворот " + Math.round(span) + "°: " + fps + " fps · худший кадр " + worst + " мс · медленных " + slow + " из " + gaps.length;
+    fpsBox.textContent = "поворот " + Math.round(span) + "°: " + fps + " fps · худший кадр " + worst + " мс на " + at + "% · медленных " + slow + " из " + gaps.length;
     fpsBox.classList.toggle("is-bad", fps < 45 || worst > 50);
     try { console.info("[cube]", fpsBox.textContent); } catch (e) {}
   }
