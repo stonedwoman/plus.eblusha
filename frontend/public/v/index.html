@@ -1359,9 +1359,6 @@
       .dot-online {
         animation: none !important;
       }
-      .home-logo {
-        animation: none;
-      }
       .glass-panel--interactive:hover {
         transform: translateZ(0);
       }
@@ -1462,11 +1459,6 @@
           <div class="forest-parallax__layer forest-parallax__layer--4" data-depth-x="-0.90" data-depth-y="-0.24" data-base-y="0"></div>
         </div>
         <div class="face__scroll">
-          <a class="home-logo" href="https://koban.uk/" aria-label="Вернуться на koban.uk">
-            <img class="home-logo__img home-logo__img--static" src="/koban/logo-body.png" alt="КОБАНЮК" />
-            <img class="home-logo__img home-logo__img--eyes" src="/koban/logo-eyes.png" alt="" aria-hidden="true" />
-            <img class="home-logo__img home-logo__img--glasses" src="/koban/logo-glasses.png" alt="" aria-hidden="true" />
-          </a>
 
           <div class="page" aria-live="polite">
             <article class="hero glass-panel k-rise" style="--i: 0">
@@ -1994,32 +1986,6 @@
       setInterval(function () {
         if (cachedRecent.length) renderRecent(cachedRecent);
       }, 30000);
-    })();
-  </script>
-  <script>
-    (function () {
-      var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      var logo = document.querySelector(".home-logo");
-      var timer = 0;
-
-      if (!logo || reduceMotion) return;
-
-      function schedulePeek() {
-        if (timer) window.clearTimeout(timer);
-        timer = window.setTimeout(function () {
-          logo.classList.add("is-logo-peeking");
-          window.setTimeout(function () {
-            logo.classList.remove("is-logo-peeking");
-            schedulePeek();
-          }, 1200);
-        }, 5000 + Math.random() * 5000);
-      }
-
-      schedulePeek();
-      window.addEventListener("pagehide", function () {
-        if (timer) window.clearTimeout(timer);
-      });
-      window.addEventListener("pageshow", schedulePeek);
     })();
   </script>
   <script>

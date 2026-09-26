@@ -113,6 +113,8 @@ html.cube-3d .face { pointer-events: none; }
   z-index: 5;
   overflow-x: hidden;
   overflow-y: auto;
+  /* Появление полосы прокрутки не должно сдвигать содержимое грани. */
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   /* Вертикаль — прокрутка, горизонталь — поворот куба пальцем (cube.js). */
