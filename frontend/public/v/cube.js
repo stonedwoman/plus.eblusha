@@ -125,6 +125,7 @@
     FACES.forEach(function (f) {
       var el = faces[f];
       if (!el) return;
+      el.classList.remove("is-warm");
       var on = involved.indexOf(f) >= 0;
       el.classList.toggle("is-in", on);
       el.style.transform = on
@@ -151,6 +152,7 @@
     });
     root.dataset.face = face;
     setSkies([face]);
+    if (warmOn) warm(true);
     // Фокус остался на отвёрнутой грани (ушли с карты клавишами) — ставим
     // его на прокрутку видимой, чтобы PageDown и пробел листали её.
     var cur = faces[face];
@@ -548,6 +550,61 @@
   // Наведение на щит карты — тоже повод начать грузить.
   var mapTab = document.querySelector('.nr-tab[data-face="map"]');
   if (mapTab) mapTab.addEventListener("pointerenter", ensureMap, { once: true });
+
+  // ---------- подготовка к повороту ----------
+  //
+  // Соседние грани в покое скрыты, и браузер их не рисует. Первый кадр
+  // поворота из-за этого рисовал входящую грань целиком — короткий рывок на
+  // старте. Когда рука идёт к повороту (мышь на балке со щитами, на плитках
+  // «Карта / Настройки», на стрелке «назад», фокус на них, палец коснулся
+  // экрана), соседние грани заранее показываем почти прозрачными — к клику
+  // они уже нарисованы. В покое лишней работы нет.
+
+  var warmOn = false;
+  var warmTimer = 0;
+
+  function warm(on) {
+    warmOn = on;
+    root.classList.toggle("cube-warm", on);
+    FACES.forEach(function (f) {
+      var el = faces[f];
+      if (el) el.classList.toggle("is-warm", on && f !== current && !root.classList.contains("cube-3d"));
+    });
+    if (on) FACES.forEach(function (f) { if (faces[f]) shadeOf(f); });
+  }
+
+  function warmSoon() {
+    clearTimeout(warmTimer);
+    if (!warmOn) warm(true);
+  }
+
+  function coolLater(ms) {
+    clearTimeout(warmTimer);
+    warmTimer = setTimeout(function () {
+      if (!raf && !drag) warm(false);
+    }, ms);
+  }
+
+  var INTENT = ".nr-nav, .nr-tab, .hero__grid .tile, .oback";
+  document.addEventListener("pointerover", function (e) {
+    if (e.pointerType === "touch") return;
+    if (e.target.closest && e.target.closest(INTENT)) warmSoon();
+  });
+  document.addEventListener("pointerout", function (e) {
+    if (e.pointerType === "touch") return;
+    var to = e.relatedTarget;
+    if (e.target.closest && e.target.closest(INTENT) && !(to && to.closest && to.closest(INTENT))) coolLater(1500);
+  });
+  document.addEventListener("focusin", function (e) {
+    if (e.target.closest && e.target.closest(INTENT)) { warmSoon(); coolLater(4000); }
+  });
+  // Палец: на главной и в настройках любое касание может стать свайпом.
+  viewport.addEventListener("pointerdown", function (e) {
+    if (e.pointerType === "touch" && current !== "map") { warmSoon(); coolLater(2500); }
+  }, { passive: true });
+  document.addEventListener("pointerdown", function (e) {
+    if (e.pointerType === "touch" && e.target.closest && e.target.closest(".nr-nav")) { warmSoon(); coolLater(2500); }
+  }, { passive: true });
 
   // ---------- старт ----------
 
