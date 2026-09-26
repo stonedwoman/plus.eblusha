@@ -102,7 +102,7 @@
 
 
     .hero__title {
-      font-family: "Cinzel", Georgia, serif;
+      font-family: var(--font-display);
       font-weight: 700;
       font-size: clamp(1.2rem, 3.4vw, 1.7rem);
       letter-spacing: 0.14em;
@@ -236,7 +236,7 @@
 
     .tile__title {
       display: block;
-      font-family: "Cinzel", Georgia, serif;
+      font-family: var(--font-display);
       font-size: clamp(1.02rem, 2.1vw, 1.32rem);
       font-weight: 700;
       letter-spacing: 0.05em;
@@ -539,7 +539,7 @@
     }
 
     .wclock__day {
-      font-family: "Cinzel", Georgia, serif;
+      font-family: var(--font-display);
       font-size: clamp(1.05rem, 2.4vw, 1.35rem);
       font-weight: 700;
       letter-spacing: 0.06em;
@@ -1458,8 +1458,7 @@
           <div class="forest-parallax__layer forest-parallax__layer--3" data-depth-x="-0.60" data-depth-y="-0.16" data-base-y="0"></div>
           <div class="forest-parallax__layer forest-parallax__layer--4" data-depth-x="-0.90" data-depth-y="-0.24" data-base-y="0"></div>
         </div>
-        <div class="face__scroll">
-
+        <div class="face__scroll" tabindex="-1">
           <div class="page" aria-live="polite">
             <article class="hero glass-panel k-rise" style="--i: 0">
               <div class="hero__grid">
@@ -1533,7 +1532,7 @@
           <div class="forest-parallax__layer forest-parallax__layer--3" data-depth-x="-0.60" data-depth-y="-0.16" data-base-y="0"></div>
           <div class="forest-parallax__layer forest-parallax__layer--4" data-depth-x="-0.90" data-depth-y="-0.24" data-base-y="0"></div>
         </div>
-        <div class="face__scroll">
+        <div class="face__scroll" tabindex="-1">
           <div class="page">
             <div class="nr-pagehead k-rise">
               <span class="nr-pagehead__mark" aria-hidden="true"><span class="nr-shield"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13.4 2.8 21.2 10.6 17.6 14.2 9.8 6.4z" fill="currentColor" fill-opacity=".22"/><path d="M13.6 10.4 4.2 19.8" stroke-width="2.7"/><path d="m16.2 5.6-2.2 2.2M18.4 7.8l-2.2 2.2" stroke-width="1.2" opacity=".7"/></svg></span></span>
@@ -1569,10 +1568,10 @@
   </main>
 
   <script src="/v/canvallax.min.js"></script>
-  <script src="/v/v-sky-full.js?v=10"></script>
+  <script src="/v/v-sky-full.js?v=11"></script>
   <script src="/v/forest-parallax.js?v=4"></script>
   <i id="k-ready" hidden></i>
-  <script src="/v/cube.js?v=2"></script>
+  <script src="/v/cube.js?v=3"></script>
   <script src="/v/layout.js?v=4"></script>
   <script src="/v/koban-ui.js?v=3" defer></script>
   <script src="/v/constants/valheim-world-ru.js?v=3"></script>
@@ -1648,7 +1647,10 @@
           return;
         }
         if (cooldownMs > 0) {
-          refreshLabel.textContent = "Подождать " + Math.max(1, Math.ceil(cooldownMs / 1000)) + "с";
+          var secs = Math.max(1, Math.ceil(cooldownMs / 1000));
+          // На узком телефоне длинная подпись налезала на «Koban · Онлайн».
+          var narrow = window.matchMedia && window.matchMedia("(max-width: 360px)").matches;
+          refreshLabel.textContent = narrow ? secs + " с" : "Подождать " + secs + "с";
           return;
         }
         refreshLabel.textContent = REFRESH_LABEL_IDLE;

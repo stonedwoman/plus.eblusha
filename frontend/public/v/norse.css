@@ -478,8 +478,8 @@ html.nr .nr-sparks i:nth-child(3) { animation-delay: 1.6s !important; left: 8px;
 html.nr .nr-bar .tbtn {
   position: relative;
   min-width: 44px;
-  min-height: 42px;
-  height: 42px;
+  min-height: 44px;
+  height: 44px;
   padding: 0 15px 0 12px;
   gap: 9px;
   border-radius: 7px;
@@ -1084,11 +1084,24 @@ html.nr--map .sheet {
 
 html.nr--map .sheet.is-open { transform: none; opacity: 1; }
 
+/* Закрытая панель только сложена и прозрачна — без этого она невидимо
+   ловила клики, колесо и Tab в левом верхнем углу карты. */
+html.nr--map .sheet:not(.is-open) {
+  pointer-events: none;
+  visibility: hidden;
+  transition: transform 620ms cubic-bezier(0.34, 1.45, 0.64, 1), opacity 240ms ease, visibility 0s linear 620ms;
+}
+
 html.nr--map .dockcol {
   right: var(--nr-edge);
   width: min(340px, calc(100vw - 2 * var(--nr-edge)));
   gap: 22px;
+  /* Колонка кончается над кнопками масштаба (18 + 3×48 + 2×10 + зазор). */
+  bottom: calc(var(--nr-bottom) + 18px + 3 * 48px + 2 * 10px + 12px);
 }
+
+/* Длинный чат не сплющивает список игроков. */
+html.nr--map .dockcol:has(.dock--chat.is-open) .dock--players.is-open { flex-shrink: 0; max-height: 45%; }
 
 html.nr--map .dock {
   transform-origin: 50% 0;
@@ -1224,19 +1237,31 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
    MID WIDTHS — the beam compacts before it ever overlaps
    ===================================================================== */
 
+/* Правила были написаны под отдельную страницу карты (html.nr--map); на
+   общей странице они не срабатывали, и на 721–1100 px «Игроки» налезали на
+   щит «Настройки». */
 @media (max-width: 1240px) {
   html.nr .nr-crest__runes { display: none; }
+  html.nr .nr-bar .tbtn:not(.tbtn--labeled) .tbtn__label { display: none; }
+  html.nr .nr-bar .tbtn:not(.tbtn--labeled) { padding: 0 10px; }
 }
 
 @media (max-width: 1180px) {
-  html.nr--map .nr-bar .tbtn:not(.tbtn--labeled) .tbtn__label { display: none; }
-  html.nr--map .nr-bar .tbtn:not(.tbtn--labeled) { padding: 0 10px; }
   html.nr .nr-tab { padding: 0 12px 0 8px; gap: 9px; }
 }
 
 @media (max-width: 1000px) {
   html.nr .nr-crest__text { display: none; }
   html.nr .nr-tab { font-size: 14px; letter-spacing: 0.1em; }
+}
+
+/* Планшет, полэкрана: все кнопки балки — значки 44 px со счётчиком в углу.
+   От 721 px — ниже своя раскладка телефона. */
+@media (min-width: 721px) and (max-width: 920px) {
+  html.nr .nr-bar .tbtn { width: 44px; padding: 0; }
+  html.nr .nr-bar .tbtn--labeled .tbtn__label { display: none; }
+  html.nr .nr-bar .tbtn__badge { position: absolute; top: -6px; right: -6px; min-width: 19px; height: 19px; padding: 0 5px; font-size: 10px; }
+  html.nr .nr-bar .tbtn__badge:not(.is-live) { display: none; }
 }
 
 /* =====================================================================
@@ -1261,7 +1286,7 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
   html.nr .nr-crest__name { font-size: 19px; }
   html.nr .nr-crest__status .kicker { font-size: 10px; letter-spacing: 0.18em; }
 
-  html.nr .nr-bar .tbtn { height: 42px; min-height: 42px; padding: 0 12px; }
+  html.nr .nr-bar .tbtn { height: 44px; min-height: 44px; padding: 0 12px; }
   html.nr .nr-bar .tbtn--labeled .tbtn__label { display: inline; }
   html.nr .nr-bar .tbtn:not(.tbtn--labeled) { width: 44px; padding: 0; }
   html.nr .nr-bar .tbtn:not(.tbtn--labeled) .tbtn__label { display: none; }
@@ -1427,6 +1452,7 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
   html.nr .face--main .nr-stone-runes { animation: none !important; }
   html.nr--map .sheet,
   html.nr--map .dock { transition: opacity 200ms ease; }
+  html.nr--map .sheet:not(.is-open) { transition: opacity 200ms ease, visibility 0s linear 200ms; }
 }
 
 /* =====================================================================
@@ -1456,4 +1482,29 @@ html.nr.embed .k-toast { top: 16px; }
   html.nr.embed .dockcol { bottom: 16px; }
   html.nr.embed .zoombar { bottom: 16px; }
   html.nr.embed .stage > .poiCard { bottom: 16px; }
+}
+
+/* Низкий экран (телефон боком): колонка игроков и чата — до низа, масштаб
+   прячется, пока открыта панель. */
+@media (min-width: 721px) and (max-height: 500px) {
+  html.nr--map .dockcol { bottom: calc(var(--nr-bottom) + 16px); }
+  html.nr--map .zoombar { transition: opacity 200ms ease; }
+  html.nr--map:has(.dock.is-open) .zoombar { opacity: 0; pointer-events: none; }
+}
+
+/* Активный щит — с первого кадра, ещё до того как скрипт куба поставит
+   aria-current (раньше первые кадры шли без подсвеченного раздела). */
+html.nr[data-nav="map"] .nr-tab[data-face="map"],
+html.nr[data-nav="main"] .nr-tab[data-face="main"],
+html.nr[data-nav="options"] .nr-tab[data-face="options"] { color: var(--nr-gold); }
+
+/* Заголовок настроек читается и на фоне светлого облака. */
+html.nr .face--options .nr-pagehead__title,
+html.nr .face--options .nr-pagehead__sub {
+  text-shadow: 0 1px 0 #3a2410, 0 2px 3px rgba(0, 0, 0, 0.8), 0 0 18px rgba(4, 19, 24, 0.75), 0 0 36px rgba(4, 19, 24, 0.5);
+}
+
+/* Узкий телефон: «Настройки мира» на плитке не обрезается. */
+@media (max-width: 400px) {
+  html.nr .face--main .hero__grid .tile__title { font-size: clamp(1rem, 4.6vw, 1.3rem); letter-spacing: 0.03em; }
 }

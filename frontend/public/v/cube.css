@@ -97,7 +97,9 @@ html.cube-3d .face { pointer-events: none; }
 /* Грани с небом. Пока холст неба не нарисован — тот же градиент, что у него. */
 .face--main,
 .face--options {
-  background: linear-gradient(to top, #e1f6f4 40%, #07588a 100%);
+  /* Низ — цвет леса: если лес не дотянет до края, там не будет бледной
+     полоски неба. */
+  background: linear-gradient(to top, #041318 0, #041318 6%, #e1f6f4 18%, #e1f6f4 40%, #07588a 100%);
 }
 
 .face__sky {
@@ -117,11 +119,14 @@ html.cube-3d .face { pointer-events: none; }
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  /* Вертикаль — прокрутка, горизонталь — поворот куба пальцем (cube.js). */
-  touch-action: pan-y;
+  /* Вертикаль — прокрутка, горизонталь — поворот куба пальцем (cube.js),
+     щипок — масштаб страницы. */
+  touch-action: pan-y pinch-zoom;
   scrollbar-width: thin;
   scrollbar-color: rgba(214, 170, 96, 0.4) transparent;
 }
+
+.face__scroll:focus { outline: none; }
 
 .face__scroll::-webkit-scrollbar { width: 8px; }
 .face__scroll::-webkit-scrollbar-thumb { background: rgba(214, 170, 96, 0.35); border-radius: 8px; }

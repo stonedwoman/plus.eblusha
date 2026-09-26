@@ -174,6 +174,15 @@
       return canvas;
     }
 
+    // Размер неба — по его контейнеру: грань куба ниже окна на высоту балки,
+    // и холст по окну сплющивал звёзды и облака.
+    function hostSize(parent) {
+      if (parent && parent !== document.body && parent.clientWidth && parent.clientHeight) {
+        return { width: parent.clientWidth, height: parent.clientHeight };
+      }
+      return viewportSize();
+    }
+
     function buildSky(parent, inst) {
       var flags = mediaFlags();
       // ?fx=nosky — небо не строим вовсе, остаётся статичный градиент.
@@ -186,7 +195,7 @@
         return null;
       }
 
-      var view = viewportSize();
+      var view = hostSize(parent);
       var width = view.width;
       var height = view.height;
       var can = Canvallax({
@@ -246,7 +255,7 @@
 
       function syncCanvas() {
         if (destroyed) return;
-        var next = viewportSize();
+        var next = hostSize(parent);
         width = next.width;
         height = next.height;
 
