@@ -260,7 +260,11 @@
     var total = frames[frames.length - 1] - frames[0];
     var fps = Math.round(((frames.length - 1) * 1000) / total);
     var worst = Math.round(Math.max.apply(null, gaps));
-    var slow = gaps.filter(function (g) { return g > 25; }).length;
+    // Медленный — дольше двух обычных кадров этого экрана (на 60 Гц это
+    // ~33 мс, на 200 Гц — ~10 мс), а не жёсткие 25 мс.
+    var sorted = gaps.slice().sort(function (x, y) { return x - y; });
+    var median = sorted[sorted.length >> 1];
+    var slow = gaps.filter(function (g) { return g > median * 2; }).length;
     // Где был худший кадр — в процентах времени поворота.
     var wi = gaps.indexOf(Math.max.apply(null, gaps));
     var at = Math.round(((frames[wi + 1] - frames[0]) / total) * 100);
