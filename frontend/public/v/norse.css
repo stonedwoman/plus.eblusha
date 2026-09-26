@@ -854,10 +854,14 @@ html.nr .face--main .nr-stone-runes {
   overflow: hidden;
   white-space: nowrap;
   color: transparent;
-  background: linear-gradient(180deg, rgba(20, 22, 21, 0.75) 0%, rgba(20, 22, 21, 0.75) 40%, #ffc766 50%, rgba(20, 22, 21, 0.75) 60%, rgba(20, 22, 21, 0.75) 100%) 0 0 / 100% 300%;
+  /* Резьба, а не полоса: знаки чуть темнее камня, к концам растворяются —
+     иначе тёмная колонка у края читалась как шов. */
+  background: linear-gradient(180deg, rgba(20, 22, 21, 0.42) 0%, rgba(20, 22, 21, 0.42) 40%, #ffc766 50%, rgba(20, 22, 21, 0.42) 60%, rgba(20, 22, 21, 0.42) 100%) 0 0 / 100% 300%;
   -webkit-background-clip: text;
   background-clip: text;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.1);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.06);
+  -webkit-mask: linear-gradient(180deg, transparent 0%, #000 22%, #000 78%, transparent 100%);
+  mask: linear-gradient(180deg, transparent 0%, #000 22%, #000 78%, transparent 100%);
   animation: nrGlint 6s linear infinite;
   pointer-events: none;
 }

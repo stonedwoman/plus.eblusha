@@ -6,13 +6,19 @@
  * длительность) — общие с панелью «Боссы»: window.ValheimEvents из
  * world-info.js и window.ValheimWorldRu из constants/valheim-world-ru.js.
  *
- * Вверху — последний набег крупно и сколько времени прошло без набегов,
- * ниже — счёт по видам и лента прошлых набегов.
+ * Две вкладки в строке заголовка: «Последний» — последний набег и счёт
+ * (кто пришёл, где бывает, сколько длится, сколько уже без набегов, какой
+ * чаще всего), «История» — лента прошлых набегов. Сделано так, чтобы
+ * «Последний» влезал в панель ~490×410 без прокрутки. Выбранная вкладка
+ * запоминается в браузере.
  */
 (function (global) {
   "use strict";
 
-  var SHOW_HISTORY = 12;
+  var SHOW_HISTORY = 40;
+  var TAB_KEY = "koban.raids.tab";
+  var tab = "last";
+  try { if (localStorage.getItem(TAB_KEY) === "history") tab = "history"; } catch (e) {}
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -56,6 +62,40 @@
     return out;
   }
 
+  // Вкладки живут в строке заголовка панели (h2 перед корнем): так они не
+  // отнимают высоту у содержимого.
+  function tabsFor(root, count, onPick) {
+    var head = root.previousElementSibling;
+    if (!head || !head.classList || !head.classList.contains("panel__head")) return;
+    var box = head.querySelector(".raids__tabs");
+    if (!box) {
+      box = el("span", "raids__tabs");
+      box.setAttribute("role", "tablist");
+      box.setAttribute("aria-label", "Набеги");
+      [["last", "Последний"], ["history", "История"]].forEach(function (t) {
+        var b = el("button", "raids__tab");
+        b.type = "button";
+        b.setAttribute("role", "tab");
+        b.setAttribute("data-tab", t[0]);
+        b.appendChild(el("span", null, t[1]));
+        b.addEventListener("click", function () { onPick(t[0]); });
+        box.appendChild(b);
+      });
+      head.classList.add("has-tabs");
+      head.appendChild(box);
+    }
+    Array.prototype.forEach.call(box.querySelectorAll(".raids__tab"), function (b) {
+      var on = b.getAttribute("data-tab") === tab;
+      b.classList.toggle("is-on", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+      var n = b.querySelector(".raids__count");
+      if (b.getAttribute("data-tab") === "history") {
+        if (!n) { n = el("span", "raids__count"); b.appendChild(n); }
+        n.textContent = count > 0 ? String(count) : "";
+      }
+    });
+  }
+
   function renderWorldRaids(root, world) {
     if (!root) return;
     var E = global.ValheimEvents;
@@ -64,10 +104,22 @@
     // Свежие сверху.
     events = events.slice().reverse();
 
+    tabsFor(root, Math.max(0, events.length - 1), function (t) {
+      tab = t;
+      try { localStorage.setItem(TAB_KEY, t); } catch (e) {}
+      renderWorldRaids(root, world);
+    });
+
     root.textContent = "";
+    root.setAttribute("data-tab", tab);
 
     if (!events.length) {
       root.appendChild(el("p", "empty", "Набегов пока не было — или лог о них молчит"));
+      return;
+    }
+
+    if (tab === "history") {
+      renderHistory(root, events.slice(1), E);
       return;
     }
 
@@ -95,11 +147,12 @@
     // ---------- счёт ----------
 
     var stats = el("div", "raids__stats");
-    function stat(value, label) {
-      var s = el("div", "raids__stat");
-      s.appendChild(el("b", null, value));
-      s.appendChild(el("span", null, label));
-      stats.appendChild(s);
+    function stat(value, label, title) {
+      var st = el("div", "raids__stat");
+      st.appendChild(el("b", null, value));
+      st.appendChild(el("span", null, label));
+      if (title) st.title = title;
+      stats.appendChild(st);
     }
     stat(String(events.length), plural(events.length, "набег", "набега", "набегов") + " в логе");
     if (last.secondsAgo != null) stat(span(last.secondsAgo), "без набегов");
@@ -109,29 +162,30 @@
       counts[k] = (counts[k] || 0) + 1;
     });
     var top = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; })[0];
-    if (top && counts[top] > 1) stat("×" + counts[top], "чаще всего: " + top);
+    if (top && counts[top] > 1) stat("×" + counts[top], top, "Чаще всего: " + top);
     root.appendChild(stats);
+  }
 
-    // ---------- лента ----------
-
-    var older = events.slice(1, 1 + SHOW_HISTORY);
-    if (older.length) {
-      var list = el("ol", "raids__list");
-      older.forEach(function (e) {
-        var li = el("li", "raids__item" + (e.unknown ? " is-unknown" : ""));
-        li.appendChild(el("span", "raids__mark"));
-        li.appendChild(el("span", "raids__item-name", e.nameRu || e.id));
-        var t = el("span", "raids__item-when");
-        t.appendChild(el("span", null, e.secondsAgo != null && E ? E.formatRealAgo(e.secondsAgo) : ""));
-        t.appendChild(el("small", null, when(e.occurredAt)));
-        li.appendChild(t);
-        if (E) li.title = E.tooltip(e);
-        list.appendChild(li);
-      });
-      root.appendChild(list);
-      var rest = events.length - 1 - older.length;
-      if (rest > 0) root.appendChild(el("p", "raids__more", "и ещё " + rest + " раньше"));
+  function renderHistory(root, older, E) {
+    if (!older.length) {
+      root.appendChild(el("p", "empty", "Кроме последнего, набегов не было"));
+      return;
     }
+    var list = el("ol", "raids__list");
+    older.slice(0, SHOW_HISTORY).forEach(function (e) {
+      var li = el("li", "raids__item" + (e.unknown ? " is-unknown" : ""));
+      li.appendChild(el("span", "raids__mark"));
+      li.appendChild(el("span", "raids__item-name", e.nameRu || e.id));
+      var t = el("span", "raids__item-when");
+      t.appendChild(el("span", null, e.secondsAgo != null && E ? E.formatRealAgo(e.secondsAgo) : ""));
+      t.appendChild(el("small", null, when(e.occurredAt)));
+      li.appendChild(t);
+      if (E) li.title = E.tooltip(e);
+      list.appendChild(li);
+    });
+    root.appendChild(list);
+    var rest = older.length - SHOW_HISTORY;
+    if (rest > 0) root.appendChild(el("p", "raids__more", "и ещё " + rest + " раньше"));
   }
 
   global.renderWorldRaids = renderWorldRaids;
