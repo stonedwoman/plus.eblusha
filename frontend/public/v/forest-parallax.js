@@ -112,7 +112,14 @@
     var noParallax = root.classList.contains("fx-no-parallax");
 
     if (reduceMotion || coarsePointer || noParallax) {
-      renderLayers();
+      // Параллакса нет — слоям не нужен translate3d: он выносил каждый из
+      // них в отдельный слой видеокарты (4 на грань), и на телефоне поворот
+      // куба сводил их все на каждом кадре. Оставляем только сдвиг по base-y.
+      layers.forEach(function (layer) {
+        var baseY = parseNum(layer.getAttribute("data-base-y"));
+        layer.style.transform = baseY ? "translateY(" + baseY + "px)" : "none";
+        layer.style.willChange = "auto";
+      });
       return;
     }
 

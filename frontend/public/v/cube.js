@@ -120,6 +120,13 @@
     });
   }
 
+  // Грани, видимые хоть где-то между углами a и b (ближе 90° к пути).
+  function facesFor(a, b) {
+    var lo = Math.min(a, b);
+    var hi = Math.max(a, b);
+    return FACES.filter(function (f) { return ANGLE[f] > lo - 89.99 && ANGLE[f] < hi + 89.99; });
+  }
+
   function enter3D(involved) {
     measure();
     FACES.forEach(function (f) {
@@ -390,13 +397,24 @@
       drag.on = true;
       // Грани на время поворота не принимают касаний — держим палец на сцене.
       try { viewport.setPointerCapture(e.pointerId); } catch (err) {}
-      enter3D(FACES);
+      // В 3D — только текущая грань и та, к которой тянут; вторая соседка
+      // (например, живая карта при свайпе к настройкам) не участвует.
+      drag.lo = drag.a0;
+      drag.hi = drag.a0;
+      enter3D(facesFor(drag.a0 + (dx < 0 ? -1 : 1), drag.a0));
     }
     var dt = Math.max(1, e.timeStamp - drag.lastT);
     drag.v = (e.clientX - drag.lastX) / dt;
     drag.lastX = e.clientX;
     drag.lastT = e.timeStamp;
     angle = Math.max(-90, Math.min(90, drag.a0 + (dx / W) * 110));
+    // Повели палец обратно дальше исходной грани — добавляем и другую соседку.
+    if (angle < drag.lo || angle > drag.hi) {
+      drag.lo = Math.min(drag.lo, angle);
+      drag.hi = Math.max(drag.hi, angle);
+      var need = facesFor(drag.lo, drag.hi);
+      if (need.some(function (f) { return !faces[f].classList.contains("is-in"); })) enter3D(need);
+    }
     place(angle);
   }, { passive: true });
 
@@ -598,13 +616,9 @@
   document.addEventListener("focusin", function (e) {
     if (e.target.closest && e.target.closest(INTENT)) { warmSoon(); coolLater(4000); }
   });
-  // Палец: на главной и в настройках любое касание может стать свайпом.
-  viewport.addEventListener("pointerdown", function (e) {
-    if (e.pointerType === "touch" && current !== "map") { warmSoon(); coolLater(2500); }
-  }, { passive: true });
-  document.addEventListener("pointerdown", function (e) {
-    if (e.pointerType === "touch" && e.target.closest && e.target.closest(".nr-nav")) { warmSoon(); coolLater(2500); }
-  }, { passive: true });
+  // На сенсорных экранах подготовки нет: там она клала соседние грани (и
+  // живую карту) поверх текущей при каждом касании, в том числе при обычной
+  // прокрутке, — телефону это стоило дороже, чем экономило.
 
   // ---------- старт ----------
 

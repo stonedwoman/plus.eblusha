@@ -1541,3 +1541,9 @@ html.nr .face--options .nr-pagehead__sub {
 @media (min-width: 721px) and (max-width: 760px) {
   html.nr .nr-actions .nr-divider { display: none; }
 }
+
+/* ?fx=noglass — без размытия под стеклом (для сравнения скорости). */
+html.fx-no-glass .glass-panel {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}

@@ -112,6 +112,51 @@ html.cube-warm .face * {
   will-change: transform;
 }
 
+/* Сенсорные экраны (телефоны, планшеты): как можно меньше отдельных слоёв
+   внутри граней. На iPhone поворот сводил ~50 слоёв общей площадью ~40
+   экранов (стеклянные панели, слои леса, плитки) — около 10 кадров в
+   секунду. Здесь панели и плитки рисуются прямо в слой грани; раскрой
+   растра посреди поворота, ради которого на компьютере стоит will-change у
+   панелей, на телефоне не так важен, как число слоёв. */
+@media (hover: none) and (pointer: coarse) {
+  .face .glass-panel {
+    will-change: auto;
+    transform: none;
+    -webkit-backface-visibility: visible;
+    backface-visibility: visible;
+  }
+
+  .face [data-tilt] {
+    will-change: auto;
+    transform-style: flat;
+  }
+
+  .face .forest-parallax__layer { will-change: auto; }
+
+  /* Старое translateZ(0) у .page (scene.css) выносило в отдельный слой всю
+     прокручиваемую страницу грани — 4000 px высотой. */
+  .face .page { transform: none; }
+
+  /* На время поворота анимации внутри граней не просто на паузе, а сняты:
+     анимированный элемент — отдельный слой, и всё, что рисуется поверх него,
+     браузер тоже выносил в слои (на настройках — слой переключателей
+     в 3500 px высотой). */
+  html.cube-3d .face *,
+  html.cube-3d .face *::before,
+  html.cube-3d .face *::after {
+    animation: none !important;
+  }
+}
+
+/* Во время поворота бесконечные анимации (угольки щитов, свечение кода,
+   блик рун, пульс кнопки) замирают: каждая из них перерисовывала кусок
+   грани на каждом кадре. На 0,9 с этого никто не заметит. */
+html.cube-3d *,
+html.cube-3d *::before,
+html.cube-3d *::after {
+  animation-play-state: paused !important;
+}
+
 /* Затемнение отвёрнутой грани — отдельный элемент, которому cube.js ставит
    opacity. Раньше это был ::after с opacity: var(--shade): переменная
    наследуется, и её смена на каждом кадре заставляла пересчитывать стили
