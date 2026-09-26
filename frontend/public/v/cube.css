@@ -82,17 +82,49 @@ html.cube-3d .face.is-in {
 }
 
 /* Грань, отвернувшаяся от нас, темнеет — так поворот читается объёмным. */
-.face::after {
-  content: "";
+/* Затемнение отвёрнутой грани — отдельный элемент, которому cube.js ставит
+   opacity. Раньше это был ::after с opacity: var(--shade): переменная
+   наследуется, и её смена на каждом кадре заставляла пересчитывать стили
+   всех ~200 элементов грани. */
+.face__shade {
   position: absolute;
   inset: 0;
   z-index: 100;
   pointer-events: none;
   background: #000;
-  opacity: var(--shade, 0);
+  opacity: 0;
 }
 
 html.cube-3d .face { pointer-events: none; }
+
+/* Замер поворота (?fx=fps). */
+.cube-fps {
+  position: fixed;
+  z-index: 200;
+  left: 12px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font: 600 12px/1.3 "JetBrains Mono", ui-monospace, monospace;
+  color: #7fedb2;
+  background: rgba(8, 12, 10, 0.88);
+  border: 1px solid rgba(110, 231, 168, 0.4);
+  pointer-events: none;
+}
+
+.cube-fps.is-bad { color: #f29a8c; border-color: rgba(232, 104, 104, 0.5); }
+
+@media (max-width: 720px) {
+  .cube-fps { bottom: calc(var(--nr-rail-h, 70px) + env(safe-area-inset-bottom, 0px) + 10px); }
+}
+
+/* На время поворота стекло не размывает фон: пересчитывать размытие под
+   каждой из 10–15 вращающихся панелей на каждом кадре — самая тяжёлая
+   работа поворота, а панели почти непрозрачные, разницы не видно. */
+html.cube-3d .face * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
 
 /* Грани с небом. Пока холст неба не нарисован — тот же градиент, что у него. */
 .face--main,

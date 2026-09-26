@@ -34,7 +34,8 @@
     (function () {
       var KEY = "koban.fx";
       var OFF = ["nosky", "noforest", "noclock", "noglass", "noparallax"];
-      var VALID = OFF.slice();
+      // fps — замер поворота куба (cube.js), не украшение: ?fx=fps.
+      var VALID = OFF.concat(["fps"]);
       var q = null;
       try {
         q = new URLSearchParams(location.search).get("fx");

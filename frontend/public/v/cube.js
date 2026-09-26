@@ -89,6 +89,19 @@
     return 2 * x * k;
   }
 
+  // Слой затемнения грани — создаём один раз.
+  var shades = {};
+  function shadeOf(f) {
+    if (!shades[f]) {
+      var d = document.createElement("div");
+      d.className = "face__shade";
+      d.setAttribute("aria-hidden", "true");
+      faces[f].appendChild(d);
+      shades[f] = d;
+    }
+    return shades[f];
+  }
+
   function place(a, pl) {
     zPull = pl == null ? pull(a) : pl;
     cube.style.transform =
@@ -103,7 +116,7 @@
       var net = Math.min(90, Math.abs(yaw));
       var side = 0.1 * Math.sin((yaw * Math.PI) / 180) * Math.abs(Math.sin((a * Math.PI) / 90));
       var shade = Math.max(0, Math.min(0.7, (net / 90) * 0.62 + side));
-      el.style.setProperty("--shade", shade.toFixed(3));
+      shadeOf(f).style.opacity = shade.toFixed(3);
     });
   }
 
@@ -130,7 +143,7 @@
       if (!el) return;
       el.classList.remove("is-in");
       el.style.transform = "";
-      el.style.removeProperty("--shade");
+      if (shades[f]) shades[f].style.opacity = "0";
       el.setAttribute("aria-hidden", f === face ? "false" : "true");
       // Отвёрнутые грани (и карта во встроенном окне) не держат ни фокуса,
       // ни Tab, ни клавиш.
@@ -207,6 +220,7 @@
     enter3D(involved);
 
     var dur = 620 + span * 3.6;
+    var frames = [];
     // Отход на 0°, при котором плоская грань видна той же ширины, что силуэт
     // куба на 45°.
     var w45 = silhouette45();
@@ -214,6 +228,7 @@
     var t0 = performance.now();
     place(from, Math.max(pull(from), pull0));
     function step(now) {
+      frames.push(now);
       var p = Math.min(1, (now - t0) / dur);
       var e = easeInOut(p);
       angle = from + (target - from) * e;
@@ -229,9 +244,31 @@
         raf = 0;
         angle = target;
         flatten(face);
+        reportFps(frames, span);
       }
     }
     raf = requestAnimationFrame(step);
+  }
+
+  // ?fx=fps: после поворота — сколько кадров в секунду было и худший кадр.
+  // Чтобы судить о тормозах по цифрам с настоящей машины.
+  var fpsBox = null;
+  function reportFps(frames, span) {
+    if (!root.classList.contains("fx-fps") || frames.length < 3) return;
+    var gaps = [];
+    for (var i = 1; i < frames.length; i++) gaps.push(frames[i] - frames[i - 1]);
+    var total = frames[frames.length - 1] - frames[0];
+    var fps = Math.round(((frames.length - 1) * 1000) / total);
+    var worst = Math.round(Math.max.apply(null, gaps));
+    var slow = gaps.filter(function (g) { return g > 25; }).length;
+    if (!fpsBox) {
+      fpsBox = document.createElement("div");
+      fpsBox.className = "cube-fps";
+      document.body.appendChild(fpsBox);
+    }
+    fpsBox.textContent = "поворот " + Math.round(span) + "°: " + fps + " fps · худший кадр " + worst + " мс · медленных " + slow + " из " + gaps.length;
+    fpsBox.classList.toggle("is-bad", fps < 45 || worst > 50);
+    try { console.info("[cube]", fpsBox.textContent); } catch (e) {}
   }
 
   function go(face) {

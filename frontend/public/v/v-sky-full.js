@@ -351,6 +351,10 @@
           if (destroyed) return;
           // Грань не видна — не рисуем вовсе.
           if (inst && !inst.active) return;
+          // Пока куб поворачивается, облака замирают: два полноэкранных холста
+          // на каждом кадре поворота — лишняя работа, а за 0,9 с движения
+          // облаков никто не заметит.
+          if (document.documentElement.classList.contains("cube-3d")) return;
           if (t - lastDraw < 1000 / SKY_FPS) return;
           lastDraw = t;
           safeRender();
