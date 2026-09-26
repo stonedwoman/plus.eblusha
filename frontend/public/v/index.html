@@ -404,6 +404,20 @@
 
     .farm__name { color: rgba(226, 232, 226, 0.92); }
 
+    /* Число изменилось — короткая вспышка: прибавилось — зелёная, убыло — красная. */
+    .farm__count.is-up { animation: farmUp 1.6s ease-out; }
+    .farm__count.is-down { animation: farmDown 1.6s ease-out; }
+
+    @keyframes farmUp {
+      0% { color: #7fedb2; text-shadow: 0 0 14px rgba(110, 231, 168, 0.9); transform: scale(1.25); }
+      100% { transform: none; }
+    }
+
+    @keyframes farmDown {
+      0% { color: #f29a8c; text-shadow: 0 0 14px rgba(232, 104, 104, 0.9); transform: scale(1.25); }
+      100% { transform: none; }
+    }
+
     .farm__count {
       margin-left: auto;
       font-family: "JetBrains Mono", ui-monospace, monospace;
@@ -1654,7 +1668,7 @@
   <script src="/v/components/world-info.js?v=12"></script>
   <script src="/v/components/world-raids.js?v=2"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>
-  <script src="/v/components/world-farm.js?v=6" defer></script>
+  <script src="/v/components/world-farm.js?v=7" defer></script>
   <script src="/v/components/world-options.js?v=10" defer></script>
   <script>
     (function () {

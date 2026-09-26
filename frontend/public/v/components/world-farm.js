@@ -2,7 +2,10 @@
  *
  * Данные из /v/api/animals — плагин обходит ZDO и берёт только тех, у кого
  * стоит флаг tamed. Дикие того же префаба в мире встречаются постоянно и в
- * подсчёт не идут.
+ * подсчёт не идут. Плагин пересчитывает прирученных раз в 10 секунд, мы
+ * спрашиваем с той же частотой — но только пока главная грань на экране и
+ * вкладка открыта. Перерисовываем, только если что-то изменилось; новое число
+ * на мгновение вспыхивает.
  *
  * На каждый вид показываем: сколько всего, сколько взрослых и молодняка,
  * сколько со звёздами и какие клички дали игроки. Виды, которых ещё нет,
@@ -12,7 +15,9 @@
   "use strict";
 
   var ENDPOINT = "/v/api/animals";
-  var POLL_MS = 60000;
+  var POLL_MS = 10000;
+  var lastJson = null;
+  var lastCounts = {};
 
   var root = document.getElementById("worldFarmRoot");
   if (!root) return;
@@ -90,7 +95,12 @@
       var head = el("div", "farm__head");
       head.appendChild(el("span", "farm__icon", sp.icon));
       head.appendChild(el("span", "farm__name", sp.label));
-      head.appendChild(el("b", "farm__count", String(sum)));
+      var countEl = el("b", "farm__count", String(sum));
+      if (lastCounts[sp.id] != null && lastCounts[sp.id] !== sum) {
+        countEl.classList.add(sum > lastCounts[sp.id] ? "is-up" : "is-down");
+      }
+      lastCounts[sp.id] = sum;
+      head.appendChild(countEl);
       row.appendChild(head);
 
       var facts = [];
@@ -135,12 +145,29 @@
     return fetch(ENDPOINT, { cache: "no-store" })
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.json();
+        return r.text();
       })
-      .then(render)
-      .catch(function () { render(null); });
+      .then(function (text) {
+        if (text === lastJson) return;
+        lastJson = text;
+        render(JSON.parse(text));
+      })
+      .catch(function () {
+        if (lastJson === null) render(null);
+      });
+  }
+
+  // Спрашиваем, только когда ферму видно: главная грань куба и открытая вкладка.
+  function visible() {
+    if (document.visibilityState === "hidden") return false;
+    var face = document.documentElement.dataset.face;
+    return !face || face === "main";
   }
 
   load();
-  setInterval(load, POLL_MS);
+  setInterval(function () { if (visible()) load(); }, POLL_MS);
+  document.addEventListener("visibilitychange", function () { if (visible()) load(); });
+  window.addEventListener("koban:face", function (e) {
+    if (e.detail && e.detail.face === "main") load();
+  });
 })();
