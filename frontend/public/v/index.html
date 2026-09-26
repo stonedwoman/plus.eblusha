@@ -1018,7 +1018,8 @@
       text-decoration: none;
       font-size: 0.9375rem;
       font-weight: 600;
-      overflow-wrap: anywhere;
+      overflow-wrap: break-word;
+      hyphens: auto;
     }
 
     .world-info__boss-link:hover {
@@ -1412,6 +1413,14 @@
         <span class="nr-sparks" aria-hidden="true"><i></i><i></i><i></i></span>
       </a>
     </nav>
+    <script>
+      // Активный щит — уже в первом кадре; дальше им управляет cube.js.
+      (function () {
+        var f = document.documentElement.dataset.nav;
+        var t = document.querySelector('.nr-tab[data-face="' + f + '"]');
+        if (t) t.setAttribute("aria-current", "page");
+      })();
+    </script>
     <div class="nr-bar__side nr-bar__side--right">
       <div class="nr-actions" data-face="main">
         <button type="button" class="tbtn tbtn--labeled" id="refreshBtn" aria-busy="false" title="Обновить код, игроков и мир">

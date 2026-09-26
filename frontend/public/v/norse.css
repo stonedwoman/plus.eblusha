@@ -1100,8 +1100,13 @@ html.nr--map .dockcol {
   bottom: calc(var(--nr-bottom) + 18px + 3 * 48px + 2 * 10px + 12px);
 }
 
-/* Длинный чат не сплющивает список игроков. */
-html.nr--map .dockcol:has(.dock--chat.is-open) .dock--players.is-open { flex-shrink: 0; max-height: 45%; }
+/* Игроки и чат вместе: место делится поровну, а короткая панель отдаёт
+   лишнее соседке (длинный чат не сплющивает игроков, короткий не режет их). */
+html.nr--map .dockcol:has(.dock--players.is-open):has(.dock--chat.is-open) {
+  display: grid;
+  grid-template-rows: minmax(0, max-content) minmax(0, max-content);
+  align-content: start;
+}
 
 html.nr--map .dock {
   transform-origin: 50% 0;
@@ -1258,6 +1263,7 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
 /* Планшет, полэкрана: все кнопки балки — значки 44 px со счётчиком в углу.
    От 721 px — ниже своя раскладка телефона. */
 @media (min-width: 721px) and (max-width: 920px) {
+  html.nr .nr-medal { width: 40px; height: 40px; }
   html.nr .nr-bar .tbtn { width: 44px; padding: 0; }
   html.nr .nr-bar .tbtn--labeled .tbtn__label { display: none; }
   html.nr .nr-bar .tbtn__badge { position: absolute; top: -6px; right: -6px; min-width: 19px; height: 19px; padding: 0 5px; font-size: 10px; }
@@ -1501,12 +1507,6 @@ html.nr.embed .k-toast { top: 16px; }
   html.nr--map:has(.dock.is-open) .zoombar { opacity: 0; pointer-events: none; }
 }
 
-/* Активный щит — с первого кадра, ещё до того как скрипт куба поставит
-   aria-current (раньше первые кадры шли без подсвеченного раздела). */
-html.nr[data-nav="map"] .nr-tab[data-face="map"],
-html.nr[data-nav="main"] .nr-tab[data-face="main"],
-html.nr[data-nav="options"] .nr-tab[data-face="options"] { color: var(--nr-gold); }
-
 /* Заголовок настроек читается и на фоне светлого облака. */
 html.nr .face--options .nr-pagehead__title,
 html.nr .face--options .nr-pagehead__sub {
@@ -1514,6 +1514,21 @@ html.nr .face--options .nr-pagehead__sub {
 }
 
 /* Узкий телефон: «Настройки мира» на плитке не обрезается. */
+/* Узкий телефон: «Настройки» не помещаются рядом со щитом-стрелкой. При
+   стрелке по умолчанию (справа снизу) щит уходит в правый верхний угол:
+   текст прижат к низу, верх свободен, и заголовок получает всю ширину.
+   Выбранный в раскладке угол (data-arrow / data-valign) не трогаем. */
 @media (max-width: 400px) {
   html.nr .face--main .hero__grid .tile__title { font-size: clamp(1rem, 4.6vw, 1.3rem); letter-spacing: 0.03em; }
+  html.nr .face--main .hero__grid .tile:not([data-arrow]):not([data-valign]) > .tile__go {
+    position: absolute;
+    margin: 0;
+    top: clamp(0.9rem, 2.2vw, 1.25rem);
+    right: clamp(0.9rem, 2.2vw, 1.25rem);
+  }
+  html.nr .face--main .hero__grid .tile .tile__kicker { letter-spacing: 0.16em; }
+}
+
+@media (min-width: 721px) and (max-width: 760px) {
+  html.nr .nr-actions .nr-divider { display: none; }
 }

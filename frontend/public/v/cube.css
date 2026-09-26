@@ -19,7 +19,7 @@ html.nr body {
 
 /* Окно больше не прокручивается — прокручиваются грани. Резерв под полосу
    прокрутки (scene.css) дал бы пустую полосу справа. */
-html.nr { scrollbar-gutter: auto; }
+html.nr { scrollbar-gutter: auto; overscroll-behavior-x: none; }
 
 html.nr body {
   overscroll-behavior: none;

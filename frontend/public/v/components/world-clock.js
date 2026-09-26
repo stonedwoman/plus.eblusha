@@ -213,7 +213,8 @@
     // Сегменты подписаны прямо внутри: цветовой код без легенды никто не читает.
     var dial = el("div", "wclock__dial");
     [
-      { cls: "is-yes", left: 0, width: 15, text: "можно", word: true },
+      // Узкий первый отрезок: «спать» в нём не помещалось и обрезалось.
+      { cls: "is-yes", left: 0, width: 15, text: "можно" },
       { cls: "is-no", left: 15, width: 35, text: "нельзя", word: true },
       { cls: "is-yes", left: 50, width: 50, text: "можно", word: true }
     ].forEach(function (seg) {

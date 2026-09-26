@@ -79,6 +79,16 @@
     return Math.max(0.32 * W * bend, need);
   }
 
+  // Ширина силуэта куба на 45° при текущем отходе — в пикселях экрана.
+  function silhouette45() {
+    var h = W / 2;
+    var r = Math.PI / 4;
+    var x = h * (Math.cos(r) + Math.sin(r));
+    var z = -h - pull(45) + h * Math.abs(Math.cos(r) - Math.sin(r));
+    var k = P / (P - z);
+    return 2 * x * k;
+  }
+
   function place(a, pl) {
     zPull = pl == null ? pull(a) : pl;
     cube.style.transform =
@@ -197,6 +207,10 @@
     enter3D(involved);
 
     var dur = 620 + span * 3.6;
+    // Отход на 0°, при котором плоская грань видна той же ширины, что силуэт
+    // куба на 45°.
+    var w45 = silhouette45();
+    var F180 = w45 > 0 ? Math.max(0, P * (W / w45 - 1)) : 0.2 * W;
     var t0 = performance.now();
     place(from, Math.max(pull(from), pull0));
     function step(now) {
@@ -204,8 +218,9 @@
       var e = easeInOut(p);
       angle = from + (target - from) * e;
       var pl = pull(angle);
-      // Карта ↔ настройки: один отход на весь поворот, без нырка вперёд на 0°.
-      if (span > 90) pl = Math.max(pl, 0.32 * W * Math.sin(Math.PI * p));
+      // Карта ↔ настройки: один отход на весь поворот, без нырка вперёд на 0°
+      // и без лишнего отскока назад — на 0° куб такой же ширины, как на 45°.
+      if (span > 90) pl = Math.max(pl, F180 * Math.sin(Math.PI * p));
       pl = Math.max(pl, pull0 * (1 - e));
       place(angle, pl);
       if (p < 1) {

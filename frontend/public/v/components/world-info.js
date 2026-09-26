@@ -267,12 +267,25 @@
       var b = box.getBoundingClientRect();
       var t = tile.getBoundingClientRect();
       var pad = 16;
-      if (t.top < b.top + pad) {
+      // Трогаем, только если плитка целиком ушла из виду: частично видную
+      // оставляем как есть — иначе закрытие у края окна чуть сдвигало страницу.
+      if (t.bottom < b.top + pad) {
         box.scrollTop -= b.top + pad - t.top;
-      } else if (t.bottom > b.bottom - pad && t.height < b.height - 2 * pad) {
+      } else if (t.top > b.bottom - pad && t.height < b.height - 2 * pad) {
         box.scrollTop += t.bottom - (b.bottom - pad);
       }
     });
+  }
+
+  // После разворота: верх плитки (имя, начало советов) ушёл выше видимого —
+  // поднимаем его под балку. На телефоне развёрнутая плитка встаёт на место
+  // всей сетки и нижняя уезжала вверх за экран.
+  function revealTop(tile) {
+    var face = tile.closest && tile.closest(".face__scroll");
+    if (!face) return;
+    var b = face.getBoundingClientRect();
+    var t = tile.getBoundingClientRect();
+    if (t.top < b.top + 8) face.scrollTop -= b.top + 16 - t.top;
   }
 
   function expandTile(tile, animate) {
@@ -309,6 +322,7 @@
       clearRect(tile);
       syncExpandedHeight(grid, tile);
       watchExpanded(grid, tile);
+      if (animate) revealTop(tile);
     };
 
     if (animate && !REDUCED_MOTION) {
