@@ -771,8 +771,9 @@ html.nr .face--main .hero__id {
   position: relative;
   overflow: hidden;
   isolation: isolate;
+  /* Отступы одинаковые с обеих сторон: руны справа — фон камня, под
+     надписями, а не отдельная полоса, которая сдвигала всё влево. */
   padding: clamp(1.2rem, 2.8vw, 1.7rem) clamp(1.2rem, 3vw, 1.8rem) clamp(1.1rem, 2.6vw, 1.5rem);
-  padding-right: clamp(2.8rem, 5vw, 3.6rem);
   border: 1px solid rgba(0, 0, 0, 0.7);
   border-radius: 46px 58px 12px 14px / 34px 42px 12px 14px;
   background:
@@ -841,10 +842,11 @@ html.nr .face--main .code.muted { animation: none; color: rgba(241, 229, 203, 0.
 /* rune band carved down the right edge of the stone, a glint travels along it */
 html.nr .face--main .nr-stone-runes {
   position: absolute;
-  z-index: 0;
+  /* Под содержимым камня, но над самим камнем (у .hero__id isolation). */
+  z-index: -1;
   top: 18px;
   bottom: 18px;
-  right: clamp(0.9rem, 2vw, 1.25rem);
+  right: clamp(0.6rem, 1.4vw, 0.9rem);
   writing-mode: vertical-rl;
   font-family: var(--nr-rune);
   font-size: 15px;
