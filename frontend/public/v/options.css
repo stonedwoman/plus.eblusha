@@ -4,109 +4,147 @@
  * раскладка настроек: вводная панель, сетка групп, строки опций, окно пароля.
  */
 
-/* Верх настроек: плитка «← Главная» слева и панель правки справа. */
+/* Верх настроек: слева узкая доска со стрелкой ← (назад, на главную —
+   куб повернётся влево), справа панель правки. */
 .otop {
   display: grid;
-  grid-template-columns: minmax(8.5rem, 11rem) minmax(0, 1fr);
-  gap: clamp(0.75rem, 2vw, 1.1rem);
+  grid-template-columns: 3.75rem minmax(0, 1fr);
+  gap: clamp(0.6rem, 1.6vw, 0.9rem);
   align-items: stretch;
 }
 
 .oback {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.55rem;
-  min-height: 9rem;
-  padding: 1rem 0.75rem;
+  display: grid;
+  place-items: center;
+  min-height: 7rem;
   border-radius: 9px;
   text-decoration: none;
-  color: var(--nr-parch, #f1e5cb);
+  color: #ffd98f;
   border: 1px solid rgba(214, 170, 96, 0.45);
   background:
-    var(--nr-corner-tl) left top / 22px 22px no-repeat,
-    var(--nr-corner-tr) right top / 22px 22px no-repeat,
-    var(--nr-corner-bl) left bottom / 22px 22px no-repeat,
-    var(--nr-corner-br) right bottom / 22px 22px no-repeat,
-    radial-gradient(90% 90% at 50% 40%, rgba(255, 150, 50, 0.12) 0%, rgba(255, 150, 50, 0) 70%),
+    radial-gradient(120% 70% at 50% 50%, rgba(255, 150, 50, 0.12) 0%, rgba(255, 150, 50, 0) 70%),
     var(--nr-grain, none) 0 0 / 900px 260px,
     linear-gradient(180deg, #33231a 0%, #1b120b 100%);
   box-shadow:
-    0 16px 36px rgba(0, 0, 0, 0.5),
+    0 14px 30px rgba(0, 0, 0, 0.45),
     0 2px 0 rgba(0, 0, 0, 0.5),
     inset 0 0 0 3px rgba(0, 0, 0, 0.45),
     inset 0 0 0 4px rgba(214, 170, 96, 0.14);
-  transition: border-color 200ms ease, box-shadow 220ms ease, transform 200ms ease;
+  transition: border-color 200ms ease, box-shadow 220ms ease, color 200ms ease;
+}
+
+.oback svg {
+  width: 34px;
+  height: 34px;
+  display: block;
+  filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.7)) drop-shadow(0 0 8px rgba(255, 150, 50, 0.35));
+  /* Раз в несколько секунд стрелка чуть «тянется» влево — подсказка, куда. */
+  animation: obackNudge 4.5s ease-in-out infinite;
+}
+
+@keyframes obackNudge {
+  0%, 78%, 100% { transform: translateX(0); }
+  86% { transform: translateX(-5px); }
+  92% { transform: translateX(0); }
 }
 
 .oback:hover {
+  color: #ffe6b0;
   border-color: rgba(240, 205, 132, 0.85);
   box-shadow:
-    0 18px 40px rgba(0, 0, 0, 0.55),
+    0 16px 34px rgba(0, 0, 0, 0.5),
     0 2px 0 rgba(0, 0, 0, 0.5),
     inset 0 0 0 3px rgba(0, 0, 0, 0.45),
     inset 0 0 0 4px rgba(240, 205, 132, 0.3),
-    0 0 30px rgba(255, 150, 50, 0.16);
+    0 0 26px rgba(255, 150, 50, 0.2);
 }
 
-.oback:active { transform: translateY(1px); }
-
-.oback__shield { --s: 52px; }
-.oback__shield svg { width: 24px; height: 24px; }
-
-.oback:hover .oback__shield { transform: rotate(-12deg) scale(1.06); }
-
-.oback__label {
-  font-family: var(--font-display);
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6);
+.oback:hover svg {
+  animation: none;
+  transform: translateX(-5px);
+  transition: transform 200ms ease;
 }
 
-/* Стрелка — в сторону главной: куб повернётся влево. */
-.oback__arrow {
-  position: absolute;
-  top: 0.55rem;
-  left: 0.7rem;
-  font-size: 1.1rem;
-  line-height: 1;
-  color: #ffd98f;
-  opacity: 0.8;
-  transition: transform 200ms ease, opacity 200ms ease;
-}
+.oback:active svg { transform: translateX(-7px); }
 
-.oback:hover .oback__arrow { transform: translateX(-4px); opacity: 1; }
-
+/* Приглашение к правке — отдельная плашка с кнопкой, в тон углям. */
 .ointro__bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem 1rem;
   flex-wrap: wrap;
-  margin-top: 0.75rem;
-  padding-top: 0.7rem;
-  border-top: 1px dashed rgba(214, 170, 96, 0.18);
+  margin-top: 0.9rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 170, 70, 0.5);
+  background:
+    radial-gradient(120% 180% at 0% 50%, rgba(255, 140, 40, 0.22) 0%, rgba(255, 140, 40, 0) 60%),
+    rgba(0, 0, 0, 0.25);
+  box-shadow: inset 0 0 24px rgba(255, 120, 30, 0.1), 0 0 20px rgba(255, 140, 40, 0.08);
 }
 
-.ointro__bar .ointro__mode { margin: 0 !important; flex: 1 1 18rem; }
+.ointro__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  color: #ffd98f;
+  background:
+    radial-gradient(circle, #3d2a17 0 58%, rgba(0, 0, 0, 0) 60%) padding-box,
+    conic-gradient(from 200deg, #fbe2a4, #8f6a31 25%, #f0cd84 50%, #6d4f22 75%, #fbe2a4) border-box;
+  box-shadow: 0 0 14px rgba(255, 154, 60, 0.35);
+}
+
+.ointro__icon svg { width: 19px; height: 19px; }
+.ointro__icon .is-open { display: none; }
+
+.ointro .ointro__bar .ointro__mode {
+  flex: 1 1 14rem;
+  margin: 0 !important;
+  font-size: 1rem;
+  line-height: 1.4;
+  color: rgba(241, 229, 203, 0.9) !important;
+}
+
+.ointro .ointro__bar .ointro__mode b { color: #ffc766; font-weight: 700; }
 
 .ointro__edit {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  min-height: 44px;
-  padding: 0 1.2rem;
-  font-size: 0.9rem;
+  gap: 0.55rem;
+  margin-left: auto;
+  min-height: 46px;
+  padding: 0 1.4rem;
+  font-size: 0.95rem;
+  animation: ointroCall 2.8s ease-in-out infinite;
 }
 
 .ointro__edit svg { width: 18px; height: 18px; }
 
-/* Режим правки: кнопка «Готово» — тёмная, чтобы было видно, что режим включён. */
+@keyframes ointroCall {
+  0%, 100% { box-shadow: inset 0 1px 0 rgba(255, 245, 210, 0.7), 0 2px 0 #3a260d, 0 0 0 rgba(255, 170, 60, 0); }
+  50% { box-shadow: inset 0 1px 0 rgba(255, 245, 210, 0.7), 0 2px 0 #3a260d, 0 0 22px rgba(255, 170, 60, 0.55); }
+}
+
+/* Режим правки: плашка зелёная, замок открыт, «Готово» — тёмная кнопка. */
+.ointro__bar:has(.is-editing) {
+  border-color: rgba(110, 231, 168, 0.5);
+  background:
+    radial-gradient(120% 180% at 0% 50%, rgba(110, 231, 168, 0.16) 0%, rgba(110, 231, 168, 0) 60%),
+    rgba(0, 0, 0, 0.25);
+  box-shadow: inset 0 0 24px rgba(110, 231, 168, 0.08);
+}
+
+.ointro__bar:has(.is-editing) .ointro__icon { color: #7fedb2; box-shadow: 0 0 14px rgba(110, 231, 168, 0.35); }
+.ointro__bar:has(.is-editing) .ointro__icon .is-open { display: block; }
+.ointro__bar:has(.is-editing) .ointro__icon .is-closed { display: none; }
+.ointro .ointro__bar .ointro__mode.is-editing b { color: #7fedb2; }
+
 .ointro__edit[aria-pressed="true"] {
+  animation: none;
   color: #ffe2a6;
   border-color: rgba(255, 196, 110, 0.9);
   background:
@@ -116,13 +154,15 @@
 }
 
 @media (max-width: 720px) {
-  /* Телефон: «назад» — узкий столбик со щитом, панель — рядом. */
-  .otop { grid-template-columns: 4.6rem minmax(0, 1fr); gap: 0.6rem; }
-  .oback { min-height: 0; padding: 0.8rem 0.3rem; gap: 0.4rem; }
-  .oback__shield { --s: 42px; }
-  .oback__label { font-size: 0.66rem; letter-spacing: 0.08em; }
-  .oback__arrow { top: 0.4rem; left: 0.45rem; font-size: 0.95rem; }
+  .otop { grid-template-columns: 2.9rem minmax(0, 1fr); gap: 0.55rem; }
+  .oback { min-height: 0; }
+  .oback svg { width: 26px; height: 26px; }
+  .ointro .ointro__bar .ointro__mode { font-size: 0.92rem; flex-basis: 10rem; }
   .ointro__edit { width: 100%; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oback svg, .ointro__edit { animation: none; }
 }
 
 /* Вводная панель — как панели главной. */
@@ -140,11 +180,21 @@
 .ointro__mode.is-editing b { color: var(--online); }
 
 /* Группы настроек — карточки в сетке, как панели на главной. */
+/* Восемь групп: на широком экране — по четыре в ряд, два ровных ряда
+   (панели в ряду одной высоты); уже — по две; на телефоне — одна. */
 .ogrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: clamp(0.75rem, 2vw, 1.1rem);
-  align-items: start;
+  align-items: stretch;
+}
+
+@media (min-width: 760px) {
+  .ogrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 1200px) {
+  .ogrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
 .ogroup { font-size: 0.875rem; line-height: 1.4; }

@@ -1600,10 +1600,8 @@
             <!-- Верх настроек: слева — назад на главную (куб повернётся влево),
                  справа — что это за настройки и кнопка правки. -->
             <div class="otop">
-              <a class="oback k-rise" href="#main" style="--i: 0" title="На главную (клавиша 2)">
-                <span class="oback__arrow" aria-hidden="true">←</span>
-                <span class="nr-shield oback__shield" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 12.4 12 5.3l9.2 7.1"/><path d="M8.8 2.9 12 5.3l3.2-2.4"/><path d="M5.3 10.7V20h13.4v-9.3"/><path d="M10.2 20v-4.7h3.6V20"/></svg></span>
-                <span class="oback__label">Главная</span>
+              <a class="oback k-rise" href="#main" style="--i: 0" title="Назад, на главную (клавиша 2)" aria-label="Назад, на главную">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12H5"/><path d="M11 5l-7 7 7 7"/></svg>
               </a>
               <section class="panel glass-panel ointro k-rise" style="--i: 1">
                 <h2 class="panel__head">Правка мира</h2>
@@ -1613,7 +1611,11 @@
                   переживают перезапуск сервера.
                 </p>
                 <div class="ointro__bar">
-                  <p class="ointro__mode" id="optsStatus"><b>Только просмотр.</b> Чтобы менять, нажми «Изменить» — понадобится пароль.</p>
+                  <span class="ointro__icon" aria-hidden="true">
+                    <svg class="is-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+                    <svg class="is-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.6-1.7"/></svg>
+                  </span>
+                  <p class="ointro__mode" id="optsStatus"><b>Хочешь поменять правила мира?</b> Жми «Изменить» — понадобится пароль.</p>
                   <button type="button" class="btn-primary ointro__edit" id="optsEdit" aria-pressed="false" title="Изменить настройки">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
                     <span id="optsEditLabel">Изменить</span>
@@ -1652,7 +1654,7 @@
   <script src="/v/components/world-raids.js?v=2"></script>
   <script src="/v/components/world-clock.js?v=17" defer></script>
   <script src="/v/components/world-farm.js?v=6" defer></script>
-  <script src="/v/components/world-options.js?v=9" defer></script>
+  <script src="/v/components/world-options.js?v=10" defer></script>
   <script>
     (function () {
       var JSON_URL = "/v/valheim-join-code.json";
