@@ -1534,9 +1534,9 @@
         <span class="nr-crest__text">
           <span class="nr-crest__name">Koban</span>
           <span class="nr-crest__status"><span class="kicker kicker--offline topbar__kicker" id="heroStatus" aria-live="polite"><span class="topbar__kicker-text">Связь</span></span></span>
-          <!-- Сутки мира в сжатом виде: время и полоса, штриховка — когда
-               можно спать. Рисует components/world-clock.js, щелчок ведёт
-               к панели «Время в мире». -->
+          <!-- Сутки мира в сжатом виде: время и полоса — зелёное, где можно
+               спать, красное, где нельзя, золотая черта — сейчас. Рисует
+               components/world-clock.js, щелчок ведёт к панели «Время в мире». -->
           <button type="button" class="nr-day" id="nrDay" data-state="none" aria-label="Время в мире">
             <b class="nr-day__time" id="nrDayTime">--:--</b>
             <span class="nr-day__rail" aria-hidden="true">
@@ -1544,7 +1544,7 @@
                 <span class="nr-day__scale">
                   <i class="nr-day__win" id="nrDayWinA"></i>
                   <i class="nr-day__win" id="nrDayWinB"></i>
-                  <i class="nr-day__gem" id="nrDayNow"></i>
+                  <i class="nr-day__now" id="nrDayNow"></i>
                 </span>
               </span>
             </span>

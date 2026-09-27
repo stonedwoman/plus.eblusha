@@ -306,7 +306,8 @@
 
   // ---------- сутки в балке ----------
   // Сжатая копия полосы для шапки страницы (#nrDay): время цветом состояния и
-  // игла на полосе суток. Своих запросов нет — это те же часы, что у панели.
+  // золотая черта на полосе суток. Своих запросов нет — это те же часы, что у
+  // панели.
   var beam = (function () {
     var box = document.getElementById("nrDay");
     if (!box) return null;
@@ -345,7 +346,7 @@
     setAttr(beam.box, "data-state", "bState", frozen ? "frozen" : canSleep ? "sleep" : "wait");
     setText(beam.time, "bTime", hhmm);
 
-    // Игла проходит пиксель полосы за ~15 секунд: ставим её с шагом в
+    // Черта проходит пиксель полосы за ~15 секунд: ставим её с шагом в
     // тысячную суток, а не на каждом кадре.
     var pos = (Math.round(f * 1000) / 10) + "%";
     if (last.bPos !== pos) {
@@ -366,7 +367,7 @@
         ", по вашим часам около " + wallClock(wait) + ".";
     }
     setAttr(beam.box, "aria-label", "bAria", "Время в мире " + text);
-    setAttr(beam.box, "title", "bTitle", text + "\nШтриховка на полосе — когда кровать работает: с " +
+    setAttr(beam.box, "title", "bTitle", text + "\nЗелёное на полосе — когда кровать работает: с " +
       clock(opens) + " до " + clock(closes) + ". Щёлкните — откроется панель «Время в мире».");
   }
 
