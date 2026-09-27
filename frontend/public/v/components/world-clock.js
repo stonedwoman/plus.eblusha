@@ -298,12 +298,133 @@
     node.textContent = value;
   }
 
+  function setAttr(node, name, key, value) {
+    if (last[key] === value) return;
+    last[key] = value;
+    node.setAttribute(name, value);
+  }
+
+  // ---------- сутки в балке ----------
+  // Сжатая копия полосы для шапки страницы (#nrDay): время цветом состояния и
+  // игла на полосе суток. Своих запросов нет — это те же часы, что у панели.
+  var beam = (function () {
+    var box = document.getElementById("nrDay");
+    if (!box) return null;
+    return {
+      box: box,
+      time: document.getElementById("nrDayTime"),
+      now: document.getElementById("nrDayNow"),
+      winA: document.getElementById("nrDayWinA"),
+      winB: document.getElementById("nrDayWinB")
+    };
+  })();
+
+  function drawBeam(f, canSleep) {
+    if (!beam) return;
+
+    // Окна сна — из тех же порогов, что у большой полосы.
+    var win = opens + "|" + closes;
+    if (last.bWin !== win) {
+      last.bWin = win;
+      beam.winA.style.left = "0%";
+      beam.winA.style.width = (closes * 100) + "%";
+      beam.winB.style.left = (opens * 100) + "%";
+      beam.winB.style.width = ((1 - opens) * 100) + "%";
+    }
+
+    if (f == null) {
+      var none = "Время в мире: сервер не отдаёт время";
+      setAttr(beam.box, "data-state", "bState", "none");
+      setText(beam.time, "bTime", "--:--");
+      setAttr(beam.box, "title", "bTitle", none);
+      setAttr(beam.box, "aria-label", "bAria", none);
+      return;
+    }
+
+    var hhmm = clock(f);
+    setAttr(beam.box, "data-state", "bState", frozen ? "frozen" : canSleep ? "sleep" : "wait");
+    setText(beam.time, "bTime", hhmm);
+
+    // Игла проходит пиксель полосы за ~15 секунд: ставим её с шагом в
+    // тысячную суток, а не на каждом кадре.
+    var pos = (Math.round(f * 1000) / 10) + "%";
+    if (last.bPos !== pos) {
+      last.bPos = pos;
+      beam.now.style.left = pos;
+    }
+
+    var text;
+    if (frozen) {
+      text = hhmm + " — время стоит: на сервере никого, игра не крутит часы.";
+    } else if (canSleep) {
+      var left = ahead(f, closes) * dayLengthSec;
+      text = hhmm + " — спать можно. Лечь можно ещё " + fmt(left) +
+        ", по вашим часам до " + wallClock(left) + ".";
+    } else {
+      var wait = ahead(f, opens) * dayLengthSec;
+      text = hhmm + " — спать нельзя. Спать можно через " + fmt(wait) +
+        ", по вашим часам около " + wallClock(wait) + ".";
+    }
+    setAttr(beam.box, "aria-label", "bAria", "Время в мире " + text);
+    setAttr(beam.box, "title", "bTitle", text + "\nШтриховка на полосе — когда кровать работает: с " +
+      clock(opens) + " до " + clock(closes) + ". Щёлкните — откроется панель «Время в мире».");
+  }
+
+  // Щелчок по суткам в балке: главная грань, прокрутка к панели часов и
+  // короткая подсветка, чтобы глаз её нашёл.
+  var calledTimer = 0;
+  function showClock() {
+    var html = document.documentElement;
+    var panel = root.closest("section") || root;
+
+    function onMain() {
+      return html.dataset.face === "main" && !html.classList.contains("cube-3d");
+    }
+
+    function reveal() {
+      var sc = panel.closest(".face__scroll");
+      if (sc) {
+        var bar = document.getElementById("nrBar");
+        var rail = document.querySelector(".nr-nav");
+        var top = (bar ? bar.getBoundingClientRect().bottom : 0) + 14;
+        // На телефоне щиты внизу экрана: панель должна целиком встать над ними.
+        var railTop = rail ? rail.getBoundingClientRect().top : window.innerHeight;
+        var bottom = (railTop > window.innerHeight / 2 ? railTop : window.innerHeight) - 10;
+        var r = panel.getBoundingClientRect();
+        if (r.top < top || r.bottom > bottom) {
+          var calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          sc.scrollTo({ top: sc.scrollTop + (r.top - top), behavior: calm ? "auto" : "smooth" });
+        }
+      }
+      panel.classList.remove("is-called");
+      void panel.offsetWidth;
+      panel.classList.add("is-called");
+      clearTimeout(calledTimer);
+      calledTimer = setTimeout(function () { panel.classList.remove("is-called"); }, 2000);
+    }
+
+    if (onMain()) {
+      reveal();
+      return;
+    }
+    if (window.KobanCube && typeof window.KobanCube.go === "function") window.KobanCube.go("main");
+    else location.hash = "#main";
+    var until = Date.now() + 3000;
+    (function wait() {
+      if (onMain()) { reveal(); return; }
+      if (Date.now() < until) setTimeout(wait, 60);
+    })();
+  }
+
+  if (beam) beam.box.addEventListener("click", showClock);
+
   function draw() {
     if (!ui) return;
 
     if (!haveData) {
       setText(ui.status, "status", "Сервер не отдаёт время");
       setText(ui.note, "note", "");
+      drawBeam(null);
       return;
     }
 
@@ -335,6 +456,7 @@
       last.canSleep = canSleep;
       root.classList.toggle("is-sleep", canSleep);
     }
+    drawBeam(f, canSleep);
 
     // Табло: сколько реальных минут ждать до кровати или сколько ещё можно лечь.
     var countShown = !frozen;
