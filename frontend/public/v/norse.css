@@ -298,17 +298,16 @@ html.nr .nr-crest__status .kicker--offline { color: #f29a8c; }
 html.nr .nr-crest__status .topbar__kicker-text { display: inline !important; }
 
 /* ---------- сутки мира: время и кованая планка ----------
-   Время — тем же шрифтом, что имя в гербе, цветом состояния: зелёное —
-   спать можно, красное — нельзя, выцветшее — время стоит (на сервере
-   никого) или его нет. Под ним железная планка на латунных заклёпках —
-   сутки слева направо, залитые эмалью: зелёной, где кровать работает
-   (с 12:00 до 03:36), красной, где нет. «Сейчас» — золотая черта, как
-   стрелка на большой полосе в панели. Черта не цветная намеренно: она всегда
-   стоит на эмали своего же цвета и слилась бы с ней. */
+   Цвета — из материалов балки, «день и ночь»: где кровать работает (с 12:00
+   до 03:36) — воронёная сталь, ночная синь в тон небу под балкой; где нет —
+   латунь, как золото балки. Время — тем же шрифтом, что имя в гербе:
+   лунно-голубое, когда спать можно, янтарное, когда нельзя, выцветшее, когда
+   время стоит (на сервере никого) или его нет. «Сейчас» — светлая черта с
+   тёмной каймой: она видна и на стали, и на латуни. Насыщенные зелёный и
+   красный здесь пробовали — на дубе и золоте они смотрелись светофором. */
 
 html.nr .nr-day {
   --nr-day-c: rgba(241, 229, 203, 0.45);
-  --nr-day-glow: rgba(0, 0, 0, 0);
   grid-area: day;
   position: relative;
   display: grid;
@@ -325,8 +324,8 @@ html.nr .nr-day {
   -webkit-tap-highlight-color: transparent;
 }
 
-html.nr .nr-day[data-state="sleep"] { --nr-day-c: #8fe3b5; --nr-day-glow: rgba(110, 231, 168, 0.28); }
-html.nr .nr-day[data-state="wait"] { --nr-day-c: #f2866a; --nr-day-glow: rgba(255, 100, 70, 0.28); }
+html.nr .nr-day[data-state="sleep"] { --nr-day-c: #c9dbf5; }
+html.nr .nr-day[data-state="wait"] { --nr-day-c: #f2bd66; }
 
 /* резной желобок между гербом и сутками — как перед кнопками балки */
 html.nr .nr-day::before {
@@ -354,8 +353,8 @@ html.nr .nr-day__time {
   letter-spacing: 0.07em;
   font-variant-numeric: lining-nums tabular-nums;
   color: var(--nr-day-c);
-  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.62), 0 0 14px var(--nr-day-glow);
-  transition: color 400ms ease, text-shadow 400ms ease;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.62);
+  transition: color 400ms ease;
 }
 
 html.nr .nr-day:hover .nr-day__time { filter: brightness(1.12); }
@@ -391,8 +390,8 @@ html.nr .nr-day__track {
     0 1px 0 1px rgba(255, 214, 150, 0.07);
 }
 
-/* шкала суток — эмаль в железе, чуть внутри планки: черта у края суток не
-   лезет на заклёпку. Вся шкала — красная эмаль, окна сна поверх — зелёная. */
+/* шкала суток — чуть внутри планки: черта у края суток не лезет на
+   заклёпку. Вся шкала — латунь, окна сна поверх — воронёная сталь. */
 html.nr .nr-day__scale {
   position: absolute;
   top: 1px;
@@ -400,8 +399,8 @@ html.nr .nr-day__scale {
   left: 4px;
   right: 4px;
   border-radius: 1px;
-  background: linear-gradient(180deg, #d77a62 0%, #ad3f2b 45%, #7b2317 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 220, 200, 0.22), inset 0 -1px 1px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(180deg, #f3d08a 0%, #d19a48 55%, #96703a 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 240, 210, 0.3), inset 0 -1px 1px rgba(0, 0, 0, 0.35);
 }
 
 html.nr .nr-day__win {
@@ -410,11 +409,11 @@ html.nr .nr-day__win {
   bottom: 0;
   left: 0;
   width: 0;
-  background: linear-gradient(180deg, #86d8a9 0%, #3d9d69 45%, #1f6342 100%);
-  box-shadow: inset 0 1px 0 rgba(220, 255, 235, 0.22), inset 0 -1px 1px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(180deg, #6f86b0 0%, #435781 55%, #26334f 100%);
+  box-shadow: inset 0 1px 0 rgba(210, 225, 255, 0.22), inset 0 -1px 1px rgba(0, 0, 0, 0.4);
 }
 
-/* «сейчас» — золотая черта */
+/* «сейчас» — светлая черта с тёмной каймой */
 html.nr .nr-day__now {
   position: absolute;
   top: -4px;
@@ -423,8 +422,8 @@ html.nr .nr-day__now {
   width: 3px;
   margin-left: -1.5px;
   border-radius: 1.5px;
-  background: linear-gradient(180deg, #fff1c9, #f0cd84 50%, #c99a45);
-  box-shadow: 0 0 0 1px rgba(20, 12, 4, 0.75), 0 0 7px rgba(255, 205, 120, 0.7);
+  background: linear-gradient(180deg, #fffaf0, #f3e6c8);
+  box-shadow: 0 0 0 1px rgba(16, 10, 4, 0.9), 0 0 5px rgba(255, 240, 210, 0.55);
 }
 
 html.nr .nr-day[data-state="frozen"] .nr-day__scale,
