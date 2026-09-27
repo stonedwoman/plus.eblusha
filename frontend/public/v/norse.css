@@ -297,20 +297,26 @@ html.nr .nr-crest__status .kicker--online { color: #7fedb2; }
 html.nr .nr-crest__status .kicker--offline { color: #f29a8c; }
 html.nr .nr-crest__status .topbar__kicker-text { display: inline !important; }
 
-/* ---------- сутки мира: время и полоса ----------
-   Полоса — 24 часа слева направо. Штриховка — когда кровать работает
-   (с 12:00 до 03:36), гладкий красноватый отрезок — когда нельзя. Игла и
-   цифры — цветом состояния: зелёный — спать можно, красный — нельзя, серый —
-   время стоит (на сервере никого) или его нет. */
+/* ---------- сутки мира: время и кованая планка ----------
+   Время — тем же шрифтом, что имя в гербе, цветом состояния: зелёное —
+   спать можно, красное — нельзя, выцветшее — время стоит (на сервере
+   никого) или его нет. Под ним железная планка на латунных заклёпках —
+   сутки слева направо: где кровать работает (с 12:00 до 03:36), по железу
+   идёт золотая насечка, как на оружии той поры. «Сейчас» — самоцвет в
+   золотой оправе: изумруд, гранат или тусклое железо. */
 
 html.nr .nr-day {
-  --nr-day-c: rgba(241, 229, 203, 0.42);
+  --nr-day-c: rgba(241, 229, 203, 0.45);
   --nr-day-glow: rgba(0, 0, 0, 0);
+  --gem-hi: #d7dadd;
+  --gem: #767b80;
+  --gem-lo: #2a2d30;
+  --gem-glow: rgba(0, 0, 0, 0);
   grid-area: day;
   position: relative;
   display: grid;
   justify-items: start;
-  row-gap: 6px;
+  row-gap: 5px;
   margin: 0 0 0 16px;
   padding: 2px 2px 2px 16px;
   border: 0;
@@ -320,6 +326,24 @@ html.nr .nr-day {
   font: inherit;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+}
+
+html.nr .nr-day[data-state="sleep"] {
+  --nr-day-c: #8fe3b5;
+  --nr-day-glow: rgba(110, 231, 168, 0.28);
+  --gem-hi: #c9ffe2;
+  --gem: #2fae73;
+  --gem-lo: #0b4a2c;
+  --gem-glow: rgba(110, 231, 168, 0.55);
+}
+
+html.nr .nr-day[data-state="wait"] {
+  --nr-day-c: #f2866a;
+  --nr-day-glow: rgba(255, 100, 70, 0.28);
+  --gem-hi: #ffc2b0;
+  --gem: #c2311c;
+  --gem-lo: #4a0b06;
+  --gem-glow: rgba(255, 90, 60, 0.55);
 }
 
 /* резной желобок между гербом и сутками — как перед кнопками балки */
@@ -341,70 +365,96 @@ html.nr .nr-day:focus-visible {
 }
 
 html.nr .nr-day__time {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 15px;
+  font-family: var(--font-display);
+  font-size: 19px;
   font-weight: 700;
   line-height: 1;
-  letter-spacing: 0.05em;
-  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.07em;
+  font-variant-numeric: lining-nums tabular-nums;
   color: var(--nr-day-c);
-  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6), 0 0 12px var(--nr-day-glow);
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.62), 0 0 14px var(--nr-day-glow);
   transition: color 400ms ease, text-shadow 400ms ease;
 }
 
 html.nr .nr-day:hover .nr-day__time { filter: brightness(1.12); }
 
-html.nr .nr-day__strip {
+/* планка: латунная заклёпка — железо — латунная заклёпка */
+html.nr .nr-day__rail {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+html.nr .nr-day__rail::before,
+html.nr .nr-day__rail::after {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 34%, #fbe2a4 0 0.9px, #d9b066 1.6px, #8f6a31 2.8px, #4a3414 3.5px);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
+}
+
+html.nr .nr-day__track {
   position: relative;
   display: block;
-  width: 104px;
-  height: 7px;
-  border-radius: 2px;
-  background: #0c0805;
+  width: 112px;
+  height: 8px;
+  border-radius: 1.5px;
+  background: linear-gradient(180deg, #9aa0a6 0%, #5a5f64 30%, #2e3236 72%, #15171a 100%);
   box-shadow:
-    inset 0 1px 2px rgba(0, 0, 0, 0.85),
-    0 0 0 1px rgba(236, 199, 124, 0.22),
-    0 1px 0 1px rgba(255, 214, 150, 0.06);
+    0 0 0 1px rgba(0, 0, 0, 0.65),
+    0 2px 3px rgba(0, 0, 0, 0.5),
+    0 1px 0 1px rgba(255, 214, 150, 0.07);
 }
 
-/* всё, что не окно сна, — «нельзя»: красноватая подложка под штриховкой */
-html.nr .nr-day__strip::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: rgba(226, 120, 104, 0.3);
-}
-
-html.nr .nr-day__win {
+/* шкала суток — чуть внутри планки, чтобы самоцвет у края не лез на заклёпку */
+html.nr .nr-day__scale {
   position: absolute;
   top: 0;
   bottom: 0;
+  left: 4px;
+  right: 4px;
+}
+
+/* окно сна — золотая насечка по железу */
+html.nr .nr-day__win {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
   left: 0;
   width: 0;
-  background:
-    repeating-linear-gradient(-55deg, rgba(127, 237, 178, 0.75) 0 1.2px, rgba(127, 237, 178, 0) 1.2px 3.4px),
-    #0d1a13;
+  background: repeating-linear-gradient(-60deg,
+    rgba(0, 0, 0, 0) 0 1.6px,
+    rgba(80, 52, 16, 0.9) 1.6px 2.1px,
+    #e7c47c 2.1px 3.2px,
+    rgba(251, 226, 164, 0.9) 3.2px 3.5px,
+    rgba(0, 0, 0, 0) 3.5px 4.6px);
+  opacity: 0.9;
 }
 
-html.nr .nr-day__now {
+/* «сейчас» — самоцвет в золотой оправе */
+html.nr .nr-day__gem {
   position: absolute;
-  top: -4px;
-  bottom: -4px;
+  top: 50%;
   left: 0;
-  width: 3px;
-  margin-left: -1.5px;
-  border-radius: 2px;
-  background: var(--nr-day-c);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 0 8px var(--nr-day-glow);
-  transition: background-color 400ms ease;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  transform: rotate(45deg);
+  border-radius: 1.5px;
+  background: radial-gradient(circle at 35% 30%, var(--gem-hi) 0 12%, var(--gem) 45%, var(--gem-lo) 100%);
+  box-shadow:
+    0 0 0 1.5px #c9a052,
+    0 0 0 2.5px rgba(40, 26, 8, 0.9),
+    0 0 10px 2px var(--gem-glow),
+    0 2px 3px 2px rgba(0, 0, 0, 0.55);
 }
 
-html.nr .nr-day[data-state="sleep"] { --nr-day-c: #7fedb2; --nr-day-glow: rgba(110, 231, 168, 0.55); }
-html.nr .nr-day[data-state="wait"] { --nr-day-c: #ff9a80; --nr-day-glow: rgba(255, 110, 80, 0.5); }
-html.nr .nr-day[data-state="frozen"] .nr-day__strip,
-html.nr .nr-day[data-state="none"] .nr-day__strip { filter: saturate(0.25) brightness(0.8); }
-html.nr .nr-day[data-state="none"] .nr-day__now { display: none; }
+html.nr .nr-day[data-state="none"] .nr-day__gem { display: none; }
+html.nr .nr-day[data-state="none"] .nr-day__win,
+html.nr .nr-day[data-state="frozen"] .nr-day__win { opacity: 0.45; }
 
 /* Щелчок по суткам в балке: панель «Время в мире» на миг обводится золотом. */
 html.nr .face--main .panel.is-called {
@@ -1390,12 +1440,12 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
 /* Полоса суток заняла место слева: на грани карты за ней ещё «Слои». Сначала
    «Слои» теряют подпись, потом герб — имя и статус (статус остаётся цветом
    ободка медали), потом щиты складывают подписи под себя. */
-@media (max-width: 1437px) {
+@media (max-width: 1493px) {
   html.nr .nr-bar__side--left .tbtn:not(.tbtn--labeled) .tbtn__label { display: none; }
   html.nr .nr-bar__side--left .tbtn:not(.tbtn--labeled) { padding: 0 10px; }
 }
 
-@media (min-width: 721px) and (max-width: 1317px) {
+@media (min-width: 721px) and (max-width: 1373px) {
   html.nr .nr-crest__name,
   html.nr .nr-crest__status { display: none; }
   html.nr .nr-crest__text { grid-template-columns: auto; grid-template-areas: "day"; }
@@ -1413,7 +1463,7 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
 
 /* Щиты с подписью под собой — как на телефонной рейке, только в балке:
    так средняя колонка занимает ~250 px вместо ~500. */
-@media (min-width: 721px) and (max-width: 1115px) {
+@media (min-width: 721px) and (max-width: 1180px) {
   html.nr .nr-nav { gap: 2px; }
   html.nr .nr-tab {
     --s: 38px;
@@ -1435,8 +1485,8 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
 @media (min-width: 721px) and (max-width: 920px) {
   html.nr .nr-day { margin-left: 0; padding-left: 0; }
   html.nr .nr-day::before { display: none; }
-  html.nr .nr-day__strip { width: 88px; }
-  html.nr .nr-day__time { font-size: 14px; }
+  html.nr .nr-day__track { width: 88px; }
+  html.nr .nr-day__time { font-size: 17px; }
   html.nr .nr-medal { width: 40px; height: 40px; }
   html.nr .nr-bar .tbtn { width: 44px; padding: 0; }
   html.nr .nr-bar .tbtn--labeled .tbtn__label { display: none; }
@@ -1474,9 +1524,13 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
   html.nr .nr-day::before { display: none; }
   /* палец крупнее строки */
   html.nr .nr-day::after { content: ""; position: absolute; inset: -9px -6px; }
-  html.nr .nr-day__time { font-size: 13px; }
-  html.nr .nr-day__strip { width: 72px; height: 6px; }
-  html.nr .nr-day__now { top: -3px; bottom: -3px; }
+  html.nr .nr-day__time { font-size: 16px; }
+  html.nr .nr-day__rail { gap: 2px; }
+  html.nr .nr-day__rail::before,
+  html.nr .nr-day__rail::after { width: 6px; height: 6px; }
+  html.nr .nr-day__track { width: 70px; height: 7px; }
+  html.nr .nr-day__scale { left: 3px; right: 3px; }
+  html.nr .nr-day__gem { width: 8px; height: 8px; margin: -4px 0 0 -4px; }
   html.nr .nr-crest__text:not(:has(.kicker--online)) .nr-day,
   html.nr .nr-day[data-state="none"] { display: none; }
   html.nr .nr-crest__text:has(.kicker--online):has(.nr-day:not([data-state="none"])) .nr-crest__status { display: none; }
@@ -1651,12 +1705,14 @@ html.nr--map .player__name { font-family: var(--font-display); letter-spacing: 0
 @media (max-width: 374px) {
   html.nr .nr-bar .tbtn--labeled { width: 44px; padding: 0; }
   html.nr .nr-bar .tbtn--labeled .tbtn__label { display: none; }
+  html.nr .nr-day { column-gap: 6px; }
+  html.nr .nr-day__time { font-size: 15px; }
+  html.nr .nr-day__track { width: 58px; }
 }
 
 @media (max-width: 340px) {
-  html.nr .nr-day { column-gap: 6px; }
-  html.nr .nr-day__time { font-size: 12px; }
-  html.nr .nr-day__strip { width: 46px; }
+  html.nr .nr-day__time { font-size: 13px; letter-spacing: 0.04em; }
+  html.nr .nr-day__track { width: 40px; }
 }
 
 @media (max-width: 360px) {
@@ -1737,6 +1793,10 @@ html.nr .face--options .nr-pagehead__sub {
 
 @media (min-width: 721px) and (max-width: 760px) {
   html.nr .nr-actions .nr-divider { display: none; }
+}
+
+@media (min-width: 721px) and (max-width: 800px) {
+  html.nr .nr-day__track { width: 68px; }
 }
 
 /* ?fx=noglass — без размытия под стеклом (для сравнения скорости). */
