@@ -3,8 +3,6 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import { exec } from "child_process";
-import { promisify } from "util";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { authenticate } from "../middlewares/auth";
@@ -21,6 +19,8 @@ import {
   type EBP2Metadata,
 } from "../lib/storageEncryption";
 import { getStorageProvider } from "../lib/storage";
+import { deriveThumbKey as deriveThumbKeyShared } from "../lib/imageThumbs";
+import { enqueueImageThumb } from "../jobs/queue";
 
 const router = Router();
 
@@ -47,7 +47,6 @@ const uploadSingle = upload.single("file");
 
 const objectPrefix = env.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
 const encKey = env.STORAGE_ENC_KEY ? parseStorageEncKey(env.STORAGE_ENC_KEY) : null;
-const execAsync = promisify(exec);
 
 const encodeKeyForUrl = (key: string) =>
   key
@@ -55,9 +54,9 @@ const encodeKeyForUrl = (key: string) =>
     .map((segment) => encodeURIComponent(segment))
     .join("/");
 
-// Деривативный ключ превью картинки. ДОЛЖЕН совпадать с тем же хелпером в files.ts.
-export const deriveThumbKey = (key: string): string =>
-  key.endsWith(".eblusha") ? key.replace(/\.eblusha$/, ".thumb.eblusha") : `${key}.thumb`;
+// Формула ключа превью живёт в lib/imageThumbs.ts — ОДНА на аплоад, отдачу и воркер.
+// Раньше её копия была здесь и ещё в двух файлах, и копии успели разъехаться.
+export const deriveThumbKey = deriveThumbKeyShared;
 
 function logUploadTiming(req: Request, startedAtMs: number, step: string, extra?: Record<string, unknown>) {
   const reqId = String((req as any).requestId ?? req.headers["x-request-id"] ?? "unknown");
@@ -359,40 +358,14 @@ async function storeUploadedObject(
   );
   if (startedAtMs != null) logUploadTiming(req, startedAtMs, "putObject_done", { putKey, encFormat, totalSize });
 
-  // Превью картинки из ПЛЕЙНТЕКСТА (filePath) прямо на аплоаде — без расшифровки и без
-  // нагрузки на отдачу файлов. Для секретных чатов клиент грузит уже шифротекст → ffmpeg
-  // не декодирует → try/catch тихо пропустит. Хранится как EBP1(encKey) по деривативному
-  // ключу; отдаётся через ?thumb с фолбэком на полный размер (см. files.ts). Нефатально.
-  try {
-    if (encKey && filePath && fs.existsSync(filePath) && /^image\//i.test(contentType || "")) {
-      const thumbKey = deriveThumbKey(putKey);
-      const outPath = path.join(path.dirname(filePath), `ithumb-${crypto.randomBytes(8).toString("hex")}.jpg`);
-      try {
-        // async exec (не execSync!) — иначе ffmpeg заблокировал бы event loop на каждый
-        // аплоад картинки. filePath/outPath — серверные temp-пути (без польз. ввода).
-        await execAsync(
-          `ffmpeg -y -i "${filePath}" -vf "scale='min(720,iw)':-2" -frames:v 1 -q:v 5 "${outPath}"`,
-          { timeout: 15000 }
-        );
-        const thumbPlain = fs.readFileSync(outPath);
-        const enc = encryptBuffer(thumbPlain, encKey, { aad: thumbKey, contentType: "image/jpeg" });
-        await storage.putObject(thumbKey, enc.payload, {
-          contentType: "application/octet-stream",
-          metadata: {
-            enc: "ebp1",
-            encv: enc.meta.v,
-            encalg: enc.meta.alg,
-            enciv: enc.meta.iv,
-            enctag: enc.meta.tag,
-            ct: "image/jpeg",
-          },
-        });
-      } finally {
-        try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
-      }
-    }
-  } catch (e) {
-    logger.warn({ err: e, putKey }, "[upload] image thumbnail generation failed (non-fatal)");
+  // Превью картинки делает eblusha-worker, а НЕ этот запрос. Раньше здесь синхронно
+  // ждал форк ffmpeg (таймаут 15 с) — отправитель фото стоял всё это время. Воркер уже
+  // примонтирован к тому же хранилищу и имеет STORAGE_ENC_KEY, так что читает объект сам.
+  // Гейт по content-type отсекает шифротекст секретных чатов (он идёт octet-stream);
+  // вторая, железная проверка — по таблице secret_attachment_refs — стоит в самом воркере.
+  // Постановка в очередь не бросает и не ждёт: нет превью — отдача честно вернёт оригинал.
+  if (/^image\//i.test(contentType || "")) {
+    enqueueImageThumb({ objectKey: putKey, contentType: contentType || "" });
   }
 
   const encodedKey = encodeKeyForUrl(putKey);
@@ -548,11 +521,11 @@ router.post(
 
     try {
       // Склеиваем части в ОДИН файл внутри каталога сессии и отдаём storeUploadedObject
-      // именно filePath: ветка превью картинок (ffmpeg) работает только от файла, поэтому
-      // чанк-аплоады раньше оставались без .thumb и каждый просмотр тянул полный размер.
-      // Каталог сессии подчищается removeUploadSession'ом (успех) или GC (сбой) — склейка
-      // не живёт дольше самой сессии. Для секретных чатов сюда приходит уже шифротекст
-      // (application/octet-stream) — image/*-гейт превью не срабатывает, E2EE не затронут.
+      // именно filePath. Каталог сессии подчищается removeUploadSession'ом (успех) или GC
+      // (сбой) — склейка не живёт дольше самой сессии. Превью теперь делает воркер уже из
+      // сохранённого объекта, так что от временного файла оно не зависит вовсе. Для
+      // секретных чатов сюда приходит шифротекст (application/octet-stream) — image/*-гейт
+      // постановки в очередь не срабатывает, E2EE не затронут.
       const assembledPath = path.join(getUploadSessionDir(uploadId), "assembled");
       // pipeline (а не pipe): гарантированно закрывает ОБА потока при сбое любой стороны —
       // ручной pipe копил открытые fd на повторных ошибках (ревью).

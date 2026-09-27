@@ -66,6 +66,21 @@ function objectKeyFromUrl(url: string | null | undefined): string | null {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
+  // ⚠️ УСТАРЕЛО И НЕ ЗАПУСКАТЬ. Заменено на scripts/backfillChatImageThumbs.ts.
+  // Ни разу не запускался, и правильно: у него три дефекта.
+  //   1. objectKeyFromUrl() требует «/api/files/» в url, поэтому 39 старых вложений с
+  //      абсолютным S3-адресом он МОЛЧА считает пропущенными (skipped++ без причины).
+  //   2. Расшифрованные байты он берёт у живого прокси по HTTP — это ~585 МБ трафика
+  //      через рабочий бэкенд, тогда как том хранилища примонтирован прямо в воркер.
+  //   3. Своя, третья копия формулы ключа превью (строка с deriveThumbKey выше).
+  //      Расхождение копий — ровно то, из-за чего превью и оказывались недостижимы.
+  // Код оставлен как есть, для истории; запуск закрыт явным флагом.
+  if (!hasFlag("--i-know-this-one-is-superseded")) {
+    throw new Error(
+      "backfillImageThumbnails УСТАРЕЛ, не запускайте его. " +
+        "Используйте: node dist/scripts/backfillChatImageThumbs.js (см. шапку того файла).",
+    );
+  }
   if (!encKey) throw new Error("STORAGE_ENC_KEY not configured");
   const storage = getStorageProvider();
 

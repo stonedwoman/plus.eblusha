@@ -154,3 +154,71 @@ export async function getLinkPreviewQueueDepth(): Promise<number> {
   return waiting + active + delayed;
 }
 
+
+export type ImageThumbJob = {
+  /** Ключ ОРИГИНАЛА в хранилище (putKey из upload.ts), не URL и не путь запроса. */
+  objectKey: string;
+  /** Content-type, как его прислал клиент, — только для журнала. */
+  contentType?: string;
+  /**
+   * Дополнительные AAD-кандидаты для СТАРЫХ объектов EBP1.
+   *
+   * У новых загрузок AAD записан в сайдкаре — угадывать нечего. А у объектов,
+   * залитых до переименования в `.eblusha`, в сайдкаре его нет, и AAD привязан к
+   * ПРЕЖНЕМУ ключу (`uploads/<имя>.jpg`, иногда с бакетом впереди). Отдача
+   * (routes/files.ts) перебирает ровно те же варианты; воркер, которому передали
+   * только ключ объекта, сам их знать не может — поэтому их передаёт тот, кто
+   * ставит задачу и видел исходный url.
+   */
+  aadCandidates?: string[];
+};
+
+let imageThumbQueue: Queue<ImageThumbJob> | null = null;
+
+export function getImageThumbQueue(): Queue<ImageThumbJob> {
+  if (imageThumbQueue) return imageThumbQueue;
+  imageThumbQueue = new Queue<ImageThumbJob>("imageThumb", {
+    connection: getConnection(),
+    defaultJobOptions: {
+      removeOnComplete: true,
+      removeOnFail: 500,
+    },
+  });
+  return imageThumbQueue;
+}
+
+/**
+ * Поставить генерацию превью картинки в очередь.
+ *
+ * НИКОГДА не бросает и НИЧЕГО не ждёт: отправка фото не должна зависеть ни от Redis,
+ * ни от воркера. До этого превью делалось прямо в POST /api/upload — форк ffmpeg
+ * с таймаутом 15 с внутри запроса, и человек всё это время смотрел на прогресс.
+ * Нет превью — отдача честно вернёт оригинал (см. files.ts), лента не сломается.
+ */
+export function enqueueImageThumb(job: ImageThumbJob): void {
+  const objectKey = String(job?.objectKey ?? "").trim();
+  if (!objectKey) return;
+  try {
+    void getImageThumbQueue()
+      .add(
+        "imageThumb",
+        {
+          objectKey,
+          ...(job.contentType ? { contentType: job.contentType } : {}),
+          ...(job.aadCandidates?.length ? { aadCandidates: job.aadCandidates } : {}),
+        },
+        {
+          // BullMQ запрещает двоеточие в custom jobId (см. историю с пушами выше).
+          // Ключ объекта уникален → дубль постановки лишней работы не создаст.
+          jobId: objectKey.replace(/:/g, "-"),
+          attempts: 3,
+          backoff: { type: "exponential", delay: 5000 },
+        },
+      )
+      .catch((error) => {
+        logger.warn({ error, objectKey }, "imageThumb: failed to enqueue");
+      });
+  } catch (error) {
+    logger.warn({ error, objectKey }, "imageThumb: failed to enqueue");
+  }
+}

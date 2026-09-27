@@ -9,6 +9,8 @@ import {
 } from "../lib/storageEncryption";
 import { getNonSecretConversationDek } from "../lib/nonSecretChatEncryption";
 import { getStorageProvider } from "../lib/storage";
+import { deriveThumbKey } from "../lib/imageThumbs";
+import { decodeKeyFromUrl, expandCandidateKeys } from "../lib/storageKeys";
 
 const EBP1_RANGE_SIZE_LIMIT = 50 * 1024 * 1024; // 50MB: above this, EBP1 ignores Range and returns 200
 const RANGE_MAX_SIZE = 16 * 1024 * 1024; // 16MB: default max Range span
@@ -86,16 +88,8 @@ const encKey = env.STORAGE_ENC_KEY ? parseStorageEncKey(env.STORAGE_ENC_KEY) : n
 const bucketForKeys =
   env.STORAGE_BACKEND === "local" ? null : (env.STORAGE_S3_BUCKET ?? null);
 
-// Decode URL-encoded path segments
-const decodeKeyFromUrl = (urlPath: string) =>
-  urlPath
-    .split("/")
-    .map((segment) => decodeURIComponent(segment))
-    .join("/");
-
-// Деривативный ключ превью картинки. ДОЛЖЕН совпадать с deriveThumbKey в upload.ts.
-const deriveThumbKey = (key: string): string =>
-  key.endsWith(".eblusha") ? key.replace(/\.eblusha$/, ".thumb.eblusha") : `${key}.thumb`;
+// Разрешение «путь запроса → ключ объекта» — одно на отдачу, аплоад и скрипты
+// (см. lib/storageKeys.ts). Формула ключа превью — одна на всех (lib/imageThumbs.ts).
 
 /** S3/metadata иногда даёт смешанный регистр; без нормализации remap и отдача файла могут «не узнать» EBP1. */
 const metaEncTag = (m: Record<string, string>) => String(m?.enc ?? "").trim().toLowerCase();
@@ -105,32 +99,6 @@ const metaIsEbp1 = (m: Record<string, string>) =>
   String((m as any)?.encv ?? (m as any)?.enc_v ?? "")
     .trim()
     .toLowerCase() === "1";
-
-const splitPathSegments = (p: string) => p.split("/").filter(Boolean);
-
-const stripLeadingBucketSegment = (decodedPath: string, bucket: string | null, prefix: string) => {
-  const segments = splitPathSegments(decodedPath);
-  if (segments.length === 0) return decodedPath;
-
-  // Common case: proxy path was derived from a path-style public URL:
-  //   https://s3.example.com/<bucket>/<key>
-  // Frontend converts it to: /api/files/<bucket>/<key>
-  // If we see "<something>/<prefix>/..." treat the leading segment as bucket and strip it.
-  const prefixSegments = splitPathSegments(prefix);
-  if (prefixSegments.length > 0 && segments.length >= 1 + prefixSegments.length) {
-    const maybePrefix = segments.slice(1, 1 + prefixSegments.length).join("/");
-    if (maybePrefix === prefixSegments.join("/")) {
-      return segments.slice(1).join("/");
-    }
-  }
-
-  // Also strip an explicit, configured bucket name if present.
-  if (bucket && segments[0] === bucket) {
-    return segments.slice(1).join("/");
-  }
-
-  return decodedPath;
-};
 
 const isAccessDenied = (err: any) =>
   err?.name === "AccessDenied" ||
@@ -206,47 +174,6 @@ const readBodyToBuffer = async (body: any): Promise<Buffer> => {
   throw new Error("Unsupported S3 body type");
 };
 
-const buildCandidateKeys = (decodedPath: string, bucket: string | null, prefix: string): string[] => {
-  const base = decodedPath.replace(/^\//, "");
-  const stripped = stripLeadingBucketSegment(base, bucket, prefix);
-
-  const candidates: string[] = [];
-  const push = (k: string) => {
-    const key = k.replace(/^\//, "");
-    if (!key) return;
-    if (!candidates.includes(key)) candidates.push(key);
-  };
-
-  // Try as-is first (it might already be the real object key).
-  push(base);
-  push(stripped);
-
-  // Then try enforcing STORAGE_PREFIX (avoids missing prefix issues).
-  const prefixNorm = prefix.replace(/^\/|\/$/g, "");
-  if (prefixNorm) {
-    for (const k of [base, stripped]) {
-      if (k === prefixNorm || k.startsWith(prefixNorm + "/")) {
-        push(k);
-      } else {
-        push(`${prefixNorm}/${k}`);
-      }
-    }
-  }
-
-  return candidates;
-};
-
-const toEblushaKey = (k: string): string => {
-  if (k.endsWith(".eblusha")) return k;
-  const parts = k.split("/");
-  const base = parts.pop() ?? "";
-  if (!base) return `${k}.eblusha`;
-  const dot = base.lastIndexOf(".");
-  const baseNoExt = dot > 0 ? base.slice(0, dot) : base;
-  parts.push(`${baseNoExt}.eblusha`);
-  return parts.join("/");
-};
-
 // Proxy route: /api/files/*
 // Use router.use with method check for catch-all
 router.use(async (req: Request, res: Response, next) => {
@@ -292,37 +219,66 @@ router.use(async (req: Request, res: Response, next) => {
   // Remove leading slash if present
   decodedPath = decodedPath.replace(/^\//, "");
 
+  // Ключи-кандидаты ОРИГИНАЛА. Считаются ДО превью, потому что ключ превью выводится
+  // из ключа оригинала, а не из пути запроса.
+  const expandedOriginalCandidates = expandCandidateKeys(
+    decodedPath,
+    bucketForKeys,
+    objectPrefix,
+    { eblushaFallback: Boolean(encKey) }
+  );
+
   // ?thumb=1: если есть заранее сгенерированное превью картинки (деривативный ключ) —
-  // отдаём его; если нет (старые фото / секретные / генерация не удалась) — оставляем
+  // отдаём его; если нет (секретные / генерация ещё идёт или не удалась) — оставляем
   // оригинал и отдаём полный размер (безопасный фолбэк). Дешёвая head-проверка.
-  if ((req.query as Record<string, unknown>)?.thumb && encKey) {
+  //
+  // ⚠️ Ключ превью строится ИЗ КЛЮЧЕЙ ОРИГИНАЛА, а не из сырого пути запроса.
+  // Воркер получает ключ объекта (`uploads/<id>.eblusha`) и пишет превью РЯДОМ
+  // (`uploads/<id>.thumb.eblusha`). Но у 39 старых вложений в БД лежит абсолютный
+  // S3-адрес `…/uploads/<id>.png`, и запрос приходит как
+  // `/api/files/<bucket>/uploads/<id>.png`. Производная от ЭТОГО пути —
+  // `uploads/<id>.png.thumb` — не совпадает ни с чем на диске, и превью такого
+  // вложения оставалось недостижимым, сколько бы раз его ни сгенерировали.
+  const thumbRequested = Boolean((req.query as Record<string, unknown>)?.thumb);
+  let thumbServed = false;
+  let resolvedThumbKey: string | null = null;
+  if (thumbRequested && encKey) {
     try {
-      const thumbBase = deriveThumbKey(decodedPath);
+      const derivedThumbKeys = expandedOriginalCandidates
+        .map(deriveThumbKey)
+        .filter((k) => Boolean(k) && !expandedOriginalCandidates.includes(k));
+      // Настоящая форма превью на диске — «.thumb.eblusha»; пробуем её первой, чтобы
+      // у старых вложений промах не стоил пяти лишних head-ов.
       const thumbCandidates = Array.from(
         new Set([
-          ...buildCandidateKeys(thumbBase, bucketForKeys, objectPrefix),
-          ...buildCandidateKeys(thumbBase, bucketForKeys, objectPrefix).map(toEblushaKey),
+          ...derivedThumbKeys.filter((k) => k.endsWith(".thumb.eblusha")),
+          ...derivedThumbKeys,
         ])
       );
       for (const ck of thumbCandidates) {
         try {
           const h = await storage.headObject(ck);
-          if (h) { decodedPath = thumbBase; break; }
+          if (h) { resolvedThumbKey = ck; thumbServed = true; break; }
         } catch { /* try next candidate */ }
       }
     } catch { /* fall back to full-size */ }
   }
+  // Видно и клиенту, и в логах: пришла настоящая миниатюра или фолбэк-оригинал.
+  // Без этого «?thumb=1 отдал 8 МБ» ничем не отличался от «?thumb=1 отдал 57 КБ».
+  if (thumbRequested) res.setHeader("X-Eblusha-Thumb", thumbServed ? "hit" : "miss");
 
-  const candidates = buildCandidateKeys(
-    decodedPath,
-    bucketForKeys,
-    objectPrefix
-  );
-  // If we migrated objects to *.eblusha but DB still contains old URLs (.jpg/.png/.bin),
-  // transparently try the ".eblusha" variant as a fallback.
-  const expandedCandidates = encKey
-    ? Array.from(new Set([...candidates, ...candidates.map(toEblushaKey)]))
-    : candidates;
+  // Фолбэк «превью нет → ушёл ОРИГИНАЛ» нельзя кэшировать на год как immutable:
+  // как только воркер (или догенерация) положит настоящее превью, у клиента всё равно
+  // останется тяжёлая копия до конца года. Год immutable — только настоящему превью
+  // и обычной выдаче файла; фолбэку — пять минут.
+  const cacheControlValue =
+    thumbRequested && !thumbServed
+      ? "public, max-age=300"
+      : "public, max-age=31536000, immutable";
+
+  // Превью найдено — отдаём ИМЕННО его ключ, без повторного перебора вариантов
+  // (раньше сюда подставлялся пересчитанный путь, и разрешение шло второй раз).
+  const expandedCandidates = resolvedThumbKey ? [resolvedThumbKey] : expandedOriginalCandidates;
   logger.info(
     { urlPath, decodedPath, objectPrefix, candidates: expandedCandidates, originalPath: req.path },
     "Resolving storage key candidates for file request"
@@ -385,8 +341,13 @@ router.use(async (req: Request, res: Response, next) => {
           }
           res.setHeader("Access-Control-Allow-Origin", "*");
           res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-          res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          // X-Eblusha-Thumb нужен и на HEAD: именно так проверяют, что «?thumb=1»
+          // отдал превью, а не оригинал, — без скачивания тела.
+          res.setHeader(
+            "Access-Control-Expose-Headers",
+            "ETag, Content-Length, Content-Type, Last-Modified, X-Eblusha-Thumb"
+          );
+          res.setHeader("Cache-Control", cacheControlValue);
           res.status(200).end();
           return;
         }
@@ -407,8 +368,8 @@ router.use(async (req: Request, res: Response, next) => {
             res.setHeader("Accept-Ranges", "bytes");
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-            res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Accept-Ranges");
-            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+            res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Accept-Ranges, X-Eblusha-Thumb");
+            res.setHeader("Cache-Control", cacheControlValue);
             res.status(200).end();
             return;
           }
@@ -451,8 +412,8 @@ router.use(async (req: Request, res: Response, next) => {
           res.setHeader("Accept-Ranges", "bytes");
           res.setHeader("Access-Control-Allow-Origin", "*");
           res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-          res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges, X-Eblusha-Thumb");
+          res.setHeader("Cache-Control", cacheControlValue);
 
           const plainStream = decryptEbp2RangeStream(key, fetcher, byteRange, encKey!, { chunkSize, totalSize });
           plainStream.on("error", (err) => res.destroy(err));
@@ -592,8 +553,8 @@ router.use(async (req: Request, res: Response, next) => {
             res.setHeader("Content-Length", slice.length.toString());
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-            res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges");
-            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+            res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges, X-Eblusha-Thumb");
+            res.setHeader("Cache-Control", cacheControlValue);
             res.send(slice);
             return;
           }
@@ -604,8 +565,8 @@ router.use(async (req: Request, res: Response, next) => {
           res.setHeader("Accept-Ranges", "bytes");
           res.setHeader("Access-Control-Allow-Origin", "*");
           res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-          res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Accept-Ranges");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          res.setHeader("Access-Control-Expose-Headers", "ETag, Content-Length, Content-Type, Last-Modified, Accept-Ranges, X-Eblusha-Thumb");
+          res.setHeader("Cache-Control", cacheControlValue);
           res.send(decrypted);
           return;
         }
@@ -636,9 +597,9 @@ router.use(async (req: Request, res: Response, next) => {
         res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
         res.setHeader(
           "Access-Control-Expose-Headers",
-          "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges"
+          "ETag, Content-Length, Content-Type, Last-Modified, Content-Range, Accept-Ranges, X-Eblusha-Thumb"
         );
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        res.setHeader("Cache-Control", cacheControlValue);
 
         // Stream the object body
         const body = getResult.body;
