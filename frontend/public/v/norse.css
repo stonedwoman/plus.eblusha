@@ -343,7 +343,10 @@ html.nr .nr-shield {
   border: 3px solid transparent;
   background:
     /* boss */
-    radial-gradient(circle at 42% 38%, #3a3027 0 20%, #1a130d 34%, rgba(10, 6, 3, 0.92) 36%, rgba(10, 6, 3, 0) 38%) padding-box,
+    /* блик на умбоне — отдельным слоем, сам умбон строго по центру щита
+       (раньше центр градиента стоял на 42% 38%, и круг съезжал влево-вверх) */
+    radial-gradient(circle closest-side at 45% 41%, rgba(92, 76, 58, 0.6), rgba(58, 48, 39, 0) 34%) padding-box,
+    radial-gradient(circle closest-side, #2e251d 0 30%, #1a130d 57.7%, rgba(10, 6, 3, 0.92) 61%, rgba(10, 6, 3, 0) 64.5%) padding-box,
     /* planks */
     repeating-linear-gradient(90deg, #6b4a2b 0 6px, #3b2615 6px 7px, #5a3c22 7px 13px, #2f1e11 13px 14px) padding-box,
     /* iron rim */
@@ -399,7 +402,8 @@ html.nr .nr-tab[aria-current="page"] .nr-shield {
   --s: 52px;
   border-width: 3px;
   background:
-    radial-gradient(circle at 42% 38%, #3d2a17 0 20%, #170e07 34%, #f0cd84 35.5%, #8f6a31 37.5%, rgba(0, 0, 0, 0) 39%) padding-box,
+    radial-gradient(circle closest-side at 45% 41%, rgba(98, 68, 38, 0.6), rgba(61, 42, 23, 0) 34%) padding-box,
+    radial-gradient(circle closest-side, #301f10 0 30%, #170e07 57.7%, #f0cd84 60.3%, #8f6a31 63.7%, rgba(0, 0, 0, 0) 66.2%) padding-box,
     conic-gradient(from 45deg, #9a2e22 0 25%, #e8d8b5 0 50%, #9a2e22 0 75%, #e8d8b5 0) padding-box,
     conic-gradient(from 200deg, #fbe2a4, #8f6a31 22%, #f0cd84 45%, #6d4f22 70%, #fbe2a4) border-box;
   box-shadow:
@@ -1013,7 +1017,8 @@ html.nr .face--options .nr-pagehead__mark { display: flex; align-items: center; 
 html.nr .face--options .nr-pagehead__mark .nr-shield {
   --s: 44px;
   background:
-    radial-gradient(circle at 42% 38%, #3d2a17 0 20%, #170e07 34%, #f0cd84 35.5%, #8f6a31 37.5%, rgba(0, 0, 0, 0) 39%) padding-box,
+    radial-gradient(circle closest-side at 45% 41%, rgba(98, 68, 38, 0.6), rgba(61, 42, 23, 0) 34%) padding-box,
+    radial-gradient(circle closest-side, #301f10 0 30%, #170e07 57.7%, #f0cd84 60.3%, #8f6a31 63.7%, rgba(0, 0, 0, 0) 66.2%) padding-box,
     conic-gradient(from 45deg, #9a2e22 0 25%, #e8d8b5 0 50%, #9a2e22 0 75%, #e8d8b5 0) padding-box,
     conic-gradient(from 200deg, #fbe2a4, #8f6a31 22%, #f0cd84 45%, #6d4f22 70%, #fbe2a4) border-box;
   box-shadow: 0 0 20px 2px var(--nr-ember-soft), 0 6px 14px rgba(0, 0, 0, 0.6);
