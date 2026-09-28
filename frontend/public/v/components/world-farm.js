@@ -21,6 +21,12 @@
  * вернёшься — звери проголодаются сразу. Поэтому для стоящей зоны показываем,
  * были ли звери голодны, когда там в последний раз кто-то был: долгий голод
  * при живой зоне значит, что корма в досягаемости нет.
+ *
+ * Приручение. Дикий зверь, которого уже начали приручать, приходит с u:1:
+ *   tl — сколько секунд приручения осталось, tt — сколько всего у вида,
+ *   fr — напуган. Шкала идёт, только пока зверь сыт, не напуган и рядом
+ *   игрок (Tameable.TamingUpdate), поэтому «осталось» — это время сытого и
+ *   спокойного зверя рядом с вами.
  */
 (function () {
   "use strict";
@@ -129,6 +135,80 @@
     return line;
   }
 
+  // Форма вида в единственном числе: «волк», «волчонок».
+  function kindName(prefab) {
+    for (var i = 0; i < KINDS.length; i++) {
+      if (KINDS[i].key === prefab) return KINDS[i].forms[0];
+    }
+    return prefab;
+  }
+
+  function kindIcon(prefab) {
+    for (var i = 0; i < KINDS.length; i++) {
+      if (KINDS[i].key !== prefab) continue;
+      for (var j = 0; j < SPECIES.length; j++) {
+        if (SPECIES[j].id === KINDS[i].species) return SPECIES[j].icon;
+      }
+    }
+    return "🐾";
+  }
+
+  var SHOW_TAMING = 6;
+
+  // Кого сейчас приручают: полоса прогресса и что мешает.
+  function renderTaming(list) {
+    var box = el("div", "farm__taming");
+    box.appendChild(el("p", "farm__subhead", "Приручаются"));
+
+    list = list.slice().sort(function (a, b) {
+      return (a.tl / a.tt) - (b.tl / b.tt);
+    });
+
+    list.slice(0, SHOW_TAMING).forEach(function (it) {
+      var pct = Math.max(0, Math.min(100, Math.floor((1 - it.tl / it.tt) * 100)));
+      var row = el("div", "farm__tame");
+
+      var head = el("div", "farm__thead");
+      head.appendChild(el("span", "farm__icon", kindIcon(it.n)));
+      var name = kindName(it.n);
+      head.appendChild(el("span", "farm__tname",
+        name.charAt(0).toUpperCase() + name.slice(1) + (it.l > 1 ? " " + "★".repeat(it.l - 1) : "")));
+      head.appendChild(el("b", "farm__tpct", pct + "%"));
+      row.appendChild(head);
+
+      var bar = el("span", "farm__tbar");
+      var fill = el("i");
+      fill.style.width = pct + "%";
+      bar.appendChild(fill);
+      row.appendChild(bar);
+
+      // Что сейчас с приручением: идёт или почему стоит.
+      var text, cls;
+      if (it.a !== 1) {
+        text = "рядом никого — приручение стоит";
+        cls = "is-idle";
+      } else if (it.fr === 1) {
+        text = "напуган — приручение стоит";
+        cls = "is-hungry";
+      } else if (it.h === 1) {
+        text = "голоден — нужен корм";
+        cls = "is-hungry";
+      } else {
+        text = "сыт — до конца ~" + dur(Math.max(60, it.tl));
+        cls = "is-fed";
+      }
+      row.appendChild(el("p", "farm__tstate " + cls, text));
+      row.title = "Приручение идёт, только пока зверь сыт, не напуган и рядом кто-то есть. " +
+        "Осталось " + dur(it.tl) + " такого времени.";
+      box.appendChild(row);
+    });
+
+    if (list.length > SHOW_TAMING) {
+      box.appendChild(el("p", "farm__foot", "и ещё " + (list.length - SHOW_TAMING)));
+    }
+    return box;
+  }
+
   function render(items) {
     root.textContent = "";
 
@@ -136,6 +216,10 @@
       root.appendChild(el("p", "empty", "Сервер сейчас недоступен"));
       return;
     }
+
+    // Приручаемые — отдельным блоком, в счёт фермы они не идут.
+    var taming = items.filter(function (it) { return it.u === 1 && it.tt > 0; });
+    items = items.filter(function (it) { return it.u !== 1; });
 
     // Группируем по префабу: счёт, звёздные и клички.
     var by = {};
@@ -211,10 +295,12 @@
 
     if (!shown) {
       root.appendChild(el("p", "empty", "Прирученных пока нет"));
+      if (taming.length) root.appendChild(renderTaming(taming));
       return;
     }
 
     root.appendChild(list);
+    if (taming.length) root.appendChild(renderTaming(taming));
 
     var foot = "Всего " + total + " " + plural(total, "голова", "головы", "голов");
     if (totalStars) foot += ", из них " + totalStars + " со звёздами";
