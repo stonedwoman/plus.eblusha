@@ -46,7 +46,12 @@ struct CallConnectingOverlay: View {
 
     var body: some View {
         if controller.visible {
-            CallConnectingView(view: controller.view, leaving: controller.leaving, onCancel: controller.cancel)
+            CallConnectingView(
+                view: controller.view,
+                leaving: controller.leaving,
+                onCancel: controller.cancel,
+                ringStartedAt: controller.ringStartedAt
+            )
         }
     }
 }
@@ -57,6 +62,11 @@ struct CallConnectingView: View {
     let view: ConnectView
     let leaving: Bool
     let onCancel: () -> Void
+    /// Когда начался дозвон (монотонные мс) — кольца попадают в фазу, а не стартуют с нуля
+    /// при каждом появлении экрана. nil — от момента появления.
+    var ringStartedAt: Double? = nil
+    /// Период колец. Своего гудка у iOS нет — берём период веб-эталона по умолчанию.
+    var ringPeriodMs: Double = 2000
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var cancelling = false
@@ -123,6 +133,8 @@ struct CallConnectingView: View {
                 view: view,
                 selected: selected,
                 reduceMotion: reduceMotion,
+                ringStartedAt: ringStartedAt,
+                ringPeriodMs: ringPeriodMs,
                 onSelect: toggle
             )
             steps
@@ -201,20 +213,28 @@ struct CallConnectingView: View {
     // MARK: Заголовок
 
     private var head: some View {
+        // Новый текст проявляется заново (key={…} на вебе) — в том числе каждую секунду
+        // таймера дозвона. Каждая строка в своём ZStack: на время перехода уходящая и
+        // приходящая лежат друг на друге, а не друг под другом — иначе панель подпрыгивала бы.
         VStack(spacing: 4) {
-            Text(view.title)
-                .font(.system(size: 19, weight: .semibold))
-                .kerning(-0.2)
-                .foregroundStyle(CallInk.text)
-                .multilineTextAlignment(.center)
-                .id(view.title)
-                .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 4)))
-            Text(view.subtitle)
-                .font(.system(size: 14))
-                .foregroundStyle(CallInk.textMuted)
-                .multilineTextAlignment(.center)
-                .id(view.subtitle)
-                .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 4)))
+            ZStack {
+                Text(view.title)
+                    .font(.system(size: 19, weight: .semibold))
+                    .kerning(-0.2)
+                    .foregroundStyle(CallInk.text)
+                    .multilineTextAlignment(.center)
+                    .id(view.title)
+                    .transition(headTransition)
+            }
+            ZStack {
+                Text(view.subtitle)
+                    .font(.system(size: 14))
+                    .monospacedDigit()
+                    .foregroundStyle(CallInk.textMuted)
+                    .multilineTextAlignment(.center)
+                    .id(view.subtitle)
+                    .transition(headTransition)
+            }
         }
         // justify-content: flex-end в блоке не ниже 58 pt — без жадного Spacer: внутри
         // прокрутки он растягивал бы всю панель на высоту экрана.
@@ -222,6 +242,10 @@ struct CallConnectingView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: view.title)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: view.subtitle)
         .accessibilityElement(children: .combine)
+    }
+
+    private var headTransition: AnyTransition {
+        reduceMotion ? .identity : .asymmetric(insertion: .opacity.combined(with: .offset(y: 4)), removal: .opacity)
     }
 
     // MARK: Этапы
@@ -349,6 +373,8 @@ private struct ConnectPath: View {
     let view: ConnectView
     let selected: String?
     let reduceMotion: Bool
+    let ringStartedAt: Double?
+    let ringPeriodMs: Double
     let onSelect: (String) -> Void
 
     @State private var rowWidth: CGFloat = 0
@@ -387,7 +413,9 @@ private struct ConnectPath: View {
                     node: node,
                     wrap: wrap,
                     selected: selected == "node:\(node.id.rawValue)",
-                    reduceMotion: reduceMotion
+                    reduceMotion: reduceMotion,
+                    ringStartedAt: ringStartedAt,
+                    ringPeriodMs: ringPeriodMs
                 ) {
                     onSelect("node:\(node.id.rawValue)")
                 }
@@ -419,6 +447,8 @@ private struct NodeView: View {
     let wrap: CGFloat
     let selected: Bool
     let reduceMotion: Bool
+    let ringStartedAt: Double?
+    let ringPeriodMs: Double
     let onTap: () -> Void
 
     private static let size: CGFloat = 52
@@ -463,18 +493,24 @@ private struct NodeView: View {
         case .waiting: return "ждёт"
         case .active: return "подключается"
         case .ready: return "готов"
+        case .ringing: return "вызываем"
         }
     }
 
     private func disc(ring: Color) -> some View {
         let state = node.state
         let border: Double = state == .waiting ? 0.3 : (state == .active ? 0.85 : 0.95)
+        let underlay: Double = state == .active ? 0.08 : (state == .ringing ? 0.12 : 0.1)
         return ZStack {
             // Кольцо-подложка (box-shadow 0 0 0 4px): у готового ярче, у ждущего нет.
             if state != .waiting {
                 Circle()
-                    .fill(ring.opacity(selected ? 0.16 : (state == .active ? 0.08 : 0.1)))
+                    .fill(ring.opacity(selected ? 0.16 : underlay))
                     .frame(width: Self.size + (selected ? 10 : 8), height: Self.size + (selected ? 10 : 8))
+            }
+            if state == .ringing {
+                RingWaves(color: ring, startedAt: ringStartedAt, periodMs: ringPeriodMs, reduceMotion: reduceMotion)
+                    .frame(width: Self.size, height: Self.size)
             }
             if state == .active {
                 NodeHalo(ring: ring, reduceMotion: reduceMotion)
@@ -493,8 +529,10 @@ private struct NodeView: View {
                 .overlay(Circle().strokeBorder(ring.opacity(border), lineWidth: 2))
                 .frame(width: Self.size, height: Self.size)
                 .shadow(
-                    color: state == .ready ? ring.opacity(selected ? 0.4 : 0.28) : .clear,
-                    radius: selected ? 13 : 11
+                    color: state == .ready
+                        ? ring.opacity(selected ? 0.4 : 0.28)
+                        : (state == .ringing ? ring.opacity(selected ? 0.4 : 0.35) : .clear),
+                    radius: selected || state == .ringing ? 13 : 11
                 )
         }
         .frame(width: Self.size, height: Self.size)
@@ -530,6 +568,66 @@ private struct NodeView: View {
             .frame(width: Self.icon, height: Self.icon)
             .foregroundStyle(tint)
     }
+}
+
+/// Дозвон: три кольца расходятся от круга со сдвигом 0 / 0,13 / 0,30 периода — в такт трём
+/// нотам веб-гудка. Фаза считается от начала вызова, а не от появления вида: вернувшись в
+/// приложение или развернув звонок, человек видит те же кольца, а не новый старт с нуля.
+/// Кадр кольца — keyframes eb-cn-ring веба: за 55 % периода масштаб 1 → 1,9 и
+/// непрозрачность 0,75 → 0 (ease-out), остаток периода кольца нет.
+private struct RingWaves: View {
+    let color: Color
+    let startedAt: Double?
+    let periodMs: Double
+    let reduceMotion: Bool
+
+    @State private var appearedAt = connectMonotonicNowMs()
+
+    private static let offsets: [Double] = [0, 0.13, 0.3]
+
+    var body: some View {
+        if reduceMotion {
+            // «Меньше движения»: одно неподвижное кольцо, как на вебе.
+            Circle()
+                .strokeBorder(color, lineWidth: 2)
+                .scaleEffect(1.25)
+                .opacity(0.35)
+                .allowsHitTesting(false)
+        } else {
+            TimelineView(.animation) { _ in
+                let cycles = (connectMonotonicNowMs() - (startedAt ?? appearedAt)) / max(periodMs, 1)
+                ZStack {
+                    ForEach(0..<Self.offsets.count, id: \.self) { i in
+                        let phase = cycles - Self.offsets[i]
+                        let progress = phase - phase.rounded(.down)
+                        let eased = progress < 0.55 ? cssEaseOut(progress / 0.55) : 1
+                        Circle()
+                            .strokeBorder(color, lineWidth: 2)
+                            .scaleEffect(1 + 0.9 * eased)
+                            .opacity(0.75 * (1 - eased))
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+/// CSS ease-out — cubic-bezier(0, 0, 0.58, 1): по доле времени x находим параметр кривой
+/// (бисекция, x(t) монотонна) и возвращаем её y.
+private func cssEaseOut(_ x: Double) -> Double {
+    if x <= 0 { return 0 }
+    if x >= 1 { return 1 }
+    func curve(_ t: Double, _ p1: Double, _ p2: Double) -> Double {
+        let u = 1 - t
+        return 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t
+    }
+    var lo = 0.0, hi = 1.0
+    for _ in 0..<24 {
+        let mid = (lo + hi) / 2
+        if curve(mid, 0, 0.58) < x { lo = mid } else { hi = mid }
+    }
+    return curve((lo + hi) / 2, 0, 1)
 }
 
 /// Ореол подключающегося узла — отдельным слоем, чтобы сам круг, аватар и подпись не дышали.

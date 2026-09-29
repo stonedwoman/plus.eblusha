@@ -337,7 +337,7 @@ final class ChatListViewModel: ObservableObject {
     /// Кнопка плитки: войти в идущий звонок беседы (или вернуться в свой). Логика общая
     /// с кнопками шапки — joinOrStartConversationCall в ChatHeader.swift.
     func joinCall(_ c: Conversation, video: Bool = false) {
-        joinOrStartConversationCall(conversationId: c.id, title: c.title, video: video)
+        joinOrStartConversationCall(conversationId: c.id, title: c.title, video: video, isGroup: c.isGroup)
     }
 
     func refresh() {

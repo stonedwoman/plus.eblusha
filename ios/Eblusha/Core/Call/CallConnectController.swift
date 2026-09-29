@@ -8,6 +8,11 @@ import LiveKit
 /// CallOverlay вокруг usePacedConnectSignals → withPeerSync → buildConnectView, плюс
 /// защёлка «разговор начался» и растворение экрана.
 ///
+/// Экран поднимается с началом исходящего вызова: у 1:1 первая ступень — «Ждём ответа»
+/// (дозвон), у групп дозвона нет — там сразу этапы подключения, как на вебе. Комната у iOS
+/// подключается ещё на дозвоне (как на Android), поэтому локальные этапы не гейтятся:
+/// ответ — первая веха темпа, и каскад этапов всё равно идёт после него.
+///
 /// Только показ. Звонком не управляет: ничего не подключает, не публикует и не завершает —
 /// ни параллельной машины состояний, ни таймеров, влияющих на соединение. Единственное
 /// действие — «Отменить»/«Закрыть» по нажатию человека, и оно уходит в обычный hangUp.
@@ -21,6 +26,9 @@ final class CallConnectController: ObservableObject {
     @Published private(set) var visible = false
     /// Разговор начался — экран растворяется, разговор под ним уже идёт.
     @Published private(set) var leaving = false
+    /// Когда начался дозвон (монотонные мс) — от него считается фаза колец вокруг
+    /// собеседника. Своего гудка у iOS нет, так что фазу больше не к чему привязать.
+    @Published private(set) var ringStartedAt: Double?
 
     /// Собеседник так и не подтвердил сквозное шифрование — ошибка уже на экране.
     var onPeerEncryptionFailure: (() -> Void)?
@@ -42,6 +50,11 @@ final class CallConnectController: ObservableObject {
     private var peerTitle: String?
     private var peerAvatarUrl: String?
     private var peerId: String?
+    /// Идёт дозвон: собеседнику звонит, он ещё не ответил.
+    private var dialing = false
+    /// У звонка был дозвон: после ответа ступень «Ждём ответа» остаётся сделанной.
+    private var hadDial = false
+    private var dialTickWork: DispatchWorkItem?
 
     // ---- Показ ------------------------------------------------------------------
     /// Звонок стал активным для нас — экран поднят.
@@ -81,6 +94,15 @@ final class CallConnectController: ObservableObject {
     }
 
     // MARK: - Реальные события звонка (зовёт CallManager там, где они случаются)
+
+    /// Исходящий вызов: группа ли и как называется беседа, известно сразу — из открытой
+    /// беседы. Кеш бесед придёт позже (configure), а экран дозвона нужен в тот же кадр:
+    /// иначе группа на миг показала бы «Звоним…».
+    func outgoingStarting(isGroup: Bool, title: String) {
+        self.isGroup = isGroup
+        peerTitle = title
+        watcher.setSync(!isGroup)
+    }
 
     /// Кто на том конце — из кеша бесед. Приходит параллельно с подключением.
     func configure(isGroup: Bool, title: String?, avatarUrl: String?, peerId: String?) {
@@ -136,11 +158,19 @@ final class CallConnectController: ObservableObject {
         switch phase {
         case .idle:
             resetAll()
-        case .connecting, .inCall:
+        case .outgoing:
+            // Экран — с первой секунды вызова, вместо отдельного «Звоним…».
+            dialing = true
+            hadDial = true
+            if ringStartedAt == nil { ringStartedAt = connectMonotonicNowMs() }
             activateIfNeeded()
-        case .incoming, .outgoing:
-            // Входящий и «Звоним…» остаются своими экранами. Комната при этом может уже
-            // подключаться — ступени покажутся в темпе, когда звонок станет активным.
+        case .connecting, .inCall:
+            // Ответили (или приняли входящий): «Ждём ответа» становится сделанной.
+            dialing = false
+            if active { recompute() } else { activateIfNeeded() }
+        case .incoming:
+            // Входящий остаётся своим экраном. Комната при этом может уже подключаться —
+            // ступени покажутся в темпе, когда звонок станет активным.
             break
         }
     }
@@ -161,6 +191,11 @@ final class CallConnectController: ObservableObject {
         revealWork = nil
         leaveWork?.cancel()
         leaveWork = nil
+        dialTickWork?.cancel()
+        dialTickWork = nil
+        dialing = false
+        hadDial = false
+        ringStartedAt = nil
         watcher.detach()
         isGroup = false
         roomEncrypted = nil
@@ -192,6 +227,12 @@ final class CallConnectController: ObservableObject {
             // Асинхронно: мы внутри пересчёта, а реакция звонка сама меняет то, что он читает.
             DispatchQueue.main.async { [weak self] in self?.onPeerEncryptionFailure?() }
         }
+        // Дозвон есть только у 1:1. Пока звонит — true, после ответа — false (ступень
+        // остаётся сделанной), у звонка без дозвона — nil.
+        let ringing: Bool? = isGroup ? nil : (dialing ? true : (hadDial ? false : nil))
+        let ringingSeconds: Int? = ringing == true
+            ? ringStartedAt.map { max(0, Int((connectMonotonicNowMs() - $0) / 1000)) }
+            : nil
         let signals = ConnectSignals(
             isGroup: isGroup,
             encrypted: encrypted,
@@ -216,7 +257,9 @@ final class CallConnectController: ObservableObject {
             ),
             error: error,
             errorTitle: errorTitle,
-            micUnavailable: micUnavailable
+            micUnavailable: micUnavailable,
+            ringing: ringing,
+            ringingSeconds: ringingSeconds
         )
 
         // Темп показа (usePacedConnectSignals): реальные ступени показываются по очереди,
@@ -239,6 +282,7 @@ final class CallConnectController: ObservableObject {
         if next != view { view = next }
 
         watcher.setLocal(settled: settled, audio: !muted && !micUnavailable)
+        scheduleDialTick(ringing: ringing == true)
 
         // Разговор начался и картина дорисована — защёлкиваем.
         if active && !mediaReady && next.ready && settled {
@@ -260,6 +304,19 @@ final class CallConnectController: ObservableObject {
             self.recompute()
         }
         revealWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait / 1000, execute: work)
+    }
+
+    /// Таймер под «Звоним…» — раз в секунду, ровно на границе секунды от начала вызова.
+    private func scheduleDialTick(ringing: Bool) {
+        dialTickWork?.cancel()
+        dialTickWork = nil
+        guard ringing, let start = ringStartedAt else { return }
+        let elapsed = connectMonotonicNowMs() - start
+        // +5 мс: сработав чуть раньше границы, таймер показал бы ту же секунду ещё раз.
+        let wait = 1000 - elapsed.truncatingRemainder(dividingBy: 1000) + 5
+        let work = DispatchWorkItem { [weak self] in self?.recompute() }
+        dialTickWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + wait / 1000, execute: work)
     }
 

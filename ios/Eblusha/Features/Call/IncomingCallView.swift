@@ -56,8 +56,8 @@ struct IncomingCallView: View {
     }
 }
 
-/// Порт `BigCallButton`: большая круглая кнопка звонка с подписью снизу.
-/// Общая для входящего экрана и экрана дозвона (RingingView).
+/// Порт `BigCallButton`: большая круглая кнопка звонка с подписью снизу. Экран дозвона
+/// (RingingView) её больше не использует — дозвон показывает экран установления звонка.
 struct CallBigButton: View {
     let systemName: String
     let container: Color

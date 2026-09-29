@@ -128,7 +128,7 @@ private func headerNowMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000)
 /// (нет аудио в фоне, нет записи в «Недавних»). Сервер повторное приглашение по ЖИВОМУ
 /// звонку не размножает: группе не сбрасывает startedAt и не пишет второе системное
 /// сообщение (socket.ts:2212-2232), 1:1-участнику отвечает call:accepted (socket.ts:2075-2083).
-func joinOrStartConversationCall(conversationId: String, title: String, video: Bool) {
+func joinOrStartConversationCall(conversationId: String, title: String, video: Bool, isGroup: Bool) {
     let manager = AppContainer.shared.callManager
     if manager.conversationId == conversationId, manager.phase != .idle {
         // Свой звонок в этой же беседе (в том числе входящий и свёрнутый): «подключаться»
@@ -138,7 +138,7 @@ func joinOrStartConversationCall(conversationId: String, title: String, video: B
     }
     // Заняты разговором в другой беседе: молча не выдёргиваем человека из него.
     guard manager.phase == .idle else { return }
-    manager.startOutgoing(conversationId: conversationId, title: title, video: video)
+    manager.startOutgoing(conversationId: conversationId, title: title, video: video, isGroup: isGroup)
 }
 
 // MARK: - Тексты статуса

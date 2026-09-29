@@ -203,7 +203,9 @@ final class CallManager: NSObject, ObservableObject {
 
     // MARK: - Публичные действия
 
-    func startOutgoing(conversationId: String, title: String, video: Bool) {
+    /// `isGroup` — из открытой беседы: экран вызова поднимается в тот же кадр и должен
+    /// сразу знать, звонить ли (1:1) или подключаться к группе.
+    func startOutgoing(conversationId: String, title: String, video: Bool, isGroup: Bool) {
         guard phase == .idle else { return }
         lastEndCause = .remote
         ringerSuppressed = false
@@ -217,6 +219,7 @@ final class CallManager: NSObject, ObservableObject {
         self.cameraOn = false
         self.speakerOn = false
         self.participants = []
+        connect.outgoingStarting(isGroup: isGroup, title: title)
         self.phase = .outgoing
         // Аудиосессию поднимаем уже на дозвоне: микрофон публикуется при подключении
         // комнаты (ещё в «Звоним…»), и без активной сессии свёрнутое приложение теряло

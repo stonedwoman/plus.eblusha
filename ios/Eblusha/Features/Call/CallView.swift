@@ -136,40 +136,6 @@ struct CallView: View {
     }
 }
 
-// MARK: - Экран дозвона (исходящий)
-
-/// Порт `RingingUi`: аватар + «Звоним…»/«Видеозвонок…» + отмена.
-struct RingingView: View {
-    let title: String
-    let subtitle: String
-    let avatarUrl: String?
-    let onCancel: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-            AvatarView(name: title, avatarUrl: avatarUrl, size: 120)
-            Spacer().frame(height: 16)
-            Text(title)
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-            Text(subtitle)
-                .font(.system(size: 14))
-                .foregroundStyle(Eb.textMuted)
-            Spacer()
-            CallBigButton(
-                systemName: "phone.down.fill",
-                container: Eb.error,
-                label: "Отменить",
-                action: onCancel
-            )
-            Spacer().frame(height: 40)
-        }
-        .padding(24)
-    }
-}
-
 // MARK: - Спотлайт
 
 /// Порт `SpotlightTiles`: лента остальных участников сверху, фокусная плитка — во весь остаток.

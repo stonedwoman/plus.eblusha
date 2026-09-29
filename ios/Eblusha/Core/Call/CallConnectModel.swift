@@ -10,6 +10,7 @@ import Foundation
 // LiveKit — это чистые функции над значениями, как и на вебе.
 
 enum ConnectStepId: String {
+    case ring
     case signaling
     case cryptoPrepare = "crypto-prepare"
     case route
@@ -20,7 +21,8 @@ enum ConnectStepId: String {
 
 enum ConnectStepStatus { case done, active, waiting }
 enum ConnectNodeId: String { case you, relay, server, peer }
-enum ConnectNodeState { case waiting, active, ready }
+/// ringing — исходящий вызов: собеседнику звонит, он ещё не ответил.
+enum ConnectNodeState { case waiting, active, ready, ringing }
 enum ConnectLinkState { case idle, searching, ready }
 /// settling — собеседник уже слышен, но у него ещё дорисовывается своя картина подключения.
 enum ConnectPeerPresence { case absent, joining, settling, ready }
@@ -94,6 +96,11 @@ struct ConnectSignals: Equatable {
     var errorTitle: String?
     /// Микрофон не удалось получить — входим без него и честно это показываем.
     var micUnavailable: Bool
+    /// Исходящий вызов: true — собеседник ещё не ответил, false — ответил (ступень «Ждём
+    /// ответа» остаётся в списке сделанной), nil — у звонка не было дозвона.
+    var ringing: Bool? = nil
+    /// Сколько секунд идёт дозвон — для подписи под заголовком.
+    var ringingSeconds: Int? = nil
 }
 
 struct ConnectStep: Equatable, Identifiable {
@@ -177,6 +184,12 @@ private func pluralParticipants(_ n: Int) -> String {
     return "\(n) участников"
 }
 
+private func formatSeconds(_ total: Int) -> String {
+    let m = total / 60
+    let sec = total % 60
+    return "\(m):\(sec < 10 ? "0" : "")\(sec)"
+}
+
 private func relayFact(_ name: String?) -> String {
     guard let name = nonEmpty(name) else { return "Через ретранслятор" }
     if name == "Наш ретранслятор" { return "Через наш ретранслятор" }
@@ -201,6 +214,8 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
 
     let isGroup = s.isGroup
     let encrypted = s.encrypted
+    let dialed = s.ringing != nil
+    let ringing = s.ringing == true
     let signalingDone = s.hasToken
     let keysDone = !encrypted || s.keysReady
     let routeDone = s.connected
@@ -227,10 +242,18 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
     }
 
     var steps: [ConnectStep] = []
+    if dialed {
+        steps.append(ConnectStep(
+            id: .ring,
+            title: "Ждём ответа",
+            status: ringing ? .active : .done,
+            hint: ringing ? "Собеседнику звонит — он ещё не ответил на вызов." : "Собеседник ответил на вызов."
+        ))
+    }
     steps.append(ConnectStep(
         id: .signaling,
         title: "Договариваемся о звонке",
-        status: status(signalingDone, true),
+        status: status(signalingDone, !ringing),
         hint: signalingDone
             ? "Сервер знает о звонке и выдал нам пропуск в комнату."
             : "Просим у сервера пропуск в комнату звонка."
@@ -325,8 +348,12 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
     var subtitle = "Начинаем разговор"
     if !ready {
         switch steps.first(where: { $0.status == .active })?.id {
+        case .ring:
+            title = "Звоним…"
+            subtitle = "Ждём ответа собеседника" + (s.ringingSeconds.map { " · \(formatSeconds($0))" } ?? "")
         case .signaling:
-            title = "Подключаем звонок…"
+            // После дозвона важнее сказать, что собеседник ответил, чем что мы договариваемся.
+            title = dialed ? "Собеседник ответил" : "Подключаем звонок…"
             subtitle = "Договариваемся о соединении"
         case .cryptoPrepare:
             title = "Готовим защиту…"
@@ -406,7 +433,9 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
         avatarUrl: nil, avatarId: nil, group: false, detail: serverDetail
     ))
     let peerState: ConnectNodeState
-    if isGroup {
+    if ringing {
+        peerState = .ringing
+    } else if isGroup {
         peerState = s.peer.count == 0 ? .waiting : (s.peer.presence == .ready ? .ready : .active)
     } else {
         switch s.peer.presence {
@@ -429,7 +458,9 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
         }
     } else {
         let base: String
-        if peerState == .ready {
+        if peerState == .ringing {
+            base = "\(peerLabel): вызываем, ответа пока нет."
+        } else if peerState == .ready {
             base = "\(peerLabel): в звонке, звук идёт."
         } else if s.peer.presence == .settling {
             base = "\(peerLabel): почти готов, дорисовывает картину."
@@ -505,7 +536,11 @@ enum ConnectPacing {
 
     /// Ступени в порядке показа; которых в этом звонке нет — пропускаются.
     static func milestoneFlags(_ s: ConnectSignals) -> [Bool] {
-        var flags: [Bool] = [s.hasToken]
+        var flags: [Bool] = []
+        // Ответ — первая ступень: каскад этапов идёт после него, даже если комната
+        // подключилась ещё на дозвоне.
+        if let ringing = s.ringing { flags.append(!ringing) }
+        flags.append(s.hasToken)
         if s.encrypted { flags.append(s.keysReady) }
         flags.append(s.connected)
         if s.encrypted { flags.append(s.e2eeEnabled) }
@@ -542,6 +577,10 @@ enum ConnectPacing {
             return real && k < shown
         }
         var out = s
+        if let ringing = s.ringing {
+            let answered = next(!ringing)
+            out.ringing = ringing || !answered
+        }
         out.hasToken = next(s.hasToken)
         if s.encrypted { out.keysReady = next(s.keysReady) }
         out.connected = next(s.connected)

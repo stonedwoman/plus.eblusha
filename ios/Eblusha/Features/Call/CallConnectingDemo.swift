@@ -40,6 +40,10 @@ struct CallConnectingDemo: View {
         var s = base
         let group = ConnectPeer(presence: .absent, count: 0, name: "Ереванский Городовой", id: "demo-group", avatarUrl: nil)
         switch id {
+        case "ringing":
+            s.ringing = true; s.ringingSeconds = 7
+        case "answered":
+            s.ringing = false
         case "keys":
             s.hasToken = true
         case "route":

@@ -744,12 +744,14 @@ struct ChatView: View {
                     conversationId: conversation.id,
                     onStart: { video in
                         AppContainer.shared.callManager.startOutgoing(
-                            conversationId: conversation.id, title: headerTitleText, video: video
+                            conversationId: conversation.id, title: headerTitleText, video: video,
+                            isGroup: conversation.isGroup
                         )
                     },
                     onJoin: { video in
                         joinOrStartConversationCall(
-                            conversationId: conversation.id, title: headerTitleText, video: video
+                            conversationId: conversation.id, title: headerTitleText, video: video,
+                            isGroup: conversation.isGroup
                         )
                     },
                     onExpand: { AppContainer.shared.callManager.expand() }

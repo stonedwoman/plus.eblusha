@@ -59,18 +59,15 @@ private struct CallScreenContainer: View {
                 switch manager.phase {
                 case .incoming:
                     IncomingCallView(manager: manager)
-                case .outgoing:
-                    RingingView(
-                        title: manager.title,
-                        subtitle: manager.isVideoCall ? "Видеозвонок…" : "Звоним…",
-                        avatarUrl: manager.avatarUrl,
-                        onCancel: manager.hangUp
-                    )
-                case .connecting, .inCall:
+                case .outgoing, .connecting, .inCall:
+                    // Один экран от начала вызова до разговора: на дозвоне — «Звоним…» с
+                    // кольцами вокруг собеседника, после ответа — этапы подключения. Ветка
+                    // общая, чтобы экран не пересоздавался в момент ответа.
                     ZStack {
-                        CallView(manager: manager)
-                        // Экран установления поверх разговора: с момента, как звонок стал
-                        // активным для нас, до готовности (защёлка — до конца звонка).
+                        // Разговор монтируется под экраном установления только после ответа.
+                        if manager.phase != .outgoing {
+                            CallView(manager: manager)
+                        }
                         CallConnectingOverlay(controller: manager.connect)
                     }
                 case .idle:
