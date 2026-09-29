@@ -7,7 +7,16 @@ struct EblushaApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            // Стенд экрана установления звонка (аргумент -connectDemo) — только в отладке.
+            if let scenario = CallConnectingDemo.requestedScenario {
+                CallConnectingDemo(scenarioId: scenario)
+            } else {
+                RootView()
+            }
+            #else
             RootView()
+            #endif
         }
     }
 }

@@ -62,6 +62,10 @@ final class CallManager: NSObject, ObservableObject {
     /// Живая медиакомната — наружу, чтобы видеорендеры могли привязаться к её трекам.
     var activeRoom: Room? { room }
 
+    /// Экран установления звонка (порт веб-ConnectProgressWatcher и темпа показа). Только
+    /// показ: хуки ниже сообщают ему реальные события там, где они случаются.
+    let connect = CallConnectController()
+
     // MARK: - Зависимости и внутреннее состояние
 
     private let realtime: RealtimeClient
@@ -138,6 +142,8 @@ final class CallManager: NSObject, ObservableObject {
                 if !foreground { self?.onAppBackgrounded() }
             }
             .store(in: &cancellables)
+
+        connect.bind(to: self)
     }
 
     // MARK: - События реального времени
@@ -595,11 +601,25 @@ final class CallManager: NSObject, ObservableObject {
     // MARK: - Комната LiveKit
 
     private func connectRoom(_ cid: String) {
+        // Кто на том конце — группа ли, имя, аватар — нужно экрану установления. Кеш бесед
+        // читается ОТДЕЛЬНОЙ задачей, параллельно с запросом токена: подключение его не ждёт.
+        Task { @MainActor in
+            let conv = await self.chatRepository.conversationMeta(cid)
+            guard self.conversationId == cid, self.phase != .idle else { return }
+            let isGroup = conv?.isGroup == true
+            self.connect.configure(
+                isGroup: isGroup,
+                title: conv?.title,
+                avatarUrl: conv?.avatarUrl.flatMap { $0.isEmpty ? nil : $0 },
+                peerId: isGroup ? cid : conv?.otherUserId
+            )
+        }
         Task { @MainActor in
             switch await self.liveKit.fetchToken(conversationId: cid) {
             case .failure:
-                self.endLocally()
+                self.failConnect(cid, text: "Сервер не выдал пропуск в комнату звонка. Попробуйте позвонить заново.")
             case .success(let token):
+                if self.conversationId == cid { self.connect.tokenReceived() }
                 // 1:1-звонки используют LiveKit E2EE (веб его требует); группам сервер вернёт nil.
                 let e2eeKey = await self.liveKit.fetchE2eeKey(conversationId: cid)
                 // Пока ходили за токеном и ключом, звонок могли отклонить/отменить.
@@ -610,18 +630,38 @@ final class CallManager: NSObject, ObservableObject {
                     return
                 }
                 self.e2eeEnabled = e2eeKey != nil
-                let r = Room(delegate: self, roomOptions: self.buildRoomOptions(e2eeKeyBase64: e2eeKey))
+                let options = self.buildRoomOptions(e2eeKeyBase64: e2eeKey)
+                let r = Room(delegate: self, roomOptions: options)
                 self.room = r
+                // Комната собрана с ключом разговора (если он есть) — «Готовим шифрование»
+                // сделано; наблюдатель экрана встаёт внутрь неё отдельным делегатом.
+                self.connect.roomCreated(r, encrypted: options.e2eeOptions != nil)
                 do {
                     try await r.connect(url: token.url, token: token.token)
                 } catch {
                     // Молча умирать нельзя: это единственное место, где видно,
                     // ПОЧЕМУ звонок не собрался (сеть/токен/TLS).
                     NSLog("CallManager: room connect failed %@: %@", token.url, String(describing: error))
-                    self.endLocally()
+                    self.failConnect(cid, text: "Не удалось соединиться с сервером звонков. Проверьте связь и попробуйте ещё раз.")
                 }
             }
         }
+    }
+
+    /// Подключиться не вышло. Пока человек видит экран установления (звонок уже активен
+    /// для нас), показываем «Не удалось подключиться» с кнопкой «Закрыть», а закрытие идёт
+    /// обычным hangUp — так и собеседник узнаёт, что звонка не будет. На дозвоне экрана
+    /// установления нет, и там всё как прежде: звонок завершается сам.
+    private func failConnect(_ cid: String, text: String) {
+        guard conversationId == cid, phase != .idle else { return }
+        guard phase.isActive else {
+            endLocally()
+            return
+        }
+        // Комната больше не нужна. room = nil, чтобы её поздние события не завершили звонок
+        // раньше, чем человек прочтёт, что случилось.
+        disconnectRoom()
+        connect.fail(title: "Не удалось подключиться", text: text)
     }
 
     /// Групповой звонок: комната подключена — звонок ИДЁТ, даже если в ней пока никто,
@@ -674,11 +714,21 @@ final class CallManager: NSObject, ObservableObject {
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard let local = self.room?.localParticipant else { return }
             if await self.requestAudioPermission() {
-                _ = try? await local.setMicrophone(enabled: true)
+                do {
+                    _ = try await local.setMicrophone(enabled: true)
+                } catch {
+                    // Разрешение есть, но микрофон не поднялся (занят, сбой устройства) —
+                    // входим без него, как и при отказе, и честно показываем это.
+                    NSLog("CallManager: микрофон не поднялся: %@", String(describing: error))
+                    self.connect.markMicUnavailable()
+                }
                 // Статистику публикации (RTT для eb.ping) стримит сам трек — подписываемся.
                 local.trackPublications.values
                     .first { $0.source == .microphone }?
                     .track?.add(delegate: self)
+            } else {
+                // Микрофон не дали — это не ошибка звонка: входим без него.
+                self.connect.markMicUnavailable()
             }
             // Камера включается сама ТОЛЬКО когда мы начали видеозвонок или приняли
             // «с видео» — никогда по умолчанию. (&& не пускает await в автоклаужер.)
@@ -1097,6 +1147,7 @@ extension CallManager: RoomDelegate {
     func roomDidConnect(_ room: Room) {
         DispatchQueue.main.async {
             guard room === self.room else { return }
+            self.connect.roomConnected()
             if let cid = self.conversationId {
                 self.realtime.joinCallRoom(conversationId: cid, video: self.isVideoCall)
             }

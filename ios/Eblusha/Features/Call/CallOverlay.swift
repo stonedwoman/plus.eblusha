@@ -67,7 +67,12 @@ private struct CallScreenContainer: View {
                         onCancel: manager.hangUp
                     )
                 case .connecting, .inCall:
-                    CallView(manager: manager)
+                    ZStack {
+                        CallView(manager: manager)
+                        // Экран установления поверх разговора: с момента, как звонок стал
+                        // активным для нас, до готовности (защёлка — до конца звонка).
+                        CallConnectingOverlay(controller: manager.connect)
+                    }
                 case .idle:
                     EmptyView()
                 }
