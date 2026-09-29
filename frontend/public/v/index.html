@@ -472,6 +472,35 @@
       color: rgba(226, 232, 226, 0.4);
     }
 
+    /* Размножение: «♥ ебутся N · залетели M» — точка сердцем, тон тёплый. */
+    .farm__love {
+      position: relative;
+      margin: 0.2rem 0 0;
+      padding-left: 0.85rem;
+      font-size: 0.76rem;
+      line-height: 1.4;
+      color: rgba(238, 186, 190, 0.9);
+      cursor: default;
+    }
+
+    .farm__heart {
+      position: absolute;
+      left: 0;
+      top: 0;
+      font-size: 0.72rem;
+      color: #e38a96;
+      text-shadow: 0 0 6px rgba(227, 138, 150, 0.45);
+    }
+
+    .farm__love small {
+      margin-left: 0.4rem;
+      font-size: 0.7rem;
+      color: rgba(226, 232, 226, 0.42);
+    }
+
+    .farm__love.is-idle { color: rgba(226, 232, 226, 0.5); }
+    .farm__love.is-idle .farm__heart { color: rgba(227, 138, 150, 0.5); text-shadow: none; }
+
     /* Приручаются: дикие звери, которых уже начали приручать. */
     .farm__taming {
       display: grid;

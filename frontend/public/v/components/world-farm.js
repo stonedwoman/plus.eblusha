@@ -22,6 +22,12 @@
  * были ли звери голодны, когда там в последний раз кто-то был: долгий голод
  * при живой зоне значит, что корма в досягаемости нет.
  *
+ * Размножение (наша шутка для троих — «ебутся»). У приручённых взрослых:
+ *   mt — сердечки прибавлялись последние пару минут, pg — беременна (у кур —
+ *   скоро яйцо), cr — тесно: своих и приплода в 10 м уже столько, что игра
+ *   размножаться не даёт. Сердечки идут, только пока зверь сыт, спокоен и
+ *   рядом есть пара; набрав четыре, он беременеет.
+ *
  * Приручение. Дикий зверь, которого уже начали приручать, приходит с u:1:
  *   tl — сколько секунд приручения осталось, tt — сколько всего у вида,
  *   fr — напуган. Шкала идёт, только пока зверь сыт, не напуган и рядом
@@ -155,6 +161,40 @@
 
   var SHOW_TAMING = 6;
 
+  // Кто вообще размножается: взрослые. Молодняк сначала растёт.
+  var BREEDERS = { Boar: 1, Hen: 1, Wolf: 1, Lox: 1, Asksvin: 1 };
+
+  // Строка «♥ ебутся N · залетели M». Если никто не может — почему.
+  function loveLine(list) {
+    var adults = 0, mating = 0, preg = 0, crowded = 0;
+    list.forEach(function (it) {
+      if (!BREEDERS[it.n]) return;
+      adults++;
+      if (it.mt === 1) mating++;
+      if (it.pg === 1) preg++;
+      if (it.cr === 1) crowded++;
+    });
+    if (!adults || (!mating && !preg && !crowded)) return null;
+
+    var line = el("p", "farm__love");
+    line.appendChild(el("span", "farm__heart", "♥"));
+    var parts = [];
+    if (mating) parts.push("ебутся " + mating);
+    if (preg) parts.push("залетели " + preg);
+    if (parts.length) {
+      line.appendChild(el("span", null, parts.join(" · ")));
+      if (crowded) line.appendChild(el("small", null, "тесно " + crowded));
+    } else {
+      line.classList.add("is-idle");
+      line.appendChild(el("span", null, "не ебутся: тесно, " + crowded + " из " + adults));
+    }
+    line.title = "Ебутся — у кого за последние пару минут прибавлялись сердечки: игра даёт их, " +
+      "пока зверь сыт, спокоен и рядом есть пара, а на четвёртом он беременеет. " +
+      "Залетели — ждут приплод. Тесно — в 10 м уже столько своих и приплода, что игра не даёт размножаться: " +
+      "разведите по разным загонам.";
+    return line;
+  }
+
   // Кого сейчас приручают: полоса прогресса и что мешает.
   function renderTaming(list) {
     var box = el("div", "farm__taming");
@@ -275,10 +315,13 @@
 
       row.appendChild(el("p", "farm__facts", facts.join(" · ")));
 
-      var hunger = hungerOf(kinds.reduce(function (a, k) {
+      var all = kinds.reduce(function (a, k) {
         return by[k.key] ? a.concat(by[k.key].all) : a;
-      }, []));
+      }, []);
+      var hunger = hungerOf(all);
       if (hunger) row.appendChild(hungerLine(hunger));
+      var love = loveLine(all);
+      if (love) row.appendChild(love);
 
       var names = [];
       kinds.forEach(function (k) {
