@@ -11,6 +11,8 @@ import LiveKit
 /// Только показ. Звонком не управляет: ничего не подключает, не публикует и не завершает —
 /// ни параллельной машины состояний, ни таймеров, влияющих на соединение. Единственное
 /// действие — «Отменить»/«Закрыть» по нажатию человека, и оно уходит в обычный hangUp.
+/// Что собеседник не подтвердил шифрование, экран только сообщает (onPeerEncryptionFailure) —
+/// как с этим быть звонку, решает CallManager.
 /// Работает на главном потоке, как и сам CallManager.
 final class CallConnectController: ObservableObject {
 
@@ -19,6 +21,9 @@ final class CallConnectController: ObservableObject {
     @Published private(set) var visible = false
     /// Разговор начался — экран растворяется, разговор под ним уже идёт.
     @Published private(set) var leaving = false
+
+    /// Собеседник так и не подтвердил сквозное шифрование — ошибка уже на экране.
+    var onPeerEncryptionFailure: (() -> Void)?
 
     private weak var manager: CallManager?
     private var cancellables = Set<AnyCancellable>()
@@ -184,6 +189,8 @@ final class CallConnectController: ObservableObject {
         if encrypted && progress.peerEncryptionTimeout && error == nil {
             error = "Собеседник не подтвердил сквозное шифрование. Продолжить без шифрования нельзя."
             errorTitle = nil
+            // Асинхронно: мы внутри пересчёта, а реакция звонка сама меняет то, что он читает.
+            DispatchQueue.main.async { [weak self] in self?.onPeerEncryptionFailure?() }
         }
         let signals = ConnectSignals(
             isGroup: isGroup,

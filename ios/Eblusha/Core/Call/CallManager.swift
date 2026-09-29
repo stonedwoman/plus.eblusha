@@ -144,6 +144,13 @@ final class CallManager: NSObject, ObservableObject {
             .store(in: &cancellables)
 
         connect.bind(to: self)
+        // Собеседник 15 с не подтверждает шифрование: как веб, уходим из комнаты сразу —
+        // звук без замочка дальше не принимаем и свой не отдаём. Сам звонок закрывает
+        // человек кнопкой «Закрыть» на экране ошибки (обычный hangUp), как при failConnect.
+        connect.onPeerEncryptionFailure = { [weak self] in
+            guard let self, self.phase.isActive else { return }
+            self.disconnectRoom()
+        }
     }
 
     // MARK: - События реального времени
