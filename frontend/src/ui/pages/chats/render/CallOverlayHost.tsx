@@ -26,22 +26,61 @@ export interface CallOverlayHostCtx {
   scheduleAfterMinCallDuration: any
   clearMinCallDurationGuard: any
   isOneToOneConversation: any
+  outgoingCall: any
+  outgoingCallTimerRef: any
+  setOutgoingCall: any
+  stopDialingSound: any
+  playEndCallSound: any
+  dialingTonePeriodMs: any
 }
 
 export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
-  const { callConvId, minimizedCallConvId, conversationsQuery, activeConversation, currentUserId, me, meInfoQuery, setMinimizedCallConvId, getConversationFromCache, callStore, setCallConvId, callConvIdRef, setActiveCalls, stopRingtone, scheduleAfterMinCallDuration, clearMinCallDurationGuard, isOneToOneConversation } = ctx
-    if (!callConvId) return null
+  const { callConvId, minimizedCallConvId, conversationsQuery, activeConversation, currentUserId, me, meInfoQuery, setMinimizedCallConvId, getConversationFromCache, callStore, setCallConvId, callConvIdRef, setActiveCalls, stopRingtone, scheduleAfterMinCallDuration, clearMinCallDurationGuard, isOneToOneConversation, outgoingCall, outgoingCallTimerRef, setOutgoingCall, stopDialingSound, playEndCallSound, dialingTonePeriodMs } = ctx
+    // Дозвон 1:1 идёт в том же оверлее: панель появляется в момент набора, комната —
+    // только после ответа. У групп дозвона нет — там оверлей открывается сразу.
+    const dialConv = !callConvId && outgoingCall ? getConversationFromCache(outgoingCall.conversationId) : null
+    const dialGroup = !!(dialConv?.isGroup || (dialConv?.participants?.length ?? 0) > 2)
+    const dialConvId = !callConvId && outgoingCall && !dialGroup ? outgoingCall.conversationId : null
+    const shownConvId = callConvId ?? dialConvId
+    if (!shownConvId) return null
+    const dialing = !callConvId
+    // Сброс на дозвоне — прежний путь диалога «дозвон…»: сторож, звук, call:end, состояние.
+    const cancelDial = () => {
+      if (!outgoingCall) return
+      const convId = outgoingCall.conversationId
+      if (outgoingCallTimerRef.current) {
+        window.clearTimeout(outgoingCallTimerRef.current)
+        outgoingCallTimerRef.current = null
+      }
+      stopDialingSound()
+      playEndCallSound()
+      endCall(convId)
+      setOutgoingCall(null)
+      setActiveCalls((prev: any) => {
+        const current = prev[convId]
+        if (current?.active) {
+          return { ...prev, [convId]: { ...current, active: false, endedAt: Date.now() } }
+        }
+        const { [convId]: _omit, ...rest } = prev
+        return rest
+      })
+      callStore.endCall()
+    }
 
     return (
       <Suspense fallback={null}>
         <CallOverlay
-          open={!!callConvId}
-          conversationId={callConvId}
-          minimized={minimizedCallConvId === callConvId}
+          open
+          conversationId={shownConvId}
+          minimized={!dialing && minimizedCallConvId === callConvId}
+          dialing={dialing}
+          dialingSince={outgoingCall?.startedAt ?? null}
+          ringPeriodMs={dialingTonePeriodMs ?? null}
+          onCancelDial={cancelDial}
           peerAvatarUrl={(() => {
             // Keep the overlay outside responsive panes so orientation changes do not remount LiveKit.
-            const conv = callConvId
-              ? conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation
+            const conv = shownConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
               : activeConversation
             const parts = conv?.participants || []
             if (parts.length === 2) {
@@ -51,8 +90,8 @@ export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
             return null
           })()}
           avatarsByName={(() => {
-            const conv = callConvId
-              ? conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation
+            const conv = shownConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
               : activeConversation
             const parts = conv?.participants || []
             const map: Record<string, string | null> = {}
@@ -65,8 +104,8 @@ export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
             return map
           })()}
           avatarsById={(() => {
-            const conv = callConvId
-              ? conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation
+            const conv = shownConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
               : activeConversation
             const parts = conv?.participants || []
             const map: Record<string, string | null> = {}
@@ -79,12 +118,42 @@ export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
           })()}
           localUserId={me?.id ?? null}
           isGroup={(() => {
-            const conv = callConvId
-              ? conversationsQuery.data?.find((r: any) => r.conversation.id === callConvId)?.conversation
+            const conv = shownConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
               : activeConversation
             return !!conv?.isGroup
           })()}
-          onMinimize={() => {
+          peerName={(() => {
+            const conv = shownConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
+              : activeConversation
+            const peer = conv?.participants?.find((p: any) => (currentUserId ? p.user.id !== currentUserId : true))?.user
+            return peer?.displayName ?? peer?.username ?? null
+          })()}
+          peerId={(() => {
+            const conv = shownConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
+              : activeConversation
+            return conv?.participants?.find((p: any) => (currentUserId ? p.user.id !== currentUserId : true))?.user?.id ?? null
+          })()}
+          conversationTitle={(() => {
+            const conv = shownConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
+              : activeConversation
+            return conv?.title ?? null
+          })()}
+          conversationAvatarUrl={(() => {
+            const conv = shownConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
+              : activeConversation
+            return conv?.avatarUrl ?? null
+          })()}
+          onExpand={() => {
+            if (!callConvId) return
+            setCallConvId(callConvId)
+            setMinimizedCallConvId(null)
+          }}
+          onMinimize={dialing ? undefined : () => {
             if (callConvId) {
               const convIdToMinimize = callConvId
               setMinimizedCallConvId(convIdToMinimize)
@@ -161,7 +230,7 @@ export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
               finalize()
             }
           }}
-          initialVideo={callStore.initialVideo}
+          initialVideo={dialing ? !!outgoingCall?.video : callStore.initialVideo}
           initialAudio={callStore.initialAudio}
         />
       </Suspense>

@@ -189,6 +189,14 @@ export function CallHost() {
       })
   }
 
+  // Дозвон 1:1 живёт в том же оверлее, что и разговор: панель появляется при наборе,
+  // комната — только после ответа. У групп дозвона нет.
+  const dialConv = !overlayConvId && outgoingCall ? getConversation(outgoingCall.conversationId) : null
+  const dialGroup = !!(dialConv?.isGroup || (dialConv?.participants?.length ?? 0) > 2)
+  const dialConvId = !overlayConvId && outgoingCall && !dialGroup ? outgoingCall.conversationId : null
+  const shownConvId = overlayConvId ?? dialConvId
+  const dialing = !overlayConvId && !!dialConvId
+
   if (onChatsRoute) {
     return null
   }
@@ -196,13 +204,21 @@ export function CallHost() {
   return (
     <>
       <Suspense fallback={null}>
-        {overlayConvId && (
+        {shownConvId && (
           <CallOverlay
-            open={!!overlayConvId}
-            conversationId={overlayConvId}
-            minimized={minimizedCallConvId === overlayConvId}
+            open
+            conversationId={shownConvId}
+            minimized={!dialing && minimizedCallConvId === overlayConvId}
+            dialing={dialing}
+            dialingSince={outgoingCall?.startedAt ?? null}
+            onCancelDial={() => {
+              if (!outgoingCall) return
+              endCall(outgoingCall.conversationId)
+              setOutgoingCall(null)
+              endStoredCall()
+            }}
             peerAvatarUrl={(() => {
-              const conversation = getConversation(overlayConvId)
+              const conversation = getConversation(shownConvId)
               const parts = conversation?.participants || []
               if (parts.length === 2) {
                 const peer = parts.find((participant: any) => participant.user.id !== me?.id)?.user
@@ -211,7 +227,7 @@ export function CallHost() {
               return null
             })()}
             avatarsByName={(() => {
-              const conversation = getConversation(overlayConvId)
+              const conversation = getConversation(shownConvId)
               const parts = conversation?.participants || []
               const map: Record<string, string | null> = {}
               for (const participant of parts) {
@@ -224,7 +240,7 @@ export function CallHost() {
               return map
             })()}
             avatarsById={(() => {
-              const conversation = getConversation(overlayConvId)
+              const conversation = getConversation(shownConvId)
               const parts = conversation?.participants || []
               const map: Record<string, string | null> = {}
               for (const participant of parts) {
@@ -237,8 +253,20 @@ export function CallHost() {
               return map
             })()}
             localUserId={me?.id ?? null}
-            isGroup={!!getConversation(overlayConvId)?.isGroup}
-            onMinimize={() => {
+            isGroup={!!getConversation(shownConvId)?.isGroup}
+            peerName={(() => {
+              const conversation = getConversation(shownConvId)
+              const peer = conversation?.participants?.find((participant: any) => participant.user.id !== me?.id)?.user
+              return peer?.displayName ?? peer?.username ?? null
+            })()}
+            peerId={(() => {
+              const conversation = getConversation(shownConvId)
+              return conversation?.participants?.find((participant: any) => participant.user.id !== me?.id)?.user?.id ?? null
+            })()}
+            conversationTitle={getConversation(shownConvId)?.title ?? null}
+            conversationAvatarUrl={getConversation(shownConvId)?.avatarUrl ?? null}
+            onExpand={() => setMinimizedCallConvId(null)}
+            onMinimize={dialing ? undefined : () => {
               if (overlayConvId) {
                 setMinimizedCallConvId(overlayConvId)
               }
@@ -250,147 +278,7 @@ export function CallHost() {
         )}
       </Suspense>
 
-      {outgoingCall &&
-        (() => {
-          const conversation = getConversation(outgoingCall.conversationId)
-          const isGroup = !!(conversation?.isGroup || (conversation?.participants?.length ?? 0) > 2)
-          if (isGroup) return null
-
-          let displayName = 'Неизвестный'
-          let avatarUrl: string | undefined
-          let avatarId = outgoingCall.conversationId
-          const otherParticipant = conversation?.participants?.find((participant: any) => participant.user.id !== me?.id)?.user
-          if (otherParticipant) {
-            displayName = otherParticipant.displayName ?? otherParticipant.username ?? otherParticipant.id ?? 'Неизвестный'
-            avatarUrl = otherParticipant.avatarUrl
-            avatarId = otherParticipant.id
-          } else {
-            const contact = contacts.find((entry: any) => (entry.conversationIds || []).includes(outgoingCall.conversationId))
-            if (contact?.friend) {
-              displayName = contact.friend.displayName ?? contact.friend.username ?? contact.friend.id ?? 'Неизвестный'
-              avatarUrl = contact.friend.avatarUrl
-              avatarId = contact.friend.id
-            }
-          }
-
-          const elapsed = Math.floor((Date.now() - outgoingCall.startedAt) / 1000)
-          const minutes = Math.floor(elapsed / 60)
-          const seconds = elapsed % 60
-          const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`
-
-          return createPortal(
-            <div
-              style={{
-                position: 'fixed',
-                inset: 0,
-                background: 'rgba(10,12,16,0.55)',
-                backdropFilter: 'blur(4px) saturate(110%)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                zIndex: 1001,
-              }}
-            >
-              <div
-                style={{
-                  background: 'var(--surface-200)',
-                  borderRadius: 16,
-                  border: '1px solid var(--surface-border)',
-                  padding: 24,
-                  width: 'min(92vw, 440px)',
-                  boxShadow: 'var(--shadow-sharp)',
-                  transform: 'translateY(-4vh)',
-                  color: 'var(--text-primary)',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-                  <div style={{ fontWeight: 700 }}>{outgoingCall.video ? 'Видеозвонок' : 'Звонок'}</div>
-                  {!outgoingCall.minimized ? (
-                    <button
-                      className="btn btn-icon btn-ghost"
-                      onClick={() => {
-                        setOutgoingCall((prev) => (prev ? { ...prev, minimized: true } : null))
-                      }}
-                      style={{ padding: 8 }}
-                    >
-                      <Minus size={18} />
-                    </button>
-                  ) : null}
-                </div>
-                <div
-                  className="caller-tile"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12,
-                    padding: 12,
-                    background: 'var(--surface-100)',
-                    border: '1px solid var(--surface-border)',
-                    borderRadius: 12,
-                    marginBottom: 16,
-                  }}
-                >
-                  <Avatar name={displayName} id={avatarId} size={64} avatarUrl={avatarUrl} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 16 }}>{displayName}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>дозвон…</div>
-                  </div>
-                  <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
-                    {timeStr}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    className="btn"
-                    style={{
-                      background: 'var(--danger)',
-                      color: '#fff',
-                      flex: 1,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 8,
-                      padding: '14px 16px',
-                      minHeight: 48,
-                      borderRadius: 12,
-                    }}
-                    onClick={() => {
-                      endCall(outgoingCall.conversationId)
-                      setOutgoingCall(null)
-                      endStoredCall()
-                    }}
-                  >
-                    <PhoneOff size={18} />
-                    <span>Сбросить</span>
-                  </button>
-                  {outgoingCall.minimized ? (
-                    <button
-                      className="btn btn-primary"
-                      style={{
-                        flex: 1,
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: 8,
-                        padding: '14px 16px',
-                        minHeight: 48,
-                        borderRadius: 12,
-                      }}
-                      onClick={() => {
-                        setOutgoingCall((prev) => (prev ? { ...prev, minimized: false } : null))
-                        navigate(withAppRoutePrefix(location.pathname, `/chats/${outgoingCall.conversationId}`))
-                      }}
-                    >
-                      <Maximize2 size={18} />
-                      <span>Развернуть</span>
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        })()}
+      {/* Дозвон живёт в оверлее звонка выше: та же панель с момента набора. */}
 
       {incoming && incoming.source !== 'android_native' &&
         createPortal(

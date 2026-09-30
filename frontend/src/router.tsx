@@ -16,6 +16,8 @@ const ChatsPage = lazy(() => import('./ui/pages/ChatsPage'))
 const MobileChatsRoute = lazy(() => import('./ui/web-mobile/MobileChatsRoute').then((module) => ({ default: module.MobileChatsRoute })))
 const ContactsPage = lazy(() => import('./ui/pages/ContactsPage'))
 const SettingsPage = lazy(() => import('./ui/pages/SettingsPage'))
+// Dev-стенд экрана подключения к звонку: в production-сборке маршрута нет.
+const CallConnectingDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/CallConnectingDemo')) : null
 
 
 const withSuspense = (node: ReactNode) => (
@@ -23,6 +25,7 @@ const withSuspense = (node: ReactNode) => (
 )
 
 const messengerRoutes: RouteObject[] = [
+  ...(CallConnectingDemo ? [{ path: '/__dev/call-connecting', element: withSuspense(<CallConnectingDemo />) }] : []),
   {
     path: '/auth',
     element: <PublicRoute />,

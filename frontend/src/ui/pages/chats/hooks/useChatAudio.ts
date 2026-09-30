@@ -1,6 +1,12 @@
 import { useCallback, useRef, useState } from 'react'
 import { shouldShowAudioUnlockPrompt, unlockAppAudio } from '../../../../utils/audioUnlock'
 
+/**
+ * Период гудка дозвона: три ноты (0,02 / 0,28 / 0,62 с) и пауза, всего ≈2 с — см.
+ * startMelodicDialingTone. К нему привязаны кольца вокруг собеседника на экране подключения.
+ */
+export const DIALING_TONE_PERIOD_MS = 2000
+
 export function useChatAudio() {
   const audioUnlockNotRequired = !shouldShowAudioUnlockPrompt()
   const ringTimerRef = useRef<number | null>(null)

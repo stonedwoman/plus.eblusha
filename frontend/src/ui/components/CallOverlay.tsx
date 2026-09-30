@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 declare global {
   interface Window {
@@ -62,9 +62,23 @@ import { api } from '../../utils/api'
 import { normalizeLivekitServerUrl } from '../../utils/livekitUrl'
 import { signalApkCallActive } from '../../utils/apkCallSignal'
 import { installScreenShareAudioGuard } from '../../utils/screenShareAudio'
+import { callConnectOptions } from '../../utils/callRouting'
+import { CallConnecting } from './CallConnecting'
+import { CallMini } from './CallMini'
+import {
+  buildConnectView,
+  EMPTY_CONNECT_PROGRESS,
+  useDelayedUnmount,
+  usePacedConnectSignals,
+  withPeerSync,
+  monotonicNow,
+  type ConnectPeerPresence,
+  type ConnectProgress,
+  type ConnectRoute,
+} from './callConnectView'
 import { joinCallRoom, requestCallStatuses, leaveCallRoom, socket } from '../../core/realtime'
 import { useAppStore } from '../../domain/store/appStore'
-import { ConnectionState, LogLevel, Room, RoomEvent, setLogLevel, Track, RemoteAudioTrack } from 'livekit-client'
+import { ConnectionError, ConnectionErrorReason, ConnectionState, LogLevel, Room, RoomEvent, setLogLevel, Track, RemoteAudioTrack, type Participant } from 'livekit-client'
 import { createE2eeRoomOptions, enableE2ee, fetchE2eeKey } from '../../utils/e2ee'
 import { ScreenShareSettingsController } from './ScreenShareSettings'
 import { CallQualityRingUpdater } from './CallQualityRingUpdater'
@@ -123,6 +137,25 @@ type Props = {
   avatarsById?: Record<string, string | null>
   localUserId?: string | null
   isGroup?: boolean
+  /** Имя и id собеседника для экрана подключения (разговоры один на один). */
+  peerName?: string | null
+  peerId?: string | null
+  /** Название и аватар беседы — узел «участники» в групповых звонках. */
+  conversationTitle?: string | null
+  conversationAvatarUrl?: string | null
+  /**
+   * Дозвон: собеседнику звонит, он ещё не ответил. Оверлей уже на экране — та же панель,
+   * но без комнаты: к серверу звонков идём только после ответа.
+   */
+  dialing?: boolean
+  /** Когда начался дозвон (Date.now) — таймер под заголовком и фаза колец. */
+  dialingSince?: number | null
+  /** Период гудка, мс — кольца вокруг собеседника расходятся в такт. */
+  ringPeriodMs?: number | null
+  /** «Отменить» во время дозвона: сбросить вызов существующим путём, а не закрывать комнату. */
+  onCancelDial?: () => void
+  /** Развернуть свёрнутый звонок (из миниатюры). */
+  onExpand?: () => void
 }
 
 const LK_SETTINGS_KEYS = {
@@ -1600,6 +1633,358 @@ function ParticipantTileDoubleClickFocusEnhancer({ enabled }: { enabled: boolean
   return null
 }
 
+/** Тема data-канала, по которой клиенты сообщают друг другу о готовности своей картины. */
+const CONNECT_SYNC_TOPIC = 'eb.connect'
+/** Собеседник прислал «рисую», но «готов» так и не пришло: дольше этого не ждём. */
+const CONNECT_SYNC_MAX_WAIT_MS = 8000
+/** От собеседника нет ни слова (телефон, старый клиент): столько ждём после его готовности и нашего «рисую». */
+const CONNECT_SYNC_LEGACY_GRACE_MS = 1500
+/** Собеседник в комнате, но ни дорожки, ни вестей (телефон с выключенным микрофоном?): столько ждём. */
+const CONNECT_NO_AUDIO_GRACE_MS = 5000
+/** Звук собеседника идёт, а замочек всё не загорается — дальше это ошибка шифрования, а не ожидание. */
+const CONNECT_E2EE_CONFIRM_MS = 15000
+
+/**
+ * Наблюдатель хода подключения. Живёт внутри комнаты и сообщает наружу то, что видно
+ * только оттуда: опубликован ли наш микрофон, стал ли собеседник слышен (в шифрованных
+ * звонках — и подтвердил ли шифрование), каким путём легло соединение — через какой
+ * ретранслятор и с какой задержкой — и дорисовал ли собеседник свою картину.
+ *
+ * Разговор начинается не когда мы подключились, а когда СОБЕСЕДНИК стал полноценным
+ * участником: пришёл в комнату, его звук подписан, и (в шифрованных звонках) у него
+ * загорелся замочек. До этого показывать интерфейс звонка нечестно — человек видит
+ * собеседника и говорит, а связи с ним ещё нет. Но и вечно ждать звука нельзя: кто вошёл
+ * без микрофона, звука не даст — об этом он говорит в рукопожатии (audio:false), а кто
+ * рукопожатия не знает (телефон, старый клиент) — того ждём короткую паузу.
+ *
+ * Рукопожатие по data-каналу: «рисую» при подключении и при появлении собеседника,
+ * «готов» — когда наша картина дорисована. На чужое «рисую» отвечаем своим состоянием
+ * один раз, чтобы вошедший позже узнал о нас. Так разговор открывается у обоих разом.
+ */
+function ConnectProgressWatcher({
+  encrypted,
+  sync,
+  localSettled,
+  localAudio,
+  onProgress,
+}: {
+  encrypted: boolean
+  /** Ждать ли собеседника через рукопожатие (только разговоры один на один). */
+  sync: boolean
+  /** Наша картина дорисована — пора сообщить об этом собеседнику. */
+  localSettled: boolean
+  /** Мы будем передавать звук (микрофон не выключен и доступен) — собеседнику есть чего ждать. */
+  localAudio: boolean
+  onProgress: (progress: ConnectProgress) => void
+}) {
+  const room = useRoomContext()
+  const { isMicrophoneEnabled, microphoneTrack } = useLocalParticipant()
+  const micPublished = !!(isMicrophoneEnabled && microphoneTrack?.trackSid)
+  /** Что видно в комнате. */
+  const [peers, setPeers] = useState<{
+    count: number
+    /** У кого-то объявлена аудиодорожка (подписка на подходе). */
+    published: boolean
+    /** У кого-то есть подписанная аудиодорожка (пусть ещё без подтверждения шифрования). */
+    audible: boolean
+    /** Кто-то слышен по-настоящему: звук идёт и (в шифрованных звонках) замочек горит. */
+    heard: boolean
+    name: string | null
+    joinedAt: number | null
+    audibleAt: number | null
+  }>({ count: 0, published: false, audible: false, heard: false, name: null, joinedAt: null, audibleAt: null })
+  const [route, setRoute] = useState<ConnectRoute>(EMPTY_CONNECT_PROGRESS.route)
+  /** Что собеседник сообщил о себе: состояние картины, когда пришло ПЕРВОЕ «рисую», будет ли звук. */
+  const [peerSync, setPeerSync] = useState<{ state: 'none' | 'connecting' | 'settled'; since: number; audio: boolean | null }>({
+    state: 'none',
+    since: 0,
+    audio: null,
+  })
+  /** Пересчёт по истечении сроков ожидания. */
+  const [tick, setTick] = useState(0)
+  const localRef = useRef({ settled: localSettled, audio: localAudio })
+  localRef.current = { settled: localSettled, audio: localAudio }
+  /** Кому мы уже ответили на «рисую» — чтобы эхо не ходило по кругу. */
+  const answeredRef = useRef<Set<string>>(new Set())
+  /** Когда собеседник стал готов — от этого момента ждём «молчуна». */
+  const readyAtRef = useRef<number | null>(null)
+  /** Когда наше «рисую» реально ушло: раньше этого молчание собеседника ничего не значит. */
+  const announcedAtRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!room) return
+    const check = () => {
+      const list = Array.from(room.remoteParticipants.values()) as any[]
+      let published = false
+      let audible = false
+      let heard = false
+      list.forEach((p) => {
+        const audio = Array.from(p.audioTrackPublications?.values?.() ?? []) as any[]
+        if (audio.length > 0) published = true
+        if (!audio.some((pub) => pub.isSubscribed && pub.track)) return
+        audible = true
+        // В шифрованных звонках ждём подтверждения шифрования у собеседника — это тот
+        // самый замочек на его плитке.
+        if (encrypted && p.isEncrypted === false) return
+        heard = true
+      })
+      const first = list[0]
+      const count = list.length
+      const name = (first?.name || first?.identity?.split('#')[0] || null) as string | null
+      setPeers((prev) => {
+        const now = monotonicNow()
+        const joinedAt = count === 0 ? null : (prev.joinedAt ?? now)
+        const audibleAt = audible ? (prev.audibleAt ?? now) : null
+        if (
+          prev.count === count &&
+          prev.published === published &&
+          prev.audible === audible &&
+          prev.heard === heard &&
+          prev.name === name &&
+          prev.joinedAt === joinedAt &&
+          prev.audibleAt === audibleAt
+        ) {
+          return prev
+        }
+        return { count, published, audible, heard, name, joinedAt, audibleAt }
+      })
+    }
+    const onLeft = () => {
+      check()
+      if (room.remoteParticipants.size === 0) {
+        // Собеседник ушёл: его рукопожатие к новому входу не относится.
+        answeredRef.current.clear()
+        readyAtRef.current = null
+        setPeerSync({ state: 'none', since: 0, audio: null })
+      }
+    }
+    check()
+    const events: any[] = [
+      RoomEvent.ParticipantConnected,
+      RoomEvent.TrackPublished,
+      RoomEvent.TrackUnpublished,
+      RoomEvent.TrackSubscribed,
+      RoomEvent.TrackUnsubscribed,
+      RoomEvent.ParticipantEncryptionStatusChanged,
+      RoomEvent.ConnectionStateChanged,
+    ]
+    events.forEach((e) => room.on(e, check))
+    room.on(RoomEvent.ParticipantDisconnected, onLeft)
+    return () => {
+      events.forEach((e) => room.off(e, check))
+      room.off(RoomEvent.ParticipantDisconnected, onLeft)
+    }
+  }, [room, encrypted])
+
+  // Раз в секунду спрашиваем у соединения, каким путём оно легло. Берём именно
+  // ВЫБРАННУЮ пару кандидатов (transport.selectedCandidatePairId; иначе — nominated),
+  // а не любую успешную: браузер держит и запасные. Путь идёт через ретранслятор, если
+  // хоть один кандидат этой пары — relay; имя ретранслятора — из адреса нашего кандидата.
+  useEffect(() => {
+    if (!room) return
+    let stopped = false
+    const read = async () => {
+      try {
+        const engine = (room as any)?.engine
+        const pc = engine?.pcManager?.subscriber?._pc || engine?.pcManager?.publisher?._pc
+        if (!pc) return
+        const report = await pc.getStats()
+        const byId = new Map<string, any>()
+        report.forEach((st: any) => byId.set(st.id, st))
+        let pair: any = null
+        report.forEach((st: any) => {
+          if (st.type === 'transport' && st.selectedCandidatePairId && byId.has(st.selectedCandidatePairId)) {
+            pair = byId.get(st.selectedCandidatePairId)
+          }
+        })
+        if (!pair) {
+          report.forEach((st: any) => {
+            if (st.type !== 'candidate-pair' || st.state !== 'succeeded') return
+            if (!pair || (st.nominated && !pair.nominated)) pair = st
+          })
+        }
+        let next: ConnectRoute = EMPTY_CONNECT_PROGRESS.route
+        if (pair) {
+          const local = byId.get(pair.localCandidateId)
+          const remote = byId.get(pair.remoteCandidateId)
+          const rtt =
+            typeof pair.currentRoundTripTime === 'number' && pair.currentRoundTripTime > 0
+              ? Math.round(pair.currentRoundTripTime * 1000)
+              : null
+          const relayed = local?.candidateType === 'relay' || remote?.candidateType === 'relay'
+          let relayName: string | null = null
+          let relayHost: string | null = null
+          if (relayed) {
+            const host = String(local?.url || '').replace(/^turns?:/, '').split('?')[0].split(':')[0]
+            if (host) {
+              relayHost = host
+              relayName = host.includes('cloudflare') ? 'Cloudflare' : host.includes('eblusha') ? 'Наш ретранслятор' : host
+            }
+          }
+          next = { relayed, rttMs: rtt, relayName, relayHost }
+        }
+        if (!stopped) {
+          setRoute((prev) =>
+            prev.relayed === next.relayed && prev.rttMs === next.rttMs && prev.relayName === next.relayName && prev.relayHost === next.relayHost
+              ? prev
+              : next,
+          )
+        }
+      } catch {
+        // статистика недоступна — экран обойдётся без подробностей
+      }
+    }
+    void read()
+    const timer = setInterval(read, 1000)
+    return () => {
+      stopped = true
+      clearInterval(timer)
+    }
+  }, [room])
+
+  const sendSync = useCallback(
+    (state: 'connecting' | 'settled', to?: string) => {
+      if (!room || !sync) return
+      // «Рисую» имеет смысл только из подключённой комнаты. «Готов» отправляем и в
+      // переподключении — publishData сам дождётся канала; иначе собеседник ждал бы нас
+      // по таймауту, а наблюдатель к тому времени уже снят.
+      if (room.state === ConnectionState.Disconnected) return
+      if (state === 'connecting' && room.state !== ConnectionState.Connected) return
+      try {
+        const payload = new TextEncoder().encode(JSON.stringify({ v: 1, state, audio: localRef.current.audio }))
+        void room.localParticipant
+          .publishData(payload, { reliable: true, topic: CONNECT_SYNC_TOPIC, ...(to ? { destinationIdentities: [to] } : {}) })
+          .then(() => {
+            if (state === 'connecting' && announcedAtRef.current === null) {
+              announcedAtRef.current = monotonicNow()
+              setTick((t) => t + 1)
+            }
+          })
+          .catch(() => {})
+      } catch {
+        // канал данных недоступен — собеседник дождётся нас по таймауту
+      }
+    },
+    [room, sync],
+  )
+
+  useEffect(() => {
+    if (!room || !sync) return
+    const announce = () => sendSync(localRef.current.settled ? 'settled' : 'connecting')
+    const onData = (payload: Uint8Array, participant?: any, _kind?: any, topic?: string) => {
+      if (topic !== CONNECT_SYNC_TOPIC || !participant) return
+      let msg: any
+      try {
+        msg = JSON.parse(new TextDecoder().decode(payload))
+      } catch {
+        return
+      }
+      if (msg?.state !== 'connecting' && msg?.state !== 'settled') return
+      const audio: boolean | null = typeof msg.audio === 'boolean' ? msg.audio : null
+      // Повторное «рисую» не сдвигает срок ожидания: помним первое, иначе таймаут не наступит.
+      setPeerSync((prev) => {
+        if (msg.state === 'connecting' && prev.state !== 'none') return prev.audio === audio ? prev : { ...prev, audio }
+        return { state: msg.state, since: monotonicNow(), audio }
+      })
+      // На «рисую» отвечаем своим состоянием один раз на собеседника: так о нас узнаёт
+      // вошедший позже, а эхо по кругу не ходит.
+      if (msg.state === 'connecting') {
+        const id = String(participant.identity || '')
+        if (!answeredRef.current.has(id)) {
+          answeredRef.current.add(id)
+          sendSync(localRef.current.settled ? 'settled' : 'connecting', id)
+        }
+      }
+    }
+    const onState = (state: ConnectionState) => {
+      if (state === ConnectionState.Connected) announce()
+    }
+    room.on(RoomEvent.DataReceived, onData as any)
+    room.on(RoomEvent.ConnectionStateChanged, onState as any)
+    room.on(RoomEvent.ParticipantConnected, announce)
+    announce()
+    return () => {
+      room.off(RoomEvent.DataReceived, onData as any)
+      room.off(RoomEvent.ConnectionStateChanged, onState as any)
+      room.off(RoomEvent.ParticipantConnected, announce)
+    }
+  }, [room, sync, sendSync])
+
+  useEffect(() => {
+    if (localSettled) sendSync('settled')
+  }, [localSettled, sendSync])
+
+  // Готовность собеседника и сроки ожидания.
+  const derived = useMemo(() => {
+    const now = monotonicNow()
+    let presence: ConnectPeerPresence
+    if (peers.count === 0) presence = 'absent'
+    else if (peers.heard) presence = 'ready'
+    // Звук есть, замочка нет — ждём подтверждения (с пределом: дальше это ошибка E2EE).
+    else if (peers.audible) presence = 'joining'
+    // Дорожка объявлена — подписка на подходе, ждём звука без срока.
+    else if (peers.published) presence = 'joining'
+    // Сам сказал, что без микрофона: ждать нечего.
+    else if (peerSync.state !== 'none' && peerSync.audio === false) presence = 'ready'
+    // Дорисовал картину, а дорожки так и нет — значит, звука не будет.
+    else if (peerSync.state === 'settled') presence = 'ready'
+    else if (peerSync.state === 'connecting') presence = now - peerSync.since >= CONNECT_SYNC_MAX_WAIT_MS ? 'ready' : 'joining'
+    else presence = peers.joinedAt !== null && now - peers.joinedAt >= CONNECT_NO_AUDIO_GRACE_MS ? 'ready' : 'joining'
+    if (presence === 'ready') {
+      if (readyAtRef.current === null) readyAtRef.current = now
+    } else {
+      readyAtRef.current = null
+    }
+    const legacyFrom =
+      readyAtRef.current !== null && announcedAtRef.current !== null ? Math.max(readyAtRef.current, announcedAtRef.current) : null
+    let peerSettled: boolean
+    if (!sync) peerSettled = true
+    else if (peerSync.state === 'settled') peerSettled = true
+    else if (peerSync.state === 'connecting') peerSettled = now - peerSync.since >= CONNECT_SYNC_MAX_WAIT_MS
+    else peerSettled = presence === 'ready' && legacyFrom !== null && now - legacyFrom >= CONNECT_SYNC_LEGACY_GRACE_MS
+    const peerEncryptionTimeout =
+      encrypted && peers.audible && !peers.heard && peers.audibleAt !== null && now - peers.audibleAt >= CONNECT_E2EE_CONFIRM_MS
+    const deadlines: number[] = []
+    if (presence === 'joining' && !peers.audible && !peers.published) {
+      if (peerSync.state === 'connecting') deadlines.push(peerSync.since + CONNECT_SYNC_MAX_WAIT_MS)
+      else if (peerSync.state === 'none' && peers.joinedAt !== null) deadlines.push(peers.joinedAt + CONNECT_NO_AUDIO_GRACE_MS)
+    }
+    if (encrypted && peers.audible && !peers.heard && peers.audibleAt !== null && !peerEncryptionTimeout) {
+      deadlines.push(peers.audibleAt + CONNECT_E2EE_CONFIRM_MS)
+    }
+    if (sync && !peerSettled) {
+      if (peerSync.state === 'connecting') deadlines.push(peerSync.since + CONNECT_SYNC_MAX_WAIT_MS)
+      else if (presence === 'ready' && legacyFrom !== null) deadlines.push(legacyFrom + CONNECT_SYNC_LEGACY_GRACE_MS)
+    }
+    return { presence, peerSettled, peerEncryptionTimeout, nextDeadline: deadlines.length ? Math.min(...deadlines) : null }
+    // tick заставляет пересчитать по истечении срока ожидания и после отправки «рисую».
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peers, peerSync, sync, encrypted, tick])
+
+  useEffect(() => {
+    if (derived.nextDeadline === null) return
+    const timer = setTimeout(() => setTick((t) => t + 1), Math.max(0, derived.nextDeadline - monotonicNow()) + 20)
+    return () => clearTimeout(timer)
+  }, [derived.nextDeadline, tick])
+
+  useEffect(() => {
+    onProgress({
+      micPublished,
+      peerPresence: derived.presence,
+      peerCount: peers.count,
+      peerName: peers.name,
+      peerSettled: derived.peerSettled,
+      peerEncryptionTimeout: derived.peerEncryptionTimeout,
+      route,
+    })
+  }, [onProgress, micPublished, derived.presence, derived.peerSettled, derived.peerEncryptionTimeout, peers.count, peers.name, route])
+
+  // Комната пересоздаётся при смене маршрута: сведения о старом пути к новой не относятся.
+  useEffect(() => () => onProgress(EMPTY_CONNECT_PROGRESS), [onProgress])
+
+  return null
+}
+
 function CallSettings() {
   const room = useRoomContext()
   const { isMicrophoneEnabled, microphoneTrack } = useLocalParticipant()
@@ -1793,6 +2178,7 @@ function CallSettings() {
         </div>
       </div>
 
+
       <div
         className="eb-settings-grid"
         style={{
@@ -1826,7 +2212,7 @@ function CallSettings() {
   )
 }
 
-export function CallOverlay({ open, conversationId, onClose, onMinimize, minimized = false, initialVideo = false, initialAudio = true, peerAvatarUrl = null, avatarsByName = {}, avatarsById = {}, localUserId = null, isGroup = false }: Props) {
+export function CallOverlay({ open, conversationId, onClose, onMinimize, minimized = false, initialVideo = false, initialAudio = true, peerAvatarUrl = null, avatarsByName = {}, avatarsById = {}, localUserId = null, isGroup = false, peerName = null, peerId = null, conversationTitle = null, conversationAvatarUrl = null, dialing = false, dialingSince = null, ringPeriodMs = null, onCancelDial, onExpand }: Props) {
   const [token, setToken] = useState<string | null>(null)
   const [serverUrl, setServerUrl] = useState<string | null>(null)
   const livekitServerUrl = useMemo(() => normalizeLivekitServerUrl(serverUrl), [serverUrl])
@@ -1872,6 +2258,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     }
   }, [])
   const handleClose = useCallback((options?: { manual?: boolean }) => {
+    everJoinedCallRef.current = false
     // Позволяем повторные вызовы, чтобы не зависать в состоянии закрытия.
     // Дополнительные вызовы idempotent, но обеспечивают выход из оверлея,
     // даже если первый вызов был прерван.
@@ -1899,6 +2286,32 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     onClose(effectiveOptions)
   }, [conversationId, isGroup, onClose])
 
+  // Пережившая обрыв отметка «мы уже входили в комнату этого звонка».
+  const everJoinedCallRef = useRef(false)
+  /**
+   * Аварийный откат на короткий путь. Звонки идут через ретрансляторы, но если оба
+   * недоступны (провайдер режет, корпоративная сеть), человек не должен остаться без
+   * связи вовсе — через несколько секунд снимаем ограничение и пробуем как получится.
+   */
+  const [allowDirectFallback, setAllowDirectFallback] = useState(false)
+  /** Что происходит в комнате: микрофон, собеседник, путь к серверу — сообщает ConnectProgressWatcher. */
+  const [progress, setProgress] = useState<ConnectProgress>(EMPTY_CONNECT_PROGRESS)
+  /** Разговор начался: наша часть готова и собеседник слышен. Защёлка — до конца звонка назад не сбрасывается. */
+  const [mediaReady, setMediaReady] = useState(false)
+  /** Сервер звонков не пустил (и откат на прямой путь не помог) — показываем, а не висим. */
+  const [connectError, setConnectError] = useState<string | null>(null)
+  /** Микрофон не удалось получить — входим без него и честно показываем это. */
+  const [micUnavailable, setMicUnavailable] = useState(false)
+  useEffect(() => {
+    setMediaReady(false)
+    setProgress(EMPTY_CONNECT_PROGRESS)
+    setConnectError(null)
+    setMicUnavailable(false)
+    // Другой звонок в том же оверлее — путь к нему ещё не проложен.
+    setWasConnected(false)
+    setAllowDirectFallback(false)
+  }, [open, conversationId])
+
   const restoreCallPresence = useCallback(() => {
     if (!conversationId) return
     try {
@@ -1918,14 +2331,19 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   useEffect(() => {
     if (!open || !conversationId) return
     const onSocketConnect = () => {
-      if (!wasConnected) return
+      // ВАЖНО: проверять текущее состояние подключения нельзя. Оно сбрасывается ровно
+      // при обрыве — то есть именно тогда, когда заявить о себе заново и нужно. Из-за
+      // этого сервер не узнавал о возвращении участника, считал собеседника ушедшим и
+      // завершал звонок по признаку «остался один». Признак «мы уже были в звонке»
+      // держим в ref: он переживает обрыв.
+      if (!everJoinedCallRef.current) return
       restoreCallPresence()
     }
     socket.on('connect', onSocketConnect)
     return () => {
       socket.off('connect', onSocketConnect as any)
     }
-  }, [conversationId, open, restoreCallPresence, wasConnected])
+  }, [conversationId, open, restoreCallPresence])
 
   const syncWindowExpandedDom = useCallback((expanded: boolean) => {
     isWindowExpandedRef.current = expanded
@@ -2796,9 +3214,19 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   useEffect(() => {
     let mounted = true
     async function fetchToken() {
-      if (!open || !conversationId) return
+      // На дозвоне за пропуском не ходим: комната понадобится только после ответа.
+      if (!open || !conversationId || dialing) return
       const room = `conv-${conversationId}`
-      const resp = await api.post('/livekit/token', { room, participantMetadata: { app: 'eblusha', userId: me?.id, displayName: me?.displayName ?? me?.username, avatarUrl: myAvatar } })
+      let resp: any
+      try {
+        resp = await api.post('/livekit/token', { room, participantMetadata: { app: 'eblusha', userId: me?.id, displayName: me?.displayName ?? me?.username, avatarUrl: myAvatar } })
+      } catch (err) {
+        if (!mounted) return
+        // eslint-disable-next-line no-console
+        console.warn('[CallOverlay] не удалось получить пропуск в комнату звонка', err)
+        setConnectError('Сервер не выдал пропуск в комнату звонка. Попробуйте позвонить заново.')
+        return
+      }
       if (!mounted) return
       setToken(resp.data.token)
       setServerUrl(resp.data.url)
@@ -2825,7 +3253,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       setToken(null)
       setServerUrl(null)
     }
-  }, [open, conversationId])
+  }, [open, conversationId, dialing])
 
   useEffect(() => {
     setE2eeEnabled(false)
@@ -2979,8 +3407,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         setE2eeEnabled(true)
 
         // Only publish after E2EE is confirmed enabled.
-        // Microphone is essential to the call; a failure here is fatal.
-        await room.localParticipant.setMicrophoneEnabled(!muted)
+        // Микрофон не дали (запрет, занят, отсутствует) — это не ошибка шифрования: входим
+        // без него и честно показываем это на экране подключения.
+        try {
+          await room.localParticipant.setMicrophoneEnabled(!muted)
+        } catch (micErr) {
+          // eslint-disable-next-line no-console
+          console.warn('[CallOverlay] микрофон недоступен — входим без него', micErr)
+          setMicUnavailable(true)
+          setMuted(true)
+        }
         // Camera is best-effort: a denied/busy/absent camera must NOT tear down a call
         // that can still carry audio. Downgrade to audio-only and reflect it in the UI.
         if (camera) {
@@ -3028,6 +3464,242 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       room.off(RoomEvent.ParticipantEncryptionStatusChanged, onStatus as any)
     }
   }, [cleanupE2eeResources, e2eeEnabled, e2eeRoom, shouldUseE2ee])
+
+  // Пока подключение не состоялось, держим наготове откат: без него запрет прямых
+  // путей превратил бы недоступность ретрансляторов в «звонок вообще не работает».
+  useEffect(() => {
+    if (!open || !conversationId || dialing) {
+      setAllowDirectFallback(false)
+      return
+    }
+    if (wasConnected || allowDirectFallback) return
+    const timer = setTimeout(() => {
+      if (!wasConnected) {
+        // eslint-disable-next-line no-console
+        console.warn('[CallOverlay] через ретрансляторы подключиться не удалось — пробуем короткий путь')
+        setAllowDirectFallback(true)
+      }
+    }, 12000)
+    return () => clearTimeout(timer)
+  }, [open, conversationId, dialing, wasConnected, allowDirectFallback])
+
+  // Дозвон: помним, что у этого звонка он был (ступень «Ждём ответа» остаётся в списке
+  // сделанной), и раз в секунду обновляем таймер под заголовком.
+  const dialRef = useRef<{ id: string | null; had: boolean }>({ id: null, had: false })
+  if (dialRef.current.id !== conversationId) dialRef.current = { id: conversationId, had: false }
+  if (dialing) dialRef.current.had = true
+  const hadDial = dialRef.current.had
+  const [dialTick, setDialTick] = useState(0)
+  useEffect(() => {
+    if (!dialing) return
+    const timer = setInterval(() => setDialTick((t) => t + 1), 1000)
+    return () => clearInterval(timer)
+  }, [dialing])
+  const ringingSeconds = dialing && dialingSince ? Math.max(0, Math.floor((Date.now() - dialingSince) / 1000)) : null
+  void dialTick
+
+  // Реальное состояние звонка для экрана подключения: каждый этап и факт выводятся из
+  // него, а не из одного счётчика «текущий шаг».
+  const connectSignals = useMemo(
+    () => ({
+        isGroup,
+        encrypted: shouldUseE2ee,
+        muted,
+        hasToken: !!token,
+        keysReady: !!e2eeRoom,
+        connected: wasConnected,
+        e2eeEnabled,
+        micPublished: progress.micPublished,
+        routeSwitching: allowDirectFallback && !wasConnected,
+        route: progress.route,
+        peer: {
+          presence: progress.peerPresence,
+          count: progress.peerCount,
+          name: isGroup ? conversationTitle : progress.peerName || peerName,
+          id: isGroup ? conversationId : peerId,
+          avatarUrl: isGroup ? conversationAvatarUrl : peerAvatarUrl,
+        },
+        error: e2eeError ?? connectError,
+        errorTitle: e2eeError ? null : connectError ? 'Не удалось подключиться' : null,
+        micUnavailable,
+        ringing: dialing ? true : hadDial ? false : undefined,
+        ringingSeconds,
+    }),
+    [
+      isGroup,
+      shouldUseE2ee,
+      muted,
+      token,
+      e2eeRoom,
+      wasConnected,
+      e2eeEnabled,
+      progress,
+      allowDirectFallback,
+      conversationTitle,
+      peerName,
+      peerId,
+      conversationId,
+      conversationAvatarUrl,
+      peerAvatarUrl,
+      e2eeError,
+      connectError,
+      micUnavailable,
+      dialing,
+      hadDial,
+      ringingSeconds,
+    ],
+  )
+  const allowDirectFallbackRef = useRef(allowDirectFallback)
+  allowDirectFallbackRef.current = allowDirectFallback
+  /**
+   * Провал подключения к серверу звонков. Ошибки устройств приходят сюда же, но их
+   * разбирает onMediaDeviceFailure. Ошибка старой попытки после смены маршрута — не наша.
+   * Через ретрансляторы не вышло — не ждём 12 секунд, сразу пробуем напрямую; не вышло и
+   * напрямую (или пропуск не приняли) — показываем ошибку вместо вечного «прокладываем путь».
+   */
+  const handleConnectError = useCallback((err: unknown, attempt: 'relay' | 'direct') => {
+    if (!(err instanceof ConnectionError)) return
+    if (attempt !== (allowDirectFallbackRef.current ? 'direct' : 'relay')) return
+    const reason = err.reason
+    if (reason === ConnectionErrorReason.Cancelled || reason === ConnectionErrorReason.LeaveRequest) return
+    const retryable =
+      reason === ConnectionErrorReason.ServerUnreachable ||
+      reason === ConnectionErrorReason.Timeout ||
+      reason === ConnectionErrorReason.WebSocket ||
+      reason === ConnectionErrorReason.InternalError
+    if (attempt === 'relay' && retryable) {
+      // eslint-disable-next-line no-console
+      console.warn('[CallOverlay] через ретрансляторы подключиться не удалось — пробуем короткий путь', err)
+      setAllowDirectFallback(true)
+      return
+    }
+    // eslint-disable-next-line no-console
+    console.warn('[CallOverlay] подключение к серверу звонков не удалось', err)
+    setConnectError(
+      reason === ConnectionErrorReason.NotAllowed
+        ? 'Сервер звонков не принял пропуск в комнату. Попробуйте позвонить заново.'
+        : 'Не удалось соединиться с сервером звонков. Проверьте связь и попробуйте ещё раз.',
+    )
+  }, [])
+  /** Устройство не дали: без камеры продолжаем молча, без микрофона — входим и говорим об этом. */
+  const handleMediaFailure = useCallback((failure: unknown, kind?: string) => {
+    if (kind === 'videoinput') {
+      // eslint-disable-next-line no-console
+      console.warn('[CallOverlay] камера недоступна — продолжаем без видео', failure)
+      setCamera(false)
+      return
+    }
+    // eslint-disable-next-line no-console
+    console.warn('[CallOverlay] микрофон недоступен — входим без него', failure, kind)
+    setMicUnavailable(true)
+    setMuted(true)
+  }, [])
+  // «Отменить» на дозвоне сбрасывает вызов, а после ответа — закрывает звонок.
+  const cancelConnecting = useCallback(() => {
+    if (dialing && onCancelDial) onCancelDial()
+    else handleClose({ manual: true })
+  }, [dialing, onCancelDial, handleClose])
+  // useLiveKitRoom перезапускает connect() при смене identity onError — обработчик
+  // должен быть стабильным, иначе каждый рендер начинал бы новую попытку подключения.
+  const liveKitAttempt: 'relay' | 'direct' = allowDirectFallback ? 'direct' : 'relay'
+  const onLiveKitError = useMemo(() => (err: Error) => handleConnectError(err, liveKitAttempt), [handleConnectError, liveKitAttempt])
+  // Показ идёт в человеческом темпе (~3 с на всю картину), само соединение — как шло.
+  const paced = usePacedConnectSignals(connectSignals, open ? conversationId : null)
+  // Пока собеседник дорисовывает свою картину, показываем «синхронизируемся»: разговор
+  // открывается у обоих разом.
+  const presented = useMemo(() => withPeerSync(paced.signals, progress.peerSettled), [paced.signals, progress.peerSettled])
+  const connectView = useMemo(() => buildConnectView(presented), [presented])
+  // Звук собеседника идёт, а замочек так и не загорелся — продолжать без шифрования нельзя.
+  useEffect(() => {
+    if (!shouldUseE2ee || !progress.peerEncryptionTimeout || e2eeError) return
+    setE2eeError('Собеседник не подтвердил сквозное шифрование. Продолжить без шифрования нельзя.')
+    cleanupE2eeResources()
+  }, [shouldUseE2ee, progress.peerEncryptionTimeout, e2eeError, cleanupE2eeResources])
+
+  // Разговор начался и картина дорисована — защёлкиваем: экран подключения не вернётся
+  // до конца звонка.
+  useEffect(() => {
+    if (open && connectView.ready && paced.settled) setMediaReady(true)
+  }, [open, connectView.ready, paced.settled])
+  // Экран растворяется, а не пропадает рывком; разговор под ним уже идёт.
+  const connecting = useDelayedUnmount(open && !mediaReady, 220)
+
+  // Свёрнутый звонок живёт в миниатюре (CallMini): помним, откуда ей прилететь при
+  // сворачивании и куда вернуться панели при разворачивании — иначе звонок «пропадает»
+  // и «появляется» рывком, и человек не понимает, куда он делся.
+  const [flyFrom, setFlyFrom] = useState<DOMRect | null>(null)
+  const expandFromRef = useRef<DOMRect | null>(null)
+  const requestMinimize = useCallback(() => {
+    if (!onMinimize) return
+    setFlyFrom(containerRef.current?.getBoundingClientRect() ?? null)
+    onMinimize()
+  }, [onMinimize])
+  const requestExpand = useCallback(
+    (fromRect: DOMRect | null) => {
+      expandFromRef.current = fromRect
+      onExpand?.()
+    },
+    [onExpand],
+  )
+  // Панель возвращается из миниатюры: стартует её прямоугольником и разъезжается на место.
+  useLayoutEffect(() => {
+    if (minimized) return
+    const from = expandFromRef.current
+    const el = containerRef.current
+    if (!from || !el) return
+    expandFromRef.current = null
+    const to = el.getBoundingClientRect()
+    if (!to.width || !to.height) return
+    el.style.transition = 'none'
+    el.style.transformOrigin = '0 0'
+    el.style.transform = `translate(${from.left - to.left}px, ${from.top - to.top}px) scale(${from.width / to.width}, ${from.height / to.height})`
+    el.style.opacity = '0.4'
+    const raf = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform .32s cubic-bezier(.2,.8,.2,1), opacity .28s ease'
+        el.style.transform = ''
+        el.style.opacity = ''
+        setTimeout(() => {
+          el.style.transition = ''
+          el.style.transformOrigin = ''
+        }, 340)
+      }),
+    )
+    return () => cancelAnimationFrame(raf)
+  }, [minimized])
+  /** Когда разговор начался — таймер в миниатюре. */
+  const connectedAtRef = useRef<number | null>(null)
+  if (wasConnected && connectedAtRef.current === null) connectedAtRef.current = Date.now()
+  useEffect(() => {
+    connectedAtRef.current = null
+  }, [conversationId])
+  /** Аватар участника комнаты — по userId из метаданных (или identity), иначе по имени. */
+  const resolveParticipantAvatar = useCallback(
+    (p: Participant): string | null => {
+      let userId = p.identity.split('#')[0]
+      try {
+        const meta = p.metadata ? JSON.parse(p.metadata) : null
+        if (meta?.userId) userId = String(meta.userId)
+      } catch {
+        // чужие метаданные
+      }
+      const byId = avatarsById[userId]
+      const name = p.name || ''
+      const byName = name ? avatarsByName[name] ?? avatarsByName[Object.keys(avatarsByName).find((k) => k.toLowerCase() === name.toLowerCase()) ?? ''] : null
+      return resolveAvatarUrl(byId ?? byName ?? null)
+    },
+    [avatarsById, avatarsByName, resolveAvatarUrl],
+  )
+  // Esc сворачивает идущий разговор (не дозвон и не подключение — те во весь экран).
+  useEffect(() => {
+    if (!open || minimized || dialing || !mediaReady || !isDesktop || !onMinimize) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      requestMinimize()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, minimized, dialing, mediaReady, isDesktop, onMinimize, requestMinimize])
 
   // Sync initial media flags on every open
   useEffect(() => {
@@ -3688,7 +4360,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     return () => mo.disconnect()
   }, [open, avatarsByName, avatarsById, localUserId, myAvatar])
 
-  if (!open || !conversationId || !token || !livekitServerUrl) return null
+  if (!open || !conversationId) return null
 
   const overlay = (
     <div
@@ -3699,7 +4371,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         // Prevent taps/clicks from bubbling to the underlying app on mobile (can cause call state to reset)
         e.stopPropagation()
         if (e.target === e.currentTarget && isDesktop && onMinimize) {
-          onMinimize()
+          requestMinimize()
         }
       }}
       onTouchStart={(e) => {
@@ -3736,54 +4408,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       }} className="call-container">
         <style>{videoContainCss}</style>
         {shouldUseE2ee ? (
-          e2eeError ? (
-            <div
-              style={{
-                width: '100%',
-                height: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: 24,
-              }}
-            >
-              <div style={{ maxWidth: 560 }}>
-                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Защищённый звонок недоступен</div>
-                <div style={{ opacity: 0.85, marginBottom: 16 }}>{e2eeError}</div>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  <button type="button" className="btn btn-primary" onClick={() => handleClose({ manual: true })}>
-                    Закрыть
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : !e2eeRoom ? (
-            <div
-              style={{
-                width: '100%',
-                height: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: 24,
-              }}
-            >
-              <div style={{ maxWidth: 560 }}>
-                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Включаем защищённый звонок…</div>
-                <div style={{ opacity: 0.85, marginBottom: 16 }}>
-                  Подготавливаем шифрование (E2EE). Это может занять пару секунд.
-                </div>
-                <button type="button" className="btn btn-secondary" onClick={() => handleClose({ manual: true })}>
-                  Отмена
-                </button>
-              </div>
-            </div>
+          e2eeError || !e2eeRoom ? (
+            <CallConnecting view={connectView} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} />
           ) : (
             <LiveKitRoom
               room={e2eeRoom}
-              serverUrl={livekitServerUrl}
-              token={token}
+              serverUrl={livekitServerUrl ?? undefined}
+              token={token ?? undefined}
               connect
+              key={allowDirectFallback ? 'direct' : 'relay'}
+              connectOptions={callConnectOptions(allowDirectFallback)}
               // IMPORTANT: never publish tracks before E2EE is enabled.
               video={e2eeEnabled ? camera : false}
               audio={e2eeEnabled ? !muted : false}
@@ -3791,8 +4425,11 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                 setE2eeError('Не удалось продолжить звонок: ошибка E2EE. Попробуйте начать звонок заново.')
                 cleanupE2eeResources()
               }}
+              onError={onLiveKitError}
               onConnected={() => {
                 setWasConnected(true)
+                setConnectError(null)
+                everJoinedCallRef.current = true
                 if (conversationId) {
                   signalApkCallActive(conversationId, initialVideo)
                 }
@@ -3806,7 +4443,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                 }
                 const hadConnection = wasConnected
                 setWasConnected(false)
-                const manual = reason === 1 || manualCloseRef.current
+                // «Отключено по инициативе клиента» ДО первого подключения — это не кнопка
+                // «Выйти» (её ещё нет на экране), а смена маршрута: старый экземпляр комнаты
+                // закрывается, а событие достаётся новому. Ручным считаем только после подключения.
+                const manual = manualCloseRef.current || (reason === 1 && hadConnection)
                 // Если оверлей минимизирован, не закрываем его при отключении - это может быть временное отключение
                 if (minimized) {
                   return
@@ -3822,50 +4462,54 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                 }
               }}
             >
-              {!e2eeEnabled ? (
-                <div
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: 24,
-                  }}
-                >
-                  <div style={{ maxWidth: 560 }}>
-                    <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Подключаемся и включаем E2EE…</div>
-                    <div style={{ opacity: 0.85, marginBottom: 16 }}>
-                      Сначала подключаемся к комнате, затем включаем шифрование и только после этого публикуем микрофон/камеру.
-                    </div>
-                    <button type="button" className="btn btn-secondary" onClick={() => handleClose({ manual: true })}>
-                      Отмена
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ width: '100%', height: '100%' }}>
-                  <ConnectionStatusBadge />
-                  <DefaultMicrophoneSetter />
-                  <CallQualityRingUpdater />
-                  <ParticipantVolumeUpdater />
-                  <VideoTileZoomEnhancer enabled={!minimized} />
-                  <ParticipantTileDoubleClickFocusEnhancer enabled={!minimized} />
-                  <ScreenShareSettingsController enabled={!minimized} />
-                  <VideoConference SettingsComponent={CallSettings} />
-                </div>
-              )}
+              <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+                {connecting.mounted && (
+                  <CallConnecting view={connectView} leaving={connecting.leaving} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} />
+                )}
+                {connecting.mounted && <ConnectProgressWatcher encrypted={shouldUseE2ee} sync={!isGroup} localSettled={paced.settled} localAudio={!muted && !micUnavailable} onProgress={setProgress} />}
+                {connectedAtRef.current !== null && (
+                  <CallMini
+                    visible={minimized}
+                    isGroup={isGroup}
+                    encrypted={shouldUseE2ee && e2eeEnabled}
+                    connectedAt={connectedAtRef.current}
+                    resolveAvatar={resolveParticipantAvatar}
+                    flyFrom={flyFrom}
+                    onExpand={requestExpand}
+                    onHangUp={() => handleClose({ manual: true })}
+                  />
+                )}
+                {/* Интерфейс разговора монтируем только после включения E2EE. */}
+                {e2eeEnabled && (
+                  <>
+                    <ConnectionStatusBadge />
+                    <DefaultMicrophoneSetter />
+                    <CallQualityRingUpdater />
+                    <ParticipantVolumeUpdater />
+                    <VideoTileZoomEnhancer enabled={!minimized} />
+                    <ParticipantTileDoubleClickFocusEnhancer enabled={!minimized} />
+                    <ScreenShareSettingsController enabled={!minimized} />
+                    <VideoConference SettingsComponent={CallSettings} />
+                  </>
+                )}
+              </div>
             </LiveKitRoom>
           )
         ) : (
           <LiveKitRoom
-            serverUrl={livekitServerUrl}
-            token={token}
+            serverUrl={livekitServerUrl ?? undefined}
+            token={token ?? undefined}
             connect
+            key={allowDirectFallback ? 'direct' : 'relay'}
+            connectOptions={callConnectOptions(allowDirectFallback)}
             video={camera}
             audio={!muted}
+            onError={onLiveKitError}
+            onMediaDeviceFailure={handleMediaFailure}
             onConnected={() => {
               setWasConnected(true)
+              setConnectError(null)
+              everJoinedCallRef.current = true
               if (conversationId) {
                 signalApkCallActive(conversationId, initialVideo)
               }
@@ -3903,7 +4547,23 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               }
             }}
           >
-            <div style={{ width: '100%', height: '100%' }}>
+            <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+              {connecting.mounted && (
+                <CallConnecting view={connectView} leaving={connecting.leaving} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} />
+              )}
+              {connecting.mounted && <ConnectProgressWatcher encrypted={false} sync={!isGroup} localSettled={paced.settled} localAudio={!muted && !micUnavailable} onProgress={setProgress} />}
+              {connectedAtRef.current !== null && (
+                <CallMini
+                  visible={minimized}
+                  isGroup={isGroup}
+                  encrypted={false}
+                  connectedAt={connectedAtRef.current}
+                  resolveAvatar={resolveParticipantAvatar}
+                  flyFrom={flyFrom}
+                  onExpand={requestExpand}
+                  onHangUp={() => handleClose({ manual: true })}
+                />
+              )}
               <ConnectionStatusBadge />
               <DefaultMicrophoneSetter />
               <CallQualityRingUpdater />
