@@ -1,0 +1,521 @@
+# iOS-клиент Еблуши — справка для передачи дел
+
+Состояние на 2026-09-30. Последняя сборка в TestFlight — **914** (коммит `da4fbe1c`),
+статус `IN_BETA_TESTING`. Справку писал агент чата «EBLUSHA iPhone (stoned)», который вёл
+порт с первого дня (2026-08-15). Всё ниже сверено с кодом и git на момент записи; если
+что-то расходится с кодом — прав код.
+
+---
+
+## 0. Коротко
+
+- Нативный клиент на SwiftUI (плюс UIKit там, где SwiftUI не справляется) лежит в `ios/`
+  этого репозитория: ~122 файла, ~42,7 тыс. строк Swift. Bundle `org.eblusha.plus`,
+  iOS 18+, только iPhone.
+- **Эталон поведения и вида — веб** (`frontend/src/ui/pages/chats/`, там README с картой
+  модулей). До 2026-09-10 эталоном был нативный Android.
+- Xcode есть только на маке. Сборка: `scripts/ios-build.sh [sim|--install|--clean]`,
+  релиз в TestFlight: `scripts/ios-release.sh`. Номер сборки = число коммитов в HEAD →
+  **сначала коммит, потом релиз**.
+- Правило пользователя: после каждой готовой порции iOS-правок — коммит, пуш и
+  **TestFlight**. Исключение — задача прямо запрещает релиз или установку.
+- Не проверено вживую: рукопожатие `eb.connect` и новый дозвон на экране установления
+  звонка (§7.8). Это первое, что стоит проверить звонком.
+
+---
+
+## 1. Решения пользователя и ориентиры
+
+- 2026-08-15: v1 = паритет с **нативным Android**, затем оба клиента параллельно
+  дотягиваются до веба. С 2026-09-10 эталон — **веб**, и оба клиента приводятся к нему.
+- Источник правды Android — **не git**: `C:\projects\eblusha-mobile` на `winpc`
+  (Kotlin/Compose, ~20 тыс. строк, пакет `org.eblusha.app`). Каталог `android/` в репо —
+  старый прототип, по нему о возможностях Android судить нельзя. Локальная копия
+  исходников для сверки: `tmp/eblusha-mobile-src/` (rsync с winpc, перед работой обновить).
+- Push: APNs + PushKit/CallKit — сразу, в фундаменте. На iOS нет аналога
+  foreground-сервиса Android, и без VoIP-пуша фоновых звонков не существует.
+- UI: пользователь **отверг таб-бар** («три бабла внизу выглядят не очень») и карандаш
+  «новая беседа» в панели. Фирменные элементы (плитки «Беседа/Контакты», анимированный
+  wordmark) он ценит выше системных. Таб-бар не предлагать.
+- Расшифровка голосовых — **только на устройстве** (Speech,
+  `requiresOnDeviceRecognition = true`). Whisper на сервере отвергнут осознанно: бокс
+  (4 ядра Ryzen 3 4300U) делит процессор с LiveKit, а секретные чаты сервер расшифровать
+  не может в принципе.
+- Фоторедактор свой: код Telegram не брать (GPL v2 заражает приложение и конфликтует с
+  App Store), готовые MIT-библиотеки тоже (чужой интерфейс). У Telegram берём только
+  поведение и числа (см. `docs/ios-telegram-behaviour-2026-09-11.md`).
+- Язык общения с пользователем — русский. Комментарии в коде русские и объясняют
+  «почему», а не «что».
+
+---
+
+## 2. Карта кода (`ios/`)
+
+Каркас описан в `ios/project.yml` (XcodeGen). `.xcodeproj` генерируется на маке и в git
+не хранится. Swift 5, `SWIFT_STRICT_CONCURRENCY: minimal`: переход на строгую
+конкурентность Swift 6 — отдельная большая работа. SPM: LiveKit `client-sdk-swift` 2.16.0,
+Socket.IO Swift 16.1.1.
+
+**App/** — `EblushaApp` (в DEBUG есть вход в стенд `-connectDemo`), `PushAppDelegate`
+(токены APNs), `RootView` (один `NavigationStack(path:)` с маршрутами `HomeRoute`, поверх
+всего — `CallOverlay`; там же `SecretOutboxFlusher`).
+
+**Core/**
+- `App/` — жизненный цикл, `DraftStore` (черновики), `SecretOutbox` + `SecretOutboxFlusher`
+  (очередь неотправленного в секретках на диске, досыл даже при закрытом чате).
+- `Audio/VoiceRecorder` — запись голосовых.
+- `Call/` — звонки: `CallManager` (главный, ~1300 строк), `CallModels` (фазы, причины
+  конца), экран установления: `CallConnectModel` / `CallConnectWatcher` /
+  `CallConnectController` (§7).
+- `Config/AppConfig` — источник: eblusha.org или зеркало ru.eblusha.org. Выбирается в
+  настройках, смена через выход из аккаунта.
+- `Crypto/SecretCrypto` — криптография секретных чатов.
+- `DI/AppContainer` — контейнер зависимостей (`AppContainer.shared.callManager` и т. д.).
+- `Network/` — `APIClient` и DTO. PATCH живёт расширением в `ProfileRepository.swift`:
+  второй такой же метод дал «ambiguous use».
+- `Push/` — `CallKitController`, `VoIPPushHandler`, `PushRepository` (регистрация
+  токенов), `MessageNotifications`.
+- `Realtime/` — `RealtimeClient` (Socket.IO, порт Android один в один), `RealtimeEvents`,
+  `CallStatusStore` (идущие звонки для списка и шапки).
+- `Repository/` — `ChatRepository` (+ Forward/ReplyBundle/SecretMeta/Social/Uploads),
+  `ContactsRepository`, `DevicesRepository`, `LiveKitRepository` (токен и E2EE-ключ
+  звонка), `ProfileRepository`, `SecretRepository` (~1400 строк).
+- `Session/` — `SessionStore`, `KeychainStore`, `SecretKeyStore`, `DeviceIdProvider`.
+- `Speech/` — `VoiceTranscriber`, `TranscriptStore` (§5.6).
+- `Util/`, `Result/ApiResult`, **Domain/** (модели чата и социалки).
+
+**Features/**
+- `Auth/` — вход и регистрация.
+- `Call/` — `CallOverlay` (корень звонкового UI и плашка свёрнутого звонка), `CallView`
+  (разговор), `IncomingCallView`, `CallConnectingView` (экран установления),
+  `CallConnectingDemo` (DEBUG-стенд).
+- `Chat/` — список (`ChatListView/VM`), беседа (`ChatView`, `ChatViewModel` +
+  `…Secret`/`…Jump`), лента `MessageListView` (UICollectionView, §5.3), композер
+  (`ChatComposer`, `ComposerAttachments`, `ComposerFormatting`), вложения
+  (`AttachmentAlbum`, `AttachmentSheet`, `AttachmentOpening`, `InlineVideoPlayer`),
+  голосовые (`VoiceMessage`, `VoiceRecordGesture`), реакции (`ReactionChips`,
+  `ReactionPicker`, `EmojiCatalogSource`), пересылка (`ForwardBundle`, `ForwardFlow`),
+  меню и выбор сообщений (`MessageActionsOverlay/Sheet`, `MessageSelection`), цитаты
+  (`ReplyQuoteCard`), `ChatMarkdown` (разбор с кэшем по строке), `ChatSounds`,
+  `SecretChatCards`.
+- `PhotoEditor/` — свой редактор (§5.7). `PhotoViewer/` — просмотрщик (§5.7).
+- `Social/` — контакты, создание группы, участники группы, QR-сканер, настройки.
+- `Presence/` — устройства и присутствие.
+
+**UI/** — `Components/` (`Avatar`, `CachedImage`, `SwipeBack`, `UserProfileCard`),
+`Theme/Palette` (`Eb.*`). **Resources/** — `Info.plist`, entitlements, ассеты,
+`notify.caf`, `fluent-emoji-reactions.json` (каталог эмодзи из веба, 3145 записей,
+обновляется с сервера).
+
+---
+
+## 3. Сборка, установка, релиз
+
+### 3.1 Мак
+- ssh-алиас `mac` (user `valentina`). Bonjour-имя `Mac.local`, DHCP-адрес плавает —
+  жёсткий IP в конфиге протухает. Xcode 26.6, XcodeGen в `~/.local/bin`. Спарен iPhone 16
+  Pro пользователя (iOS 26.6.x).
+- На маке **bash 3.2**: пустые массивы под `set -u` ломаются.
+- **Мак засыпает** (MacBook на батарее, крышка закрыта). Под caffeinate тоже. Рецепт:
+  1. будить циклом, пока `ssh -o ConnectTimeout=3 -o BatchMode=yes mac true` не пройдёт:
+     `wakeonlan -i 192.168.1.255 86:0f:ae:7e:9b:a5`, пауза 2 с;
+  2. сразу держать фоном: `ssh mac 'caffeinate -dimsu -t 1500' &`;
+  3. длинные удалённые работы гнать **одной** ssh-сессией:
+     `ssh mac 'caffeinate -dimsu bash -s' <<'EOF' … EOF`. Если мак уснёт между сессиями,
+     rsync падает с кодом 255.
+
+### 3.2 Сборка — `scripts/ios-build.sh`
+- Заливает `ios/` rsync'ом на мак (`~/builds/eblusha-ios`), генерирует проект, собирает.
+  Назад ничего не возвращается.
+- `sim` — под симулятор, без подписи, быстрее всего. Проверка сборки — только так.
+- без аргументов — под устройство; `--install` — собрать и поставить на телефон;
+  `--clean` — с нуля.
+- Лог фильтруется по `error:` (раньше `tail -40` прятал саму ошибку).
+- Под симулятор `.app` лежит в
+  `~/builds/eblusha-ios/build/Build/Products/Debug-iphonesimulator/Eblusha.app`.
+
+### 3.3 Подпись — через `build.keychain`, НЕ login
+login-связка на macOS 26 для ssh-сессии заперта наглухо: codesign отдаёт
+`errSecInternalComponent`, security — «User interaction is not allowed». Разблокировка в
+GUI и `set-key-partition-list` не помогают, у ssh своя security-сессия. **Не тратить на это
+время и не просить у пользователя пароль.** Рабочая схема (уже в скриптах):
+- отдельная `~/Library/Keychains/build.keychain-db` с ключом «Apple Development: Created
+  via API», пароль в `~/.keys/build-keychain-pass`;
+- профили Xcode создаёт сам по ASC API-ключу `~/.appstoreconnect/private_keys/AuthKey_N433G64327.p8`
+  (KID `N433G64327`, ISS `16defce3-2569-44b9-ab9f-e22fcfb630e2`), `-allowProvisioningUpdates`;
+- team `4748P9MT6D`. Схема взята из `~/builds/huila-apple/build-signed.sh` (там же
+  собирается «Еблуша VPN», `com.eblusha.huila`).
+
+### 3.4 Релиз — `scripts/ios-release.sh`
+- archive Release → экспорт `app-store-connect` с загрузкой по ASC-ключу.
+  `--no-upload` — только архив и .ipa, `--upload-only` — догрузить готовый архив.
+- Номер сборки: `EBLUSHA_BUILD_NUMBER`, по умолчанию `git rev-list --count HEAD`.
+  **Незакоммиченное не меняет номер** — дубль отвергается (так пропала сборка 835).
+- Приложение в ASC: «Eblusha», app id `6809898824`, SKU `eblusha`, версия 1.0.
+  Внутренняя группа «Внутренние» (id `0d23cc04-b1b6-4617-8c66-dba4caef763c`,
+  `hasAccessToAllBuilds`) — новые сборки доступны тестеру сами. Тестер — сам
+  пользователь (ADMIN в ASC).
+- Предупреждения «Upload Symbols Failed … LiveKitWebRTC / RustLiveKitUniFFI» безвредны:
+  это бинарные фреймворки без dSYM.
+- `ITSAppUsesNonExemptEncryption = false` в Info.plist, поэтому «Missing Compliance» не
+  возникает.
+- Обработка в ASC занимает 2–5 минут (914 обработалась за ~2). Проверка на маке:
+  ```
+  ~/builds/asc/asc-get.sh "/v1/builds?filter%5Bapp%5D=6809898824&sort=-uploadedDate&limit=3&fields%5Bbuilds%5D=version,processingState,uploadedDate"
+  ~/builds/asc/asc-get.sh "/v1/builds?filter%5Bapp%5D=6809898824&filter%5Bversion%5D=914&include=buildBetaDetail"
+  ```
+  Готово, когда `processingState = VALID` и `internalBuildState = IN_BETA_TESTING`. JWT
+  ES256 скрипт подписывает через openssl и python3 stdlib: PyJWT и cryptography на маке нет.
+- Мак один: установку на телефон и релиз запускать по очереди, не параллельно.
+
+### 3.5 Проверка без человека
+- Устройство: логов нет (`log stream --device-name` в macOS 26 убран), скриншот снять
+  нечем (idevicescreenshot/cfgutil не стоят), GUI-автоматизации нет (osascript без
+  Accessibility). **Поведение на телефоне проверяет только пользователь.**
+- Симулятор (UDID `2A9441D5-50FF-4F38-9D37-53C1EA5E567E`) + DEBUG-стенд экрана
+  установления звонка:
+  ```
+  xcrun simctl install <UDID> <путь к Eblusha.app>
+  xcrun simctl launch <UDID> org.eblusha.plus -connectDemo cf-wait
+  sleep 3.5   # иначе после холодного запуска кадр пустой
+  xcrun simctl io <UDID> screenshot ~/builds/shot.png
+  ```
+  Сценарии стенда: `ringing answered signaling keys route cf-e2ee cf-publish cf-wait
+  cf-joining own direct switch group-empty group muted longname mic-unavailable
+  connect-error sync error done` (те же id, что у веб-стенда `/__dev/call-connecting`).
+
+---
+
+## 4. Бэкенд, сделанный под iOS
+
+- APNs: `src/push/apns.ts` (HTTP/2, ретраи, keep-alive), `src/push/index.ts`,
+  `src/routes/devices.ts` (VoIP-токен устройства), миграция
+  `prisma/migrations/20260815200000_device_voip_push_token`. Настройка — `docs/apns-setup.md`,
+  установка ключа — `scripts/apns-install-key.sh`.
+- Ключ APNs `M64RYD2F6S` («Sandbox & Production»). base64 лежит в `.env` (`APNS_KEY`),
+  копия в `secrets/`, на маке — `~/.keys/apns/`. `APNS_ENV=auto`: основной хост
+  production, запасной sandbox. В entitlements `aps-environment = development`, экспорт в
+  App Store переписывает его на production. ASC API-ключ для APNs **не годится** (403
+  InvalidProviderToken).
+- Попутно найдено 2026-09-08: пуши о сообщениях вообще не ставились в очередь (BullMQ
+  отвергал `jobId` с двоеточием). До этой даты уведомлений о сообщениях не было и на
+  Android.
+- **`npx prisma migrate dev` на этом проекте хочет сбросить боевую базу.** Миграции писать
+  руками в `prisma/migrations/`, катить `migrate deploy` (он в `docker-entrypoint.sh`).
+- Пересборка бэка — по `CLAUDE.md` (docker compose `build backend worker maintenance` +
+  `up -d`).
+
+---
+
+## 5. Подсистемы: инварианты и уроки
+
+### 5.1 Реалтайм (`RealtimeClient`)
+- Порт Android. События `call:*` идут через очередь.
+- Ротация токена **одна на всех** (`sharedRefresh`, коммит `d8afae67`). Раньше
+  `connect()` и `onAuthError()` обновляли токен независимо, и разбуженный VoIP-пушем
+  телефон слал два bootstrap подряд: второй сносил только что поднятый сокет. Перед
+  пересборкой проверяется, не поднят ли сокет уже с этим токеном. Смена device-id
+  пересобирает принудительно: его везёт рукопожатие.
+
+### 5.2 Звонки (`CallManager`, CallKit, PushKit)
+- Фазы: `idle → incoming | outgoing → connecting → inCall`. `isActive` = connecting/inCall.
+- **Исходящий:** `startOutgoing(conversationId:title:video:isGroup:)`. Комната
+  подключается **ещё на дозвоне**: `connectRoom` сразу, микрофон публикуется до ответа,
+  аудиосессия поднимается на дозвоне. 1:1 честно ждёт `call:accepted`
+  (`onAccepted` → `.inCall`, или `.connecting`, если комнаты ещё нет). У групп
+  `call:accepted` никто не шлёт: `promoteGroupOutgoingToActive` переводит в разговор, когда
+  комната подключилась.
+- E2EE 1:1: ключ даёт сервер (`LiveKitRepository.fetchE2eeKey`), группам — nil. Интероп с
+  вебом держится на PBKDF2 от **строки** (подробности в комментарии к
+  `buildRoomOptions`). Если на вебе ключ уйдёт в `setKey` буфером, будет HKDF, разные
+  ключи и DECRYPTIONFAILED.
+- CallKit (`CallKitController`): исходящий докладывается по фазе `.outgoing`. Входящий по
+  сокету тоже идёт в CallKit. LiveKit-движок включается в `didActivate`. Переписано по
+  итогам ревью 2026-09-08 (`80a2d055`); пользователь проверил на телефоне звонок на
+  заблокированный экран, ответ с локскрина и отбой.
+- `CXEndCallAction` на входящем раньше всегда считался красной кнопкой и слал
+  `call:decline`, то есть отбой для обеих сторон и «Пропущенный звонок» в беседе. Теперь
+  отказ уходит, только если звонок реально показан (`callDidAppear`), репорт не в полёте и
+  провайдер не сбрасывался (`providerWasReset`). Иначе — `dismissIncoming()` без сигнала
+  серверу. Реализован `provider(_:timedOutPerforming:)`. Происхождение действия iOS
+  достоверно не сообщает, идеальной развязки нет.
+- Рингтон входящего (`CallRinger`) ищет в бандле `incoming_call.{caf,m4a,mp3,wav}`. Файла
+  нет — остаётся вибрация. **Гудка дозвона у iOS нет** (CallKit его тоже не играет).
+- `eb.ping` (RTT собеседникам) заработал только 2026-09-29: SDK по умолчанию не собирает
+  статистику дорожки (`Track.set(reportStatistics:)` = false), её включили ради экрана
+  установления.
+
+### 5.3 Лента чата (`MessageListView`)
+- **SwiftUI ScrollView + LazyVStack для ленты непригоден**: нет детерминированной позиции
+  и вклейки истории без рывка, две недели правок результата не дали. Лента —
+  **UICollectionView** с diffable-источником, ячейки — SwiftUI через
+  `UIHostingConfiguration`. Прокрутку и вставку истории считает арифметика
+  `contentOffset/contentSize`.
+- Маркер в 1 pt с `onAppear` как признак «мы у низа» в LazyVStack врёт: это
+  материализация, а не видимость.
+- **Любую цель прокрутки, посчитанную до материализации ячеек, перепроверять после.**
+  Одноразовый `setContentOffset` здесь всегда врёт: ячейки ниже экрана не измерены.
+  Кнопка «вниз» открывает окно до-прижатия (`armStickToBottom`) и доводит позицию через
+  0,35 с после анимации, сверяясь с настоящим `bottomOffset` (не `isAtBottom`: у него
+  порог 80 pt).
+- «Текст под клавиатурой»: флаг «мы внизу» обновляется на каждый сдвиг позиции
+  (`updatePosition()`) плюс прямая реакция на `keyboardWillChangeFrame`. Уведомление
+  приходит ДО сжатия вьюпорта, и это единственный достоверный момент.
+- Долгое нажатие — `UILongPressGestureRecognizer` на коллекции. SwiftUI
+  `onTapGesture`/`onLongPressGesture` в ячейках перехватывали касания. Двойной тап —
+  быстрая реакция.
+- Свайп-ответ живёт на коллекции (пороги Telegram: тянется до 80 pt, срабатывает после 45),
+  по коммиту `c4fff5f3` — влево у всех сообщений. «Назад» — свайп вправо из любой точки
+  (`SwipeBack.swift`), кромку 24 pt уступает системному pop.
+
+### 5.4 Оболочка
+Корень — один `NavigationStack(path:)` (`RootView`). Список чатов — свой экран: брендовая
+шапка, `List` со свайпами, contextMenu и pull-to-refresh, внизу плитки «Беседа/Контакты» и
+строка профиля с пилюлей версии; панель навигации скрыта. Остальные экраны — родные панели,
+`.searchable`, штатная «назад». Контакты и беседы — карточками на серой поверхности, как в
+вебе.
+
+### 5.5 Секретные чаты
+`SecretRepository`, `SecretCrypto`, `ChatViewModelSecret`, `SecretChatCards`. Очередь
+неотправленного на диске (`SecretOutbox`), досыл — `SecretOutboxFlusher` в `RootView`.
+Секретное аудио и вложения расшифровываются ключом треда.
+
+### 5.6 Голосовые и расшифровка
+- Воспроизведение вынесено из ячейки в общий `VoicePlaybackCenter`: `@StateObject` в
+  ячейке обрывал звук при прокрутке, а переиспользование ячейки путало соседние
+  сообщения. Позиция — в отдельных часах `VoicePlaybackClock`, иначе тик 20 раз в
+  секунду перерисовывал все видимые голосовые. Перемотка тапом по волне
+  (`SpatialTapGesture`), протяжка только у активного пузыря. Скорость 1×/1,5×/2×
+  (`defaultRate` + `audioTimePitchAlgorithm = .timeDomain`, выбор в UserDefaults).
+- Расшифровка: `VoiceTranscriber`, пилюля «Аа» в пузыре. Кэш `TranscriptStore`: AES-GCM,
+  ключ в Keychain, `.completeFileProtection`, срок 7 дней, стирается при выходе.
+  Две грабли:
+  1. `recognitionTask` и распознаватель **надо удерживать** (`RecognitionSession`), иначе
+     ARC убивает их сразу и любой файл даёт «не удалось разобрать речь». Ошибки движка не
+     сводить к общей фразе: логов с устройства нет, диагноз — только по тексту в UI.
+  2. Файлы хранилища называются `<ключ>.eblusha`. Расширение есть, но AVFoundation его не
+     знает (-11828). Неизвестное расширение заменять выведенным из mime
+     (`playableAudioURL`).
+- Отзыв пользователя о качестве расшифровки: «работает, но плохо». Что именно плохо, не
+  выяснено.
+
+### 5.7 Фото
+- Редактор (`PhotoEditor/`): слои (штрихи, размытие, текст, стикеры) хранятся в
+  нормализованных координатах **исходного** кадра, обрезка — в координатах показанного
+  (повёрнутого) кадра и пересчитывается при повороте. `EditGeometry` переводит
+  экран↔кадр. Рендер общий для превью и экспорта (`PhotoEditorRenderer`). Фото из
+  скрепки → редактор → кнопка сразу отправляет; тап по чипу в очереди — правка.
+- Просмотрщик (`PhotoViewer/`): жесты на UIKit (`UIPageViewController` с зазором 20,
+  `ZoomableImageView` на UIScrollView, свайп-закрытие `UIPanGestureRecognizer`), хром —
+  SwiftUI (`PhotoViewerView`), мост — `PhotoViewerProxy`. Открывается `fullScreenCover`
+  с прозрачным фоном без анимации перехода. Кадр вырастает из плитки чата и улетает в её
+  **актуальную** рамку (`MessageListProxy.tileFrameInWindow`). Полноразмерные картинки
+  даунсэмплятся ImageIO до ≤4096 px.
+
+### 5.8 Паритет с вебом (2026-09-11)
+`docs/ios-web-parity-2026-09-11.md` (+ `.json` с деталями): 45 подтверждённых расхождений,
+закрыты семью порциями (`13178284 → bbbd94f6`). Поведение из Telegram —
+`docs/ios-telegram-behaviour-2026-09-11.md` (принято 31 из 36).
+
+---
+
+## 6. SwiftUI-грабли, найденные здесь
+
+- `.id(text)` + `.transition` **внутри VStack** держит старую и новую строку в раскладке на
+  время перехода, и панель прыгает по высоте. Меняющиеся строки класть каждую в свой ZStack
+  (так сделан заголовок экрана установления).
+- Внутри `ScrollView` жадный `Spacer` или гибкие дети растягивают панель на высоту экрана.
+  Панели — `.fixedSize(horizontal: false, vertical: true)`, центрирование через
+  `.frame(minHeight: geo.size.height)`.
+- Карточки одной строки одинаковой высоты: `Grid`/`GridRow` + `maxHeight: .infinity`, а не
+  `LazyVGrid`.
+- `@Published`-издатель шлёт значение в `willSet`: в подписчике само свойство ещё старое.
+  Нужное значение брать из параметра.
+
+---
+
+## 7. Экран установления звонка (последняя работа, 2026-09-29)
+
+### 7.1 Что и откуда
+Порт веб-экрана по спеке `docs/call-connecting-screen.md`. Эталон:
+`frontend/src/ui/components/callConnectView.ts` (модель и темп — **один в один**),
+`CallOverlay.tsx` → `ConnectProgressWatcher` (сигналы, готовность собеседника,
+рукопожатие, таймауты), `CallConnecting.tsx` + `callConnecting.css` (дизайн
+«вариант 2»), стенд `frontend/src/ui/dev/CallConnectingDemo.tsx`.
+
+⚠️ На 2026-09-30 спека и веб-эталон **не закоммичены**: это работа другой сессии. От
+своего имени их не коммитить.
+
+Коммиты iOS: `df88c5f2` (порт), `1536c903` (уход из комнаты при неподтверждённом
+шифровании собеседника), `da4fbe1c` (экран с момента набора, вместо «Звоним…»).
+
+### 7.2 Требования пользователя (жёсткие)
+1. Ни один этап или факт не показывается раньше реальности, ничего по таймерам,
+   соединение не задерживается.
+2. Темп показа ≈3 с: `dwell = max(400, round(3000/(N+1)))` мс на ступень. Заключительная
+   пауза — тоже ступень, откат реальности — сразу.
+3. Рукопожатие по data-каналу LiveKit: reliable, topic `eb.connect`, JSON
+   `{"v":1,"state":"connecting"|"settled","audio":bool}`. Разговор открывается у обоих
+   разом; телефон, который не шлёт сигнал, веб не блокирует.
+4. Не переписывать сигналинг, E2EE, выбор маршрута и существующие пути завершения.
+   Никакой параллельной машины состояний, управляющей звонком. Без новых зависимостей.
+5. Дозвон (второй заход): экран появляется в момент набора — один оверлей вместо
+   «Звоним…» + экрана установления. Ступень `ring` «Ждём ответа» первая. Заголовок
+   «Звоним…», подзаголовок «Ждём ответа собеседника · m:ss». Узел собеседника `ringing`:
+   цветной аватар и три кольца со сдвигом 0 / 0,13 / 0,30 периода, период 2 с. Если есть
+   свой гудок — период и фаза по нему. После ответа — ✓, «Собеседник ответил», дальше
+   этапы в темпе. Группы дозвона не имеют. Отказ и таймаут — существующие пути. CallKit
+   не трогать.
+
+### 7.3 Файлы и роли
+- `Core/Call/CallConnectModel.swift` — `buildConnectView`, `withPeerSync`,
+  `ConnectPacing` (`milestoneFlags`, `applyPacing`, `dwellMs`). Чистые функции, без
+  SwiftUI и LiveKit. `nonEmpty()` воспроизводит JS-ложность пустой строки,
+  `connectJsRound` — `Math.round`.
+- `Core/Call/CallConnectWatcher.swift` — делегат комнаты (`room.add(delegate:)`) и дорожки:
+  - собеседники: `heard` = есть подписанная аудиодорожка и (если шифрованный звонок) все
+    публикации с `encryptionType != .none`, аналог `participant.isEncrypted` веба;
+  - сроки как на вебе: 8000 / 1500 / 5000 / 15000 мс, дедлайны +20 мс;
+  - рукопожатие: «connecting» — только при `.connected`, при подключении и при входе
+    участника. «settled» — при переходе локальной готовности false→true, если комната не
+    `.disconnected`. Ответ каждому identity один раз, адресно. Принимается topic
+    `eb.connect` или пустой topic с валидным state. Отправитель по умолчанию —
+    единственный участник. `audio` проверяется строго как булево;
+  - путь: из `TrackStatistics` микрофона. Пара берётся по
+    `transportStats.selectedCandidatePairId`, иначе succeeded/nominated. id кандидатов
+    сверяются с парой: SDK отдаёт только первый local/remote кандидат.
+    Не подтвердилось — «напрямую/через ретранслятор» не называется;
+  - E2EE: `didUpdateE2EEState` `.ok/.key_ratcheted` на своей публикации →
+    `localEncryptionOk`, на чужой → `remoteDecryptionOk`.
+- `Core/Call/CallConnectController.swift` — склейка, **только показ**:
+  - подписки на `$phase`/`$micOn`, темп, `withPeerSync`, защёлка «разговор начался» →
+    растворение 220 мс (0 при Reduce Motion) → `watcher.detach()`;
+  - `encrypted = !isGroup && (roomEncrypted ?? true)`;
+    `e2eeEnabled = localEncryptionOk || (micUnavailable && remoteDecryptionOk)`;
+  - дозвон: `dialing`/`hadDial`, `ringing = isGroup ? nil : (dialing ? true : (hadDial ? false : nil))`,
+    `ringStartedAt` (монотонные мс — фаза колец), таймер раз в секунду ровно на границе
+    секунды от начала вызова.
+- `Core/Call/CallManager.swift` — хуки там, где события реально случаются:
+  - `connect.outgoingStarting(isGroup:title:)` до `phase = .outgoing`. Признак группы
+    приходит из открытой беседы: кеш бесед асинхронный, а словари `ChatRepository`
+    пишутся вне главного потока, синхронно их читать нельзя;
+  - `configure(...)` — отдельной задачей из кеша бесед, параллельно с токеном;
+    `tokenReceived()`, `roomCreated(_:encrypted:)`, `roomConnected()`,
+    `markMicUnavailable()`;
+  - `failConnect`: на активном звонке — `disconnectRoom()` + экран «Не удалось
+    подключиться», закрытие обычным `hangUp`. На дозвоне — `endLocally()`, как было;
+  - `onPeerEncryptionFailure`: собеседник 15 с не подтверждает шифрование → уходим из
+    комнаты (`disconnectRoom`), как веб (`cleanupE2eeResources`). Звонок закрывает
+    человек кнопкой «Закрыть».
+- `Features/Call/CallConnectingView.swift` — дизайн «вариант 2», раскладка телефона:
+  палитра `CallInk`, факты (`FlowRows`), заголовок, цепочка узлов (узел 52, обёртка
+  сжимается до ≥64, чтобы 4 узла влезли), волны (Canvas), этапы в `Grid` 2×N, подсказка по
+  тапу, «Отменить/Отменяем…», ошибка «Закрыть». Кольца дозвона — `RingWaves`
+  (TimelineView, keyframes `eb-cn-ring`: масштаб 1→1,9, прозрачность 0,75→0 за 55 %
+  периода, CSS ease-out через бисекцию cubic-bezier).
+- `Features/Call/CallConnectingDemo.swift` — DEBUG-стенд (§3.5).
+- `Features/Call/CallOverlay.swift` — ветка `.outgoing, .connecting, .inCall` общая, чтобы
+  экран не пересоздавался в момент ответа. `CallView` монтируется только после ответа.
+  `RingingView` удалён.
+
+### 7.4 Намеренные отличия от веба
+- Подсказка про микрофон: «Проверьте разрешения **в настройках**» вместо «…браузера».
+- «Шифрование включено» = отчёт шифратора своей дорожки: события «включено для
+  участника», как на вебе, в iOS-SDK нет. Без микрофона подтверждает расшифрованная чужая
+  дорожка.
+- Сервер не дал ключ для 1:1 → экран не обещает шифрование. Звонок идёт без него, как и
+  раньше.
+- Маршрут не подтверждён статистикой → факта «напрямую/ретранслятор» нет.
+- Этапа «Меняем маршрут» нет: отката маршрутов, как на вебе (`callRouting.ts`), у iOS нет;
+  `routeSwitching` всегда false.
+- Узлы сжимаются под ширину телефона: на вебе ряд вылезает на ~16 px.
+- Гудка нет: период колец 2 с, фаза от начала вызова.
+
+### 7.5 Сверка модели — дифференциальный тест
+Как повторить после правок веб-эталона:
+1. Скопировать `callConnectView.ts` во временную папку, удалить строку импорта React,
+   добавить `export` к `milestoneFlags` и `leadingTrue`.
+2. Скрипт на TS (Node 22, `node --experimental-strip-types`) генерирует N случайных
+   состояний ConnectSignals с фиксированным seed. Сюда входят `ringing`
+   (нет/true/false) и `ringingSeconds` (нет/null/целые), плюс `peerSettled`. Для каждого
+   состояния пишутся `milestoneFlags`, `leadingTrue`, dwell, `buildConnectView(s)`,
+   `…withPeerSync…` и виды с темпом (`applyPacing`) для `shown = 0…total+2` в
+   `cases.json` и `web.json`.
+3. На маке `xcrun swiftc -O -o parity CallConnectModel.swift main.swift`, где `main.swift`
+   читает `cases.json` и считает то же самое Swift-функциями. **Без
+   `-parse-as-library`**: у `main.swift` код верхнего уровня.
+4. Сравнить JSON как словари. Ожидаемые расхождения — только подсказка
+   «браузера» → «в настройках»; её заменить перед сравнением.
+
+Результат 2026-09-29: 3000 состояний, 30 952 вида (17 838 со ступенью «Ждём ответа»,
+9 582 с узлом `ringing`, 15 разных заголовков) — **0 расхождений**.
+
+### 7.6 Побочные эффекты
+- Включён `reportStatistics` у микрофонной дорожки → заработал `eb.ping`.
+- Сбой пропуска или подключения на **активном** звонке теперь показывает ошибку, а не
+  молча завершает звонок.
+
+### 7.7 Что проверено
+Сборка под симулятор; скриншоты всех сценариев стенда (включая `ringing`, `answered`,
+группы, ошибки, длинные имена); дифференциальный тест модели. **Настоящих звонков не было**
+(пользователь запретил в задаче).
+
+### 7.8 Что проверить первым делом (нужен человек)
+1. iPhone → веб, 1:1: пока идёт дозвон — «Звоним…», кольца, таймер. После ответа ✓ и
+   «Собеседник ответил», каскад этапов, **разговор открывается у обоих одновременно**
+   (рукопожатие `eb.connect`).
+2. Веб → iPhone (входящий): экран без ступени «Ждём ответа», то же одновременное открытие.
+3. Групповой звонок с iPhone: без дозвона, пустая группа → «вы первые».
+4. Отмена на дозвоне, отказ собеседника, таймаут: экран просто уходит.
+
+---
+
+## 8. Открытые вопросы и хвосты
+
+Ждут решения пользователя (без его слова не делать):
+- «Мягкий» отказ на сервере: у `call:decline` различать источник (человек или система).
+  Это правка сервера.
+- Дедупликация синхронизации push-токенов (лишние регистрации, мелочь).
+- Предпроверка в `ios-release.sh`, что номер сборки ещё не занят в ASC.
+- Что конкретно «плохо» в расшифровке голосовых.
+
+Не сделано или стоит иметь в виду:
+- Локальный кэш сообщений: беседа всегда открывается спиннером. С Android не портирован.
+- Рингтон входящего — файла `incoming_call.*` в бандле нет, только вибрация.
+- Гудка дозвона нет. Если его добавить, кольца экрана установления надо синхронизировать
+  с его периодом и стартом (`ringStartedAt`, `ringPeriodMs` у `CallConnectingView`).
+- Android-трек (довести Android до веба) — отдельная работа, источник на winpc.
+
+---
+
+## 9. Как работать в этом репозитории
+
+- `CLAUDE.md`: после любой правки — пересобрать то, что менялось, **закоммитить и
+  запушить** без вопросов. Трейлер коммита: `Co-Authored-By: Claude Opus 4.8
+  <noreply@anthropic.com>`. Секреты и `*.bak` не коммитить. `frontend/public/{s,v,w}/*.json`
+  постоянно «изменены» — это шум, в коммиты не брать.
+- Для iOS «пересобрать» = `scripts/ios-build.sh sim` (проверка), затем **TestFlight**
+  (`scripts/ios-release.sh`) после коммита. Напрямую на телефон (`--install`) ставить, только
+  когда просят.
+- **Рабочее дерево общее**: в этом же checkout коммитят другие сессии (Valheim `/v/`, Cloud,
+  VPN, игра, инфраструктура). Текущая ветка — `platform/core-redis-queue-ssrf-rateobs`
+  (с upstream на origin), коммиты идут в неё. Всегда `git add <явные пути>`, чужие
+  изменённые и неотслеживаемые файлы не трогать и не коммитить.
+- В auto-mode `rm` с раскрытием переменной блокируется: использовать литеральные пути или
+  `"${VAR:?}"`.
+- Пользователь мыслит «один проект — один чат». Жалоба «не подключается / не могу
+  продолжить» — это просьба починить доступ, а не заказ работы в этом чате.
+- Память проекта: `~/.claude/projects/-DATA-eblusha-plus/memory/` — `ios-port-project.md`
+  (подробная хроника), `ios-always-testflight.md`, `android-source-of-truth.md`,
+  `infra-ssh-hosts.md`.
+
+## 10. Аккаунты и идентификаторы
+
+- Тестовый аккаунт: `sss` (профиль «Казёл»). **Пароль в репозиторий не кладём** — спросить
+  у пользователя.
+- Аккаунт пользователя на его iPhone — `ston`.
+- Bundle `org.eblusha.plus`, team `4748P9MT6D`, ASC app `6809898824`, ASC API-ключ
+  `N433G64327`, ключ APNs `M64RYD2F6S`. Это идентификаторы, не секреты: сами ключи лежат
+  на маке и в `.env`/`secrets/`.
+- Хосты: `mac` (сборка), `winpc` (Android-исходники; Windows, вывод в cp866),
+  `eblusha-ru` (зеркало ru.eblusha.org). Прод — сам этот бокс (eblusha.org).
