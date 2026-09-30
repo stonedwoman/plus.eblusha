@@ -25,6 +25,7 @@ import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
+import { isRelayOnlyEnabled, setRelayOnlyEnabled } from '../../../../utils/callRouting'
 
 import { getStoredDeviceInfo } from '../../../../domain/device/deviceManager'
 import { wipeLocalDeviceData } from '../../../../domain/device/deviceWipe'
@@ -235,6 +236,41 @@ export interface ChatModalsCtx {
  * Смена пароля в профиле. Отдельный компонент, а не кусок renderChatModals:
  * renderChatModals — обычная функция рендера, hooks в ней нельзя.
  */
+/**
+ * Выбор пути для звонков. Живёт в профиле, а не в настройках внутри звонка: человеку
+ * с рвущейся связью некогда искать галочку посреди разговора, да и применяется она
+ * всё равно со следующего звонка.
+ */
+function CallRoutingSection() {
+  const [relayOnly, setRelayOnly] = useState(() => isRelayOnlyEnabled())
+  return (
+    <div style={{ marginBottom: 18, border: '1px solid var(--surface-border)', borderRadius: 14, background: 'var(--surface-100)', padding: 12 }}>
+      <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--text-muted)', letterSpacing: 0.2, marginBottom: 10 }}>ЗВОНКИ</div>
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', userSelect: 'none' }}>
+        <input
+          type="checkbox"
+          checked={relayOnly}
+          onChange={(e) => {
+            const v = e.target.checked
+            setRelayOnly(v)
+            setRelayOnlyEnabled(v)
+            systemToast.success(v ? 'Звонки пойдут через ретранслятор — со следующего звонка' : 'Путь для звонков снова выбирается автоматически')
+          }}
+          style={{ marginTop: 3 }}
+        />
+        <span>
+          <div style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 600 }}>Всегда соединяться через ретранслятор</div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.45, marginTop: 3 }}>
+            Обычно путь к серверу выбирается сам: сначала короткий, а ретранслятор — если короткий не сложился.
+            Включите, если в звонках рвётся связь или голос звучит «роботом»: через ретранслятор дольше, но заметно надёжнее.
+            Применится со следующего звонка.
+          </div>
+        </span>
+      </label>
+    </div>
+  )
+}
+
 function ChangePasswordSection({ username }: { username?: string }) {
   const [open, setOpen] = useState(false)
   const [current, setCurrent] = useState('')
@@ -1174,6 +1210,8 @@ export function renderChatModals(ctx: ChatModalsCtx) {
               </div>
             </div>
           )}
+
+          <CallRoutingSection />
 
           <ChangePasswordSection username={(me as any)?.username} />
 

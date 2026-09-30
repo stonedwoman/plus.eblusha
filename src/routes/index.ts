@@ -9,6 +9,7 @@ import statusRouter from "./status";
 import uploadRouter from "./upload";
 import attachmentsRouter from "./attachments";
 import devicesRouter from "./devices";
+import nettestRouter from "./nettest";
 import filesRouter from "./files";
 import secretRouter from "./secret";
 import callsRouter from "./calls";
@@ -33,6 +34,8 @@ router.use("/users", usersRouter);
 router.use("/upload", uploadRouter);
 router.use("/attachments", attachmentsRouter);
 router.use("/devices", devicesRouter);
+// Проверка связи со стороны пользователя: без авторизации, ссылку шлём тому, у кого рвётся звук.
+router.use("/nettest", nettestRouter);
 router.use("/files", filesRouter);
 router.use("/secret", secretRouter);
 router.use("/threads", threadsRouter);

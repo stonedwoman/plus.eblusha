@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Еблуша — проверка связи</title>
+<meta name="description" content="Проверка качества интернет-соединения для звонков: потери пакетов, задержка, дрожание.">
+<link rel="icon" href="/icon.png">
+<style>
+  :root{
+    --paper:#0f1217; --surface:#232731; --surface-2:#1b1f27; --border:#313643;
+    --cream:#f4e8c9; --orange:#e25c2a; --brand:#d97706; --brand-2:#e38b0a;
+    --txt:#f1f3f6; --txt-2:#9aa0a8; --good:#22c55e; --warn:#eab308; --bad:#ef4444;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{margin:0}
+  body{font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       background:var(--paper); color:var(--txt); min-height:100vh}
+  .glow{position:fixed; inset:0; z-index:0; pointer-events:none;
+        background:radial-gradient(60vw 40vh at 50% -10%, rgba(217,119,6,.18), transparent 70%)}
+  .wrap{position:relative; z-index:2; max-width:640px; margin:0 auto; padding:clamp(28px,7vh,64px) 20px 40px}
+  h1{font-size:clamp(24px,5vw,34px); margin:0 0 6px; color:var(--cream); letter-spacing:-.5px}
+  .sub{color:var(--txt-2); margin:0 0 26px; line-height:1.5; font-size:15px}
+  .card{background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:22px;
+        box-shadow:0 16px 34px rgba(0,0,0,.42)}
+  button{width:100%; cursor:pointer; border:0; border-radius:14px; padding:16px 22px; font-size:17px; font-weight:800;
+         color:#1b1207; background:linear-gradient(180deg,var(--brand-2),var(--brand)); font-family:inherit;
+         box-shadow:0 12px 26px rgba(217,119,6,.32), inset 0 1px 0 rgba(255,255,255,.35)}
+  button:disabled{opacity:.5; cursor:default; box-shadow:none}
+  .phase{margin-top:18px; color:var(--txt-2); font-size:14px; min-height:22px}
+  .bar{margin-top:12px; height:8px; border-radius:999px; background:var(--surface-2); overflow:hidden}
+  .bar i{display:block; height:100%; width:0; background:linear-gradient(90deg,var(--brand),var(--brand-2)); transition:width .3s}
+  .verdict{margin-top:22px; padding:18px; border-radius:14px; border:1px solid var(--border); background:var(--surface-2); display:none}
+  .verdict.show{display:block}
+  .verdict h2{margin:0 0 8px; font-size:20px}
+  .verdict p{margin:0; color:var(--txt-2); line-height:1.55; font-size:14.5px}
+  .good{color:var(--good)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  table{width:100%; border-collapse:collapse; margin-top:18px; font-size:14px; display:none}
+  table.show{display:table}
+  td{padding:9px 0; border-bottom:1px solid var(--border); color:var(--txt-2)}
+  td:last-child{text-align:right; color:var(--txt); font-weight:700; font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:0}
+  .hint{margin-top:20px; font-size:12.5px; color:var(--txt-2); line-height:1.5}
+  .err{color:var(--bad); margin-top:16px; font-size:14px; display:none}
+  .err.show{display:block}
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="wrap">
+  <h1>Проверка связи</h1>
+  <p class="sub">Тест отправляет через сервер Еблуши поток небольших пакетов — так же, как это делает голос во время звонка, — и считает, сколько из них потерялось по дороге. Занимает 15 секунд.</p>
+
+  <div class="card">
+    <button id="run">Проверить связь</button>
+    <div class="phase" id="phase">Нажмите кнопку — ничего настраивать не нужно.</div>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="err" id="err"></div>
+
+    <table id="stats">
+      <tr><td>Отправлено пакетов</td><td id="sent">—</td></tr>
+      <tr><td>Дошло</td><td id="recv">—</td></tr>
+      <tr><td>Потеряно</td><td id="lost">—</td></tr>
+      <tr><td>Задержка (туда-обратно)</td><td id="rtt">—</td></tr>
+      <tr><td>Дрожание (разброс прихода)</td><td id="jit">—</td></tr>
+      <tr><td>Путь</td><td id="path">—</td></tr>
+    </table>
+
+    <div class="verdict" id="verdict"><h2 id="vtitle"></h2><p id="vtext"></p></div>
+
+    <div id="reach" style="display:none; margin-top:18px">
+      <div style="font-size:13px; font-weight:800; color:var(--txt-2); letter-spacing:.2px; margin-bottom:8px">ДОСТУПНОСТЬ СЕРВЕРОВ СВЯЗИ</div>
+      <table style="display:table"><tbody id="reachRows"></tbody></table>
+    </div>
+  </div>
+
+  <p class="hint">Если показывает потери — проблема в интернете на этом компьютере или у провайдера, и звонки будут рваться независимо от программы. Попробуйте подключить кабель вместо Wi-Fi, отключить VPN и повторить проверку.</p>
+</div>
+
+<script src="/nettest/livekit.js"></script>
+<script>
+const PACKETS_PER_SEC = 50;      // столько же пакетов в секунду шлёт голос
+const DURATION_MS = 12000;
+const PAYLOAD = "x".repeat(160); // примерно как голосовой кадр
+
+const $ = (id) => document.getElementById(id);
+const setPhase = (t) => { $('phase').textContent = t };
+const setBar = (p) => { $('bar').style.width = Math.max(0, Math.min(100, p)) + '%' };
+
+function fail(msg) {
+  $('err').textContent = msg;
+  $('err').classList.add('show');
+  $('run').disabled = false;
+  setPhase('Проверка не завершилась.');
+}
+
+async function run(relayOnly = true) {
+  $('run').disabled = true;
+  $('err').classList.remove('show');
+  $('verdict').classList.remove('show');
+  $('stats').classList.remove('show');
+  setBar(0);
+  setPhase('Подключаемся к серверу…');
+
+  let ice;
+  try {
+    const resp = await fetch('/api/nettest/turn', { cache: 'no-store' });
+    if (!resp.ok) throw new Error('turn ' + resp.status);
+    const t = await resp.json();
+    ice = [{ urls: t.urls, username: t.username, credential: t.credential }];
+  } catch (e) {
+    return fail('Не удалось получить настройки сервера. Проверьте, открывается ли сайт eblusha.org.');
+  }
+
+  // Два конца соединения в одной вкладке: пакеты идут отсюда на ретранслятор и обратно,
+  // то есть проходят ровно тот же путь, что и голос в звонке.
+  // Сначала пробуем строго через ретранслятор — это путь боевых звонков. Если он
+  // недоступен (закрыт порт, режет антивирус или корпоративная сеть), это само по себе
+  // диагноз, но тест обязан ДОЙТИ до конца и сказать, что именно не получилось.
+  const diag = { relayCandidates: 0, anyCandidates: 0, iceState: '', errors: [] };
+  const cfg = { iceServers: ice, iceTransportPolicy: relayOnly ? 'relay' : 'all' };
+  const pc1 = new RTCPeerConnection(cfg);
+  const pc2 = new RTCPeerConnection(cfg);
+  const done = (fn) => { try { fn() } catch {} };
+
+  const noteCandidate = (c) => {
+    if (!c) return;
+    diag.anyCandidates++;
+    if (String(c.candidate || '').includes(' typ relay')) diag.relayCandidates++;
+  };
+  pc1.onicecandidate = (e) => { noteCandidate(e.candidate); if (e.candidate) done(() => pc2.addIceCandidate(e.candidate)) };
+  pc2.onicecandidate = (e) => { if (e.candidate) done(() => pc1.addIceCandidate(e.candidate)) };
+  pc1.onicecandidateerror = (e) => { diag.errors.push((e.errorCode || '?') + ' ' + (e.errorText || '')) };
+  pc1.oniceconnectionstatechange = () => { diag.iceState = pc1.iceConnectionState };
+
+  // Канал без повторной отправки — потерянный пакет теряется навсегда, как в голосе.
+  const dc = pc1.createDataChannel('probe', { ordered: false, maxRetransmits: 0 });
+
+  const received = new Set();
+  let firstArrival = null, lastArrival = null, jitterSum = 0, jitterCount = 0, prevArrival = null;
+
+  const ready = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), 15000);
+    pc2.ondatachannel = (ev) => {
+      ev.channel.onmessage = (m) => {
+        const now = performance.now();
+        const seq = Number(String(m.data).split('|')[0]);
+        if (Number.isFinite(seq)) received.add(seq);
+        if (firstArrival === null) firstArrival = now;
+        lastArrival = now;
+        if (prevArrival !== null) {
+          jitterSum += Math.abs(now - prevArrival - 1000 / PACKETS_PER_SEC);
+          jitterCount++;
+        }
+        prevArrival = now;
+      };
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+
+  try {
+    const offer = await pc1.createOffer();
+    await pc1.setLocalDescription(offer);
+    await pc2.setRemoteDescription(offer);
+    const answer = await pc2.createAnswer();
+    await pc2.setLocalDescription(answer);
+    await pc1.setRemoteDescription(answer);
+    setPhase('Соединение устанавливается…');
+    await ready;
+  } catch (e) {
+    pc1.close(); pc2.close();
+    if (relayOnly) {
+      // Через ретранслятор не вышло — повторяем обычным путём, чтобы понять,
+      // блокируется именно он или сеть не работает вовсе.
+      setPhase('Через сервер не получилось, пробуем прямой путь…');
+      return run(false);
+    }
+    const why = diag.relayCandidates === 0
+      ? 'браузер не смог получить адрес на сервере-ретрансляторе (порт 3478 закрыт у провайдера, либо это блокирует антивирус или файрвол)'
+      : 'соединение не установилось (состояние: ' + (diag.iceState || 'неизвестно') + ')';
+    return fail('Не удалось проверить связь: ' + why + '. Адресов найдено: ' + diag.anyCandidates +
+                (diag.errors.length ? '. Ошибки: ' + diag.errors.slice(0, 2).join('; ') : ''));
+  }
+
+  setPhase('Идёт проверка, говорить не нужно…');
+  let sent = 0, skipped = 0;
+  const total = Math.round((DURATION_MS / 1000) * PACKETS_PER_SEC);
+  await new Promise((resolve) => {
+    const started = performance.now();
+    const timer = setInterval(() => {
+      const elapsed = performance.now() - started;
+      if (elapsed >= DURATION_MS) { clearInterval(timer); resolve(); return }
+      // Канал без повторной отправки роняет пакеты САМ, если его буфер переполнить:
+      // это выглядело бы как потери в сети, которых нет. Поэтому при заполнении буфера
+      // такт пропускаем — считаем только то, что реально ушло в сеть.
+      if (dc.readyState === 'open' && dc.bufferedAmount < 32 * 1024) {
+        try { dc.send(sent + '|' + PAYLOAD); sent++; } catch { skipped++ }
+      } else {
+        skipped++
+      }
+      setBar((elapsed / DURATION_MS) * 100);
+    }, 1000 / PACKETS_PER_SEC);
+  });
+
+  setBar(100);
+  setPhase('Считаем результат…');
+  await new Promise((r) => setTimeout(r, 1200)); // ждём хвост пакетов
+
+  let rtt = null, pathKind = '—';
+  try {
+    const report = await pc1.getStats();
+    report.forEach((s) => {
+      if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.currentRoundTripTime != null) {
+        rtt = Math.round(s.currentRoundTripTime * 1000);
+      }
+    });
+    report.forEach((s) => {
+      if (s.type === 'local-candidate' && s.candidateType) {
+        pathKind = s.candidateType === 'relay' ? 'через сервер (обычный для звонков)' : s.candidateType;
+      }
+    });
+  } catch {}
+
+  pc1.close(); pc2.close();
+
+  const got = received.size;
+  const lost = Math.max(0, sent - got);
+  const lossPct = sent ? (lost / sent) * 100 : 0;
+  const jitter = jitterCount ? jitterSum / jitterCount : 0;
+
+  $('sent').textContent = sent;
+  $('recv').textContent = got;
+  $('lost').textContent = lost + ' (' + lossPct.toFixed(1) + '%)';
+  $('rtt').textContent = rtt === null ? '—' : rtt + ' мс';
+  $('jit').textContent = jitter.toFixed(0) + ' мс';
+  $('path').textContent = relayOnly ? pathKind : (pathKind + ' — ПРЯМОЙ путь, ретранслятор недоступен');
+  $('stats').classList.add('show');
+
+  let cls, title, text;
+  // Если соединение замкнулось внутри машины, наружу не ушло ни одного пакета —
+  // такой замер нельзя показывать как «всё хорошо», он не проверил вообще ничего.
+  if (!relayOnly && (rtt === null || rtt === 0 || pathKind === 'host')) {
+    $('vtitle').textContent = 'Проверить не удалось';
+    $('vtitle').className = 'warn';
+    $('vtext').textContent = 'Компьютер не смог связаться с сервером-ретранслятором (порт 3478), и проверка замкнулась внутри машины — эти цифры ничего не значат. Обычно так бывает, когда UDP режет антивирус, файрвол, роутер или сеть провайдера. Для звонков это важно: если ретранслятор недоступен, связь будет работать не везде.';
+    $('verdict').classList.add('show');
+    setPhase('Готово.');
+    $('run').disabled = false;
+    return;
+  }
+  if (sent < total * 0.5) {
+    cls = 'warn'; title = 'Проверка не набрала данных';
+    text = 'Браузер не успел отправить нужное количество пакетов — измерение получилось бы недостоверным. Закройте лишние вкладки и программы и попробуйте ещё раз.';
+    $('vtitle').textContent = title; $('vtitle').className = cls; $('vtext').textContent = text;
+    $('verdict').classList.add('show'); setPhase('Готово.'); $('run').disabled = false;
+    return;
+  }
+  if (lossPct < 1 && jitter < 30) {
+    cls = 'good'; title = 'Связь в порядке';
+    text = 'Пакеты доходят полностью. Если звонки всё равно рвутся, дело не в интернете этого компьютера — покажите этот результат тому, кто разбирается с приложением.';
+  } else if (lossPct < 5) {
+    cls = 'warn'; title = 'Связь с небольшими потерями';
+    text = 'Часть пакетов теряется. На разговоре это слышно редкими щелчками. Стоит попробовать кабель вместо Wi-Fi.';
+  } else {
+    cls = 'bad'; title = 'Связь теряет пакеты';
+    text = 'Потери такого уровня слышны как «робот» и рваная речь — голосу просто нечем заполнить пропуски. Причина в интернете на этом компьютере или у провайдера. Попробуйте: подключить кабель вместо Wi-Fi, выключить VPN и другие программы, качающие из сети, и повторить проверку.';
+  }
+  $('vtitle').textContent = title;
+  $('vtitle').className = cls;
+  $('vtext').textContent = text;
+  $('verdict').classList.add('show');
+  setPhase('Готово.');
+  $('run').disabled = false;
+}
+
+// Отдельная проверка: до каких серверов связи этот компьютер вообще достаёт.
+// Домашние провайдеры в разных странах режут по-разному, и дата-центр тут не показатель —
+// судить можно только с машины самого человека.
+const SERVERS = [
+  { name: 'Наш сервер (Россия), UDP', urls: ['stun:ru.eblusha.org:3478'] },
+  { name: 'Cloudflare, UDP', urls: ['stun:turn.cloudflare.com:3478'] },
+  { name: 'Cloudflare, порт 443', urls: ['stun:turn.cloudflare.com:443'] },
+];
+
+function probeServer(srv) {
+  return new Promise((resolve) => {
+    let pc;
+    try { pc = new RTCPeerConnection({ iceServers: [{ urls: srv.urls }] }) } catch { return resolve({ ok: false, ms: null }) }
+    const t0 = performance.now();
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return; settled = true;
+      try { pc.close() } catch {}
+      resolve({ ok, ms: ok ? Math.round(performance.now() - t0) : null });
+    };
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return finish(false);
+      // srflx означает: сервер ответил и сообщил наш внешний адрес — значит, достучались.
+      if (String(e.candidate.candidate || '').includes(' typ srflx')) finish(true);
+    };
+    setTimeout(() => finish(false), 6000);
+    try {
+      pc.createDataChannel('probe');
+      pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(() => finish(false));
+    } catch { finish(false) }
+  });
+}
+
+/**
+ * Проверка ПРЯМОГО пути: подключаемся к нашему серверу звонков, запретив ретранслятор.
+ * Сервер закрыт для входящих, но соединение всё равно может установиться — он шлёт
+ * пакеты навстречу и пробивает обратный проход. Если получилось, значит конкретно
+ * этому компьютеру ретранслятор не нужен вовсе.
+ */
+async function checkDirect() {
+  const row = document.createElement('tr');
+  row.innerHTML = '<td>Прямое соединение с сервером (без ретранслятора)</td><td>проверяем…</td>';
+  $('reachRows').appendChild(row);
+  const cell = row.children[1];
+  try {
+    const r = await fetch('/api/nettest/livekit-token', { cache: 'no-store' });
+    if (!r.ok) throw new Error('token ' + r.status);
+    const { token, url } = await r.json();
+    if (!url) throw new Error('нет адреса сервера');
+    const LK = window.LivekitClient || window.LiveKitClient;
+    if (!LK) throw new Error('библиотека не загрузилась');
+
+    const t0 = performance.now();
+    const room = new LK.Room({
+      // Только прямые пути: ретранслятор намеренно исключён.
+      rtcConfig: { iceServers: [{ urls: 'stun:ru.eblusha.org:3478' }], iceTransportPolicy: 'all' },
+    });
+    const connect = room.connect(url, token, { autoSubscribe: false });
+    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('таймаут')), 12000));
+    await Promise.race([connect, timeout]);
+    const ms = Math.round(performance.now() - t0);
+    let pairType = '';
+    try {
+      const pc = room.engine?.pcManager?.subscriber?._pc || room.engine?.pcManager?.publisher?._pc;
+      if (pc) {
+        const rep = await pc.getStats();
+        rep.forEach((st) => {
+          if (st.type === 'candidate-pair' && st.state === 'succeeded' && st.remoteCandidateId) {
+            rep.forEach((c) => { if (c.id === st.remoteCandidateId && c.candidateType) pairType = c.candidateType });
+          }
+        });
+      }
+    } catch {}
+    await room.disconnect();
+    cell.innerHTML = '<span style="color:var(--good)">получилось, ' + ms + ' мс' + (pairType ? ' (' + pairType + ')' : '') + '</span>';
+  } catch (e) {
+    cell.innerHTML = '<span style="color:var(--warn)">не удалось — нужен ретранслятор</span>';
+  }
+}
+
+async function checkReach() {
+  const rows = $('reachRows');
+  rows.innerHTML = '';
+  $('reach').style.display = 'block';
+  for (const srv of SERVERS) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + srv.name + '</td><td>проверяем…</td>';
+    rows.appendChild(tr);
+    const r = await probeServer(srv);
+    tr.children[1].innerHTML = r.ok
+      ? '<span style="color:var(--good)">доступен, ' + r.ms + ' мс</span>'
+      : '<span style="color:var(--bad)">НЕ доступен</span>';
+  }
+  await checkDirect();
+}
+
+$('run').addEventListener('click', () => { checkReach(); run(true).catch((e) => fail('Непредвиденная ошибка проверки: ' + (e && e.message ? e.message : e))) });
+</script>
+</body>
+</html>

@@ -10,6 +10,14 @@ import { applyLivekitFactsEvent } from "../lib/livekitFacts";
 import { buildLivekitPublicUrl } from "../lib/livekitUrl";
 
 const router = Router();
+
+/** Заголовок приходит строкой или массивом; пустое значение считаем отсутствующим. */
+function normalizeDeviceId(value: unknown): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 const webhookReceiver = new WebhookReceiver(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
 const LIVEKIT_EVENT_KEY_PREFIX = "livekit_webhook_event:";
 const LIVEKIT_EVENT_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -125,8 +133,14 @@ router.post("/token", async (req, res) => {
   // collide on a single LiveKit identity (LiveKit evicts the older participant on a
   // clash, kicking the first device off the call). The app-level userId travels in
   // server-controlled metadata, so participant→user mapping stays correct.
-  const deviceSuffix =
-    authed.deviceId && authed.deviceId.trim() ? authed.deviceId.trim() : randomBytes(6).toString("hex");
+  // Идентификатор устройства берём и из токена, и из заголовка запроса. Одного токена
+  // мало: в сессию он попадает только при обновлении токена, а до тех пор сюда приходил
+  // СЛУЧАЙНЫЙ суффикс — на каждый запрос новый. Из-за этого повторное подключение к
+  // комнате входило туда как новый участник (вытеснять по совпадению имени было нечего),
+  // и человек висел в звонке дважды, вещая микрофон обоими подключениями.
+  const knownDeviceId =
+    normalizeDeviceId(authed.deviceId) ?? normalizeDeviceId(req.headers["x-device-id"]);
+  const deviceSuffix = knownDeviceId ?? randomBytes(6).toString("hex");
   const identity = `${user.id}#${deviceSuffix}`;
   const displayName = user.displayName ?? user.username;
 

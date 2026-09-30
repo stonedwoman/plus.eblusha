@@ -28,6 +28,36 @@ if [ -n "$node_ip" ]; then
   mv "${output_path}.node_ip" "$output_path"
 fi
 
+# Второй ретранслятор (Cloudflare) отличается тем, что у него не общий секрет, а
+# готовая пара логин/пароль с ограниченным сроком — её обновляет отдельный скрипт.
+append_turn_server_creds() {
+  protocol="$1"
+  port="$2"
+  host="$3"
+  user="$4"
+  cred="$5"
+  if [ -z "$port" ] || [ -z "$host" ] || [ -z "$user" ] || [ -z "$cred" ]; then
+    return
+  fi
+  if [ "$turn_header_written" -eq 0 ]; then
+    printf '%s
+' '  turn_servers:' >> "$turn_block_file"
+    turn_header_written=1
+  fi
+  {
+    printf '%s
+' "    - host: ${host}"
+    printf '%s
+' "      port: ${port}"
+    printf '%s
+' "      protocol: ${protocol}"
+    printf '%s
+' "      username: \"${user}\""
+    printf '%s
+' "      credential: \"${cred}\""
+  } >> "$turn_block_file"
+}
+
 append_turn_server() {
   protocol="$1"
   port="$2"
@@ -55,6 +85,21 @@ if [ -n "$turn_host" ] && [ -n "$turn_secret" ]; then
   append_turn_server udp "$udp_port"
   append_turn_server tcp "$tcp_port"
   append_turn_server tls "$tls_port"
+fi
+
+# Cloudflare — вторым в списке. Из нашего дома до него единицы миллисекунд, тогда как
+# до собственного VPS плечо периодически проваливается. Свой ретранслятор оставляем
+# рядом: если Cloudflare где-то недоступен, звонки продолжат ходить как раньше.
+cf_host=$(printf '%s' "${CF_TURN_HOST:-turn.cloudflare.com}" | tr -d '[:space:]')
+cf_user=$(printf '%s' "${CF_TURN_USERNAME:-}" | tr -d '[:space:]')
+cf_cred=$(printf '%s' "${CF_TURN_CREDENTIAL:-}" | tr -d '[:space:]')
+if [ -n "$cf_user" ] && [ -n "$cf_cred" ]; then
+  append_turn_server_creds udp "${CF_TURN_UDP_PORT:-3478}" "$cf_host" "$cf_user" "$cf_cred"
+  append_turn_server_creds tcp "${CF_TURN_TCP_PORT:-3478}" "$cf_host" "$cf_user" "$cf_cred"
+  append_turn_server_creds tls "${CF_TURN_TLS_PORT:-5349}" "$cf_host" "$cf_user" "$cf_cred"
+  # У Cloudflare тот же ретранслятор слушает и на 443 по UDP — это спасает там,
+  # где провайдер режет нестандартные порты, а такой трафик неотличим от обычного сайта.
+  append_turn_server_creds udp 443 "$cf_host" "$cf_user" "$cf_cred"
 fi
 
 TURN_BLOCK_FILE="$turn_block_file" awk '

@@ -11,6 +11,7 @@ import {
   senderSample,
   type QualitySample,
 } from '../../utils/callQuality'
+import { api } from '../../utils/api'
 
 // Same pattern as the other call enhancers in this codebase: <VideoConference>
 // owns the tile DOM, so we compute per-participant scores from `room` (keyed by
@@ -74,6 +75,110 @@ export function CallQualityRingUpdater() {
       const smoothed = emaScore(smoothedRef.current.get(identity) ?? null, scoreFromMetrics(metrics))
       smoothedRef.current.set(identity, smoothed)
       scoreByIdentityRef.current.set(identity, { score: Math.round(smoothed), ping })
+      reportQuality(identity, metrics, Math.round(smoothed), ping, identity === room.localParticipant?.identity, prev, sample)
+    }
+
+    // ВРЕМЕННО (разбор «робота» в звонках). Раз в 5 секунд отправляем те же цифры,
+    // по которым рисуется кольцо качества. Для СВОЕГО трека потери приходят по RTCP
+    // от собеседника — то есть это ровно «сколько моего голоса до него не доехало».
+    // Для чужого трека concealPct показывает, сколько звука пришлось додумывать
+    // подстановкой — это и есть слышимый «робот».
+    const lastReportAt = new Map<string, number>()
+    const reportQuality = (
+      identity: string,
+      metrics: { lossPct: number; jitterMs: number; concealPct: number },
+      score: number,
+      ping: number | null,
+      isSelf: boolean,
+      prev: QualitySample,
+      sample: QualitySample,
+    ) => {
+      const now = Date.now()
+      // Только проблемные замеры: качество просело, есть потери или звук достраивается.
+      // Здоровый звонок телеметрию не шлёт вовсе.
+      const worthReporting = score < 80 || metrics.lossPct > 1 || metrics.concealPct > 5
+      if (!worthReporting) return
+      // Троттл на КАЖДОГО участника: с общим счётчиком пролезал только свой микрофон,
+      // а входящий звук — то, ради чего всё и затевалось — не доезжал ни разу.
+      if (now - (lastReportAt.get(identity) ?? 0) < 5000) return
+      lastReportAt.set(identity, now)
+      const events = [{
+        ts: now,
+        level: 'error' as const,
+        tag: 'callQuality',
+        kind: isSelf ? 'uplink' : 'downlink',
+        rootCause: 'CALL_AUDIO',
+        data: {
+          kind: isSelf ? 'uplink' : 'downlink',
+          who: identity.split('#')[0].slice(-6),
+          device: identity.split('#')[1]?.slice(0, 8) ?? null,
+          score,
+          pingMs: ping,
+          // Пакетов в секунду: голос идёт кадрами по 20 мс, то есть норма ровно 50.
+          // Заметно меньше — источник звука отдаёт поток с дырами, и дорисовка у
+          // собеседника растёт БЕЗ всяких потерь в сети.
+          pktPerSec: Number((((sample.packetsTotal - prev.packetsTotal) / Math.max(1, sample.tMs - prev.tMs)) * 1000).toFixed(1)),
+          packets: sample.packetsTotal - prev.packetsTotal,
+          windowMs: Math.round(sample.tMs - prev.tMs),
+          lossPct: Number(metrics.lossPct.toFixed(2)),
+          jitterMs: Math.round(metrics.jitterMs),
+          concealPct: Number(metrics.concealPct.toFixed(2)),
+          room: (room as any)?.name ?? null,
+        },
+      }]
+      void api.post('/debug/client-logs', { events }).catch(() => {})
+    }
+
+    // Сырые поля приёмника: дорисовка звука при нулевых потерях бывает по разным
+    // причинам, и различить их можно только здесь. Растяжение и сжатие говорят о разном
+    // ходе часов у звуковых устройств, отброшенные пакеты — о буфере, задержка обработки
+    // — о нехватке процессора (расшифровка и декодирование не успевают).
+    let lastRawAt = 0
+    const reportRawInbound = async (identity: string, track: { receiver?: RTCRtpReceiver }) => {
+      const now = Date.now()
+      if (now - lastRawAt < 5000) return
+      const receiver = track?.receiver
+      if (!receiver || typeof receiver.getStats !== 'function') return
+      lastRawAt = now
+      // Сырые счётчики нужны только когда есть на что смотреть — их собирает
+      // вызывающая сторона лишь для проблемных участников.
+      try {
+        const report = await receiver.getStats()
+        let inbound: any = null
+        report.forEach((st: any) => {
+          if (st.type === 'inbound-rtp' && st.kind === 'audio') inbound = st
+        })
+        if (!inbound) return
+        const events = [{
+          ts: now,
+          level: 'error' as const,
+          tag: 'callQuality',
+          kind: 'inbound-raw',
+          rootCause: 'CALL_AUDIO',
+          data: {
+            kind: 'inbound-raw',
+            who: identity.split('#')[0].slice(-6),
+            codec: inbound.mimeType ?? null,
+            received: inbound.packetsReceived ?? null,
+            lost: inbound.packetsLost ?? null,
+            discarded: inbound.packetsDiscarded ?? null,
+            fec: inbound.fecPacketsReceived ?? null,
+            concealed: inbound.concealedSamples ?? null,
+            silentConcealed: inbound.silentConcealedSamples ?? null,
+            concealEvents: inbound.concealmentEvents ?? null,
+            inserted: inbound.insertedSamplesForDeceleration ?? null,
+            removed: inbound.removedSamplesForAcceleration ?? null,
+            jbDelay: inbound.jitterBufferDelay ?? null,
+            jbEmitted: inbound.jitterBufferEmittedCount ?? null,
+            jbTarget: inbound.jitterBufferTargetDelay ?? null,
+            samples: inbound.totalSamplesReceived ?? null,
+            duration: inbound.totalSamplesDuration ?? null,
+          },
+        }]
+        void api.post('/debug/client-logs', { events }).catch(() => {})
+      } catch {
+        // ignore
+      }
     }
 
     let stopped = false
@@ -108,7 +213,11 @@ export function CallQualityRingUpdater() {
           const track = p.getTrackPublication(Track.Source.Microphone)?.audioTrack as
             | { getReceiverStats?: () => Promise<unknown> }
             | undefined
-          if (track?.getReceiverStats) record(p.identity, receiverSample(await track.getReceiverStats(), tMs), null)
+          if (track?.getReceiverStats) {
+            record(p.identity, receiverSample(await track.getReceiverStats(), tMs), null)
+            const sc = scoreByIdentityRef.current.get(p.identity)?.score
+            if (sc !== undefined && sc < 80) void reportRawInbound(p.identity, track as any)
+          }
         } catch {
           // ignore
         }

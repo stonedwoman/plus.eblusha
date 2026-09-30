@@ -67,6 +67,31 @@ if (isNativeClient) {
 
 const storage = getDefaultStorageAdapter()
 
+/**
+ * Идентификатор устройства сервер запоминает в сессии, когда видит его при обновлении
+ * токена, и потом кладёт в токен доступа. Раньше заголовок ставился ТОЛЬКО на основном
+ * клиенте, а обновление идёт через отдельный — поэтому в сессию он не попадал никогда.
+ * Следствие вылезало в звонках: участник LiveKit получал случайное имя, переподключение
+ * не вытесняло прежнее, и человек двоился в комнате.
+ */
+function attachDeviceId(config: { headers?: unknown }): void {
+  try {
+    const raw = storage.getItem('eb_device_info_v1')
+    if (!raw) return
+    const parsed = JSON.parse(raw) as any
+    const did = typeof parsed?.deviceId === 'string' ? parsed.deviceId.trim() : ''
+    if (!did) return
+    const headers = (config.headers ?? {}) as Record<string, unknown>
+    headers['X-Device-Id'] = did
+    config.headers = headers
+  } catch {}
+}
+
+refreshClient.interceptors.request.use((config) => {
+  attachDeviceId(config)
+  return config
+})
+
 api.interceptors.request.use((config) => {
   const token = useAppStore.getState().session?.accessToken
   if (token) {
@@ -74,18 +99,7 @@ api.interceptors.request.use((config) => {
     config.headers.Authorization = `Bearer ${token}`
   }
 
-  try {
-    const raw = storage.getItem('eb_device_info_v1')
-    if (raw) {
-      const parsed = JSON.parse(raw) as any
-      const did = typeof parsed?.deviceId === 'string' ? parsed.deviceId.trim() : ''
-      if (did) {
-        config.headers = config.headers ?? {}
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(config.headers as any)['X-Device-Id'] = did
-      }
-    }
-  } catch {}
+  attachDeviceId(config)
 
   try {
     const url = String(config.url ?? '')
