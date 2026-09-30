@@ -39,25 +39,27 @@ final class CallManager: NSObject, ObservableObject {
     @Published private(set) var e2eeEnabled = false
     /// Выбранная камера (deviceId); nil — по умолчанию (фронтальная LiveKit).
     @Published private(set) var selectedCameraId: String?
-    /// Момент перехода в разговор — для таймера длительности в UI и свёрнутой полоске.
+    /// Момент перехода в разговор — для таймера длительности в UI и плитке свёрнутого звонка.
     @Published private(set) var activeSince: Date?
+    /// Группа ли это — из открытой беседы или кеша бесед. Плитке свёрнутого звонка нужно
+    /// для «Пока никого» и подписи «Выйти из звонка».
+    @Published private(set) var isGroup = false
+    /// Комната переподключается — плитка показывает это вместо таймера.
+    @Published private(set) var reconnecting = false
+    /// Кто говорит прямо сейчас, громкий первым (порядок SDK) — плитка выбирает по нему,
+    /// кого показать.
+    @Published private(set) var activeSpeakerIds: [String] = []
 
     // ---- Свёрнутый звонок -----------------------------------------------------------
-    // Звонок можно убрать в компактную полоску над любым экраном (как на ПК): разговор
-    // продолжается, а пользователь ходит по чатам. Полный оверлей возвращается тапом
-    // или вытягиванием полоски вниз.
+    // Разговор можно убрать в плитку-миниатюру поверх любого экрана (как на вебе и ПК):
+    // разговор продолжается, а пользователь ходит по чатам. Полный оверлей возвращается
+    // тапом по плитке или кнопкой в шапке беседы.
     @Published private(set) var minimized = false
 
-    /// Прогресс шторки 0..1: 0 — полный оверлей, 1 — звонок свёрнут в шапку чата.
-    /// Пишется жестом в оверлее звонка; шапка чата читает его, чтобы подсветка
-    /// проявлялась СИНХРОННО с тем, как оверлей уезжает вверх и растворяется.
+    /// Прогресс шторки 0..1: 0 — полный оверлей, 1 — оверлей утянут вверх. Пишется
+    /// жестом в оверлее звонка, пока человек тянет; отпустил — либо сворачиваем, либо
+    /// возвращаем к 0.
     @Published private(set) var minimizeProgress: Double = 0
-
-    /// Интерактивное вытягивание оверлея из шапки пальцем: оверлей монтируется
-    /// невидимым, но авто-анимацию разворота НЕ запускаем — прогрессом рулит жест
-    /// в экране чата. Пока флаг поднят, шапка продолжает показывать «Идёт звонок»
-    /// и язычок, чтобы узел с активным жестом не исчез из-под пальца.
-    @Published private(set) var expandDragActive = false
 
     /// Живая медиакомната — наружу, чтобы видеорендеры могли привязаться к её трекам.
     var activeRoom: Room? { room }
@@ -219,6 +221,7 @@ final class CallManager: NSObject, ObservableObject {
         self.cameraOn = false
         self.speakerOn = false
         self.participants = []
+        self.isGroup = isGroup
         connect.outgoingStarting(isGroup: isGroup, title: title)
         self.phase = .outgoing
         // Аудиосессию поднимаем уже на дозвоне: микрофон публикуется при подключении
@@ -458,32 +461,25 @@ final class CallManager: NSObject, ObservableObject {
 
     // MARK: - Свёрнутый звонок
 
+    /// Свернуть можно только ИДУЩИЙ разговор: дозвон и подключение всегда во весь экран
+    /// (спека миниатюры), а пока виден экран установления (в том числе с ошибкой) —
+    /// тем более.
+    var canMinimize: Bool { phase == .inCall && !connect.visible }
+
     func minimize() {
-        if phase.isActive || phase == .outgoing {
-            minimized = true
-            minimizeProgress = 1
-        }
+        guard canMinimize else { return }
+        minimized = true
+        minimizeProgress = 1
     }
 
     func expand() {
-        // Прогресс НЕ сбрасываем: оверлей монтируется невидимым (1.0) и сам
-        // анимирует шторку вниз до полного — см. появление экрана звонка.
+        // Панель разъезжается из плитки сама (CallOverlay); шторка при этом опущена.
         minimized = false
+        minimizeProgress = 0
     }
 
     func setMinimizeProgress(_ value: Double) {
         minimizeProgress = min(1, max(0, value))
-    }
-
-    func beginInteractiveExpand() {
-        if phase.isActive || phase == .outgoing {
-            expandDragActive = true
-            minimized = false
-        }
-    }
-
-    func endInteractiveExpand() {
-        expandDragActive = false
     }
 
     // MARK: - Входящие
@@ -617,6 +613,7 @@ final class CallManager: NSObject, ObservableObject {
             let conv = await self.chatRepository.conversationMeta(cid)
             guard self.conversationId == cid, self.phase != .idle else { return }
             let isGroup = conv?.isGroup == true
+            self.isGroup = isGroup
             self.connect.configure(
                 isGroup: isGroup,
                 title: conv?.title,
@@ -935,6 +932,8 @@ final class CallManager: NSObject, ObservableObject {
         activeCameraId = nil
         startCameraOn = false
         peerAvatarUrl = nil
+        reconnecting = false
+        activeSpeakerIds = []
         if let r = room {
             // room зануляем ДО асинхронного disconnect: иначе didDisconnectWithError
             // этой же комнаты снова позвал бы endLocally по уже мёртвому звонку.
@@ -968,7 +967,9 @@ final class CallManager: NSObject, ObservableObject {
         activeSince = nil
         minimized = false
         minimizeProgress = 0
-        expandDragActive = false
+        isGroup = false
+        reconnecting = false
+        activeSpeakerIds = []
         autoHangupTask?.cancel(); autoHangupTask = nil
         pingTask?.cancel(); pingTask = nil
         localRttMs = nil
@@ -1240,7 +1241,19 @@ extension CallManager: RoomDelegate {
     }
 
     func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
-        refreshOnMain(room)
+        DispatchQueue.main.async {
+            guard room === self.room else { return }
+            // Порядок SDK — громкий первым: по нему плитка свёрнутого звонка выбирает, кого показать.
+            self.activeSpeakerIds = participants.compactMap { $0.identity?.stringValue }
+            self.refresh()
+        }
+    }
+
+    func room(_ room: Room, didUpdateConnectionState connectionState: ConnectionState, from oldConnectionState: ConnectionState) {
+        DispatchQueue.main.async {
+            guard room === self.room else { return }
+            self.reconnecting = connectionState == .reconnecting
+        }
     }
 
     func room(_ room: Room, participant: Participant, didUpdateMetadata metadata: String?) {

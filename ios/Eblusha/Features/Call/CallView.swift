@@ -90,7 +90,7 @@ struct CallView: View {
             UserCardSheet(
                 seed: seed,
                 onOpenConversation: { ref in
-                    // Звонок сворачивается в плашку — из карточки участника можно уйти
+                    // Звонок сворачивается в плитку — из карточки участника можно уйти
                     // прямо в переписку, разговор продолжается.
                     userCard = nil
                     manager.minimize()
@@ -113,7 +113,7 @@ struct CallView: View {
     }
 
     /// Ручка шторки: явные шевроны ВВЕРХ — за них (и вертикальным жестом по всему
-    /// оверлею) звонок тянется вверх и сворачивается в плашку; тап делает то же самое.
+    /// оверлею) звонок тянется вверх и сворачивается в плитку-миниатюру; тап делает то же.
     private var collapseHandle: some View {
         // Три шеврона В РЯД — однозначное «тяни ВВЕРХ» (центральный ярче).
         HStack(spacing: 10) {
@@ -126,13 +126,12 @@ struct CallView: View {
         .frame(maxWidth: .infinity)
         .padding(.bottom, 2)
         .contentShape(Rectangle())
-        .onTapGesture {
-            Task { @MainActor in
-                await animateCallMinimizeProgress(manager, to: 1)
-                manager.minimize()
-            }
-        }
+        // Сразу minimize(): плитка прилетает из прямоугольника панели (CallOverlay),
+        // отдельная анимация шторки перед этим только затягивала бы.
+        .onTapGesture { manager.minimize() }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Свернуть звонок")
+        .accessibilityAddTraits(.isButton)
     }
 }
 

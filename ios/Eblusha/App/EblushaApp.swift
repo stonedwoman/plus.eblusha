@@ -8,9 +8,13 @@ struct EblushaApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            // Стенд экрана установления звонка (аргумент -connectDemo) — только в отладке.
+            // Стенды экрана установления звонка и миниатюры (аргумент -connectDemo) — только в отладке.
             if let scenario = CallConnectingDemo.requestedScenario {
-                CallConnectingDemo(scenarioId: scenario)
+                if scenario.hasPrefix("mini") {
+                    CallMiniDemo(scenarioId: scenario)
+                } else {
+                    CallConnectingDemo(scenarioId: scenario)
+                }
             } else {
                 RootView()
             }

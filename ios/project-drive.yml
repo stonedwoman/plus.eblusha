@@ -1,0 +1,36 @@
+# Спецификация «пульта» симулятора (EblushaUITests) ПОВЕРХ основного project.yml.
+# Генерируется только ради `xcodebuild test` на симуляторе (scripts/ios-drive.sh) и не
+# трогает ни сборку приложения, ни релиз — те идут по project.yml, где тестового таргета
+# нет: под устройство ему понадобился бы свой профиль подписи.
+include:
+  - project.yml
+
+name: Eblusha
+
+targets:
+  EblushaUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: EblushaUITests
+    dependencies:
+      - target: Eblusha
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.eblusha.plus.uitests
+        TEST_TARGET_NAME: Eblusha
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+
+schemes:
+  EblushaDrive:
+    build:
+      targets:
+        Eblusha: all
+        EblushaUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EblushaUITests

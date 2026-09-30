@@ -3,40 +3,84 @@ import UIKit
 import QuartzCore
 
 // Порт корня `ui/call/CallScreen.kt` (фон + шторка сворачивания + выбор экрана по фазе)
-// плюс компактная плашка свёрнутого звонка.
+// плюс миниатюра свёрнутого звонка (порт веб-CallMini, см. CallMiniView).
 //
 // Отличия платформы (семантика сохранена):
 //  - системной кнопки «назад» на iOS нет — Android-BackHandler (в разговоре свернуть,
 //    входящий глотает back) не нужен: оверлей лежит поверх навигации и сам её глушит;
 //  - IncomingCallService.goQuiet (убрать всплывашку с дублирующими кнопками, когда наш
 //    полноэкранный входящий уже виден) не нужен: рингтоном владеет CallRinger в CallManager;
-//  - на Android свёрнутый звонок подсвечивал шапку конкретного чата; здесь плашка живёт
-//    в самом оверлее и видна над ЛЮБЫМ экраном (как полоска на ПК).
+//  - на Android свёрнутый звонок подсвечивал шапку конкретного чата; здесь плитка живёт
+//    в самом оверлее и видна над ЛЮБЫМ экраном (как на вебе и ПК).
 
 /// Корневой оверлей звонков. Кладётся в ZStack RootView ПОВЕРХ всего приложения:
 /// пока фаза не idle, поверх навигации живёт полноэкранный экран звонка
-/// (входящий / дозвон / разговор), а свёрнутый звонок — компактная плашка сверху:
-/// разговор продолжается, пользователь ходит по чатам.
+/// (входящий / дозвон / разговор), а свёрнутый разговор — перетаскиваемая плитка 16:9
+/// с говорящим: разговор продолжается, пользователь ходит по чатам.
 struct CallOverlay: View {
     @ObservedObject var manager: CallManager
+    @ObservedObject private var connect: CallConnectController
+    /// Прямоугольник плитки (координаты окна), из которого панель разъезжается при развороте.
+    @State private var expandFrom: CGRect?
+    /// Последний прямоугольник панели звонка — из него плитка прилетает при сворачивании.
+    @State private var panelFrame: CGRect?
+
+    init(manager: CallManager) {
+        _manager = ObservedObject(wrappedValue: manager)
+        _connect = ObservedObject(wrappedValue: manager.connect)
+    }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            // Полный оверлей монтируется и во время интерактивного вытягивания из плашки:
-            // невидимый (progress≈1), он РЕАЛЬНО следует за пальцем через minimizeProgress.
-            if manager.phase != .idle && (!manager.minimized || manager.expandDragActive) {
-                CallScreenContainer(manager: manager)
+        ZStack {
+            if manager.phase != .idle && !manager.minimized {
+                CallScreenContainer(
+                    manager: manager,
+                    connect: connect,
+                    expandFrom: expandFrom,
+                    onPanelFrame: { panelFrame = $0 }
+                )
             }
-            // Плашка живёт, пока звонок свёрнут, И пока идёт вытягивание: узел с активным
-            // жестом не должен исчезнуть из-под пальца (порт комментария из шапки
-            // Android-чата). Растворяется синхронно с разворотом оверлея.
-            if (manager.phase.isActive || manager.phase == .outgoing)
-                && (manager.minimized || manager.expandDragActive) {
-                MinimizedCallPill(manager: manager)
-                    .opacity(manager.minimizeProgress)
-                    .padding(.top, 6)
+            // Плитка живёт, пока разговор свёрнут. Комната LiveKit остаётся в CallManager:
+            // сворачивание — только смена экрана.
+            if manager.phase == .inCall && manager.minimized {
+                CallMiniView(
+                    snapshot: miniSnapshot,
+                    flyFrom: panelFrame,
+                    onExpand: { rect in
+                        expandFrom = rect
+                        manager.expand()
+                    },
+                    onToggleMic: { manager.toggleMic() },
+                    onHangUp: { manager.hangUp() }
+                )
             }
         }
+        // Прямоугольник плитки годится один раз: следующий разворот (например, кнопкой в
+        // шапке беседы) не должен стартовать из старого места, а новый звонок — тем более.
+        .onChange(of: manager.minimized) { _, minimized in
+            if minimized { expandFrom = nil }
+        }
+        .onChange(of: manager.phase) { _, phase in
+            if phase == .idle { expandFrom = nil }
+        }
+        // Экран установления снова виден (ошибка подключения или шифрования) — он всегда
+        // во весь экран: если человек в этот момент был в плитке, разворачиваем.
+        .onChange(of: connect.visible) { _, visible in
+            if visible && manager.minimized { manager.expand() }
+        }
+    }
+
+    private var miniSnapshot: CallMiniSnapshot {
+        CallMiniSnapshot(
+            participants: manager.participants,
+            activeSpeakerIds: manager.activeSpeakerIds,
+            micOn: manager.micOn,
+            cameraOn: manager.cameraOn,
+            isGroup: manager.isGroup,
+            encrypted: manager.e2eeEnabled,
+            connectedAt: manager.activeSince,
+            reconnecting: manager.reconnecting
+        )
     }
 }
 
@@ -44,15 +88,37 @@ struct CallOverlay: View {
 
 private struct CallScreenContainer: View {
     @ObservedObject var manager: CallManager
+    @ObservedObject var connect: CallConnectController
+    let onPanelFrame: (CGRect) -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Прямоугольник плитки, из которого панель разъезжается на место (FLIP, как на вебе);
+    /// nil — панель уже на месте.
+    @State private var entering: CGRect?
     /// Последний translation жеста: SwiftUI отдаёт абсолютный сдвиг, а прогресс
     /// двигается инкрементами — как detectVerticalDragGestures в Kotlin.
     @State private var lastDragY: CGFloat?
 
-    private var collapsible: Bool { manager.phase.isActive || manager.phase == .outgoing }
+    init(
+        manager: CallManager,
+        connect: CallConnectController,
+        expandFrom: CGRect?,
+        onPanelFrame: @escaping (CGRect) -> Void
+    ) {
+        _manager = ObservedObject(wrappedValue: manager)
+        _connect = ObservedObject(wrappedValue: connect)
+        self.onPanelFrame = onPanelFrame
+        _entering = State(initialValue: expandFrom)
+    }
+
+    /// Свернуть можно только ИДУЩИЙ разговор: дозвон и подключение всегда во весь экран
+    /// (спека миниатюры), а пока виден экран установления — тем более.
+    private var collapsible: Bool { manager.canMinimize }
 
     var body: some View {
         GeometryReader { geo in
             let progress = collapsible ? manager.minimizeProgress : 0
+            let frame = geo.frame(in: .global)
 
             ZStack {
                 Eb.paper.ignoresSafeArea()
@@ -68,21 +134,34 @@ private struct CallScreenContainer: View {
                         if manager.phase != .outgoing {
                             CallView(manager: manager)
                         }
-                        CallConnectingOverlay(controller: manager.connect)
+                        CallConnectingOverlay(controller: connect)
                     }
                 case .idle:
                     EmptyView()
                 }
             }
-            // Шторка: тянем оверлей ВВЕРХ — он уезжает к плашке, растворяясь по мере
-            // движения; параллельно (через minimizeProgress) проявляется сама плашка.
-            // Отпустили раньше трети пути — опускается обратно.
+            // Шторка: тянем оверлей ВВЕРХ — он уезжает, растворяясь по мере движения.
+            // Отпустили дальше трети пути — сворачивается в плитку, иначе опускается обратно.
             .offset(y: -progress * geo.size.height * 0.25)
             .opacity(1 - progress)
             .gesture(
                 collapseDrag(height: geo.size.height),
                 including: collapsible ? .all : .subviews
             )
+            // Разворот из плитки: панель стартует из её прямоугольника и разъезжается на
+            // место (translate+scale, 320 мс, прозрачность .4→1) — как FLIP на вебе.
+            .scaleEffect(
+                x: entering.map { $0.width / max(1, frame.width) } ?? 1,
+                y: entering.map { $0.height / max(1, frame.height) } ?? 1,
+                anchor: .topLeading
+            )
+            .offset(
+                x: entering.map { $0.minX - frame.minX } ?? 0,
+                y: entering.map { $0.minY - frame.minY } ?? 0
+            )
+            .opacity(entering == nil ? 1 : 0.4)
+            .onAppear { onPanelFrame(frame) }
+            .onChange(of: geo.size) { _, _ in onPanelFrame(geo.frame(in: .global)) }
         }
         .onAppear {
             // Оверлей лежит ПОВЕРХ чата, поле ввода под ним сохраняет фокус: развернув
@@ -91,13 +170,14 @@ private struct CallScreenContainer: View {
             UIApplication.shared.sendAction(
                 #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
             )
-            // Разворот из плашки: оверлей монтируется с progress=1 (невидим) и шторкой
-            // опускается вниз до полного. При интерактивном вытягивании авто-анимацию
-            // НЕ запускаем — прогрессом рулит палец на плашке.
-            if collapsible && manager.minimizeProgress > 0.95 && !manager.expandDragActive {
-                Task { @MainActor in
-                    await animateCallMinimizeProgress(manager, to: 0)
-                }
+            guard entering != nil else { return }
+            if reduceMotion {
+                entering = nil
+                return
+            }
+            // Стартовый (сжатый) кадр должен отрисоваться до анимации.
+            DispatchQueue.main.async {
+                withAnimation(callMiniSnapCurve) { entering = nil }
             }
         }
     }
@@ -118,83 +198,16 @@ private struct CallScreenContainer: View {
             }
     }
 
-    /// Отпустили: утянули дальше трети — доводим сворачивание, иначе опускаем обратно.
+    /// Отпустили: утянули дальше трети — сворачиваем (плитка прилетит из панели), иначе
+    /// опускаем обратно.
     private func finishDrag() {
+        if manager.minimizeProgress > 0.3 {
+            manager.minimize()
+            return
+        }
         Task { @MainActor in
-            let current = manager.minimizeProgress
-            if current > 0.3 {
-                await animateCallMinimizeProgress(manager, to: 1)
-                manager.minimize()
-            } else {
-                await animateCallMinimizeProgress(manager, to: 0)
-            }
+            await animateCallMinimizeProgress(manager, to: 0)
         }
-    }
-}
-
-// MARK: - Плашка свёрнутого звонка
-
-/// Компактная плашка «Идёт звонок» у верхнего края (роль подсвеченной шапки чата с
-/// таймером на Android). Тап — развернуть; можно потянуть ВНИЗ — оверлей звонка
-/// следует за пальцем.
-private struct MinimizedCallPill: View {
-    @ObservedObject var manager: CallManager
-    @State private var dragging = false
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            HStack(spacing: 8) {
-                Image(systemName: "phone.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Eb.online)
-                Text("Идёт звонок · " + callTimerLabel(activeSince: manager.activeSince, now: context.date))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Eb.textPrimary)
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Eb.textMuted)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(Eb.surface300, in: Capsule())
-            .overlay(Capsule().strokeBorder(Eb.brand.opacity(0.55)))
-        }
-        .contentShape(Capsule())
-        // Тап — развернуть: прогресс НЕ сбрасывается, onAppear оверлея сам опустит шторку.
-        .onTapGesture { manager.expand() }
-        .gesture(expandDrag)
-        .accessibilityLabel("Вернуться в звонок")
-    }
-
-    /// Порт вытягивания из шапки Android-чата (startExpandDrag/moveExpandDrag/finishExpandDrag).
-    private var expandDrag: some Gesture {
-        DragGesture(minimumDistance: 6)
-            .onChanged { value in
-                if !dragging {
-                    dragging = true
-                    if manager.minimized { manager.beginInteractiveExpand() }
-                }
-                // Жест стартует из свёрнутого состояния (progress = 1), поэтому абсолютный
-                // сдвиг пальца прямо даёт прогресс: dy>0 (палец вниз) => прогресс падает =>
-                // оверлей выезжает за пальцем.
-                let collapseDistance = UIScreen.main.bounds.height * 0.45
-                manager.setMinimizeProgress(1 - Double(value.translation.height) / Double(collapseDistance))
-            }
-            .onEnded { _ in
-                dragging = false
-                // Отпустили: вытянули больше трети — доводим разворот, иначе прячем обратно.
-                Task { @MainActor in
-                    let current = manager.minimizeProgress
-                    if current < 0.7 {
-                        await animateCallMinimizeProgress(manager, to: 0)
-                    } else {
-                        await animateCallMinimizeProgress(manager, to: 1)
-                        manager.minimize()
-                    }
-                    manager.endInteractiveExpand()
-                }
-            }
     }
 }
 
@@ -219,8 +232,7 @@ func callDurationLabel(since: Date, now: Date) -> String {
 
 /// Порт `androidx.compose.animation.core.animate`: доводит ОБЩИЙ minimizeProgress до цели
 /// вручную, малыми шагами. Анимировать надо само значение, а не вью: его синхронно читают
-/// оверлей и плашка (а в перспективе и шапка чата) — локальная SwiftUI-анимация каждого
-/// из них разъехалась бы.
+/// оверлей и шторка — локальная SwiftUI-анимация каждого из них разъехалась бы.
 @MainActor
 func animateCallMinimizeProgress(_ manager: CallManager, to target: Double) async {
     let start = manager.minimizeProgress
