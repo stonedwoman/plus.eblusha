@@ -1,13 +1,14 @@
 # iOS-клиент Еблуши — справка для передачи дел
 
-Состояние на 2026-10-01. Последняя сборка в TestFlight — **920** (миниатюра свёрнутого
-звонка, §11); до неё — 914 (коммит `da4fbe1c`), статус `IN_BETA_TESTING`. Сборка **924**
-(фирменный стиль экрана установления, §12, коммит `363b334f`) заархивирована на маке
-(`~/builds/eblusha-ios/build/archive/Eblusha.xcarchive`), но загрузка упёрлась в
-`403 FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED` — весь ASC API отвечает так же, это
-не сбой загрузки, а новое соглашение Apple, которое должен принять владелец аккаунта
-(App Store Connect → Agreements, Tax, and Banking). После этого —
-`scripts/ios-release.sh --upload-only`: архив 924 дольётся без пересборки. Справку писал агент чата «EBLUSHA iPhone (stoned)», который вёл
+Состояние на 2026-10-01 (вечер). Последняя сборка в TestFlight — **924** (фирменный стиль
+экрана установления, §12, коммит `363b334f`), загружена 20:05 после того, как владелец
+аккаунта принял новое соглашение Apple; до неё — 920 (миниатюра свёрнутого звонка, §11)
+и 914 (коммит `da4fbe1c`). Грабли на будущее: `403 FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED`
+на загрузке и на любом запросе ASC API означает новое соглашение в App Store Connect →
+Agreements, Tax, and Banking (принимает только владелец аккаунта); после принятия 403
+держится ещё ~10 минут. Архив лежит на маке (`~/builds/eblusha-ios/build/archive/Eblusha.xcarchive`),
+дозалить без пересборки — `scripts/ios-release.sh --upload-only`; дешёвый зонд — `~/builds/asc/asc-get.sh /v1/users`
+на маке. Справку писал агент чата «EBLUSHA iPhone (stoned)», который вёл
 порт с первого дня (2026-08-15). Всё ниже сверено с кодом и git на момент записи; если
 что-то расходится с кодом — прав код.
 
@@ -534,9 +535,9 @@ EB_PASS=… EBLUSHA_DRIVE_ENV=EB_PASS scripts/ios-drive.sh 'launch; sleep:4; tap
   Это правка сервера.
 - Дедупликация синхронизации push-токенов (лишние регистрации, мелочь).
 - Предпроверка в `ios-release.sh`, что номер сборки ещё не занят в ASC.
-- 2026-10-01: ASC API целиком отвечает `403 FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED`
-  — принять соглашение в App Store Connect может только владелец аккаунта; потом дозалить
-  архив 924 (`scripts/ios-release.sh --upload-only`).
+- 2026-10-01: ASC API целиком отвечал `403 FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED`
+  — владелец принял соглашение в App Store Connect, архив 924 дозалит
+  (`scripts/ios-release.sh --upload-only`, см. §0). Закрыто.
 - Что конкретно «плохо» в расшифровке голосовых.
 
 Не сделано или стоит иметь в виду:
