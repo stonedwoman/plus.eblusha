@@ -47,6 +47,22 @@ type Props = {
   onHangUp: () => void
 }
 
+/**
+ * Стартовый кадр полёта из панели звонка не должен выглядеть «полноэкранным слоем»:
+ * ПК-оболочка (Electron) считает fixed-элемент размером ≥70 % окна таким слоем и
+ * растягивает его на всю ширину — и плитка застревала огромной. Поэтому прямоугольник,
+ * откуда прилетаем, ужимаем до 60 % окна вокруг его же центра.
+ */
+function capFlyRect(r: DOMRect): DOMRect {
+  const maxW = window.innerWidth * 0.6
+  const maxH = window.innerHeight * 0.6
+  const k = Math.min(1, maxW / Math.max(1, r.width), maxH / Math.max(1, r.height))
+  if (k >= 1) return r
+  const w = r.width * k
+  const h = r.height * k
+  return new DOMRect(r.left + (r.width - w) / 2, r.top + (r.height - h) / 2, w, h)
+}
+
 function loadPlacement(): Placement {
   try {
     const raw = window.localStorage.getItem(STORE_KEY)
@@ -237,7 +253,7 @@ export function CallMini({ visible, isGroup, encrypted, connectedAt, resolveAvat
     const at = resolve(placement)
     if (!at) return
     if (flyFrom) {
-      setEntering(flyFrom)
+      setEntering(capFlyRect(flyFrom))
       setAnimate(false)
       setPos(at)
       const raf = requestAnimationFrame(() => requestAnimationFrame(() => { setEntering(null); setAnimate(true) }))
@@ -385,7 +401,7 @@ export function CallMini({ visible, isGroup, encrypted, connectedAt, resolveAvat
         onDoubleClick={(e) => {
           if (!(e.target as HTMLElement).closest('button')) expand()
         }}
-        role="dialog"
+        role="region"
         aria-label="Свёрнутый звонок"
       >
         <div className="eb-mini__face">

@@ -156,6 +156,8 @@ type Props = {
   onCancelDial?: () => void
   /** Развернуть свёрнутый звонок (из миниатюры). */
   onExpand?: () => void
+  /** Начало звонка по серверу — чтобы таймер миниатюры совпадал с «В ЗВОНКЕ» в шапке. */
+  callStartedAt?: number | null
 }
 
 const LK_SETTINGS_KEYS = {
@@ -2212,7 +2214,7 @@ function CallSettings() {
   )
 }
 
-export function CallOverlay({ open, conversationId, onClose, onMinimize, minimized = false, initialVideo = false, initialAudio = true, peerAvatarUrl = null, avatarsByName = {}, avatarsById = {}, localUserId = null, isGroup = false, peerName = null, peerId = null, conversationTitle = null, conversationAvatarUrl = null, dialing = false, dialingSince = null, ringPeriodMs = null, onCancelDial, onExpand }: Props) {
+export function CallOverlay({ open, conversationId, onClose, onMinimize, minimized = false, initialVideo = false, initialAudio = true, peerAvatarUrl = null, avatarsByName = {}, avatarsById = {}, localUserId = null, isGroup = false, peerName = null, peerId = null, conversationTitle = null, conversationAvatarUrl = null, dialing = false, dialingSince = null, ringPeriodMs = null, onCancelDial, onExpand, callStartedAt = null }: Props) {
   const [token, setToken] = useState<string | null>(null)
   const [serverUrl, setServerUrl] = useState<string | null>(null)
   const livekitServerUrl = useMemo(() => normalizeLivekitServerUrl(serverUrl), [serverUrl])
@@ -3650,18 +3652,27 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     expandFromRef.current = null
     const to = el.getBoundingClientRect()
     if (!to.width || !to.height) return
+    // Раскрываемся из прямоугольника плитки через clip-path, а не масштабом всей панели:
+    // getBoundingClientRect учитывает transform, и ПК-оболочка (Electron) на кадрах, где
+    // панель «маленькая», снимает с неё поправку на свою шапку — панель дёргалась бы.
+    const cx = from.left + from.width / 2 - to.left
+    const cy = from.top + from.height / 2 - to.top
+    const px = (n: number) => `${Math.max(0, Math.round(n))}px`
     el.style.transition = 'none'
-    el.style.transformOrigin = '0 0'
-    el.style.transform = `translate(${from.left - to.left}px, ${from.top - to.top}px) scale(${from.width / to.width}, ${from.height / to.height})`
+    el.style.transformOrigin = `${cx}px ${cy}px`
+    el.style.clipPath = `inset(${px(from.top - to.top)} ${px(to.right - from.right)} ${px(to.bottom - from.bottom)} ${px(from.left - to.left)} round 14px)`
+    el.style.transform = 'scale(0.94)'
     el.style.opacity = '0.4'
     const raf = requestAnimationFrame(() =>
       requestAnimationFrame(() => {
-        el.style.transition = 'transform .32s cubic-bezier(.2,.8,.2,1), opacity .28s ease'
+        el.style.transition = 'clip-path .32s cubic-bezier(.2,.8,.2,1), transform .32s cubic-bezier(.2,.8,.2,1), opacity .28s ease'
+        el.style.clipPath = 'inset(0 0 0 0 round 0px)'
         el.style.transform = ''
         el.style.opacity = ''
         setTimeout(() => {
           el.style.transition = ''
           el.style.transformOrigin = ''
+          el.style.clipPath = ''
         }, 340)
       }),
     )
@@ -3673,6 +3684,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   useEffect(() => {
     connectedAtRef.current = null
   }, [conversationId])
+  // Показываем в плитке то же время, что шапка чата (начало звонка по серверу); без него — наше подключение.
+  const miniConnectedAt = callStartedAt ?? connectedAtRef.current
   /** Аватар участника комнаты — по userId из метаданных (или identity), иначе по имени. */
   const resolveParticipantAvatar = useCallback(
     (p: Participant): string | null => {
@@ -4472,7 +4485,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                     visible={minimized}
                     isGroup={isGroup}
                     encrypted={shouldUseE2ee && e2eeEnabled}
-                    connectedAt={connectedAtRef.current}
+                    connectedAt={miniConnectedAt}
                     resolveAvatar={resolveParticipantAvatar}
                     flyFrom={flyFrom}
                     onExpand={requestExpand}
@@ -4557,7 +4570,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                   visible={minimized}
                   isGroup={isGroup}
                   encrypted={false}
-                  connectedAt={connectedAtRef.current}
+                  connectedAt={miniConnectedAt}
                   resolveAvatar={resolveParticipantAvatar}
                   flyFrom={flyFrom}
                   onExpand={requestExpand}

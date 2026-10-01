@@ -22,6 +22,7 @@ export interface CallOverlayHostCtx {
   setCallConvId: any
   callConvIdRef: any
   setActiveCalls: any
+  activeCalls?: Record<string, { startedAt?: number | null }>
   stopRingtone: any
   scheduleAfterMinCallDuration: any
   clearMinCallDurationGuard: any
@@ -35,7 +36,7 @@ export interface CallOverlayHostCtx {
 }
 
 export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
-  const { callConvId, minimizedCallConvId, conversationsQuery, activeConversation, currentUserId, me, meInfoQuery, setMinimizedCallConvId, getConversationFromCache, callStore, setCallConvId, callConvIdRef, setActiveCalls, stopRingtone, scheduleAfterMinCallDuration, clearMinCallDurationGuard, isOneToOneConversation, outgoingCall, outgoingCallTimerRef, setOutgoingCall, stopDialingSound, playEndCallSound, dialingTonePeriodMs } = ctx
+  const { callConvId, minimizedCallConvId, conversationsQuery, activeConversation, currentUserId, me, meInfoQuery, setMinimizedCallConvId, getConversationFromCache, callStore, setCallConvId, callConvIdRef, setActiveCalls, activeCalls, stopRingtone, scheduleAfterMinCallDuration, clearMinCallDurationGuard, isOneToOneConversation, outgoingCall, outgoingCallTimerRef, setOutgoingCall, stopDialingSound, playEndCallSound, dialingTonePeriodMs } = ctx
     // Дозвон 1:1 идёт в том же оверлее: панель появляется в момент набора, комната —
     // только после ответа. У групп дозвона нет — там оверлей открывается сразу.
     const dialConv = !callConvId && outgoingCall ? getConversationFromCache(outgoingCall.conversationId) : null
@@ -148,6 +149,7 @@ export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
               : activeConversation
             return conv?.avatarUrl ?? null
           })()}
+          callStartedAt={callConvId ? activeCalls?.[callConvId]?.startedAt ?? null : null}
           onExpand={() => {
             if (!callConvId) return
             setCallConvId(callConvId)

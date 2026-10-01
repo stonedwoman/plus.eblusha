@@ -305,3 +305,18 @@
     animation: none;
   }
 }
+
+/* ПК-оболочка (Electron) помечает «полноэкранные» слои data-eb-safearea и растягивает их
+   на всё окно. Плитка — не слой: даже если её пометили, размер и место остаются нашими. */
+body[data-eb-shell="1"] .eb-mini[data-eb-safearea="1"],
+body[data-eb-shell="1"] .eb-mini-magnet[data-eb-safearea="1"] {
+  top: 0 !important;
+  left: 0 !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: min(320px, 60vw) !important;
+  height: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  padding-top: 0 !important;
+}
