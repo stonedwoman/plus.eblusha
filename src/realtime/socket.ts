@@ -71,7 +71,7 @@ type ServerToClientEvents = {
   "secret:notify": (payload: { toDeviceId: string; msgId: string }) => void;
   "secret:thread:created": (payload: { threadId: string; type: "SECRET" }) => void;
   "device:revoked": (payload: { deviceId: string; reason?: string }) => void;
-  "session:new": (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number }) => void;
+  "session:new": (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number; firstSeen?: boolean }) => void;
 };
 
 type ClientToServerEvents = {
@@ -1535,7 +1535,7 @@ export async function initSocket(
         try {
           const dev = await prisma.userDevice.findUnique({
             where: { id: verifiedDeviceId },
-            select: { name: true, platform: true },
+            select: { name: true, platform: true, lastSeenAt: true },
           });
           const xff = socket.handshake.headers?.["x-forwarded-for"];
           const ipRaw =
@@ -1543,10 +1543,14 @@ export async function initSocket(
             (typeof (socket.handshake as any)?.address === "string" ? String((socket.handshake as any).address).trim() : "") ||
             "";
           const ipLoc = buildIpLocationFromRaw(ipRaw);
-          const payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number } = {
+          // Событие уходит при КАЖДОМ подключении сокета (клиенты по нему обновляют список
+          // устройств), а плашку «новый сеанс» клиент показывает только при firstSeen —
+          // устройство ещё ни разу не было в сети, то есть это действительно новый вход.
+          const payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number; firstSeen?: boolean } = {
             userId,
             deviceId: verifiedDeviceId,
             ts: Date.now(),
+            firstSeen: !dev?.lastSeenAt,
           };
           if (dev?.name != null && dev.name !== "") payload.deviceName = dev.name;
           if (dev?.platform != null && dev.platform !== "") payload.platform = dev.platform;

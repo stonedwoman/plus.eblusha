@@ -12,6 +12,26 @@ import { SystemPopups } from '../components/SystemPopups'
 import { AppRuntimeCoordinator } from './AppRuntimeCoordinator'
 import { CallHost } from './CallHost'
 
+const NEW_SESSION_SEEN_KEY = 'eb.newSession.seen.v1'
+
+/** true — устройство ещё не показывали (и теперь запомнили); false — уже показывали. */
+function rememberNewSessionShown(userId: string, deviceId: string): boolean {
+  const id = String(deviceId || '').trim()
+  const uid = String(userId || '').trim() || '_'
+  if (!id) return false
+  try {
+    const raw = window.localStorage.getItem(NEW_SESSION_SEEN_KEY)
+    const parsed = (raw ? JSON.parse(raw) : {}) as Record<string, string[]>
+    const list = Array.isArray(parsed[uid]) ? parsed[uid] : []
+    if (list.includes(id)) return false
+    parsed[uid] = [...list.slice(-199), id]
+    window.localStorage.setItem(NEW_SESSION_SEEN_KEY, JSON.stringify(parsed))
+  } catch {
+    // приватный режим — покажем и так
+  }
+  return true
+}
+
 export default function AppLayout() {
   const useV2 = isSecretEngineV2Enabled()
   const queryClient = useQueryClient()
@@ -22,6 +42,12 @@ export default function AppLayout() {
       if (String(payload.deviceId ?? '').trim() === String(currentId ?? '').trim()) return
       queryClient.refetchQueries({ queryKey: ['my-devices'] })
       queryClient.refetchQueries({ queryKey: ['my-devices-settings'] })
+      // Плашка — только про ДЕЙСТВИТЕЛЬНО новое устройство: сервер шлёт session:new при каждом
+      // подключении сокета (телефон открыли — событие), а первое появление помечает firstSeen.
+      // Уже показанные устройства помним: две вкладки или гонка с записью lastSeenAt на сервере
+      // могут прислать firstSeen дважды.
+      if (payload.firstSeen !== true) return
+      if (!rememberNewSessionShown(payload.userId, payload.deviceId)) return
       useSystemUiStore.getState().requestNewSessionPopup({
         deviceId: payload.deviceId,
         deviceName: payload.deviceName,

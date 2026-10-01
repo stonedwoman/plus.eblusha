@@ -89,6 +89,8 @@ export type SessionNewPayload = {
   lastCity?: string
   lastCountry?: string
   ts: number
+  /** Первое подключение устройства — только тогда стоит спрашивать «это вы?». */
+  firstSeen?: boolean
 }
 
 export type SecretChatAcceptedPayload = {
