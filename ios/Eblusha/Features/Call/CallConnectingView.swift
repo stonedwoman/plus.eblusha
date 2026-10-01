@@ -1,38 +1,50 @@
 import SwiftUI
 
-// Экран установления звонка — порт `CallConnecting.tsx` + `callConnecting.css` (дизайн
-// «вариант 2»), раскладка узкого экрана (телефон): узел 52, обёртка до 80, этапы в две
-// колонки. Всё, что здесь нарисовано, приходит готовым из ConnectView: вид ничего не решает
-// и ничем не управляет, кроме отмены. Его собственная память — выбранная подсказка и
-// «уже отменяем».
+// Экран установления звонка и дозвона — в фирменном стиле Еблуши: графит, янтарь, сливки.
+// Порт веб-эталона `CallConnecting.tsx` + `callConnecting.css` в раскладке узкого контейнера
+// (≤ 480 px): панель с янтарной шапкой (логотип, капсулы «Аудиозвонок · m:ss» и фактов),
+// заголовок, цепочка узлов 52 pt, карточки этапов в две колонки, кнопка внизу. Цвета и
+// состояния — один в один с вебом.
+//
+// Всё, что здесь нарисовано, приходит готовым из ConnectView: вид ничего не решает и ничем
+// не управляет, кроме отмены. Его собственная память — выбранная подсказка, «уже отменяем»
+// и начало секундомера в шапке.
 
 // MARK: - Палитра звонка
 
-/// Сине-графитовая палитра экрана звонка — НЕ оранжевая: у звонка свой характер.
-/// Значения — из переменных `.eb-cn` веба.
+/// Палитра сайта (`frontend/src/style.css :root`) — те же токены, что у `Eb`, плюс роли
+/// узлов схемы: «Вы» сливочный, ретранслятор и собеседник янтарные, сервер — тёмный
+/// янтарь. Синего и бирюзового прежней схемы здесь больше нет.
 private enum CallInk {
-    static let bg = Color(hex: 0x0D1722)
-    static let bgDeep = Color(hex: 0x0A121B)
-    static let bgGlow = Color(hex: 0x12213A)
-    static let border = Color(hex: 0x293A50)
-    static let borderStrong = Color(hex: 0x3A5070)
-    static let text = Color(hex: 0xEEF3FF)
-    static let textMuted = Color(hex: 0xAABCD5)
-    static let accent = Color(hex: 0x4B7BFF)
-    static let accentText = Color(hex: 0xA9C1FF)
-    static let success = Color(hex: 0x64DDAA)
-    static let error = Color(hex: 0xFF5C7A)
-    /// Кружок сделанного этапа: тёмная галочка на бирюзовом.
-    static let successInk = Color(hex: 0x08231A)
-    /// Идущие штрихи «ждёт»: rgba(170, 188, 213, 0.3).
-    static let idleDash = Color(hex: 0xAABCD5, opacity: 0.3)
+    static let bg = Eb.paper                        // #0f1217
+    static let bgDeep = Color(hex: 0x0B0E12)
+    static let bgGlow = Color(hex: 0x171A21)
+    static let surface = Eb.surface100              // #1b1f27 — панель, капсулы шапки
+    static let surface2 = Eb.surface200             // #232731 — карточки, круги узлов
+    static let surface3 = Eb.surface300             // #2b303a — бейдж ждущего этапа, выбор
+    static let border = Eb.border                   // #313643
+    static let borderStrong = Eb.borderStrong       // #3b414f
+    static let text = Eb.textPrimary                // #f1f3f6
+    static let textMuted = Eb.textMuted             // #9aa0a8
+    static let textDim = Color(hex: 0x6B7280)
+    static let amber = Eb.brand600                  // #e38b0a
+    static let amberDeep = Eb.brand                 // #d97706
+    static let amberDark = Eb.brand700              // #b45309
+    static let cream = Eb.logoCream                 // #f4e8c9
+    static let brandB = Eb.logoB                    // #e25c2a — переворачивающаяся «б»
+    static let error = Color(hex: 0xEF4444)
+    /// Текст активной (янтарной) карточки.
+    static let onAmber = Color(hex: 0x0A0A0A)
+    /// Низ градиента инициалов — linear-gradient(160deg, #b45309, #7a3407) веба.
+    static let initialsDeep = Color(hex: 0x7A3407)
 
-    static func ring(_ id: ConnectNodeId) -> Color {
+    /// Цвет роли узла. Роль задаёт оттенок, состояние — насыщенность, ореол и активность.
+    static func role(_ id: ConnectNodeId) -> Color {
         switch id {
-        case .you: return Color(hex: 0x64DDAA)
-        case .relay: return Color(hex: 0x4B7BFF)
-        case .server: return Color(hex: 0x8758FF)
-        case .peer: return Color(hex: 0x64DDAA)
+        case .you: return cream
+        case .relay: return amber
+        case .server: return amberDark
+        case .peer: return amber
         }
     }
 }
@@ -43,6 +55,8 @@ private enum CallInk {
 /// устанавливается как шло, а человек не видит разговор раньше, чем его начнут слышать.
 struct CallConnectingOverlay: View {
     @ObservedObject var controller: CallConnectController
+    /// Видеозвонок — только подпись в капсуле шапки.
+    var video: Bool = false
 
     var body: some View {
         if controller.visible {
@@ -50,7 +64,8 @@ struct CallConnectingOverlay: View {
                 view: controller.view,
                 leaving: controller.leaving,
                 onCancel: controller.cancel,
-                ringStartedAt: controller.ringStartedAt
+                ringStartedAt: controller.ringStartedAt,
+                video: video
             )
         }
     }
@@ -62,16 +77,26 @@ struct CallConnectingView: View {
     let view: ConnectView
     let leaving: Bool
     let onCancel: () -> Void
-    /// Когда начался дозвон (монотонные мс) — кольца попадают в фазу, а не стартуют с нуля
-    /// при каждом появлении экрана. nil — от момента появления.
+    /// Когда начался дозвон (монотонные мс) — кольца, столбики гудка и «б» попадают в фазу,
+    /// а секундомер считает с набора, а не с появления экрана. nil — от момента появления.
     var ringStartedAt: Double? = nil
     /// Период колец. Своего гудка у iOS нет — берём период веб-эталона по умолчанию.
     var ringPeriodMs: Double = 2000
+    /// Видеозвонок — подпись и значок капсулы в шапке.
+    var video: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var cancelling = false
     @State private var selected: String?
     @State private var appeared = false
+    /// Начало секундомера в шапке: первый известный старт (дозвон), иначе появление экрана.
+    /// Запоминается один раз: после ответа дозвон из модели уходит, а секундомер
+    /// сбрасываться не должен.
+    @State private var clockSince: Date?
+
+    private static let corner: CGFloat = 14
+
+    private var ringing: Bool { view.nodes.contains { $0.id == .peer && $0.state == .ringing } }
 
     var body: some View {
         GeometryReader { geo in
@@ -81,18 +106,16 @@ struct CallConnectingView: View {
                     Group {
                         if view.mode == .error, let error = view.error {
                             errorPanel(error)
+                                // Панель ошибки берёт СВОЮ высоту и стоит по центру.
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity)
+                                .frame(minHeight: geo.size.height - 24, alignment: .center)
                         } else {
-                            panel
+                            // Панель во весь экран; если содержимое выше экрана — прокрутка.
+                            panel(minHeight: geo.size.height - 24)
                         }
                     }
-                    // Панель берёт СВОЮ высоту, а не высоту экрана: иначе высоту, которую
-                    // предлагает прокрутка, съедали бы гибкие дети — карточки этапов
-                    // вытягивались бы на весь экран.
-                    .fixedSize(horizontal: false, vertical: true)
                     .padding(12)
-                    .frame(maxWidth: .infinity)
-                    // Панель по центру, если помещается; иначе — прокрутка (overflow: auto).
-                    .frame(minHeight: geo.size.height, alignment: .center)
                 }
             }
         }
@@ -101,6 +124,7 @@ struct CallConnectingView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: leaving)
         .allowsHitTesting(!leaving)
         .onAppear {
+            pinClock()
             if reduceMotion {
                 appeared = true
             } else {
@@ -109,7 +133,19 @@ struct CallConnectingView: View {
         }
     }
 
+    /// Секундомер привязывается к первому известному началу один раз. Монотонные мс
+    /// дозвона переводятся в дату здесь же: периодической шкале TimelineView нужна Date.
+    private func pinClock() {
+        guard clockSince == nil else { return }
+        if let ringStartedAt {
+            clockSince = Date().addingTimeInterval((ringStartedAt - connectMonotonicNowMs()) / 1000)
+        } else {
+            clockSince = Date()
+        }
+    }
+
     private var background: some View {
+        // radial-gradient(120% 90% at 50% 0%, #171a21, #0f1217 55%, #0b0e12) веба.
         EllipticalGradient(
             stops: [
                 .init(color: CallInk.bgGlow, location: 0),
@@ -125,28 +161,40 @@ struct CallConnectingView: View {
 
     // MARK: Панель
 
-    private var panel: some View {
-        VStack(spacing: 14) {
-            if !view.facts.isEmpty { factsCard }
-            head
-            ConnectPath(
-                view: view,
-                selected: selected,
-                reduceMotion: reduceMotion,
-                ringStartedAt: ringStartedAt,
-                ringPeriodMs: ringPeriodMs,
-                onSelect: toggle
-            )
-            steps
-            Text(selectedDetail ?? " ")
-                .font(.system(size: 12.5))
-                .foregroundStyle(CallInk.textMuted)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity, minHeight: 18)
-                .opacity(selectedDetail == nil ? 0 : 1)
-            cancelButton(title: cancelling ? "Отменяем…" : "Отменить")
+    private func panel(minHeight: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            bar
+            VStack(spacing: 14) {
+                Spacer(minLength: 0)
+                // Содержимое берёт СВОЮ высоту (fixedSize): иначе VStack делит экран между
+                // ним и пружинами поровну, и многострочные подписи ужимаются до одной строки.
+                VStack(spacing: 14) {
+                    head
+                    ConnectPath(
+                        view: view,
+                        selected: selected,
+                        reduceMotion: reduceMotion,
+                        ringStartedAt: ringStartedAt,
+                        ringPeriodMs: ringPeriodMs,
+                        onSelect: toggle
+                    )
+                    steps
+                    detailLine
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                cancelButton(
+                    title: ringing
+                        ? (cancelling ? "Сбрасываем…" : "Сбросить")
+                        : (cancelling ? "Отменяем…" : "Отменить"),
+                    hangup: ringing
+                )
+            }
+            .padding(EdgeInsets(top: 14, leading: 16, bottom: 16, trailing: 16))
+            .frame(maxHeight: .infinity)
         }
-        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: minHeight)
+        .clipShape(RoundedRectangle(cornerRadius: Self.corner))
         .background(panelShape)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 6)
@@ -154,49 +202,83 @@ struct CallConnectingView: View {
     }
 
     private var panelShape: some View {
-        RoundedRectangle(cornerRadius: 14)
-            .fill(LinearGradient(
-                colors: [
-                    Color(red: 20 / 255, green: 32 / 255, blue: 46 / 255, opacity: 0.92),
-                    Color(red: 13 / 255, green: 23 / 255, blue: 34 / 255, opacity: 0.96),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            ))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(CallInk.border, lineWidth: 1))
-            .shadow(color: Color(red: 3 / 255, green: 8 / 255, blue: 16 / 255, opacity: 0.45), radius: 25, y: 18)
+        RoundedRectangle(cornerRadius: Self.corner)
+            .fill(CallInk.surface)
+            .overlay(RoundedRectangle(cornerRadius: Self.corner).strokeBorder(CallInk.border, lineWidth: 1))
+            .shadow(color: Color(red: 5 / 255, green: 6 / 255, blue: 9 / 255, opacity: 0.45), radius: 16, y: 12)
     }
 
-    // MARK: Факты
+    // MARK: Шапка: логотип и капсулы
 
-    private var factsCard: some View {
-        FlowRows(horizontalSpacing: 16, verticalSpacing: 6) {
+    /// Янтарная шапка панели (`.eb-cn__bar`): слева логотип, справа капсула звонка; капсулы
+    /// подтверждённых фактов — рядом, с переносом. Подпись «Звонок · Имя» на телефоне скрыта.
+    private var bar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                BrandMark(
+                    ringing: ringing,
+                    ringStartedAt: ringStartedAt,
+                    ringPeriodMs: ringPeriodMs,
+                    reduceMotion: reduceMotion
+                )
+                Spacer(minLength: 8)
+                callPill
+            }
+            if !view.facts.isEmpty {
+                factsRow
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(LinearGradient(
+            colors: [CallInk.amberDeep.opacity(0.22), CallInk.amberDeep.opacity(0.05)],
+            startPoint: .top,
+            endPoint: .bottom
+        ))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(CallInk.amberDeep).frame(height: 2)
+        }
+    }
+
+    /// «Аудиозвонок · m:ss»: секундомер считает от начала дозвона и после ответа не
+    /// сбрасывается — он честный, как в шапке чата.
+    private var callPill: some View {
+        HStack(spacing: 8) {
+            Image(systemName: video ? "video" : "phone")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(CallInk.amber)
+            Text(video ? "Видеозвонок" : "Аудиозвонок")
+                .font(.system(size: 12))
+                .foregroundStyle(CallInk.textMuted)
+            ClockLabel(since: clockSince)
+        }
+        .modifier(PillStyle())
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Факты о соединении — только подтверждённые (модель других не отдаёт).
+    private var factsRow: some View {
+        FlowRows(horizontalSpacing: 8, verticalSpacing: 8) {
             ForEach(view.facts) { fact in
                 HStack(spacing: 8) {
                     Image(systemName: factIcon(fact.id))
                         .font(.system(size: 12, weight: .medium))
-                        .frame(width: 14, height: 14)
-                        .foregroundStyle(CallInk.success)
+                        .foregroundStyle(CallInk.amber)
                     Text(fact.text)
-                        .font(.system(size: 12))
+                        .font(.system(size: 12, weight: fact.id == .rtt ? .semibold : .regular))
                         // Цифры табличной ширины: 45 и 108 мс не двигают строку.
                         .monospacedDigit()
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .foregroundStyle(CallInk.text)
                 }
+                .modifier(PillStyle())
                 .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 4)))
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: view.facts.map(\.id))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 13)
-                .fill(Color(red: 13 / 255, green: 23 / 255, blue: 34 / 255, opacity: 0.72))
-        )
-        .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(CallInk.border, lineWidth: 1))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Сведения о соединении: " + view.facts.map(\.text).joined(separator: ", "))
     }
@@ -219,7 +301,7 @@ struct CallConnectingView: View {
         VStack(spacing: 4) {
             ZStack {
                 Text(view.title)
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(.system(size: 19, weight: .bold))
                     .kerning(-0.2)
                     .foregroundStyle(CallInk.text)
                     .multilineTextAlignment(.center)
@@ -227,18 +309,22 @@ struct CallConnectingView: View {
                     .transition(headTransition)
             }
             ZStack {
-                Text(view.subtitle)
-                    .font(.system(size: 14))
-                    .monospacedDigit()
-                    .foregroundStyle(CallInk.textMuted)
-                    .multilineTextAlignment(.center)
-                    .id(view.subtitle)
-                    .transition(headTransition)
+                HStack(spacing: 10) {
+                    Text(view.subtitle)
+                        .font(.system(size: 14))
+                        .monospacedDigit()
+                        .foregroundStyle(CallInk.textMuted)
+                        .multilineTextAlignment(.center)
+                    if ringing {
+                        ToneBars(ringStartedAt: ringStartedAt, ringPeriodMs: ringPeriodMs, reduceMotion: reduceMotion)
+                    }
+                }
+                .id(view.subtitle)
+                .transition(headTransition)
             }
         }
-        // justify-content: flex-end в блоке не ниже 58 pt — без жадного Spacer: внутри
-        // прокрутки он растягивал бы всю панель на высоту экрана.
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .bottom)
+        // justify-content: flex-end в блоке не ниже 52 pt — без жадного Spacer.
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .bottom)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: view.title)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: view.subtitle)
         .accessibilityElement(children: .combine)
@@ -276,23 +362,40 @@ struct CallConnectingView: View {
         }
     }
 
-    // MARK: Отмена
+    // MARK: Подсказка и отмена
 
-    private func cancelButton(title: String) -> some View {
+    private var detailLine: some View {
+        Text(selectedDetail ?? " ")
+            .font(.system(size: 12.5))
+            .foregroundStyle(CallInk.textMuted)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, minHeight: 18)
+            .opacity(selectedDetail == nil ? 0 : 1)
+    }
+
+    /// На дозвоне — красный «Сбросить» с перечёркнутой трубкой, как на телефоне; дальше —
+    /// тёмный «Отменить».
+    private func cancelButton(title: String, hangup: Bool) -> some View {
         Button {
             guard !cancelling else { return }
             cancelling = true
             onCancel()
         } label: {
-            Text(title)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(CallInk.text)
-                .frame(maxWidth: 280)
-                .frame(height: 44)
-                .background(
-                    Capsule().fill(Color(red: 20 / 255, green: 32 / 255, blue: 46 / 255, opacity: 0.9))
-                )
-                .overlay(Capsule().strokeBorder(CallInk.borderStrong, lineWidth: 1))
+            HStack(spacing: 8) {
+                if hangup {
+                    Image(systemName: "phone.down.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+            }
+            .foregroundStyle(hangup ? .white : CallInk.text)
+            .frame(maxWidth: 280)
+            .frame(height: 44)
+            .background(RoundedRectangle(cornerRadius: 12).fill(hangup ? CallInk.error : CallInk.surface))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(hangup ? CallInk.error : CallInk.border, lineWidth: 1))
+            .shadow(color: Color(red: 3 / 255, green: 3 / 255, blue: 4 / 255, opacity: 0.35), radius: 7, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(CancelPressStyle())
         .disabled(cancelling)
@@ -303,39 +406,52 @@ struct CallConnectingView: View {
     // MARK: Ошибка
 
     private func errorPanel(_ error: ConnectError) -> some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(CallInk.error.opacity(0.1))
-                    .frame(width: 80, height: 80)
-                Circle()
-                    .fill(Color(hex: 0x1B1320))
-                    .frame(width: 72, height: 72)
-                    .overlay(Circle().strokeBorder(CallInk.error.opacity(0.8), lineWidth: 2))
-                    .shadow(color: CallInk.error.opacity(0.25), radius: 12)
-                Image(systemName: "exclamationmark.shield")
-                    .font(.system(size: 30, weight: .regular))
-                    .foregroundStyle(CallInk.error)
+        VStack(spacing: 0) {
+            HStack {
+                BrandMark(ringing: false, ringStartedAt: nil, ringPeriodMs: ringPeriodMs, reduceMotion: reduceMotion)
+                Spacer()
             }
-            .accessibilityHidden(true)
-            Text(error.title)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(CallInk.text)
-                .multilineTextAlignment(.center)
-            Text(error.text)
-                .font(.system(size: 14))
-                .lineSpacing(3)
-                .foregroundStyle(CallInk.textMuted)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 440)
-                .padding(.bottom, 6)
-            cancelButton(title: cancelling ? "Закрываем…" : "Закрыть")
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(LinearGradient(
+                colors: [CallInk.amberDeep.opacity(0.22), CallInk.amberDeep.opacity(0.05)],
+                startPoint: .top,
+                endPoint: .bottom
+            ))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(CallInk.amberDeep).frame(height: 2)
+            }
+            VStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(CallInk.error.opacity(0.1))
+                        .frame(width: 80, height: 80)
+                    Circle()
+                        .fill(CallInk.surface2)
+                        .frame(width: 72, height: 72)
+                        .overlay(Circle().strokeBorder(CallInk.error.opacity(0.8), lineWidth: 2))
+                        .shadow(color: CallInk.error.opacity(0.25), radius: 12)
+                    Image(systemName: "exclamationmark.shield")
+                        .font(.system(size: 30, weight: .regular))
+                        .foregroundStyle(CallInk.error)
+                }
+                .accessibilityHidden(true)
+                Text(error.title)
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(CallInk.text)
+                    .multilineTextAlignment(.center)
+                Text(error.text)
+                    .font(.system(size: 14))
+                    .lineSpacing(3)
+                    .foregroundStyle(CallInk.textMuted)
+                    .multilineTextAlignment(.center)
+                    .padding(.bottom, 6)
+                cancelButton(title: cancelling ? "Закрываем…" : "Закрыть", hangup: false)
+            }
+            .padding(EdgeInsets(top: 30, leading: 24, bottom: 24, trailing: 24))
         }
-        .padding(.top, 16)
-        .padding(.horizontal, 8)
-        .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
-        .padding(16)
+        .clipShape(RoundedRectangle(cornerRadius: Self.corner))
         .background(panelShape)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 6)
@@ -357,6 +473,17 @@ struct CallConnectingView: View {
     }
 }
 
+/// Капсула шапки (`.eb-cn__pill`): рамка #3b414f на фоне панели.
+private struct PillStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(CallInk.surface))
+            .overlay(Capsule().strokeBorder(CallInk.borderStrong, lineWidth: 1))
+    }
+}
+
 private struct CancelPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -365,10 +492,168 @@ private struct CancelPressStyle: ButtonStyle {
     }
 }
 
+private func nodeStateTitle(_ state: ConnectNodeState) -> String {
+    switch state {
+    case .waiting: return "ждёт"
+    case .active: return "подключается"
+    case .ready: return "готов"
+    case .ringing: return "вызываем"
+    }
+}
+
+private func stepStatusTitle(_ status: ConnectStepStatus) -> String {
+    switch status {
+    case .done: return "готово"
+    case .active: return "выполняется"
+    case .waiting: return "ждёт"
+    }
+}
+
+/// m:ss, как в шапке чата.
+private func formatClock(_ total: Int) -> String {
+    let m = total / 60
+    let s = total % 60
+    return "\(m):\(s < 10 ? "0" : "")\(s)"
+}
+
+// MARK: - Логотип
+
+/// Логотип с фирменной переворачивающейся «б» — как на заставке. На дозвоне оборот за
+/// период гудка, в фазе с кольцами; в остальное время — редкий, раз в 5 с (keyframes
+/// eb-cn-flip / eb-cn-flip-slow веба).
+private struct BrandMark: View {
+    let ringing: Bool
+    let ringStartedAt: Double?
+    let ringPeriodMs: Double
+    let reduceMotion: Bool
+
+    @State private var appearedAt = connectMonotonicNowMs()
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text("Е").foregroundStyle(CallInk.cream)
+            if reduceMotion {
+                Text("б").foregroundStyle(CallInk.brandB)
+            } else {
+                TimelineView(.animation) { _ in
+                    Text("б")
+                        .foregroundStyle(CallInk.brandB)
+                        .rotation3DEffect(
+                            .degrees(angle(at: connectMonotonicNowMs())),
+                            axis: (x: 0, y: 1, z: 0),
+                            perspective: 0.5
+                        )
+                }
+            }
+            Text("луша").foregroundStyle(CallInk.cream)
+        }
+        .font(.system(size: 20, weight: .heavy))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Еблуша")
+    }
+
+    private func angle(at now: Double) -> Double {
+        if ringing {
+            let period = max(ringPeriodMs, 1)
+            let p = fraction((now - (ringStartedAt ?? appearedAt)) / period)
+            // 0–18 % покой, 18–45 % поворот на 180°, 45–72 % покой, 72–100 % дооборот до 360°.
+            return keyframes(p, [(0.18, 0), (0.45, 180), (0.72, 180), (1, 360)])
+        }
+        let p = fraction((now - appearedAt) / 5000)
+        // 85 % покоя, затем полный оборот за 10 % периода.
+        return keyframes(p, [(0.85, 0), (0.90, 180), (0.95, 360), (1, 360)])
+    }
+
+    private func fraction(_ cycles: Double) -> Double {
+        let p = cycles - cycles.rounded(.down)
+        return p < 0 ? p + 1 : p
+    }
+
+    /// Кусочно-линейные ключи (доля периода, угол) с ease-in-out между ними.
+    private func keyframes(_ p: Double, _ keys: [(Double, Double)]) -> Double {
+        var prev = (0.0, 0.0)
+        for key in keys {
+            if p <= key.0 {
+                let span = key.0 - prev.0
+                let t = span > 0 ? (p - prev.0) / span : 1
+                return prev.1 + (key.1 - prev.1) * (t * t * (3 - 2 * t))
+            }
+            prev = key
+        }
+        return prev.1
+    }
+}
+
+// MARK: - Секундомер
+
+/// Тикает ровно на границе секунды от старта, чтобы не расходиться с «· m:ss» в
+/// подзаголовке дозвона, который модель считает от того же момента.
+private struct ClockLabel: View {
+    let since: Date?
+
+    var body: some View {
+        let start = since ?? Date()
+        TimelineView(.periodic(from: start, by: 1)) { context in
+            // +50 мс запаса: дата перевода монотонных часов в Date неточна на миллисекунды,
+            // и секунда не должна «проскакивать» назад.
+            let elapsed = max(0, Int((context.date.timeIntervalSince(start) + 0.05).rounded(.down)))
+            Text(formatClock(elapsed))
+                .font(.system(size: 12, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(CallInk.text)
+        }
+    }
+}
+
+// MARK: - Гудок: столбики
+
+/// Три янтарных столбика гаснут по очереди в такт трём нотам гудка (keyframes eb-cn-tone:
+/// 0–12 % ярко, к 30 % гаснут до 0,25, дальше тускло), сдвиг 0 / 0,13 / 0,30 периода.
+private struct ToneBars: View {
+    let ringStartedAt: Double?
+    let ringPeriodMs: Double
+    let reduceMotion: Bool
+
+    @State private var appearedAt = connectMonotonicNowMs()
+
+    private static let offsets: [Double] = [0, 0.13, 0.3]
+    private static let heights: [CGFloat] = [8, 12, 16]
+
+    var body: some View {
+        if reduceMotion {
+            bars { _ in 0.7 }
+        } else {
+            TimelineView(.animation) { _ in
+                let cycles = (connectMonotonicNowMs() - (ringStartedAt ?? appearedAt)) / max(ringPeriodMs, 1)
+                bars { i in
+                    let phase = cycles - Self.offsets[i]
+                    let p = phase - phase.rounded(.down)
+                    if p < 0.12 { return 1 }
+                    if p < 0.30 { return 1 - 0.75 * cssEaseOut((p - 0.12) / 0.18) }
+                    return 0.25
+                }
+            }
+        }
+    }
+
+    private func bars(_ opacity: @escaping (Int) -> Double) -> some View {
+        HStack(alignment: .bottom, spacing: 4) {
+            ForEach(0..<3, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(CallInk.amber)
+                    .frame(width: 4, height: Self.heights[i])
+                    .opacity(opacity(i))
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Цепочка узлов
 
-/// Путь разговора: вы → [ретранслятор] → сервер → собеседник, с участками между узлами и
-/// волнами за ними. Участок лежит на горизонтали центров кругов, а не блоков с подписями.
+/// Путь разговора: вы → [ретранслятор] → сервер → собеседник, узлы 52 pt с подписями и
+/// участками между ними. Участок лежит на горизонтали центров кругов, а не блоков с
+/// подписями.
 private struct ConnectPath: View {
     let view: ConnectView
     let selected: String?
@@ -385,7 +670,7 @@ private struct ConnectPath: View {
         let count = max(view.nodes.count, 1)
         // У веба обёртка узла 80 px, и цепочка из четырёх узлов на телефоне вылезала за
         // край. Здесь обёртка сжимается ровно настолько, чтобы все участки сохранили хотя бы
-        // свой минимум (22 px, из них 12 заходят под поля соседних узлов).
+        // свой минимум (22 pt, из них 12 заходят под поля соседних узлов).
         let wrap = rowWidth > 0
             ? min(80, max(Self.node + 12, (rowWidth - CGFloat(count - 1) * 10) / CGFloat(count)))
             : 80
@@ -395,10 +680,10 @@ private struct ConnectPath: View {
             ForEach(Array(view.nodes.enumerated()), id: \.element.id) { index, node in
                 if index > 0 {
                     let previous = view.nodes[index - 1]
-                    ConnectLinkView(
+                    LinkView(
                         state: view.links.first(where: { $0.to == node.id })?.state ?? .ready,
-                        from: CallInk.ring(previous.id),
-                        to: CallInk.ring(node.id),
+                        from: CallInk.role(previous.id),
+                        to: CallInk.role(node.id),
                         reduceMotion: reduceMotion
                     )
                     // Линия тянется почти от кромки до кромки кругов: заходит под поля
@@ -425,23 +710,13 @@ private struct ConnectPath: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: view.nodes.map(\.id))
         .frame(maxWidth: .infinity)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = $0 }
-        .background(alignment: .top) {
-            // Фоновые волны — только декор; при «меньше движения» их нет вовсе.
-            if !reduceMotion {
-                ConnectWaves()
-                    .frame(height: Self.node + 72)
-                    .padding(.horizontal, -24)
-                    .offset(y: -16)
-                    .allowsHitTesting(false)
-            }
-        }
-        .padding(.top, 14)
-        .padding(.bottom, 4)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
     }
 }
 
-/// Узел: круг с кольцом цвета роли, подпись под ним. Цвет роли и состояние — разные вещи:
-/// роль задаёт оттенок, состояние — насыщенность, ореол и активность.
+/// Узел: круг с кольцом цвета роли, подпись под ним. На дозвоне вокруг собеседника
+/// расходятся три кольца, у подключающегося — ореол и бегущая сливочная дуга.
 private struct NodeView: View {
     let node: ConnectNode
     let wrap: CGFloat
@@ -452,18 +727,34 @@ private struct NodeView: View {
     let onTap: () -> Void
 
     private static let size: CGFloat = 52
-    private static let icon: CGFloat = 22
 
     var body: some View {
-        let ring = CallInk.ring(node.id)
         Button(action: onTap) {
             VStack(spacing: 0) {
-                disc(ring: ring)
-                    .offset(y: selected ? -2 : 0)
-                    .animation(.easeOut(duration: 0.16), value: selected)
+                ZStack {
+                    if node.state == .ringing {
+                        RingWaves(
+                            color: CallInk.amberDeep,
+                            startedAt: ringStartedAt,
+                            periodMs: ringPeriodMs,
+                            reduceMotion: reduceMotion
+                        )
+                        .frame(width: Self.size, height: Self.size)
+                    }
+                    if node.state == .active {
+                        NodeHalo(ring: CallInk.amberDark, reduceMotion: reduceMotion)
+                            .frame(width: Self.size, height: Self.size)
+                        SpinningArc(color: CallInk.cream.opacity(0.95), lineWidth: 2, period: 1.1, reduceMotion: reduceMotion)
+                            .frame(width: Self.size + 12, height: Self.size + 12)
+                    }
+                    NodeDisc(node: node, selected: selected)
+                }
+                .frame(width: Self.size, height: Self.size)
+                .offset(y: selected ? -2 : 0)
+                .animation(.easeOut(duration: 0.16), value: selected)
                 Text(node.label)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(CallInk.text)
+                    .foregroundStyle(node.state == .waiting ? CallInk.textMuted : CallInk.text)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     // Длинное слово («ретранслятор») чуть ужимается, а не обрезается.
@@ -475,7 +766,7 @@ private struct NodeView: View {
                         .monospacedDigit()
                         .foregroundStyle(CallInk.textMuted)
                         .lineLimit(1)
-                        .truncationMode(.tail)
+                        .truncationMode(.middle)
                         .padding(.top, 2)
                 }
             }
@@ -483,82 +774,84 @@ private struct NodeView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(node.label): \(stateTitle)")
+        .accessibilityLabel("\(node.label): \(nodeStateTitle(node.state))")
         .accessibilityHint(node.detail)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
+}
 
-    private var stateTitle: String {
+/// Круг узла (`.eb-cn__circle`): подложка-кольцо, содержимое (значок или аватар), рамка и
+/// свечение — по состоянию. Ждёт — серая рамка и тусклый значок; подключается —
+/// полупрозрачная рамка роли (ореол и дугу рисует владелец); готов — рамка роли с мягким
+/// свечением; вызываем — янтарная рамка и свечение сильнее. «Вы» всегда сливочный и без
+/// свечения: это не этап, а точка отсчёта.
+private struct NodeDisc: View {
+    let node: ConnectNode
+    let selected: Bool
+
+    private static let size: CGFloat = 52
+    private static let icon: CGFloat = 22
+
+    /// Рамка, подложка и свечение по состоянию.
+    private struct Look {
+        let ring: Color
+        let underlay: Double
+        let glow: Double
+    }
+
+    private var look: Look {
+        let role = CallInk.role(node.id)
         switch node.state {
-        case .waiting: return "ждёт"
-        case .active: return "подключается"
-        case .ready: return "готов"
-        case .ringing: return "вызываем"
+        case .waiting:
+            return Look(ring: CallInk.borderStrong, underlay: 0, glow: 0)
+        case .active:
+            return Look(ring: role.opacity(0.7), underlay: 0.08, glow: 0)
+        case .ready:
+            return Look(ring: role, underlay: node.id == .you ? 0.08 : 0.1, glow: node.id == .you ? 0 : 0.28)
+        case .ringing:
+            return Look(ring: CallInk.amber, underlay: 0.14, glow: 0.35)
         }
     }
 
-    private func disc(ring: Color) -> some View {
-        let state = node.state
-        let border: Double = state == .waiting ? 0.3 : (state == .active ? 0.85 : 0.95)
-        let underlay: Double = state == .active ? 0.08 : (state == .ringing ? 0.12 : 0.1)
-        return ZStack {
-            // Кольцо-подложка (box-shadow 0 0 0 4px): у готового ярче, у ждущего нет.
-            if state != .waiting {
+    var body: some View {
+        let role = CallInk.role(node.id)
+        let look = look
+        let shadowOpacity = selected ? max(look.glow, 0.3) + 0.1 : look.glow
+        ZStack {
+            if look.underlay > 0 {
                 Circle()
-                    .fill(ring.opacity(selected ? 0.16 : underlay))
+                    .fill(role.opacity(selected ? look.underlay + 0.06 : look.underlay))
                     .frame(width: Self.size + (selected ? 10 : 8), height: Self.size + (selected ? 10 : 8))
             }
-            if state == .ringing {
-                RingWaves(color: ring, startedAt: ringStartedAt, periodMs: ringPeriodMs, reduceMotion: reduceMotion)
-                    .frame(width: Self.size, height: Self.size)
-            }
-            if state == .active {
-                NodeHalo(ring: ring, reduceMotion: reduceMotion)
-                SpinningArc(color: ring.opacity(0.9), lineWidth: 2, period: 1.2, reduceMotion: reduceMotion)
-                    .frame(width: Self.size + 12, height: Self.size + 12)
-            }
             Circle()
-                .fill(RadialGradient(
-                    colors: [Color(hex: 0x1C2D42), Color(hex: 0x0F1B29)],
-                    center: UnitPoint(x: 0.5, y: 0.38),
-                    startRadius: 0,
-                    endRadius: Self.size * 0.6
-                ))
-                .overlay(glyph(ring: ring))
+                .fill(CallInk.surface2)
+                .overlay(glyph(role: role))
                 .clipShape(Circle())
-                .overlay(Circle().strokeBorder(ring.opacity(border), lineWidth: 2))
+                .overlay(Circle().strokeBorder(look.ring, lineWidth: 2))
                 .frame(width: Self.size, height: Self.size)
                 .shadow(
-                    color: state == .ready
-                        ? ring.opacity(selected ? 0.4 : 0.28)
-                        : (state == .ringing ? ring.opacity(selected ? 0.4 : 0.35) : .clear),
-                    radius: selected || state == .ringing ? 13 : 11
+                    color: shadowOpacity > 0 ? role.opacity(shadowOpacity) : .clear,
+                    radius: node.state == .ringing || selected ? 14 : 11
                 )
         }
         .frame(width: Self.size, height: Self.size)
     }
 
     @ViewBuilder
-    private func glyph(ring: Color) -> some View {
-        let tint = node.state == .waiting ? ring.opacity(0.5) : ring
+    private func glyph(role: Color) -> some View {
+        let waiting = node.state == .waiting
         switch node.id {
         case .you:
-            symbol("person", tint)
+            symbol("person", waiting ? CallInk.textDim : role)
         case .relay:
-            symbol("cloud", tint)
+            symbol("cloud", waiting ? CallInk.textDim : role)
         case .server:
-            symbol("server.rack", tint)
+            // Значок сервера янтарный при тёмно-янтарной рамке — как на макете.
+            symbol("server.rack", waiting ? CallInk.textDim : CallInk.amber)
         case .peer:
-            if node.group && node.avatarUrl?.isEmpty != false {
-                // Группа без картинки — значок людей, как у веба.
-                symbol("person.2", tint)
-            } else {
-                // Штатный аватар приложения: картинка или инициалы в тех же цветах, что в
-                // списке чатов, — собеседник узнаётся с первого взгляда.
-                AvatarView(name: node.label, avatarUrl: node.avatarUrl, size: Self.size)
-                    .grayscale(node.state == .waiting ? 0.7 : 0)
-                    .opacity(node.state == .waiting ? 0.55 : 1)
-            }
+            ConnectAvatar(node: node, size: Self.size)
+                .grayscale(waiting ? 0.7 : 0)
+                .opacity(waiting ? 0.55 : 1)
         }
     }
 
@@ -569,6 +862,59 @@ private struct NodeView: View {
             .foregroundStyle(tint)
     }
 }
+
+/// Аватар в узле: картинка, если она есть и грузится; иначе инициалы на фирменном янтаре
+/// или значок группы. Ошибка загрузки схему не ломает — остаётся запасной вариант.
+private struct ConnectAvatar: View {
+    let node: ConnectNode
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let resolved = resolveMediaUrl(node.avatarUrl), let url = URL(string: resolved) {
+                CachedImage(url: url, contentMode: .fill) { fallback }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+    }
+
+    @ViewBuilder
+    private var fallback: some View {
+        if node.group {
+            ZStack {
+                Circle().fill(CallInk.surface2)
+                Image(systemName: "person.2")
+                    .font(.system(size: size * 0.36, weight: .regular))
+                    .foregroundStyle(CallInk.amber)
+            }
+        } else {
+            ZStack {
+                Circle().fill(LinearGradient(
+                    colors: [CallInk.amberDark, CallInk.initialsDeep],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+                Text(Self.initials(node.label))
+                    .font(.system(size: size * 0.36, weight: .bold))
+                    .kerning(0.5)
+                    .foregroundStyle(.white)
+            }
+        }
+    }
+
+    /// Как initialsFromName веба: первая буква первого и последнего слова.
+    private static func initials(_ name: String) -> String {
+        let parts = name.split(whereSeparator: { $0.isWhitespace }).filter { !$0.isEmpty }
+        guard let first = parts.first else { return "?" }
+        if parts.count == 1 { return first.prefix(1).uppercased() }
+        return (first.prefix(1) + parts[parts.count - 1].prefix(1)).uppercased()
+    }
+}
+
+// MARK: - Кольца, ореол, дуга
 
 /// Дозвон: три кольца расходятся от круга со сдвигом 0 / 0,13 / 0,30 периода — в такт трём
 /// нотам веб-гудка. Фаза считается от начала вызова, а не от появления вида: вернувшись в
@@ -645,10 +991,12 @@ private struct NodeHalo: View {
                 guard !reduceMotion else { return }
                 withAnimation(.easeOut(duration: 2).repeatForever(autoreverses: false)) { pulse = true }
             }
+            .allowsHitTesting(false)
     }
 }
 
-/// Бегущая дуга: верхняя четверть окружности (border-top-color на вебе), вращение по кругу.
+/// Бегущая сливочная дуга: верхняя четверть окружности (border-top-color на вебе),
+/// вращение по кругу.
 private struct SpinningArc: View {
     let color: Color
     let lineWidth: CGFloat
@@ -665,12 +1013,14 @@ private struct SpinningArc: View {
                 guard !reduceMotion else { return }
                 withAnimation(.linear(duration: period).repeatForever(autoreverses: false)) { spin = true }
             }
+            .allowsHitTesting(false)
     }
 }
 
-/// Участок между узлами: пунктир «ждёт», бегущий пунктир «прокладывается», сплошной
-/// градиент с бегущей светящейся точкой «проложен». Точка едет ТОЛЬКО по проложенным.
-private struct ConnectLinkView: View {
+/// Участок между узлами: пунктир «ждёт», бегущий янтарный пунктир «прокладывается»,
+/// градиент от цвета узла к цвету узла с бегущей сливочной точкой «проложен». Точка едет
+/// ТОЛЬКО по проложенным.
+private struct LinkView: View {
     let state: ConnectLinkState
     let from: Color
     let to: Color
@@ -679,23 +1029,23 @@ private struct ConnectLinkView: View {
     var body: some View {
         switch state {
         case .idle:
-            DashLine(color: CallInk.idleDash, phase: 0)
+            DashLine(color: CallInk.borderStrong, phase: 0)
         case .searching:
             if reduceMotion {
-                DashLine(color: CallInk.accent.opacity(0.85), phase: 0)
+                DashLine(color: CallInk.amberDeep.opacity(0.85), phase: 0)
             } else {
                 TimelineView(.animation(minimumInterval: 1 / 30)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
                     // Сдвиг на период штриха (12 pt) за 0,8 с — пунктир «бежит» вперёд.
-                    DashLine(color: CallInk.accent.opacity(0.85), phase: -CGFloat(t.truncatingRemainder(dividingBy: 0.8) / 0.8) * 12)
+                    DashLine(color: CallInk.amberDeep.opacity(0.85), phase: -CGFloat(t.truncatingRemainder(dividingBy: 0.8) / 0.8) * 12)
                 }
             }
         case .ready:
             Capsule()
                 .fill(LinearGradient(colors: [from, to], startPoint: .leading, endPoint: .trailing))
-                .shadow(color: CallInk.accent.opacity(0.25), radius: 4)
+                .shadow(color: CallInk.amberDeep.opacity(0.25), radius: 4)
                 .overlay(alignment: .leading) {
-                    if !reduceMotion { Packet(glow: to) }
+                    if !reduceMotion { Packet() }
                 }
         }
     }
@@ -716,10 +1066,10 @@ private struct DashLine: View {
     }
 }
 
-/// Светящаяся точка, едущая по проложенному участку за 2,2 с, с проявлением в начале и
-/// растворением в конце пути.
+/// Сливочная точка с янтарным ореолом, едущая по проложенному участку за 2,2 с, с
+/// проявлением в начале и растворением в конце пути.
 private struct Packet: View {
-    let glow: Color
+    private static let size: CGFloat = 8
 
     var body: some View {
         GeometryReader { geo in
@@ -730,11 +1080,11 @@ private struct Packet: View {
                     ? progress / 0.12
                     : (progress > 0.88 ? (1 - progress) / 0.12 : 1)
                 Circle()
-                    .fill(.white)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: glow, radius: 5)
+                    .fill(CallInk.cream)
+                    .frame(width: Self.size, height: Self.size)
+                    .shadow(color: CallInk.amber, radius: 5)
                     .opacity(alpha)
-                    .offset(x: -4 + geo.size.width * progress, y: geo.size.height / 2 - 4)
+                    .offset(x: -Self.size / 2 + geo.size.width * progress, y: geo.size.height / 2 - Self.size / 2)
             }
         }
     }
@@ -742,6 +1092,9 @@ private struct Packet: View {
 
 // MARK: - Этап
 
+/// Карточка этапа (`.eb-cn__step`): бейдж с номером или галочкой и подпись. Сделанный —
+/// янтарный бейдж с белой галочкой; активный — янтарная карточка в диагональную полоску с
+/// тёмным текстом и сливочной дугой вокруг бейджа; ждущий — приглушённый.
 private struct StepCard: View {
     let step: ConnectStep
     let number: Int
@@ -749,12 +1102,15 @@ private struct StepCard: View {
     let reduceMotion: Bool
     let onTap: () -> Void
 
+    private static let corner: CGFloat = 12
+
     var body: some View {
+        let active = step.status == .active
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 8) {
                 badge
                 Text(step.title)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: active ? .semibold : .regular))
                     .lineSpacing(1)
                     .lineLimit(3)
                     .multilineTextAlignment(.leading)
@@ -762,21 +1118,24 @@ private struct StepCard: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, minHeight: 72, maxHeight: .infinity, alignment: .topLeading)
-            .background(RoundedRectangle(cornerRadius: 13).fill(fill))
-            .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(stroke, lineWidth: 1))
+            .background(cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: Self.corner))
+            .overlay(RoundedRectangle(cornerRadius: Self.corner).strokeBorder(stroke, lineWidth: 1))
             .overlay {
-                if step.status == .active {
-                    RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(CallInk.accent.opacity(0.25), lineWidth: 1)
-                        .padding(1)
+                // box-shadow 0 0 0 1px rgba(amber, .45): тонкое кольцо снаружи рамки.
+                if active {
+                    RoundedRectangle(cornerRadius: Self.corner + 1)
+                        .strokeBorder(CallInk.amberDeep.opacity(0.45), lineWidth: 1)
+                        .padding(-1)
                 }
             }
-            .opacity(step.status == .waiting ? 0.72 : 1)
-            .contentShape(RoundedRectangle(cornerRadius: 13))
+            .shadow(color: active ? CallInk.amberDeep.opacity(0.28) : .clear, radius: 7, y: 2)
+            .opacity(step.status == .waiting ? 0.85 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: Self.corner))
         }
         .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.2), value: step.status)
-        .accessibilityLabel("Этап \(number), \(step.title): \(statusTitle)")
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: step.status)
+        .accessibilityLabel("Этап \(number), \(step.title): \(stepStatusTitle(step.status))")
         .accessibilityHint(step.hint)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -787,142 +1146,117 @@ private struct StepCard: View {
             if step.status == .done {
                 Image(systemName: "checkmark")
                     .font(.system(size: 11, weight: .heavy))
-                    .foregroundStyle(CallInk.successInk)
+                    .foregroundStyle(.white)
             } else {
                 Text("\(number)")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(step.status == .active ? .white : CallInk.textMuted)
+                    .font(.system(size: 12, weight: step.status == .active ? .bold : .semibold))
+                    .foregroundStyle(step.status == .active ? CallInk.cream : CallInk.textMuted)
             }
             if step.status == .active {
-                SpinningArc(color: CallInk.accent.opacity(0.9), lineWidth: 2, period: 1.1, reduceMotion: reduceMotion)
+                SpinningArc(color: CallInk.cream, lineWidth: 2, period: 1.1, reduceMotion: reduceMotion)
                     .frame(width: 32, height: 32)
             }
         }
         .frame(width: 24, height: 24)
+        .accessibilityHidden(true)
     }
 
-    private var statusTitle: String {
-        switch step.status {
-        case .done: return "готово"
-        case .active: return "выполняется"
-        case .waiting: return "ждёт"
+    @ViewBuilder
+    private var cardBackground: some View {
+        if step.status == .active {
+            AmberStripes(highlight: selected)
+        } else {
+            RoundedRectangle(cornerRadius: Self.corner)
+                .fill(selected ? CallInk.surface3 : CallInk.surface2)
         }
     }
 
     private var textColor: Color {
         switch step.status {
         case .done: return CallInk.text
-        case .active: return CallInk.accentText
+        case .active: return CallInk.onAmber
         case .waiting: return CallInk.textMuted
         }
     }
 
     private var badgeFill: Color {
         switch step.status {
-        case .done: return CallInk.success
-        case .active: return CallInk.accent
-        case .waiting: return Color(hex: 0xAABCD5, opacity: 0.12)
+        case .done: return CallInk.amberDeep
+        case .active: return CallInk.surface
+        case .waiting: return CallInk.surface3
         }
     }
 
-    private var fill: Color {
-        if step.status == .active { return CallInk.accent.opacity(selected ? 0.16 : 0.1) }
-        if selected { return Color(red: 26 / 255, green: 41 / 255, blue: 56 / 255, opacity: 0.9) }
-        return Color(red: 20 / 255, green: 32 / 255, blue: 46 / 255, opacity: 0.6)
-    }
-
     private var stroke: Color {
-        if step.status == .active { return CallInk.accent.opacity(selected ? 0.9 : 0.8) }
+        if step.status == .active { return selected ? CallInk.cream : CallInk.amber }
         return selected ? CallInk.borderStrong : CallInk.border
     }
 }
 
-// MARK: - Волны
-
-/// Фоновые волны за схемой: три слоя с периодом 800 единиц (как SVG веба, растянутый без
-/// сохранения пропорций), сдвиг ровно на период даёт бесшовный цикл — 14 с, 19 с в
-/// обратную сторону и 11 с со сдвигом −4 с. Чисто декоративны: не реагируют ни на голос,
-/// ни на состояние.
-private struct ConnectWaves: View {
-
-    private struct Layer {
-        let base: CGFloat
-        let control: CGFloat
-        let period: Double
-        let reverse: Bool
-        let delay: Double
-        let fillOpacity: Double
-        let lineWidth: CGFloat
-        let lineOpacity: Double
-    }
-
-    private static let layers: [Layer] = [
-        Layer(base: 116, control: 62, period: 14, reverse: false, delay: 0, fillOpacity: 0.24, lineWidth: 1.0, lineOpacity: 0.85),
-        Layer(base: 124, control: 92, period: 19, reverse: true, delay: 0, fillOpacity: 0.18, lineWidth: 0.75, lineOpacity: 0.6),
-        Layer(base: 104, control: 80, period: 11, reverse: false, delay: -4, fillOpacity: 0, lineWidth: 0.6, lineOpacity: 0.35),
-    ]
-
-    private static let gradient = Gradient(colors: [
-        Color(hex: 0x38D3B0), Color(hex: 0x4B7BFF), Color(hex: 0x8758FF),
-    ])
+/// Янтарная карточка в тонкую диагональную полоску, как плашки сайта: четыре слоя CSS —
+/// основа под 158°, две сетки штрихов (белые под −32° через 9 pt, чёрные под 32° через
+/// 13 pt) и блик сверху.
+private struct AmberStripes: View {
+    /// Выбранная карточка: блик чуть ярче (`.is-active.is-selected`).
+    let highlight: Bool
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
+        ZStack {
+            // linear-gradient(158deg, #b45309 0%, #e38b0a 48%, #d97706 100%): направление
+            // 158° по часовой от вертикали — почти вниз, чуть вправо.
+            LinearGradient(
+                stops: [
+                    .init(color: CallInk.amberDark, location: 0),
+                    .init(color: CallInk.amber, location: 0.48),
+                    .init(color: CallInk.amberDeep, location: 1),
+                ],
+                startPoint: UnitPoint(x: 0.31, y: 0.04),
+                endPoint: UnitPoint(x: 0.69, y: 0.96)
+            )
             Canvas { ctx, size in
-                let sx = size.width / 800
-                let sy = size.height / 200
-                let shading = GraphicsContext.Shading.linearGradient(
-                    Self.gradient,
-                    startPoint: .zero,
-                    endPoint: CGPoint(x: size.width, y: 0)
-                )
-                for layer in Self.layers {
-                    var fraction = ((t - layer.delay) / layer.period).truncatingRemainder(dividingBy: 1)
-                    if fraction < 0 { fraction += 1 }
-                    let shift = layer.reverse ? -(1 - fraction) * 800 : -fraction * 800
-                    let wave = Self.wavePath(layer: layer, shift: shift, sx: sx, sy: sy)
-                    if layer.fillOpacity > 0 {
-                        var filled = wave
-                        filled.addLine(to: CGPoint(x: (1600 + shift) * sx, y: 200 * sy))
-                        filled.addLine(to: CGPoint(x: (-800 + shift) * sx, y: 200 * sy))
-                        filled.closeSubpath()
-                        ctx.opacity = layer.fillOpacity
-                        ctx.fill(filled, with: shading)
-                    }
-                    ctx.opacity = layer.lineOpacity
-                    ctx.stroke(wave, with: shading, lineWidth: layer.lineWidth)
-                }
+                Self.stripes(ctx, size, angle: -32, period: 9, color: .white.opacity(0.14))
+                Self.stripes(ctx, size, angle: 32, period: 13, color: .black.opacity(0.05))
             }
+            LinearGradient(
+                stops: [
+                    .init(color: .white.opacity(highlight ? 0.26 : 0.2), location: 0),
+                    .init(color: .white.opacity(highlight ? 0.08 : 0.06), location: 0.55),
+                    .init(color: .black.opacity(0.04), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
         }
-        // Маска сверху вниз: волны растворяются к нижнему краю.
-        .mask(LinearGradient(colors: [.white, .white.opacity(0)], startPoint: .top, endPoint: .bottom))
     }
 
-    /// `M-800,b Q-600,c -400,b T0,b …` — сглаженные квадратичные сегменты по 400 единиц:
-    /// контрольная точка каждого следующего отражает предыдущую (горб, впадина, горб…).
-    private static func wavePath(layer: Layer, shift: Double, sx: CGFloat, sy: CGFloat) -> Path {
+    /// repeating-linear-gradient(angle, transparent 0 period−1, color period−1 period):
+    /// штрих шириной 1 pt в конце каждого периода, перпендикулярно направлению градиента.
+    private static func stripes(_ ctx: GraphicsContext, _ size: CGSize, angle: Double, period: CGFloat, color: Color) {
+        let rad = angle * .pi / 180
+        // Направление градиента CSS: угол от вертикали по часовой стрелке.
+        let n = CGPoint(x: sin(rad), y: -cos(rad))
+        // Сам штрих идёт поперёк направления.
+        let d = CGPoint(x: -n.y, y: n.x)
+        let corners = [CGPoint.zero, CGPoint(x: size.width, y: 0), CGPoint(x: 0, y: size.height), CGPoint(x: size.width, y: size.height)]
+        let projections = corners.map { $0.x * n.x + $0.y * n.y }
+        guard let tMin = projections.min(), let tMax = projections.max() else { return }
+        let reach = hypot(size.width, size.height)
         var path = Path()
-        let trough = 2 * layer.base - layer.control
-        path.move(to: CGPoint(x: (-800 + shift) * sx, y: layer.base * sy))
-        var x: Double = -800
-        var crest = true
-        while x < 1600 {
-            let controlY = crest ? layer.control : trough
-            path.addQuadCurve(
-                to: CGPoint(x: (x + 400 + shift) * sx, y: layer.base * sy),
-                control: CGPoint(x: (x + 200 + shift) * sx, y: controlY * sy)
-            )
-            x += 400
-            crest.toggle()
+        var k = (tMin / period).rounded(.down)
+        while k * period <= tMax + period {
+            let t = k * period + period - 0.5
+            let origin = CGPoint(x: n.x * t, y: n.y * t)
+            path.move(to: CGPoint(x: origin.x - d.x * reach, y: origin.y - d.y * reach))
+            path.addLine(to: CGPoint(x: origin.x + d.x * reach, y: origin.y + d.y * reach))
+            k += 1
         }
-        return path
+        ctx.stroke(path, with: .color(color), lineWidth: 1)
     }
 }
 
 // MARK: - Строки с переносом
 
-/// Факты в карточке: в ряд, с переносом на следующую строку (flex-wrap веба).
+/// Капсулы фактов: в ряд, с переносом на следующую строку (flex-wrap веба).
 private struct FlowRows: Layout {
     let horizontalSpacing: CGFloat
     let verticalSpacing: CGFloat

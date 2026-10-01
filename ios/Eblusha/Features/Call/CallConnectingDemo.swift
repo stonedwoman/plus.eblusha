@@ -6,6 +6,7 @@ import SwiftUI
 /// только в отладочной сборке и открывается аргументом запуска:
 ///
 ///     xcrun simctl launch <устройство> org.eblusha.plus -connectDemo cf-wait
+///     xcrun simctl launch <устройство> org.eblusha.plus -connectDemo ringing-video
 ///
 /// Экран здесь ничем не управляет, «Отменить» ничего не делает.
 struct CallConnectingDemo: View {
@@ -19,8 +20,21 @@ struct CallConnectingDemo: View {
     }
 
     var body: some View {
-        CallConnectingView(view: buildConnectView(Self.signals(scenarioId)), leaving: false, onCancel: {})
-            .preferredColorScheme(.dark)
+        let signals = Self.signals(Self.baseId(scenarioId))
+        CallConnectingView(
+            view: buildConnectView(signals),
+            leaving: false,
+            onCancel: {},
+            // Секундомер и фаза колец — как будто дозвон идёт столько, сколько сказано в сценарии.
+            ringStartedAt: signals.ringingSeconds.map { connectMonotonicNowMs() - Double($0) * 1000 },
+            video: scenarioId.hasSuffix("-video")
+        )
+        .preferredColorScheme(.dark)
+    }
+
+    /// Суффикс `-video` у любого сценария — тот же экран, но видеозвонок (капсула в шапке).
+    static func baseId(_ id: String) -> String {
+        id.hasSuffix("-video") ? String(id.dropLast("-video".count)) : id
     }
 
     private static let cloudflare = ConnectRoute(relayed: true, rttMs: 45, relayName: "Cloudflare", relayHost: "turn.cloudflare.com")

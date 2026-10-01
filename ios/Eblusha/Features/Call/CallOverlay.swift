@@ -134,7 +134,7 @@ private struct CallScreenContainer: View {
                         if manager.phase != .outgoing {
                             CallView(manager: manager)
                         }
-                        CallConnectingOverlay(controller: connect)
+                        CallConnectingOverlay(controller: connect, video: manager.isVideoCall)
                     }
                 case .idle:
                     EmptyView()

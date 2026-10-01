@@ -252,7 +252,7 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
     }
     steps.append(ConnectStep(
         id: .signaling,
-        title: "Договариваемся о звонке",
+        title: "Согласуем звонок",
         status: status(signalingDone, !ringing),
         hint: signalingDone
             ? "Сервер знает о звонке и выдал нам пропуск в комнату."
