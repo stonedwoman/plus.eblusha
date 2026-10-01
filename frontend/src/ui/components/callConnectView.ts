@@ -204,14 +204,14 @@ export function buildConnectView(s: ConnectSignals): ConnectView {
   }
   steps.push({
     id: 'signaling',
-    title: 'Договариваемся о звонке',
+    title: 'Согла­суем звонок',
     status: status(signalingDone, !ringing),
     hint: signalingDone ? 'Сервер знает о звонке и выдал нам пропуск в комнату.' : 'Просим у сервера пропуск в комнату звонка.',
   })
   if (encrypted) {
     steps.push({
       id: 'crypto-prepare',
-      title: 'Готовим шифрование',
+      title: 'Готовим шифро­вание',
       status: status(s.keysReady, signalingDone),
       hint: s.keysReady
         ? 'Ключ разговора получен, шифратор готов. Само шифрование включится после подключения.'
@@ -233,7 +233,7 @@ export function buildConnectView(s: ConnectSignals): ConnectView {
   if (encrypted) {
     steps.push({
       id: 'crypto-enable',
-      title: 'Включаем шифрование',
+      title: 'Включаем шифро­вание',
       status: status(s.e2eeEnabled, routeDone),
       hint: s.e2eeEnabled
         ? 'Сквозное шифрование включено: голос уходит зашифрованным.'
@@ -242,7 +242,7 @@ export function buildConnectView(s: ConnectSignals): ConnectView {
   }
   steps.push({
     id: 'publish',
-    title: s.micUnavailable ? 'Микрофон недоступен' : s.muted ? 'Микрофон выключен' : 'Передаём ваш голос',
+    title: s.micUnavailable ? 'Микрофон недо­ступен' : s.muted ? 'Микрофон выклю­чен' : 'Передаём ваш голос',
     status: status(publishDone, routeDone && e2eeDone),
     hint: s.micUnavailable
       ? 'Не удалось получить доступ к микрофону — вас не будет слышно. Проверьте разрешения браузера.'
@@ -254,7 +254,7 @@ export function buildConnectView(s: ConnectSignals): ConnectView {
   })
   steps.push({
     id: 'wait-peer',
-    title: isGroup ? 'Подключаем участников' : 'Ждём собеседника',
+    title: isGroup ? 'Подключаем участ­ников' : 'Ждём собесед­ника',
     status: status(peerDone, localReady),
     hint: isGroup
       ? s.peer.count === 0

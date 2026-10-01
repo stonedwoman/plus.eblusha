@@ -4422,7 +4422,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         <style>{videoContainCss}</style>
         {shouldUseE2ee ? (
           e2eeError || !e2eeRoom ? (
-            <CallConnecting view={connectView} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} />
+            <CallConnecting view={connectView} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} video={initialVideo} startedAt={callStartedAt ?? dialingSince ?? undefined} />
           ) : (
             <LiveKitRoom
               room={e2eeRoom}
@@ -4477,7 +4477,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
             >
               <div style={{ width: '100%', height: '100%', position: 'relative' }}>
                 {connecting.mounted && (
-                  <CallConnecting view={connectView} leaving={connecting.leaving} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} />
+                  <CallConnecting view={connectView} leaving={connecting.leaving} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} video={initialVideo} startedAt={callStartedAt ?? dialingSince ?? undefined} />
                 )}
                 {connecting.mounted && <ConnectProgressWatcher encrypted={shouldUseE2ee} sync={!isGroup} localSettled={paced.settled} localAudio={!muted && !micUnavailable} onProgress={setProgress} />}
                 {connectedAtRef.current !== null && (
@@ -4562,7 +4562,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           >
             <div style={{ width: '100%', height: '100%', position: 'relative' }}>
               {connecting.mounted && (
-                <CallConnecting view={connectView} leaving={connecting.leaving} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} />
+                <CallConnecting view={connectView} leaving={connecting.leaving} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} video={initialVideo} startedAt={callStartedAt ?? dialingSince ?? undefined} />
               )}
               {connecting.mounted && <ConnectProgressWatcher encrypted={false} sync={!isGroup} localSettled={paced.settled} localAudio={!muted && !micUnavailable} onProgress={setProgress} />}
               {connectedAtRef.current !== null && (
