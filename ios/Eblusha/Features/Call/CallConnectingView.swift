@@ -31,7 +31,7 @@ private enum CallInk {
     static let amberDeep = Eb.brand                 // #d97706
     static let amberDark = Eb.brand700              // #b45309
     static let cream = Eb.logoCream                 // #f4e8c9
-    static let brandB = Eb.logoB                    // #e25c2a — переворачивающаяся «б»
+    static let brandB = Eb.logoB                    // #e25c2a — переворачивающаяся «Б»
     static let error = Color(hex: 0xEF4444)
     /// Текст активной (янтарной) карточки.
     static let onAmber = Color(hex: 0x0A0A0A)
@@ -77,7 +77,7 @@ struct CallConnectingView: View {
     let view: ConnectView
     let leaving: Bool
     let onCancel: () -> Void
-    /// Когда начался дозвон (монотонные мс) — кольца, столбики гудка и «б» попадают в фазу,
+    /// Когда начался дозвон (монотонные мс) — кольца, столбики гудка и «Б» попадают в фазу,
     /// а секундомер считает с набора, а не с появления экрана. nil — от момента появления.
     var ringStartedAt: Double? = nil
     /// Период колец. Своего гудка у iOS нет — берём период веб-эталона по умолчанию.
@@ -518,9 +518,9 @@ private func formatClock(_ total: Int) -> String {
 
 // MARK: - Логотип
 
-/// Логотип с фирменной переворачивающейся «б» — как на заставке. На дозвоне оборот за
-/// период гудка, в фазе с кольцами; в остальное время — редкий, раз в 5 с (keyframes
-/// eb-cn-flip / eb-cn-flip-slow веба).
+/// Логотип «ЕБлуша» с фирменной переворачивающейся большой «Б» — как в шапке веба и на
+/// заставке. На дозвоне оборот за период гудка, в фазе с кольцами; в остальное время —
+/// редкий, раз в 5 с (keyframes eb-cn-flip / eb-cn-flip-slow веба).
 private struct BrandMark: View {
     let ringing: Bool
     let ringStartedAt: Double?
@@ -533,10 +533,10 @@ private struct BrandMark: View {
         HStack(spacing: 0) {
             Text("Е").foregroundStyle(CallInk.cream)
             if reduceMotion {
-                Text("б").foregroundStyle(CallInk.brandB)
+                Text("Б").foregroundStyle(CallInk.brandB)
             } else {
                 TimelineView(.animation) { _ in
-                    Text("б")
+                    Text("Б")
                         .foregroundStyle(CallInk.brandB)
                         .rotation3DEffect(
                             .degrees(angle(at: connectMonotonicNowMs())),

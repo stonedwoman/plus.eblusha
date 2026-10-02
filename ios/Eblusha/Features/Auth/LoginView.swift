@@ -75,11 +75,11 @@ struct LoginView: View {
     }
 }
 
-/// Логотип «Еблуша» — кремовые буквы с оранжевой «б», как в вебе.
+/// Логотип «ЕБлуша» — кремовые буквы с большой оранжевой «Б», как в вебе.
 struct EblushaWordmark: View {
     var body: some View {
         (Text("Е").foregroundColor(Eb.logoCream)
-            + Text("б").foregroundColor(Eb.logoB)
+            + Text("Б").foregroundColor(Eb.logoB)
             + Text("луша").foregroundColor(Eb.logoCream))
             .font(.system(size: 42, weight: .heavy))
     }
