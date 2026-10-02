@@ -275,13 +275,13 @@ export function CallConnecting({ view, leaving = false, onCancel, ringPeriodMs, 
   )
 }
 
-/** Логотип с фирменной переворачивающейся «б» — как на заставке приложения. */
+/** Логотип «ЕБлуша» с фирменной переворачивающейся большой «Б» — как в шапке приложения. */
 function Brand() {
   return (
     <span className="eb-cn__brand" role="img" aria-label="Еблуша">
       <span aria-hidden="true">Е</span>
       <span className="eb-cn__b" aria-hidden="true">
-        б
+        Б
       </span>
       <span aria-hidden="true">луша</span>
     </span>
