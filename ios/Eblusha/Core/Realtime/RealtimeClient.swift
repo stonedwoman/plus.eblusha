@@ -22,6 +22,8 @@ final class RealtimeClient: ObservableObject {
     private var manager: SocketManager?
     private var socket: SocketIOClient?
     private var socketToken: String?
+    /// deviceId, с которым шло рукопожатие текущего сокета (для DEVICE_REVOKED).
+    private var socketDeviceId: String?
     private var refreshing = false
     /// Единственная идущая ротация токена. Раньше гейтов было два и они не знали друг о
     /// друге: `opening` у connect(), `refreshing` у onAuthError(), а
@@ -150,6 +152,11 @@ final class RealtimeClient: ObservableObject {
             let message = data.first.map { String(describing: $0) } ?? ""
             if message.localizedCaseInsensitiveContains("Unauthorized") {
                 self?.onAuthError()
+            } else if message.contains("DEVICE_REVOKED") {
+                // X5: сервер не признал ни одного живого id устройства. Раньше это
+                // игнорировалось: отозванный телефон крутил реконнект с ключами секреток.
+                guard let self else { return }
+                self.events.send(.deviceRevoked(deviceId: self.socketDeviceId, viaConnectError: true))
             }
         }
         socket.on(clientEvent: .reconnectAttempt) { [weak self] _, _ in
@@ -221,6 +228,11 @@ final class RealtimeClient: ObservableObject {
         bind(socket, "secret:chat:accepted", SecretChatAcceptedPayload.self) {
             .secretChatAccepted(conversationId: $0.conversationId, peerDeviceId: $0.peerDeviceId)
         }
+        // X5: «Отключить» с другого устройства (или бан аккаунта: deviceId "*"). Обработчика
+        // не было вовсе — ключи секреток оставались на отозванном телефоне.
+        bind(socket, "device:revoked", DeviceRevokedPayload.self) {
+            .deviceRevoked(deviceId: $0.deviceId, viaConnectError: false)
+        }
         // Заявки в друзья живут вживую: payload не разбираем — экран просто перечитывает
         // списки. on() напрямую: у части событий payload может быть пустым.
         for event in ["contacts:request:new", "contacts:request:accepted", "contacts:request:rejected", "contacts:removed"] {
@@ -253,9 +265,11 @@ final class RealtimeClient: ObservableObject {
             .callEnded(conversationId: $0.conversationId, byUserId: $0.by?.id ?? "")
         }
 
+        let handshakeDeviceId = deviceIdProvider.deviceId()
+        socketDeviceId = handshakeDeviceId
         socket.connect(withPayload: [
             "token": token,
-            "deviceId": deviceIdProvider.deviceId(),
+            "deviceId": handshakeDeviceId,
         ])
     }
 

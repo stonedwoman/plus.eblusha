@@ -33,4 +33,9 @@ struct DeviceDto: Decodable {
     var lastCity: String?
     var signedPreKey: JSONValue? // наличие => ключи E2EE готовы
     var availablePrekeys: Int?
+    /// Открытая X25519-идентичность устройства, как её зарегистрировал сам клиент
+    /// (веб — base64, Android/iOS — b64url). По ней связка ключей (device_link_keys)
+    /// проверяется на «прислало действительно наше устройство» (X4).
+    var publicKey: String?
+    var identityPublicKey: String?
 }

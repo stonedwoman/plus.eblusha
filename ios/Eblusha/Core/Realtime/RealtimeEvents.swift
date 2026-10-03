@@ -19,6 +19,11 @@ enum RealtimeEvent {
     case secretNotify(toDeviceId: String?, msgId: String?)
     /// Собеседник принял секретный чат на ОДНОМ устройстве → создатель ключует ровно его.
     case secretChatAccepted(conversationId: String, peerDeviceId: String)
+    /// X5: устройство отозвано. `device:revoked` — сервер выгнал комнату устройства
+    /// (deviceId) или весь аккаунт ("*": бан/удаление); connect_error `DEVICE_REVOKED`
+    /// (viaConnectError) — ни один id рукопожатия не жив, deviceId — тот, с которым мы
+    /// стучались. Что делать, решает SecretRepository.revocationVerdict.
+    case deviceRevoked(deviceId: String?, viaConnectError: Bool)
 
     case callIncoming(conversationId: String, fromUserId: String, fromName: String, video: Bool)
     /// `live` — ответ на приглашение в УЖЕ идущий разговор (вход своим вторым устройством),
@@ -140,4 +145,9 @@ struct SecretNotifyPayload: Decodable {
 struct SecretChatAcceptedPayload: Decodable {
     let conversationId: String
     let peerDeviceId: String
+}
+
+struct DeviceRevokedPayload: Decodable {
+    var deviceId: String?
+    var reason: String?
 }

@@ -11,6 +11,8 @@ struct RootView: View {
     @ObservedObject private var session: SessionStore
     @ObservedObject private var lifecycle = AppLifecycle.shared
     @State private var bootstrapped = false
+    /// Идёт разбор сигнала отзыва: connect_error сыплется на каждый реконнект.
+    @State private var revocationHandling = false
     /// Досыл секретной очереди при приходе ключа — работает и когда экран беседы закрыт.
     @State private var secretFlusher = SecretOutboxFlusher(
         secret: AppContainer.shared.secretRepository,
@@ -36,14 +38,7 @@ struct RootView: View {
                 AuthFlowView(container: container)
             case .loggedIn:
                 HomeNavView(container: container) {
-                    Task {
-                        // Токен снимаем ДО выхода: после очистки сессии запрос ушёл бы
-                        // без авторизации, и следующий владелец телефона получал бы
-                        // чужие уведомления.
-                        await PushRepository.shared.unregister()
-                        await container.authRepository.logout()
-                        container.clearLocalData()
-                    }
+                    Task { await logout() }
                 }
             }
 
@@ -64,8 +59,10 @@ struct RootView: View {
         // и pushRepository.syncToken() — в этих же точках, как в оригинале.
         .onChange(of: loggedIn) { _, isIn in
             if isIn {
-                container.realtimeClient.connect()
-                startAfterLogin()
+                // Сразу после входа сокет подключаем ПОСЛЕ бутстрапа устройства: бутстрап
+                // может сменить id (отозванный/стёртый, X5/H13), а рукопожатие со старым
+                // отозванным id сервер отвергнет как DEVICE_REVOKED.
+                startAfterLogin(connectFirst: false)
             } else {
                 container.realtimeClient.disconnect()
                 // Выход по 401 (сеанс отозван) сессию чистит, а флаг «устройство
@@ -77,8 +74,7 @@ struct RootView: View {
         }
         .onAppear {
             if loggedIn {
-                container.realtimeClient.connect()
-                startAfterLogin()
+                startAfterLogin(connectFirst: true)
             }
         }
         // Глобальные секретные обработчики (порт LaunchedEffect из RootNavHost): работают
@@ -100,6 +96,8 @@ struct RootView: View {
                         threadId: conversationId, peerDeviceId: peerDeviceId
                     )
                 }
+            case .deviceRevoked(let deviceId, let viaConnectError):
+                Task { await handleDeviceRevoked(deviceId: deviceId, viaConnectError: viaConnectError) }
             default:
                 break
             }
@@ -126,14 +124,58 @@ struct RootView: View {
     }
 
     /// Порядок важен: устройство сначала регистрируется (и, возможно, ротирует id при
-    /// 409), и только потом ему можно привязывать push-токены — иначе
+    /// 409/отзыве), и только потом ему можно привязывать push-токены — иначе
     /// POST /devices/{id}/push отвечает 404 несуществующему устройству.
-    private func startAfterLogin() {
+    /// connectFirst: холодный старт с живой сессией — сокет не ждёт регистрации (она там
+    /// почти всегда уже пройдена); сразу после входа — ждёт (см. onChange(loggedIn)).
+    private func startAfterLogin(connectFirst: Bool) {
+        if connectFirst { container.realtimeClient.connect() }
         Task {
             await container.secretRepository.ensureDeviceBootstrap()
+            if !connectFirst { container.realtimeClient.connect() }
             await container.secretRepository.syncInbox()
             await PushRepository.shared.syncTokens()
             MessageNotifications.shared.requestPermissionAfterLogin()
+        }
+    }
+
+    /// Выход: пользователем («Выйти») или потому, что это устройство отозвали.
+    private func logout() async {
+        // Токен снимаем ДО выхода: после очистки сессии запрос ушёл бы
+        // без авторизации, и следующий владелец телефона получал бы
+        // чужие уведомления.
+        await PushRepository.shared.unregister()
+        await container.authRepository.logout()
+        // Стирает ключи секреток и заводит новый id устройства (H13).
+        container.clearLocalData()
+    }
+
+    /// X5: устройство отозвали («Отключить» с другого устройства, бан аккаунта). Как веб:
+    /// стираем ключи секреток и выходим — отозванный телефон не должен ни хранить ключи,
+    /// ни воскрешать свой id перерегистрацией. connect_error сначала сверяется со списком
+    /// устройств: «id ещё не зарегистрирован» — повод для бутстрапа, а не для выхода.
+    private func handleDeviceRevoked(deviceId: String?, viaConnectError: Bool) async {
+        guard loggedIn, !revocationHandling else { return }
+        revocationHandling = true
+        defer { revocationHandling = false }
+        let verdict = await container.secretRepository.revocationVerdict(
+            revokedDeviceId: deviceId, viaConnectError: viaConnectError
+        )
+        switch verdict {
+        case .logout:
+            NSLog("RootView: this device was revoked — wiping secret keys and logging out")
+            container.realtimeClient.disconnect()
+            await logout()
+        case .rebootstrap:
+            let before = container.deviceIdProvider.deviceId()
+            // Сменённый id переподключает сокет сам (onDeviceIdRotated); тот же — переподключаем
+            // здесь: рукопожатие шло, пока сервер этого id ещё не знал.
+            if await container.secretRepository.rebootstrapDevice(),
+               container.deviceIdProvider.deviceId() == before {
+                container.realtimeClient.reconnectForDeviceChange()
+            }
+        case .ignore:
+            break
         }
     }
 }

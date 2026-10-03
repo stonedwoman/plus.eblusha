@@ -18,12 +18,17 @@ final class APIClient {
     /// из TokenAuthenticator — здесь ту же роль играет actor c общей задачей).
     private let refresher = TokenRefresher()
 
-    init(session: SessionStore, deviceIdProvider: DeviceIdProvider) {
+    /// `urlSession` подменяется только в тестах (фиктивный транспорт вместо сети).
+    init(session: SessionStore, deviceIdProvider: DeviceIdProvider, urlSession: URLSession? = nil) {
         self.session = session
         self.deviceIdProvider = deviceIdProvider
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
-        self.urlSession = URLSession(configuration: config)
+        if let urlSession {
+            self.urlSession = urlSession
+        } else {
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 30
+            self.urlSession = URLSession(configuration: config)
+        }
     }
 
     // MARK: - Публичные вызовы
@@ -47,6 +52,16 @@ final class APIClient {
         authorized: Bool = true
     ) async throws {
         _ = try await raw(path: path, method: "POST", query: [], body: body, authorized: authorized)
+    }
+
+    /// POST, ответ которого нужен «по возможности»: тело отдаётся сырым, чтобы разбор
+    /// необязательных полей не превращал успешный запрос в ошибку.
+    func postRaw<In: Encodable>(
+        _ path: String,
+        body: In,
+        authorized: Bool = true
+    ) async throws -> Data {
+        try await raw(path: path, method: "POST", query: [], body: body, authorized: authorized)
     }
 
     func delete<Out: Decodable>(_ path: String) async throws -> Out {

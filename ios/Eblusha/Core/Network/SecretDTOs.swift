@@ -36,6 +36,28 @@ struct PublishPrekeysRequest: Encodable {
     let prekeys: [PrekeyUpload]
 }
 
+/// Ответ /devices/register и /devices/{id}/prekeys: сервер держит не больше 250 невыданных
+/// OPK на устройство и молча отбрасывает лишние — принятые перечислены в insertedKeyIds.
+/// Секреты отброшенных хранить незачем (H04). nil — старый сервер без поля: ничего не чистим.
+struct PrekeysAcceptedResponse: Decodable {
+    var insertedKeyIds: [String]?
+
+    private enum CodingKeys: String, CodingKey { case insertedKeyIds }
+
+    init(insertedKeyIds: [String]? = nil) {
+        self.insertedKeyIds = insertedKeyIds
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        insertedKeyIds = try? c.decodeIfPresent([String].self, forKey: .insertedKeyIds)
+    }
+
+    static func lenient(_ data: Data) -> PrekeysAcceptedResponse {
+        (try? JSONDecoder().decode(PrekeysAcceptedResponse.self, from: data)) ?? PrekeysAcceptedResponse()
+    }
+}
+
 // MARK: - Prekey-бандлы / claim (открытые ключи устройств собеседника)
 
 struct PrekeyBundlesResponse: Decodable {
@@ -131,27 +153,33 @@ extension SecretHeader {
         case type, fromDeviceId, requesterDeviceId, ts, token, code, attachment
     }
 
+    /// Терпимый разбор (H12). Заголовок пишет ОТПРАВИТЕЛЬ — любой пользователь через
+    /// /secret/send, любой участник через /messages/push, — поэтому неверный тип одного
+    /// необязательного поля не должен ронять ни конверт, ни (раньше) всю пачку инбокса:
+    /// такое поле читается как отсутствующее. Обязателен только `kind` — без него конверт
+    /// не к чему отнести; такой элемент разбор пачки пропускает и подтверждает
+    /// (SecretInboxResponse.undecodableMsgIds).
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        v = try c.decodeIfPresent(Int.self, forKey: .v) ?? 1
         kind = try c.decode(String.self, forKey: .kind)
-        nonce = try c.decodeIfPresent(String.self, forKey: .nonce)
-        packageKind = try c.decodeIfPresent(String.self, forKey: .packageKind)
-        threadId = try c.decodeIfPresent(String.self, forKey: .threadId)
-        recipientDeviceId = try c.decodeIfPresent(String.self, forKey: .recipientDeviceId)
-        initiatorDeviceId = try c.decodeIfPresent(String.self, forKey: .initiatorDeviceId)
-        initiatorIdentityKey = try c.decodeIfPresent(String.self, forKey: .initiatorIdentityKey)
-        prekeyId = try c.decodeIfPresent(String.self, forKey: .prekeyId)
-        handshakeSalt = try c.decodeIfPresent(String.self, forKey: .handshakeSalt)
-        hkdfInfo = try c.decodeIfPresent(String.self, forKey: .hkdfInfo)
-        alg = try c.decodeIfPresent(String.self, forKey: .alg)
-        type = try c.decodeIfPresent(String.self, forKey: .type)
-        fromDeviceId = try c.decodeIfPresent(String.self, forKey: .fromDeviceId)
-        requesterDeviceId = try c.decodeIfPresent(String.self, forKey: .requesterDeviceId)
-        ts = try c.decodeIfPresent(Int64.self, forKey: .ts)
-        token = try c.decodeIfPresent(String.self, forKey: .token)
-        code = try c.decodeIfPresent(String.self, forKey: .code)
-        attachment = try c.decodeIfPresent(SecretHeaderAttachment.self, forKey: .attachment)
+        v = (try? c.decodeIfPresent(Int.self, forKey: .v)) ?? 1
+        nonce = try? c.decodeIfPresent(String.self, forKey: .nonce)
+        packageKind = try? c.decodeIfPresent(String.self, forKey: .packageKind)
+        threadId = try? c.decodeIfPresent(String.self, forKey: .threadId)
+        recipientDeviceId = try? c.decodeIfPresent(String.self, forKey: .recipientDeviceId)
+        initiatorDeviceId = try? c.decodeIfPresent(String.self, forKey: .initiatorDeviceId)
+        initiatorIdentityKey = try? c.decodeIfPresent(String.self, forKey: .initiatorIdentityKey)
+        prekeyId = try? c.decodeIfPresent(String.self, forKey: .prekeyId)
+        handshakeSalt = try? c.decodeIfPresent(String.self, forKey: .handshakeSalt)
+        hkdfInfo = try? c.decodeIfPresent(String.self, forKey: .hkdfInfo)
+        alg = try? c.decodeIfPresent(String.self, forKey: .alg)
+        type = try? c.decodeIfPresent(String.self, forKey: .type)
+        fromDeviceId = try? c.decodeIfPresent(String.self, forKey: .fromDeviceId)
+        requesterDeviceId = try? c.decodeIfPresent(String.self, forKey: .requesterDeviceId)
+        ts = try? c.decodeIfPresent(Int64.self, forKey: .ts)
+        token = try? c.decodeIfPresent(String.self, forKey: .token)
+        code = try? c.decodeIfPresent(String.self, forKey: .code)
+        attachment = try? c.decodeIfPresent(SecretHeaderAttachment.self, forKey: .attachment)
     }
 }
 
@@ -228,14 +256,50 @@ struct SecretSendBatchRequest: Encodable {
 }
 
 /// Поле инбокса у бэкенда — `messages`, НЕ `items`: старое имя молча парсилось в пустоту.
+///
+/// H12: пачка разбирается ПОЭЛЕМЕНТНО. Раньше один элемент с заголовком неверной формы
+/// ронял декодирование всего ответа — ack становился невозможен, запись навсегда стояла
+/// в голове FIFO (сервер отдаёт первые 50), и входящие секреток умирали. Теперь такой
+/// элемент пропускается, а его msgId (если он читается) попадает в undecodableMsgIds —
+/// вызывающий обязан его подтвердить.
 struct SecretInboxResponse: Decodable {
     var messages: [SecretInboxItemDto] = []
+    var undecodableMsgIds: [String] = []
 
     private enum CodingKeys: String, CodingKey { case messages }
 
+    init(messages: [SecretInboxItemDto] = [], undecodableMsgIds: [String] = []) {
+        self.messages = messages
+        self.undecodableMsgIds = undecodableMsgIds
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        messages = try c.decodeIfPresent([SecretInboxItemDto].self, forKey: .messages) ?? []
+        guard let elements = try? c.decodeIfPresent([LossyElement<SecretInboxItemDto>].self, forKey: .messages) else {
+            return
+        }
+        for element in elements {
+            if let item = element.value {
+                messages.append(item)
+            } else if let msgId = element.msgId {
+                undecodableMsgIds.append(msgId)
+            }
+        }
+    }
+}
+
+/// Элемент массива, разбор которого не бросает: иначе неразобранный элемент не сдвигал бы
+/// курсор UnkeyedDecodingContainer и пачку нельзя было бы дочитать.
+struct LossyElement<T: Decodable>: Decodable {
+    let value: T?
+    /// msgId сырого элемента — чтобы подтвердить даже то, что не разобралось.
+    let msgId: String?
+
+    private enum IdKey: String, CodingKey { case msgId }
+
+    init(from decoder: Decoder) throws {
+        value = try? T(from: decoder)
+        msgId = try? decoder.container(keyedBy: IdKey.self).decode(String.self, forKey: .msgId)
     }
 }
 
@@ -271,14 +335,18 @@ struct SecretHistoryResponse: Decodable {
     var items: [SecretMessageItemDto] = []
     var hasMore: Bool = false
     var nextCursor: String?           // "createdAtISO|msgId" — keyset, как в обычной истории
+    /// Строки, которые не разобрались (H12): страница их пропускает, а не падает целиком.
+    var skippedCount = 0
 
     private enum CodingKeys: String, CodingKey { case items, hasMore, nextCursor }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        items = try c.decodeIfPresent([SecretMessageItemDto].self, forKey: .items) ?? []
-        hasMore = try c.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
-        nextCursor = try c.decodeIfPresent(String.self, forKey: .nextCursor)
+        let elements = (try? c.decodeIfPresent([LossyElement<SecretMessageItemDto>].self, forKey: .items)) ?? nil
+        items = (elements ?? []).compactMap(\.value)
+        skippedCount = (elements?.count ?? 0) - items.count
+        hasMore = (try? c.decodeIfPresent(Bool.self, forKey: .hasMore)) ?? false
+        nextCursor = try? c.decodeIfPresent(String.self, forKey: .nextCursor)
     }
 }
 
@@ -342,4 +410,49 @@ struct AcceptSecretThreadResponse: Decodable {
 struct PushTokenRequest: Encodable {
     let token: String
     var provider: String = "apns"
+}
+
+// MARK: - Участники секретных тредов (проверка отправителя ключа, H01/H03)
+
+/// Минимальный срез GET /conversations: только то, что нужно, чтобы решить «отправитель —
+/// участник этого SECRET-треда». Разбор терпимый: одна непонятная беседа не мешает остальным.
+struct SecretMembershipListResponse: Decodable {
+    var conversations: [LossyElement<SecretMembershipRow>] = []
+
+    private enum CodingKeys: String, CodingKey { case conversations }
+
+    init(conversations: [LossyElement<SecretMembershipRow>] = []) {
+        self.conversations = conversations
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        conversations = (try? c.decodeIfPresent([LossyElement<SecretMembershipRow>].self, forKey: .conversations)) ?? []
+    }
+}
+
+struct SecretMembershipRow: Decodable {
+    let conversation: SecretMembershipConversation
+}
+
+struct SecretMembershipConversation: Decodable {
+    let id: String
+    var type: String?
+    var isSecret: Bool?
+    var participants: [SecretMembershipParticipant] = []
+
+    private enum CodingKeys: String, CodingKey { case id, type, isSecret, participants }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        type = try? c.decodeIfPresent(String.self, forKey: .type)
+        isSecret = try? c.decodeIfPresent(Bool.self, forKey: .isSecret)
+        participants = ((try? c.decodeIfPresent([LossyElement<SecretMembershipParticipant>].self, forKey: .participants)) ?? nil)?
+            .compactMap(\.value) ?? []
+    }
+}
+
+struct SecretMembershipParticipant: Decodable {
+    let userId: String
 }

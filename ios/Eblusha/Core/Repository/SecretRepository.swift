@@ -64,6 +64,21 @@ final class SecretRepository {
     private var lastRebootstrapMs: Int64 = 0
     private var localInvite: DeviceLinkInvite?
 
+    // Участники SECRET-тредов, в которых мы состоим: threadId → userId участников (H01/H03).
+    // Состав 1:1-секретки не меняется, поэтому кэш только положительный; промах — повод
+    // перечитать список бесед (не чаще membershipRefetchMs).
+    private var membershipCache: [String: Set<String>] = [:]
+    private var membershipFetchStartedMs: Int64 = 0
+    // H04: prekeys_needed пополняет пул не чаще раза в prekeysNeededThrottleMs.
+    private var lastPrekeysNeededReplenishMs: Int64 = 0
+    // connect_error DEVICE_REVOKED сыплется на каждый реконнект — сверяемся со списком
+    // устройств не чаще раза в revocationCheckThrottleMs.
+    private var lastRevocationCheckMs: Int64 = 0
+
+    // Бутстрап может стереть ключи и сменить id (X5/H13) — параллельный бутстрап в этот
+    // момент зарегистрировал бы на сервере уже стёртую идентичность. Сериализуем.
+    private let bootstrapGate = AsyncSemaphore(1)
+
     // Пик расшифровки вложения = шифртекст+плейнтекст в памяти (~2× размера). Большие —
     // строго по одному, мелкие — до трёх (параллельный автодекод видимых видео-пузырей
     // иначе съедал бы сотни МБ; порт ревью Android).
@@ -113,6 +128,14 @@ final class SecretRepository {
     /// Порог «большого» вложения: выше — расшифровка строго по одному (2× размер в памяти).
     private static let bigAttachmentBytes: Int64 = 15 * 1024 * 1024
     private static let inviteTtlMs: Int64 = 5 * 60_000
+    /// Сколько невыданных OPK на сервере достаточно, чтобы новых не публиковать (как веб:
+    /// MIN_SERVER_PREKEY_RESERVE). Иначе каждый prekeys_needed добавлял бы +50 секретов.
+    static let minServerPrekeyReserve = 20
+    /// Серверный потолок невыданных OPK на устройство (devices.ts MAX_UNCONSUMED_PREKEYS_PER_DEVICE).
+    static let serverPrekeyCap = 250
+    private static let prekeysNeededThrottleMs: Int64 = 60_000
+    private static let membershipRefetchMs: Int64 = 2_000
+    private static let revocationCheckThrottleMs: Int64 = 30_000
 
     // MARK: - Бутстрап устройства
 
@@ -121,62 +144,254 @@ final class SecretRepository {
     @discardableResult
     func ensureDeviceBootstrap() async -> Bool {
         if keyStore.isBootstrapped() { return true }
+        return await bootstrapGate.withPermit { await self.bootstrapLocked() }
+    }
+
+    private func bootstrapLocked() async -> Bool {
+        if keyStore.isBootstrapped() { return true } // пока ждали замок, бутстрап уже прошёл
         if !SecretCrypto.selfTest() {
             NSLog("SecretE2EE: SecretCrypto self-test FAILED — interop will not work")
         }
-        let identity = keyStore.loadOrCreateIdentity()
-        let (uploads, secrets) = Self.generatePrekeys(Self.prekeyBatch)
-        keyStore.addPrekeySecrets(secrets)
-        let pub = SecretCrypto.b64UrlEncode(identity.publicKey)
-        func request() -> RegisterDeviceRequest {
-            RegisterDeviceRequest(
-                deviceId: deviceIdProvider.deviceId(),
-                name: "iPhone",
-                platform: "ios",
-                publicKey: pub,
-                identityPublicKey: pub,
-                prekeys: uploads
-            )
-        }
-        do {
-            do {
-                try await devices.register(request())
-            } catch let error as HTTPError where error.code == 409 {
-                // 409 = этот id установки закреплён за ДРУГИМ аккаунтом (device-id
-                // переживает logout, так что после входа под другим пользователем он
-                // занят навсегда). Без ротации бутстрап не проходил бы НИКОГДА, а
-                // x-device-id указывал бы на чужое устройство → /secret/inbox/pull 400
-                // и realtime секреток мёртв (сообщения только реконсиляцией истории).
-                let fresh = deviceIdProvider.rotate()
-                NSLog("SecretE2EE: device id was taken by another account — rotated to %@", fresh)
-                try await devices.register(request())
-                onDeviceIdRotated?()
-            }
-            keyStore.setBootstrapped()
-            NSLog("SecretE2EE: device E2EE bootstrap complete")
-            onDeviceBootstrapped?()
-            return true
-        } catch {
-            NSLog("SecretE2EE: device bootstrap failed: %@", String(describing: error))
+        // Keychain не ответил (до первой разблокировки после ребута) — это НЕ «идентичности
+        // нет»: новая поверх старой разошлась бы с тем, что знает сервер. Повторим позже.
+        let identityState = keyStore.identityState()
+        if identityState == .unavailable {
+            NSLog("SecretE2EE: keychain unavailable — device bootstrap postponed")
             return false
+        }
+        var rotated = false
+        // Что сервер знает о текущем id (nil — спросить не удалось: решаем без него).
+        let status = await ownDeviceStatus()
+        if status == .revoked {
+            // X5: отозванный id не воскрешаем перерегистрацией (сервер пока снимает отзыв
+            // молча). Ключи этого устройства стираются, дальше — чистое новое устройство;
+            // ключи секреток оно получит только через привязку.
+            wipeDeviceKeys(reason: "device id is revoked")
+            rotated = true
+        } else if identityState == .missing,
+                  status == .live || (status == nil && deviceIdProvider.wasRegistered(deviceIdProvider.deviceId())) {
+            // H13: идентичность стёрта (выход, сбой), а id прежний. Под ним на сервере лежат
+            // неизрасходованные OPK, секретов к которым больше нет, — claim отдаёт самые
+            // старые, и пакеты ключей не вскрылись бы. Новый id = чистое новое устройство.
+            let fresh = deviceIdProvider.rotate()
+            NSLog("SecretE2EE: device keys were wiped but the id is registered — rotated to %@", fresh)
+            rotated = true
+        }
+        for attempt in 0..<2 {
+            let identity = keyStore.loadOrCreateIdentity()
+            let (uploads, secrets) = Self.generatePrekeys(Self.prekeyBatch)
+            keyStore.addPrekeySecrets(secrets)
+            let pub = SecretCrypto.b64UrlEncode(identity.publicKey)
+            let deviceId = deviceIdProvider.deviceId()
+            do {
+                let accepted = try await devices.register(RegisterDeviceRequest(
+                    deviceId: deviceId,
+                    name: "iPhone",
+                    platform: "ios",
+                    publicKey: pub,
+                    identityPublicKey: pub,
+                    prekeys: uploads
+                ))
+                dropRejectedPrekeys(published: secrets.keys, accepted: accepted)
+                deviceIdProvider.markRegistered(deviceId)
+                keyStore.setBootstrapped()
+                NSLog("SecretE2EE: device E2EE bootstrap complete")
+                if rotated { onDeviceIdRotated?() }
+                onDeviceBootstrapped?()
+                return true
+            } catch let error as HTTPError where (error.code == 409 || error.code == 410) && attempt == 0 {
+                // Сервер регистрацию отверг — эти prekeys он не принял.
+                keyStore.removePrekeySecrets(secrets.keys)
+                if await isRevokedConflict(error) {
+                    // Будущий серверный запрет (S5): отозванный id не регистрируется.
+                    wipeDeviceKeys(reason: "register refused: device revoked")
+                } else {
+                    // 409 = этот id установки закреплён за ДРУГИМ аккаунтом. Без ротации
+                    // бутстрап не проходил бы НИКОГДА, а x-device-id указывал бы на чужое
+                    // устройство → /secret/inbox/pull 400 и realtime секреток мёртв.
+                    let fresh = deviceIdProvider.rotate()
+                    NSLog("SecretE2EE: device id was taken by another account — rotated to %@", fresh)
+                }
+                rotated = true
+            } catch {
+                // Сбой сети: секреты НЕ удаляем — регистрация могла дойти, а ответ потеряться.
+                NSLog("SecretE2EE: device bootstrap failed: %@", String(describing: error))
+                if rotated { onDeviceIdRotated?() }
+                return false
+            }
+        }
+        if rotated { onDeviceIdRotated?() }
+        return false
+    }
+
+    /// Что сервер знает о нашем устройстве.
+    enum OwnDeviceStatus: Equatable {
+        case live
+        case revoked
+        /// Сервер такого id у нас не знает (не регистрировались, восстановление БД).
+        case missing
+    }
+
+    static func ownDeviceStatus(_ devices: [DeviceDto], myId: String) -> OwnDeviceStatus {
+        guard let mine = devices.first(where: { $0.id == myId }) else { return .missing }
+        return mine.revokedAt == nil ? .live : .revoked
+    }
+
+    /// nil — спросить не удалось (сеть, нет сессии).
+    func ownDeviceStatus() async -> OwnDeviceStatus? {
+        guard let list = try? await devices.list().devices else { return nil }
+        return Self.ownDeviceStatus(list, myId: deviceIdProvider.deviceId())
+    }
+
+    private func isRevokedConflict(_ error: HTTPError) async -> Bool {
+        if error.code == 410 { return true }
+        let body = String(data: error.body, encoding: .utf8)?.lowercased() ?? ""
+        if body.contains("revoked") { return true }
+        return await ownDeviceStatus() == .revoked
+    }
+
+    /// Стирает ВЕСЬ ключевой материал устройства и заводит новый id (отзыв, X5).
+    private func wipeDeviceKeys(reason: String) {
+        try? FileManager.default.removeItem(at: Self.attCacheDirectory())
+        stateLock.withStateLock {
+            localInvite = nil
+            membershipCache.removeAll()
+        }
+        invalidateReceivers(nil)
+        keyStore.clear()
+        let fresh = deviceIdProvider.rotate()
+        NSLog("SecretE2EE: %@ — device keys wiped, new device id %@", reason, fresh)
+    }
+
+    /// Что делать с сигналом отзыва из сокета.
+    enum RevocationVerdict: Equatable {
+        /// Отозвано именно это устройство (или весь аккаунт) — выйти и стереть ключи (как веб).
+        case logout
+        /// Id ещё не зарегистрирован (бутстрап не успел) — зарегистрироваться и переподключиться.
+        case rebootstrap
+        case ignore
+    }
+
+    /// `device:revoked` сервер шлёт в комнату устройства (deviceId) или всего аккаунта
+    /// ("*": бан/удаление). connect_error `DEVICE_REVOKED` значит лишь, что ни один id
+    /// рукопожатия не жив, — это и отзыв, и «новый id ещё не успел зарегистрироваться»;
+    /// различаем по списку устройств (Б6: самолечение не отключать).
+    static func revocationVerdict(
+        revokedDeviceId: String?,
+        viaConnectError: Bool,
+        myDeviceId: String,
+        status: OwnDeviceStatus?
+    ) -> RevocationVerdict {
+        if !viaConnectError {
+            guard let id = revokedDeviceId?.trimmed(), id == "*" || id == myDeviceId else { return .ignore }
+            return .logout
+        }
+        // Рукопожатие шло со старым id (его уже сменили) — сокет и так пересобирается.
+        if let id = revokedDeviceId, id != myDeviceId { return .ignore }
+        switch status {
+        case .revoked?: return .logout
+        case .missing?: return .rebootstrap
+        case .live?, nil: return .ignore // не смогли спросить: мёртвая сессия умрёт на 401 сама
         }
     }
 
-    /// Пополняет пул one-time prekeys (сервер сообщает об иссякании: kind="prekeys_needed").
+    func revocationVerdict(revokedDeviceId: String?, viaConnectError: Bool) async -> RevocationVerdict {
+        let myId = deviceIdProvider.deviceId()
+        guard viaConnectError else {
+            return Self.revocationVerdict(
+                revokedDeviceId: revokedDeviceId, viaConnectError: false, myDeviceId: myId, status: nil
+            )
+        }
+        if let id = revokedDeviceId, id != myId { return .ignore }
+        let now = nowMs()
+        let allowed: Bool = stateLock.withStateLock {
+            guard now - lastRevocationCheckMs > Self.revocationCheckThrottleMs else { return false }
+            lastRevocationCheckMs = now
+            return true
+        }
+        guard allowed else { return .ignore }
+        return Self.revocationVerdict(
+            revokedDeviceId: revokedDeviceId,
+            viaConnectError: true,
+            myDeviceId: myId,
+            status: await ownDeviceStatus()
+        )
+    }
+
+    /// Устройство отозвано (или не зарегистрировано), а сессия жива: сбросить флаг
+    /// бутстрапа и пройти его заново — он сам решит, нужен ли новый id.
+    func rebootstrapDevice() async -> Bool {
+        keyStore.clearBootstrapped()
+        return await ensureDeviceBootstrap()
+    }
+
+    /// Пополняет пул one-time prekeys (сервер сообщает об иссякании: kind="prekeys_needed",
+    /// перед accept, привязкой и ручным «Повторить»).
+    ///
+    /// H04: публикует, только если на сервере невыданных меньше minServerPrekeyReserve
+    /// (иначе каждый prekeys_needed добавлял бы +50 секретов без предела), и ровно столько,
+    /// сколько сервер примет; секреты не принятых сервером ключей тут же удаляются.
     @discardableResult
     func replenishPrekeys(count: Int = SecretRepository.prekeyBatch) async -> Bool {
+        let deviceId = deviceIdProvider.deviceId()
+        var toPublish = count
+        if let available = await serverAvailablePrekeys(deviceId) {
+            guard available < Self.minServerPrekeyReserve else { return true }
+            toPublish = min(count, max(0, Self.serverPrekeyCap - available))
+            guard toPublish > 0 else { return true }
+        }
+        let (uploads, secrets) = Self.generatePrekeys(toPublish)
+        // Секреты пишем ДО публикации: ключ, выданный сервером раньше, чем мы успели бы
+        // сохранить его секрет, не вскрылся бы никогда.
+        keyStore.addPrekeySecrets(secrets)
         do {
-            let (uploads, secrets) = Self.generatePrekeys(count)
-            keyStore.addPrekeySecrets(secrets)
-            try await devices.publishPrekeys(
-                deviceId: deviceIdProvider.deviceId(),
+            let accepted = try await devices.publishPrekeys(
+                deviceId: deviceId,
                 PublishPrekeysRequest(prekeys: uploads)
             )
+            dropRejectedPrekeys(published: secrets.keys, accepted: accepted)
+            keyStore.prunePrekeySecrets()
             return true
+        } catch let error as HTTPError where (400..<500).contains(error.code) {
+            // Сервер отказал явно (отозвано/неизвестно/лимит) — ничего не принял, секреты бесполезны.
+            keyStore.removePrekeySecrets(secrets.keys)
+            NSLog("SecretE2EE: prekey replenish refused: HTTP %d", error.code)
+            return false
         } catch {
             NSLog("SecretE2EE: prekey replenish failed: %@", String(describing: error))
             return false
         }
+    }
+
+    /// Пополнение по сигналу prekeys_needed — не чаще раза в минуту: шторм таких конвертов
+    /// (в проде их 15 тыс.) иначе превращался бы в шторм публикаций.
+    private func replenishPrekeysOnDemand() async {
+        let now = nowMs()
+        let allowed: Bool = stateLock.withStateLock {
+            guard now - lastPrekeysNeededReplenishMs > Self.prekeysNeededThrottleMs else { return false }
+            lastPrekeysNeededReplenishMs = now
+            return true
+        }
+        guard allowed else { return }
+        await replenishPrekeys()
+    }
+
+    /// Сколько невыданных OPK видит сервер у нашего устройства; nil — не знаем.
+    private func serverAvailablePrekeys(_ deviceId: String) async -> Int? {
+        guard let list = try? await devices.list().devices,
+              let mine = list.first(where: { $0.id == deviceId }),
+              mine.revokedAt == nil else { return nil }
+        return mine.availablePrekeys
+    }
+
+    /// Сервер принимает не больше 250 невыданных OPK; не принятые перечислены неявно —
+    /// их нет в insertedKeyIds. Их секреты хранить незачем.
+    private func dropRejectedPrekeys<S: Sequence>(published: S, accepted: PrekeysAcceptedResponse)
+    where S.Element == String {
+        guard let inserted = accepted.insertedKeyIds else { return } // старый сервер: не знаем
+        let insertedSet = Set(inserted)
+        let rejected = published.filter { !insertedSet.contains($0) }
+        if !rejected.isEmpty { keyStore.removePrekeySecrets(rejected) }
     }
 
     // MARK: - Создание/жизненный цикл треда
@@ -313,38 +528,64 @@ final class SecretRepository {
                 "secret/inbox/pull", query: [URLQueryItem(name: "limit", value: "50")]
             )
             let items = resp.messages
-            guard !items.isEmpty else { return }
-            var acks: [String] = []
+            // H12: элементы, которые не разобрались (заголовок неверной формы), подтверждаем —
+            // иначе они навсегда стоят в голове очереди (сервер отдаёт первые 50) и клинят
+            // все входящие: ключи, сообщения, связывание.
+            var acks: [String] = resp.undecodableMsgIds
+            if !resp.undecodableMsgIds.isEmpty {
+                NSLog("SecretE2EE: %d malformed inbox envelope(s) skipped and acked", resp.undecodableMsgIds.count)
+            }
+            guard !items.isEmpty || !acks.isEmpty else { return }
+            let myDeviceId = deviceIdProvider.deviceId()
+            // OPK, которыми вскрыли пакеты: удалятся через сутки после ack (одноразовые, H04).
+            var usedPrekeys: [String] = []
+            var prekeysNeeded = false
             for item in items {
                 let h = item.headerJson
                 if h.kind == "key_package", h.packageKind == "thread_key" {
-                    if await importKeyPackage(item) {
+                    switch await importKeyPackage(item) {
+                    case .imported(let threadId, _):
                         acks.append(item.msgId)
                         poisonAttempts.removeValue(forKey: item.msgId)
-                        if let threadId = h.threadId {
-                            keyImported.send(threadId)
-                            // Квитанция инициатору, чтобы он перестал переслать (веб-паритет).
-                            if let initiator = h.initiatorDeviceId {
-                                try? await sendControl(
-                                    toDeviceId: initiator,
-                                    header: SecretHeader(
-                                        kind: "control",
-                                        threadId: threadId,
-                                        type: "key_receipt",
-                                        fromDeviceId: deviceIdProvider.deviceId()
-                                    )
+                        if let prekeyId = h.prekeyId { usedPrekeys.append(prekeyId) }
+                        keyImported.send(threadId)
+                        // Квитанция инициатору, чтобы он перестал переслать (веб-паритет).
+                        if let initiator = h.initiatorDeviceId?.trimmed(), !initiator.isEmpty, initiator != myDeviceId {
+                            try? await sendControl(
+                                toDeviceId: initiator,
+                                header: SecretHeader(
+                                    kind: "control",
+                                    threadId: threadId,
+                                    type: "key_receipt",
+                                    fromDeviceId: myDeviceId
                                 )
-                            }
+                            )
                         }
-                    } else {
+                    case .rejected(let reason, let opened):
+                        NSLog("SecretE2EE: thread_key %@ rejected: %@", item.msgId, reason)
+                        acks.append(item.msgId)
+                        poisonAttempts.removeValue(forKey: item.msgId)
+                        if opened, let prekeyId = h.prekeyId { usedPrekeys.append(prekeyId) }
+                    case .retry(let reason):
+                        NSLog("SecretE2EE: thread_key %@ postponed: %@", item.msgId, reason)
                         registerPoisonFailure(item.msgId, acks: &acks)
+                    case .linked:
+                        acks.append(item.msgId)
                     }
                 } else if h.kind == "key_package", h.packageKind == "device_link_keys" {
                     // Привязка устройства: связка ВСЕХ ключей тредов с доверенного устройства.
-                    if await importDeviceLinkKeys(item) {
+                    switch await importDeviceLinkKeys(item) {
+                    case .linked, .imported:
                         acks.append(item.msgId)
                         poisonAttempts.removeValue(forKey: item.msgId)
-                    } else {
+                        if let prekeyId = h.prekeyId { usedPrekeys.append(prekeyId) }
+                    case .rejected(let reason, let opened):
+                        NSLog("SecretE2EE: device_link_keys %@ rejected: %@", item.msgId, reason)
+                        acks.append(item.msgId)
+                        poisonAttempts.removeValue(forKey: item.msgId)
+                        if opened, let prekeyId = h.prekeyId { usedPrekeys.append(prekeyId) }
+                    case .retry(let reason):
+                        NSLog("SecretE2EE: device_link_keys %@ postponed: %@", item.msgId, reason)
                         registerPoisonFailure(item.msgId, acks: &acks)
                     }
                 } else if h.kind == "link_device_join" {
@@ -352,16 +593,16 @@ final class SecretRepository {
                     // нашего приглашения. Отдаём ТОЛЬКО при совпадении с активным локальным
                     // приглашением (веб отдаёт без проверки — намеренно строже: иначе любое
                     // добавленное в аккаунт устройство молча выкачивало бы все ключи).
-                    // ack ТОЛЬКО когда запрос обработан (или заведомо чужой): иначе один
-                    // прилетевший раньше времени запрос сжигался бы, и повторное «Добавить
-                    // устройство» уже не помогло бы — конверт удалён.
-                    let handled = (try? await handleLinkDeviceJoin(h)) ?? false
-                    if handled { acks.append(item.msgId) }
+                    // Своё-без-приглашения НЕ ack-ается (доживёт TTL до момента, когда
+                    // пользователь откроет приглашение); чужое и негодное — ack (X3).
+                    if await handleLinkDeviceJoin(item) { acks.append(item.msgId) }
                 } else if h.kind == "control" {
-                    try? await handleControl(item)
-                    acks.append(item.msgId)
+                    switch await handleControl(item) {
+                    case .done: acks.append(item.msgId)
+                    case .retry: registerPoisonFailure(item.msgId, acks: &acks)
+                    }
                 } else if h.kind == "prekeys_needed" {
-                    await replenishPrekeys()
+                    prekeysNeeded = true // один раз на пачку, с троттлом и сверкой с сервером (H04)
                     acks.append(item.msgId)
                 } else if h.kind == "msg" {
                     // Огорожено: один битый конверт (плохой base64/nonce) не должен
@@ -375,8 +616,16 @@ final class SecretRepository {
                     acks.append(item.msgId) // неизвестные kind не должны клинить инбокс
                 }
             }
-            if !acks.isEmpty {
-                try await api.postIgnoringResponse("secret/inbox/ack", body: SecretAckRequest(msgIds: acks))
+            if prekeysNeeded { await replenishPrekeysOnDemand() }
+            // Сервер принимает в ack только UUID и отвергает ВЕСЬ запрос из-за одного кривого
+            // id — такой (неоткуда ему взяться, но всё же) не должен держать остальные.
+            let ackable = orderedDistinct(acks.filter { UUID(uuidString: $0) != nil })
+            if !ackable.isEmpty {
+                try await api.postIgnoringResponse("secret/inbox/ack", body: SecretAckRequest(msgIds: ackable))
+            }
+            if !usedPrekeys.isEmpty {
+                keyStore.markPrekeysUsed(usedPrekeys)
+                keyStore.prunePrekeySecrets()
             }
         } catch {
             NSLog("SecretE2EE: inbox sync failed: %@", String(describing: error))
@@ -635,23 +884,22 @@ final class SecretRepository {
         limit: Int = 80
     ) async -> ApiResult<SecretHistoryPage> {
         await safeApiCall {
-            let key = self.keyStore.threadKey(conversationId)
             let me = self.session.currentUserId()
             var query = [
                 URLQueryItem(name: "threadId", value: conversationId),
                 URLQueryItem(name: "limit", value: String(limit)),
             ]
             if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+            // Строки неверной формы разбор страницы пропускает (H12), а не падает целиком.
             let resp: SecretHistoryResponse = try await self.api.get("secret/history", query: query)
+            if resp.skippedCount > 0 {
+                NSLog("SecretE2EE: history of %@: %d malformed row(s) skipped", conversationId, resp.skippedCount)
+            }
+            let keys = self.keyStore.threadKeysForDecrypt(conversationId) // текущий, затем прежние
             let messages = resp.items.compactMap { item -> DecryptedSecretMessage? in
                 // Пер-строчный guard: одна битая строка не должна валить страницу навсегда.
                 guard let nonceB64 = item.headerJson.nonce else { return nil }
-                var plain: Data?
-                if let key,
-                   let cipher = SecretCrypto.b64UrlDecode(item.ciphertext),
-                   let nonce = SecretCrypto.b64UrlDecode(nonceB64) {
-                    plain = SecretCrypto.secretBoxOpen(cipher: cipher, nonce: nonce, key: key)
-                }
+                let plain = Self.openWithKeys(keys, cipherB64: item.ciphertext, nonceB64: nonceB64)
                 let (text, atts) = Self.decodeContent(plain, contentType: item.contentType)
                 return DecryptedSecretMessage(
                     id: item.msgId,
@@ -686,16 +934,57 @@ final class SecretRepository {
         ))
     }
 
+    enum ControlOutcome: Equatable {
+        case done
+        /// Проверить запрос сейчас нечем (сеть) — оставить в инбоксе (с учётом отравления).
+        case retry
+    }
+
+    /// Адресат ответа на key_request — ТОЛЬКО устройство, названное в заголовке
+    /// (requesterDeviceId, у старых — fromDeviceId). senderDeviceId — это did отправителя без
+    /// проверки владельца (X8): запасным адресатом ключа он больше не служит.
+    static func keyRequestTarget(_ h: SecretHeader, myDeviceId: String) -> String? {
+        let candidate = (h.requesterDeviceId ?? h.fromDeviceId)?.trimmed() ?? ""
+        guard !candidate.isEmpty, candidate != myDeviceId else { return nil }
+        return candidate
+    }
+
     /// Другое устройство просит ключ треда (пропущенный/протухший пакет) — пересылаем,
-    /// если держим.
-    private func handleControl(_ item: SecretInboxItemDto) async throws {
+    /// если держим. H03: ключ уходит только УЧАСТНИКУ этого SECRET-треда (senderUserId
+    /// ставит сервер из авторизации) и только на его ЖИВОЕ устройство — раньше его получал
+    /// любой, кто знал threadId и назвал в заголовке любое устройство.
+    private func handleControl(_ item: SecretInboxItemDto) async -> ControlOutcome {
         let h = item.headerJson
         switch h.type ?? "" {
         case "key_request", "key_resend_request":
-            guard let threadId = h.threadId else { return }
-            guard let requester = h.requesterDeviceId ?? h.fromDeviceId ?? item.senderDeviceId else { return }
+            guard let threadId = h.threadId?.trimmed(), !threadId.isEmpty else { return .done }
+            guard let requester = Self.keyRequestTarget(h, myDeviceId: deviceIdProvider.deviceId()) else {
+                return .done
+            }
+            guard let key = keyStore.threadKey(threadId), let identity = keyStore.identity() else { return .done }
+            guard let sender = item.senderUserId?.trimmed(), !sender.isEmpty else { return .done }
+            switch await threadMembership(threadId) {
+            case .unknown:
+                return .retry
+            case .notMember:
+                NSLog("SecretE2EE: key_request for %@ ignored — not our secret thread", threadId)
+                return .done
+            case .members(let members):
+                guard members.contains(sender) else {
+                    NSLog("SecretE2EE: key_request for %@ from non-participant %@ ignored", threadId, sender)
+                    return .done
+                }
+            }
+            // Устройство-адресат обязано быть живым устройством САМОГО просящего (bundles
+            // отдают только не отозванные).
+            guard let senderDevices = try? await devices.prekeyBundles(userId: sender).bundles.map(\.deviceId) else {
+                return .retry
+            }
+            guard senderDevices.contains(requester) else {
+                NSLog("SecretE2EE: key_request for %@ names device %@ not owned by %@ — ignored", threadId, requester, sender)
+                return .done
+            }
             invalidateReceivers(threadId) // заговорило устройство, о котором мы могли не знать
-            guard let key = keyStore.threadKey(threadId), let identity = keyStore.identity() else { return }
             do {
                 try await sendThreadKeyPackage(
                     conversationId: threadId,
@@ -707,9 +996,54 @@ final class SecretRepository {
             } catch {
                 NSLog("SecretE2EE: key re-send to %@ failed: %@", requester, String(describing: error))
             }
+            return .done
         default:
-            break // key_receipt и прочее — информационные
+            return .done // key_receipt и прочее — информационные
         }
+    }
+
+    // MARK: - Участники секретных тредов (H01/H03)
+
+    enum ThreadMembership: Equatable {
+        /// SECRET-тред, в котором мы состоим; userId всех участников (включая нас).
+        case members(Set<String>)
+        /// Не наш тред, не секретный или не существует.
+        case notMember
+        /// Проверить не удалось (сеть) — решать позже.
+        case unknown
+    }
+
+    func threadMembership(_ threadId: String) async -> ThreadMembership {
+        if let cached = stateLock.withStateLock({ membershipCache[threadId] }) { return .members(cached) }
+        // Промах: перечитываем список бесед. Если свежий (моложе membershipRefetchMs)
+        // список уже есть и треда в нём нет — тред не наш: шторм чужих конвертов не
+        // превращается в шторм GET /conversations.
+        let startedAt = nowMs()
+        let fresh: Bool = stateLock.withStateLock { startedAt - membershipFetchStartedMs < Self.membershipRefetchMs }
+        if fresh { return .notMember }
+        guard let snapshot = await fetchSecretMemberships() else { return .unknown }
+        stateLock.withStateLock {
+            membershipCache.merge(snapshot) { _, new in new }
+            membershipFetchStartedMs = max(membershipFetchStartedMs, startedAt)
+        }
+        return snapshot[threadId].map { .members($0) } ?? .notMember
+    }
+
+    /// threadId → участники для всех SECRET-тредов, где мы состоим; nil — сбой сети.
+    private func fetchSecretMemberships() async -> [String: Set<String>]? {
+        guard let resp: SecretMembershipListResponse = try? await api.get("conversations") else { return nil }
+        return Self.secretMemberships(resp)
+    }
+
+    static func secretMemberships(_ resp: SecretMembershipListResponse) -> [String: Set<String>] {
+        var out: [String: Set<String>] = [:]
+        for row in resp.conversations.compactMap(\.value) {
+            let conv = row.conversation
+            let isSecret = conv.type?.uppercased() == "SECRET" || conv.isSecret == true
+            guard isSecret, !conv.id.isEmpty else { continue }
+            out[conv.id] = Set(conv.participants.map(\.userId).filter { !$0.isEmpty })
+        }
+        return out
     }
 
     private func sendThreadKeyPackage(
@@ -794,34 +1128,121 @@ final class SecretRepository {
         return SecretCrypto.secretBoxOpen(cipher: cipher, nonce: nonce, key: sessionKey)
     }
 
-    private func importKeyPackage(_ item: SecretInboxItemDto) async -> Bool {
-        guard let plain = openKeyPackage(item),
-              let payload = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else {
-            return false
+    /// Итог разбора key_package.
+    enum KeyPackageOutcome: Equatable {
+        case imported(threadId: String, change: SecretKeyStore.ThreadKeyChange)
+        /// Связка ключей с другого своего устройства: сколько ключей добавлено.
+        case linked(added: Int)
+        /// Негоден и годным не станет — подтвердить. opened: секрет OPK уже потрачен.
+        case rejected(reason: String, opened: Bool)
+        /// Сейчас не вскрыть/не проверить — повторить на следующем pull (с отравлением).
+        case retry(reason: String)
+    }
+
+    enum ThreadKeyPayload: Equatable {
+        case valid(threadId: String, key: Data)
+        case invalid(String)
+    }
+
+    /// Что именно импортировать из вскрытого thread_key (Б1, Б2):
+    ///  - вид пакета ВНУТРИ (если указан) обязан совпасть с packageKind заголовка — иначе
+    ///    заголовок thread_key вёз бы внутри другой вид пакета;
+    ///  - тред — из payload, а без него — из заголовка. Отсутствие threadId в заголовке —
+    ///    норма (Б1: в проде 1527 таких пакетов от старых клиентов); если тред есть в обоих,
+    ///    они обязаны совпасть — членство проверяется по тому же треду, в который ляжет ключ;
+    ///  - ключ — ровно 32 байта (проверка ДО записи в Keychain: негодный ключ иначе оседал бы
+    ///    в хранилище навсегда, отравляя тред).
+    static func validateThreadKeyPayload(_ payload: [String: Any], header: SecretHeader) -> ThreadKeyPayload {
+        let expectedKind = header.packageKind ?? "thread_key"
+        if let rawKind = payload["kind"] {
+            guard let kind = rawKind as? String, kind == expectedKind else {
+                return .invalid("payload kind does not match header packageKind")
+            }
         }
-        guard let threadId = (payload["threadId"] as? String) ?? item.headerJson.threadId,
-              let keyB64 = payload["key"] as? String,
+        var payloadThread: String?
+        if let raw = payload["threadId"] {
+            guard let value = raw as? String else { return .invalid("payload threadId is not a string") }
+            let trimmed = value.trimmed()
+            payloadThread = trimmed.isEmpty ? nil : trimmed
+        }
+        let headerTrimmed = header.threadId?.trimmed() ?? ""
+        let headerThread: String? = headerTrimmed.isEmpty ? nil : headerTrimmed
+        if let payloadThread, let headerThread, payloadThread != headerThread {
+            return .invalid("payload threadId differs from header threadId")
+        }
+        guard let threadId = payloadThread ?? headerThread else { return .invalid("no threadId") }
+        guard let keyB64 = payload["key"] as? String,
               let key = SecretCrypto.b64UrlDecode(keyB64),
-              // Длину проверяем ЗДЕСЬ, до записи в Keychain: пакет приходит из сети, и
-              // ключ негодного размера иначе оседал бы в хранилище навсегда, отравляя
-              // тред (веб делает ту же проверку в secretThreadKeyStore).
-              key.count == SecretCrypto.keyBytes else { return false }
-        keyStore.setThreadKey(threadId, key: key)
-        NSLog("SecretE2EE: imported secret thread key for %@", threadId)
-        return true
+              key.count == SecretCrypto.keyBytes else { return .invalid("thread key is not 32 bytes") }
+        return .valid(threadId: threadId, key: key)
+    }
+
+    /// H01: ключ треда принимаем только от УЧАСТНИКА этого SECRET-треда (senderUserId ставит
+    /// сервер из авторизации — подделать его нельзя). Смена ключа от проверенного участника —
+    /// автоматическая (решение владельца), но прежний ключ остаётся для старой истории.
+    private func importKeyPackage(_ item: SecretInboxItemDto) async -> KeyPackageOutcome {
+        guard let plain = openKeyPackage(item) else {
+            // Нет секрета OPK / не сошлось: как и раньше — повтор, затем отравление.
+            return .retry(reason: "cannot open package")
+        }
+        guard let payload = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else {
+            return .rejected(reason: "payload is not a JSON object", opened: true)
+        }
+        let threadId: String
+        let key: Data
+        switch Self.validateThreadKeyPayload(payload, header: item.headerJson) {
+        case .invalid(let reason):
+            return .rejected(reason: reason, opened: true)
+        case .valid(let validThread, let validKey):
+            threadId = validThread
+            key = validKey
+        }
+        guard let sender = item.senderUserId?.trimmed(), !sender.isEmpty else {
+            return .rejected(reason: "no senderUserId", opened: true)
+        }
+        switch await threadMembership(threadId) {
+        case .unknown:
+            return .retry(reason: "thread membership unknown")
+        case .notMember:
+            return .rejected(reason: "not our secret thread", opened: true)
+        case .members(let members):
+            guard members.contains(sender) else {
+                return .rejected(reason: "sender \(sender) is not a participant", opened: true)
+            }
+        }
+        let change = keyStore.replaceThreadKey(threadId, key: key)
+        switch change {
+        case .rejected:
+            return .retry(reason: "keychain unavailable")
+        case .replaced:
+            NSLog("SecretE2EE: thread key for %@ changed by participant %@ — previous key kept for history", threadId, sender)
+        case .added, .unchanged:
+            NSLog("SecretE2EE: imported secret thread key for %@", threadId)
+        }
+        return .imported(threadId: threadId, change: change)
     }
 
     // MARK: - Расшифровка сообщений
 
+    /// Текущий ключ треда, затем прежние (история, запечатанная до смены ключа).
+    private func openWithThreadKeys(_ threadId: String, cipherB64: String, nonceB64: String) -> Data? {
+        Self.openWithKeys(keyStore.threadKeysForDecrypt(threadId), cipherB64: cipherB64, nonceB64: nonceB64)
+    }
+
+    static func openWithKeys(_ keys: [Data], cipherB64: String, nonceB64: String) -> Data? {
+        guard !keys.isEmpty,
+              let cipher = SecretCrypto.b64UrlDecode(cipherB64),
+              let nonce = SecretCrypto.b64UrlDecode(nonceB64) else { return nil }
+        for key in keys {
+            if let plain = SecretCrypto.secretBoxOpen(cipher: cipher, nonce: nonce, key: key) { return plain }
+        }
+        return nil
+    }
+
     private func decryptThreadItem(threadId: String, item: SecretInboxItemDto) -> DecryptedSecretMessage? {
         let me = session.currentUserId()
         guard let nonceB64 = item.headerJson.nonce else { return nil }
-        var plain: Data?
-        if let key = keyStore.threadKey(threadId),
-           let cipher = SecretCrypto.b64UrlDecode(item.ciphertext),
-           let nonce = SecretCrypto.b64UrlDecode(nonceB64) {
-            plain = SecretCrypto.secretBoxOpen(cipher: cipher, nonce: nonce, key: key)
-        }
+        let plain = openWithThreadKeys(threadId, cipherB64: item.ciphertext, nonceB64: nonceB64)
         let (text, atts) = Self.decodeContent(plain, contentType: item.contentType)
         return DecryptedSecretMessage(
             id: item.msgId,
@@ -872,7 +1293,8 @@ final class SecretRepository {
         nonceB64: String,
         expectedSize: Int64? = nil
     ) async -> URL? {
-        guard let key = keyStore.threadKey(threadId) else { return nil }
+        let keys = keyStore.threadKeysForDecrypt(threadId) // текущий, затем прежние
+        guard !keys.isEmpty else { return nil }
         let dir = Self.attCacheDirectory()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // Префикс по треду — чтобы purgeThreadLocal мог удалить кэш ИМЕННО этого треда.
@@ -902,7 +1324,9 @@ final class SecretRepository {
                 // Guard обязателен: битый base64-nonce из враждебного дескриптора не
                 // должен ронять процесс — сообщение-то остаётся в истории.
                 guard let nonce = SecretCrypto.b64UrlDecode(nonceB64),
-                      let plain = SecretCrypto.secretBoxOpen(cipher: cipher, nonce: nonce, key: key) else {
+                      let plain = keys.lazy.compactMap({
+                          SecretCrypto.secretBoxOpen(cipher: cipher, nonce: nonce, key: $0)
+                      }).first else {
                     return nil
                 }
                 let tmp = dir.appendingPathComponent("\(cacheName).tmp")
@@ -948,11 +1372,23 @@ final class SecretRepository {
 
     /// Порт вклада в AppContainer.clearLocalData(): при logout стираем ВЕСЬ ключевой
     /// материал и расшифрованный кэш — они не должны достаться следующему аккаунту.
+    ///
+    /// H13: и заводим НОВЫЙ id устройства. Под прежним id на сервере остаются его
+    /// неизрасходованные one-time prekeys, а их секреты мы только что стёрли; войди мы снова
+    /// под тем же id с новой идентичностью — claim отдавал бы самые старые OPK, и пакеты
+    /// ключей на них не вскрылись бы, пока те не выработаются. Новый id = чистое устройство
+    /// (так же делает веб: deviceWipe стирает и device-info с id).
     func clearLocalData() {
         try? FileManager.default.removeItem(at: Self.attCacheDirectory())
-        stateLock.withStateLock { localInvite = nil }
+        stateLock.withStateLock {
+            localInvite = nil
+            membershipCache.removeAll()
+            membershipFetchStartedMs = 0
+            lastPrekeysNeededReplenishMs = 0
+        }
         invalidateReceivers(nil)
         keyStore.clear()
+        deviceIdProvider.rotate()
     }
 
     // MARK: - Привязка устройства по QR
@@ -1058,51 +1494,106 @@ final class SecretRepository {
         }
     }
 
-    /// Ответ на link_device_join. Отдаём связку ТОЛЬКО если выполнено всё сразу:
-    ///  - предъявлен token/код ЖИВОГО приглашения, показанного на этом устройстве;
-    ///  - запрашивающее устройство — НАШЕ (deviceId любого пользователя виден всем через
-    ///    /e2ee/prekeys/bundles, поэтому чужой запрос отправить тривиально).
-    /// false = запрос отклонён — конверт НЕ ack-ается и доживёт свой TTL до момента,
-    /// когда пользователь действительно откроет приглашение.
-    private func handleLinkDeviceJoin(_ h: SecretHeader) async throws -> Bool {
+    enum LinkJoinDecision: Equatable {
+        /// Чужой, пустой или заведомо негодный запрос — подтвердить и забыть.
+        case ack
+        /// Своё устройство, но приглашения сейчас нет/не то, или проверить нечем — оставить:
+        /// запрос мог прийти раньше, чем пользователь открыл приглашение, и доживёт TTL (600 с).
+        case keep
+        case send(requester: String)
+    }
+
+    /// Решение по link_device_join (X3, Б8). Связку отдаём ТОЛЬКО если выполнено всё сразу:
+    ///  - запрос прислал НАШ аккаунт (senderUserId ставит сервер) с НАШЕГО живого устройства
+    ///    (deviceId любого пользователя виден всем через bundles — чужой запрос отправить
+    ///    тривиально);
+    ///  - предъявлен token/код ЖИВОГО приглашения, показанного на этом устройстве.
+    /// Проверка «чужое» — ДО проверки приглашения: чужой запрос подтверждается сразу, иначе
+    /// 50 таких конвертов от любого пользователя клинили бы инбокс (сервер отдаёт первые 50),
+    /// а серверный S3 «свой-своему» этот случай не закрывает.
+    static func decideLinkJoin(
+        header h: SecretHeader,
+        senderUserId: String?,
+        me: String?,
+        myDeviceId: String,
+        myDevices: [DeviceDto]?,
+        invite: DeviceLinkInvite?
+    ) -> LinkJoinDecision {
         let requester = (h.requesterDeviceId ?? "").trimmed()
-        if requester.isEmpty || requester == deviceIdProvider.deviceId() { return true }
-        guard let invite = currentInvite() else {
-            NSLog("SecretE2EE: link_device_join from %@ ignored — no active invite on this device", requester)
-            return false
+        if requester.isEmpty || requester == myDeviceId { return .ack }
+        guard let me else { return .keep }                       // без сессии не решаем
+        guard senderUserId?.trimmed() == me else { return .ack } // чужой аккаунт
+        guard let myDevices else { return .keep }                // список не получили — позже
+        guard myDevices.contains(where: { $0.id == requester && $0.revokedAt == nil }) else {
+            return .ack // не наше или отозванное устройство
         }
+        guard let invite, !invite.expired else { return .keep }
+        // Токен — b64url, сверяется как есть (регистр значим); код — по цифрам (H14).
+        let token = (h.token ?? "").trimmed()
+        let tokenMatches = !token.isEmpty && constantTimeEquals(Data(token.utf8), Data(invite.token.utf8))
         let digitsOnly = (h.code ?? "").filter(\.isNumber)
-        let matches = h.token?.trimmed() == invite.token
-            || (!digitsOnly.isEmpty && digitsOnly == invite.code)
-        guard matches else {
-            NSLog("SecretE2EE: link_device_join from %@ ignored — invite mismatch", requester)
+        let codeMatches = !digitsOnly.isEmpty && constantTimeEquals(Data(digitsOnly.utf8), Data(invite.code.utf8))
+        guard tokenMatches || codeMatches else { return .keep } // может, для приглашения на другом нашем устройстве
+        return .send(requester: requester)
+    }
+
+    /// Ответ на link_device_join. true — конверт подтвердить.
+    private func handleLinkDeviceJoin(_ item: SecretInboxItemDto) async -> Bool {
+        let h = item.headerJson
+        let me = session.currentUserId()
+        let myDeviceId = deviceIdProvider.deviceId()
+        let requester = (h.requesterDeviceId ?? "").trimmed()
+        // Список устройств нужен только запросу от своего аккаунта — чужой отсекаем без сети.
+        var myDevices: [DeviceDto]?
+        if !requester.isEmpty, requester != myDeviceId, let me, item.senderUserId?.trimmed() == me {
+            myDevices = try? await devices.list().devices
+        }
+        let decision = Self.decideLinkJoin(
+            header: h,
+            senderUserId: item.senderUserId,
+            me: me,
+            myDeviceId: myDeviceId,
+            myDevices: myDevices,
+            invite: currentInvite()
+        )
+        switch decision {
+        case .ack:
+            if !requester.isEmpty, requester != myDeviceId {
+                NSLog("SecretE2EE: link_device_join from foreign/unknown device %@ — acked, keys NOT sent", requester)
+            }
+            return true
+        case .keep:
+            NSLog("SecretE2EE: link_device_join from %@ kept — no matching invite on this device (yet)", requester)
             return false
+        case .send(let target):
+            let count: Int
+            do {
+                count = try await sendDeviceLinkKeys(toDeviceId: target)
+            } catch {
+                NSLog("SecretE2EE: device_link_keys to %@ failed: %@", target, String(describing: error))
+                return false // повторим на следующем pull, пока жив TTL
+            }
+            clearInvite() // приглашение одноразовое
+            NSLog("SecretE2EE: device_link_keys sent to %@ (%d keys)", target, count)
+            // Имя устройства знает только сервер — резолвим, чтобы UI сказал ««iPhone» подключён».
+            let name = myDevices?.first(where: { $0.id == target })?.name ?? ""
+            deviceLinkedOut.send(LinkedDevice(name: name, threadCount: count))
+            // Серверное приглашение (если это был путь LINK_DEVICE) гасим, чтобы не висело.
+            if let token = h.token, !token.trimmed().isEmpty {
+                try? await api.postIgnoringResponse(
+                    "devices/pairing/consume", body: PairingConsumeRequest(token: token)
+                )
+            }
+            return true
         }
-        let listed: DevicesListResponse
-        do {
-            listed = try await devices.list()
-        } catch {
-            NSLog("SecretE2EE: link_device_join: device check failed — keys NOT sent")
-            return false // не смогли проверить — ключи не отдаём
-        }
-        guard listed.devices.contains(where: { $0.id == requester && $0.revokedAt == nil }) else {
-            NSLog("SecretE2EE: link_device_join from FOREIGN device %@ — rejected", requester)
-            return true // чужому конверту в инбоксе делать нечего
-        }
-        let count = try await sendDeviceLinkKeys(toDeviceId: requester)
-        clearInvite() // приглашение одноразовое
-        NSLog("SecretE2EE: device_link_keys sent to %@ (%d keys)", requester, count)
-        // Имя устройства знает только сервер — резолвим, чтобы UI сказал ««iPhone» подключён».
-        let name = (try? await devices.list())?.devices
-            .first(where: { $0.id == requester })?.name ?? ""
-        deviceLinkedOut.send(LinkedDevice(name: name, threadCount: count))
-        // Серверное приглашение (если это был путь LINK_DEVICE) гасим, чтобы не висело.
-        if let token = h.token, !token.trimmed().isEmpty {
-            try? await api.postIgnoringResponse(
-                "devices/pairing/consume", body: PairingConsumeRequest(token: token)
-            )
-        }
-        return true
+    }
+
+    /// Сравнение без раннего выхода по первому несовпавшему байту.
+    static func constantTimeEquals(_ a: Data, _ b: Data) -> Bool {
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for (x, y) in zip(a, b) { diff |= x ^ y }
+        return diff == 0
     }
 
     /// Шифрует ВСЕ ключи тредов в пакет device_link_keys для устройства toDeviceId.
@@ -1176,22 +1667,66 @@ final class SecretRepository {
         return keys.count
     }
 
+    /// X4: связку ключей принимаем только от СВОЕГО ЖИВОГО устройства, и только если пакет
+    /// запечатан его ЗАРЕГИСТРИРОВАННОЙ идентичностью. Пакет шифруется на наш публичный
+    /// prekey, который сервер отдаёт кому угодно, а initiatorDeviceId — просто поле заголовка
+    /// (id чужих устройств видны всем через bundles). Поэтому сверяем: отправитель — наш
+    /// аккаунт (senderUserId ставит сервер), устройство не отозвано, initiatorIdentityKey
+    /// побайтно равен его ключу на сервере (DH на этом ключе и даёт вскрытие пакета).
+    static func verifyDeviceLinkSender(
+        header h: SecretHeader,
+        senderUserId: String?,
+        me: String?,
+        myDevices: [DeviceDto]
+    ) -> Bool {
+        guard let me, senderUserId?.trimmed() == me else { return false }
+        let initiator = (h.initiatorDeviceId ?? "").trimmed()
+        guard !initiator.isEmpty,
+              let device = myDevices.first(where: { $0.id == initiator }),
+              device.revokedAt == nil else { return false }
+        guard let claimed = h.initiatorIdentityKey.flatMap(SecretCrypto.b64UrlDecode),
+              claimed.count == SecretCrypto.keyBytes else { return false }
+        // Веб регистрирует ключ в base64, Android/iOS — в b64url: сравниваем байты.
+        let registered = [device.identityPublicKey, device.publicKey]
+            .compactMap { $0.flatMap(SecretCrypto.b64UrlDecode) }
+        return registered.contains { constantTimeEquals($0, claimed) }
+    }
+
     /// Приём связки: расшифровка тем же handshake, что и thread_key, затем merge
     /// (без перетирания существующих ключей).
-    private func importDeviceLinkKeys(_ item: SecretInboxItemDto) async -> Bool {
-        // Связку принимаем ТОЛЬКО от своего устройства: пакет шифруется на наш ПУБЛИЧНЫЙ
-        // prekey, который сервер отдаёт кому угодно, так что «расшифровалось» ≠ «прислали
-        // свои». Чужая связка подсунула бы подставные ключи для тредов, которых у нас нет.
-        let sender = (item.headerJson.initiatorDeviceId ?? "").trimmed()
-        let senderIsOurs = ((try? await devices.list())?.devices.contains(where: { $0.id == sender })) ?? false
-        guard senderIsOurs else {
-            NSLog("SecretE2EE: device_link_keys from foreign device %@ — dropped", sender)
-            return true // не наше — ack, чтобы не копилось, но НЕ импортируем
+    private func importDeviceLinkKeys(_ item: SecretInboxItemDto) async -> KeyPackageOutcome {
+        guard let me = session.currentUserId() else { return .retry(reason: "no session") }
+        guard item.senderUserId?.trimmed() == me else {
+            // Чужая связка подсунула бы подставные ключи для тредов, которых у нас нет.
+            return .rejected(reason: "sent by another account", opened: false)
         }
-        guard let plain = openKeyPackage(item),
-              let payload = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any],
-              let keysObj = (payload["threadKeys"] as? [String: Any])?["keys"] as? [String: Any] else {
-            return false
+        let myDevices: [DeviceDto]
+        do {
+            myDevices = try await devices.list().devices
+        } catch {
+            // Раньше сбой сети здесь означал «не наше» и честная связка терялась (ack).
+            return .retry(reason: "devices list unavailable")
+        }
+        guard Self.verifyDeviceLinkSender(
+            header: item.headerJson, senderUserId: item.senderUserId, me: me, myDevices: myDevices
+        ) else {
+            return .rejected(
+                reason: "initiator \(item.headerJson.initiatorDeviceId ?? "?") is not our live device with this identity",
+                opened: false
+            )
+        }
+        guard let plain = openKeyPackage(item) else { return .retry(reason: "cannot open package") }
+        guard let payload = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else {
+            return .rejected(reason: "payload is not a JSON object", opened: true)
+        }
+        if let rawKind = payload["kind"] {
+            // Б2: вид пакета внутри обязан совпасть с заголовком.
+            guard (rawKind as? String) == "device_link_keys" else {
+                return .rejected(reason: "payload kind does not match header packageKind", opened: true)
+            }
+        }
+        guard let keysObj = (payload["threadKeys"] as? [String: Any])?["keys"] as? [String: Any] else {
+            return .rejected(reason: "no threadKeys.keys in payload", opened: true)
         }
         var incomingKeys: [String: Data] = [:]
         for (threadId, rec) in keysObj {
@@ -1204,7 +1739,7 @@ final class SecretRepository {
         NSLog("SecretE2EE: device link: received %d thread keys, %d new", incomingKeys.count, added)
         deviceLinked.send(added)
         for threadId in incomingKeys.keys { keyImported.send(threadId) }
-        return true
+        return .linked(added: added)
     }
 
     private static func parseAddDeviceQr(_ raw: String) -> String? {

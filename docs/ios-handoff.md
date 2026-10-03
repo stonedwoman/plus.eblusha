@@ -248,6 +248,24 @@ EB_PASS=… EBLUSHA_DRIVE_ENV=EB_PASS scripts/ios-drive.sh 'launch; sleep:4; tap
 - видео: `xcrun simctl io <UDID> recordVideo --codec h264 -f файл.mp4` в фоне, `kill -INT`
   по окончании; кадры удобно смотреть на боксе через `ffmpeg -vf "fps=20,scale=180:-1,tile=10x5"`.
 
+### 3.7 Модульные тесты — `scripts/ios-test.sh` (2026-10-04)
+XCTest-таргет `EblushaTests` (спека `ios/project-tests.yml` поверх `project.yml`, схема
+`EblushaTests`), тесты живут в приложении-хосте (`@testable import Eblusha`). Сети нет:
+`APIClient` получает `URLSession` с `MockURLProtocol`, «сервер» — `FakeServer` в памяти
+теста (`ios/EblushaTests/SecretTestSupport.swift`); криптография настоящая. Ключи — в своём
+Keychain-service и UserDefaults-suite на каждый тест (`SecretKeyStore(service:defaults:)`,
+`DeviceIdProvider(defaults:)`), боевое хранилище не трогается.
+
+```
+scripts/ios-test.sh                                   # все (≈4 с после сборки)
+scripts/ios-test.sh SecretHolesTests/testH12_malformedEnvelopesDoNotJamInboxAndAreAcked
+```
+
+Симулятор — отдельный от стенда пульта (`EBLUSHA_TEST_SIM_UDID`, по умолчанию «iPhone 17»
+`7C8AAE75-…`): тестовый стенд пишет сессию в Keychain хоста. Полный лог — `~/builds/ios-test-last.log`
+на маке. `SecretHolesTests` — по тесту на каждую дыру секреток (имена начинаются с id дыры);
+проверено мутациями: откат любой из правок роняет свой тест.
+
 ---
 
 ## 4. Бэкенд, сделанный под iOS
@@ -366,6 +384,34 @@ EB_PASS=… EBLUSHA_DRIVE_ENV=EB_PASS scripts/ios-drive.sh 'launch; sleep:4; tap
 `SecretRepository`, `SecretCrypto`, `ChatViewModelSecret`, `SecretChatCards`. Очередь
 неотправленного на диске (`SecretOutbox`), досыл — `SecretOutboxFlusher` в `RootView`.
 Секретное аудио и вложения расшифровываются ключом треда.
+
+Инварианты разбора инбокса (дыры секреток, 2026-10-04; тесты — §3.7):
+- **Разбор поэлементный** (H12): `SecretInboxResponse`/`SecretHistoryResponse` через
+  `LossyElement`, `SecretHeader` терпим к неверному типу необязательного поля. Элемент без
+  `kind` пропускается и **подтверждается** (`undecodableMsgIds`) — иначе он навсегда в голове
+  очереди (сервер отдаёт первые 50).
+- **thread_key — только от участника** SECRET-треда (H01): `senderUserId` (его ставит сервер)
+  ∈ участники из `GET /conversations` (кэш `threadMembership`). Тред — из payload, без него из
+  заголовка; **отказа «нет threadId в заголовке» нет** (Б1: 1527 старых пакетов). Если тред
+  есть в обоих — совпадают; `kind` внутри = `packageKind`; ключ 32 байта. Смена ключа от
+  участника — автоматически (решение владельца), прежний ключ остаётся в `thread_keys_prev`
+  для старой истории (`threadKeysForDecrypt`).
+- **key_request** (H03/X8): ключ — только на живое устройство САМОГО просящего участника
+  (bundles), адресат — `requesterDeviceId`/`fromDeviceId`; `senderDeviceId` адресатом не служит.
+- **device_link_keys** (X4): только наш аккаунт, наше НЕ отозванное устройство, и
+  `initiatorIdentityKey` побайтно = его ключу на сервере. Сбой `GET /devices` — повтор, не ack.
+- **link_device_join** (X3): чужой аккаунт/чужое или отозванное устройство — ack сразу; своё
+  без приглашения на этом устройстве — не ack (доживёт TTL).
+- **OPK** (H04): публикуются, только если на сервере < 20 невыданных; секреты не принятых
+  сервером (`insertedKeyIds`) удаляются; вскрытый OPK удаляется через сутки; потолок 1000.
+  `prekeys_needed` — одно пополнение на пачку и не чаще раза в минуту.
+- **Выход = новый id устройства** (H13, `clearLocalData`); бутстрап с пустой идентичностью
+  под уже зарегистрированным id тоже меняет id.
+- **Отзыв** (X5): `device:revoked` (наш id или `*`) → выход со стиранием ключей, как веб;
+  connect_error `DEVICE_REVOKED` сначала сверяется с `GET /devices` (отозван → выход, не
+  зарегистрирован → бутстрап). Бутстрап, увидев свой id отозванным (или 409/410 «revoked»),
+  стирает ключи и регистрирует НОВЫЙ id — отозванный не воскрешается (готовность к серверному
+  S5). Сразу после входа сокет подключается после бутстрапа.
 
 ### 5.6 Голосовые и расшифровка
 - Воспроизведение вынесено из ячейки в общий `VoicePlaybackCenter`: `@StateObject` в

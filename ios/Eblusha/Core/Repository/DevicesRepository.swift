@@ -27,14 +27,18 @@ final class DevicesRepository {
     /// повторить register с новым id и переподключить сокет
     /// (RealtimeClient.reconnectForDeviceChange) — иначе secret:notify уходил бы в комнату
     /// старого устройства (см. ensureDeviceBootstrap в Kotlin-оригинале).
-    func register(_ body: RegisterDeviceRequest) async throws {
-        try await api.postIgnoringResponse("devices/register", body: body)
+    @discardableResult
+    func register(_ body: RegisterDeviceRequest) async throws -> PrekeysAcceptedResponse {
+        let data = try await api.postRaw("devices/register", body: body)
+        return PrekeysAcceptedResponse.lenient(data)
     }
 
     /// POST /devices/{deviceId}/prekeys — пополнение пула one-time prekeys
     /// (когда сервер сообщает, что тот иссякает: kind="prekeys_needed").
-    func publishPrekeys(deviceId: String, _ body: PublishPrekeysRequest) async throws {
-        try await api.postIgnoringResponse("devices/\(deviceId)/prekeys", body: body)
+    @discardableResult
+    func publishPrekeys(deviceId: String, _ body: PublishPrekeysRequest) async throws -> PrekeysAcceptedResponse {
+        let data = try await api.postRaw("devices/\(deviceId)/prekeys", body: body)
+        return PrekeysAcceptedResponse.lenient(data)
     }
 
     // MARK: - Ключи собеседников (E2eeApi)

@@ -1,0 +1,40 @@
+# Модульные тесты (XCTest) ПОВЕРХ основного project.yml — как project-drive.yml для «пульта».
+# Генерируется только ради `xcodebuild test` на симуляторе (scripts/ios-test.sh) и не трогает
+# ни сборку приложения, ни релиз: в project.yml тестового таргета нет.
+#
+# Тесты живут ВНУТРИ приложения-хоста (@testable import Eblusha): сеть подменена
+# (MockURLProtocol), ключи секреток — в отдельном Keychain-service и UserDefaults-suite на
+# каждый тест, боевое хранилище приложения не трогается. Гонять на ОТДЕЛЬНОМ симуляторе,
+# а не на стенде с живой сессией (scripts/ios-test.sh берёт свой по умолчанию).
+include:
+  - project.yml
+
+name: Eblusha
+
+targets:
+  EblushaTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: EblushaTests
+    dependencies:
+      - target: Eblusha
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.eblusha.plus.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Eblusha.app/Eblusha"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  EblushaTests:
+    build:
+      targets:
+        Eblusha: all
+        EblushaTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EblushaTests
