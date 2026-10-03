@@ -5,7 +5,7 @@ import prisma from "../lib/prisma";
 import { buildIpLocationFromRaw } from "../lib/ipLocation";
 import env from "../config/env";
 import { createDedicatedRedisClient, getRedisClient } from "../lib/redis";
-import { getOrCreateCallE2eeKey } from "../lib/callE2ee";
+import { CALL_E2EE_KEY_REFRESH_INTERVAL_MS, getOrCreateCallE2eeKey, touchCallE2eeKeys } from "../lib/callE2ee";
 import { MESSAGE_UPDATE_CHANNEL } from "./events";
 import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
@@ -531,6 +531,8 @@ const groupAloneTimers: Map<
   { aloneSince: number; reminder: NodeJS.Timeout; autoEnd: NodeJS.Timeout; reminded: boolean }
 > = new Map();
 let statusInterval: NodeJS.Timeout | null = null;
+/** Продление срока ключей шифрования идущих звонков 1:1 (lib/callE2ee.ts). */
+let callKeyRefreshInterval: NodeJS.Timeout | null = null;
 
 type PresenceStatus = "ONLINE" | "OFFLINE" | "BACKGROUND";
 type BroadcastPresenceStatus = PresenceStatus | "IN_CALL";
@@ -1502,6 +1504,21 @@ export async function initSocket(
     groupAloneTimers.set(conversationId, { aloneSince, reminder, autoEnd, reminded: false });
     broadcastCallStatus(conversationId);
   };
+
+  // Ключ шифрования идущего звонка 1:1 не должен истечь посреди разговора: веб переспрашивает
+  // его при перемонтировании оверлея, второе устройство («Тоже сюда») и повторный вход — тоже.
+  // Истёкший ключ на таком запросе создался бы заново, и у собеседников оказались бы разные
+  // ключи. Поэтому пока звонок беседы идёт, срок ключа продлеваем (lib/callE2ee.ts).
+  if (!callKeyRefreshInterval) {
+    callKeyRefreshInterval = setInterval(() => {
+      const ids = Array.from(activeDirectCalls.keys());
+      if (ids.length === 0) return;
+      touchCallE2eeKeys(ids).catch((error) => {
+        logger.error({ error, count: ids.length }, "Failed to extend call E2EE keys of live direct calls");
+      });
+    }, CALL_E2EE_KEY_REFRESH_INTERVAL_MS);
+    callKeyRefreshInterval.unref?.();
+  }
 
   // Периодически обновляем elapsedMs для активных звонков (каждую секунду)
   if (!statusInterval) {
@@ -2791,6 +2808,17 @@ export async function initSocket(
 
       addParticipant(callInfo, userId, socket.id);
       logger.info({ conversationId, userId, isFirstParticipant }, "User added to activeGroupCalls participants");
+
+      // 1:1: вошедший («Тоже сюда», повторный вход, веб после реконнекта) сейчас попросит ключ —
+      // он должен быть тем же, что у собеседника. Тот же SET NX, что у invite/accept, заодно
+      // продлевает срок ключа (lib/callE2ee.ts).
+      if (!isGroup) {
+        try {
+          await getOrCreateCallE2eeKey(conversationId);
+        } catch (error) {
+          logger.error({ error, conversationId, userId }, "Failed to ensure call E2EE key on room join");
+        }
+      }
 
       // Обновляем состояние звонка для всех участников (только для групповых)
       if (isGroup) {

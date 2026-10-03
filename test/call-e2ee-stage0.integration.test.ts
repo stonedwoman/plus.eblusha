@@ -5,7 +5,12 @@
  *   - вебхук LiveKit track_published с encryption NONE в комнате `conv-<id>` беседы 1:1 →
  *     MutePublishedTrack + RemoveParticipant (подставной RoomService на 127.0.0.1);
  *     в группе, для зашифрованных и data-дорожек, для комнат не `conv-` — ничего;
- *   - вебхук без подписи или с чужой подписью → 401 и ни одного вызова RoomService (правка В11).
+ *   - вебхук без подписи или с чужой подписью → 401 и ни одного вызова RoomService (правка В11);
+ *   - (ревью этапа 0) выкидывание идёт в фоне и с повторами: ответ вебхука не ждёт RoomService,
+ *     сбой RoomService/БД повторяется; выкинутому устройству 2 мин не выдаётся пропуск в ту же
+ *     комнату; комната несуществующей беседы — тоже выкидываем;
+ *   - (ревью этапа 0) ключ 1:1 продлевается при каждом чтении, accept, room:join и у идущих
+ *     звонков: повторный запрос не создаёт новый ключ.
  *
  * Запускать ТОЛЬКО в изолированной среде (боевые БД/Redis недоступны предохранителю guard.ts):
  *   test/secret-env/secret-test.sh run test/call-e2ee-stage0.integration.test.ts
@@ -66,8 +71,10 @@ async function call(
 }
 
 // ---------- подставной RoomService (Twirp поверх HTTP, как у livekit-server-sdk) ----------
-type RsCall = { method: string; body: any; authorization: string | undefined };
+type RsCall = { method: string; body: any; authorization: string | undefined; failed?: boolean };
 const rsCalls: RsCall[] = [];
+/** Сколько следующих вызовов RoomService отвечают 503 (проверка повторов). */
+let rsFailNext = 0;
 const fakeRoomService = http.createServer((req, res) => {
   let data = "";
   req.on("data", (c) => (data += c));
@@ -78,6 +85,13 @@ const fakeRoomService = http.createServer((req, res) => {
       body = data ? JSON.parse(data) : {};
     } catch {
       body = { raw: data };
+    }
+    if (rsFailNext > 0) {
+      rsFailNext -= 1;
+      rsCalls.push({ method, body, authorization: req.headers.authorization, failed: true });
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ code: "unavailable", msg: "test: RoomService down" }));
+      return;
     }
     rsCalls.push({ method, body, authorization: req.headers.authorization });
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -198,6 +212,13 @@ async function main() {
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
   const takeRsCalls = () => rsCalls.splice(0, rsCalls.length);
+  // Страховка вебхука идёт в фоне: ответ приходит раньше вызовов RoomService. Дожидаемся конца
+  // всех фоновых проверок и только потом смотрим, что было вызвано.
+  const settledRsCalls = async () => {
+    await guard.whenCallEncryptionIdle?.();
+    return takeRsCalls();
+  };
+  const keyTtl = async (cid: string) => redis.ttl(`call_e2ee_key:${cid}`);
 
   try {
     const A = await mkUser("a");
@@ -259,23 +280,94 @@ async function main() {
       await sleep(300);
     });
 
+    console.log("Срок ключа 1:1 продлевается");
+    await step("GET ключа продлевает срок (GETEX): почти истёкший ключ после чтения живёт снова 2 ч", async () => {
+      const k = (await call("GET", `/api/calls/${D}/e2ee-key`, { token: A.token, device: A.dev })).body.key;
+      await redis.expire(`call_e2ee_key:${D}`, 3);
+      const r = await call("GET", `/api/calls/${D}/e2ee-key`, { token: B.token, device: B.dev });
+      assert.equal(r.body.key, k, "тот же ключ");
+      const ttl = await keyTtl(D);
+      assert.ok(ttl > 7000, `ttl после чтения ${ttl}`);
+    });
+    await step("invite → ключ почти истёк → собеседник берёт ключ → тот же ключ (а не новый)", async () => {
+      await redis.del(`call_e2ee_key:${D}`);
+      const sa = await connect(A);
+      sa.emit("call:invite", { conversationId: D, video: false });
+      let key: string | null = null;
+      for (let i = 0; i < 30 && !key; i += 1) {
+        await sleep(100);
+        key = await redis.get(`call_e2ee_key:${D}`);
+      }
+      assert.ok(key, "ключ создан invite");
+      await redis.expire(`call_e2ee_key:${D}`, 1);
+      const r = await call("GET", `/api/calls/${D}/e2ee-key`, { token: B.token, device: B.dev });
+      assert.equal(r.body.key, key, "собеседник получил ключ звонящего");
+      await sleep(1500);
+      assert.equal(await redis.get(`call_e2ee_key:${D}`), key, "ключ не истёк через 1 с: чтение продлило срок");
+      sa.emit("call:end", { conversationId: D });
+      await sleep(300);
+    });
+    await step("accept и room:join продлевают срок ключа и не меняют его", async () => {
+      await redis.del(`call_e2ee_key:${D}`);
+      const sa = await connect(A);
+      const sb = await connect(B);
+      sa.emit("call:invite", { conversationId: D, video: false });
+      let key: string | null = null;
+      for (let i = 0; i < 30 && !key; i += 1) {
+        await sleep(100);
+        key = await redis.get(`call_e2ee_key:${D}`);
+      }
+      assert.ok(key);
+      await redis.expire(`call_e2ee_key:${D}`, 30);
+      sb.emit("call:accept", { conversationId: D, video: false });
+      await sleep(500);
+      assert.ok((await keyTtl(D)) > 7000, "accept продлил срок");
+      assert.equal(await redis.get(`call_e2ee_key:${D}`), key);
+      await redis.expire(`call_e2ee_key:${D}`, 30);
+      sb.emit("call:room:join", { conversationId: D, video: false });
+      await sleep(500);
+      assert.ok((await keyTtl(D)) > 7000, "room:join продлил срок");
+      assert.equal(await redis.get(`call_e2ee_key:${D}`), key, "room:join не меняет ключ");
+      sa.emit("call:end", { conversationId: D });
+      await sleep(300);
+    });
+    await step("touchCallE2eeKeys продлевает ключи идущих звонков и не создаёт отсутствующие", async () => {
+      const ce = await import("../src/lib/callE2ee");
+      await redis.set(`call_e2ee_key:${D}`, b64(), { EX: 30 });
+      await redis.del(`call_e2ee_key:${G}`);
+      await ce.touchCallE2eeKeys([D, G]);
+      assert.ok((await keyTtl(D)) > 7000);
+      assert.equal(await redis.exists(`call_e2ee_key:${G}`), 0, "ключ не создан");
+      assert.ok(ce.CALL_E2EE_KEY_REFRESH_INTERVAL_MS < (ce.CALL_E2EE_KEY_TTL_SECONDS * 1000) / 2);
+    });
+    await step("getOrCreate: отсутствующий создаётся один на всех, существующий отдаётся и продлевается", async () => {
+      const ce = await import("../src/lib/callE2ee");
+      await redis.del(`call_e2ee_key:${D}`);
+      const keys = await Promise.all(Array.from({ length: 8 }, () => ce.getOrCreateCallE2eeKey(D)));
+      assert.equal(new Set(keys).size, 1, "параллельные запросы сошлись на одном ключе");
+      assert.equal(await redis.get(`call_e2ee_key:${D}`), keys[0]);
+      await redis.expire(`call_e2ee_key:${D}`, 5);
+      assert.equal(await ce.getOrCreateCallE2eeKey(D), keys[0]);
+      assert.ok((await keyTtl(D)) > 7000);
+    });
+
     console.log("Вебхук: подпись");
     await step("без Authorization → 401, RoomService не вызывался", async () => {
       takeRsCalls();
       const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}` }), "none");
       assert.equal(r.status, 401);
       await sleep(100);
-      assert.deepEqual(takeRsCalls(), []);
+      assert.deepEqual(await settledRsCalls(), []);
     });
     await step("подпись чужим секретом → 401", async () => {
       const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}` }), "wrong-secret");
       assert.equal(r.status, 401);
-      assert.deepEqual(takeRsCalls(), []);
+      assert.deepEqual(await settledRsCalls(), []);
     });
     await step("подпись от другого тела (sha256 не сходится) → 401", async () => {
       const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}` }), "wrong-body");
       assert.equal(r.status, 401);
-      assert.deepEqual(takeRsCalls(), []);
+      assert.deepEqual(await settledRsCalls(), []);
     });
 
     console.log("Вебхук: незашифрованная дорожка");
@@ -283,7 +375,7 @@ async function main() {
       const evt = trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}`, type: "AUDIO", encryption: "NONE" });
       const r = await postWebhook(evt);
       assert.equal(r.status, 200, JSON.stringify(r.body));
-      const calls = takeRsCalls();
+      const calls = (await settledRsCalls());
       assert.deepEqual(
         calls.map((c) => c.method),
         ["MutePublishedTrack", "RemoveParticipant"]
@@ -306,55 +398,57 @@ async function main() {
       const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${A.id}#${A.dev}`, type: "VIDEO", encryption: null }));
       assert.equal(r.status, 200);
       assert.deepEqual(
-        takeRsCalls().map((c) => c.method),
+        (await settledRsCalls()).map((c) => c.method),
         ["MutePublishedTrack", "RemoveParticipant"]
       );
     });
     await step("секретная беседа (1:1) с NONE → выкинут", async () => {
       const r = await postWebhook(trackPublished({ room: `conv-${S}`, identity: `${C.id}#${C.dev}` }));
       assert.equal(r.status, 200);
-      const calls = takeRsCalls();
+      const calls = (await settledRsCalls());
       assert.deepEqual(calls.map((c) => c.method), ["MutePublishedTrack", "RemoveParticipant"]);
       assert.equal(calls[1]!.body.room, `conv-${S}`);
     });
     await step("1:1, GCM-дорожка → ничего", async () => {
       const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}`, encryption: "GCM" }));
       assert.equal(r.status, 200);
-      assert.deepEqual(takeRsCalls(), []);
+      assert.deepEqual((await settledRsCalls()), []);
     });
     await step("1:1, data-дорожка NONE → ничего (не звук и не видео)", async () => {
       const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}`, type: "DATA" }));
       assert.equal(r.status, 200);
-      assert.deepEqual(takeRsCalls(), []);
+      assert.deepEqual((await settledRsCalls()), []);
     });
     await step("группа, звук NONE → ничего (этап 0: группы ещё никто не шифрует)", async () => {
       const r = await postWebhook(trackPublished({ room: `conv-${G}`, identity: `${C.id}#${C.dev}` }));
       assert.equal(r.status, 200);
-      assert.deepEqual(takeRsCalls(), []);
+      assert.deepEqual((await settledRsCalls()), []);
     });
     await step("имя комнаты без conv- (голый id беседы 1:1) → не комната звонка, ничего", async () => {
       const r = await postWebhook(trackPublished({ room: D, identity: `${B.id}#${B.dev}` }));
       assert.equal(r.status, 200);
-      assert.deepEqual(takeRsCalls(), []);
+      assert.deepEqual((await settledRsCalls()), []);
     });
-    await step("conv-<несуществующая беседа> → ничего", async () => {
+    await step("conv-<несуществующая беседа> → выкинут (законного звонка в такой комнате нет)", async () => {
       const r = await postWebhook(trackPublished({ room: `conv-${RUN}nope`, identity: `${B.id}#${B.dev}` }));
       assert.equal(r.status, 200);
-      assert.deepEqual(takeRsCalls(), []);
+      const calls = await settledRsCalls();
+      assert.deepEqual(calls.map((c) => c.method), ["MutePublishedTrack", "RemoveParticipant"]);
+      assert.equal(calls[1]!.body.room, `conv-${RUN}nope`);
     });
     await step("повтор того же события (тот же id) → duplicate, второй раз не выкидываем", async () => {
       const evt = trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}` });
       assert.equal((await postWebhook(evt)).status, 200);
-      assert.equal(takeRsCalls().length, 2);
+      assert.equal((await settledRsCalls()).length, 2);
       const again = await postWebhook(evt);
       assert.equal(again.status, 200);
       assert.equal(again.body.duplicate, true);
-      assert.deepEqual(takeRsCalls(), []);
+      assert.deepEqual((await settledRsCalls()), []);
     });
     await step("другие события (participant_joined) в 1:1 — RoomService не трогаем", async () => {
       const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}`, event: "participant_joined" }));
       assert.equal(r.status, 200);
-      assert.deepEqual(takeRsCalls(), []);
+      assert.deepEqual((await settledRsCalls()), []);
     });
     console.log("Чистые функции и отказ БД");
     await step("conversationIdFromCallRoom / isUnencryptedTrack", async () => {
@@ -369,22 +463,84 @@ async function main() {
       assert.equal(guard.isUnencryptedTrack(1), false);
       assert.equal(guard.isUnencryptedTrack(2), false);
     });
-    await step("сбой поиска беседы → не выкидываем (это могла быть группа), вердикт lookup_failed", async () => {
+    await step("сбой поиска беседы → повторы, потом не выкидываем (это могла быть группа), вердикт lookup_failed", async () => {
       takeRsCalls();
-      const v = await guard.enforceCallEncryption(trackPublished({ room: `conv-${D}`, identity: "x#y" }), async () => {
-        throw new Error("db down");
+      let lookups = 0;
+      const out = await guard.enforceCallEncryption(trackPublished({ room: `conv-${D}`, identity: "x#y" }), {
+        findConversation: async () => {
+          lookups += 1;
+          throw new Error("db down");
+        },
+        lookupDelaysMs: [0, 20, 20],
       });
-      assert.deepEqual(v, { action: "ignore", reason: "lookup_failed" });
+      assert.deepEqual(out.verdict, { action: "ignore", reason: "lookup_failed" });
+      assert.equal(out.eviction, null);
+      assert.equal(lookups, 3, "поиск беседы повторён");
       await sleep(100);
       assert.deepEqual(takeRsCalls(), []);
     });
-    await step("RoomService недоступен → вебхук всё равно 200 (страховка не роняет обработку)", async () => {
+    await step("сбой поиска беседы, потом БД ответила → выкинут", async () => {
+      takeRsCalls();
+      let lookups = 0;
+      const out = await guard.enforceCallEncryption(trackPublished({ room: `conv-${D}`, identity: `${A.id}#lookup-retry` }), {
+        findConversation: async () => {
+          lookups += 1;
+          if (lookups < 2) throw new Error("db blip");
+          return { isGroup: false };
+        },
+        lookupDelaysMs: [0, 20, 20],
+      });
+      assert.equal(out.verdict.action, "evict");
+      assert.equal(out.eviction?.removed, true);
+      assert.deepEqual(takeRsCalls().map((c) => c.method), ["MutePublishedTrack", "RemoveParticipant"]);
+    });
+    await step("RoomService отвечает ошибкой → выкидывание повторяется, пока не выйдет", async () => {
+      takeRsCalls();
+      rsFailNext = 4; // обе попытки (Mute+Remove) первых двух заходов падают, третий заход проходит
+      const out = await guard.enforceCallEncryption(trackPublished({ room: `conv-${D}`, identity: `${A.id}#rs-retry` }), {
+        evictDelaysMs: [0, 20, 20, 20],
+      });
+      rsFailNext = 0;
+      assert.equal(out.eviction?.removed, true);
+      assert.equal(out.eviction?.attempts, 3);
+      const calls = takeRsCalls();
+      assert.equal(calls.filter((c) => c.method === "RemoveParticipant").length, 3, JSON.stringify(calls.map((c) => [c.method, !!c.failed])));
+      assert.equal(calls.filter((c) => c.method === "RemoveParticipant" && !c.failed).length, 1);
+      assert.equal(calls.filter((c) => c.method === "MutePublishedTrack" && !c.failed).length, 1, "дорожка заглушена с третьей попытки");
+    });
+
+    console.log("Запрет на возврат выкинутого");
+    await step("выкинутое устройство 2 мин не получает пропуск в ту же комнату (403), остальные — получают", async () => {
+      const banKey = guard.callEncryptionBanKey(`conv-${D}`, `${B.id}#${B.dev}`);
+      // Оба устройства выкидывались шагами выше — снимаем их запреты, чтобы начать с чистого листа.
+      await redis.del([banKey, guard.callEncryptionBanKey(`conv-${D}`, `${A.id}#${A.dev}`)]);
+      const before = await call("POST", "/api/livekit/token", { token: B.token, device: B.dev, body: { room: `conv-${D}` } });
+      assert.equal(before.status, 200, JSON.stringify(before.body));
+      const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}` }));
+      assert.equal(r.status, 200);
+      await settledRsCalls();
+      const ttl = await redis.ttl(banKey);
+      assert.ok(ttl > 60 && ttl <= 120, `ttl запрета ${ttl}`);
+      const blocked = await call("POST", "/api/livekit/token", { token: B.token, device: B.dev, body: { room: `conv-${D}` } });
+      assert.equal(blocked.status, 403, JSON.stringify(blocked.body));
+      assert.equal(blocked.body.code, "CALL_UNENCRYPTED_BLOCKED");
+      const other = await call("POST", "/api/livekit/token", { token: A.token, device: A.dev, body: { room: `conv-${D}` } });
+      assert.equal(other.status, 200, "собеседник не затронут");
+      await redis.del(banKey);
+      const after = await call("POST", "/api/livekit/token", { token: B.token, device: B.dev, body: { room: `conv-${D}` } });
+      assert.equal(after.status, 200, "после истечения запрета пропуск снова выдаётся");
+    });
+
+    await step("RoomService недоступен → вебхук отвечает сразу (не ждёт RoomService) и 200", async () => {
       const verdict = await guard.judgeCallEncryptionEvent(trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}` }));
       assert.equal(verdict.action, "evict");
       fakeRoomService.closeAllConnections?.();
       await new Promise<void>((resolve) => fakeRoomService.close(() => resolve()));
-      const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${B.id}#${B.dev}` }));
+      const t0 = Date.now();
+      const r = await postWebhook(trackPublished({ room: `conv-${D}`, identity: `${A.id}#rs-down` }));
+      const took = Date.now() - t0;
       assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.ok(took < 2000, `вебхук ждал RoomService ${took} мс`);
     });
 
     await getPushQueue().close().catch(() => undefined);

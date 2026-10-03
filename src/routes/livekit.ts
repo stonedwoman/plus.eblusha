@@ -7,7 +7,7 @@ import { authenticate } from "../middlewares/auth";
 import { getRedisClient } from "../lib/redis";
 import prisma from "../lib/prisma";
 import { applyLivekitFactsEvent } from "../lib/livekitFacts";
-import { enforceCallEncryption } from "../lib/callEncryptionGuard";
+import { isBlockedFromCallRoom, startCallEncryptionEnforcement } from "../lib/callEncryptionGuard";
 import { buildLivekitPublicUrl } from "../lib/livekitUrl";
 
 const router = Router();
@@ -60,10 +60,13 @@ router.post("/webhook", async (req, res) => {
   }
 
   // Звонок 1:1 без шифрования невозможен: открытая (encryption NONE) звуковая или видеодорожка
-  // в комнате беседы 1:1 → дорожку глушим, участника выкидываем (lib/callEncryptionGuard.ts).
-  // До записи фактов и независимо от неё: сбой БД фактов не должен отменять страховку.
+  // в комнате беседы 1:1 → запрет на возврат, дорожку глушим, участника выкидываем
+  // (lib/callEncryptionGuard.ts). В ФОНЕ и с повторами: ответ LiveKit не ждёт RoomService (иначе
+  // очередь вебхуков комнаты стоит до ~15 с), а сбой RoomService или БД не оставляет открытую
+  // дорожку навсегда. Подпись и дедуп — выше, синхронно. Запускаем до записи фактов и
+  // независимо от неё: сбой БД фактов не должен отменять страховку.
   if (event.event === "track_published") {
-    await enforceCallEncryption(event);
+    startCallEncryptionEnforcement(event);
   }
 
   try {
@@ -152,6 +155,24 @@ router.post("/token", async (req, res) => {
     normalizeDeviceId(authed.deviceId) ?? normalizeDeviceId(req.headers["x-device-id"]);
   const deviceSuffix = knownDeviceId ?? randomBytes(6).toString("hex");
   const identity = `${user.id}#${deviceSuffix}`;
+
+  // Это устройство только что выкинуто из этой комнаты за незашифрованную дорожку в звонке 1:1
+  // (вебхук, lib/callEncryptionGuard.ts). RemoveParticipant не отзывает выданный пропуск, а клиент
+  // с циклом переподключения снова отдавал бы открытый звук — новый пропуск не выдаём, пока
+  // запрет не истечёт (2 мин). Redis недоступен — не держим честных: решают клиентские затворы.
+  let blocked = false;
+  try {
+    blocked = await isBlockedFromCallRoom(room, identity);
+  } catch {
+    blocked = false;
+  }
+  if (blocked) {
+    res.status(403).json({
+      message: "Звонок без шифрования запрещён: обновите приложение",
+      code: "CALL_UNENCRYPTED_BLOCKED",
+    });
+    return;
+  }
   const displayName = user.displayName ?? user.username;
 
   // Metadata is SERVER-controlled for the identity fields (anti-spoofing): a client
