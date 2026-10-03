@@ -1,0 +1,55 @@
+# Изолированная среда интеграционных тестов бэкенда (секретные чаты и прочее).
+# Поднимать/сносить ТОЛЬКО через test/secret-env/secret-test.sh — он же следит,
+# чтобы процесс тестов не видел боевой .env.
+#
+# Отличия от боевого стека, на которые опирается проверка изоляции (guard.ts):
+#   - свой compose-проект eb-secret-test, своя сеть, НИ ОДНОГО общего тома;
+#   - порты только на 127.0.0.1 и не боевые (Postgres 55433, Redis 56380);
+#   - своя БД eblusha_secret_test под своим пользователем ebtest;
+#   - cluster_name=eb-secret-test у Postgres и ключ-метка eb-secret-test:marker в Redis;
+#   - данные в tmpfs: после down ничего не остаётся.
+name: eb-secret-test
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    pull_policy: missing
+    environment:
+      POSTGRES_DB: eblusha_secret_test
+      POSTGRES_USER: ebtest
+      POSTGRES_PASSWORD: ebtest
+    command:
+      - postgres
+      - -c
+      - cluster_name=eb-secret-test
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+    ports:
+      - "127.0.0.1:${EB_TEST_PG_PORT:-55433}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data:size=2g
+    labels:
+      org.eblusha.purpose: "eb-secret-test (integration tests, NOT production)"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ebtest -d eblusha_secret_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    pull_policy: missing
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${EB_TEST_REDIS_PORT:-56380}:6379"
+    labels:
+      org.eblusha.purpose: "eb-secret-test (integration tests, NOT production)"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
