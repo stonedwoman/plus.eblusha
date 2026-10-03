@@ -365,7 +365,11 @@ final class CallManager: NSObject, ObservableObject {
         // Затвор закрыт: включит (или нет) сам затвор, когда шифратор доложит «OK».
         if updateGatedPublication(source: .microphone, enabled: on) { return }
         Task { @MainActor in
-            _ = try? await self.room?.localParticipant.setMicrophone(enabled: on)
+            if on {
+                await self.enableMicrophoneGated()
+            } else {
+                _ = try? await self.room?.localParticipant.setMicrophone(enabled: false)
+            }
         }
     }
 
@@ -573,6 +577,17 @@ final class CallManager: NSObject, ObservableObject {
             try? await Task.sleep(nanoseconds: Self.sendGateFallbackNs)
             guard self.callSeq == seq else { return }
             self.openSendGate(publication, reason: "запасной путь")
+        }
+    }
+
+    /// Микрофон кнопкой: если при входе он не поднялся и в эфире его нет, первая публикация —
+    /// тоже за затвором; уже опубликованный включаем как обычно — его шифратор давно прикреплён.
+    private func enableMicrophoneGated() async {
+        guard let local = room?.localParticipant else { return }
+        if e2eeEnabled, local.trackPublications.values.first(where: { $0.source == .microphone }) == nil {
+            try? await publishGated(LocalAudioTrack.createTrack(), on: local)
+        } else {
+            _ = try? await local.setMicrophone(enabled: true)
         }
     }
 
