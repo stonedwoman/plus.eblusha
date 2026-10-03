@@ -10,7 +10,9 @@
  *     сбой RoomService/БД повторяется; выкинутому устройству 2 мин не выдаётся пропуск в ту же
  *     комнату; комната несуществующей беседы — тоже выкидываем;
  *   - (ревью этапа 0) ключ 1:1 продлевается при каждом чтении, accept, room:join и у идущих
- *     звонков: повторный запрос не создаёт новый ключ.
+ *     звонков: повторный запрос не создаёт новый ключ;
+ *   - (ревью этапа 0) приглашение в уже идущий 1:1 от его участника получает call:accepted с
+ *     live: true — клиент при сбое ключа уходит один, а не завершает разговор.
  *
  * Запускать ТОЛЬКО в изолированной среде (боевые БД/Redis недоступны предохранителю guard.ts):
  *   test/secret-env/secret-test.sh run test/call-e2ee-stage0.integration.test.ts
@@ -349,6 +351,33 @@ async function main() {
       await redis.expire(`call_e2ee_key:${D}`, 5);
       assert.equal(await ce.getOrCreateCallE2eeKey(D), keys[0]);
       assert.ok((await keyTtl(D)) > 7000);
+    });
+
+    console.log("Вход своим вторым устройством в идущий разговор");
+    await step("приглашение в живой 1:1 от его участника → call:accepted с live: true; обычный ответ — без live", async () => {
+      await redis.del(`call_e2ee_key:${D}`);
+      const sa = await connect(A);
+      const sb = await connect(B);
+      const accepted: any[] = [];
+      sa.on("call:accepted", (p: any) => accepted.push(p));
+      sa.emit("call:invite", { conversationId: D, video: false });
+      await sleep(400);
+      sb.emit("call:accept", { conversationId: D, video: false });
+      await sleep(500);
+      assert.equal(accepted.length, 1, JSON.stringify(accepted));
+      assert.equal(accepted[0].by?.id, B.id);
+      assert.ok(!accepted[0].live, "ответ собеседника на новый звонок — не live");
+      // Второе устройство A («Тоже сюда» на iOS/Android = повторный invite) после окна троттлинга.
+      await sleep(2100);
+      const sa2 = await connect(A);
+      const got: any[] = [];
+      sa2.on("call:accepted", (p: any) => got.push(p));
+      sa2.emit("call:invite", { conversationId: D, video: false });
+      for (let i = 0; i < 30 && got.length === 0; i += 1) await sleep(100);
+      assert.equal(got.length, 1, "второму устройству ответили «уже принято»");
+      assert.equal(got[0].live, true, JSON.stringify(got[0]));
+      sa.emit("call:end", { conversationId: D });
+      await sleep(300);
     });
 
     console.log("Вебхук: подпись");

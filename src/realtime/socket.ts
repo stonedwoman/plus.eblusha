@@ -59,7 +59,8 @@ type ServerToClientEvents = {
   "conversations:updated": (payload: { conversationId: string; conversation?: any }) => void;
   "conversations:deleted": (payload: { conversationId: string }) => void;
   "call:incoming": (payload: { conversationId: string; from: { id: string; name: string }; video: boolean }) => void;
-  "call:accepted": (payload: { conversationId: string; by: { id: string }; video: boolean }) => void;
+  /** live: true — ответ на приглашение в уже идущий разговор (вход своим вторым устройством). */
+  "call:accepted": (payload: { conversationId: string; by: { id: string }; video: boolean; live?: boolean }) => void;
   "call:declined": (payload: { conversationId: string; by: { id: string } }) => void;
   "call:ended": (payload: { conversationId: string; by: { id: string } }) => void;
   // Sent to the original inviter when the peer simultaneously dialed them
@@ -2166,10 +2167,15 @@ export async function initSocket(
             // или в другом окне. Промолчать нельзя — его клиент уже показал экран
             // дозвона и через полминуты сам пошлёт «завершить», снося ЖИВОЙ звонок.
             // Отвечаем «уже принято»: дозвон гаснет, клиент подключается к разговору.
+            // live: true — это вход в УЖЕ идущий разговор, а не ответ на новый звонок: если
+            // этому устройству не удастся включить шифрование, ему надо уйти одному
+            // (call:room:leave), а не завершать разговор (call:end) на других устройствах и у
+            // собеседника (ревью этапа 0 E2EE). Старые клиенты лишнее поле игнорируют.
             io.to(userRoom(userId)).emit("call:accepted", {
               conversationId,
               by: { id: existingState.inviterId },
               video: existingState.video,
+              live: true,
             });
           } else {
             // Приглашение прислал тот, кого в разговоре нет (в беседе с флагом 1:1
