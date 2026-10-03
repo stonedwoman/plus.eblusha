@@ -146,6 +146,8 @@ final class SecretHolesTests: XCTestCase {
         rig.keyStore.setThreadKey(thread, key: oldKey)
         let imported = Box<[String]>([])
         rig.repo.keyImported.sink { imported.value.append($0) }.store(in: &subscriptions)
+        let rotations = Box<[SecretRepository.KeyRotation]>([])
+        rig.repo.keyRotated.sink { rotations.value.append($0) }.store(in: &subscriptions)
         let item = rig.keyPackageItem(
             from: peer, prekey: rig.makeMyPrekey(), packageKind: "thread_key",
             payload: rig.threadKeyPayload(threadId: thread, key: newKey), headerThreadId: thread
@@ -156,6 +158,10 @@ final class SecretHolesTests: XCTestCase {
         XCTAssertEqual(rig.keyStore.threadKey(thread), newKey, "смена ключа от участника — автоматически")
         XCTAssertEqual(rig.keyStore.previousThreadKeys(thread), [oldKey], "прежний ключ сохранён")
         XCTAssertEqual(imported.value, [thread])
+        // Не молча: экран беседы получает событие (и непоказанную плашку на случай закрытого чата).
+        XCTAssertEqual(rotations.value, [SecretRepository.KeyRotation(threadId: thread, senderUserId: peer.userId)])
+        XCTAssertTrue(rig.repo.takeKeyRotationNotice(thread))
+        XCTAssertFalse(rig.repo.takeKeyRotationNotice(thread), "плашка показывается один раз")
         // Квитанция ушла инициатору — веб-паритет.
         let receipt = rig.server.sentEnvelopes.first
         XCTAssertEqual(receipt?["toDeviceId"] as? String, peer.deviceId)
@@ -265,6 +271,27 @@ final class SecretHolesTests: XCTestCase {
         rig.server.conversationsStatus = 200
         await rig.repo.syncInbox()
         XCTAssertNotNil(rig.keyStore.threadKey(thread), "сеть вернулась — ключ принят")
+    }
+
+    func testH01_membershipFailuresNeverPoisonAnHonestKey() async throws {
+        // Раньше «не удалось проверить участника» шло в счётчик отравления: после 20 сбоев
+        // GET /conversations честный ключ подтверждался без импорта и терялся.
+        rig.server.conversationsStatus = 503
+        let key = SecretCrypto.randomKey()
+        let rotations = Box(0)
+        rig.repo.keyRotated.sink { _ in rotations.value += 1 }.store(in: &subscriptions)
+        rig.server.inbox = [rig.keyPackageItem(
+            from: peer, prekey: rig.makeMyPrekey(), packageKind: "thread_key",
+            payload: rig.threadKeyPayload(threadId: thread, key: key), headerThreadId: thread
+        )]
+        for _ in 0..<25 { await rig.repo.syncInbox() }
+        XCTAssertTrue(rig.server.ackedIds.isEmpty, "сбой проверки — не отравление: конверт живёт до серверного срока")
+        XCTAssertNil(rig.keyStore.threadKey(thread))
+        rig.server.conversationsStatus = 200
+        await rig.repo.syncInbox()
+        XCTAssertEqual(rig.keyStore.threadKey(thread), key)
+        XCTAssertEqual(rig.server.ackedIds.count, 1)
+        XCTAssertEqual(rotations.value, 0, "первый ключ — не «смена ключа»")
     }
 
     func testH01_validateThreadKeyPayloadTable() {
@@ -451,6 +478,8 @@ final class SecretHolesTests: XCTestCase {
         rig.server.devicesStatus = 503
         await rig.repo.syncInbox()
         XCTAssertTrue(rig.server.ackedIds.isEmpty, "раньше сбой сети здесь означал «чужое» и честная связка терялась")
+        for _ in 0..<22 { await rig.repo.syncInbox() }
+        XCTAssertTrue(rig.server.ackedIds.isEmpty, "и после 20+ сбоев не подтверждается (не отравление)")
         rig.server.devicesStatus = 200
         await rig.repo.syncInbox()
         XCTAssertEqual(rig.keyStore.threadKey("linked-thread"), key)
@@ -579,6 +608,31 @@ final class SecretHolesTests: XCTestCase {
         XCTAssertNil(rig.keyStore.prekeySecret("new-1"))
     }
 
+    func testH04_legacyUnmarkedSecretsAreNeverCutByCap() throws {
+        // Секреты старых сборок: без отметок времени (и среди них — ещё не выданные сервером).
+        var legacy: [String: Data] = [:]
+        for i in 0..<300 { legacy["legacy-\(i)"] = SecretCrypto.randomKey() }
+        rig.keyStore.addPrekeySecrets(legacy, nowMs: 1_000)
+        rig.keyStore.dropPrekeyCreationMarksForTests()
+        let before = rig.keyStore.prekeySecretCount()
+        XCTAssertEqual(rig.keyStore.prunePrekeySecrets(nowMs: 2_000, cap: 100), 0, "порядок легаси неизвестен — потолком не режем")
+        XCTAssertEqual(rig.keyStore.prekeySecretCount(), before)
+        // Новые секреты (с отметкой) режутся потолком, легаси — нет.
+        var fresh: [String: Data] = [:]
+        for i in 0..<105 { fresh["fresh-\(i)"] = SecretCrypto.randomKey() }
+        rig.keyStore.addPrekeySecrets(fresh, nowMs: 3_000)
+        var newest: [String: Data] = [:]
+        for i in 0..<5 { newest["newest-\(i)"] = SecretCrypto.randomKey() }
+        rig.keyStore.addPrekeySecrets(newest, nowMs: 4_000)
+        XCTAssertEqual(rig.keyStore.prunePrekeySecrets(nowMs: 5_000, cap: 100), 10)
+        for i in 0..<300 { XCTAssertNotNil(rig.keyStore.prekeySecret("legacy-\(i)")) }
+        for i in 0..<5 { XCTAssertNotNil(rig.keyStore.prekeySecret("newest-\(i)")) }
+        // Легаси уходит только по «вскрыт + сутки».
+        rig.keyStore.markPrekeysUsed(["legacy-7"], nowMs: 5_000)
+        XCTAssertEqual(rig.keyStore.prunePrekeySecrets(nowMs: 5_000 + SecretKeyStore.usedPrekeyGraceMs + 1, cap: 100), 1)
+        XCTAssertNil(rig.keyStore.prekeySecret("legacy-7"))
+    }
+
     func testH04_usedPrekeyIsMarkedAfterImport() async throws {
         let prekey = rig.makeMyPrekey("used-pk")
         let item = rig.keyPackageItem(
@@ -601,6 +655,17 @@ final class SecretHolesTests: XCTestCase {
         XCTAssertNotEqual(rig.deviceIds.deviceId(), before)
         XCTAssertEqual(rig.keyStore.identityState(), .missing)
         XCTAssertNil(rig.keyStore.threadKey(thread))
+    }
+
+    func testH13_logoutRevokesTheOldDeviceIdOnServer() async throws {
+        // «Выйти» отзывает прежний id (как веб и Android) — иначе копились бы живые зомби.
+        let id = rig.deviceIds.deviceId()
+        let ok = await rig.devices.revokeDevice(id, timeoutSeconds: 5)
+        XCTAssertTrue(ok)
+        XCTAssertEqual(rig.server.calls("DELETE", "devices/\(id)").count, 1)
+        rig.server.deleteDeviceStatus = 404
+        let failed = await rig.devices.revokeDevice(id, timeoutSeconds: 5)
+        XCTAssertFalse(failed, "сбой отзыва — best-effort, выход не блокирует")
     }
 
     func testH13_bootstrapWithWipedKeysUnderRegisteredIdRotates() async throws {
@@ -627,30 +692,51 @@ final class SecretHolesTests: XCTestCase {
 
     // MARK: - X5: отзыв устройства
 
-    func testX5_bootstrapOnRevokedIdWipesKeysAndRegistersNewId() async throws {
+    func testX5_bootstrapOnRevokedIdWipesKeysAndLogsOutWithoutRegistering() async throws {
         let oldId = rig.deviceIds.deviceId()
         rig.keyStore.setThreadKey(thread, key: SecretCrypto.randomKey())
         rig.server.myDevices = [rig.deviceRecord(id: oldId, identity: rig.keyStore.identity()!.publicKey, revoked: true)]
         rig.keyStore.clearBootstrapped()
-        let rotated = Box(false)
-        rig.repo.onDeviceIdRotated = { rotated.value = true }
+        let revoked = Box<[String]>([])
+        rig.repo.deviceRevokedLocally.sink { revoked.value.append($0) }.store(in: &subscriptions)
         let ok = await rig.repo.ensureDeviceBootstrap()
-        XCTAssertTrue(ok)
-        let registeredIds = rig.server.calls("POST", "devices/register").compactMap { ($0.json as? [String: Any])?["deviceId"] as? String }
-        XCTAssertFalse(registeredIds.contains(oldId), "отозванный id не воскрешается перерегистрацией")
-        XCTAssertEqual(registeredIds, [rig.deviceIds.deviceId()])
+        XCTAssertFalse(ok)
+        XCTAssertTrue(rig.server.calls("POST", "devices/register").isEmpty,
+                      "ни отозванный, ни НОВЫЙ id в этой сессии не регистрируются (украденный телефон не оживает)")
+        XCTAssertNotEqual(rig.deviceIds.deviceId(), oldId)
         XCTAssertNil(rig.keyStore.threadKey(thread), "ключи отозванного устройства стёрты")
-        XCTAssertTrue(rotated.value, "сокет переподключится с новым id")
+        XCTAssertEqual(revoked.value.count, 1, "RootView выходит из аккаунта")
+        // Повторный бутстрап в той же сессии (инбокс, холодный старт) — по-прежнему ничего.
+        let again = await rig.repo.ensureDeviceBootstrap()
+        XCTAssertFalse(again)
+        XCTAssertTrue(rig.server.calls("POST", "devices/register").isEmpty)
+        // Следующий вход — чистое новое устройство.
+        rig.relogin()
+        rig.server.myDevices = []
+        let afterLogin = await rig.repo.ensureDeviceBootstrap()
+        XCTAssertTrue(afterLogin)
+        let registeredIds = rig.server.calls("POST", "devices/register").compactMap { ($0.json as? [String: Any])?["deviceId"] as? String }
+        XCTAssertEqual(registeredIds, [rig.deviceIds.deviceId()])
+        XCTAssertFalse(registeredIds.contains(oldId))
+    }
+
+    func testX5_revocationNoticedAfterLogoutDoesNotLockNextLogin() async throws {
+        rig.session.clear()
+        rig.repo.noteDeviceRevoked() // сессии нет — отметка не ставится
+        rig.relogin()
+        XCTAssertFalse(rig.repo.registrationBlocked())
     }
 
     func testX5_inbox400OnRevokedDeviceRotatesInsteadOfResurrecting() async throws {
         let oldId = rig.deviceIds.deviceId()
         rig.server.pullStatus = 400
         rig.server.myDevices = [rig.deviceRecord(id: oldId, identity: rig.keyStore.identity()!.publicKey, revoked: true)]
+        let revoked = Box(0)
+        rig.repo.deviceRevokedLocally.sink { _ in revoked.value += 1 }.store(in: &subscriptions)
         await rig.repo.syncInbox()
-        let registeredIds = rig.server.calls("POST", "devices/register").compactMap { ($0.json as? [String: Any])?["deviceId"] as? String }
-        XCTAssertEqual(registeredIds.count, 1)
-        XCTAssertNotEqual(registeredIds.first, oldId)
+        XCTAssertTrue(rig.server.calls("POST", "devices/register").isEmpty, "ни старый, ни новый id в этой сессии")
+        XCTAssertNotEqual(rig.deviceIds.deviceId(), oldId)
+        XCTAssertEqual(revoked.value, 1, "выход из аккаунта")
     }
 
     func testX5_B6_inbox400OnUnknownDeviceSelfHealsWithSameId() async throws {
@@ -673,13 +759,15 @@ final class SecretHolesTests: XCTestCase {
         rig.keyStore.clearBootstrapped()
         rig.server.devicesStatus = 503 // список устройств недоступен — решает ответ register
         rig.server.registerResponses = [(409, ["message": "Device is revoked"])]
+        let revoked = Box(0)
+        rig.repo.deviceRevokedLocally.sink { _ in revoked.value += 1 }.store(in: &subscriptions)
         let ok = await rig.repo.ensureDeviceBootstrap()
-        XCTAssertTrue(ok)
+        XCTAssertFalse(ok)
         let registeredIds = rig.server.calls("POST", "devices/register").compactMap { ($0.json as? [String: Any])?["deviceId"] as? String }
-        XCTAssertEqual(registeredIds.count, 2, "без зацикливания: одна повторная попытка с новым id")
-        XCTAssertEqual(registeredIds.first, oldId)
-        XCTAssertNotEqual(registeredIds.last, oldId)
+        XCTAssertEqual(registeredIds, [oldId], "новый id в этой сессии не регистрируется — выход")
+        XCTAssertNotEqual(rig.deviceIds.deviceId(), oldId)
         XCTAssertNil(rig.keyStore.threadKey(thread))
+        XCTAssertEqual(revoked.value, 1)
     }
 
     func testX5_registerConflictWithOtherAccountRotatesWithoutWipe() async throws {
@@ -697,7 +785,10 @@ final class SecretHolesTests: XCTestCase {
     func testX5_registerKeepsFailingNoLoop() async throws {
         rig.keyStore.clearBootstrapped()
         rig.server.myDevices = []
-        rig.server.registerResponses = [(409, ["message": "Device is revoked"]), (409, ["message": "Device is revoked"])]
+        rig.server.registerResponses = [
+            (409, ["message": "Device already registered to another user"]),
+            (409, ["message": "Device already registered to another user"]),
+        ]
         let ok = await rig.repo.ensureDeviceBootstrap()
         XCTAssertFalse(ok)
         XCTAssertEqual(rig.server.calls("POST", "devices/register").count, 2, "не больше двух попыток")

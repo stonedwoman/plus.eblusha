@@ -138,6 +138,9 @@ final class ChatViewModel: ObservableObject {
         var linkedKeys: Int?
         /// Кому мы отдали ключи: имя устройства + число тредов.
         var linkedOut: LinkedDevice?
+        /// Ключ этого секретного чата сменился (автоматически, по пакету проверенного
+        /// участника — решение владельца). Не молча: плашка над лентой, как тост на вебе.
+        var secretKeyRotated = false
     }
 
     @Published var ui = UiState()

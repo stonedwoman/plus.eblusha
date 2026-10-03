@@ -13,6 +13,8 @@ struct RootView: View {
     @State private var bootstrapped = false
     /// Идёт разбор сигнала отзыва: connect_error сыплется на каждый реконнект.
     @State private var revocationHandling = false
+    /// Идёт выход — второй выход (свой device:revoked, сигнал бутстрапа) поверх не запускаем.
+    @State private var loggingOut = false
     /// Досыл секретной очереди при приходе ключа — работает и когда экран беседы закрыт.
     @State private var secretFlusher = SecretOutboxFlusher(
         secret: AppContainer.shared.secretRepository,
@@ -102,6 +104,12 @@ struct RootView: View {
                 break
             }
         }
+        // X5: бутстрап увидел НАШ id отозванным (список устройств, register 409/410 «revoked»):
+        // ключи уже стёрты, id сменён — выходим, как по `device:revoked`. Новый id в этой же
+        // сессии не регистрируется (SecretRepository.registrationBlocked).
+        .onReceive(container.secretRepository.deviceRevokedLocally.receive(on: DispatchQueue.main)) { reason in
+            Task { await handleLocalRevocation(reason: reason) }
+        }
         // Порт наблюдателя AppLifecycle.foreground: возврат из фона с истёкшим access —
         // проактивный refresh (первый запрос ресинка не ловит 401), и честный
         // presence:state о текущем состоянии.
@@ -140,14 +148,36 @@ struct RootView: View {
     }
 
     /// Выход: пользователем («Выйти») или потому, что это устройство отозвали.
-    private func logout() async {
+    /// revokeThisDevice: «Выйти» отзывает ЭТО устройство на сервере (как веб и Android) —
+    /// после выхода id всё равно меняется (H13), и без отзыва прежняя запись копилась бы
+    /// «живым» устройством-зомби: отправители тратили бы на неё OPK, веб просил бы у неё ключ
+    /// («Восстановить» спрашивает первые устройства из bundles), «есть другие устройства» врало
+    /// бы. При выходе ИЗ-ЗА отзыва устройство уже отозвано — повторно не трогаем.
+    private func logout(revokeThisDevice: Bool = true) async {
+        guard !loggingOut else { return }
+        loggingOut = true
+        defer { loggingOut = false }
         // Токен снимаем ДО выхода: после очистки сессии запрос ушёл бы
         // без авторизации, и следующий владелец телефона получал бы
         // чужие уведомления.
         await PushRepository.shared.unregister()
+        if revokeThisDevice {
+            // Сокет закрываем ДО отзыва: собственный `device:revoked` не должен запустить
+            // обработку отзыва поверх выхода. Не дольше 5 с — без сети выход не зависает.
+            container.realtimeClient.disconnect()
+            await container.devicesRepository.revokeDevice(container.deviceIdProvider.deviceId(), timeoutSeconds: 5)
+        }
         await container.authRepository.logout()
         // Стирает ключи секреток и заводит новый id устройства (H13).
         container.clearLocalData()
+    }
+
+    /// X5 со стороны бутстрапа: наш id отозван, ключи уже стёрты — выход без повторного отзыва.
+    private func handleLocalRevocation(reason: String) async {
+        guard loggedIn, !loggingOut else { return }
+        NSLog("RootView: this device id is revoked (%@) — keys wiped, logging out", reason)
+        container.realtimeClient.disconnect()
+        await logout(revokeThisDevice: false)
     }
 
     /// X5: устройство отозвали («Отключить» с другого устройства, бан аккаунта). Как веб:
@@ -155,7 +185,7 @@ struct RootView: View {
     /// ни воскрешать свой id перерегистрацией. connect_error сначала сверяется со списком
     /// устройств: «id ещё не зарегистрирован» — повод для бутстрапа, а не для выхода.
     private func handleDeviceRevoked(deviceId: String?, viaConnectError: Bool) async {
-        guard loggedIn, !revocationHandling else { return }
+        guard loggedIn, !revocationHandling, !loggingOut else { return }
         revocationHandling = true
         defer { revocationHandling = false }
         let verdict = await container.secretRepository.revocationVerdict(
@@ -165,7 +195,7 @@ struct RootView: View {
         case .logout:
             NSLog("RootView: this device was revoked — wiping secret keys and logging out")
             container.realtimeClient.disconnect()
-            await logout()
+            await logout(revokeThisDevice: false)
         case .rebootstrap:
             let before = container.deviceIdProvider.deviceId()
             // Сменённый id переподключает сокет сам (onDeviceIdRotated); тот же — переподключаем

@@ -230,6 +230,12 @@ struct ChatView: View {
                             onSubmitCode: { vm.submitLinkCode() }
                         )
                     }
+                    // Ключ шифрования треда сменился — плашка поверх начала ленты (не молча).
+                    .overlay(alignment: .top) {
+                        if vm.ui.isSecret, vm.ui.secretKeyRotated, !vm.ui.secretInvite, !vm.ui.secretWaiting {
+                            SecretKeyRotatedBanner { vm.dismissSecretKeyRotated() }
+                        }
+                    }
                     .overlay { emptyState }
                     .overlay {
                         if vm.ui.loading, vm.ui.messages.isEmpty {

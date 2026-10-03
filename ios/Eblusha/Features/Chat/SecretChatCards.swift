@@ -152,6 +152,40 @@ struct SecretChatOverlay: View {
     }
 }
 
+/// Ключ шифрования треда сменился (автоматически, по пакету проверенного участника —
+/// решение владельца). Не молча: все новые сообщения уходят уже на новом ключе. Плашка над
+/// лентой (как тост на вебе и плашка на Android), прежние сообщения остаются читаемыми.
+struct SecretKeyRotatedBanner: View {
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text("🔑").font(.system(size: 16))
+            Text("Ключ шифрования этого чата сменился. Прежние сообщения остаются читаемыми.")
+                .font(.footnote)
+                .foregroundStyle(Eb.textMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Eb.textMuted)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Скрыть")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
+        .padding(.vertical, 6)
+        .frame(maxWidth: 520)
+        .background(Eb.surface300, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Eb.borderStrong))
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+    }
+}
+
 /// Общий каркас секретной карточки: surface300, скругление 16, кант borderStrong.
 private struct SecretCardShell<Content: View>: View {
     @ViewBuilder var content: Content

@@ -79,8 +79,15 @@ extension ChatViewModel {
         // Сторож ожидания: без него бесключевой чат крутился молча и вечно — ни причины,
         // ни кнопок (веб показывает «Не удалось получить ключи» через две минуты).
         startSecretKeysWatchdog()
+        // Ключ треда сменился, пока экран был закрыт, — плашка при открытии.
+        if secretRepo.takeKeyRotationNotice(conversationId) { ui.secretKeyRotated = true }
         subscribeSecretStreams()
         startSecretLoops()
+    }
+
+    /// Плашка «ключ шифрования сменился» прочитана.
+    func dismissSecretKeyRotated() {
+        ui.secretKeyRotated = false
     }
 
     /// Подписки на паблишеры SecretRepository (порт collect-блоков initSecret).
@@ -105,6 +112,16 @@ extension ChatViewModel {
                 self.stopSecretKeysWatchdog()
                 self.flushSecretQueue()
                 Task { await self.loadSecret() }
+            }
+            .store(in: &cancellables)
+
+        // Ключ треда сменился при открытом экране — плашка сразу (H01: не молча).
+        secretRepo.keyRotated
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] rotation in
+                guard let self, rotation.threadId == self.conversationId else { return }
+                _ = self.secretRepo.takeKeyRotationNotice(self.conversationId)
+                self.ui.secretKeyRotated = true
             }
             .store(in: &cancellables)
 

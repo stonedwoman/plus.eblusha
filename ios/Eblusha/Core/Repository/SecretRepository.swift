@@ -45,6 +45,20 @@ final class SecretRepository {
     /// Мы отдали связку ключей другому своему устройству (имя + сколько тредов).
     let deviceLinkedOut = PassthroughSubject<LinkedDevice, Never>()
 
+    /// Ключ треда автоматически сменён по пакету проверенного участника (решение владельца).
+    struct KeyRotation: Equatable {
+        let threadId: String
+        let senderUserId: String
+    }
+
+    /// Не молча (H01): экран беседы показывает плашку «ключ шифрования сменился», как тост веба.
+    let keyRotated = PassthroughSubject<KeyRotation, Never>()
+
+    /// X5: НАШ id отозван (бутстрап увидел revoked, register 409/410 «revoked»). Ключи уже
+    /// стёрты и id сменён; RootView выходит из аккаунта (как `device:revoked`). Новый id в этой
+    /// сессии не регистрируется — только после следующего входа.
+    let deviceRevokedLocally = PassthroughSubject<String, Never>()
+
     // Нерасшифровываемые key package ретраятся на каждом pull; после веб-лимитов
     // (>20 попыток или >30 мин) — poison-ack, чтобы битый конверт не заклинил инбокс.
     // Трогается ТОЛЬКО под inboxGate.
@@ -74,6 +88,12 @@ final class SecretRepository {
     // connect_error DEVICE_REVOKED сыплется на каждый реконнект — сверяемся со списком
     // устройств не чаще раза в revocationCheckThrottleMs.
     private var lastRevocationCheckMs: Int64 = 0
+    // Треды, где ключ сменился, пока экран беседы не был открыт: плашка покажется при открытии.
+    private var rotationNotices: Set<String> = []
+    // X5: номер сессии (SessionStore.generation), в которой замечен отзыв нашего id. Пока эта
+    // сессия жива — ни одной регистрации: иначе отозванный (украденный) телефон в окне живого
+    // access-токена заводил бы НОВОЕ живое устройство аккаунта и снова получал ключи и пуши.
+    private var revokedInSession: Int64 = -1
 
     // Бутстрап может стереть ключи и сменить id (X5/H13) — параллельный бутстрап в этот
     // момент зарегистрировал бы на сервере уже стёртую идентичность. Сериализуем.
@@ -143,11 +163,34 @@ final class SecretRepository {
     /// (идемпотентно для устройства). false — сбой сети/сервера, повторить позже.
     @discardableResult
     func ensureDeviceBootstrap() async -> Bool {
+        if registrationBlocked() { return false }
         if keyStore.isBootstrapped() { return true }
         return await bootstrapGate.withPermit { await self.bootstrapLocked() }
     }
 
+    /// Отзыв нашего id замечен в текущей сессии — до выхода ничего не регистрируем.
+    func registrationBlocked() -> Bool {
+        let generation = session.generation()
+        return stateLock.withStateLock { revokedInSession == generation }
+    }
+
+    /// Отметить отзыв (только при живой сессии: отметка «после выхода» заперла бы следующий вход).
+    func noteDeviceRevoked() {
+        guard session.currentRefreshToken() != nil else { return }
+        let generation = session.generation()
+        stateLock.withStateLock { revokedInSession = generation }
+    }
+
+    /// X5: наш id отозван — стереть ключи, новый id, запрет регистрации до выхода и сигнал
+    /// RootView на выход (как веб на `device:revoked` и Android `onDeviceRevoked`).
+    private func handleOwnDeviceRevoked(reason: String) {
+        wipeDeviceKeys(reason: reason)
+        noteDeviceRevoked()
+        deviceRevokedLocally.send(reason)
+    }
+
     private func bootstrapLocked() async -> Bool {
+        if registrationBlocked() { return false }
         if keyStore.isBootstrapped() { return true } // пока ждали замок, бутстрап уже прошёл
         if !SecretCrypto.selfTest() {
             NSLog("SecretE2EE: SecretCrypto self-test FAILED — interop will not work")
@@ -164,10 +207,11 @@ final class SecretRepository {
         let status = await ownDeviceStatus()
         if status == .revoked {
             // X5: отозванный id не воскрешаем перерегистрацией (сервер пока снимает отзыв
-            // молча). Ключи этого устройства стираются, дальше — чистое новое устройство;
-            // ключи секреток оно получит только через привязку.
-            wipeDeviceKeys(reason: "device id is revoked")
-            rotated = true
+            // молча) — и не заводим вместо него НОВОЕ устройство в этой же сессии: ключи
+            // стираются, id меняется, и приложение выходит из аккаунта. Новое устройство —
+            // только после следующего входа (ключи секреток оно получит через привязку).
+            handleOwnDeviceRevoked(reason: "device id is revoked")
+            return false
         } else if identityState == .missing,
                   status == .live || (status == nil && deviceIdProvider.wasRegistered(deviceIdProvider.deviceId())) {
             // H13: идентичность стёрта (выход, сбой), а id прежний. Под ним на сервере лежат
@@ -203,8 +247,10 @@ final class SecretRepository {
                 // Сервер регистрацию отверг — эти prekeys он не принял.
                 keyStore.removePrekeySecrets(secrets.keys)
                 if await isRevokedConflict(error) {
-                    // Будущий серверный запрет (S5): отозванный id не регистрируется.
-                    wipeDeviceKeys(reason: "register refused: device revoked")
+                    // Будущий серверный запрет (S5): отозванный id не регистрируется — и новый
+                    // в этой сессии тоже (выход; см. выше).
+                    handleOwnDeviceRevoked(reason: "register refused: device revoked")
+                    return false
                 } else {
                     // 409 = этот id установки закреплён за ДРУГИМ аккаунтом. Без ротации
                     // бутстрап не проходил бы НИКОГДА, а x-device-id указывал бы на чужое
@@ -544,11 +590,17 @@ final class SecretRepository {
                 let h = item.headerJson
                 if h.kind == "key_package", h.packageKind == "thread_key" {
                     switch await importKeyPackage(item) {
-                    case .imported(let threadId, _):
+                    case .imported(let threadId, let change):
                         acks.append(item.msgId)
                         poisonAttempts.removeValue(forKey: item.msgId)
                         if let prekeyId = h.prekeyId { usedPrekeys.append(prekeyId) }
                         keyImported.send(threadId)
+                        if change == .replaced {
+                            // Ключ сменился (автоматически, от проверенного участника) — не молча.
+                            let rotation = KeyRotation(threadId: threadId, senderUserId: item.senderUserId?.trimmed() ?? "")
+                            stateLock.withStateLock { _ = rotationNotices.insert(threadId) }
+                            keyRotated.send(rotation)
+                        }
                         // Квитанция инициатору, чтобы он перестал переслать (веб-паритет).
                         if let initiator = h.initiatorDeviceId?.trimmed(), !initiator.isEmpty, initiator != myDeviceId {
                             try? await sendControl(
@@ -569,6 +621,9 @@ final class SecretRepository {
                     case .retry(let reason):
                         NSLog("SecretE2EE: thread_key %@ postponed: %@", item.msgId, reason)
                         registerPoisonFailure(item.msgId, acks: &acks)
+                    case .deferred(let reason):
+                        // Не ack и не отравление: ждём сети, срок жизни конверта ведёт сервер.
+                        NSLog("SecretE2EE: thread_key %@ deferred: %@", item.msgId, reason)
                     case .linked:
                         acks.append(item.msgId)
                     }
@@ -587,6 +642,8 @@ final class SecretRepository {
                     case .retry(let reason):
                         NSLog("SecretE2EE: device_link_keys %@ postponed: %@", item.msgId, reason)
                         registerPoisonFailure(item.msgId, acks: &acks)
+                    case .deferred(let reason):
+                        NSLog("SecretE2EE: device_link_keys %@ deferred: %@", item.msgId, reason)
                     }
                 } else if h.kind == "link_device_join" {
                     // Другое НАШЕ устройство просит связку ключей, предъявляя token/code
@@ -1135,8 +1192,13 @@ final class SecretRepository {
         case linked(added: Int)
         /// Негоден и годным не станет — подтвердить. opened: секрет OPK уже потрачен.
         case rejected(reason: String, opened: Bool)
-        /// Сейчас не вскрыть/не проверить — повторить на следующем pull (с отравлением).
+        /// Сейчас не вскрыть — повторить на следующем pull (с отравлением: 20 попыток / 30 мин).
         case retry(reason: String)
+        /// Проверить не удалось (сеть, Keychain, нет сессии) — НЕ подтверждать и НЕ считать
+        /// отравлением: конверт живёт до серверного срока. Иначе ~20 сбоев тяжёлого
+        /// GET /conversations (как раз сразу после «Принять» на плохой сети) выбрасывали
+        /// честный ключ треда без импорта — веб в этом случае тоже не подтверждает.
+        case deferred(reason: String)
     }
 
     enum ThreadKeyPayload: Equatable {
@@ -1202,7 +1264,7 @@ final class SecretRepository {
         }
         switch await threadMembership(threadId) {
         case .unknown:
-            return .retry(reason: "thread membership unknown")
+            return .deferred(reason: "thread membership unknown")
         case .notMember:
             return .rejected(reason: "not our secret thread", opened: true)
         case .members(let members):
@@ -1213,7 +1275,7 @@ final class SecretRepository {
         let change = keyStore.replaceThreadKey(threadId, key: key)
         switch change {
         case .rejected:
-            return .retry(reason: "keychain unavailable")
+            return .deferred(reason: "keychain unavailable")
         case .replaced:
             NSLog("SecretE2EE: thread key for %@ changed by participant %@ — previous key kept for history", threadId, sender)
         case .added, .unchanged:
@@ -1385,10 +1447,16 @@ final class SecretRepository {
             membershipCache.removeAll()
             membershipFetchStartedMs = 0
             lastPrekeysNeededReplenishMs = 0
+            rotationNotices.removeAll()
         }
         invalidateReceivers(nil)
         keyStore.clear()
         deviceIdProvider.rotate()
+    }
+
+    /// Есть ли непоказанная плашка «ключ сменился» для треда; показ её снимает.
+    func takeKeyRotationNotice(_ threadId: String) -> Bool {
+        stateLock.withStateLock { rotationNotices.remove(threadId) != nil }
     }
 
     // MARK: - Привязка устройства по QR
@@ -1695,7 +1763,7 @@ final class SecretRepository {
     /// Приём связки: расшифровка тем же handshake, что и thread_key, затем merge
     /// (без перетирания существующих ключей).
     private func importDeviceLinkKeys(_ item: SecretInboxItemDto) async -> KeyPackageOutcome {
-        guard let me = session.currentUserId() else { return .retry(reason: "no session") }
+        guard let me = session.currentUserId() else { return .deferred(reason: "no session") }
         guard item.senderUserId?.trimmed() == me else {
             // Чужая связка подсунула бы подставные ключи для тредов, которых у нас нет.
             return .rejected(reason: "sent by another account", opened: false)
@@ -1705,7 +1773,7 @@ final class SecretRepository {
             myDevices = try await devices.list().devices
         } catch {
             // Раньше сбой сети здесь означал «не наше» и честная связка терялась (ack).
-            return .retry(reason: "devices list unavailable")
+            return .deferred(reason: "devices list unavailable")
         }
         guard Self.verifyDeviceLinkSender(
             header: item.headerJson, senderUserId: item.senderUserId, me: me, myDevices: myDevices

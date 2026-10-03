@@ -88,6 +88,35 @@ final class DevicesRepository {
         }
     }
 
+    /// DELETE /devices/{deviceId}: отозвать устройство на сервере. Выход «Выйти» меняет id
+    /// (H13), и без отзыва прежняя запись оставалась бы «живым» устройством аккаунта — с OPK,
+    /// доставками и местом в списке, у кого просить ключ (веб и Android на выходе отзывают так
+    /// же). Best-effort с потолком по времени: без сети выход не должен зависать.
+    @discardableResult
+    func revokeDevice(_ deviceId: String, timeoutSeconds: Double = 5) async -> Bool {
+        let id = deviceId.trimmed()
+        guard !id.isEmpty else { return false }
+        let api = self.api
+        return await withTaskGroup(of: Bool?.self) { group in
+            group.addTask {
+                do {
+                    // Основной клиент (тот же x-device-id и 401→refresh), не upload-путь.
+                    let _: EmptyResponse = try await api.delete("devices/\(id)")
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(timeoutSeconds))
+                return nil // время вышло
+            }
+            let first: Bool? = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? false
+        }
+    }
+
     /// DELETE /devices/{deviceId}/push — снятие при выходе. ВАЖНО вызывать ДО очистки сессии:
     /// без токена доступа запрос уйдёт неавторизованным, и чужой аккаунт на этом телефоне
     /// продолжил бы получать уведомления.

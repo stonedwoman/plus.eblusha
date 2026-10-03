@@ -78,6 +78,8 @@ final class FakeServer {
     var registerResponses: [(status: Int, body: [String: Any]?)] = []
     /// Сколько ключей примет /devices/{id}/prekeys (nil — все).
     var publishAcceptLimit: Int?
+    /// Ответ на DELETE /devices/{id} (отзыв устройства при выходе).
+    var deleteDeviceStatus = 200
 
     var calls: [Call] { lock.withLockT { _calls } }
 
@@ -177,6 +179,9 @@ final class FakeServer {
         case ("POST", "devices/pairing/consume"):
             return (200, Self.data(["ok": true]))
         default:
+            if method == "DELETE", path.hasPrefix("devices/"), !path.hasSuffix("/push") {
+                return (deleteDeviceStatus, Self.data(deleteDeviceStatus == 200 ? ["success": true] : ["message": "Device not found"]))
+            }
             if method == "POST", path.hasPrefix("devices/"), path.hasSuffix("/prekeys") {
                 var keyIds = (((json as? [String: Any])?["prekeys"] as? [[String: Any]]) ?? []).compactMap { $0["keyId"] as? String }
                 if let limit = publishAcceptLimit { keyIds = Array(keyIds.prefix(limit)) }
@@ -244,11 +249,7 @@ final class SecretTestRig {
     init() {
         defaults = UserDefaults(suiteName: suiteName)!
         deviceIds = DeviceIdProvider(defaults: defaults)
-        let sessionJSON = """
-        {"user":{"id":"user-me","username":"me"},"accessToken":"test-access","refreshToken":"test-refresh",
-         "expiresAt":"2099-01-01T00:00:00.000Z"}
-        """
-        session.save(try! JSONDecoder().decode(SessionResponse.self, from: Data(sessionJSON.utf8)))
+        session.save(try! JSONDecoder().decode(SessionResponse.self, from: Data(Self.sessionJSON.utf8)))
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockURLProtocol.self]
         api = APIClient(session: session, deviceIdProvider: deviceIds, urlSession: URLSession(configuration: config))
@@ -256,6 +257,17 @@ final class SecretTestRig {
         keyStore = SecretKeyStore(service: "org.eblusha.plus.secret.tests.\(UUID().uuidString)", defaults: defaults)
         repo = SecretRepository(api: api, devices: devices, keyStore: keyStore, deviceIdProvider: deviceIds, session: session)
         MockURLProtocol.server = server
+    }
+
+    static let sessionJSON = """
+    {"user":{"id":"user-me","username":"me"},"accessToken":"test-access","refreshToken":"test-refresh",
+     "expiresAt":"2099-01-01T00:00:00.000Z"}
+    """
+
+    /// Выход и новый вход тем же аккаунтом (следующая сессия).
+    func relogin() {
+        session.clear()
+        session.save(try! JSONDecoder().decode(SessionResponse.self, from: Data(Self.sessionJSON.utf8)))
     }
 
     /// Устройство уже зарегистрировано: идентичность есть, бутстрап пройден.

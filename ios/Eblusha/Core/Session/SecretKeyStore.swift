@@ -38,6 +38,11 @@ final class SecretKeyStore {
     static let maxPrekeySecrets = 1000
     /// Сколько живёт секрет OPK после того, как им вскрыли пакет.
     static let usedPrekeyGraceMs: Int64 = 24 * 60 * 60 * 1000
+    /// Отметка секретов, записанных версиями ДО отметок времени. Их порядок неизвестен (карта —
+    /// словарь в JSON), а старые сборки добавляли +50 на КАЖДЫЙ prekeys_needed без учёта
+    /// insertedKeyIds — среди них и ещё не выданные сервером OPK. Под потолок они не попадают,
+    /// уходят только по «вскрыт + сутки».
+    static let legacyPrekeyMark = "legacy"
 
     // Флаг «устройство зарегистрировано на сервере» — в UserDefaults, НЕ в Keychain:
     // Keychain переживает переустановку приложения, а device-id (UserDefaults) — нет.
@@ -171,8 +176,12 @@ final class SecretKeyStore {
     }
 
     /// Чистка секретов OPK (H04): использованные дольше суток назад и всё сверх потолка,
-    /// начиная с самых старых. Секреты без отметки времени (записаны до этой версии)
-    /// получают отметку «сейчас» — то есть уходят последними. Возвращает число удалённых.
+    /// начиная с самых старых. Потолок считается только по секретам с отметкой времени
+    /// (записаны этой версией: порядок отметок = порядок выдачи сервером). Секреты без
+    /// отметки (записаны до неё) получают метку `legacyPrekeyMark` и потолком НЕ режутся:
+    /// раньше они получали одну отметку «сейчас» и при count > cap уходили в порядке
+    /// случайных UUID — вместе с ещё не выданными сервером, после чего пакеты на них
+    /// не вскрывались. Возвращает число удалённых.
     @discardableResult
     func prunePrekeySecrets(
         nowMs: Int64 = SecretKeyStore.nowMs(),
@@ -186,7 +195,7 @@ final class SecretKeyStore {
         var removed = 0
         var createdChanged = false
         for keyId in current.keys where created[keyId] == nil {
-            created[keyId] = String(nowMs)
+            created[keyId] = Self.legacyPrekeyMark
             createdChanged = true
         }
         for (keyId, at) in used {
@@ -195,11 +204,12 @@ final class SecretKeyStore {
             created.removeValue(forKey: keyId)
             used.removeValue(forKey: keyId)
         }
-        if current.count > cap {
-            let oldestFirst = current.keys.sorted {
-                (Int64(created[$0] ?? "") ?? 0, $0) < (Int64(created[$1] ?? "") ?? 0, $1)
-            }
-            for keyId in oldestFirst.prefix(current.count - cap) {
+        let dated: [(keyId: String, at: Int64)] = current.keys.compactMap { keyId in
+            Int64(created[keyId] ?? "").map { (keyId, $0) }
+        }
+        if dated.count > cap {
+            let oldestFirst = dated.sorted { ($0.at, $0.keyId) < ($1.at, $1.keyId) }.map(\.keyId)
+            for keyId in oldestFirst.prefix(dated.count - cap) {
                 current.removeValue(forKey: keyId)
                 created.removeValue(forKey: keyId)
                 used.removeValue(forKey: keyId)
@@ -218,6 +228,16 @@ final class SecretKeyStore {
         }
         return removed
     }
+
+    #if DEBUG
+    /// Только для тестов: хранилище в том виде, в каком его оставили версии до отметок
+    /// времени секретов OPK (карты prekey_created не было).
+    func dropPrekeyCreationMarksForTests() {
+        lock.lock()
+        defer { lock.unlock() }
+        writeMap(Keys.prekeyCreated, [:])
+    }
+    #endif
 
     // MARK: - Ключи тредов
 

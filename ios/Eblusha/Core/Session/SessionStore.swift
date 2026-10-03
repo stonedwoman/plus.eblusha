@@ -41,6 +41,12 @@ final class SessionStore: ObservableObject {
 
     func currentAccessToken() -> String? { lock.withLock { accessToken } }
     func currentRefreshToken() -> String? { lock.withLock { refreshToken } }
+
+    /// Номер сессии: растёт на каждый выход ([clear]). Обновление токенов его не меняет — по
+    /// нему отличают «та же сессия» от «вышли и вошли снова» (X5: после отзыва устройства
+    /// новый id регистрируется только в СЛЕДУЮЩЕЙ сессии).
+    private var generationValue: Int64 = 0
+    func generation() -> Int64 { lock.withLock { generationValue } }
     func currentUserId() -> String? {
         if case .loggedIn(let user) = state { return user.id }
         return nil
@@ -113,6 +119,7 @@ final class SessionStore: ObservableObject {
 
     func clear() {
         lock.withLock {
+            generationValue += 1
             accessToken = nil
             refreshToken = nil
             accessExpiresAt = nil
