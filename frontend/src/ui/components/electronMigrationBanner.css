@@ -3,16 +3,28 @@
    логотип «ЕБлуша» с переворачивающейся «Б», капсулы фактов, янтарная кнопка в полоску. */
 
 /* Док во всю ширину, но сквозной для мыши: ловит клики только сама карточка. Сверху —
-   под 30-пиксельной шапкой окна ПК-оболочки (она объявляет --eb-header-h на <html>). */
+   под 30-пиксельной шапкой окна ПК-оболочки (она объявляет --eb-header-h на <html>).
+   Слой 40 — над самим приложением (его слои не выше 30), но НИЖЕ всего, что открывается поверх:
+   меню (45–50), окна и карточки (60–200: карточка пользователя, привязка устройства, просмотр
+   картинок и видео), «Запросы в друзья» (214), всплывашки (1100+). Окно никогда не прячется под
+   баннер. И ниже 1000: такие fixed-элементы ПК-оболочка растягивает на всё окно (data-eb-safearea).
+   align-items: flex-start — карточка не тянется по высоте дока, что бы с ним ни сделали. */
 .eb-mig-dock {
   position: fixed;
   top: calc(var(--eb-header-h, 0px) + 12px);
   left: 12px;
   right: 12px;
-  z-index: 1150;
+  z-index: 40;
   display: flex;
   justify-content: center;
+  align-items: flex-start;
   pointer-events: none;
+}
+
+/* «Запросы в друзья» (ChatsPage) стоит там же — сверху по центру. Пока она видна, баннер ждёт:
+   плашку можно закрыть, а заявки важнее. */
+body:has([data-eb-contacts-bar]) .eb-mig-dock {
+  display: none;
 }
 
 .eb-mig {
@@ -33,6 +45,8 @@
   pointer-events: auto;
   width: 100%;
   max-width: 600px;
+  /* Кнопки не уезжают за край окна, даже если оно ниже карточки (масштаб, очень узкое окно). */
+  max-height: calc(100vh - var(--eb-header-h, 0px) - 24px);
   container-type: inline-size;
   border-radius: 16px;
   border: 1px solid var(--mig-border);
@@ -40,7 +54,9 @@
   box-shadow:
     0 16px 40px rgba(5, 6, 9, 0.55),
     0 2px 10px rgba(5, 6, 9, 0.35);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   color: var(--mig-text);
   font-family: inherit;
   text-align: left;
@@ -260,7 +276,8 @@
   color: var(--mig-text-muted);
 }
 
-/* Узкое окно: кнопки во всю ширину, подпись в шапке уступает место капсулам. */
+/* Узкое окно: подпись в шапке уступает место капсулам; кнопки в одну строку, пока влезают
+   («Перейти» тянется), иначе «Перейти» — на всю ширину, «Позже» — под ней. */
 @container (max-width: 440px) {
   .eb-mig__bar-text {
     display: none;
@@ -270,8 +287,16 @@
     margin-left: auto;
   }
 
-  .eb-mig__actions > button {
-    flex: 1 1 100%;
+  .eb-mig__go {
+    flex: 1 1 auto;
+    padding: 0 12px 0 14px;
+    font-size: 13.5px;
+  }
+
+  .eb-mig__later {
+    flex: 1 0 auto;
+    padding: 0 14px;
+    font-size: 13.5px;
   }
 
   .eb-mig__body {

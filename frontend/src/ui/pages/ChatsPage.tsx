@@ -6106,6 +6106,8 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     {renderActiveCallOverlay({ callConvId, minimizedCallConvId, conversationsQuery, activeConversation, currentUserId, me, meInfoQuery, setMinimizedCallConvId, getConversationFromCache, callStore, setCallConvId, callConvIdRef, setActiveCalls, activeCalls, stopRingtone, scheduleAfterMinCallDuration, clearMinCallDurationGuard, isOneToOneConversation, outgoingCall, outgoingCallTimerRef, setOutgoingCall, stopDialingSound, playEndCallSound, dialingTonePeriodMs: DIALING_TONE_PERIOD_MS })}
     {showContactsBar && (
       <div
+        // Метка для баннера «Переезжайте на новую Еблушу» (ElectronMigrationBanner): он стоит там же и ждёт.
+        data-eb-contacts-bar=""
         style={{
           position: 'fixed',
           top: 0,
