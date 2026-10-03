@@ -75,4 +75,7 @@ enum CallEndCause {
     case declinedElsewhere
     /// Истёк локальный таймаут дозвона.
     case unanswered
+    /// Не удалось включить шифрование личного звонка — звонок не начат. Системный звонок
+    /// закрывается причиной «не удалось» (CXCallEndedReason.failed).
+    case encryptionFailed
 }

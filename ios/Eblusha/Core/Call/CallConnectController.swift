@@ -29,8 +29,12 @@ final class CallConnectController: ObservableObject {
     /// Когда начался дозвон (монотонные мс) — от него считается фаза колец вокруг
     /// собеседника. Своего гудка у iOS нет, так что фазу больше не к чему привязать.
     @Published private(set) var ringStartedAt: Double?
+    /// Номер попытки: растёт на каждом сбросе. Экран привязан к нему, чтобы «Повторить»
+    /// показывал новый вызов с чистого листа (секундомер, нажатые кнопки), даже если
+    /// SwiftUI не успел снять старый экран между сбросом и новым вызовом.
+    @Published private(set) var attempt = 0
 
-    /// Собеседник так и не подтвердил сквозное шифрование — ошибка уже на экране.
+    /// Собеседник так и не подтвердил шифрование — ошибка уже на экране.
     var onPeerEncryptionFailure: (() -> Void)?
 
     private weak var manager: CallManager?
@@ -39,7 +43,7 @@ final class CallConnectController: ObservableObject {
 
     // ---- Реальные сигналы звонка --------------------------------------------------
     private var isGroup = false
-    /// Собрана ли комната со сквозным шифрованием; nil — комнаты ещё нет.
+    /// Собрана ли комната с шифрованием; nil — комнаты ещё нет.
     private var roomEncrypted: Bool?
     private var hasToken = false
     private var connected = false
@@ -47,6 +51,8 @@ final class CallConnectController: ObservableObject {
     private var micUnavailable = false
     private var error: String?
     private var errorTitle: String?
+    /// К ошибке есть «Повторить».
+    private var errorRetry = false
     private var peerTitle: String?
     private var peerAvatarUrl: String?
     private var peerId: String?
@@ -67,9 +73,9 @@ final class CallConnectController: ObservableObject {
     private var revealWork: DispatchWorkItem?
     private var leaveWork: DispatchWorkItem?
 
-    /// Звонок один на один идёт со сквозным шифрованием. Пока комнаты нет, так и ждём
-    /// (как shouldUseE2ee на вебе); если сервер ключа не выдал — iOS, как и прежде,
-    /// собирает обычную комнату, и экран честно перестаёт обещать шифрование.
+    /// Звонок один на один всегда шифруется: без ключа CallManager комнату не собирает
+    /// вовсе («звонок не начат»), открытой личной комнаты не бывает. Обычная комната —
+    /// только у групп (их шифрование — в 2.0).
     private var encrypted: Bool { !isGroup && (roomEncrypted ?? true) }
 
     init() {
@@ -139,11 +145,20 @@ final class CallConnectController: ObservableObject {
         recompute()
     }
 
-    /// Подключиться не удалось. Закрытие — обычным hangUp по кнопке.
-    func fail(title: String, text: String) {
+    /// Подключиться не удалось. Закрытие — обычным hangUp по кнопке; `retry` добавляет
+    /// «Повторить» (звонок не начат из-за шифрования — его можно набрать заново).
+    func fail(title: String, text: String, retry: Bool = false) {
         error = text
         errorTitle = title
+        errorRetry = retry
+        // Дозвона больше нет: таймер под «Звоним…» не нужен.
+        dialing = false
         recompute()
+    }
+
+    /// «Повторить» на экране «звонок не начат»: новый вызов в ту же беседу.
+    func retry() {
+        manager?.retryAfterEncryptionFailure()
     }
 
     /// «Отменить» / «Закрыть»: существующий путь завершения. Повторные нажатия гасит
@@ -187,6 +202,7 @@ final class CallConnectController: ObservableObject {
     }
 
     private func resetAll() {
+        attempt += 1
         revealWork?.cancel()
         revealWork = nil
         leaveWork?.cancel()
@@ -204,6 +220,7 @@ final class CallConnectController: ObservableObject {
         micUnavailable = false
         error = nil
         errorTitle = nil
+        errorRetry = false
         peerTitle = nil
         peerAvatarUrl = nil
         peerId = nil
@@ -222,8 +239,9 @@ final class CallConnectController: ObservableObject {
         // Звук собеседника идёт, а замочек так и не загорелся — продолжать без шифрования
         // нельзя. Как на вебе, ошибка защёлкивается: позднее подтверждение её не снимает.
         if encrypted && progress.peerEncryptionTimeout && error == nil {
-            error = "Собеседник не подтвердил сквозное шифрование. Продолжить без шифрования нельзя."
+            error = "Собеседник не подтвердил шифрование. Продолжить без шифрования нельзя."
             errorTitle = nil
+            errorRetry = false
             // Асинхронно: мы внутри пересчёта, а реакция звонка сама меняет то, что он читает.
             DispatchQueue.main.async { [weak self] in self?.onPeerEncryptionFailure?() }
         }
@@ -259,7 +277,8 @@ final class CallConnectController: ObservableObject {
             errorTitle: errorTitle,
             micUnavailable: micUnavailable,
             ringing: ringing,
-            ringingSeconds: ringingSeconds
+            ringingSeconds: ringingSeconds,
+            errorRetry: errorRetry
         )
 
         // Темп показа (usePacedConnectSignals): реальные ступени показываются по очереди,

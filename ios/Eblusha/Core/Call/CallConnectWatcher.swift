@@ -91,7 +91,7 @@ final class CallConnectWatcher: NSObject {
 
     // MARK: - Жизненный цикл
 
-    /// Подключиться к комнате. `encrypted` — комната собрана со сквозным шифрованием;
+    /// Подключиться к комнате. `encrypted` — комната собрана с шифрованием;
     /// `sync` — ждать ли собеседника через рукопожатие (только разговоры один на один).
     func attach(room: Room, encrypted: Bool, sync: Bool) {
         detach()

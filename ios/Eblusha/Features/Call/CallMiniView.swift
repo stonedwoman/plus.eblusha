@@ -473,12 +473,12 @@ struct CallMiniView: View {
     private func topBar(speaking: Bool, width: CGFloat, expand: @escaping () -> Void) -> some View {
         HStack(spacing: 6) {
             HStack(spacing: 6) {
-                if snapshot.encrypted {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(MiniInk.amber)
-                        .accessibilityLabel("Сквозное шифрование")
-                }
+                // Щит, не замок: ключ звонка выдаёт сервер — шифрование через сервер, не
+                // сквозное. Группы пока не шифруются — перечёркнутый щит.
+                Image(systemName: snapshot.encrypted ? "shield.fill" : "shield.slash")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(snapshot.encrypted ? MiniInk.amber : Eb.textMuted)
+                    .accessibilityLabel(snapshot.encrypted ? "Шифрование через сервер" : "Без шифрования")
                 Text(shownName)
                     .lineLimit(1)
                     .truncationMode(.tail)

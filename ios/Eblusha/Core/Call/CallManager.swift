@@ -118,6 +118,21 @@ final class CallManager: NSObject, ObservableObject {
     private var proximityObserver: NSObjectProtocol?
     private var speakerBeforeEar: Bool?
 
+    // ---- Шифрование личного звонка (этап 0 ТЗ звонков) -------------------------------
+    // Открытого звонка один на один не бывает: не получили ключ — звонок не начинается.
+    /// Ключ личного звонка не получен: звонок уже завершён (сервер и CallKit знают), а на
+    /// экране — причина с «Повторить» и «Закрыть». Фаза при этом остаётся прежней, иначе
+    /// экран ошибки исчез бы; события по этому звонку его не трогают.
+    private var encryptionFailed = false
+    /// Что набрать заново по «Повторить».
+    private var retryCall: (conversationId: String, title: String, video: Bool)?
+    /// Группа ли беседа — со слов открытого экрана беседы (исходящий). Нужна, только если
+    /// кеш бесед о ней ничего не знает.
+    private var groupHint: Bool?
+    /// Номер звонка: растёт на каждом reset. Поздний ответ на запрос токена или ключа от
+    /// прошлого звонка не должен собрать комнату или показать ошибку в новом.
+    private var callSeq = 0
+
     init(
         realtime: RealtimeClient,
         liveKit: LiveKitRepository,
@@ -166,14 +181,16 @@ final class CallManager: NSObject, ObservableObject {
         case .callDeclined(let cid, let byUserId):
             onDeclined(conversationId: cid, byUserId: byUserId)
         case .callEnded(let cid, _):
-            if conversationId == cid { endLocally() }
+            // После сбоя шифрования звонок уже завершён нами самими; экран ошибки остаётся,
+            // пока человек его не закроет.
+            if conversationId == cid && !encryptionFailed { endLocally() }
         case .socketReconnected:
             socketConnectedAt = Date()
             // Реконнект чат-сокета посреди звонка: сервер уже выкинул наш старый
             // сокет из комнаты звонка и через 15 секунд завершит её, если не
             // заявиться заново. Из-за отсутствия этого re-join живой звонок
             // умирал ровно через минуту с «Звонок продлился…».
-            if phase.isActive, let cid = conversationId {
+            if phase.isActive, !encryptionFailed, let cid = conversationId {
                 realtime.joinCallRoom(conversationId: cid, video: isVideo)
             }
         default:
@@ -210,6 +227,7 @@ final class CallManager: NSObject, ObservableObject {
     func startOutgoing(conversationId: String, title: String, video: Bool, isGroup: Bool) {
         guard phase == .idle else { return }
         lastEndCause = .remote
+        groupHint = isGroup
         ringerSuppressed = false
         self.conversationId = conversationId
         self.isVideoCall = video
@@ -296,6 +314,13 @@ final class CallManager: NSObject, ObservableObject {
     }
 
     func hangUp() {
+        if encryptionFailed {
+            // «Закрыть» на экране «звонок не начат»: серверу и CallKit всё уже сказано при
+            // сбое. Повторный call:end мог бы погасить новый звонок собеседника — он как раз
+            // мог перезвонить.
+            reset()
+            return
+        }
         lastEndCause = .localHangUp
         if let cid = conversationId {
             realtime.endCall(conversationId: cid)
@@ -491,6 +516,8 @@ final class CallManager: NSObject, ObservableObject {
     /// подключение сокета догонит настоящее событие call:incoming — повтор
     /// безопасен, onIncoming отсеивает не-idle.
     func onPushIncoming(conversationId: String, callerName: String, video: Bool, avatarUrl: String?) {
+        // Экран «звонок не начат» — уже не звонок: новый входящий важнее.
+        if encryptionFailed { reset() }
         guard phase == .idle else { return }
         realtime.dropPendingCallEmits(conversationId: conversationId)
         lastEndCause = .remote
@@ -505,6 +532,9 @@ final class CallManager: NSObject, ObservableObject {
     }
 
     private func onIncoming(conversationId cid: String, fromName: String, video: Bool) {
+        // Экран «звонок не начат» — уже не звонок: новый входящий (например, собеседник
+        // перезванивает) важнее.
+        if encryptionFailed { reset() }
         guard phase == .idle else { return }
         if let declined = lastLocalDecline, declined.conversationId == cid,
            Date().timeIntervalSince(declined.at) < Self.declineMemorySeconds,
@@ -545,6 +575,8 @@ final class CallManager: NSObject, ObservableObject {
     }
 
     private func onAccepted(conversationId cid: String, byUserId: String) {
+        // Звонок уже завершён нами из-за сбоя шифрования: поздний accept его не оживит.
+        if encryptionFailed { return }
         // Звонок принят на ДРУГОМ моём устройстве (сервер рассылает call:accepted и
         // остальным устройствам принявшего) — этот рингер обязан замолчать.
         if phase == .incoming {
@@ -563,6 +595,7 @@ final class CallManager: NSObject, ObservableObject {
     }
 
     private func onDeclined(conversationId cid: String, byUserId: String) {
+        if encryptionFailed { return }
         if phase == .incoming {
             // Пока звонок ВХОДЯЩИЙ, decline гасит его только когда отклонил
             // Я САМ на другом своём устройстве. Чужой decline (участник
@@ -577,7 +610,7 @@ final class CallManager: NSObject, ObservableObject {
             Task { @MainActor in
                 let isGroup = await self.chatRepository.conversationMeta(cid)?.isGroup == true
                 if !isGroup || byUserId == self.session.currentUserId() {
-                    if self.conversationId == cid || self.phase == .outgoing {
+                    if !self.encryptionFailed, self.conversationId == cid || self.phase == .outgoing {
                         self.endLocally()
                     }
                 }
@@ -607,11 +640,12 @@ final class CallManager: NSObject, ObservableObject {
     // MARK: - Комната LiveKit
 
     private func connectRoom(_ cid: String) {
+        let seq = callSeq
         // Кто на том конце — группа ли, имя, аватар — нужно экрану установления. Кеш бесед
         // читается ОТДЕЛЬНОЙ задачей, параллельно с запросом токена: подключение его не ждёт.
         Task { @MainActor in
             let conv = await self.chatRepository.conversationMeta(cid)
-            guard self.conversationId == cid, self.phase != .idle else { return }
+            guard self.callSeq == seq, self.conversationId == cid, self.phase != .idle else { return }
             let isGroup = conv?.isGroup == true
             self.isGroup = isGroup
             self.connect.configure(
@@ -624,24 +658,43 @@ final class CallManager: NSObject, ObservableObject {
         Task { @MainActor in
             switch await self.liveKit.fetchToken(conversationId: cid) {
             case .failure:
+                guard self.callSeq == seq else { return }
                 self.failConnect(cid, text: "Сервер не выдал пропуск в комнату звонка. Попробуйте позвонить заново.")
             case .success(let token):
+                guard self.callSeq == seq else { return }
                 if self.conversationId == cid { self.connect.tokenReceived() }
-                // 1:1-звонки используют LiveKit E2EE (веб его требует); группам сервер вернёт nil.
-                let e2eeKey = await self.liveKit.fetchE2eeKey(conversationId: cid)
+                // Шифровать ли, решает то, что клиент САМ знает о беседе, а не ответ сервера
+                // на запрос ключа. Раньше любой сбой ключа (404/403/5xx, сеть, выключенный
+                // флаг, ключ не той длины) молча собирал обычную комнату, и личный звонок
+                // шёл без шифрования. Теперь личный звонок — только с ключом, иначе он не
+                // начинается. Группы пока не шифруются (это 2.0) и честно так подписаны.
+                let isGroup = await self.knownGroup(cid)
+                guard self.callSeq == seq else { return }
+                let options: RoomOptions
+                if isGroup {
+                    options = RoomOptions()
+                } else {
+                    switch await self.liveKit.fetchE2eeKey(conversationId: cid) {
+                    case .failure(let reason):
+                        self.failEncryption(cid, reason: reason, seq: seq)
+                        return
+                    case .success(let key):
+                        options = Self.encryptedRoomOptions(passphrase: key)
+                    }
+                }
                 // Пока ходили за токеном и ключом, звонок могли отклонить/отменить.
                 // Без проверки здесь собиралась «зомби-комната»: состояние уже Idle,
                 // а Room подключался и ПУБЛИКОВАЛ МИКРОФОН без всякого UI.
-                if self.conversationId != cid || self.phase == .idle {
+                if self.callSeq != seq || self.conversationId != cid || self.phase == .idle || self.encryptionFailed {
                     NSLog("CallManager: звонок завершился во время подключения — комнату не собираем")
                     return
                 }
-                self.e2eeEnabled = e2eeKey != nil
-                let options = self.buildRoomOptions(e2eeKeyBase64: e2eeKey)
+                self.e2eeEnabled = options.e2eeOptions != nil
                 let r = Room(delegate: self, roomOptions: options)
                 self.room = r
-                // Комната собрана с ключом разговора (если он есть) — «Готовим шифрование»
-                // сделано; наблюдатель экрана встаёт внутрь неё отдельным делегатом.
+                // Комната собрана с ключом разговора (у личного звонка он есть всегда) —
+                // «Готовим шифрование» сделано; наблюдатель экрана встаёт внутрь неё
+                // отдельным делегатом.
                 self.connect.roomCreated(r, encrypted: options.e2eeOptions != nil)
                 do {
                     try await r.connect(url: token.url, token: token.token)
@@ -649,10 +702,51 @@ final class CallManager: NSObject, ObservableObject {
                     // Молча умирать нельзя: это единственное место, где видно,
                     // ПОЧЕМУ звонок не собрался (сеть/токен/TLS).
                     NSLog("CallManager: room connect failed %@: %@", token.url, String(describing: error))
+                    guard self.callSeq == seq else { return }
                     self.failConnect(cid, text: "Не удалось соединиться с сервером звонков. Проверьте связь и попробуйте ещё раз.")
                 }
             }
         }
+    }
+
+    /// Группа ли беседа — по тому, что клиент знает сам: кеш бесед, а без него — открытый
+    /// экран беседы при исходящем. Не знаем — считаем личной: шифрование обязательно.
+    private func knownGroup(_ cid: String) async -> Bool {
+        let hint = groupHint
+        if let conv = await chatRepository.conversationMeta(cid) { return conv.isGroup }
+        return hint ?? false
+    }
+
+    /// Ключ шифрования личного звонка не получен — звонок НЕ начинается. Комнату не
+    /// собираем, микрофон никуда не отдаём. Собеседнику (call:end) и системе (CallKit,
+    /// причина «не удалось») сразу сообщаем, что звонка не будет: он не должен звонить
+    /// в пустоту или ждать в комнате. Человеку — причину и «Повторить» / «Закрыть».
+    private func failEncryption(_ cid: String, reason: CallKeyFailure, seq: Int) {
+        guard callSeq == seq, conversationId == cid, phase != .idle, !encryptionFailed else { return }
+        NSLog("CallE2EE: звонок не начат — нет ключа шифрования (%@)", reason.logDescription)
+        encryptionFailed = true
+        lastEndCause = .encryptionFailed
+        retryCall = (cid, title, isVideoCall)
+        disconnectRoom()
+        e2eeEnabled = false
+        ringer.stop()
+        disableProximity()
+        realtime.endCall(conversationId: cid)
+        realtime.leaveCallRoom(conversationId: cid)
+        // Системный звонок закрывается reportCall(.failed), не CXEndCallAction: тот ушёл бы
+        // серверу отказом. Аудиосессию системного звонка гасит сама система; свою — мы.
+        let hadSystemCall = CallKitController.shared.hasSystemCall
+        CallKitController.shared.reportCallFailed(conversationId: cid)
+        if !hadSystemCall { releaseAudioSession() }
+        connect.fail(title: "Не удалось включить шифрование — звонок не начат", text: reason.userText, retry: true)
+    }
+
+    /// «Повторить» на экране «звонок не начат»: новый исходящий в ту же беседу. Для
+    /// принятого входящего это перезвон — тот звонок мы уже завершили.
+    func retryAfterEncryptionFailure() {
+        guard encryptionFailed, let target = retryCall else { return }
+        reset()
+        startOutgoing(conversationId: target.conversationId, title: target.title, video: target.video, isGroup: false)
     }
 
     /// Подключиться не вышло. Пока человек видит экран установления (звонок уже активен
@@ -692,7 +786,7 @@ final class CallManager: NSObject, ObservableObject {
         }
     }
 
-    /// Настраивает E2EE 1:1 для интеропа с вебом. Нативный libwebrtc FrameCryptor
+    /// Настраивает шифрование 1:1 для интеропа с вебом. Нативный libwebrtc FrameCryptor
     /// выводит AES-ключ через PBKDF2(passphrase, salt="LKFrameEncryptionKey", 100000,
     /// SHA-256) — НЕ HKDF. Веб интеропится только когда его ExternalE2EEKeyProvider
     /// тоже идёт путём PBKDF2, а так происходит, когда `setKey` получает СТРОКУ
@@ -701,18 +795,13 @@ final class CallManager: NSObject, ObservableObject {
     /// `setKey(key: String)` (UTF-8 → PBKDF2), на вебе через `setKey(string)`.
     /// Индекс 0 совпадает с вебом (отправитель шифрует последним индексом ключа,
     /// а веб держит только индекс 0).
-    private func buildRoomOptions(e2eeKeyBase64: String?) -> RoomOptions {
-        guard let e2eeKeyBase64 else { return RoomOptions() }
-        let key = e2eeKeyBase64.trimmed()
-        // Сверяем, что сервер вернул ожидаемый 32-байтовый ключ (паролем для криптора
-        // служит сама base64-СТРОКА, не эти раскодированные байты).
-        guard let decoded = Data(base64Encoded: key), decoded.count == 32 else {
-            NSLog("CallE2EE: неожиданный e2ee-ключ — комната без E2EE")
-            return RoomOptions()
-        }
+    ///
+    /// Ключ сюда приходит уже проверенным (LiveKitRepository.fetchE2eeKey: base64 ровно
+    /// 32 байт). Запасного «RoomOptions() без шифрования» здесь больше нет.
+    private static func encryptedRoomOptions(passphrase key: String) -> RoomOptions {
         let keyProvider = BaseKeyProvider(isSharedKey: true)
         keyProvider.setKey(key: key)
-        NSLog("CallE2EE: общий E2EE-пароль установлен (PBKDF2)")
+        NSLog("CallE2EE: общий пароль шифрования установлен (PBKDF2)")
         return RoomOptions(e2eeOptions: E2EEOptions(keyProvider: keyProvider))
     }
 
@@ -962,6 +1051,10 @@ final class CallManager: NSObject, ObservableObject {
     }
 
     private func reset() {
+        callSeq += 1
+        encryptionFailed = false
+        retryCall = nil
+        groupHint = nil
         ringer.stop() // роль IncomingCallService.stop
         disableProximity()
         activeSince = nil
@@ -995,9 +1088,14 @@ final class CallManager: NSObject, ObservableObject {
         // деактивирует CallKit (didDeactivate), а самовольный setActive(false) поверх
         // живого CXCall ломает аудио следующего звонка.
         if !CallKitController.shared.hasSystemCall {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            try? AudioManager.shared.setEngineAvailability(.none)
+            releaseAudioSession()
         }
+    }
+
+    /// Отпустить аудиосессию разговора: звук возвращается другим приложениям.
+    private func releaseAudioSession() {
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        try? AudioManager.shared.setEngineAvailability(.none)
     }
 
     // MARK: - Аудиосессия и маршрут звука

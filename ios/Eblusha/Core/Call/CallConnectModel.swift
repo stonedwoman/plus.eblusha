@@ -73,7 +73,8 @@ struct ConnectPeer: Equatable {
 /// Реальные состояния звонка, из которых собирается экран.
 struct ConnectSignals: Equatable {
     var isGroup: Bool
-    /// Звонок идёт со сквозным шифрованием (разговоры один на один).
+    /// Звонок шифруется (разговоры один на один). Ключ сегодня выдаёт сервер — это
+    /// «шифрование через сервер», не сквозное.
     var encrypted: Bool
     /// Человек вошёл с выключенным микрофоном — публикации голоса ждать нечего.
     var muted: Bool
@@ -83,7 +84,7 @@ struct ConnectSignals: Equatable {
     var keysReady: Bool
     /// Соединение с сервером звонков установлено.
     var connected: Bool
-    /// Сквозное шифрование подтверждено на нашем соединении.
+    /// Шифрование подтверждено на нашем соединении.
     var e2eeEnabled: Bool
     var micPublished: Bool
     /// Через ретрансляторы не вышло — идёт повторная попытка напрямую.
@@ -101,6 +102,8 @@ struct ConnectSignals: Equatable {
     var ringing: Bool? = nil
     /// Сколько секунд идёт дозвон — для подписи под заголовком.
     var ringingSeconds: Int? = nil
+    /// К ошибке можно предложить «Повторить» (звонок не начат: не удалось включить шифрование).
+    var errorRetry: Bool = false
 }
 
 struct ConnectStep: Equatable, Identifiable {
@@ -139,6 +142,8 @@ struct ConnectFact: Equatable, Identifiable {
 struct ConnectError: Equatable {
     let title: String
     let text: String
+    /// Показать «Повторить» рядом с «Закрыть».
+    var retry: Bool = false
 }
 
 enum ConnectMode { case connecting, done, error }
@@ -207,7 +212,7 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
             nodes: [],
             links: [],
             facts: [],
-            error: ConnectError(title: title, text: error),
+            error: ConnectError(title: title, text: error, retry: s.errorRetry),
             ready: false
         )
     }
@@ -293,8 +298,8 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
             title: "Включаем шифрование",
             status: status(s.e2eeEnabled, routeDone),
             hint: s.e2eeEnabled
-                ? "Сквозное шифрование включено: голос уходит зашифрованным."
-                : "Включаем сквозное шифрование на этом соединении и ждём подтверждения."
+                ? "Шифрование включено: голос уходит зашифрованным. Ключ разговора выдаёт сервер."
+                : "Включаем шифрование на этом соединении и ждём подтверждения."
         ))
     }
     let publishHint: String
@@ -357,7 +362,7 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
             subtitle = "Договариваемся о соединении"
         case .cryptoPrepare:
             title = "Готовим защиту…"
-            subtitle = "Подготавливаем сквозное шифрование"
+            subtitle = "Подготавливаем шифрование"
         case .route:
             if s.routeSwitching {
                 title = "Меняем маршрут…"
@@ -495,7 +500,10 @@ func buildConnectView(_ s: ConnectSignals) -> ConnectView {
     ))
 
     var facts: [ConnectFact] = []
-    if encrypted && s.e2eeEnabled { facts.append(ConnectFact(id: .e2ee, text: "Сквозное шифрование")) }
+    // Честно: ключ личного звонка сегодня выдаёт сервер — это не сквозное шифрование.
+    // Группы пока не шифруются вовсе (их шифрование — в 2.0).
+    if encrypted && s.e2eeEnabled { facts.append(ConnectFact(id: .e2ee, text: "Шифрование через сервер")) }
+    if !encrypted && s.connected { facts.append(ConnectFact(id: .e2ee, text: "Без шифрования")) }
     if relayShown { facts.append(ConnectFact(id: .relay, text: relayFact(s.route.relayName))) }
     if s.connected && s.route.relayed == false { facts.append(ConnectFact(id: .direct, text: "Прямой путь")) }
     if let rtt { facts.append(ConnectFact(id: .rtt, text: "\(rtt) мс до сервера")) }

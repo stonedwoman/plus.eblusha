@@ -64,9 +64,11 @@ struct CallConnectingOverlay: View {
                 view: controller.view,
                 leaving: controller.leaving,
                 onCancel: controller.cancel,
+                onRetry: controller.retry,
                 ringStartedAt: controller.ringStartedAt,
                 video: video
             )
+            .id(controller.attempt)
         }
     }
 }
@@ -77,6 +79,8 @@ struct CallConnectingView: View {
     let view: ConnectView
     let leaving: Bool
     let onCancel: () -> Void
+    /// «Повторить» под ошибкой, у которой он есть (звонок не начат из-за шифрования).
+    var onRetry: (() -> Void)? = nil
     /// Когда начался дозвон (монотонные мс) — кольца, столбики гудка и «Б» попадают в фазу,
     /// а секундомер считает с набора, а не с появления экрана. nil — от момента появления.
     var ringStartedAt: Double? = nil
@@ -403,6 +407,29 @@ struct CallConnectingView: View {
         .frame(maxWidth: .infinity)
     }
 
+    /// Главная кнопка под ошибкой «звонок не начат» — янтарная, над тёмным «Закрыть».
+    /// Своего «нажато» не держит: экран после неё сразу показывает новый вызов, а
+    /// повторное нажатие гасит сам CallManager (ошибки к тому моменту уже нет).
+    private func retryButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("Повторить")
+                    .font(.system(size: 14, weight: .semibold))
+            }
+            .foregroundStyle(CallInk.onAmber)
+            .frame(maxWidth: 280)
+            .frame(height: 44)
+            .background(RoundedRectangle(cornerRadius: 12).fill(CallInk.amber))
+            .shadow(color: Color(red: 3 / 255, green: 3 / 255, blue: 4 / 255, opacity: 0.35), radius: 7, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(CancelPressStyle())
+        .disabled(cancelling)
+        .frame(maxWidth: .infinity)
+    }
+
     // MARK: Ошибка
 
     private func errorPanel(_ error: ConnectError) -> some View {
@@ -446,6 +473,9 @@ struct CallConnectingView: View {
                     .foregroundStyle(CallInk.textMuted)
                     .multilineTextAlignment(.center)
                     .padding(.bottom, 6)
+                if error.retry, let onRetry {
+                    retryButton(onRetry)
+                }
                 cancelButton(title: cancelling ? "Закрываем…" : "Закрыть", hangup: false)
             }
             .padding(EdgeInsets(top: 30, leading: 24, bottom: 24, trailing: 24))

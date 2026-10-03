@@ -25,6 +25,7 @@ struct CallConnectingDemo: View {
             view: buildConnectView(signals),
             leaving: false,
             onCancel: {},
+            onRetry: {},
             // Секундомер и фаза колец — как будто дозвон идёт столько, сколько сказано в сценарии.
             ringStartedAt: signals.ringingSeconds.map { connectMonotonicNowMs() - Double($0) * 1000 },
             video: scenarioId.hasSuffix("-video")
@@ -106,7 +107,13 @@ struct CallConnectingDemo: View {
             s.micPublished = true; s.route = cloudflare; s.peer.presence = .settling; s.peer.count = 1
         case "error":
             s.hasToken = true; s.keysReady = true
-            s.error = "Не удалось включить сквозное шифрование для этого звонка."
+            s.error = "Собеседник не подтвердил шифрование. Продолжить без шифрования нельзя."
+        case "key-error":
+            // Ключ личного звонка не получен — звонок не начат (этап 0 ТЗ звонков).
+            s.hasToken = true
+            s.errorTitle = "Не удалось включить шифрование — звонок не начат"
+            s.error = CallKeyFailure.server(404).userText
+            s.errorRetry = true
         case "done":
             s.hasToken = true; s.keysReady = true; s.connected = true; s.e2eeEnabled = true
             s.micPublished = true; s.route = cloudflare; s.peer.presence = .ready; s.peer.count = 1

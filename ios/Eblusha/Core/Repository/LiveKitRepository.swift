@@ -29,17 +29,48 @@ final class LiveKitRepository {
         self.session = session
     }
 
-    /// Достаёт общий E2EE-ключ 1:1-звонка. nil для групповых/выключенных (сервер 404).
-    /// Несколько повторов, потому что вызывающий идёт за ключом сразу после
-    /// `call:invite` — а именно invite генерирует и сохраняет ключ на сервере.
-    func fetchE2eeKey(conversationId: String) async -> String? {
-        for attempt in 0..<3 {
-            let response: E2eeKeyResponse? = try? await api.get("calls/\(conversationId)/e2ee-key")
-            if let key = response?.key.trimmed(), !key.isEmpty { return key }
+    /// Достаёт ключ шифрования звонка один на один. Ключ этот выдаёт сервер — шифрование
+    /// «через сервер», не сквозное (настоящее, с ключами устройств, — в 2.0).
+    ///
+    /// Ни одна ошибка здесь НЕ превращается в «звоним без шифрования»: раньше `try?`
+    /// сводил любой сбой (сеть, 403/404/5xx, выключенный на сервере флаг, ключ не той
+    /// длины) к nil, а nil — к обычной открытой комнате, и личный звонок молча шёл
+    /// незашифрованным. Теперь сбой возвращается причиной, и звонок не начинается.
+    /// Группы сюда не ходят вовсе: решение «шифровать или нет» принимает CallManager
+    /// по тому, что клиент сам знает о беседе, а не по ответу этой ручки.
+    ///
+    /// Несколько повторов — на случай сетевой икоты: вызывающий идёт за ключом сразу
+    /// после `call:invite`. Отказ доступа (400/401/403) повтором не лечится.
+    func fetchE2eeKey(conversationId: String) async -> Result<String, CallKeyFailure> {
+        var failure = CallKeyFailure.network
+        attempts: for attempt in 0..<3 {
+            let result: ApiResult<E2eeKeyResponse> = await safeApiCall {
+                try await api.get("calls/\(conversationId)/e2ee-key")
+            }
+            switch result {
+            case .success(let response):
+                let key = response.key.trimmed()
+                // Паролем для криптора служит сама base64-СТРОКА, но сервер обещает за ней
+                // ровно 32 байта. Иное — не наш ключ: звонить с ним нельзя.
+                guard Self.isValidCallKey(key) else {
+                    NSLog("CallE2EE: сервер вернул ключ неверного вида для %@ — звонок не начат", conversationId)
+                    return .failure(.malformed)
+                }
+                return .success(key)
+            case .failure(_, let code):
+                failure = CallKeyFailure(code: code)
+                if case .server(let status) = failure, [400, 401, 403].contains(status) { break attempts }
+            }
             if attempt < 2 { try? await Task.sleep(nanoseconds: 350_000_000) }
         }
-        NSLog("CallE2EE: нет e2ee-ключа для %@ (группа/выключено → обычная комната)", conversationId)
-        return nil
+        NSLog("CallE2EE: нет ключа шифрования для %@ (%@) — звонок не начат", conversationId, failure.logDescription)
+        return .failure(failure)
+    }
+
+    /// Ключ звонка — base64 ровно 32 байт.
+    static func isValidCallKey(_ key: String) -> Bool {
+        guard let decoded = Data(base64Encoded: key) else { return false }
+        return decoded.count == 32
     }
 
     /// Имя комнаты — конвенция веб-клиента: `conv-{conversationId}`.
@@ -63,6 +94,54 @@ final class LiveKitRepository {
                 )
             )
             return LiveKitTokenResponse(token: response.token, url: normalizeLivekitUrl(response.url))
+        }
+    }
+}
+
+/// Почему не удалось получить ключ шифрования личного звонка. Любая причина означает
+/// одно: звонок не начинается (открытого звонка один на один не бывает).
+enum CallKeyFailure: Error, Equatable {
+    /// Нет связи с сервером или он не ответил.
+    case network
+    /// Сервер ответил ошибкой: 404 (ключа нет / шифрование выключено), 403, 5xx…
+    case server(Int)
+    /// Сервер прислал не то, что обещал: не JSON, без ключа или ключ не 32 байта.
+    case malformed
+
+    /// Из кода ApiResult: отрицательные — ошибки URLSession (сеть, отмена), nil — разбор ответа.
+    init(code: Int?) {
+        guard let code else {
+            self = .malformed
+            return
+        }
+        self = code < 100 ? .network : .server(code)
+    }
+
+    /// Для журнала: только класс причины, никаких данных ключа.
+    var logDescription: String {
+        switch self {
+        case .network: return "сеть"
+        case .server(let code): return "HTTP \(code)"
+        case .malformed: return "неверный ответ"
+        }
+    }
+
+    /// Что сказать человеку под заголовком «Не удалось включить шифрование — звонок не начат».
+    var userText: String {
+        let tail = " Без шифрования личный звонок не начинается — попробуйте ещё раз."
+        switch self {
+        case .network:
+            return "Не удалось получить ключ шифрования: нет связи с сервером." + tail
+        case .server(403):
+            return "Сервер отказал в ключе шифрования для этого звонка (ошибка 403)." + tail
+        case .server(404):
+            return "Сервер не выдал ключ шифрования для этого звонка (ошибка 404)." + tail
+        case .server(let code) where code >= 500:
+            return "Сервер не смог выдать ключ шифрования (ошибка \(code))." + tail
+        case .server(let code):
+            return "Сервер не выдал ключ шифрования (ошибка \(code))." + tail
+        case .malformed:
+            return "Сервер прислал ключ шифрования неверного вида." + tail
         }
     }
 }

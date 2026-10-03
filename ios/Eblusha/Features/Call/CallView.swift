@@ -80,10 +80,13 @@ struct CallView: View {
                 CallControlBar(manager: manager)
             }
 
-            ConnectionBadgeView(
-                connecting: manager.phase == .connecting,
-                activeSince: manager.activeSince
-            )
+            VStack(alignment: .leading, spacing: 6) {
+                ConnectionBadgeView(
+                    connecting: manager.phase == .connecting,
+                    activeSince: manager.activeSince
+                )
+                EncryptionBadgeView(encrypted: manager.e2eeEnabled)
+            }
             .padding(16)
         }
         .sheet(item: $userCard) { seed in
@@ -224,14 +227,16 @@ private struct ParticipantTileView: View {
         )
     }
 
-    /// Нижний левый чип: 🔒 (E2EE) + перечёркнутый микрофон (mute) + имя + « (мы)».
+    /// Нижний левый чип: щит (шифрование через сервер) + перечёркнутый микрофон (mute) +
+    /// имя + « (мы)». Щит, а не замок: ключ звонка сегодня выдаёт сервер, сквозным это
+    /// шифрование не является.
     private var nameChip: some View {
         HStack(spacing: 5) {
             if e2ee {
-                Image(systemName: "lock.fill")
+                Image(systemName: "shield.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(chipGold)
-                    .accessibilityLabel("Зашифровано")
+                    .accessibilityLabel("Шифрование через сервер")
             }
             if participant.muted {
                 Image(systemName: "mic.slash.fill")
@@ -341,6 +346,32 @@ private struct ConnectionBadgeView: View {
         if connecting { return "Подключение…" }
         guard let activeSince else { return "Подключено" }
         return "Подключено · " + callDurationLabel(since: activeSince, now: now)
+    }
+}
+
+// MARK: - Шифрование
+
+/// Как защищён звонок — честно, словами. Ключ личного звонка сегодня выдаёт сервер:
+/// это «шифрование через сервер» (щит, не замок), а не сквозное. Группы пока не
+/// шифруются вовсе — так и написано (их шифрование — в 2.0).
+private struct EncryptionBadgeView: View {
+    let encrypted: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: encrypted ? "shield.fill" : "shield.slash")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(encrypted ? chipGold : callWarn)
+            Text(encrypted ? "Шифрование через сервер" : "Без шифрования")
+                .lineLimit(1)
+        }
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(chipScrim, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))
+        .accessibilityElement(children: .combine)
     }
 }
 

@@ -299,6 +299,19 @@ final class CallKitController: NSObject {
         }
     }
 
+    /// Звонок не начат: не удалось включить шифрование (ключ личного звонка не получен).
+    /// Системный звонок закрываем СРАЗУ и причиной «не удалось», не дожидаясь, пока человек
+    /// закроет экран ошибки в приложении: иначе система держала бы «идущий» звонок с
+    /// аудиосессией и зелёной плашкой. Именно reportCall(endedAt:reason:), а не
+    /// CXEndCallAction: тот вернулся бы в perform(CXEndCallAction) и ушёл серверу как
+    /// отказ (call:decline). Сигналинг завершения CallManager отправляет сам.
+    func reportCallFailed(conversationId: String) {
+        onMain {
+            guard callUUID != nil, callConversationId == conversationId else { return }
+            endSystemCall(reason: .failed)
+        }
+    }
+
     /// Единая точка завершения системного звонка по НАШЕЙ инициативе (не через
     /// CXEndCallAction): доложить причину и забыть звонок. Последующий переход фазы в
     /// .idle ничего не задублирует — callUUID уже пуст.
@@ -371,6 +384,10 @@ final class CallKitController: NSObject {
                 endSystemCall(reason: .declinedElsewhere)
             case .unanswered:
                 endSystemCall(reason: .unanswered)
+            case .encryptionFailed:
+                // Обычно уже закрыт в reportCallFailed — сюда доходит, только если тогда
+                // системного звонка ещё не было.
+                endSystemCall(reason: .failed)
             case .remote:
                 endSystemCall(reason: .remoteEnded)
             }

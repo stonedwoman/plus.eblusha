@@ -15,8 +15,10 @@ struct LiveKitTokenResponse: Decodable {
     let url: String
 }
 
-/// Ответ GET `calls/{callId}/e2ee-key` — общий E2EE-ключ 1:1-звонка
-/// (callId == conversationId). Для группы/выключенного E2EE сервер отвечает 404.
+/// Ответ GET `calls/{callId}/e2ee-key` — общий ключ шифрования 1:1-звонка
+/// (callId == conversationId). Ключ выдаёт сервер: это шифрование через сервер, не
+/// сквозное. Для группы сервер отвечает 404, но группы сюда и не ходят; для личного
+/// звонка любой сбой этой ручки означает «звонок не начат», а не открытую комнату.
 struct E2eeKeyResponse: Decodable {
     let key: String
 }
