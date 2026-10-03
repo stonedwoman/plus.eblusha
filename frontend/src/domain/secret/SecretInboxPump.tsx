@@ -16,12 +16,14 @@ import { getDeviceLinkInvite, clearDeviceLinkInvite, inviteMatches } from '../de
 import {
   type InboxLookups,
   type MyDevice,
+  decideLinkDeviceJoin,
   verifyDeviceLinkKeys,
   verifyKeyReceipt,
   verifyKeyRequest,
   verifyThreadKeyPackage,
 } from './secretInboxGuards'
 import { systemToast } from '../store/systemUiStore'
+import { useAppStore } from '../store/appStore'
 
 type InboxItem = {
   msgId: string
@@ -286,48 +288,40 @@ export function SecretInboxPump() {
             header && typeof header === 'object' && String((header as any).kind ?? '') === 'link_device_join'
 
           if (isLinkDeviceJoin) {
-            const requesterDeviceId = String((header as any).requesterDeviceId ?? '').trim()
-            // ДВЕ ПРОВЕРКИ, без которых запрос — это удалённая выгрузка всех ключей секреток:
-            // 1) устройство обязано быть НАШИМ (deviceId любого пользователя виден всем через
-            //    /e2ee/prekeys/bundles, так что чужой запрос отправить тривиально);
-            // 2) запрос обязан предъявить token/код ЖИВОГО приглашения, показанного на этом
-            //    устройстве (карточка «Добавить устройство»), — иначе ключи не отдаются.
+            // Запрос — это удалённая выгрузка всех ключей секреток, поэтому (decideLinkDeviceJoin):
+            // 1) отправитель (senderUserId ставит сервер) — МОЙ аккаунт, иначе ack сразу: id моих
+            //    устройств виден всем через /e2ee/prekeys/bundles, и чужой запрос «от моего
+            //    устройства» без ack клинил бы инбокс до 7 суток (X3/Б8);
+            // 2) устройство — моё и не отозвано, иначе ack;
+            // 3) запрос предъявил token/код ЖИВОГО приглашения, показанного на этом устройстве
+            //    (карточка «Добавить устройство»). Своё без приглашения — НЕ ack: конверт доживёт
+            //    TTL и сработает, как только код покажут.
             const invite = getDeviceLinkInvite()
             const joinToken = String((header as any).token ?? '').trim()
             const joinCode = String((header as any).code ?? '').trim()
             const inviteOk = !!invite && (inviteMatches(invite, joinToken) || inviteMatches(invite, joinCode))
-            let ownDeviceOk = false
-            if (requesterDeviceId && inviteOk) {
+            const myUserIdHint = (() => {
               try {
-                const resp = await api.get('/devices')
-                ownDeviceOk = ((resp.data?.devices ?? []) as any[]).some(
-                  (d) => String(d?.id ?? '').trim() === requesterDeviceId && !d?.revokedAt,
-                )
+                return String(useAppStore.getState().session?.user?.id ?? '').trim() || null
               } catch {
-                ownDeviceOk = false // не смогли проверить — НЕ отдаём ключи
+                return null
               }
-            }
-            if (requesterDeviceId && (!inviteOk || !ownDeviceOk)) {
+            })()
+            const decision = await decideLinkDeviceJoin(item, inviteOk, lookups, myUserIdHint)
+            if (decision.action !== 'proceed') {
               clientLog('SecretInboxPump', 'warn', 'link_device_join rejected', {
-                data: { requesterDeviceId, inviteOk, ownDeviceOk },
+                data: {
+                  requesterDeviceId: String((header as any).requesterDeviceId ?? '').trim(),
+                  inviteOk,
+                  action: decision.action,
+                  reason: decision.reason,
+                },
               })
-              // Запрос от СВОЕГО устройства, но карточка «Добавить устройство» ещё не открыта —
-              // не сжигаем конверт: он доживёт свой TTL и сработает, как только код покажут.
-              // Чужой запрос (или неизвестное устройство) — ack, чтобы не копился в инбоксе.
-              const ownDeviceKnown = !inviteOk && requesterDeviceId ? await (async () => {
-                try {
-                  const resp = await api.get('/devices')
-                  return ((resp.data?.devices ?? []) as any[]).some(
-                    (d) => String(d?.id ?? '').trim() === requesterDeviceId && !d?.revokedAt,
-                  )
-                } catch {
-                  return false
-                }
-              })() : false
-              if (!ownDeviceKnown) ackIds.push(item.msgId)
+              if (decision.action === 'ack') ackIds.push(item.msgId)
               continue
             }
-            if (requesterDeviceId) {
+            const requesterDeviceId = decision.requesterDeviceId
+            {
               const now = Date.now()
               const last = lastLinkDeviceJoinSentAt.get(requesterDeviceId) ?? 0
               if (now - last >= LINK_DEVICE_JOIN_THROTTLE_MS) {
@@ -358,10 +352,9 @@ export function SecretInboxPump() {
                     const threadCount = Object.keys(payload?.threadKeys?.keys ?? {}).length
                     let deviceName = ''
                     try {
-                      const resp = await api.get('/devices')
-                      const found = ((resp.data?.devices ?? []) as any[]).find(
+                      const found = (await lookups.myDevices()).find(
                         (d) => String(d?.id ?? '').trim() === requesterDeviceId,
-                      )
+                      ) as any
                       deviceName = String(found?.name ?? '').trim()
                     } catch {}
                     window.dispatchEvent(

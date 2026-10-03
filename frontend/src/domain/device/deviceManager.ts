@@ -167,9 +167,16 @@ function appendStoredPrekeys(deviceId: string, prekeys: GeneratedPrekey[]) {
 
 /**
  * H04: чистка секретов OPK, которые уже никогда не понадобятся. Сервер раздаёт OPK от старых к
- * новым, значит неизрасходованные на сервере — это самые свежие `serverAvailable` штук. Всё, что
- * старше этого окна (+запас) И старше 14 суток (пакет по такому OPK давно истёк бы во входящих),
- * удаляем. Записи без даты (до этой правки) получают дату сейчас и чистятся не раньше чем через 14 суток.
+ * новым (ORDER BY createdAt ASC), значит неизрасходованные на сервере — это самые свежие
+ * `serverAvailable` штук. Всё, что старше этого окна (+запас) И старше 14 суток (пакет по такому
+ * OPK давно истёк бы во входящих), удаляем.
+ *
+ * «Свежесть» — ПОРЯДОК ВСТАВКИ в карту секретов (новые OPK всегда дописываются в конец, ключи —
+ * UUID, так что JSON сохраняет порядок), а НЕ prekeyCreatedAt: у записей до этой правки даты нет,
+ * при первой чистке они все получают одну и ту же отметку «сейчас» — позже, чем у уже датированных,
+ * — и сортировка по дате ставила бы самые СТАРЫЕ легаси-секреты в окно, а через 14 суток удаляла бы
+ * самые НОВЫЕ, то есть как раз те, чьи OPK сервер ещё не раздал. Дата нужна только для порога
+ * «старше 14 суток»: легаси-записи чистятся не раньше чем через 14 суток после первой отметки.
  */
 function pruneStalePrekeySecrets(deviceId: string, serverAvailable: number) {
   const secrets = loadDeviceSecrets()
@@ -189,7 +196,7 @@ function pruneStalePrekeySecrets(deviceId: string, serverAvailable: number) {
       changed = true
     }
   }
-  const newestFirst = Object.keys(secrets.prekeys).sort((a, b) => (createdAt[b] ?? 0) - (createdAt[a] ?? 0))
+  const newestFirst = Object.keys(secrets.prekeys).reverse()
   const keepWindow = Math.max(0, Math.floor(serverAvailable)) + PREKEY_PRUNE_SLACK
   for (let i = keepWindow; i < newestFirst.length; i += 1) {
     const keyId = newestFirst[i]!

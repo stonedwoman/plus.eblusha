@@ -44,17 +44,20 @@ function installStorage() {
   ;(globalThis as any).window = Object.assign(target, { localStorage: ls, location: { search: '' } })
 }
 
-function seedDevice(prekeyCount: number, ageMs = 0) {
+// Как в жизни: pk-0 вставлен первым (самый старый), pk-(n-1) — последним (самый новый).
+// dated=false — записи до правки H04, без prekeyCreatedAt.
+function seedDevice(prekeyCount: number, ageMs = 0, dated = true) {
   store.set(INFO, JSON.stringify({ deviceId: 'dev-1', name: 'Браузер', platform: 'web', publicKey: 'PUB', registeredAt: 1 }))
   const prekeys: Record<string, string> = {}
   const createdAt: Record<string, number> = {}
   for (let i = 0; i < prekeyCount; i += 1) {
     prekeys[`pk-${i}`] = `secret-${i}`
-    createdAt[`pk-${i}`] = Date.now() - ageMs - i
+    createdAt[`pk-${i}`] = Date.now() - ageMs - (prekeyCount - i)
   }
-  store.set(SECRETS, JSON.stringify({ deviceId: 'dev-1', identitySecret: 'SEC', prekeys, prekeyCreatedAt: createdAt }))
+  store.set(SECRETS, JSON.stringify({ deviceId: 'dev-1', identitySecret: 'SEC', prekeys, ...(dated ? { prekeyCreatedAt: createdAt } : {}) }))
 }
-const storedPrekeyCount = () => Object.keys(JSON.parse(store.get(SECRETS) ?? '{"prekeys":{}}').prekeys ?? {}).length
+const storedPrekeyIds = (): string[] => Object.keys(JSON.parse(store.get(SECRETS) ?? '{"prekeys":{}}').prekeys ?? {})
+const storedPrekeyCount = () => storedPrekeyIds().length
 
 describe('W-H04 публикация OPK по счётчику сервера', () => {
   beforeEach(() => {
@@ -85,6 +88,31 @@ describe('W-H04 публикация OPK по счётчику сервера', 
     await forcePublishPrekeys({ reason: 'test3', count: 1, force: true })
     // окно 30+50=80 старых остаётся, +1 только что опубликованный
     expect(storedPrekeyCount()).toBe(81)
+    // остаются САМЫЕ НОВЫЕ: сервер раздаёт OPK от старых к новым, свободны последние
+    const ids = storedPrekeyIds()
+    for (let i = 220; i < 300; i += 1) expect(ids).toContain(`pk-${i}`)
+    expect(ids).not.toContain('pk-219')
+  })
+
+  it('легаси-секреты без даты: через 15 суток НЕ удаляются те, чьи OPK сервер ещё не раздал (последние 40 из 200)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const t0 = Date.parse('2026-10-04T00:00:00Z')
+      vi.setSystemTime(t0)
+      seedDevice(200, 0, false)
+      server.devices = [{ id: 'dev-1', userId: 'me', revokedAt: null, availablePrekeys: 40 }]
+      await forcePublishPrekeys({ reason: 'legacy-mark', count: 1, force: true })
+      expect(storedPrekeyCount()).toBe(201) // первая отметка ничего не удаляет
+      vi.setSystemTime(t0 + 15 * 24 * 60 * 60_000)
+      await forcePublishPrekeys({ reason: 'legacy-prune', count: 1, force: true })
+      const ids = storedPrekeyIds()
+      for (let i = 160; i < 200; i += 1) expect(ids).toContain(`pk-${i}`) // свободные на сервере — целы
+      expect(ids).not.toContain('pk-0') // давно выданные — вычищены
+      expect(ids).not.toContain('pk-110')
+      expect(storedPrekeyCount()).toBe(91) // окно 40+50 + новый
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

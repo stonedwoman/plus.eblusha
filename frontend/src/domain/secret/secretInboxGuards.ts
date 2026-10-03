@@ -192,6 +192,54 @@ export async function verifyDeviceLinkKeys(
   return { ok: true }
 }
 
+export type LinkJoinDecision =
+  | { action: 'proceed'; requesterDeviceId: string }
+  /** Подтвердить (ack) и выбросить: чужой аккаунт, чужое/отозванное устройство, мусор. */
+  | { action: 'ack'; reason: string }
+  /** Своё живое устройство, но приглашение ещё не показано — НЕ подтверждать (доживёт TTL). */
+  | { action: 'wait'; reason: string }
+  /** Не удалось проверить (сеть) — не подтверждать, разберём на следующем pull. */
+  | { action: 'retry'; reason: string }
+
+/**
+ * X3/Б8: `link_device_join` (запрос нового устройства на ВСЕ ключи секреток). Проверки — в порядке,
+ * при котором посторонний не может ни выгрузить ключи, ни заклинить инбокс:
+ *   1) senderUserId (ставит сервер) == я. Иначе сразу ack: раньше чужой аккаунт, подставив в
+ *      requesterDeviceId id МОЕГО устройства (виден всем через bundles), получал «своё, ждём
+ *      приглашения» — без ack, и 50 таких конвертов с TTL до 7 суток клинили инбокс веба/Electron;
+ *   2) requesterDeviceId — моё НЕотозванное устройство, иначе ack;
+ *   3) только для своего: нет живого приглашения (карточка «Добавить устройство») — wait.
+ * `myUserIdHint` (из сессии) — запасной, если в GET /devices нет userId.
+ */
+export async function decideLinkDeviceJoin(
+  item: { senderUserId?: string | null; headerJson?: any },
+  inviteOk: boolean,
+  lk: InboxLookups,
+  myUserIdHint?: string | null,
+): Promise<LinkJoinDecision> {
+  const header = item?.headerJson ?? {}
+  const requesterDeviceId = str(header?.requesterDeviceId)
+  if (!requesterDeviceId) return { action: 'ack', reason: 'bad_request' }
+  const sender = str(item?.senderUserId)
+  const hint = str(myUserIdHint)
+  // Явно чужой по сессии — ack без единого запроса к серверу (шторм не стоит нам GET /devices).
+  if (hint && sender !== hint) return { action: 'ack', reason: 'not_my_account' }
+  let mine: MyDevice[]
+  try {
+    mine = await lk.myDevices()
+  } catch {
+    return { action: 'retry', reason: 'lookup_failed' }
+  }
+  const myUserId = str(mine.find((d) => str(d.userId))?.userId) || hint
+  if (!myUserId) return { action: 'retry', reason: 'my_user_unknown' }
+  if (!sender || sender !== myUserId) return { action: 'ack', reason: 'not_my_account' }
+  if (!mine.some((d) => str(d.id) === requesterDeviceId && !d.revokedAt)) {
+    return { action: 'ack', reason: 'not_my_live_device' }
+  }
+  if (!inviteOk) return { action: 'wait', reason: 'no_invite' }
+  return { action: 'proceed', requesterDeviceId }
+}
+
 /** Секретку (V2 type=SECRET или легаси isSecret) нельзя пересылать никуда (W-X6, как Android/iOS). */
 export function canForwardFromConversation(conv: any): boolean {
   if (!conv) return false

@@ -3,6 +3,7 @@ import nacl from 'tweetnacl'
 import { bytesToBase64 } from '../../utils/base64'
 import {
   canForwardFromConversation,
+  decideLinkDeviceJoin,
   sameKeyBytes,
   verifyDeviceLinkKeys,
   verifyKeyReceipt,
@@ -143,6 +144,40 @@ describe('W-X4 verifyDeviceLinkKeys', () => {
   it('sameKeyBytes сравнивает байты, а не строки', () => {
     expect(sameKeyBytes(std, url)).toBe(true)
     expect(sameKeyBytes(std, bytesToBase64(nacl.randomBytes(32)))).toBe(false)
+  })
+})
+
+describe('X3/Б8 decideLinkDeviceJoin (веб и Electron)', () => {
+  const join = (senderUserId: string, requesterDeviceId: string) => ({
+    senderUserId,
+    headerJson: { kind: 'link_device_join', v: 1, requesterDeviceId, token: 't', code: '12345678' },
+  })
+  it('чужой аккаунт с id МОЕГО устройства и без приглашения — ack сразу (раньше висел до 7 суток и клинил инбокс)', async () => {
+    expect(await decideLinkDeviceJoin(join(STRANGER, 'my-d1'), false, lookups())).toEqual({ action: 'ack', reason: 'not_my_account' })
+  })
+  it('чужой аккаунт с id моего устройства и подходящим приглашением — ack, ключи не отдаются', async () => {
+    expect(await decideLinkDeviceJoin(join(STRANGER, 'my-d1'), true, lookups())).toMatchObject({ action: 'ack' })
+  })
+  it('чужой по сессии — ack без запроса GET /devices', async () => {
+    let calls = 0
+    const lk = lookups()
+    const counted: InboxLookups = { ...lk, myDevices: async () => { calls += 1; return lk.myDevices() } }
+    expect(await decideLinkDeviceJoin(join(STRANGER, 'my-d1'), false, counted, ME)).toEqual({ action: 'ack', reason: 'not_my_account' })
+    expect(calls).toBe(0)
+  })
+  it('свой аккаунт, своё живое устройство, приглашения нет — wait (не ack, доживёт TTL)', async () => {
+    expect(await decideLinkDeviceJoin(join(ME, 'my-d1'), false, lookups(), ME)).toEqual({ action: 'wait', reason: 'no_invite' })
+  })
+  it('свой аккаунт, своё живое устройство, приглашение есть — proceed', async () => {
+    expect(await decideLinkDeviceJoin(join(ME, 'my-d1'), true, lookups(), ME)).toEqual({ action: 'proceed', requesterDeviceId: 'my-d1' })
+  })
+  it('свой аккаунт, но устройство отозвано или не моё — ack', async () => {
+    expect(await decideLinkDeviceJoin(join(ME, 'my-old'), true, lookups())).toEqual({ action: 'ack', reason: 'not_my_live_device' })
+    expect(await decideLinkDeviceJoin(join(ME, 'peer-d1'), false, lookups())).toEqual({ action: 'ack', reason: 'not_my_live_device' })
+  })
+  it('без requesterDeviceId — ack; сбой сети при проверке своего — retry (не ack)', async () => {
+    expect(await decideLinkDeviceJoin({ senderUserId: ME, headerJson: { kind: 'link_device_join' } }, false, lookups())).toEqual({ action: 'ack', reason: 'bad_request' })
+    expect(await decideLinkDeviceJoin(join(ME, 'my-d1'), true, lookups({ fail: true }), ME)).toEqual({ action: 'retry', reason: 'lookup_failed' })
   })
 })
 
