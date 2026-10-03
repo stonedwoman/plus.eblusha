@@ -73,3 +73,58 @@ export function describeE2eeSetupError(err: unknown): { text: string; retry: boo
   if (lower.includes('timeout')) return { text: `${lead} Шифрование не подтвердилось вовремя.`, retry: true }
   return { text: `${lead} Ключ шифрования не получен или повреждён.`, retry: true }
 }
+
+/**
+ * Затвор приёма (ревью этапа 0). В шифрованном звонке собеседник опубликовал звук или видео с
+ * меткой «без шифрования» (TrackInfo.encryption = NONE): так делают старые телефоны при сбое
+ * ключа. livekit-client для такой дорожки сам выключает расшифровку участника и проиграл бы её
+ * открытым звуком, поэтому такую дорожку не играем, а звонок прерываем.
+ */
+export const PEER_UNENCRYPTED_TEXT =
+  'Собеседник говорит без шифрования — звонок прерван. Без шифрования разговор один на один не идёт.'
+
+/** Звуковая или видеодорожка собеседника помечена как незашифрованная (метка сервера LiveKit). */
+export function isUnencryptedMediaPublication(
+  pub: { kind?: unknown; isEncrypted?: unknown } | null | undefined,
+): boolean {
+  if (!pub) return false
+  if (pub.kind !== 'audio' && pub.kind !== 'video') return false
+  return pub.isEncrypted === false
+}
+
+/**
+ * Режим шифрования закрепляется за звонком (ревью этапа 0): решение «шифровать ли» принимается
+ * один раз, когда тип беседы известен, и посреди звонка не пересчитывается. Иначе перезапрос
+ * списка бесед, вернувший для идущего 1:1 isGroup=true, тихо переключил бы оверлей на открытую
+ * комнату с микрофоном.
+ */
+export type PinnedCallMode = { conversationId: string; e2ee: boolean }
+
+/**
+ * Следующее закреплённое значение. Пока тип беседы неизвестен (список ещё не загружен),
+ * ничего не закрепляем — звонок при этом всё равно считается личным и шифруется
+ * ([callRequiresE2ee] от isGroup=false).
+ */
+export function nextPinnedCallMode(
+  prev: PinnedCallMode | null,
+  open: boolean,
+  conversationId: string | null,
+  isGroup: boolean,
+  conversationKnown: boolean,
+): PinnedCallMode | null {
+  if (!open || !conversationId) return null
+  if (prev && prev.conversationId === conversationId) return prev
+  if (!conversationKnown) return null
+  return { conversationId, e2ee: callRequiresE2ee(isGroup) }
+}
+
+/** Известный тип беседы разошёлся с закреплённым режимом звонка — звонок прерываем. */
+export function callModeChanged(pinned: PinnedCallMode | null, isGroup: boolean, conversationKnown: boolean): boolean {
+  if (!pinned || !conversationKnown) return false
+  return pinned.e2ee !== callRequiresE2ee(isGroup)
+}
+
+/** Режим беседы (личная ↔ группа) сменился посреди звонка: дальше разговор не продолжаем. */
+export const CALL_MODE_CHANGED_TEXT =
+  'Тип беседы изменился посреди звонка — звонок прерван. Начните звонок заново.'
+export const CALL_ABORTED_TITLE = 'Звонок прерван'

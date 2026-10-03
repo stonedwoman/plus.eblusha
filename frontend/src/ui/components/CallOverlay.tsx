@@ -67,11 +67,18 @@ import { CallConnecting } from './CallConnecting'
 import { CallMini } from './CallMini'
 import { CallStatusPill } from './CallSecurityMark'
 import {
+  CALL_ABORTED_TITLE,
+  CALL_MODE_CHANGED_TEXT,
   E2EE_SETUP_FAILED_TITLE,
+  PEER_UNENCRYPTED_TEXT,
+  callModeChanged,
   callRequiresE2ee,
   callSecurityOf,
   describeE2eeSetupError,
+  isUnencryptedMediaPublication,
+  nextPinnedCallMode,
   type CallSecurity,
+  type PinnedCallMode,
 } from './callSecurity'
 import {
   buildConnectView,
@@ -121,6 +128,11 @@ type Props = {
   avatarsById?: Record<string, string | null>
   localUserId?: string | null
   isGroup?: boolean
+  /**
+   * Беседа найдена в списке бесед, и isGroup — её настоящий тип, а не значение по умолчанию.
+   * Режим шифрования закрепляется за звонком, только когда тип известен (ревью этапа 0).
+   */
+  conversationKnown?: boolean
   /** Имя и id собеседника для экрана подключения (разговоры один на один). */
   peerName?: string | null
   peerId?: string | null
@@ -2183,7 +2195,7 @@ function CallSettings() {
   )
 }
 
-export function CallOverlay({ open, conversationId, onClose, onMinimize, minimized = false, initialVideo = false, initialAudio = true, peerAvatarUrl = null, avatarsByName = {}, avatarsById = {}, localUserId = null, isGroup = false, peerName = null, peerId = null, conversationTitle = null, conversationAvatarUrl = null, dialing = false, dialingSince = null, ringPeriodMs = null, onCancelDial, onExpand, callStartedAt = null }: Props) {
+export function CallOverlay({ open, conversationId, onClose, onMinimize, minimized = false, initialVideo = false, initialAudio = true, peerAvatarUrl = null, avatarsByName = {}, avatarsById = {}, localUserId = null, isGroup = false, conversationKnown = true, peerName = null, peerId = null, conversationTitle = null, conversationAvatarUrl = null, dialing = false, dialingSince = null, ringPeriodMs = null, onCancelDial, onExpand, callStartedAt = null }: Props) {
   const [token, setToken] = useState<string | null>(null)
   const [serverUrl, setServerUrl] = useState<string | null>(null)
   const livekitServerUrl = useMemo(() => normalizeLivekitServerUrl(serverUrl), [serverUrl])
@@ -2199,7 +2211,16 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
 
   // Звонок 1:1 шифруется ВСЕГДА: флага сборки VITE_E2EE_1TO1 больше нет (без него веб звонил
   // открыто). Нет ключа — звонок не начинается. Без шифрования — только группы (до 2.0).
-  const shouldUseE2ee = callRequiresE2ee(isGroup)
+  // Режим закрепляется за звонком, как только тип беседы известен, и посреди звонка не
+  // пересчитывается: смена isGroup (перезапрос списка бесед, путаница данных) не переключает
+  // оверлей на открытую комнату с микрофоном, а прерывает звонок (ревью этапа 0).
+  const pinnedModeRef = useRef<PinnedCallMode | null>(null)
+  pinnedModeRef.current = nextPinnedCallMode(pinnedModeRef.current, open, conversationId, isGroup, conversationKnown)
+  const pinnedMode = pinnedModeRef.current
+  const shouldUseE2ee = pinnedMode ? pinnedMode.e2ee : callRequiresE2ee(isGroup)
+  const callModeChangedNow = callModeChanged(pinnedMode, isGroup, conversationKnown)
+  /** Тип беседы сменился посреди звонка — звонок прерван (защёлка до конца этого звонка). */
+  const [callModeError, setCallModeError] = useState<string | null>(null)
   const e2eeRoomRef = useRef<Room | null>(null)
   const e2eeWorkerRef = useRef<Worker | null>(null)
   const e2eeEnableStartedRef = useRef(false)
@@ -2279,6 +2300,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   /** Микрофон не удалось получить — входим без него и честно показываем это. */
   const [micUnavailable, setMicUnavailable] = useState(false)
   useEffect(() => {
+    setCallModeError(null)
     setMediaReady(false)
     setProgress(EMPTY_CONNECT_PROGRESS)
     setConnectError(null)
@@ -3456,6 +3478,74 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     }
   }, [cleanupE2eeResources, e2eeEnabled, e2eeRoom, shouldUseE2ee])
 
+  // Тип беседы разошёлся с закреплённым режимом звонка: прерываем, а не переключаем ветку.
+  useEffect(() => {
+    if (!callModeChangedNow || callModeError) return
+    // eslint-disable-next-line no-console
+    console.error('[CallOverlay] тип беседы изменился посреди звонка — звонок прерван', { conversationId, isGroup })
+    setCallModeError(CALL_MODE_CHANGED_TEXT)
+    cleanupE2eeResources()
+  }, [callModeChangedNow, callModeError, cleanupE2eeResources, conversationId, isGroup])
+
+  // Затвор приёма (ревью этапа 0). В шифрованном звонке дорожку собеседника с меткой «без
+  // шифрования» (TrackInfo.encryption = NONE — старый телефон при сбое ключа) НЕ играем:
+  // livekit-client для неё сам выключает расшифровку участника (E2eeManager: TrackPublished →
+  // setParticipantCryptorEnabled(false)) и проиграл бы открытый звук. Вебхук сервера такого
+  // участника выкидывает, но с задержкой и не всегда. Слушатели вешаются на комнату ДО connect —
+  // раньше, чем отрисовщики LiveKit, — поэтому дорожка гасится до того, как её начнут играть.
+  useEffect(() => {
+    if (!shouldUseE2ee || !e2eeRoom) return
+    const room = e2eeRoom
+    let tripped = false
+    const block = (pub: any, participant: any) => {
+      if (!isUnencryptedMediaPublication(pub)) return
+      try {
+        const mst = pub?.track?.mediaStreamTrack as MediaStreamTrack | undefined
+        if (mst) mst.enabled = false
+      } catch {
+        // ignore
+      }
+      try {
+        pub?.track?.detach?.()
+      } catch {
+        // ignore
+      }
+      try {
+        pub?.setSubscribed?.(false)
+      } catch {
+        // ignore
+      }
+      if (tripped) return
+      tripped = true
+      // eslint-disable-next-line no-console
+      console.error('[CallOverlay] собеседник публикует дорожку без шифрования — звонок прерван', {
+        identity: participant?.identity,
+        kind: pub?.kind,
+        source: pub?.source,
+      })
+      setE2eeError(PEER_UNENCRYPTED_TEXT)
+      setE2eeSetupFailure(null)
+      cleanupE2eeResources()
+    }
+    const sweep = () => {
+      room.remoteParticipants.forEach((p: any) => p.trackPublications.forEach((pub: any) => block(pub, p)))
+    }
+    const onPublished = (pub: any, participant: any) => block(pub, participant)
+    const onSubscribed = (_track: any, pub: any, participant: any) => block(pub, participant)
+    const onParticipant = (participant: any) => participant?.trackPublications?.forEach((pub: any) => block(pub, participant))
+    room.on(RoomEvent.TrackPublished, onPublished as any)
+    room.on(RoomEvent.TrackSubscribed, onSubscribed as any)
+    room.on(RoomEvent.ParticipantConnected, onParticipant as any)
+    room.on(RoomEvent.Connected, sweep as any)
+    sweep()
+    return () => {
+      room.off(RoomEvent.TrackPublished, onPublished as any)
+      room.off(RoomEvent.TrackSubscribed, onSubscribed as any)
+      room.off(RoomEvent.ParticipantConnected, onParticipant as any)
+      room.off(RoomEvent.Connected, sweep as any)
+    }
+  }, [cleanupE2eeResources, e2eeRoom, shouldUseE2ee])
+
   // Пока подключение не состоялось, держим наготове откат: без него запрет прямых
   // путей превратил бы недоступность ретрансляторов в «звонок вообще не работает».
   useEffect(() => {
@@ -3510,9 +3600,15 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           id: isGroup ? conversationId : peerId,
           avatarUrl: isGroup ? conversationAvatarUrl : peerAvatarUrl,
         },
-        error: e2eeError ?? connectError,
-        errorTitle: e2eeError ? (e2eeSetupFailure ? E2EE_SETUP_FAILED_TITLE : null) : connectError ? 'Не удалось подключиться' : null,
-        errorRetry: !!e2eeError && e2eeSetupFailure === 'retry',
+        error: callModeError ?? e2eeError ?? connectError,
+        errorTitle: callModeError
+          ? CALL_ABORTED_TITLE
+          : e2eeError
+            ? (e2eeSetupFailure ? E2EE_SETUP_FAILED_TITLE : null)
+            : connectError
+              ? 'Не удалось подключиться'
+              : null,
+        errorRetry: !callModeError && !!e2eeError && e2eeSetupFailure === 'retry',
         micUnavailable,
         ringing: dialing ? true : hadDial ? false : undefined,
         ringingSeconds,
@@ -3533,6 +3629,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       conversationId,
       conversationAvatarUrl,
       peerAvatarUrl,
+      callModeError,
       e2eeError,
       e2eeSetupFailure,
       connectError,
@@ -4411,7 +4508,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         visibility: minimized ? 'hidden' : 'visible',
       }} className="call-container">
         <style>{videoContainCss}</style>
-        {shouldUseE2ee ? (
+        {callModeError ? (
+          <CallConnecting view={connectView} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} video={initialVideo} startedAt={callStartedAt ?? dialingSince ?? undefined} />
+        ) : shouldUseE2ee ? (
           e2eeError || !e2eeRoom ? (
             <CallConnecting view={connectView} onCancel={cancelConnecting} onRetry={retryE2eeSetup} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} video={initialVideo} startedAt={callStartedAt ?? dialingSince ?? undefined} />
           ) : (

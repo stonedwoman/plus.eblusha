@@ -254,6 +254,7 @@ export function CallHost() {
             })()}
             localUserId={me?.id ?? null}
             isGroup={!!getConversation(shownConvId)?.isGroup}
+            conversationKnown={typeof getConversation(shownConvId)?.isGroup === 'boolean'}
             peerName={(() => {
               const conversation = getConversation(shownConvId)
               const peer = conversation?.participants?.find((participant: any) => participant.user.id !== me?.id)?.user

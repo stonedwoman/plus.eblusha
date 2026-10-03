@@ -6,12 +6,17 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { buildConnectView, EMPTY_CONNECT_PROGRESS, type ConnectSignals, type ConnectView } from './callConnectView'
 import {
+  CALL_MODE_CHANGED_TEXT,
   CALL_SECURITY_DETAIL,
   CALL_SECURITY_LABEL,
   E2EE_SETUP_FAILED_TITLE,
+  PEER_UNENCRYPTED_TEXT,
+  callModeChanged,
   callRequiresE2ee,
   callSecurityOf,
   describeE2eeSetupError,
+  isUnencryptedMediaPublication,
+  nextPinnedCallMode,
 } from './callSecurity'
 
 const base: ConnectSignals = {
@@ -152,7 +157,7 @@ describe('статическая проверка: путей без шифро�
   it('нет флага сборки VITE_E2EE_1TO1 — шифрование 1:1 решает только callRequiresE2ee', () => {
     expect(overlay).not.toMatch(/env\??\.VITE_E2EE/)
     expect(overlay).not.toMatch(/readEnvBool/)
-    expect(overlay).toMatch(/const shouldUseE2ee = callRequiresE2ee\(isGroup\)/)
+    expect(overlay).toMatch(/const shouldUseE2ee = pinnedMode \? pinnedMode\.e2ee : callRequiresE2ee\(isGroup\)/)
   })
 
   it('нигде не выключаем шифрование вызовом SDK', () => {
@@ -167,5 +172,75 @@ describe('статическая проверка: путей без шифро�
       expect(src).not.toMatch(/['"`]Сквозное шифрование/)
       expect(src).not.toMatch(/aria-label="Сквозное/)
     }
+  })
+})
+
+describe('затвор приёма: дорожку собеседника без шифрования не играем (ревью этапа 0)', () => {
+  it('isUnencryptedMediaPublication: только звук/видео с меткой «не зашифровано»', () => {
+    expect(isUnencryptedMediaPublication({ kind: 'audio', isEncrypted: false })).toBe(true)
+    expect(isUnencryptedMediaPublication({ kind: 'video', isEncrypted: false })).toBe(true)
+    expect(isUnencryptedMediaPublication({ kind: 'audio', isEncrypted: true })).toBe(false)
+    expect(isUnencryptedMediaPublication({ kind: 'video', isEncrypted: true })).toBe(false)
+    // Неизвестная метка (нет поля) — не повод рвать звонок: решает только явное false.
+    expect(isUnencryptedMediaPublication({ kind: 'audio' })).toBe(false)
+    expect(isUnencryptedMediaPublication({ kind: 'unknown', isEncrypted: false })).toBe(false)
+    expect(isUnencryptedMediaPublication(null)).toBe(false)
+    expect(isUnencryptedMediaPublication(undefined)).toBe(false)
+  })
+
+  it('текст ошибки — без «E2EE» и «сквозного»', () => {
+    expect(PEER_UNENCRYPTED_TEXT).toMatch(/без шифрования/)
+    expect(PEER_UNENCRYPTED_TEXT).not.toMatch(/E2EE|сквозн/i)
+  })
+
+  it('CallOverlay вешает затвор на комнату до connect: публикация, подписка, вход участника, подключение', () => {
+    const overlay = readFileSync(new URL('./CallOverlay.tsx', import.meta.url), 'utf8')
+    const gate = overlay.slice(overlay.indexOf('// Затвор приёма'), overlay.indexOf('// Затвор приёма') + 4000)
+    expect(gate).toMatch(/isUnencryptedMediaPublication\(pub\)/)
+    expect(gate).toMatch(/setSubscribed\?\.\(false\)/)
+    expect(gate).toMatch(/\.detach\?\.\(\)/)
+    expect(gate).toMatch(/mst\.enabled = false/)
+    for (const ev of ['TrackPublished', 'TrackSubscribed', 'ParticipantConnected', 'Connected']) {
+      expect(gate).toContain(`room.on(RoomEvent.${ev},`)
+    }
+    expect(gate).toMatch(/setE2eeError\(PEER_UNENCRYPTED_TEXT\)/)
+    expect(gate).toMatch(/cleanupE2eeResources\(\)/)
+  })
+})
+
+describe('режим шифрования закреплён за звонком (ревью этапа 0)', () => {
+  it('закрепляется, только когда тип беседы известен', () => {
+    expect(nextPinnedCallMode(null, true, 'c1', false, false)).toBeNull()
+    expect(nextPinnedCallMode(null, true, 'c1', false, true)).toEqual({ conversationId: 'c1', e2ee: true })
+    expect(nextPinnedCallMode(null, true, 'c1', true, true)).toEqual({ conversationId: 'c1', e2ee: false })
+    expect(nextPinnedCallMode(null, false, 'c1', false, true)).toBeNull()
+    expect(nextPinnedCallMode(null, true, null, false, true)).toBeNull()
+  })
+
+  it('посреди звонка не пересчитывается; новый звонок/беседа — заново', () => {
+    const pinned = { conversationId: 'c1', e2ee: true }
+    expect(nextPinnedCallMode(pinned, true, 'c1', true, true)).toBe(pinned)
+    expect(nextPinnedCallMode(pinned, true, 'c1', false, false)).toBe(pinned)
+    expect(nextPinnedCallMode(pinned, true, 'c2', true, true)).toEqual({ conversationId: 'c2', e2ee: false })
+    expect(nextPinnedCallMode(pinned, false, 'c1', false, true)).toBeNull()
+  })
+
+  it('1:1 → «группа» посреди звонка — фатально; беседа пропала из списка — нет', () => {
+    const one = { conversationId: 'c1', e2ee: true }
+    expect(callModeChanged(one, true, true)).toBe(true)
+    expect(callModeChanged(one, false, true)).toBe(false)
+    expect(callModeChanged(one, false, false)).toBe(false)
+    expect(callModeChanged(one, true, false)).toBe(false)
+    const group = { conversationId: 'g1', e2ee: false }
+    expect(callModeChanged(group, false, true)).toBe(true)
+    expect(callModeChanged(group, true, true)).toBe(false)
+    expect(callModeChanged(null, true, true)).toBe(false)
+    expect(CALL_MODE_CHANGED_TEXT).not.toMatch(/E2EE|сквозн/i)
+  })
+
+  it('CallOverlay: при смене режима — экран ошибки, а не ветка без шифрования', () => {
+    const overlay = readFileSync(new URL('./CallOverlay.tsx', import.meta.url), 'utf8')
+    expect(overlay).toMatch(/\{callModeError \? \(\s*<CallConnecting/)
+    expect(overlay).toMatch(/setCallModeError\(CALL_MODE_CHANGED_TEXT\)/)
   })
 })

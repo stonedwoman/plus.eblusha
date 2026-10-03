@@ -124,6 +124,14 @@ export function renderActiveCallOverlay(ctx: CallOverlayHostCtx) {
               : activeConversation
             return !!conv?.isGroup
           })()}
+          conversationKnown={(() => {
+            // Беседа найдена — isGroup настоящий; иначе это значение по умолчанию, и режим
+            // шифрования за звонком ещё не закрепляется (CallOverlay, ревью этапа 0).
+            const conv = shownConvId
+              ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
+              : activeConversation
+            return !!conv && typeof conv.isGroup === 'boolean'
+          })()}
           peerName={(() => {
             const conv = shownConvId
               ? conversationsQuery.data?.find((r: any) => r.conversation.id === shownConvId)?.conversation
