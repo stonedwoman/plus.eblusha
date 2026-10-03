@@ -2,6 +2,7 @@ import { api } from '../../utils/api'
 import { ensureDeviceBootstrap, forcePublishPrekeys, getStoredDeviceInfo } from '../device/deviceManager'
 import { createAndShareSecretThreadKey } from './secretThreadSetup'
 import { sendSecretControl } from './secretControl'
+import { hasSecretThreadKey } from './secretThreadKeyStore'
 
 function secretDebugEnabled(): boolean {
   try {
@@ -14,7 +15,11 @@ function secretDebugEnabled(): boolean {
   }
 }
 
-export async function requestSecretThreadKeyResend(threadId: string, peerUserId: string): Promise<void> {
+export async function requestSecretThreadKeyResend(
+  threadId: string,
+  peerUserId: string,
+  opts?: { includeOwnDevices?: boolean },
+): Promise<void> {
   const boot = await ensureDeviceBootstrap()
   const requesterDeviceId = boot?.deviceId ?? getStoredDeviceInfo()?.deviceId ?? null
   if (!requesterDeviceId) throw new Error('DEVICE_NOT_READY')
@@ -26,10 +31,26 @@ export async function requestSecretThreadKeyResend(threadId: string, peerUserId:
     .filter(Boolean)
     .slice(0, 3)
 
-  if (!peerDeviceIds.length) throw new Error('NO_PEER_TARGETS')
+  // W-H02: создателю без ключа ключ отдают его же устройства (там он был выпущен) — их спрашиваем тоже.
+  let ownDeviceIds: string[] = []
+  if (opts?.includeOwnDevices) {
+    try {
+      const mine = await api.get('/devices')
+      ownDeviceIds = ((mine.data?.devices ?? []) as any[])
+        .filter((d) => !d?.revokedAt)
+        .map((d) => String(d?.id ?? '').trim())
+        .filter((id) => !!id && id !== requesterDeviceId)
+        .slice(0, 10)
+    } catch {
+      ownDeviceIds = []
+    }
+  }
+
+  const targets = Array.from(new Set([...ownDeviceIds, ...peerDeviceIds]))
+  if (!targets.length) throw new Error('NO_PEER_TARGETS')
 
   await Promise.all(
-    peerDeviceIds.map((toDeviceId) =>
+    targets.map((toDeviceId) =>
       sendSecretControl(
         toDeviceId,
         { type: 'key_request', threadId, requesterDeviceId, fromDeviceId: requesterDeviceId, ts: Date.now() },
@@ -47,10 +68,11 @@ export async function requestSecretThreadKeyResend(threadId: string, peerUserId:
 export async function fixSecretChat(opts: { threadId: string; peerUserId: string; amCreator: boolean }): Promise<void> {
   await ensureDeviceBootstrap()
   await forcePublishPrekeys({ reason: 'fix_secret_chat' })
-  if (opts.amCreator) {
+  if (opts.amCreator && hasSecretThreadKey(opts.threadId)) {
     await createAndShareSecretThreadKey(opts.threadId, opts.peerUserId)
   } else {
-    await requestSecretThreadKeyResend(opts.threadId, opts.peerUserId)
+    // W-H02: у кого ключа нет (в том числе у создателя на новом устройстве) — просим, а не выпускаем.
+    await requestSecretThreadKeyResend(opts.threadId, opts.peerUserId, { includeOwnDevices: true })
   }
 }
 
@@ -59,7 +81,8 @@ declare global {
     __ebFixSecretChat?: (threadId: string, peerUserId: string, amCreator: boolean) => Promise<void>
   }
 }
-if (typeof window !== 'undefined') {
+// Отладочный хук — только в dev-сборке (W-H02).
+if (typeof window !== 'undefined' && !!(import.meta as any).env?.DEV) {
   if (!(window as any).__ebFixSecretChat) {
     ;(window as any).__ebFixSecretChat = (threadId: string, peerUserId: string, amCreator: boolean) =>
       fixSecretChat({ threadId, peerUserId, amCreator })

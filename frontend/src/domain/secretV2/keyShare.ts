@@ -1,7 +1,7 @@
 import { createAndShareSecretThreadKey } from '../secret/secretThreadSetup'
 import { requestSecretThreadKeyResend } from '../secret/secretChatFix'
 import { api } from '../../utils/api'
-import { ensureSecretThreadKey, hasSecretThreadKey } from '../secret/secretThreadKeyStore'
+import { hasSecretThreadKey } from '../secret/secretThreadKeyStore'
 import { markThreadError, markThreadOpened, type SecretReasonCode } from './state'
 import { bytesToBase64, utf8ToBytes } from '../../utils/base64'
 
@@ -21,8 +21,14 @@ export async function ensureCreatorThreadKeyAndShare(opts: {
   const threadId = String(opts.threadId ?? '').trim()
   if (!threadId) return { ok: false, reasonCode: 'SERVER_REJECTED', message: 'Missing threadId' }
   try {
-    ensureSecretThreadKey(threadId)
     markThreadOpened(threadId)
+    // W-H02: НОВЫЙ ключ здесь не выпускаем. Создатель без ключа (новое устройство, «Восстановить»)
+    // раньше выпускал свежий ключ и рассылал его — у собеседника история становилась нечитаемой.
+    // Ключ выпускает только устройство-инициатор при создании; остальные просят его (key_request).
+    if (!hasSecretThreadKey(threadId)) {
+      await requestSecretThreadKeyResend(threadId, opts.peerUserId, { includeOwnDevices: true })
+      return { ok: false, reasonCode: 'NO_KEYPACKAGE', message: 'Waiting for thread key from own/peer devices' }
+    }
     await createAndShareSecretThreadKey(threadId, opts.peerUserId)
     return { ok: true }
   } catch (e: any) {

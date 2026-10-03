@@ -1,5 +1,5 @@
 import { api } from '../../utils/api'
-import { ensureSecretThreadKey } from './secretThreadKeyStore'
+import { getSecretThreadKey } from './secretThreadKeyStore'
 import { createEncryptedKeyPackageToDevice } from './secretKeyPackages'
 import { getStoredDeviceInfo } from '../device/deviceManager'
 import { filterUnackedTargets, getPendingAttempts, markKeyShareSent } from './secretKeyShareState'
@@ -77,11 +77,27 @@ async function nudgeDeviceToPublishPrekeys(toDeviceId: string, threadId: string)
   } catch {}
 }
 
+/** W-H02: ключ треда выпускает ТОЛЬКО устройство-инициатор при создании (ChatsPage). Здесь — только делимся. */
+export class NoLocalThreadKeyError extends Error {
+  constructor(threadId: string) {
+    super(`NO_LOCAL_THREAD_KEY:${threadId}`)
+    this.name = 'NoLocalThreadKeyError'
+  }
+}
+
+function requireLocalThreadKey(threadId: string) {
+  const rec = getSecretThreadKey(threadId)
+  if (!rec?.key) throw new NoLocalThreadKeyError(threadId)
+  return rec
+}
+
 export async function createAndShareSecretThreadKey(threadId: string, peerUserId: string): Promise<void> {
   const local = getStoredDeviceInfo()
   const localDeviceId = local?.deviceId ?? null
 
-  const keyRec = ensureSecretThreadKey(threadId)
+  // Раньше здесь был ensureSecretThreadKey: создатель без ключа (новое устройство, «Восстановить»)
+  // молча выпускал НОВЫЙ ключ и рассылал его — у собеседника история становилась нечитаемой (H02).
+  const keyRec = requireLocalThreadKey(threadId)
 
   // Gather device list for both users
   const log = (...args: any[]) => {
@@ -248,10 +264,19 @@ export async function createAndShareSecretThreadKey(threadId: string, peerUserId
 // Accept-on-one-device flow: after the peer accepts on ONE device, the creator shares the thread
 // key to exactly that device (no fanout). The peer's other devices onboard via device-linking.
 export async function shareSecretThreadKeyToDevice(threadId: string, toDeviceId: string): Promise<void> {
+  await shareExistingSecretThreadKeyToDevice(threadId, toDeviceId)
+}
+
+/**
+ * Отдать УЖЕ ИМЕЮЩИЙСЯ ключ треда одному устройству (ответ на key_request/key_resend_request,
+ * accept-on-one-device). Нового ключа не выпускает: нет ключа — NoLocalThreadKeyError (W-H02).
+ * Возвращает msgId конверта.
+ */
+export async function shareExistingSecretThreadKeyToDevice(threadId: string, toDeviceId: string): Promise<string | undefined> {
   const t = String(threadId ?? '').trim()
   const to = String(toDeviceId ?? '').trim()
-  if (!t || !to) return
-  const keyRec = ensureSecretThreadKey(t)
+  if (!t || !to) return undefined
+  const keyRec = requireLocalThreadKey(t)
   try {
     const env = await createEncryptedKeyPackageToDevice({
       toDeviceId: to,
@@ -261,6 +286,7 @@ export async function shareSecretThreadKeyToDevice(threadId: string, toDeviceId:
     })
     markKeyShareSent(t, to, String(env.msgId))
     await api.post('/secret/send', { messages: [env] }, { timeout: 15_000 })
+    return String(env.msgId)
   } catch (err: any) {
     const info = classifyShareError(err)
     if (info.rootCause === 'NO_PREKEYS') void nudgeDeviceToPublishPrekeys(to, t)
@@ -268,13 +294,14 @@ export async function shareSecretThreadKeyToDevice(threadId: string, toDeviceId:
   }
 }
 
-// Dev helper: allow manual resend without exposing UI banners.
+// Dev helper: ручная переотправка без баннеров — только в dev-сборке (W-H02: в боевой сборке
+// глобальный хук давал любому скрипту на странице разослать ключ треда).
 declare global {
   interface Window {
     __ebResendSecretThreadKey?: (threadId: string, peerUserId: string) => Promise<void>
   }
 }
-if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined' && !!(import.meta as any).env?.DEV) {
   if (!(window as any).__ebResendSecretThreadKey) {
     ;(window as any).__ebResendSecretThreadKey = (threadId: string, peerUserId: string) =>
       createAndShareSecretThreadKey(threadId, peerUserId)

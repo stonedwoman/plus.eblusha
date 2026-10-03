@@ -56,3 +56,39 @@ export function decryptSecretThreadText(
   return bytesToUtf8(plain)
 }
 
+
+/**
+ * Расшифровка любым из ключей треда (текущий первым, затем прежние — см. W-H01 в
+ * secretThreadKeyStore): после смены ключа старые сообщения и файлы остаются читаемыми.
+ */
+export function decryptSecretThreadTextAnyKey(
+  keysBase64: string[],
+  ciphertextBase64: string,
+  nonceBase64: string,
+): string | null {
+  for (const k of keysBase64) {
+    try {
+      const out = decryptSecretThreadText(k, ciphertextBase64, nonceBase64)
+      if (out != null) return out
+    } catch {
+      // битый ключ/шифротекст — пробуем следующий
+    }
+  }
+  return null
+}
+
+export function decryptSecretThreadBytesAnyKey(
+  keysBase64: string[],
+  cipher: Uint8Array,
+  nonceBase64: string,
+): Uint8Array | null {
+  for (const k of keysBase64) {
+    try {
+      const out = decryptSecretThreadBytes(k, cipher, nonceBase64)
+      if (out) return out
+    } catch {
+      // пробуем следующий
+    }
+  }
+  return null
+}

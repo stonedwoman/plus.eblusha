@@ -1,7 +1,7 @@
 import {
+  applyIncomingThreadKey,
   getSecretThreadKey,
   hasSecretThreadKey,
-  setSecretThreadKey,
   type SecretThreadKeyRecord,
 } from '../../secret/secretThreadKeyStore'
 
@@ -13,7 +13,10 @@ export function getThreadKey(threadId: string): SecretThreadKeyRecord | null {
   return getSecretThreadKey(threadId)
 }
 
+/**
+ * Импорт ключа треда. W-H01: без молчаливой перезаписи — при другом ключе прежний остаётся
+ * для расшифровки истории (applyIncomingThreadKey). Проверка отправителя — на стороне вызывающего.
+ */
 export function importThreadKey(threadId: string, keyBase64: string) {
-  setSecretThreadKey(threadId, keyBase64, { overwrite: true })
+  applyIncomingThreadKey(threadId, keyBase64)
 }
-

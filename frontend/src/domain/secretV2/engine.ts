@@ -98,6 +98,8 @@ export async function ensureReady(opts: {
 
   try {
     if (opts.amCreator) {
+      // W-H02: создатель БЕЗ ключа нового ключа не выпускает — ensureCreatorThreadKeyAndShare
+      // в этом случае только просит ключ у своих устройств и у собеседника (key_request).
       const r = await ensureCreatorThreadKeyAndShare({ threadId, peerUserId: opts.peerUserId })
       if (!r.ok) markThreadError(threadId, r.reasonCode)
       else if (localThreadHasKey(threadId)) markThreadReady(threadId)

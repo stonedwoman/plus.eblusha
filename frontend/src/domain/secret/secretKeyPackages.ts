@@ -3,7 +3,7 @@ import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { api } from '../../utils/api'
 import { base64ToBytes, bytesToBase64, utf8ToBytes, bytesToUtf8 } from '../../utils/base64'
-import { consumePrekeySecret, getPrekeySecret, getIdentityKeyPair, getStoredDeviceInfo } from '../device/deviceManager'
+import { getPrekeySecret, getIdentityKeyPair, getStoredDeviceInfo } from '../device/deviceManager'
 
 type ClaimResponse = {
   deviceId: string
@@ -167,6 +167,10 @@ export type KeyPackageRootCause =
   | 'DECRYPT_FAIL'
   | 'DECRYPT_ERROR'
   | 'JSON_ERROR'
+  // Вид пакета в зашифрованном payload не совпал с packageKind открытого заголовка (правка
+  // скептика Б2: заголовок thread_key, а внутри device_link_keys — подмена вида). Такой пакет
+  // не импортируется никогда — его подтверждают (ack) и выбрасывают.
+  | 'KIND_MISMATCH'
 
 export type KeyPackageDecryptAttempt =
   | {
@@ -227,17 +231,23 @@ export function tryDecryptIncomingKeyPackage(msg: any): KeyPackageDecryptAttempt
     if (!plain) {
       return { ok: false, rootCause: 'DECRYPT_FAIL', debug: { ...baseDebug, opkSecretFound: true, decryptOk: false } }
     }
-    // Consume OPK only after successful decrypt (prevents permanent loss on bootstrap timing).
-    consumePrekeySecret(prekeyId)
+    // W-X9: секрет OPK здесь НЕ расходуется. Его снимает вызывающий (consumePrekeySecret) только
+    // после разбора, импорта и подтверждённого ack: закрытие вкладки между расшифровкой и ack
+    // раньше теряло ключ навсегда (пакет приходил снова, а секрета уже не было).
     let decoded: any
     try {
       decoded = JSON.parse(bytesToUtf8(plain))
     } catch {
       return { ok: false, rootCause: 'JSON_ERROR', debug: { ...baseDebug, opkSecretFound: true, decryptOk: true } }
     }
+    const innerKind = typeof decoded?.kind === 'string' ? decoded.kind : ''
+    const headerKind = typeof header.packageKind === 'string' ? header.packageKind : ''
+    if (innerKind && headerKind && innerKind !== headerKind) {
+      return { ok: false, rootCause: 'KIND_MISMATCH', debug: { ...baseDebug, opkSecretFound: true, decryptOk: true } }
+    }
     return {
       ok: true,
-      kind: String(decoded?.kind ?? header.packageKind ?? ''),
+      kind: innerKind || headerKind,
       payload: decoded,
       debug: { ...baseDebug, prekeyId, opkSecretFound: true, decryptOk: true },
     }

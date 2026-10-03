@@ -2,12 +2,20 @@ import axios from 'axios'
 import nacl from 'tweetnacl'
 import { api } from '../../utils/api'
 import { getDefaultStorageAdapter } from '../../core/storage'
+import { wipeLocalDeviceData } from './deviceWipe'
 
 const DEVICE_INFO_KEY = 'eb_device_info_v1'
 const DEVICE_SECRET_KEY = 'eb_device_secret_v1'
 const DEFAULT_PREKEY_BATCH = 50
 const MIN_SERVER_PREKEY_RESERVE = 20
-const MAX_LOCAL_PREKEY_RESERVE = 200
+// Потолок неизрасходованных OPK на устройство на СЕРВЕРЕ (devices.ts MAX_UNCONSUMED_PREKEYS_PER_DEVICE).
+// Лишнее сервер и так не примет (insertedKeyIds), это лишь чтобы не генерировать впустую.
+const SERVER_MAX_UNCONSUMED_PREKEYS = 250
+// H04: секрет OPK, который сервер давно выдал (claim) и по которому пакет так и не пришёл, —
+// мусор: пакеты живут во входящих ≤ 7 суток. Чистим старше 14 суток вне окна «свежих».
+const STALE_PREKEY_SECRET_MS = 14 * 24 * 60 * 60_000
+const PREKEY_PRUNE_SLACK = 50
+const SERVER_STATE_CACHE_MS = 30_000
 // Keep this low: missing OPKs blocks key delivery. We still guard with rate limiting server-side.
 const PREKEY_PUBLISH_COOLDOWN_MS = 5_000
 const DEVICE_REGISTER_SYNC_TTL_MS = 10 * 60_000
@@ -25,6 +33,8 @@ type StoredDeviceSecrets = {
   deviceId: string
   identitySecret: string
   prekeys: Record<string, string>
+  /** Когда сгенерирован секрет OPK (мс) — для чистки устаревших (H04). Старые записи без поля. */
+  prekeyCreatedAt?: Record<string, number>
 }
 
 type GeneratedPrekey = {
@@ -67,6 +77,59 @@ function isDeviceBelongsToAnotherUserConflict(err: unknown): boolean {
   return msg.includes('another user') || msg.includes('друг') || msg.includes('чуж')
 }
 
+/**
+ * X5: сервер сообщает, что ЭТОТ id отозван (публикация OPK — 409 «Device is revoked»; после S5 —
+ * регистрация 409/410 DEVICE_REVOKED). Такой id нельзя «оживлять» перерегистрацией.
+ */
+export function isDeviceRevokedError(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) return false
+  const status = err.response?.status
+  if (status !== 409 && status !== 410) return false
+  const data = (err.response?.data as any) ?? {}
+  const code = String(data?.code ?? '').toUpperCase()
+  const msg = String(data?.message ?? err.message ?? '').toLowerCase()
+  return code === 'DEVICE_REVOKED' || msg.includes('revoked')
+}
+
+type ServerDeviceState = { found: boolean; revoked: boolean; availablePrekeys: number | null }
+let serverStateCache: { deviceId: string; at: number; state: ServerDeviceState } | null = null
+
+/** Как сервер видит это устройство (GET /devices — свои устройства, вместе с отозванными). */
+async function fetchServerDeviceState(deviceId: string, opts?: { fresh?: boolean }): Promise<ServerDeviceState> {
+  const id = String(deviceId ?? '').trim()
+  const now = Date.now()
+  if (!opts?.fresh && serverStateCache && serverStateCache.deviceId === id && now - serverStateCache.at < SERVER_STATE_CACHE_MS) {
+    return serverStateCache.state
+  }
+  const resp = await api.get('/devices')
+  const row = ((resp.data?.devices ?? []) as any[]).find((d) => String(d?.id ?? '').trim() === id)
+  const state: ServerDeviceState = {
+    found: !!row,
+    revoked: !!row?.revokedAt,
+    availablePrekeys: row && typeof row.availablePrekeys === 'number' ? row.availablePrekeys : null,
+  }
+  serverStateCache = { deviceId: id, at: now, state }
+  return state
+}
+
+/**
+ * W-X5: устройство отозвано (владелец сделал это в «Устройствах» или это украденный телефон).
+ * Ключи секреток и само устройство стираем, НОВЫЙ id заведётся при следующем входе; отозванный
+ * id больше не перерегистрируем (раньше register молча снимал отзыв — «воскрешение», X5).
+ * Выход из сессии делает utils/socket.ts по событию eb:device:revoked — как при device:revoked.
+ */
+function handleLocalDeviceRevoked(source: string) {
+  try {
+    console.warn('[deviceManager] this device is revoked on the server — wiping local keys', { source })
+  } catch {}
+  serverStateCache = null
+  lastSuccessfulRegisterAt = 0
+  wipeLocalDeviceData()
+  try {
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('eb:device:revoked', { detail: { source } }))
+  } catch {}
+}
+
 function isDeviceMissingError(err: unknown): boolean {
   if (!axios.isAxiosError(err)) return false
   if (err.response?.status !== 404) return false
@@ -92,10 +155,54 @@ function appendStoredPrekeys(deviceId: string, prekeys: GeneratedPrekey[]) {
   if (!prekeys.length) return
   const secrets = loadDeviceSecrets()
   if (!secrets || secrets.deviceId !== deviceId) return
+  const now = Date.now()
+  const createdAt = { ...(secrets.prekeyCreatedAt ?? {}) }
   for (const pk of prekeys) {
     secrets.prekeys[pk.keyId] = pk.secretKey
+    createdAt[pk.keyId] = now
   }
+  secrets.prekeyCreatedAt = createdAt
   saveDeviceSecrets(secrets)
+}
+
+/**
+ * H04: чистка секретов OPK, которые уже никогда не понадобятся. Сервер раздаёт OPK от старых к
+ * новым, значит неизрасходованные на сервере — это самые свежие `serverAvailable` штук. Всё, что
+ * старше этого окна (+запас) И старше 14 суток (пакет по такому OPK давно истёк бы во входящих),
+ * удаляем. Записи без даты (до этой правки) получают дату сейчас и чистятся не раньше чем через 14 суток.
+ */
+function pruneStalePrekeySecrets(deviceId: string, serverAvailable: number) {
+  const secrets = loadDeviceSecrets()
+  if (!secrets || secrets.deviceId !== deviceId) return
+  const now = Date.now()
+  const createdAt = { ...(secrets.prekeyCreatedAt ?? {}) }
+  let changed = false
+  for (const keyId of Object.keys(secrets.prekeys)) {
+    if (typeof createdAt[keyId] !== 'number') {
+      createdAt[keyId] = now
+      changed = true
+    }
+  }
+  for (const keyId of Object.keys(createdAt)) {
+    if (!secrets.prekeys[keyId]) {
+      delete createdAt[keyId]
+      changed = true
+    }
+  }
+  const newestFirst = Object.keys(secrets.prekeys).sort((a, b) => (createdAt[b] ?? 0) - (createdAt[a] ?? 0))
+  const keepWindow = Math.max(0, Math.floor(serverAvailable)) + PREKEY_PRUNE_SLACK
+  for (let i = keepWindow; i < newestFirst.length; i += 1) {
+    const keyId = newestFirst[i]!
+    if (now - (createdAt[keyId] ?? now) > STALE_PREKEY_SECRET_MS) {
+      delete secrets.prekeys[keyId]
+      delete createdAt[keyId]
+      changed = true
+    }
+  }
+  if (changed) {
+    secrets.prekeyCreatedAt = createdAt
+    saveDeviceSecrets(secrets)
+  }
 }
 
 function dropStoredPrekeys(deviceId: string, keyIds: string[]) {
@@ -156,12 +263,31 @@ async function publishPrekeysBatch(deviceId: string, count: number, opts?: { rea
   }
 }
 
-function getAllowedPrekeyPublishCount(deviceId: string, requestedCount: number, force: boolean): number {
-  const currentAvailable = countStoredPrekeys(deviceId)
-  if (!force && currentAvailable >= MIN_SERVER_PREKEY_RESERVE) return 0
+/**
+ * H04: сколько OPK публиковать. Раньше считалось по ЛОКАЛЬНЫМ секретам: секреты OPK, которые
+ * сервер уже раздал (а пакет не пришёл), копились, и при 200 локальных публикация вставала
+ * навсегда (потолок 200), хотя на сервере OPK не осталось, — отсюда шторм prekeys_needed.
+ * Теперь меряем по счётчику СЕРВЕРА (GET /devices → availablePrekeys) и чистим устаревшие секреты.
+ * Возвращает null, если устройство отозвано (публиковать нельзя).
+ */
+async function computePrekeyPublishCount(deviceId: string, requestedCount: number, force: boolean): Promise<number | null> {
   const boundedRequested = Math.max(1, Math.min(200, Math.floor(requestedCount || DEFAULT_PREKEY_BATCH)))
-  const remainingCapacity = Math.max(0, MAX_LOCAL_PREKEY_RESERVE - currentAvailable)
-  return Math.min(boundedRequested, remainingCapacity)
+  let state: ServerDeviceState | null = null
+  try {
+    state = await fetchServerDeviceState(deviceId, { fresh: force })
+  } catch {
+    state = null
+  }
+  if (state?.revoked) return null
+  if (state?.found && typeof state.availablePrekeys === 'number') {
+    pruneStalePrekeySecrets(deviceId, state.availablePrekeys)
+    if (!force && state.availablePrekeys >= MIN_SERVER_PREKEY_RESERVE) return 0
+    const room = Math.max(0, SERVER_MAX_UNCONSUMED_PREKEYS - state.availablePrekeys)
+    return Math.min(boundedRequested, room)
+  }
+  // Сервер не ответил — по локальной оценке, но без «вечного» потолка.
+  if (!force && countStoredPrekeys(deviceId) >= MIN_SERVER_PREKEY_RESERVE) return 0
+  return boundedRequested
 }
 
 async function publishPrekeysWithRecovery(deviceId: string, count: number, opts?: { reason?: string }) {
@@ -169,6 +295,10 @@ async function publishPrekeysWithRecovery(deviceId: string, count: number, opts?
   try {
     await publishPrekeysBatch(deviceId, count, { reason: opts?.reason })
   } catch (error) {
+    if (isDeviceRevokedError(error)) {
+      handleLocalDeviceRevoked('prekey_publish')
+      return
+    }
     if (!isDeviceMissingError(error)) throw error
     const boot = await ensureDeviceBootstrap({ forceRegister: true, skipReserveCheck: true })
     const retryDeviceId = String(boot?.deviceId ?? '').trim()
@@ -189,7 +319,11 @@ export async function forcePublishPrekeys(opts?: { count?: number; reason?: stri
     deviceId = String(boot?.deviceId ?? '').trim() || null
   }
   if (!deviceId) return
-  const publishCount = getAllowedPrekeyPublishCount(deviceId, opts?.count ?? DEFAULT_PREKEY_BATCH, force)
+  const publishCount = await computePrekeyPublishCount(deviceId, opts?.count ?? DEFAULT_PREKEY_BATCH, force)
+  if (publishCount === null) {
+    handleLocalDeviceRevoked('prekey_publish_check')
+    return
+  }
   if (publishCount <= 0) return
   await publishPrekeysWithRecovery(deviceId, publishCount, { reason: opts?.reason })
   // Only advance cooldown after a successful publish.
@@ -199,7 +333,11 @@ export async function forcePublishPrekeys(opts?: { count?: number; reason?: stri
 async function maybeEnsureLocalPrekeyReserve(deviceId: string) {
   try {
     if (Date.now() - lastForcePublishAt < PREKEY_PUBLISH_COOLDOWN_MS) return
-    const publishCount = getAllowedPrekeyPublishCount(deviceId, DEFAULT_PREKEY_BATCH, false)
+    const publishCount = await computePrekeyPublishCount(deviceId, DEFAULT_PREKEY_BATCH, false)
+    if (publishCount === null) {
+      handleLocalDeviceRevoked('prekey_reserve_check')
+      return
+    }
     if (publishCount <= 0) return
     await publishPrekeysWithRecovery(deviceId, publishCount, { reason: 'reserve_low' })
     lastForcePublishAt = Date.now()
@@ -247,6 +385,19 @@ export function ensureDeviceBootstrap(opts: EnsureDeviceBootstrapOptions = {}): 
             !lastSuccessfulRegisterAt ||
             Date.now() - lastSuccessfulRegisterAt >= DEVICE_REGISTER_SYNC_TTL_MS
           if (shouldSyncRegistration) {
+            // W-X5: отозванный id НЕ перерегистрируем (register снимал отзыв — «воскрешение»).
+            // Различаем «отозван» и «id не признан» (восстановление БД, смена id после refresh —
+            // самолечение перерегистрацией сохраняется): спрашиваем сервер о СВОЁМ устройстве.
+            let serverState: ServerDeviceState | null = null
+            try {
+              serverState = await fetchServerDeviceState(storedInfo.deviceId, { fresh: true })
+            } catch {
+              serverState = null // сеть — действуем как раньше
+            }
+            if (serverState?.revoked) {
+              handleLocalDeviceRevoked('register_sync')
+              return null
+            }
             // Re-register only when forced or on a coarse TTL so we can self-heal after DB restores
             // without hammering the backend on every publish/poll loop.
             await api.post('/devices/register', {
@@ -265,6 +416,10 @@ export function ensureDeviceBootstrap(opts: EnsureDeviceBootstrapOptions = {}): 
             clearStoredDevice()
             storedInfo = null
             storedSecret = null
+          } else if (isDeviceRevokedError(metadataError)) {
+            // После серверного S5 регистрация отозванного id отвечает 409/410 — не зацикливаемся.
+            handleLocalDeviceRevoked('register_rejected')
+            return null
           } else {
             console.warn('Device metadata sync failed:', metadataError)
           }

@@ -25,6 +25,7 @@ import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
+import { canForwardFromConversation } from '../../../../domain/secret/secretInboxGuards'
 import { isRelayOnlyEnabled, setRelayOnlyEnabled } from '../../../../utils/callRouting'
 
 import { getStoredDeviceInfo } from '../../../../domain/device/deviceManager'
@@ -2534,19 +2535,21 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                   >
                     Ответить
                   </button>
-                  <button
-                    type="button"
-                    style={{ color: '#ffffff' }}
-                    onClick={() => {
-                      const ids = getSelectedMessagesOrdered().map((m: any) => m.id)
-                      if (!ids.length) return
-                      setForwardComposerDraft(null)
-                      setForwardModal({ open: true, messageIds: ids })
-                      setContextMenu({ open: false, x: 0, y: 0, messageId: null })
-                    }}
-                  >
-                    Переслать ({selectedMessageIds.length})
-                  </button>
+                  {canForwardFromConversation(activeConversation) && (
+                    <button
+                      type="button"
+                      style={{ color: '#ffffff' }}
+                      onClick={() => {
+                        const ids = getSelectedMessagesOrdered().map((m: any) => m.id)
+                        if (!ids.length) return
+                        setForwardComposerDraft(null)
+                        setForwardModal({ open: true, messageIds: ids })
+                        setContextMenu({ open: false, x: 0, y: 0, messageId: null })
+                      }}
+                    >
+                      Переслать ({selectedMessageIds.length})
+                    </button>
+                  )}
                   <button
                     type="button"
                     style={{ color: '#ffffff' }}
@@ -2680,7 +2683,9 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                   }
                   setContextMenu({ open: false, x: 0, y: 0, messageId: null })
                 }}>Копировать</button>
-                <button style={{ color: '#ffffff' }} onClick={() => { setForwardComposerDraft(null); setForwardModal({ open: true, messageIds: contextMenu.messageId ? [contextMenu.messageId] : [] }); setContextMenu({ open: false, x: 0, y: 0, messageId: null }) }}>Переслать</button>
+                {canForwardFromConversation(activeConversation) && (
+                  <button style={{ color: '#ffffff' }} onClick={() => { setForwardComposerDraft(null); setForwardModal({ open: true, messageIds: contextMenu.messageId ? [contextMenu.messageId] : [] }); setContextMenu({ open: false, x: 0, y: 0, messageId: null }) }}>Переслать</button>
+                )}
                 <button
                   type="button"
                   style={{ color: '#ffffff' }}
@@ -2860,6 +2865,13 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                         return
                       }
                       const src = activeConversation
+                      // W-X6: из секретки не пересылаем никуда (как Android/iOS) — пересылка в облачный
+                      // чат отдала бы серверу открытый текст секретной переписки.
+                      if (!canForwardFromConversation(src)) {
+                        systemToast.error('Из секретного чата пересылать нельзя.')
+                        setForwardModal({ open: false, messageIds: [] })
+                        return
+                      }
                       const isTargetSecretV2 = String(c?.type ?? '').toUpperCase() === 'SECRET'
                       const isTargetLegacySecret = !!c?.isSecret && !isTargetSecretV2
 
@@ -3296,7 +3308,13 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                     onClick={async () => {
                       if (!activeId) return
                       try {
-                        await api.delete(`/conversations/${activeId}`)
+                        // W-H10: V2-секретка закрывается через decline (CANCELLED у обоих, как в меню
+                        // списка бесед и на Android/iOS), а не жёстким DELETE.
+                        if (String(activeConversation?.type ?? '').toUpperCase() === 'SECRET') {
+                          await api.post(`/threads/secret/${activeId}/decline`, {})
+                        } else {
+                          await api.delete(`/conversations/${activeId}`)
+                        }
                         client.invalidateQueries({ queryKey: ['conversations'] })
                         client.removeQueries({ queryKey: ['messages', activeId] })
                         setActiveId(null)

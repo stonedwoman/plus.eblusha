@@ -2,18 +2,26 @@ import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../../utils/api'
 import { socket, connectSocket } from '../../core/realtime'
-import { ensureDeviceBootstrap, forcePublishPrekeys } from '../device/deviceManager'
-import { exportSecretThreadKeys, getSecretThreadKey, importSecretThreadKeys, setSecretThreadKey } from './secretThreadKeyStore'
-import { decryptSecretThreadText } from './secretThreadCrypto'
+import { consumePrekeySecret, ensureDeviceBootstrap, forcePublishPrekeys } from '../device/deviceManager'
+import { applyIncomingThreadKey, exportSecretThreadKeys, getSecretThreadKey, importSecretThreadKeys } from './secretThreadKeyStore'
 import { transformSecretHistoryItemToMessage } from './secretThreadMessaging'
 import { tryDecryptIncomingKeyPackage } from './secretKeyPackages'
-import { isSecretControlHeader, sendSecretControl } from './secretControl'
-import { markKeyReceipt, markKeyShareSent } from './secretKeyShareState'
+import { sendSecretControl } from './secretControl'
+import { markKeyReceipt } from './secretKeyShareState'
 import { createEncryptedKeyPackageToDevice } from './secretKeyPackages'
 import { clientLog } from './secretClientLog'
-import { createAndShareSecretThreadKey } from './secretThreadSetup'
+import { shareExistingSecretThreadKeyToDevice } from './secretThreadSetup'
 import { getDefaultStorageAdapter } from '../../core/storage'
 import { getDeviceLinkInvite, clearDeviceLinkInvite, inviteMatches } from '../device/deviceLinkInvite'
+import {
+  type InboxLookups,
+  type MyDevice,
+  verifyDeviceLinkKeys,
+  verifyKeyReceipt,
+  verifyKeyRequest,
+  verifyThreadKeyPackage,
+} from './secretInboxGuards'
+import { systemToast } from '../store/systemUiStore'
 
 type InboxItem = {
   msgId: string
@@ -29,6 +37,10 @@ type InboxItem = {
 
 const RESEND_REQUEST_THROTTLE_MS = 30_000
 const lastResendHandledAt = new Map<string, number>()
+// H04: каждый prekeys_needed раньше публиковал +50 OPK без ограничений (шторм). Теперь не чаще
+// раза в 30 с, а сколько публиковать — решает deviceManager по счётчику СЕРВЕРА.
+const PREKEYS_NEEDED_THROTTLE_MS = 30_000
+let lastPrekeysNeededAt = 0
 const LINK_DEVICE_JOIN_THROTTLE_MS = 120_000
 const lastLinkDeviceJoinSentAt = new Map<string, number>()
 
@@ -114,6 +126,60 @@ function setLastRootCause(code: string, details?: Record<string, any>) {
     obj[code] = prev + 1
     storage.setItem(ROOT_CAUSE_COUNTS_KEY, JSON.stringify(obj))
   } catch {}
+}
+
+/**
+ * Справочники для проверок входящих (secretInboxGuards) на ОДНУ пачку pull: каждый запрос — не
+ * чаще раза за пачку. Сбой сети пробрасывается — проверка вернёт retry (конверт не подтверждаем).
+ */
+function createInboxLookups(client: ReturnType<typeof useQueryClient>): InboxLookups {
+  let devicesP: Promise<MyDevice[]> | null = null
+  let conversationsP: Promise<any[]> | null = null
+  const bundles = new Map<string, Promise<string[]>>()
+  const participantsOf = (row: any): string[] =>
+    ((row?.conversation?.participants ?? []) as any[])
+      .map((p) => String(p?.user?.id ?? p?.userId ?? '').trim())
+      .filter(Boolean)
+  return {
+    async threadParticipants(threadId: string) {
+      const id = String(threadId ?? '').trim()
+      if (!id) return null
+      const cached = client.getQueryData(['conversations']) as any[] | undefined
+      const hit = Array.isArray(cached) ? cached.find((r: any) => r?.conversation?.id === id) : null
+      if (hit) return participantsOf(hit)
+      if (!conversationsP) {
+        conversationsP = api.get('/conversations').then((r) => (r.data?.conversations ?? []) as any[])
+        conversationsP.catch(() => {
+          conversationsP = null
+        })
+      }
+      const rows = await conversationsP
+      const row = rows.find((r: any) => r?.conversation?.id === id)
+      return row ? participantsOf(row) : null
+    },
+    async myDevices() {
+      if (!devicesP) {
+        devicesP = api.get('/devices').then((r) => (r.data?.devices ?? []) as MyDevice[])
+        devicesP.catch(() => {
+          devicesP = null
+        })
+      }
+      return devicesP
+    },
+    async userLiveDeviceIds(userId: string) {
+      const uid = String(userId ?? '').trim()
+      if (!uid) return []
+      let p = bundles.get(uid)
+      if (!p) {
+        p = api
+          .get('/e2ee/prekeys/bundles', { params: { userId: uid } })
+          .then((r) => ((r.data?.bundles ?? []) as any[]).map((b) => String(b?.deviceId ?? '').trim()).filter(Boolean))
+        bundles.set(uid, p)
+        p.catch(() => bundles.delete(uid))
+      }
+      return p
+    },
+  }
 }
 
 function toMessageObject(threadId: string, item: InboxItem, decryptedContent: string | null) {
@@ -202,6 +268,10 @@ export function SecretInboxPump() {
         if (!items.length) return
 
         const ackIds: string[] = []
+        // W-X9: секреты OPK снимаем только после подтверждённого ack (см. ниже).
+        const consumeAfterAck: string[] = []
+        const lookups = createInboxLookups(client)
+        const myDeviceId = String((bootstrapRes as any)?.deviceId ?? '').trim()
 
         for (const item of items) {
           if (!item?.msgId) continue
@@ -322,101 +392,83 @@ export function SecretInboxPump() {
             continue
           }
 
-          if (isControl && isSecretControlHeader(header)) {
+          if (isControl) {
             const type = String((header as any).type ?? '')
             const threadId = String((header as any).threadId ?? '').trim()
             if (type === 'key_receipt') {
-              const fromDeviceId = String((header as any).fromDeviceId ?? '').trim()
-              if (threadId && fromDeviceId) {
-                markKeyReceipt(threadId, fromDeviceId)
-                clientLog('SecretInboxPump', 'info', 'key_receipt received', { threadId, data: { fromDeviceId } })
+              // W-H07/X2: квитанцию засчитываем только от живого устройства участника треда —
+              // иначе посторонний «подтверждал» доставку и гасил повторные отправки ключа.
+              const v = await verifyKeyReceipt(item, lookups)
+              if (!v.ok && v.retry) continue
+              if (v.ok) {
+                markKeyReceipt(v.threadId, v.fromDeviceId)
+                clientLog('SecretInboxPump', 'info', 'key_receipt received', { threadId: v.threadId, data: { fromDeviceId: v.fromDeviceId } })
                 try {
-                  window.dispatchEvent(new CustomEvent('eb:secretV2:keyReceipt', { detail: { threadId, fromDeviceId } }))
+                  window.dispatchEvent(
+                    new CustomEvent('eb:secretV2:keyReceipt', { detail: { threadId: v.threadId, fromDeviceId: v.fromDeviceId } }),
+                  )
                 } catch {}
+              } else {
+                clientLog('SecretInboxPump', 'warn', 'key_receipt rejected', { threadId, data: { reason: v.reason } })
               }
               ackIds.push(item.msgId)
               continue
             }
             if (type === 'key_request') {
-              const requesterDeviceId = String((header as any).requesterDeviceId ?? '').trim()
-              if (threadId && requesterDeviceId) {
-                const keyRec = getSecretThreadKey(threadId)
+              // W-H03: ключ треда уходит только устройству ОТПРАВИТЕЛЯ запроса (senderUserId ставит
+              // сервер), и только если он участник треда. Раньше ключ получал любой requesterDeviceId.
+              const v = await verifyKeyRequest(item, lookups)
+              if (!v.ok && v.retry) continue
+              if (v.ok) {
+                const keyRec = getSecretThreadKey(v.threadId)
                 if (keyRec?.key) {
                   try {
-                    const env = await createEncryptedKeyPackageToDevice({
-                      toDeviceId: requesterDeviceId,
-                      kind: 'thread_key',
-                      payload: { threadId, key: keyRec.key },
-                      ttlSeconds: 60 * 60,
-                    })
-                    markKeyShareSent(threadId, requesterDeviceId, String(env.msgId))
-                    await api.post('/secret/send', { messages: [env] })
-                    if (secretDebugEnabled()) {
-                      // eslint-disable-next-line no-console
-                      console.log('[SecretInboxPump] handled key_request: resent thread_key', {
-                        threadId,
-                        toDeviceId: requesterDeviceId,
-                        msgId: env.msgId,
-                      })
-                    }
+                    const msgId = await shareExistingSecretThreadKeyToDevice(v.threadId, v.toDeviceId)
                     clientLog('SecretInboxPump', 'info', 'key_request handled: resent thread_key', {
-                      threadId,
-                      msgId: String(env.msgId),
-                      data: { toDeviceId: requesterDeviceId },
+                      threadId: v.threadId,
+                      msgId,
+                      data: { toDeviceId: v.toDeviceId },
                     })
                   } catch (e: any) {
-                    if (secretDebugEnabled()) {
-                      // eslint-disable-next-line no-console
-                      console.warn('[SecretInboxPump] failed to handle key_request', {
-                        threadId,
-                        requesterDeviceId,
-                        message: String(e?.response?.data?.message ?? e?.message ?? ''),
-                      })
-                    }
                     clientLog('SecretInboxPump', 'warn', 'key_request handling failed', {
-                      threadId,
-                      data: { requesterDeviceId, message: String(e?.response?.data?.message ?? e?.message ?? '') },
+                      threadId: v.threadId,
+                      data: { requesterDeviceId: v.toDeviceId, message: String(e?.response?.data?.message ?? e?.message ?? '') },
                     })
                   }
                 }
+              } else {
+                clientLog('SecretInboxPump', 'warn', 'key_request rejected', { threadId, data: { reason: v.reason } })
               }
               ackIds.push(item.msgId)
               continue
             }
+            // Неизвестный тип control — подтверждаем, иначе он навсегда занимает голову входящих (X2).
+            ackIds.push(item.msgId)
+            continue
           }
 
           if (isResendRequest) {
-            const threadId = String((header as any).threadId ?? '').trim()
-            const requesterUserId = String((header as any).requesterUserId ?? '').trim()
-            const requesterDeviceId = String((header as any).requesterDeviceId ?? '').trim()
-            if (threadId && requesterUserId) {
-              const keyRec = getSecretThreadKey(threadId)
-              const canResend = !!keyRec?.key
-              const key = `${threadId}:${requesterDeviceId || requesterUserId}`
+            // W-H02/W-H03: отвечаем АДРЕСНО — уже имеющимся ключом и только устройству отправителя
+            // запроса (участника треда). Ни полной рассылки, ни выпуска нового ключа: раньше здесь
+            // звался createAndShareSecretThreadKey (fanout по requesterUserId ИЗ ЗАГОЛОВКА).
+            const v = await verifyKeyRequest(item, lookups)
+            if (!v.ok && v.retry) continue
+            if (v.ok) {
+              const keyRec = getSecretThreadKey(v.threadId)
+              const throttleKey = `${v.threadId}:${v.toDeviceId}`
               const now = Date.now()
-              const last = lastResendHandledAt.get(key) ?? 0
-              if (canResend && now - last > RESEND_REQUEST_THROTTLE_MS) {
-                lastResendHandledAt.set(key, now)
-                if (secretDebugEnabled()) {
-                  // eslint-disable-next-line no-console
-                  console.log('[SecretInboxPump] key_resend_request: resending thread key', {
-                    threadId,
-                    requesterUserId,
-                    requesterDeviceId: requesterDeviceId || null,
-                  })
-                }
-                // Full fanout resend (creator + peer devices).
-                void createAndShareSecretThreadKey(threadId, requesterUserId).catch(() => {})
-              } else if (secretDebugEnabled()) {
-                // eslint-disable-next-line no-console
-                console.log('[SecretInboxPump] key_resend_request: skip', {
-                  threadId,
-                  requesterUserId,
-                  requesterDeviceId: requesterDeviceId || null,
-                  canResend,
-                  throttled: now - last <= RESEND_REQUEST_THROTTLE_MS,
+              const last = lastResendHandledAt.get(throttleKey) ?? 0
+              if (keyRec?.key && now - last > RESEND_REQUEST_THROTTLE_MS) {
+                lastResendHandledAt.set(throttleKey, now)
+                void shareExistingSecretThreadKeyToDevice(v.threadId, v.toDeviceId).catch(() => {
+                  lastResendHandledAt.delete(throttleKey)
                 })
               }
+            } else {
+              clientLog('SecretInboxPump', 'warn', 'key_resend_request rejected', {
+                threadId: String((header as any).threadId ?? '').trim() || undefined,
+                data: { reason: v.reason },
+              })
             }
             ackIds.push(item.msgId)
             continue
@@ -426,7 +478,11 @@ export function SecretInboxPump() {
             // Creator can send this signal when OPK claim fails with "No prekeys available".
             // It does not reveal anything; it only asks the peer device to publish OPKs ASAP.
             try {
-              await forcePublishPrekeys({ reason: 'prekeys_needed', count: 50, force: true })
+              const now = Date.now()
+              if (now - lastPrekeysNeededAt >= PREKEYS_NEEDED_THROTTLE_MS) {
+                lastPrekeysNeededAt = now
+                await forcePublishPrekeys({ reason: 'prekeys_needed', count: 50, force: true })
+              }
               if (secretDebugEnabled()) {
                 // eslint-disable-next-line no-console
                 console.log('[SecretInboxPump] prekeys_needed: published OPKs')
@@ -447,9 +503,25 @@ export function SecretInboxPump() {
           const attempt = isKeyPackage ? tryDecryptIncomingKeyPackage(item) : null
           if (attempt && attempt.ok) {
             if (attempt.kind === 'thread_key') {
-              const threadId = String(attempt.payload?.threadId ?? '').trim()
-              const key = String(attempt.payload?.key ?? '').trim()
-              const importOk = !!(threadId && key)
+              // W-H01: ключ треда принимаем только от участника ЭТОГО треда (тред — из payload;
+              // если заголовок несёт threadId, он обязан совпасть), с ключом ровно 32 байта.
+              const v = await verifyThreadKeyPackage(item, attempt, lookups)
+              if (!v.ok && v.retry) continue // не смогли проверить — разберём на следующем pull
+              if (!v.ok) {
+                clientLog('SecretInboxPump', 'warn', 'thread_key rejected', {
+                  msgId: item.msgId,
+                  threadId: String(attempt.payload?.threadId ?? '').trim() || undefined,
+                  data: { reason: v.reason, senderUserId: item.senderUserId ?? null },
+                })
+                ackIds.push(item.msgId)
+                consumeAfterAck.push(attempt.debug.prekeyId)
+                continue
+              }
+              const threadId = v.threadId
+              // Смена ключа — автоматически (решение владельца), но не молча и без потери истории:
+              // прежний ключ остаётся для расшифровки старых сообщений.
+              const applied = applyIncomingThreadKey(threadId, v.key)
+              const importOk = applied !== 'invalid'
               if (secretDebugEnabled()) {
                 // eslint-disable-next-line no-console
                 console.log('[SecretInboxPump] key_package thread_key', {
@@ -457,15 +529,33 @@ export function SecretInboxPump() {
                   threadId,
                   prekeyId: attempt.debug.prekeyId,
                   bootstrapReady,
-                  opkSecretFound: attempt.debug.opkSecretFound,
-                  decryptOk: attempt.debug.decryptOk,
-                  importOk,
+                  applied,
                 })
               }
+              if (applied === 'rotated') {
+                clientLog('SecretInboxPump', 'warn', 'thread_key rotated by participant', {
+                  threadId,
+                  msgId: item.msgId,
+                  data: { senderUserId: item.senderUserId ?? null, initiatorDeviceId: (item.headerJson as any)?.initiatorDeviceId },
+                })
+                try {
+                  window.dispatchEvent(
+                    new CustomEvent('eb:secretV2:threadKeyRotated', {
+                      detail: { threadId, msgId: item.msgId, senderUserId: item.senderUserId ?? null },
+                    }),
+                  )
+                } catch {}
+                try {
+                  systemToast.info('Ключ шифрования секретного чата сменился. Прежние сообщения остаются читаемыми.', {
+                    title: 'Секретный чат',
+                    ttlMs: 6000,
+                  })
+                } catch {}
+              }
               if (importOk) {
-                setSecretThreadKey(threadId, key, { overwrite: true })
                 client.invalidateQueries({ queryKey: ['messages', threadId] })
                 ackIds.push(item.msgId)
+                consumeAfterAck.push(attempt.debug.prekeyId)
                 try {
                   window.dispatchEvent(
                     new CustomEvent('eb:secretV2:threadKeyImported', {
@@ -482,7 +572,7 @@ export function SecretInboxPump() {
                 // Send a lightweight receipt back to initiator device so it can stop resends.
                 try {
                   const initiatorDeviceId = String((item.headerJson as any)?.initiatorDeviceId ?? attempt.debug.initiatorDeviceId ?? '').trim()
-                  const fromDeviceId = String((bootstrapRes as any)?.deviceId ?? '').trim()
+                  const fromDeviceId = myDeviceId
                   if (initiatorDeviceId && fromDeviceId) {
                     void sendSecretControl(
                       initiatorDeviceId,
@@ -491,29 +581,25 @@ export function SecretInboxPump() {
                     ).catch(() => {})
                   }
                 } catch {}
+              } else {
+                ackIds.push(item.msgId)
+                consumeAfterAck.push(attempt.debug.prekeyId)
               }
               continue
             }
             if (attempt.kind === 'device_link_keys') {
-              // Связку принимаем ТОЛЬКО от своего же устройства: пакет расшифровался, но
-              // отправить его мог кто угодно (он шифруется на НАШ публичный prekey, который
-              // отдаётся всем через /e2ee/prekeys/bundles). Чужая связка подсунула бы
-              // подставные ключи для тредов, которых у нас ещё нет.
-              const senderDeviceId = String((item.headerJson as any)?.initiatorDeviceId ?? '').trim()
-              let senderIsOurs = false
-              try {
-                const resp = await api.get('/devices')
-                senderIsOurs = ((resp.data?.devices ?? []) as any[]).some(
-                  (d) => String(d?.id ?? '').trim() === senderDeviceId,
-                )
-              } catch {
-                senderIsOurs = false
-              }
-              if (!senderIsOurs) {
-                clientLog('SecretInboxPump', 'warn', 'device_link_keys from foreign device — dropped', {
-                  data: { msgId: item.msgId, senderDeviceId },
+              // W-X4: связку (все ключи секреток!) принимаем ТОЛЬКО от своего живого устройства:
+              // отправитель (по серверу) — я, initiatorDeviceId — моё неотозванное устройство,
+              // initiatorIdentityKey совпадает с его зарегистрированным ключом по байтам. Раньше
+              // хватало совпадения initiatorDeviceId — простого поля заголовка (id видны всем).
+              const v = await verifyDeviceLinkKeys(item, attempt, lookups)
+              if (!v.ok && v.retry) continue
+              if (!v.ok) {
+                clientLog('SecretInboxPump', 'warn', 'device_link_keys rejected', {
+                  data: { msgId: item.msgId, reason: v.reason, initiatorDeviceId: (item.headerJson as any)?.initiatorDeviceId },
                 })
                 ackIds.push(item.msgId)
+                consumeAfterAck.push(attempt.debug.prekeyId)
                 continue
               }
               let importOk = false
@@ -537,9 +623,28 @@ export function SecretInboxPump() {
                 window.dispatchEvent(new Event('eb:deviceLinked'))
               } catch {}
               client.invalidateQueries({ queryKey: ['conversations'] })
-              if (importOk) ackIds.push(item.msgId)
+              if (importOk) {
+                ackIds.push(item.msgId)
+                consumeAfterAck.push(attempt.debug.prekeyId)
+              }
               continue
             }
+            // Неизвестный вид пакета: расшифровался, но применить нечего — подтверждаем.
+            ackIds.push(item.msgId)
+            consumeAfterAck.push(attempt.debug.prekeyId)
+            continue
+          }
+          if (attempt && !attempt.ok && (attempt.rootCause === 'KIND_MISMATCH' || attempt.rootCause === 'JSON_ERROR' || attempt.rootCause === 'BAD_HEADER')) {
+            // Пакет, который не станет годным никогда (подмена вида, мусор внутри, кривой заголовок):
+            // подтверждаем сразу, а не после 20 попыток. Секрет OPK (если пакет вскрылся) снимаем.
+            clientLog('SecretInboxPump', 'warn', 'key_package dropped', {
+              msgId: item.msgId,
+              rootCause: attempt.rootCause,
+              data: { packageKind: String((item.headerJson as any)?.packageKind ?? '') },
+            })
+            ackIds.push(item.msgId)
+            if (attempt.debug.decryptOk && attempt.debug.prekeyId) consumeAfterAck.push(attempt.debug.prekeyId)
+            continue
           }
           if (attempt && !attempt.ok) {
             const threadIdMeta = String((item.headerJson as any)?.threadId ?? '').trim()
@@ -601,7 +706,7 @@ export function SecretInboxPump() {
               try {
                 const initiatorDeviceId = String((item.headerJson as any)?.initiatorDeviceId ?? attempt.debug.initiatorDeviceId ?? '').trim()
                 const threadIdMeta = String((item.headerJson as any)?.threadId ?? '').trim()
-                const requesterDeviceId = String((bootstrapRes as any)?.deviceId ?? '').trim()
+                const requesterDeviceId = myDeviceId
                 if (initiatorDeviceId && threadIdMeta && requesterDeviceId) {
                   clientLog('SecretInboxPump', 'info', 'sending key_request to initiator', {
                     threadId: threadIdMeta,
@@ -655,7 +760,12 @@ export function SecretInboxPump() {
 
           // Secret thread message
           const threadId = item.threadId ? String(item.threadId).trim() : ''
-          if (!threadId) continue
+          if (!threadId) {
+            // X2: конверт без треда и непонятного вида (self_check, direct, будущие kind) раньше
+            // оставался во входящих без ack — 50 таких навсегда закрывали голову списка.
+            ackIds.push(item.msgId)
+            continue
+          }
           ackIds.push(item.msgId)
 
           // ЕДИНЫЙ трансформ с историей: он знает про contentType='attachment'
@@ -686,9 +796,20 @@ export function SecretInboxPump() {
           client.invalidateQueries({ queryKey: ['conversations'] })
         }
 
-        // Ack after processing (best-effort).
+        // Ack after processing (best-effort). W-X9: секреты OPK обработанных пакетов снимаем только
+        // после успешного ack — не дошёл ack, пакет придёт снова и снова вскроется.
         if (ackIds.length) {
-          void api.post('/secret/inbox/ack', { msgIds: ackIds }).catch(() => {})
+          const toConsume = Array.from(new Set(consumeAfterAck.filter(Boolean)))
+          void api
+            .post('/secret/inbox/ack', { msgIds: ackIds })
+            .then(() => {
+              for (const prekeyId of toConsume) {
+                try {
+                  consumePrekeySecret(prekeyId)
+                } catch {}
+              }
+            })
+            .catch(() => {})
         }
       } catch (err: any) {
         if (isBootstrapRepairableError(err)) {

@@ -35,6 +35,7 @@ import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
+import { canForwardFromConversation } from '../../../../domain/secret/secretInboxGuards'
 
 import { e2eeManager } from '../../../../domain/e2ee/e2eeManager'
 
@@ -759,7 +760,8 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     </button>
                   </div>
                   <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
-                    Сообщения этого секретного чата будут удалены у всех участников. Это действие необратимо.
+                    Чат закроется у вас и у собеседника и пропадёт из списка бесед — писать в него будет нельзя.
+                    Новый секретный чат можно начать заново.
                   </div>
                   <div
                     style={{
@@ -787,7 +789,13 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       onClick={async () => {
                         if (!activeId) return
                         try {
-                          await api.delete(`/conversations/${activeId}`)
+                          // W-H10: V2-секретка завершается через decline (CANCELLED у обоих — как на
+                          // Android/iOS и в меню списка бесед), а не жёстким DELETE беседы.
+                          if (String(activeConversation?.type ?? '').toUpperCase() === 'SECRET') {
+                            await api.post(`/threads/secret/${activeId}/decline`, {})
+                          } else {
+                            await api.delete(`/conversations/${activeId}`)
+                          }
                           client.invalidateQueries({ queryKey: ['conversations'] })
                           client.removeQueries({ queryKey: ['messages', activeId] })
                           setEndSecretModalOpen(false)
@@ -1385,30 +1393,32 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                 >
                   Ответить
                 </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={selectedMessageIds.length === 0}
-                  style={{
-                    background: selectedMessageIds.length ? 'var(--brand-600)' : 'var(--surface-border)',
-                    color: '#fff',
-                    fontWeight: 700,
-                    fontSize: 12,
-                    letterSpacing: 0.4,
-                    textTransform: 'uppercase',
-                    borderRadius: 10,
-                    padding: '8px 14px',
-                    opacity: selectedMessageIds.length ? 1 : 0.5,
-                  }}
-                  onClick={() => {
-                    const ids = getSelectedMessagesOrdered().map((m: any) => m.id)
-                    if (!ids.length) return
-                    setForwardComposerDraft(null)
-                    setForwardModal({ open: true, messageIds: ids })
-                  }}
-                >
-                  Переслать{selectedMessageIds.length > 0 ? ` ${selectedMessageIds.length}` : ''}
-                </button>
+                {canForwardFromConversation(activeConversation) && (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={selectedMessageIds.length === 0}
+                    style={{
+                      background: selectedMessageIds.length ? 'var(--brand-600)' : 'var(--surface-border)',
+                      color: '#fff',
+                      fontWeight: 700,
+                      fontSize: 12,
+                      letterSpacing: 0.4,
+                      textTransform: 'uppercase',
+                      borderRadius: 10,
+                      padding: '8px 14px',
+                      opacity: selectedMessageIds.length ? 1 : 0.5,
+                    }}
+                    onClick={() => {
+                      const ids = getSelectedMessagesOrdered().map((m: any) => m.id)
+                      if (!ids.length) return
+                      setForwardComposerDraft(null)
+                      setForwardModal({ open: true, messageIds: ids })
+                    }}
+                  >
+                    Переслать{selectedMessageIds.length > 0 ? ` ${selectedMessageIds.length}` : ''}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn"

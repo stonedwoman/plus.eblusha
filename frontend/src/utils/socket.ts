@@ -267,6 +267,20 @@ socket.on('device:revoked', () => {
   } catch {}
 })
 
+// W-X5: то же, когда об отзыве сказал не сокет, а HTTP (deviceManager увидел revokedAt своего
+// устройства или 409/410 на регистрации/публикации OPK). Ключи deviceManager уже стёр; новый
+// deviceId заведётся при следующем входе — отозванный id не перерегистрируется.
+if (typeof window !== 'undefined') {
+  window.addEventListener('eb:device:revoked', () => {
+    try {
+      useAppStore.getState().setSession(null)
+      try {
+        socket.disconnect()
+      } catch {}
+    } catch {}
+  })
+}
+
 export function onSessionNew(cb: (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number }) => void) {
   socket.on('session:new', cb)
   return () => {

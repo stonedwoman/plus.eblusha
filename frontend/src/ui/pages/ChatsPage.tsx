@@ -34,8 +34,8 @@ import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
 import { shareSecretThreadKeyToDevice } from '../../domain/secret/secretThreadSetup'
 import { fetchSecretHistory, sendSecretThreadText, sendSecretThreadAttachments, transformSecretHistoryItemToMessage } from '../../domain/secret/secretThreadMessaging'
-import { getSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
-import { decryptSecretThreadBytes, encryptSecretThreadBytes } from '../../domain/secret/secretThreadCrypto'
+import { getSecretThreadKey, getSecretThreadKeyCandidates } from '../../domain/secret/secretThreadKeyStore'
+import { decryptSecretThreadBytesAnyKey, encryptSecretThreadBytes } from '../../domain/secret/secretThreadCrypto'
 import { getLastPendingShareAt, getPendingDeviceIds, getReceiptDeviceIds } from '../../domain/secret/secretKeyShareState'
 import { isSecretEngineV2Enabled } from '../../domain/secretV2/featureFlag'
 import { ensureReady as ensureSecretEngineReady, getThreadView as getSecretEngineThreadView, refreshKeysAndRetry, subscribeSecretThreadState } from '../../domain/secretV2'
@@ -2632,7 +2632,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       // V2-секретка: файл шифрован КЛЮЧОМ ТРЕДА (nacl.secretbox), legacy — сессионным
       // ключом e2eeManager. Обе ветки требуют готового ключа, иначе ждём молча.
       const isSecretV2Thread = String((activeConversation as any)?.type ?? '').toUpperCase() === 'SECRET'
-      const v2ThreadKey = isSecretV2Thread ? (getSecretThreadKey(activeConversation.id)?.key ?? null) : null
+      // Текущий ключ треда и прежние (после смены ключа старые файлы остаются читаемыми — W-H01).
+      const v2ThreadKeys = isSecretV2Thread ? getSecretThreadKeyCandidates(activeConversation.id) : []
+      const v2ThreadKey = v2ThreadKeys[0] ?? null
       if (isSecretV2Thread) {
         if (!v2ThreadKey) return
       } else if (!e2eeManager.hasSession(activeConversation.id)) return
@@ -2662,7 +2664,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
           const cipher = new Uint8Array(await response.arrayBuffer())
           
           const plain = isSecretV2Thread && v2ThreadKey
-            ? decryptSecretThreadBytes(v2ThreadKey, cipher, meta.nonce)
+            ? decryptSecretThreadBytesAnyKey(v2ThreadKeys, cipher, meta.nonce)
             : e2eeManager.decryptBinary(activeConversation.id, cipher, meta.nonce)
           if (!plain) {
             throw new Error('Failed to decrypt attachment: decryptBinary returned null')

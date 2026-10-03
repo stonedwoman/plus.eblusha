@@ -1,6 +1,6 @@
 import { api } from '../../utils/api'
-import { ensureSecretThreadKey, getSecretThreadKey } from './secretThreadKeyStore'
-import { encryptSecretThreadText, decryptSecretThreadText } from './secretThreadCrypto'
+import { ensureSecretThreadKey, getSecretThreadKey, getSecretThreadKeyCandidates } from './secretThreadKeyStore'
+import { encryptSecretThreadText, decryptSecretThreadTextAnyKey } from './secretThreadCrypto'
 import { getStoredDeviceInfo } from '../device/deviceManager'
 
 export type SecretHistoryPage = {
@@ -117,9 +117,10 @@ export function transformSecretHistoryItemToMessage(threadId: string, item: any)
   const ciphertext = String(item?.ciphertext ?? '')
   const contentType = String(item?.contentType ?? 'text')
 
-  const keyRec = getSecretThreadKey(threadId)
+  // Текущий ключ и прежние (после смены ключа история остаётся читаемой — W-H01).
+  const keyCandidates = getSecretThreadKeyCandidates(threadId)
   const decrypted =
-    keyRec && nonce ? decryptSecretThreadText(keyRec.key, ciphertext, nonce) : null
+    keyCandidates.length && nonce ? decryptSecretThreadTextAnyKey(keyCandidates, ciphertext, nonce) : null
 
   // Вложение: шифртекст содержит JSON-дескриптор, а не текст.
   let view: { type: string; content: string; attachments: any[]; metadataExtras: Record<string, any> } | null = null
