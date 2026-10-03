@@ -166,7 +166,16 @@ const SCENARIOS: Array<{ id: string; title: string; signals: ConnectSignals }> =
       peer: { ...base.peer, presence: 'settling', count: 1 },
     }),
   },
-  { id: 'error', title: 'Ошибка шифрования', signals: s({ hasToken: true, keysReady: true, error: 'Не удалось включить сквозное шифрование для этого звонка.' }) },
+  {
+    id: 'error',
+    title: 'Ошибка шифрования',
+    signals: s({
+      hasToken: true,
+      error: 'Звонок не начат: без шифрования разговор один на один не идёт. Сервер не выдал ключ шифрования (ошибка 404).',
+      errorTitle: 'Не удалось включить шифрование',
+      errorRetry: true,
+    }),
+  },
   {
     id: 'done',
     title: 'Соединение установлено',
@@ -310,7 +319,7 @@ export default function CallConnectingDemo() {
           background: '#232731',
         }}
       >
-        <CallConnecting key={width} view={view} onCancel={() => setCancelled(scenario.title)} ringPeriodMs={2000} />
+        <CallConnecting key={width} view={view} onCancel={() => setCancelled(scenario.title)} onRetry={() => setCancelled(`${scenario.title} — «Повторить»`)} ringPeriodMs={2000} />
       </div>
       <div style={{ marginTop: 14, display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#aabcd5' }}>
         <button type="button" onClick={() => setMiniOn((v) => !v)} style={btn(miniOn)}>

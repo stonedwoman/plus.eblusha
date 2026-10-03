@@ -10,6 +10,7 @@
  * состояниях (см. ui/dev/CallConnectingDemo).
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { CALL_SECURITY_LABEL } from './callSecurity'
 
 export type ConnectStepId = 'ring' | 'signaling' | 'crypto-prepare' | 'route' | 'crypto-enable' | 'publish' | 'wait-peer'
 export type ConnectStepStatus = 'done' | 'active' | 'waiting'
@@ -56,7 +57,10 @@ export const EMPTY_CONNECT_PROGRESS: ConnectProgress = {
 /** Реальные состояния звонка, из которых собирается экран. */
 export type ConnectSignals = {
   isGroup: boolean
-  /** Звонок обязан быть со сквозным шифрованием (разговоры один на один). */
+  /**
+   * Звонок обязан быть зашифрован (разговоры один на один — всегда). Ключ пока выдаёт сервер,
+   * поэтому подпись — «Шифрование через сервер», а не «сквозное» (callSecurity.ts).
+   */
   encrypted: boolean
   /** Человек вошёл с выключенным микрофоном — публикации голоса ждать нечего. */
   muted: boolean
@@ -66,7 +70,7 @@ export type ConnectSignals = {
   keysReady: boolean
   /** Соединение с сервером звонков установлено. */
   connected: boolean
-  /** Сквозное шифрование подтверждено на нашем соединении. */
+  /** Шифрование подтверждено на нашем соединении. */
   e2eeEnabled: boolean
   micPublished: boolean
   /** Через ретрансляторы не вышло — идёт повторная попытка напрямую. */
@@ -83,6 +87,8 @@ export type ConnectSignals = {
   error: string | null
   /** Заголовок для ошибки; по умолчанию — про защищённый звонок. */
   errorTitle?: string | null
+  /** Ошибку можно повторить: шифрование не включилось ещё до начала разговора. */
+  errorRetry?: boolean
   /** Микрофон не удалось получить — входим без него и честно это показываем. */
   micUnavailable?: boolean
   /**
@@ -111,7 +117,8 @@ export type ConnectNode = {
 
 export type ConnectLink = { from: ConnectNodeId; to: ConnectNodeId; state: ConnectLinkState }
 
-export type ConnectFact = { id: 'e2ee' | 'relay' | 'direct' | 'rtt'; text: string }
+/** e2ee — шифрование через сервер включено; plain — звонок без шифрования (группы до 2.0). */
+export type ConnectFact = { id: 'e2ee' | 'plain' | 'relay' | 'direct' | 'rtt'; text: string }
 
 export type ConnectView = {
   mode: 'connecting' | 'done' | 'error'
@@ -121,7 +128,8 @@ export type ConnectView = {
   nodes: ConnectNode[]
   links: ConnectLink[]
   facts: ConnectFact[]
-  error: { title: string; text: string } | null
+  /** retry — показать «Повторить» (звонок ещё не начат, можно попробовать снова). */
+  error: { title: string; text: string; retry: boolean } | null
   /** Наша часть готова и собеседник слышен — экран можно убирать. */
   ready: boolean
 }
@@ -164,7 +172,7 @@ export function buildConnectView(s: ConnectSignals): ConnectView {
       nodes: [],
       links: [],
       facts: [],
-      error: { title, text: s.error },
+      error: { title, text: s.error, retry: !!s.errorRetry },
       ready: false,
     }
   }
@@ -214,8 +222,8 @@ export function buildConnectView(s: ConnectSignals): ConnectView {
       title: 'Готовим шифро­вание',
       status: status(s.keysReady, signalingDone),
       hint: s.keysReady
-        ? 'Ключ разговора получен, шифратор готов. Само шифрование включится после подключения.'
-        : 'Получаем ключ разговора и готовим шифратор.',
+        ? 'Ключ разговора получен от сервера, шифратор готов. Само шифрование включится после подключения.'
+        : 'Получаем у сервера ключ разговора и готовим шифратор. Без ключа звонок не начнётся.',
     })
   }
   steps.push({
@@ -236,8 +244,8 @@ export function buildConnectView(s: ConnectSignals): ConnectView {
       title: 'Включаем шифро­вание',
       status: status(s.e2eeEnabled, routeDone),
       hint: s.e2eeEnabled
-        ? 'Сквозное шифрование включено: голос уходит зашифрованным.'
-        : 'Включаем сквозное шифрование на этом соединении и ждём подтверждения.',
+        ? 'Шифрование включено: голос уходит зашифрованным. Ключ выдал сервер Еблуши, поэтому сквозным это шифрование не является.'
+        : 'Включаем шифрование на этом соединении и ждём подтверждения. До этого голос не передаётся.',
     })
   }
   steps.push({
@@ -291,7 +299,7 @@ export function buildConnectView(s: ConnectSignals): ConnectView {
         break
       case 'crypto-prepare':
         title = 'Готовим защиту…'
-        subtitle = 'Подготавливаем сквозное шифрование'
+        subtitle = 'Подготавливаем шифрование'
         break
       case 'route':
         if (s.routeSwitching) {
@@ -428,7 +436,9 @@ export function buildConnectView(s: ConnectSignals): ConnectView {
   })
 
   const facts: ConnectFact[] = []
-  if (encrypted && s.e2eeEnabled) facts.push({ id: 'e2ee', text: 'Сквозное шифрование' })
+  // Честная подпись: ключ 1:1 выдаёт сервер — «Шифрование через сервер»; группа — «Без шифрования».
+  if (encrypted && s.e2eeEnabled) facts.push({ id: 'e2ee', text: CALL_SECURITY_LABEL['server-key'] })
+  if (!encrypted) facts.push({ id: 'plain', text: CALL_SECURITY_LABEL.none })
   if (relayShown) facts.push({ id: 'relay', text: relayFact(s.route.relayName) })
   if (s.connected && s.route.relayed === false) facts.push({ id: 'direct', text: 'Прямой путь' })
   if (rtt !== null) facts.push({ id: 'rtt', text: `${rtt} мс до сервера` })

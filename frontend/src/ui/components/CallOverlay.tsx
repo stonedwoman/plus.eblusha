@@ -65,6 +65,14 @@ import { installScreenShareAudioGuard } from '../../utils/screenShareAudio'
 import { callConnectOptions } from '../../utils/callRouting'
 import { CallConnecting } from './CallConnecting'
 import { CallMini } from './CallMini'
+import { CallStatusPill } from './CallSecurityMark'
+import {
+  E2EE_SETUP_FAILED_TITLE,
+  callRequiresE2ee,
+  callSecurityOf,
+  describeE2eeSetupError,
+  type CallSecurity,
+} from './callSecurity'
 import {
   buildConnectView,
   EMPTY_CONNECT_PROGRESS,
@@ -85,35 +93,11 @@ import { CallQualityRingUpdater } from './CallQualityRingUpdater'
 
 installScreenShareAudioGuard()
 
-function readEnvBool(v: unknown): boolean {
-  const raw = String(v ?? '').trim().toLowerCase()
-  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on'
-}
-
 // LiveKit participant identity is `<userId>#<deviceSuffix>` (unique per device, so the
 // same user on two devices does not collide); the app-level userId is the part before
 // the first '#'.
 function identityToUserId(identity: unknown): string {
   return String(identity ?? '').split('#')[0].trim()
-}
-
-function describeE2eeSetupError(err: unknown): string {
-  const status = (err as any)?.response?.status as number | undefined
-  if (status === 403) return 'Нет доступа к ключу E2EE для этого звонка.'
-  if (status === 404) return 'Не удалось получить ключ E2EE для этого звонка. Попробуйте начать звонок заново.'
-
-  const msg = err instanceof Error ? err.message : String(err ?? '')
-  const lower = msg.toLowerCase()
-  if (
-    lower.includes('unsupported') ||
-    lower.includes('not supported') ||
-    lower.includes('deviceunsupported') ||
-    lower.includes('secure context')
-  ) {
-    return 'Этот браузер/окружение не поддерживает E2EE.'
-  }
-
-  return 'Не удалось включить E2EE для звонка. Попробуйте обновить страницу или использовать другой браузер.'
 }
 
 // Silence LiveKit internal info/debug logs (e.g. "publishing track") in production.
@@ -240,33 +224,18 @@ function ToggleRow({
   )
 }
 
-function ConnectionStatusBadge() {
+/**
+ * Плашка состояния соединения в развёрнутом звонке. security — честная подпись шифрования:
+ * «Шифрование через сервер» (1:1, ключ выдаёт сервер) или «Без шифрования» (группы до 2.0).
+ */
+function ConnectionStatusBadge({ security = null }: { security?: CallSecurity | null }) {
   const state = useConnectionState()
   let label = 'Подключено'
   if (state === ConnectionState.Connecting) label = 'Подключение…'
   else if (state === ConnectionState.Reconnecting) label = 'Переподключение…'
   else if (state === ConnectionState.Disconnected) label = 'Отключено'
 
-  return (
-    <div
-      className="eb-conn-badge"
-      style={{
-        position: 'absolute',
-        top: 10,
-        left: 10,
-        zIndex: 20,
-        padding: '6px 10px',
-        borderRadius: 999,
-        background: 'rgba(0,0,0,0.45)',
-        border: '1px solid rgba(255,255,255,0.12)',
-        fontSize: 12,
-        color: '#fff',
-        backdropFilter: 'blur(6px)',
-      }}
-    >
-      {label}
-    </div>
-  )
+  return <CallStatusPill label={label} security={security} floating />
 }
 
 // Component to set default microphone device on connection
@@ -2228,13 +2197,18 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   const isWindowExpandedRef = useRef(false)
   const me = useAppStore((s) => s.session?.user)
 
-  const e2ee1to1FlagEnabled = useMemo(() => readEnvBool((import.meta as any).env?.VITE_E2EE_1TO1), [])
-  const shouldUseE2ee = !isGroup && e2ee1to1FlagEnabled
+  // Звонок 1:1 шифруется ВСЕГДА: флага сборки VITE_E2EE_1TO1 больше нет (без него веб звонил
+  // открыто). Нет ключа — звонок не начинается. Без шифрования — только группы (до 2.0).
+  const shouldUseE2ee = callRequiresE2ee(isGroup)
   const e2eeRoomRef = useRef<Room | null>(null)
   const e2eeWorkerRef = useRef<Worker | null>(null)
   const e2eeEnableStartedRef = useRef(false)
   const [e2eeRoom, setE2eeRoom] = useState<Room | null>(null)
   const [e2eeError, setE2eeError] = useState<string | null>(null)
+  // Шифрование не включилось до начала разговора: 'retry' — можно «Повторить», 'final' — нет.
+  const [e2eeSetupFailure, setE2eeSetupFailure] = useState<'retry' | 'final' | null>(null)
+  // «Повторить» перезапускает подготовку ключа и комнаты.
+  const [e2eeAttempt, setE2eeAttempt] = useState(0)
   const [e2eePreparing, setE2eePreparing] = useState(false)
   const [e2eeEnabled, setE2eeEnabled] = useState(false)
 
@@ -2431,6 +2405,9 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     setE2eeEnabled(false)
   }, [])
   const videoContainCss = `
+    /* Замок LiveKit на плитке читается как сквозное шифрование, а ключ 1:1 пока выдаёт сервер.
+       Честная подпись — в плашке «Подключено · Шифрование через сервер». Значок экрана (screen_share) не трогаем. */
+    .call-container .lk-participant-tile:not([data-lk-source="screen_share"]) .lk-participant-metadata-item > svg:first-child { display: none !important; }
     /* Force videos to fit tile without cropping on all layouts */
     .call-container video { object-fit: contain !important; object-position: center !important; background: #000 !important; }
     .call-container .lk-room-container,
@@ -3272,12 +3249,14 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       if (!open || !conversationId || !token || !livekitServerUrl || !shouldUseE2ee) {
         setE2eePreparing(false)
         setE2eeError(null)
+        setE2eeSetupFailure(null)
         cleanupE2eeResources()
         return
       }
 
       setE2eePreparing(true)
       setE2eeError(null)
+      setE2eeSetupFailure(null)
       setE2eeEnabled(false)
       e2eeEnableStartedRef.current = false
 
@@ -3302,8 +3281,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         createdWorker = null
       } catch (err) {
         if (cancelled) return
-        const msg = describeE2eeSetupError(err)
-        setE2eeError(msg)
+        // Ключа нет — комнату не создаём вовсе: открытого звонка 1:1 не бывает.
+        const { text, retry } = describeE2eeSetupError(err)
+        setE2eeError(text)
+        setE2eeSetupFailure(retry ? 'retry' : 'final')
       } finally {
         if (!cancelled) {
           setE2eePreparing(false)
@@ -3336,7 +3317,13 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         // ignore
       }
     }
-  }, [open, conversationId, token, livekitServerUrl, shouldUseE2ee, cleanupE2eeResources])
+  }, [open, conversationId, token, livekitServerUrl, shouldUseE2ee, cleanupE2eeResources, e2eeAttempt])
+
+  const retryE2eeSetup = useCallback(() => {
+    setE2eeError(null)
+    setE2eeSetupFailure(null)
+    setE2eeAttempt((n) => n + 1)
+  }, [])
 
   // Ensure we always cleanup E2EE resources on unmount.
   useEffect(() => {
@@ -3431,8 +3418,10 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           }
         }
       } catch (err) {
-        const msg = describeE2eeSetupError(err)
-        setE2eeError(msg)
+        // Шифрование не подтвердилось после подключения: микрофон ещё не опубликован,
+        // комнату закрываем. Повтор здесь не предлагаем — комната уже была подключена.
+        setE2eeError(describeE2eeSetupError(err).text)
+        setE2eeSetupFailure('final')
         cleanupE2eeResources()
       }
     })()
@@ -3454,7 +3443,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         }
         // If E2EE was already enabled and got disabled, stop the call.
         if (e2eeEnabled) {
-          setE2eeError('E2EE отключилось во время звонка. Продолжить без шифрования нельзя.')
+          setE2eeError('Шифрование отключилось во время звонка. Без шифрования разговор продолжать нельзя — звонок прерван.')
           cleanupE2eeResources()
         }
       } catch {
@@ -3522,7 +3511,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
           avatarUrl: isGroup ? conversationAvatarUrl : peerAvatarUrl,
         },
         error: e2eeError ?? connectError,
-        errorTitle: e2eeError ? null : connectError ? 'Не удалось подключиться' : null,
+        errorTitle: e2eeError ? (e2eeSetupFailure ? E2EE_SETUP_FAILED_TITLE : null) : connectError ? 'Не удалось подключиться' : null,
+        errorRetry: !!e2eeError && e2eeSetupFailure === 'retry',
         micUnavailable,
         ringing: dialing ? true : hadDial ? false : undefined,
         ringingSeconds,
@@ -3544,6 +3534,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
       conversationAvatarUrl,
       peerAvatarUrl,
       e2eeError,
+      e2eeSetupFailure,
       connectError,
       micUnavailable,
       dialing,
@@ -3614,7 +3605,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
   // Звук собеседника идёт, а замочек так и не загорелся — продолжать без шифрования нельзя.
   useEffect(() => {
     if (!shouldUseE2ee || !progress.peerEncryptionTimeout || e2eeError) return
-    setE2eeError('Собеседник не подтвердил сквозное шифрование. Продолжить без шифрования нельзя.')
+    setE2eeError('Собеседник не подтвердил шифрование. Без шифрования разговор продолжать нельзя — звонок прерван.')
     cleanupE2eeResources()
   }, [shouldUseE2ee, progress.peerEncryptionTimeout, e2eeError, cleanupE2eeResources])
 
@@ -4422,7 +4413,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
         <style>{videoContainCss}</style>
         {shouldUseE2ee ? (
           e2eeError || !e2eeRoom ? (
-            <CallConnecting view={connectView} onCancel={cancelConnecting} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} video={initialVideo} startedAt={callStartedAt ?? dialingSince ?? undefined} />
+            <CallConnecting view={connectView} onCancel={cancelConnecting} onRetry={retryE2eeSetup} ringPeriodMs={ringPeriodMs ?? undefined} ringStartedAt={dialingSince ?? undefined} video={initialVideo} startedAt={callStartedAt ?? dialingSince ?? undefined} />
           ) : (
             <LiveKitRoom
               room={e2eeRoom}
@@ -4435,7 +4426,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
               video={e2eeEnabled ? camera : false}
               audio={e2eeEnabled ? !muted : false}
               onEncryptionError={(_error) => {
-                setE2eeError('Не удалось продолжить звонок: ошибка E2EE. Попробуйте начать звонок заново.')
+                setE2eeError('Ошибка шифрования — звонок прерван. Начните звонок заново.')
                 cleanupE2eeResources()
               }}
               onError={onLiveKitError}
@@ -4495,7 +4486,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                 {/* Интерфейс разговора монтируем только после включения E2EE. */}
                 {e2eeEnabled && (
                   <>
-                    <ConnectionStatusBadge />
+                    <ConnectionStatusBadge security="server-key" />
                     <DefaultMicrophoneSetter />
                     <CallQualityRingUpdater />
                     <ParticipantVolumeUpdater />
@@ -4577,7 +4568,7 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
                   onHangUp={() => handleClose({ manual: true })}
                 />
               )}
-              <ConnectionStatusBadge />
+              <ConnectionStatusBadge security={callSecurityOf(isGroup, false)} />
               <DefaultMicrophoneSetter />
               <CallQualityRingUpdater />
               <ParticipantVolumeUpdater />

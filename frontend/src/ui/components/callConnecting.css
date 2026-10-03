@@ -177,6 +177,11 @@
   color: var(--call-text-muted);
 }
 
+/* «Без шифрования» (группы до 2.0): серый щит, без янтаря — это не достижение, а честное предупреждение. */
+.eb-cn__pill--plain svg {
+  color: var(--call-text-muted);
+}
+
 /* Цифры табличной ширины: 45 и 108 мс не двигают строку. */
 .eb-cn__num {
   font-variant-numeric: tabular-nums;
@@ -774,6 +779,18 @@
 .eb-cn__cancel--hangup:hover {
   background: #dc2626;
   border-color: #dc2626;
+}
+
+/* «Повторить» после сбоя включения шифрования: звонок ещё не начат, это главное действие. */
+.eb-cn__cancel--retry {
+  border-color: var(--call-amber);
+  background: var(--call-amber);
+  color: #1b1f27;
+}
+
+.eb-cn__cancel--retry:hover {
+  background: var(--call-amber-deep);
+  border-color: var(--call-amber-deep);
 }
 
 .eb-cn__cancel:active {

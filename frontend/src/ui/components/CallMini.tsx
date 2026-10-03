@@ -14,8 +14,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { createPortal } from 'react-dom'
 import { useConnectionState, useLocalParticipant, useParticipants, useRoomContext, useSpeakingParticipants, useTracks } from '@livekit/components-react'
 import { ConnectionState, Track, type Participant } from 'livekit-client'
-import { Lock, Maximize2, Mic, MicOff, PhoneOff, Video, VideoOff, ChevronRight } from 'lucide-react'
+import { Maximize2, Mic, MicOff, PhoneOff, Video, VideoOff, ChevronRight } from 'lucide-react'
 import { Avatar } from './Avatar'
+import { CallSecurityMark } from './CallSecurityMark'
+import { callSecurityOf } from './callSecurity'
 import './callMini.css'
 
 const STORE_KEY = 'eb.call.mini'
@@ -36,6 +38,7 @@ type Placement =
 type Props = {
   visible: boolean
   isGroup: boolean
+  /** Шифрование звонка 1:1 подтверждено. Подпись честная: «Шифрование через сервер» (callSecurity.ts). */
   encrypted: boolean
   /** Когда разговор начался — для таймера. */
   connectedAt: number | null
@@ -122,6 +125,7 @@ export function CallMini({ visible, isGroup, encrypted, connectedAt, resolveAvat
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled } = useLocalParticipant()
   const connectionState = useConnectionState()
   const tracks = useTracks([Track.Source.Camera, Track.Source.ScreenShare], { onlySubscribed: true })
+  const security = callSecurityOf(isGroup, encrypted)
 
   // ── кто в плитке: говорящий, с задержкой смены; без говорящих — последний показанный ──
   const remote = useMemo(() => participants.filter((p) => !p.isLocal), [participants])
@@ -418,7 +422,7 @@ export function CallMini({ visible, isGroup, encrypted, connectedAt, resolveAvat
         {localTrack && <TrackVideo track={localTrack} className="eb-mini__local" />}
         <div className="eb-mini__top">
           <span className="eb-mini__tag" title={shownName}>
-            {encrypted && <Lock size={12} aria-label="Сквозное шифрование" />}
+            {security && <CallSecurityMark security={security} />}
             <span className="eb-mini__name">{shownName}</span>
             {shownSpeaking && <span className="eb-mini__say">говорит</span>}
           </span>

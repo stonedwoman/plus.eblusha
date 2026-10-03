@@ -130,6 +130,16 @@
   flex: 0 0 auto;
 }
 
+/* Значок режима шифрования (CallSecurityMark): «без шифрования» — серым, не фирменным янтарём. */
+.eb-mini__tag .eb-call-sec {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.eb-mini__tag .eb-call-sec.is-none svg {
+  color: #9aa0a8;
+}
+
 .eb-mini__name {
   overflow: hidden;
   text-overflow: ellipsis;

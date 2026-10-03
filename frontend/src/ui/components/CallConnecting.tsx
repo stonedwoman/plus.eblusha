@@ -12,9 +12,11 @@
  * в шапке (он честный: считает от начала дозвона или от появления экрана).
  */
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { ArrowRight, Check, Clock, Cloud, Lock, Phone, PhoneOff, Server, ShieldAlert, User, Users, Video, Waypoints } from 'lucide-react'
+import { ArrowRight, Check, Clock, Cloud, Phone, PhoneOff, RotateCcw, Server, ShieldAlert, User, Users, Video, Waypoints } from 'lucide-react'
 import { convertToProxyUrl } from '../../utils/media'
 import { useDelayedUnmount, type ConnectNode, type ConnectNodeId, type ConnectView } from './callConnectView'
+import { CallSecurityIcon } from './CallSecurityMark'
+import { CALL_SECURITY_DETAIL } from './callSecurity'
 import './callConnecting.css'
 
 type Props = {
@@ -22,6 +24,8 @@ type Props = {
   /** Разговор уже начался — экран растворяется, а не пропадает рывком. */
   leaving?: boolean
   onCancel?: () => void
+  /** «Повторить» на экране ошибки (только если ошибка это допускает: view.error.retry). */
+  onRetry?: () => void
   /** Период гудка дозвона, мс — кольца вокруг собеседника расходятся в такт ему. */
   ringPeriodMs?: number
   /** Когда гудки начались (Date.now) — чтобы кольца попали в фазу, а не стартовали с нуля. */
@@ -49,7 +53,7 @@ function formatClock(totalSec: number): string {
 const NODE_STATE_TITLE = { waiting: 'ждёт', active: 'подключается', ready: 'готов', ringing: 'вызываем' } as const
 const STEP_STATUS_TITLE = { done: 'готово', active: 'выполняется', waiting: 'ждёт' } as const
 
-export function CallConnecting({ view, leaving = false, onCancel, ringPeriodMs, ringStartedAt, video = false, startedAt }: Props) {
+export function CallConnecting({ view, leaving = false, onCancel, onRetry, ringPeriodMs, ringStartedAt, video = false, startedAt }: Props) {
   const [cancelling, setCancelling] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   // Фаза колец считается один раз при появлении: сколько гудка уже прошло к этому моменту.
@@ -126,6 +130,12 @@ export function CallConnecting({ view, leaving = false, onCancel, ringPeriodMs, 
                 {view.error.title}
               </div>
               <div className="eb-cn__error-text">{view.error.text}</div>
+              {view.error.retry && onRetry && (
+                <button type="button" className="eb-cn__cancel eb-cn__cancel--retry" onClick={onRetry} disabled={cancelling}>
+                  <RotateCcw aria-hidden="true" />
+                  Повторить
+                </button>
+              )}
               <button type="button" className="eb-cn__cancel" onClick={cancel} disabled={cancelling}>
                 {cancelling ? 'Закрываем…' : 'Закрыть'}
               </button>
@@ -149,8 +159,22 @@ export function CallConnecting({ view, leaving = false, onCancel, ringPeriodMs, 
               <span className="eb-cn__num">{formatClock(elapsedSec)}</span>
             </li>
             {view.facts.map((f) => (
-              <li className="eb-cn__pill" key={f.id}>
-                {f.id === 'e2ee' ? <Lock /> : f.id === 'relay' ? <Waypoints /> : f.id === 'direct' ? <ArrowRight /> : <Clock />}
+              <li
+                className={'eb-cn__pill' + (f.id === 'plain' ? ' eb-cn__pill--plain' : '')}
+                key={f.id}
+                title={f.id === 'e2ee' ? CALL_SECURITY_DETAIL['server-key'] : f.id === 'plain' ? CALL_SECURITY_DETAIL.none : undefined}
+              >
+                {f.id === 'e2ee' ? (
+                  <CallSecurityIcon security="server-key" />
+                ) : f.id === 'plain' ? (
+                  <CallSecurityIcon security="none" />
+                ) : f.id === 'relay' ? (
+                  <Waypoints />
+                ) : f.id === 'direct' ? (
+                  <ArrowRight />
+                ) : (
+                  <Clock />
+                )}
                 <span className={f.id === 'rtt' ? 'eb-cn__num' : undefined}>{f.text}</span>
               </li>
             ))}
