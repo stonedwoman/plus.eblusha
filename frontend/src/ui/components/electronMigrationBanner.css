@@ -1,0 +1,321 @@
+/* Баннер «Переезжайте на новую Еблушу» (только старая ПК-версия на Electron).
+   Фирменный стиль экрана подключения к звонку: графит, янтарная шапка с полосой,
+   логотип «ЕБлуша» с переворачивающейся «Б», капсулы фактов, янтарная кнопка в полоску. */
+
+/* Док во всю ширину, но сквозной для мыши: ловит клики только сама карточка. Сверху —
+   под 30-пиксельной шапкой окна ПК-оболочки (она объявляет --eb-header-h на <html>). */
+.eb-mig-dock {
+  position: fixed;
+  top: calc(var(--eb-header-h, 0px) + 12px);
+  left: 12px;
+  right: 12px;
+  z-index: 1150;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.eb-mig {
+  --mig-bg: #0f1217;
+  --mig-surface: #1b1f27;
+  --mig-surface-2: #232731;
+  --mig-border: #313643;
+  --mig-border-strong: #3b414f;
+  --mig-text: #f1f3f6;
+  --mig-text-muted: #9aa0a8;
+  --mig-amber: #e38b0a;
+  --mig-amber-deep: #d97706;
+  --mig-amber-dark: #b45309;
+  --mig-amber-rgb: 217, 119, 6;
+  --mig-cream: #f4e8c9;
+  --mig-brand-b: #e25c2a;
+
+  pointer-events: auto;
+  width: 100%;
+  max-width: 600px;
+  container-type: inline-size;
+  border-radius: 16px;
+  border: 1px solid var(--mig-border);
+  background: var(--mig-surface);
+  box-shadow:
+    0 16px 40px rgba(5, 6, 9, 0.55),
+    0 2px 10px rgba(5, 6, 9, 0.35);
+  overflow: hidden;
+  color: var(--mig-text);
+  font-family: inherit;
+  text-align: left;
+  animation: eb-mig-in 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* ── Шапка: логотип, подпись, капсулы ─────────────────────────────────── */
+
+.eb-mig__bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 16px;
+  background: linear-gradient(180deg, rgba(var(--mig-amber-rgb), 0.22) 0%, rgba(var(--mig-amber-rgb), 0.05) 100%);
+  border-bottom: 2px solid var(--mig-amber-deep);
+}
+
+.eb-mig__brand {
+  display: inline-flex;
+  align-items: baseline;
+  flex: 0 0 auto;
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.2px;
+  color: var(--mig-cream);
+  perspective: 160px;
+  user-select: none;
+}
+
+/* Фирменная «Б» (большая, #e25c2a) переворачивается раз в 5 с, как в шапке сайта. */
+.eb-mig__b {
+  display: inline-block;
+  transform-origin: 50% 50%;
+  color: var(--mig-brand-b);
+  animation: eb-mig-flip 5s ease-in-out infinite;
+}
+
+.eb-mig__bar-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--mig-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.eb-mig__pills {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.eb-mig__pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--mig-border-strong);
+  background: var(--mig-surface);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--mig-text);
+  white-space: nowrap;
+}
+
+.eb-mig__pill--ready {
+  border-color: var(--mig-amber);
+  background: rgba(var(--mig-amber-rgb), 0.16);
+  color: var(--mig-cream);
+}
+
+/* ── Тело ─────────────────────────────────────────────────────────────── */
+
+.eb-mig__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px 16px;
+}
+
+.eb-mig__title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.25;
+  font-weight: 800;
+  letter-spacing: -0.2px;
+  color: var(--mig-text);
+}
+
+.eb-mig__lead {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--mig-text-muted);
+}
+
+.eb-mig__facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.eb-mig__facts li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--mig-text);
+}
+
+.eb-mig__facts svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--mig-amber);
+}
+
+/* ── Кнопки-капсулы ───────────────────────────────────────────────────── */
+
+.eb-mig__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.eb-mig__go,
+.eb-mig__later {
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.1s ease;
+}
+
+/* Янтарная капсула в тонкую диагональную полоску — как активный этап на экране звонка. */
+.eb-mig__go {
+  padding: 0 18px 0 20px;
+  border: 1px solid var(--mig-amber);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.06) 55%, rgba(0, 0, 0, 0.04) 100%),
+    repeating-linear-gradient(-32deg, transparent 0 8px, rgba(255, 255, 255, 0.14) 8px 9px),
+    repeating-linear-gradient(32deg, transparent 0 12px, rgba(0, 0, 0, 0.05) 12px 13px),
+    linear-gradient(158deg, var(--mig-amber-dark) 0%, var(--mig-amber) 48%, var(--mig-amber-deep) 100%);
+  color: #0a0a0a;
+  font-weight: 700;
+  box-shadow:
+    0 0 0 1px rgba(var(--mig-amber-rgb), 0.45),
+    0 2px 14px rgba(var(--mig-amber-rgb), 0.28);
+}
+
+.eb-mig__go svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+
+.eb-mig__go:hover {
+  border-color: var(--mig-cream);
+  box-shadow:
+    0 0 0 1px rgba(var(--mig-amber-rgb), 0.6),
+    0 4px 18px rgba(var(--mig-amber-rgb), 0.38);
+}
+
+.eb-mig__later {
+  padding: 0 18px;
+  border: 1px solid var(--mig-border-strong);
+  background: var(--mig-surface-2);
+  color: var(--mig-text);
+  font-weight: 600;
+}
+
+.eb-mig__later:hover {
+  background: #2b303a;
+  border-color: #4a5160;
+}
+
+.eb-mig__go:active,
+.eb-mig__later:active {
+  transform: scale(0.985);
+}
+
+.eb-mig__go:focus-visible,
+.eb-mig__later:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.eb-mig__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--mig-text-muted);
+}
+
+/* Узкое окно: кнопки во всю ширину, подпись в шапке уступает место капсулам. */
+@container (max-width: 440px) {
+  .eb-mig__bar-text {
+    display: none;
+  }
+
+  .eb-mig__pills {
+    margin-left: auto;
+  }
+
+  .eb-mig__actions > button {
+    flex: 1 1 100%;
+  }
+
+  .eb-mig__body {
+    padding: 12px 14px 14px;
+  }
+
+  .eb-mig__title {
+    font-size: 17px;
+  }
+}
+
+@keyframes eb-mig-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes eb-mig-flip {
+  0%,
+  85% {
+    transform: rotateY(0deg);
+  }
+  90% {
+    transform: rotateY(180deg);
+  }
+  95%,
+  100% {
+    transform: rotateY(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eb-mig,
+  .eb-mig__b {
+    animation: none;
+  }
+
+  .eb-mig__go,
+  .eb-mig__later {
+    transition: none;
+  }
+}

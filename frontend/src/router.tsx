@@ -18,6 +18,8 @@ const ContactsPage = lazy(() => import('./ui/pages/ContactsPage'))
 const SettingsPage = lazy(() => import('./ui/pages/SettingsPage'))
 // Dev-стенд экрана подключения к звонку: в production-сборке маршрута нет.
 const CallConnectingDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/CallConnectingDemo')) : null
+// Dev-стенд баннера «Переезжайте на новую Еблушу» (подставной window.native) — тоже только dev.
+const ElectronMigrationDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/ElectronMigrationDemo')) : null
 
 
 const withSuspense = (node: ReactNode) => (
@@ -26,6 +28,7 @@ const withSuspense = (node: ReactNode) => (
 
 const messengerRoutes: RouteObject[] = [
   ...(CallConnectingDemo ? [{ path: '/__dev/call-connecting', element: withSuspense(<CallConnectingDemo />) }] : []),
+  ...(ElectronMigrationDemo ? [{ path: '/__dev/electron-migration', element: withSuspense(<ElectronMigrationDemo />) }] : []),
   {
     path: '/auth',
     element: <PublicRoute />,

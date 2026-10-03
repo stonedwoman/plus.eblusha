@@ -9,6 +9,7 @@ import { useSystemUiStore } from '../../domain/store/systemUiStore'
 import { api } from '../../utils/api'
 import { onSessionNew } from '../../core/realtime'
 import { SystemPopups } from '../components/SystemPopups'
+import { ElectronMigrationBanner } from '../components/ElectronMigrationBanner'
 import { AppRuntimeCoordinator } from './AppRuntimeCoordinator'
 import { CallHost } from './CallHost'
 
@@ -72,6 +73,8 @@ export default function AppLayout() {
       <AppRuntimeCoordinator />
       {useV2 ? <SecretV2InboxPump /> : <SecretInboxPump />}
       <SystemPopups />
+      {/* Старая ПК-версия (Electron, Windows): «Переезжайте на новую Еблушу», когда Electron сам видит 2.0. */}
+      <ElectronMigrationBanner />
       <CallHost />
       <main
         className="content"
