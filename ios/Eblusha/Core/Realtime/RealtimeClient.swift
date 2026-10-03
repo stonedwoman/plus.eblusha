@@ -244,7 +244,7 @@ final class RealtimeClient: ObservableObject {
             .callIncoming(conversationId: $0.conversationId, fromUserId: $0.from?.id ?? "", fromName: $0.from?.name ?? "", video: $0.video)
         }
         bind(socket, "call:accepted", CallByPayload.self) {
-            .callAccepted(conversationId: $0.conversationId, byUserId: $0.by?.id ?? "", video: $0.video)
+            .callAccepted(conversationId: $0.conversationId, byUserId: $0.by?.id ?? "", video: $0.video, live: $0.live)
         }
         bind(socket, "call:declined", CallByPayload.self) {
             .callDeclined(conversationId: $0.conversationId, byUserId: $0.by?.id ?? "")

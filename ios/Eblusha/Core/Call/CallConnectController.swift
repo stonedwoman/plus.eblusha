@@ -156,6 +156,17 @@ final class CallConnectController: ObservableObject {
         recompute()
     }
 
+    /// Разговор прерван уже после начала (собеседник заговорил без шифрования): экран
+    /// установления возвращается с ошибкой и «Закрыть». Защёлка «разговор начался» не
+    /// снимается — этапы подключения заново не идут.
+    func abort(title: String, text: String) {
+        leaveWork?.cancel()
+        leaveWork = nil
+        leaving = false
+        fail(title: title, text: text)
+        visible = true
+    }
+
     /// «Повторить» на экране «звонок не начат»: новый вызов в ту же беседу.
     func retry() {
         manager?.retryAfterEncryptionFailure()

@@ -125,13 +125,29 @@ final class CallManager: NSObject, ObservableObject {
     /// экран ошибки исчез бы; события по этому звонку его не трогают.
     private var encryptionFailed = false
     /// Что набрать заново по «Повторить».
-    private var retryCall: (conversationId: String, title: String, video: Bool)?
+    private var retryCall: (conversationId: String, title: String, video: Bool, group: Bool?)?
     /// Группа ли беседа — со слов открытого экрана беседы (исходящий). Нужна, только если
     /// кеш бесед о ней ничего не знает.
     private var groupHint: Bool?
     /// Номер звонка: растёт на каждом reset. Поздний ответ на запрос токена или ключа от
     /// прошлого звонка не должен собрать комнату или показать ошибку в новом.
     private var callSeq = 0
+    /// Входим в УЖЕ идущий разговор (своё второе устройство, «Тоже сюда», повторный вход):
+    /// при сбое этому устройству надо уйти одному (call:room:leave), а не завершать разговор
+    /// (call:end) у собеседника и на устройстве, где он идёт (ревью этапа 0).
+    private var joinedLiveCall = false
+    /// Тип беседы, по которому собрана комната: nil — неизвестен (кеш пуст, список не
+    /// загрузился). Решает, какой сигнал слать при сбое.
+    private var resolvedGroup: Bool?
+    /// Собеседник заговорил без шифрования — разговор прерван, на экране ошибка.
+    private var peerUnencryptedAbort = false
+    /// Затвор отправки (ревью этапа 0): своя дорожка публикуется заглушённой и включается,
+    /// только когда её шифратор доложил «OK». Ключ — дорожка, значение — включить ли её по
+    /// открытии (человек мог выключить микрофон или камеру, пока затвор закрыт).
+    private var sendGate: [ObjectIdentifier: Bool] = [:]
+    /// Сколько ждём «OK» шифратора, прежде чем открыть затвор запасным путём: к этому времени
+    /// шифратор публикации заведомо прикреплён (E2EEManager делает это сразу после публикации).
+    private static let sendGateFallbackNs: UInt64 = 2_000_000_000
 
     init(
         realtime: RealtimeClient,
@@ -176,8 +192,8 @@ final class CallManager: NSObject, ObservableObject {
         switch event {
         case .callIncoming(let cid, _, let fromName, let video):
             onIncoming(conversationId: cid, fromName: fromName, video: video)
-        case .callAccepted(let cid, let byUserId, _):
-            onAccepted(conversationId: cid, byUserId: byUserId)
+        case .callAccepted(let cid, let byUserId, _, let live):
+            onAccepted(conversationId: cid, byUserId: byUserId, live: live)
         case .callDeclined(let cid, let byUserId):
             onDeclined(conversationId: cid, byUserId: byUserId)
         case .callEnded(let cid, _):
@@ -240,6 +256,9 @@ final class CallManager: NSObject, ObservableObject {
         self.speakerOn = false
         self.participants = []
         self.isGroup = isGroup
+        // Звонок в этой беседе уже идёт (по снапшоту сервера) — это вход в живой разговор,
+        // а не новый вызов: при сбое уходим одни, разговор не завершаем.
+        joinedLiveCall = Self.callIsLive(conversationId)
         connect.outgoingStarting(isGroup: isGroup, title: title)
         self.phase = .outgoing
         // Аудиосессию поднимаем уже на дозвоне: микрофон публикуется при подключении
@@ -321,6 +340,15 @@ final class CallManager: NSObject, ObservableObject {
             reset()
             return
         }
+        if peerUnencryptedAbort {
+            // «Закрыть» после «Собеседник говорит без шифрования»: тот же сигнал, что при
+            // сбое ключа — свой второй вход в живой разговор уходит один.
+            lastEndCause = .encryptionFailed
+            if let cid = conversationId { signalFailedCall(cid) }
+            disconnectRoom()
+            reset()
+            return
+        }
         lastEndCause = .localHangUp
         if let cid = conversationId {
             realtime.endCall(conversationId: cid)
@@ -334,6 +362,8 @@ final class CallManager: NSObject, ObservableObject {
         guard phase.isActive else { return }
         let on = !micOn
         micOn = on
+        // Затвор закрыт: включит (или нет) сам затвор, когда шифратор доложит «OK».
+        if updateGatedPublication(source: .microphone, enabled: on) { return }
         Task { @MainActor in
             _ = try? await self.room?.localParticipant.setMicrophone(enabled: on)
         }
@@ -348,8 +378,13 @@ final class CallManager: NSObject, ObservableObject {
         guard phase.isActive else { return }
         let on = !cameraOn
         cameraOn = on
+        if updateGatedPublication(source: .camera, enabled: on) { return }
         Task { @MainActor in
-            _ = try? await self.room?.localParticipant.setCamera(enabled: on)
+            if on {
+                await self.enableCameraGated()
+            } else {
+                _ = try? await self.room?.localParticipant.setCamera(enabled: false)
+            }
             if on {
                 try? await Task.sleep(nanoseconds: 350_000_000)
                 await self.applySelectedCamera()
@@ -375,9 +410,10 @@ final class CallManager: NSObject, ObservableObject {
         guard phase.isActive else { return }
         selectedCameraId = deviceId
         cameraOn = true
+        if updateGatedPublication(source: .camera, enabled: true) { return }
         Task { @MainActor in
             if self.currentCameraTrack() == nil {
-                _ = try? await self.room?.localParticipant.setCamera(enabled: true)
+                await self.enableCameraGated()
                 try? await Task.sleep(nanoseconds: 350_000_000)
             }
             await self.applySelectedCamera()
@@ -484,6 +520,95 @@ final class CallManager: NSObject, ObservableObject {
         ).devices.first { $0.uniqueID == uniqueID }
     }
 
+    // MARK: - Затворы шифрования (ревью этапа 0)
+
+    /// Текст ошибки, когда собеседник публикует дорожку без шифрования (как у веба).
+    static let peerUnencryptedText =
+        "Собеседник говорит без шифрования — звонок прерван. Без шифрования разговор один на один не идёт."
+
+    /// Затвор приёма. В шифрованной комнате дорожку собеседника с меткой «без шифрования»
+    /// (TrackInfo.encryption = NONE — так публикует старый телефон при сбое ключа) не играем:
+    /// LiveKit для неё шифратор не создаёт (E2EEManager.addRtpReceiver пропускает `.none`) и
+    /// играл бы открытый звук. Отписываемся, комнату закрываем, на экране — причина.
+    private func blockIfUnencrypted(_ publication: RemoteTrackPublication, participant: RemoteParticipant) {
+        guard e2eeEnabled, publication.kind == .audio || publication.kind == .video,
+              publication.encryptionType == .none else { return }
+        Task { try? await publication.set(subscribed: false) }
+        guard !peerUnencryptedAbort, phase != .idle else { return }
+        peerUnencryptedAbort = true
+        NSLog("CallE2EE: собеседник публикует дорожку без шифрования — звонок прерван (%@)",
+              participant.identity?.stringValue ?? "?")
+        disconnectRoom()
+        e2eeEnabled = false
+        minimized = false
+        minimizeProgress = 0
+        connect.abort(title: "Звонок прерван", text: Self.peerUnencryptedText)
+    }
+
+    /// Опубликовать свою дорожку за затвором отправки: заглушённой (тишина / чёрный кадр), а
+    /// включить — когда шифратор этой публикации доложит «OK». Шифратор SDK вешает только
+    /// ПОСЛЕ публикации, и без затвора первые кадры могли уйти без шифрования.
+    private func publishGated(_ track: LocalTrack, on local: LocalParticipant) async throws {
+        try await track.mute()
+        let key = ObjectIdentifier(track)
+        sendGate[key] = true
+        let publication: LocalTrackPublication
+        do {
+            if let audio = track as? LocalAudioTrack {
+                publication = try await local.publish(audioTrack: audio)
+            } else if let video = track as? LocalVideoTrack {
+                publication = try await local.publish(videoTrack: video)
+            } else {
+                sendGate[key] = nil
+                return
+            }
+        } catch {
+            sendGate[key] = nil
+            throw error
+        }
+        // Запасной путь: «OK» могло не прийти (тишина без кадров), а шифратор к этому
+        // моменту заведомо прикреплён к публикации.
+        let seq = callSeq
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.sendGateFallbackNs)
+            guard self.callSeq == seq else { return }
+            self.openSendGate(publication, reason: "запасной путь")
+        }
+    }
+
+    /// Камера: первая публикация — за затвором; уже опубликованную (заглушённую) включаем как
+    /// обычно — её шифратор давно прикреплён.
+    private func enableCameraGated() async {
+        guard let local = room?.localParticipant else { return }
+        if e2eeEnabled, local.trackPublications.values.first(where: { $0.source == .camera }) == nil {
+            try? await publishGated(LocalVideoTrack.createCameraTrack(), on: local)
+        } else {
+            _ = try? await local.setCamera(enabled: true)
+        }
+    }
+
+    /// Открыть затвор: включить дорожку, если человек её не выключил, пока затвор был закрыт.
+    private func openSendGate(_ publication: LocalTrackPublication, reason: String) {
+        guard let track = publication.track as? LocalTrack else { return }
+        let key = ObjectIdentifier(track)
+        guard let wanted = sendGate.removeValue(forKey: key) else { return }
+        NSLog("CallE2EE: затвор отправки открыт (%@, %@, включить=%@)",
+              String(describing: publication.source), reason, wanted ? "да" : "нет")
+        guard wanted else { return }
+        Task { try? await publication.unmute() }
+    }
+
+    /// Затвор этой дорожки ещё закрыт — запоминаем желание человека вместо вызова SDK
+    /// (иначе unmute включил бы дорожку раньше шифратора). true — обработано здесь.
+    private func updateGatedPublication(source: Track.Source, enabled: Bool) -> Bool {
+        guard let publication = room?.localParticipant.trackPublications.values.first(where: { $0.source == source }),
+              let track = publication.track else { return false }
+        let key = ObjectIdentifier(track)
+        guard sendGate[key] != nil else { return false }
+        sendGate[key] = enabled
+        return true
+    }
+
     // MARK: - Свёрнутый звонок
 
     /// Свернуть можно только ИДУЩИЙ разговор: дозвон и подключение всегда во весь экран
@@ -574,7 +699,7 @@ final class CallManager: NSObject, ObservableObject {
         }
     }
 
-    private func onAccepted(conversationId cid: String, byUserId: String) {
+    private func onAccepted(conversationId cid: String, byUserId: String, live: Bool) {
         // Звонок уже завершён нами из-за сбоя шифрования: поздний accept его не оживит.
         if encryptionFailed { return }
         // Звонок принят на ДРУГОМ моём устройстве (сервер рассылает call:accepted и
@@ -586,6 +711,9 @@ final class CallManager: NSObject, ObservableObject {
             return
         }
         guard phase == .outgoing, conversationId == cid else { return }
+        // «Уже принято» — вход в идущий разговор, а не ответ собеседника на наш вызов: сервер
+        // помечает это live: true; старый сервер — только тем, что «принял» я сам.
+        if live || byUserId == session.currentUserId() { joinedLiveCall = true }
         micOn = true
         cameraOn = false
         speakerOn = false
@@ -668,10 +796,14 @@ final class CallManager: NSObject, ObservableObject {
                 // флаг, ключ не той длины) молча собирал обычную комнату, и личный звонок
                 // шёл без шифрования. Теперь личный звонок — только с ключом, иначе он не
                 // начинается. Группы пока не шифруются (это 2.0) и честно так подписаны.
+                // nil — тип неизвестен (кеш пуст и список не загрузился): шифруем, как личный, а
+                // при сбое ключа отказываем БЕЗ сигналинга — call:end по группе завершил бы
+                // групповой звонок у всех.
                 let isGroup = await self.knownGroup(cid)
                 guard self.callSeq == seq else { return }
+                self.resolvedGroup = isGroup
                 let options: RoomOptions
-                if isGroup {
+                if isGroup == true {
                     options = RoomOptions()
                 } else {
                     switch await self.liveKit.fetchE2eeKey(conversationId: cid) {
@@ -710,29 +842,62 @@ final class CallManager: NSObject, ObservableObject {
     }
 
     /// Группа ли беседа — по тому, что клиент знает сам: кеш бесед, а без него — открытый
-    /// экран беседы при исходящем. Не знаем — считаем личной: шифрование обязательно.
-    private func knownGroup(_ cid: String) async -> Bool {
+    /// экран беседы при исходящем. nil — не знаем (входящий из пуша, кеш пуст и список не
+    /// загрузился): звонок всё равно шифруется, как личный.
+    private func knownGroup(_ cid: String) async -> Bool? {
         let hint = groupHint
         if let conv = await chatRepository.conversationMeta(cid) { return conv.isGroup }
-        return hint ?? false
+        return hint
+    }
+
+    /// Звонок в беседе уже идёт: в снапшоте сервера он активен и в нём кто-то есть.
+    private static func callIsLive(_ cid: String) -> Bool {
+        guard let entry = CallStatusStore.shared.calls[cid] else { return false }
+        return entry.active && !entry.participants.isEmpty
+    }
+
+    /// Я уже в этом звонке с другого устройства (снапшот сервера).
+    private func mineElsewhere(_ cid: String) -> Bool {
+        guard let me = session.currentUserId(),
+              let entry = CallStatusStore.shared.calls[cid], entry.active else { return false }
+        return entry.participants.contains(me)
+    }
+
+    /// Звонок у нас не состоялся (нет ключа, собеседник без шифрования): что сказать серверу.
+    ///  - Тип беседы неизвестен — ничего: call:end по группе завершил бы её звонок у всех.
+    ///  - Группа — только call:room:leave, call:end никогда.
+    ///  - 1:1, наш неначатый дозвон (call:accepted ещё не было, это не вход в живой разговор и
+    ///    меня нет в нём с другого устройства) — call:end: собеседнику перестаёт звонить.
+    ///  - Иначе только call:room:leave: сервер сам завершит 1:1, если это было последнее моё
+    ///    устройство в разговоре (принятый здесь входящий), и не тронет разговор, который идёт
+    ///    на другом моём устройстве («Тоже сюда», повторный вход).
+    private func signalFailedCall(_ cid: String) {
+        guard let group = resolvedGroup else {
+            NSLog("CallE2EE: тип беседы неизвестен — сбой без сигналинга")
+            return
+        }
+        if !group && phase == .outgoing && !joinedLiveCall && !mineElsewhere(cid) {
+            realtime.endCall(conversationId: cid)
+        }
+        realtime.leaveCallRoom(conversationId: cid)
     }
 
     /// Ключ шифрования личного звонка не получен — звонок НЕ начинается. Комнату не
-    /// собираем, микрофон никуда не отдаём. Собеседнику (call:end) и системе (CallKit,
-    /// причина «не удалось») сразу сообщаем, что звонка не будет: он не должен звонить
-    /// в пустоту или ждать в комнате. Человеку — причину и «Повторить» / «Закрыть».
+    /// собираем, микрофон никуда не отдаём. Серверу ([signalFailedCall]) и системе (CallKit,
+    /// причина «не удалось») сразу сообщаем, что у нас звонка не будет: собеседник не должен
+    /// звонить в пустоту, а разговор, идущий на другом моём устройстве, рваться не должен.
+    /// Человеку — причину и «Повторить» / «Закрыть».
     private func failEncryption(_ cid: String, reason: CallKeyFailure, seq: Int) {
         guard callSeq == seq, conversationId == cid, phase != .idle, !encryptionFailed else { return }
         NSLog("CallE2EE: звонок не начат — нет ключа шифрования (%@)", reason.logDescription)
         encryptionFailed = true
         lastEndCause = .encryptionFailed
-        retryCall = (cid, title, isVideoCall)
+        retryCall = (cid, title, isVideoCall, resolvedGroup)
         disconnectRoom()
         e2eeEnabled = false
         ringer.stop()
         disableProximity()
-        realtime.endCall(conversationId: cid)
-        realtime.leaveCallRoom(conversationId: cid)
+        signalFailedCall(cid)
         // Системный звонок закрывается reportCall(.failed), не CXEndCallAction: тот ушёл бы
         // серверу отказом. Аудиосессию системного звонка гасит сама система; свою — мы.
         let hadSystemCall = CallKitController.shared.hasSystemCall
@@ -746,7 +911,10 @@ final class CallManager: NSObject, ObservableObject {
     func retryAfterEncryptionFailure() {
         guard encryptionFailed, let target = retryCall else { return }
         reset()
-        startOutgoing(conversationId: target.conversationId, title: target.title, video: target.video, isGroup: false)
+        startOutgoing(conversationId: target.conversationId, title: target.title, video: target.video, isGroup: target.group ?? false)
+        // Тип беседы так и не узнали — подсказку не выдумываем: при новом сбое снова без
+        // сигналинга (connectRoom читает её позже, в своей задаче).
+        groupHint = target.group
     }
 
     /// Подключиться не вышло. Пока человек видит экран установления (звонок уже активен
@@ -811,7 +979,12 @@ final class CallManager: NSObject, ObservableObject {
             guard let local = self.room?.localParticipant else { return }
             if await self.requestAudioPermission() {
                 do {
-                    _ = try await local.setMicrophone(enabled: true)
+                    if self.e2eeEnabled {
+                        // Затвор отправки: первые кадры — тишина, голос пойдёт после «OK» шифратора.
+                        try await self.publishGated(LocalAudioTrack.createTrack(), on: local)
+                    } else {
+                        _ = try await local.setMicrophone(enabled: true)
+                    }
                 } catch {
                     // Разрешение есть, но микрофон не поднялся (занят, сбой устройства) —
                     // входим без него, как и при отказе, и честно показываем это.
@@ -833,7 +1006,7 @@ final class CallManager: NSObject, ObservableObject {
                 cameraEnabled = await self.requestCameraPermission()
             }
             if cameraEnabled {
-                _ = try? await local.setCamera(enabled: true)
+                await self.enableCameraGated()
                 try? await Task.sleep(nanoseconds: 350_000_000)
                 await self.applySelectedCamera() // уважаем заранее выбранную камеру; иначе no-op (фронтальная)
             }
@@ -1055,6 +1228,10 @@ final class CallManager: NSObject, ObservableObject {
         encryptionFailed = false
         retryCall = nil
         groupHint = nil
+        joinedLiveCall = false
+        resolvedGroup = nil
+        peerUnencryptedAbort = false
+        sendGate.removeAll()
         ringer.stop() // роль IncomingCallService.stop
         disableProximity()
         activeSince = nil
@@ -1260,6 +1437,13 @@ extension CallManager: RoomDelegate {
             if let cid = self.conversationId {
                 self.realtime.joinCallRoom(conversationId: cid, video: self.isVideoCall)
             }
+            // Участники, бывшие в комнате до нас, приходят без отдельных didPublishTrack.
+            for participant in room.remoteParticipants.values {
+                for case let publication as RemoteTrackPublication in participant.trackPublications.values {
+                    self.blockIfUnencrypted(publication, participant: participant)
+                }
+            }
+            guard self.room != nil else { return }
             self.enableLocalTracks()
             self.startPingLoop()
             self.promoteGroupOutgoingToActive()
@@ -1307,7 +1491,11 @@ extension CallManager: RoomDelegate {
     // пересобирает список участников.
 
     func room(_ room: Room, participant: RemoteParticipant, didSubscribeTrack publication: RemoteTrackPublication) {
-        refreshOnMain(room)
+        DispatchQueue.main.async {
+            guard room === self.room else { return }
+            self.blockIfUnencrypted(publication, participant: participant)
+            self.refresh()
+        }
     }
 
     func room(_ room: Room, participant: RemoteParticipant, didUnsubscribeTrack publication: RemoteTrackPublication) {
@@ -1315,7 +1503,20 @@ extension CallManager: RoomDelegate {
     }
 
     func room(_ room: Room, participant: RemoteParticipant, didPublishTrack publication: RemoteTrackPublication) {
-        refreshOnMain(room)
+        DispatchQueue.main.async {
+            guard room === self.room else { return }
+            self.blockIfUnencrypted(publication, participant: participant)
+            self.refresh()
+        }
+    }
+
+    /// Шифратор своей публикации доложил «OK» — затвор отправки этой дорожки открывается.
+    func room(_ room: Room, trackPublication: TrackPublication, didUpdateE2EEState state: E2EEState) {
+        guard state == .ok, let publication = trackPublication as? LocalTrackPublication else { return }
+        DispatchQueue.main.async {
+            guard room === self.room else { return }
+            self.openSendGate(publication, reason: "шифратор OK")
+        }
     }
 
     func room(_ room: Room, participant: RemoteParticipant, didUnpublishTrack publication: RemoteTrackPublication) {

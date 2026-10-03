@@ -21,7 +21,9 @@ enum RealtimeEvent {
     case secretChatAccepted(conversationId: String, peerDeviceId: String)
 
     case callIncoming(conversationId: String, fromUserId: String, fromName: String, video: Bool)
-    case callAccepted(conversationId: String, byUserId: String, video: Bool)
+    /// `live` — ответ на приглашение в УЖЕ идущий разговор (вход своим вторым устройством),
+    /// а не ответ собеседника на новый звонок (сервер, ревью этапа 0 E2EE).
+    case callAccepted(conversationId: String, byUserId: String, video: Bool, live: Bool)
     case callDeclined(conversationId: String, byUserId: String)
     case callEnded(conversationId: String, byUserId: String)
 }
@@ -51,13 +53,16 @@ struct CallByPayload: Decodable {
     let conversationId: String
     var by: CallPeer?
     var video: Bool = false
+    /// Только у call:accepted: вход в уже идущий разговор.
+    var live: Bool = false
 
-    private enum CodingKeys: String, CodingKey { case conversationId, by, video }
+    private enum CodingKeys: String, CodingKey { case conversationId, by, video, live }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         conversationId = try c.decode(String.self, forKey: .conversationId)
         by = try c.decodeIfPresent(CallPeer.self, forKey: .by)
         video = try c.decodeIfPresent(Bool.self, forKey: .video) ?? false
+        live = try c.decodeIfPresent(Bool.self, forKey: .live) ?? false
     }
 }
 
