@@ -32,16 +32,23 @@
 #                           что id из строки EB_PROOF (env-proof.test.ts) в боевых Postgres/Redis нет
 #   status                  что запущено и куда смотрит
 #   down [--purge]          снести контейнеры (tmpfs — данные исчезают); --purge — ещё и $EB_TEST_HOME
+#
+# Второй (третий…) экземпляр рядом — когда первый занят чужим прогоном или постоянным стендом:
+#   EB_TEST_HOME=/DATA/eb-secret-test-w2 EB_TEST_PROJECT=eb-secret-test-w2 \
+#   EB_TEST_PG_PORT=55443 EB_TEST_REDIS_PORT=56390 test/secret-env/secret-test.sh up
+# (и те же четыре переменные на КАЖДЫЙ вызов run/reset/down этого экземпляра). Свои контейнеры,
+# своя tmpfs-БД, свой work/ и свой .lock; guard.ts берёт порты из .env.test экземпляра.
+# Без переменных — прежний экземпляр eb-secret-test на 55433/56380.
 set -euo pipefail
 
 REPO="${EB_REPO:-/DATA/eblusha-plus}"
 TEST_HOME="${EB_TEST_HOME:-/DATA/eb-secret-test}"
 WORK="$TEST_HOME/work"
 ENV_TEST="$TEST_HOME/.env.test"
-PROJECT=eb-secret-test
+PROJECT="${EB_TEST_PROJECT:-eb-secret-test}"
 DC_FILE="$REPO/test/secret-env/docker-compose.yml"
-PG_PORT=55433
-REDIS_PORT=56380
+PG_PORT="${EB_TEST_PG_PORT:-55433}"
+REDIS_PORT="${EB_TEST_REDIS_PORT:-56380}"
 MARKER_KEY="eb-secret-test:marker"
 MARKER="eb-secret-test"
 # Боевые контейнеры — только для prod-proof, только чтение.
@@ -60,6 +67,9 @@ sanity() {
     "" | / | "$REPO" | "$REPO"/*) fail "EB_TEST_HOME=$TEST_HOME недопустим (пусто, корень или внутри боевого дерева)" ;;
   esac
   [[ "$(basename "$TEST_HOME")" == *eb-secret-test* ]] || fail "имя EB_TEST_HOME должно содержать eb-secret-test (страховка для rm -rf)"
+  [[ "$PROJECT" =~ ^eb-secret-test[a-z0-9-]*$ ]] || fail "EB_TEST_PROJECT=$PROJECT: ждём eb-secret-test[-суффикс]"
+  [[ "$PG_PORT" =~ ^[0-9]+$ && "$REDIS_PORT" =~ ^[0-9]+$ ]] || fail "EB_TEST_PG_PORT/EB_TEST_REDIS_PORT — числа"
+  ((PG_PORT != 5432 && REDIS_PORT != 6379 && PG_PORT != REDIS_PORT)) || fail "порты $PG_PORT/$REDIS_PORT — боевые или совпадают"
   [[ -f "$DC_FILE" ]] || fail "нет $DC_FILE"
 }
 

@@ -21,6 +21,7 @@ import {
 import { getStorageProvider } from "../lib/storage";
 import { deriveThumbKey as deriveThumbKeyShared } from "../lib/imageThumbs";
 import { enqueueImageThumb } from "../jobs/queue";
+import { recordUploadOwner } from "../lib/uploadOwners";
 
 const router = Router();
 
@@ -539,6 +540,8 @@ router.post(
         filePath: assembledPath,
       });
       if (!result) return;
+      // S7 (X1): запоминаем загрузчика — секретный реф/удаление этого объекта разрешены только ему.
+      await recordUploadOwner(result.path, String((req as any).user?.id ?? ""));
       removeUploadSession(uploadId);
       res.json(result);
     } catch (error) {
@@ -624,6 +627,9 @@ router.post("/", rateLimit({ name: "upload_init", windowMs: 60_000, max: 20 }), 
       }
       return;
     }
+
+    // S7 (X1): запоминаем загрузчика — секретный реф/удаление этого объекта разрешены только ему.
+    await recordUploadOwner(result.path, String((req as any).user?.id ?? ""));
 
     // Always remove temp file (we use diskStorage)
     if ((file as any).path) {

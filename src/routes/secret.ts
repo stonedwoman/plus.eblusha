@@ -24,6 +24,22 @@ import {
   secretHeaderEnforced,
   secretHeaderProblems,
 } from "../lib/secretHeader";
+import { addObs, bumpSecretObs, obsKind } from "../lib/secretObserve";
+import {
+  SECRET_SEND_REJECTED_CODE,
+  evaluateSecretSend,
+  secretSendEnforced,
+  type SecretSendVerdict,
+} from "../lib/secretSendGuard";
+import {
+  getUploadOwners,
+  normalizeObjectKey,
+  ownerAllows,
+  ownerDecision,
+  secretAttachOwnerEnforced,
+  secretAttachOwnerStrict,
+  type OwnerDecision,
+} from "../lib/uploadOwners";
 
 const router = Router();
 router.use(authenticate);
@@ -58,6 +74,7 @@ function rejectInvalidSecretHeaders(
   route: string,
   userId: string,
   headers: unknown[],
+  obsRoute: "send" | "push",
 ): boolean {
   const invalid: Array<{ index: number; kind: string; problems: string[] }> = [];
   headers.forEach((h, index) => {
@@ -80,6 +97,7 @@ function rejectInvalidSecretHeaders(
     },
     "secret-header-invalid"
   );
+  void bumpSecretObs({ [`s2.invalid.${obsRoute}.${enforce ? "enforce" : "log"}`]: invalid.length });
   if (!enforce) return false;
   res.status(400).json({
     message: "Invalid secret headerJson",
@@ -111,6 +129,86 @@ function logInvalidSecretRows(
     { route, ...where, [action]: rows.length, byKind },
     action === "hidden" ? "secret-header-hidden" : "secret-header-invalid-served"
   );
+  void bumpSecretObs({ [`s2.${action}.${route === "history" ? "history" : "pull"}`]: rows.length });
+}
+
+/**
+ * S3: лог и счётчики по вердиктам пачки /secret/send. Ничего не решает — решение (отбросить или
+ * принять) принимает маршрут по режиму `SECRET_SEND_ENFORCE`.
+ */
+function reportSecretSendVerdicts(
+  userId: string,
+  senderDeviceId: string | null,
+  verdicts: SecretSendVerdict[],
+  enforce: boolean,
+) {
+  const counts: Record<string, number> = {};
+  const byReason: Record<string, number> = {};
+  const byKind: Record<string, number> = {};
+  const legacyByKind: Record<string, number> = {};
+  const legacyByRelation: Record<string, number> = {};
+  for (const v of verdicts) {
+    const kind = obsKind(v.kind);
+    addObs(counts, `s3.checked.${kind}`);
+    if (v.reason) {
+      addObs(counts, `s3.${enforce ? "rejected" : "would_reject"}.${v.reason}.${kind}`);
+      byReason[v.reason] = (byReason[v.reason] ?? 0) + 1;
+      byKind[kind] = (byKind[kind] ?? 0) + 1;
+    }
+    if (v.legacyNoThreadId) {
+      const rel = v.legacyRelation ?? "stranger";
+      addObs(counts, `s3.legacy_no_threadid.${kind}.${rel}`);
+      legacyByKind[kind] = (legacyByKind[kind] ?? 0) + 1;
+      legacyByRelation[rel] = (legacyByRelation[rel] ?? 0) + 1;
+    }
+  }
+  const rejected = verdicts.filter((v) => v.reason).length;
+  if (rejected) {
+    logger.warn(
+      { userId, senderDeviceId, enforce, total: verdicts.length, rejected, byReason, byKind },
+      "secret-send-reject"
+    );
+  }
+  const legacy = verdicts.filter((v) => v.legacyNoThreadId).length;
+  if (legacy) {
+    logger.warn(
+      { userId, senderDeviceId, total: verdicts.length, legacy, byKind: legacyByKind, byRelation: legacyByRelation },
+      "secret-send-legacy-no-threadid"
+    );
+  }
+  void bumpSecretObs(counts);
+}
+
+/** S7: лог и счётчик решения по загрузчику секретного вложения. */
+function reportAttachOwner(
+  route: "ref" | "push" | "delete",
+  userId: string,
+  threadId: string,
+  decisions: OwnerDecision[],
+) {
+  const counts: Record<string, number> = {};
+  const enforce = secretAttachOwnerEnforced();
+  const strict = secretAttachOwnerStrict();
+  let foreign = 0;
+  let noRecord = 0;
+  for (const d of decisions) {
+    if (d === "other_owner") {
+      foreign += 1;
+      addObs(counts, `s7.${route}.${enforce ? "rejected" : "would_reject"}.other_owner`);
+    } else if (d === "no_record") {
+      noRecord += 1;
+      addObs(counts, `s7.${route}.${strict ? "rejected" : "allowed"}.no_owner`);
+    } else {
+      addObs(counts, `s7.${route}.owner`);
+    }
+  }
+  if (foreign) {
+    logger.warn({ route, userId, threadId, foreign, enforce }, "secret-attach-foreign-object");
+  }
+  if (noRecord) {
+    logger.warn({ route, userId, threadId, noRecord, strict }, "secret-attach-no-owner-record");
+  }
+  void bumpSecretObs(counts);
 }
 
 const sendSchema = z.object({
@@ -175,10 +273,29 @@ router.post("/send", rateLimit({ name: "secret_send", windowMs: 60_000, max: 300
 
   // S2: заголовок неверной формы навсегда клинит инбокс строгих клиентов (Android/iOS) —
   // такой пакет не принимаем целиком (до записи в БД, без частичного приёма).
-  if (rejectInvalidSecretHeaders(res, "POST /secret/send", userId, prepared.map((m) => m.storedHeader))) return;
+  if (rejectInvalidSecretHeaders(res, "POST /secret/send", userId, prepared.map((m) => m.storedHeader), "send")) return;
+
+  // S3: отправитель и получатель конверта связаны (см. lib/secretSendGuard). По умолчанию —
+  // лог-режим: нарушение только пишется в лог и счётчики, конверт принимается как раньше.
+  const enforceSend = secretSendEnforced();
+  const verdicts = await evaluateSecretSend(
+    userId,
+    prepared.map((m) => ({ toDeviceId: m.toDeviceId, header: m.storedHeader }))
+  );
+  reportSecretSendVerdicts(userId, senderDeviceId, verdicts, enforceSend);
+  const accepted = enforceSend ? prepared.filter((_, i) => !verdicts[i]!.reason) : prepared;
+  const rejectedResults = enforceSend
+    ? prepared
+        .map((m, i) => ({ m, v: verdicts[i]! }))
+        .filter(({ v }) => !!v.reason)
+        .map(({ m, v }) => ({ toDeviceId: m.toDeviceId, msgId: m.msgId, inserted: false, rejected: true, reason: v.reason }))
+    : [];
+  // Жёсткий режим отвечает 200 и при частичном, и при полном отказе: статус /send у клиентов
+  // прежний (на 4xx Android/iOS уходят в перерегистрацию устройства), а отброшенные конверты
+  // помечены в results `rejected:true` + `reason` (+ code в ответе).
 
   await prisma.$transaction(async (tx) => {
-    for (const m of prepared) {
+    for (const m of accepted) {
       try {
         await tx.secretMessage.create({
           data: {
@@ -211,7 +328,7 @@ router.post("/send", rateLimit({ name: "secret_send", windowMs: 60_000, max: 300
 
   const results = await enqueueSecretMessages(
     redis,
-    prepared.map((m) => ({
+    accepted.map((m) => ({
       toDeviceId: m.toDeviceId,
       msgId: m.msgId,
       ...(m.ttlSeconds !== undefined ? { ttlSeconds: m.ttlSeconds } : {}),
@@ -242,7 +359,8 @@ router.post("/send", rateLimit({ name: "secret_send", windowMs: 60_000, max: 300
 
   res.json({
     delivery: "at-least-once",
-    results,
+    results: [...results, ...rejectedResults],
+    ...(rejectedResults.length ? { code: SECRET_SEND_REJECTED_CODE, rejected: rejectedResults.length } : {}),
   });
 });
 
@@ -443,7 +561,7 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
   }
   // S2: заголовок без kind (zod-дефолт `{}`) или с неверными типами клинит историю
   // Android/iOS навсегда — не принимаем.
-  if (rejectInvalidSecretHeaders(res, "POST /secret/messages/push", userId, [parsed.data.headerJson])) return;
+  if (rejectInvalidSecretHeaders(res, "POST /secret/messages/push", userId, [parsed.data.headerJson], "push")) return;
   // S8 (X10): в закрытый тред сообщение по-прежнему принимаем (идемпотентность клиентов), но
   // не будим собеседника — ни secret:notify, ни пуш «Секретное сообщение». PENDING будим как раньше.
   const threadCancelled = (conv as any).secretStatus === "CANCELLED";
@@ -583,17 +701,26 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
   }
 
   // Best-effort: if message is an attachment reference, persist metadata-only ref for GC/delete workflows.
+  // S7 (X1): реф заводится только на объект, загруженный самим отправителем (или без записи о
+  // загрузчике — переходный режим). Сообщение доставлено в любом случае: это шифротекст, а реф —
+  // лишь метаданные для GC/удаления, и через него чужой объект больше не «присвоить».
   try {
     const header = parsed.data.headerJson as any;
-    const objectKey = String(header?.attachment?.objectKey ?? "").trim();
+    const objectKey = normalizeObjectKey(String(header?.attachment?.objectKey ?? ""));
     const expiresAtRaw = typeof header?.expiresAt === "string" ? String(header.expiresAt).trim() : "";
     const expiresAt = expiresAtRaw ? new Date(expiresAtRaw) : null;
     const expiresValid = !!(expiresAt && !Number.isNaN(expiresAt.getTime()));
-    if (parsed.data.contentType === "attachment" && objectKey) {
+    const decision =
+      parsed.data.contentType === "attachment" && objectKey
+        ? ownerDecision(await getUploadOwners([objectKey]), objectKey, userId)
+        : null;
+    if (decision) reportAttachOwner("push", userId, threadId, [decision]);
+    if (decision && ownerAllows(decision)) {
       await prisma.secretAttachmentRef.upsert({
         where: { threadId_objectKey: { threadId, objectKey } } as any,
+        // ownerUserId НЕ перезаписываем: раньше повторная регистрация чужого ключа делала
+        // регистрирующего «владельцем» рефа (правка скептика Б7).
         update: {
-          ownerUserId: userId,
           deletedAt: null,
           ...(expiresValid ? { expiresAt } : {}),
         },
@@ -629,7 +756,11 @@ router.post(
       return;
     }
     const threadId = parsed.data.threadId.trim();
-    const objectKey = parsed.data.objectKey.trim().replace(/^\//, "");
+    const objectKey = normalizeObjectKey(parsed.data.objectKey);
+    if (!objectKey) {
+      res.status(400).json({ message: "Invalid attachment ref payload" });
+      return;
+    }
     const membership = await prisma.conversationParticipant.findFirst({
       where: { conversationId: threadId, userId },
       select: { conversationId: true },
@@ -646,11 +777,18 @@ router.post(
       res.status(409).json({ message: "Thread is not SECRET" });
       return;
     }
+    // S7 (X1): регистрировать объект как секретное вложение может только загрузивший.
+    const decision = ownerDecision(await getUploadOwners([objectKey]), objectKey, userId);
+    reportAttachOwner("ref", userId, threadId, [decision]);
+    if (!ownerAllows(decision)) {
+      res.status(403).json({ message: "Only the uploader may register this object", code: "SECRET_ATTACHMENT_NOT_OWNER" });
+      return;
+    }
     const expiresAt = parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null;
     await prisma.secretAttachmentRef.upsert({
       where: { threadId_objectKey: { threadId, objectKey } } as any,
+      // ownerUserId НЕ перезаписываем (Б7): «владелец рефа» — кто зарегистрировал первым.
       update: {
-        ownerUserId: userId,
         deletedAt: null,
         ...(expiresAt ? { expiresAt } : {}),
       },
@@ -705,9 +843,9 @@ router.post(
     }
 
     const objectKeys = (parsed.data.objectKeys ?? [])
-      .map((k) => String(k).trim().replace(/^\//, ""))
+      .map((k) => normalizeObjectKey(String(k)))
       .filter(Boolean);
-    const refs = await prisma.secretAttachmentRef.findMany({
+    const found = await prisma.secretAttachmentRef.findMany({
       where: {
         threadId,
         deletedAt: null,
@@ -716,7 +854,13 @@ router.post(
       select: { id: true, objectKey: true },
       take: 1000,
     });
-    const keys = refs.map((r) => r.objectKey);
+    // S7 (X1): удалить объект может только загрузивший (решение владельца). Чужие объекты
+    // (в том числе загрузки собеседника по deleteAllThread) пропускаем, а не роняем запрос.
+    const owners = await getUploadOwners(found.map((r) => r.objectKey));
+    const decisions = found.map((r) => ownerDecision(owners, r.objectKey, userId));
+    if (decisions.length) reportAttachOwner("delete", userId, threadId, decisions);
+    const refs = found.filter((_, i) => ownerAllows(decisions[i]!));
+    const skippedNotOwner = found.length - refs.length;
     const now = new Date();
     if (refs.length) {
       await prisma.secretAttachmentRef.updateMany({
@@ -724,6 +868,19 @@ router.post(
         data: { deletedAt: now },
       });
     }
+    // Объект, на который ещё ссылается живой реф ДРУГОГО треда, не трогаем (как в S6).
+    const refKeys = Array.from(new Set(refs.map((r) => r.objectKey)));
+    const stillUsed = refKeys.length
+      ? new Set(
+          (
+            await prisma.secretAttachmentRef.findMany({
+              where: { objectKey: { in: refKeys }, deletedAt: null },
+              select: { objectKey: true },
+            })
+          ).map((r) => r.objectKey)
+        )
+      : new Set<string>();
+    const keys = refKeys.filter((k) => !stillUsed.has(k));
     const delResult = keys.length
       ? await deleteS3ObjectsByKeys(keys, { reason: "secret_attachment_delete" })
       : { ok: true, deleted: 0 };
@@ -731,6 +888,7 @@ router.post(
       ok: true,
       threadId,
       affectedRefs: refs.length,
+      ...(skippedNotOwner ? { skippedNotOwner } : {}),
       storage: delResult,
     });
   }

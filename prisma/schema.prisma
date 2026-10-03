@@ -486,6 +486,18 @@ model SecretAttachmentRef {
   @@map("secret_attachment_refs")
 }
 
+/// S7 (X1): who uploaded a storage object via /api/upload. Secret attachment refs and deletes
+/// are allowed only for the uploader (src/lib/uploadOwners.ts, raw SQL access).
+/// No FK: objects outlive nothing here, and a missing row means "uploaded before this table".
+model UploadOwner {
+  objectKey String   @id @map("objectKey")
+  userId    String   @map("userId")
+  createdAt DateTime @default(now()) @map("createdAt")
+
+  @@index([userId, createdAt])
+  @@map("upload_owners")
+}
+
 /// One-time pairing token for linking a new device to an existing trusted device.
 model DevicePairing {
   token              String    @id
