@@ -3,7 +3,11 @@
  *   S3 — связь отправителя и получателя в POST /secret/send (H01/H03/H06/H07/X2/X4 от посторонних):
  *        по умолчанию ЛОГ-РЕЖИМ (принимаем как раньше, пишем лог + счётчики secret:obs),
  *        SECRET_SEND_ENFORCE=1 — жёсткий режим волны 3 (нарушивший конверт отбрасывается).
- *        Легаси thread_key без threadId в заголовке (Б1) пропускается в ОБОИХ режимах, со счётчиком.
+ *        Легаси thread_key без threadId в заголовке (Б1) пропускается только себе или при общей ACTIVE-
+ *        секретке (иначе legacy_stranger: старые клиенты берут тред из payload); control/
+ *        key_resend_request/prekeys_needed без threadId — thread_id_missing; key_package без
+ *        packageKind или с нестандартным — bad_package_kind; PENDING-тред, заведённый посторонним,
+ *        не открывает межпользовательские prekeys_needed/control/key_resend_request.
  *   S7 — учёт загрузчика: регистрировать/удалять секретный файл может только загрузивший (X1);
  *        «нет записи-владельца = разрешить» (переходный режим), SECRET_ATTACH_OWNER_STRICT=1 — строгий,
  *        SECRET_ATTACH_OWNER_ENFORCE=0 — аварийный (только лог).
@@ -292,6 +296,16 @@ async function main() {
       assert.equal(log[0]!.obj.byReason?.sender_not_participant, 1, JSON.stringify(log[0]!.obj));
       assert.ok((await obsDelta(before, "s3.would_reject.sender_not_participant.key_package")) >= 1, "счётчик would_reject");
     });
+    await step("S3/log: легаси thread_key без threadId от постороннего C → ПРИНЯТ, но в счётчике would_reject.legacy_stranger", async () => {
+      const before = await obs();
+      const e = env1(B.dev, threadKeyHdr(null, C.dev));
+      const r = await send(C, [e]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.ok(!(r.body.results as any[]).some((x) => x.rejected), JSON.stringify(r.body.results));
+      assert.ok(await delivered(B, B.dev, e.msgId), "в лог-режиме конверт доставлен");
+      assert.ok((await obsDelta(before, "s3.would_reject.legacy_stranger.key_package")) >= 1, "счётчик would_reject.legacy_stranger");
+      assert.ok((await obsDelta(before, "s3.legacy_no_threadid.key_package.stranger")) >= 1);
+    });
     await step("S3/log: честный поток (A→B thread_key в ACTIVE, B→A key_receipt) — без лога отказа", async () => {
       const mark = captured.length;
       const e1 = env1(B.dev, threadKeyHdr(T, A1));
@@ -389,21 +403,97 @@ async function main() {
         const r3 = await send(A, [env1(C.dev, controlHdr(T, "key_receipt"))], A1);
         assert.equal(r3.body.results?.[0]?.reason, "recipient_not_participant");
       });
-      await step("S3/enforce: легаси thread_key БЕЗ threadId в заголовке пропускается (Б1) — со счётчиком по отношению (self/shared_secret/stranger)", async () => {
+      await step("S3/enforce: легаси thread_key БЕЗ threadId (Б1): себе и собеседнику по ACTIVE-секретке — доставлены; постороннему и по одной лишь PENDING — legacy_stranger", async () => {
         const before = await obs();
         const mark = captured.length;
         const toSelf = env1(A2, threadKeyHdr(null, A1));
         const toPeer = env1(B.dev, threadKeyHdr(null, A1));
         const fromStranger = env1(B.dev, threadKeyHdr(null, C.dev));
-        assert.equal((await send(A, [toSelf, toPeer], A1)).status, 200);
-        assert.equal((await send(C, [fromStranger])).status, 200);
+        const pendingOnly = env1(A1, threadKeyHdr(null, D.dev)); // A↔D — только PENDING-тред TP
+        const rA = await send(A, [toSelf, toPeer], A1);
+        assert.equal(rA.status, 200, JSON.stringify(rA.body));
+        assert.ok(!(rA.body.results as any[]).some((x) => x.rejected), JSON.stringify(rA.body.results));
+        const rC = await send(C, [fromStranger]);
+        assert.equal(rC.status, 200, JSON.stringify(rC.body));
+        assert.equal(rC.body.results?.[0]?.rejected, true, JSON.stringify(rC.body));
+        assert.equal(rC.body.results?.[0]?.reason, "legacy_stranger");
+        const rD = await send(D, [pendingOnly]);
+        assert.equal(rD.body.results?.[0]?.reason, "legacy_stranger", JSON.stringify(rD.body));
         assert.ok(await delivered(A, A2, toSelf.msgId));
         assert.ok(await delivered(B, B.dev, toPeer.msgId));
-        assert.ok(await delivered(B, B.dev, fromStranger.msgId));
+        assert.ok(!(await delivered(B, B.dev, fromStranger.msgId)), "подмена ключа посторонним без threadId не доставлена");
+        assert.ok(!(await delivered(A, A1, pendingOnly.msgId)), "PENDING-тред не делает «своим»");
         assert.ok((await obsDelta(before, "s3.legacy_no_threadid.key_package.self")) >= 1);
         assert.ok((await obsDelta(before, "s3.legacy_no_threadid.key_package.shared_secret")) >= 1);
-        assert.ok((await obsDelta(before, "s3.legacy_no_threadid.key_package.stranger")) >= 1);
+        assert.ok((await obsDelta(before, "s3.legacy_no_threadid.key_package.stranger", 2)) >= 2);
+        assert.ok((await obsDelta(before, "s3.rejected.legacy_stranger.key_package", 2)) >= 2);
         assert.ok(logsSince(mark, "secret-send-legacy-no-threadid").length >= 2);
+      });
+      await step("S3/enforce: control / key_resend_request / prekeys_needed БЕЗ threadId — thread_id_missing (легаси-пропуска нет), даже от участника", async () => {
+        const fromC = [
+          env1(B.dev, { kind: "prekeys_needed", v: 1, ts: Date.now() }),
+          env1(B.dev, { kind: "control", v: 1, type: "key_request", requesterDeviceId: C.dev, ts: Date.now() }),
+          env1(B.dev, { kind: "key_resend_request", v: 1, requesterUserId: C.id, requesterDeviceId: C.dev, ts: Date.now() }),
+        ];
+        const rC = await send(C, fromC);
+        assert.equal(rC.status, 200, JSON.stringify(rC.body));
+        assert.equal((rC.body.results as any[]).filter((x) => x.rejected && x.reason === "thread_id_missing").length, 3, JSON.stringify(rC.body));
+        const fromA = env1(B.dev, { kind: "prekeys_needed", v: 1, ts: Date.now() });
+        const rA = await send(A, [fromA], A1);
+        assert.equal(rA.body.results?.[0]?.reason, "thread_id_missing");
+        const box = await inboxIds(B, B.dev);
+        for (const e of [...fromC, fromA]) assert.ok(!box.has(e.msgId), `не доставлен ${e.msgId}`);
+      });
+      await step("S3/enforce: key_package без packageKind / «THREAD_KEY» / мусор — bad_package_kind (старый веб берёт вид из payload); от участника тоже", async () => {
+        const noKind = threadKeyHdr(null, C.dev) as Record<string, unknown>;
+        delete noKind.packageKind;
+        const upper = { ...threadKeyHdr(T, C.dev), packageKind: "THREAD_KEY" };
+        const junk = { ...linkKeysHdr(C.dev), packageKind: "device_link_keys_v2" };
+        const envs = [env1(B.dev, noKind), env1(B.dev, upper), env1(B.dev, junk)];
+        const rC = await send(C, envs);
+        assert.equal(rC.status, 200, JSON.stringify(rC.body));
+        assert.equal((rC.body.results as any[]).filter((x) => x.rejected && x.reason === "bad_package_kind").length, 3, JSON.stringify(rC.body));
+        const fromA = threadKeyHdr(T, A1) as Record<string, unknown>;
+        delete fromA.packageKind;
+        const eA = env1(B.dev, fromA);
+        const rA = await send(A, [eA], A1);
+        assert.equal(rA.body.results?.[0]?.reason, "bad_package_kind");
+        const box = await inboxIds(B, B.dev);
+        for (const e of [...envs, eA]) assert.ok(!box.has(e.msgId), `не доставлен ${e.msgId}`);
+      });
+      await step("S3/enforce: посторонний C сам заводит PENDING-тред с B → prekeys_needed / key_request / key_resend_request / thread_key по нему — thread_not_active", async () => {
+        const TPC = await createSecretThread(C, B); // приглашение без согласия B
+        const envs = [
+          env1(B.dev, { kind: "prekeys_needed", v: 1, threadId: TPC, ts: Date.now() }),
+          env1(B.dev, controlHdr(TPC, "key_request", { requesterDeviceId: C.dev, fromDeviceId: C.dev })),
+          env1(B.dev, { kind: "key_resend_request", v: 1, threadId: TPC, requesterUserId: C.id, requesterDeviceId: C.dev, ts: Date.now() }),
+          env1(B.dev, threadKeyHdr(TPC, C.dev)),
+        ];
+        const r = await send(C, envs);
+        assert.equal(r.status, 200, JSON.stringify(r.body));
+        assert.equal((r.body.results as any[]).filter((x) => x.rejected && x.reason === "thread_not_active").length, 4, JSON.stringify(r.body));
+        const box = await inboxIds(B, B.dev);
+        for (const e of envs) assert.ok(!box.has(e.msgId), `не доставлен ${e.msgId}`);
+        // своим устройствам по PENDING — можно (синхронизация своих)
+        const self = env1(A2, { kind: "prekeys_needed", v: 1, threadId: TP, ts: Date.now() });
+        const rs = await send(A, [self], A1);
+        assert.ok(!rs.body.results?.[0]?.rejected, JSON.stringify(rs.body));
+        assert.ok(await delivered(A, A2, self.msgId));
+      });
+      await step("S3/enforce: CANCELLED — control собеседнику доставляется (честная «сверка»), prekeys_needed — нет", async () => {
+        const E = await mkUser("e");
+        const TC = await createSecretThread(A, E);
+        await accept(E, TC);
+        const dec = await call("POST", `/api/threads/secret/${TC}/decline`, { token: E.token, device: E.dev });
+        assert.equal(dec.status, 200, JSON.stringify(dec.body));
+        const receipt = env1(A1, controlHdr(TC, "key_receipt", { fromDeviceId: E.dev }));
+        const nudge = env1(A1, { kind: "prekeys_needed", v: 1, threadId: TC, ts: Date.now() });
+        const r = await send(E, [receipt, nudge]);
+        assert.equal(r.status, 200, JSON.stringify(r.body));
+        const res = r.body.results as any[];
+        assert.ok(!res.find((x) => x.msgId === receipt.msgId)?.rejected, JSON.stringify(res));
+        assert.equal(res.find((x) => x.msgId === nudge.msgId)?.reason, "thread_not_active");
+        assert.ok(await delivered(A, A1, receipt.msgId));
       });
       await step("S3/enforce: прочие kind (msg, self_check, без headerJson, неизвестный) живому устройству — без правил по содержимому", async () => {
         const envs = [env1(B.dev, { kind: "self_check", v: 1 }), env1(B.dev), env1(B.dev, { kind: "brand_new_kind", v: 1 })];

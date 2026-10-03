@@ -13,8 +13,9 @@
  *   s3.checked.<kind>                          — сколько конвертов /secret/send проверено;
  *   s3.would_reject.<reason>.<kind>            — нарушения S3 в лог-режиме (конверт ПРИНЯТ);
  *   s3.rejected.<reason>.<kind>                — нарушения S3 в жёстком режиме (конверт отброшен);
- *   s3.legacy_no_threadid.<kind>.<relation>    — тредовый конверт без threadId в заголовке
- *                                                (пропускается всегда; relation: self|shared_secret|stranger);
+ *   s3.legacy_no_threadid.<kind>.<relation>    — thread_key без threadId в заголовке (легаси);
+ *                                                relation: self|shared_secret (общая ACTIVE-секретка)
+ *                                                — пропускается, stranger — нарушение legacy_stranger;
  *   s2.invalid.<route>.<enforce|log>           — заголовок неверной формы на входе;
  *   s2.hidden.<route> / s2.served.<route>      — такие записи на выдаче;
  *   s7.<event>                                 — учёт загрузчика секретных вложений (см. secret.ts).
