@@ -10,6 +10,7 @@
     "yagluth",
     "queen",
     "fader",
+    "frozenking",
   ];
 
   var FALLBACK_BOSS_NAMES = {
@@ -20,6 +21,7 @@
     yagluth: "Яглут",
     queen: "Королева",
     fader: "Прародитель",
+    frozenking: "Келл Вестник Зимы",
   };
 
   function getV() {
@@ -33,6 +35,88 @@
   var tipsCache = null;
   var tipsLoading = null;
   var lastBossesJson = null;
+
+  // ---- живые отметки из игры (плагин WebMap: /v/api/bosses) ----
+  // Сохранение мира пишется раз в 30 минут, и по нему убитый босс появлялся с
+  // опозданием до получаса. Плагин отдаёт ключи поражения прямо из игры —
+  // когда он отвечает, верим ему; иначе остаётся то, что прочитано из
+  // сохранения. Боссов, которых сайт ещё не знает (новые версии игры), плагин
+  // тоже приносит — они встают в конец списка под игровым русским именем.
+  var BOSS_PREFABS = [
+    ["Eikthyr", "eikthyr"],
+    ["gd_king", "elder"],
+    ["Bonemass", "bonemass"],
+    ["Dragon", "moder"],
+    ["GoblinKing", "yagluth"],
+    ["SeekerQueen", "queen"],
+    ["Fader", "fader"],
+    ["FrozenKing", "frozenking"], // и его фазы FrozenKing_p2, FrozenKing_p3
+  ];
+  var DEFEAT_KEYS = {
+    defeated_eikthyr: "eikthyr",
+    defeated_gdking: "elder",
+    defeated_bonemass: "bonemass",
+    defeated_dragon: "moder",
+    defeated_goblinking: "yagluth",
+    defeated_queen: "queen",
+    defeated_fader: "fader",
+  };
+  var BOSS_POLL_MS = 15000;
+  // Откуда советы, если не с вики (там раздел пуст).
+  var TIPS_SOURCE = {
+    frozenking: "Источник: гайд Mobalytics «Kall Fimbulbringer Boss Guide» (AuraAmile), перевод; названия — из русской версии игры",
+  };
+  var liveBosses = null; // { key: true/false } из игры, null — плагин молчит
+  var liveExtra = []; // [{ key, name }] — боссы, которых нет в BOSS_KEYS_ORDER
+  var liveNames = {};
+  var lastLiveJson = "";
+  var lastRoot = null;
+  var lastWorld = null;
+
+  function siteKeyOf(b) {
+    var p = String(b.p || "");
+    for (var i = 0; i < BOSS_PREFABS.length; i++) {
+      var pre = BOSS_PREFABS[i][0];
+      if (p === pre || p.indexOf(pre + "_") === 0) return BOSS_PREFABS[i][1];
+    }
+    if (b.k && DEFEAT_KEYS[b.k]) return DEFEAT_KEYS[b.k];
+    return p ? "x_" + p.toLowerCase() : null;
+  }
+
+  function pollBosses() {
+    if (document.visibilityState === "hidden") return;
+    fetch("/v/api/bosses", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || d.ok !== true || !Array.isArray(d.bosses)) return;
+        var live = {};
+        var extra = [];
+        var names = {};
+        d.bosses.forEach(function (b) {
+          var key = siteKeyOf(b);
+          if (!key) return;
+          live[key] = !!live[key] || b.d === 1;
+          if (b.ru || b.en) names[key] = b.ru || b.en;
+          if (BOSS_KEYS_ORDER.indexOf(key) < 0 && !extra.some(function (x) { return x.key === key; })) {
+            extra.push({ key: key, name: b.ru || b.en || b.p });
+          }
+        });
+        var json = JSON.stringify([live, extra]);
+        if (json === lastLiveJson) return;
+        lastLiveJson = json;
+        liveBosses = live;
+        liveExtra = extra;
+        liveNames = names;
+        if (lastRoot) renderWorldInfo(lastRoot, lastWorld);
+      })
+      .catch(function () {});
+  }
+
+  if (typeof document !== "undefined") {
+    setTimeout(pollBosses, 1200);
+    setInterval(pollBosses, BOSS_POLL_MS);
+    document.addEventListener("visibilitychange", pollBosses);
+  }
   var resizeObs = null;
   var REDUCED_MOTION =
     typeof window !== "undefined" &&
@@ -430,7 +514,7 @@
   function bossName(key) {
     var V = getV();
     var m = (V && V.BOSS_NAMES_RU) || FALLBACK_BOSS_NAMES;
-    return m[key] || key;
+    return m[key] || liveNames[key] || key;
   }
 
   function bossWikiUrl(key) {
@@ -617,8 +701,18 @@
 
   function renderWorldInfo(root, world) {
     if (!root) return;
+    lastRoot = root;
+    lastWorld = world;
     var w = world && typeof world === "object" ? world : {};
     var bosses = w.bosses && typeof w.bosses === "object" ? w.bosses : {};
+    if (liveBosses) {
+      // Живые ключи из игры важнее сохранения, которое отстаёт до 30 минут.
+      var merged = {};
+      Object.keys(bosses).forEach(function (k) { merged[k] = bosses[k]; });
+      Object.keys(liveBosses).forEach(function (k) { merged[k] = liveBosses[k]; });
+      bosses = merged;
+    }
+    var order = BOSS_KEYS_ORDER.concat(liveExtra.map(function (x) { return x.key; }));
 
     // Опрос перерисовывает панель каждые ~20 с, а в событиях всегда меняется
     // secondsAgo, так что сравнивать весь world бесполезно. Сравниваем только
@@ -651,7 +745,7 @@
     } else {
       var bossList = document.createElement("div");
       bossList.className = "world-info__bosses";
-      BOSS_KEYS_ORDER.forEach(function (key) {
+      order.forEach(function (key) {
         var done = !!bosses[key];
         var nm = bossName(key);
         var wiki = bossWikiUrl(key);
@@ -722,7 +816,8 @@
         body.appendChild(tipsBox);
         var foot = document.createElement("div");
         foot.className = "boss-tile__foot";
-        foot.textContent = "Источник: страница «" + nm + "» русской Valheim-вики на Fandom · CC BY-SA";
+        foot.textContent = TIPS_SOURCE[key] ||
+          "Источник: страница «" + nm + "» русской Valheim-вики на Fandom · CC BY-SA";
         body.appendChild(foot);
         tile.appendChild(body);
 
