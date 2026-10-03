@@ -7,6 +7,7 @@ import { authenticate } from "../middlewares/auth";
 import { getRedisClient } from "../lib/redis";
 import prisma from "../lib/prisma";
 import { applyLivekitFactsEvent } from "../lib/livekitFacts";
+import { enforceCallEncryption } from "../lib/callEncryptionGuard";
 import { buildLivekitPublicUrl } from "../lib/livekitUrl";
 
 const router = Router();
@@ -31,6 +32,8 @@ router.post("/webhook", async (req, res) => {
   const rawBody = rawBodyBuffer.toString("utf8");
   const authHeader = req.get("Authorization") ?? undefined;
 
+  // Подпись LiveKit (JWT ключом LIVEKIT_API_KEY/SECRET + sha256 тела) обязательна: вебхук умеет
+  // выкидывать людей из звонков, так что неподписанный или чужой запрос — 401 и ничего больше.
   let event;
   try {
     event = await webhookReceiver.receive(rawBody, authHeader);
@@ -54,6 +57,13 @@ router.post("/webhook", async (req, res) => {
   if (dedupeInserted !== "OK") {
     res.json({ ok: true, duplicate: true });
     return;
+  }
+
+  // Звонок 1:1 без шифрования невозможен: открытая (encryption NONE) звуковая или видеодорожка
+  // в комнате беседы 1:1 → дорожку глушим, участника выкидываем (lib/callEncryptionGuard.ts).
+  // До записи фактов и независимо от неё: сбой БД фактов не должен отменять страховку.
+  if (event.event === "track_published") {
+    await enforceCallEncryption(event);
   }
 
   try {

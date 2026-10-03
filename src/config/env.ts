@@ -52,9 +52,13 @@ const envSchema = z.object({
   LIVEKIT_PATH: z.string().optional(), // напр. /api/voice — бэкенд построит ws(s)://host/api/voice из запроса
   LIVEKIT_API_KEY: z.string(),
   LIVEKIT_API_SECRET: z.string(),
-  // Feature flags
-  // Enable LiveKit E2EE for 1:1 calls (web/electron). Defaults to false.
-  E2EE_1TO1: z.coerce.boolean().default(false),
+  // Адрес API LiveKit для вызовов сервер→сервер (RoomService: вебхук выкидывает из звонка 1:1
+  // участника с незашифрованной дорожкой). Не задан — LIVEKIT_URL, иначе http://livekit:7880
+  // (контейнер в сети докера), см. lib/callEncryptionGuard.ts.
+  LIVEKIT_API_URL: z.string().url().optional(),
+  // Флага E2EE_1TO1 больше нет: шифрование звонков 1:1 включено всегда, выключить его нечем
+  // (его выключение отдавало 404 на ключ, а старые телефоны на 404 звонили открыто; к тому же
+  // z.coerce.boolean превращал «false» в true). Оставшаяся строка в .env просто игнорируется.
   REDIS_URL: z.string().url(),
   // Allow reading deviceId from socket handshake query (dev-only escape hatch). Default: false.
   ALLOW_DEVICE_QUERY: z.coerce.boolean().default(false),

@@ -88,7 +88,7 @@ CHAT_ENC_KEK=<base64, 32 байта — для шифрования DEK не-sec
 
 ```
 APP_ORIGIN=https://eblusha.org
-E2EE_1TO1=true
+LIVEKIT_API_URL=http://livekit:7880   # API LiveKit для бэкенда; по умолчанию LIVEKIT_URL или этот адрес
 JWT_ACCESS_EXPIRES_IN=15m
 JWT_REFRESH_EXPIRES_IN=180d
 YOUTUBE_API_KEY=<для YouTube preview>
@@ -102,7 +102,6 @@ STORAGE_ENC_V2=false
 ### Frontend (Vite, при сборке)
 
 ```
-VITE_E2EE_1TO1=true
 VITE_API_URL=                    # обычно пусто — берётся из origin
 VITE_WS_URL=                     # обычно пусто
 VITE_LIVEKIT_URL=                # если отличается от серверного

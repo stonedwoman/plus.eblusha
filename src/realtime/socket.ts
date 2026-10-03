@@ -5,7 +5,7 @@ import prisma from "../lib/prisma";
 import { buildIpLocationFromRaw } from "../lib/ipLocation";
 import env from "../config/env";
 import { createDedicatedRedisClient, getRedisClient } from "../lib/redis";
-import { generateCallE2eeSharedKeyBase64, getCallE2eeKey, getOrCreateCallE2eeKey, setCallE2eeKey } from "../lib/callE2ee";
+import { getOrCreateCallE2eeKey } from "../lib/callE2ee";
 import { MESSAGE_UPDATE_CHANNEL } from "./events";
 import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
@@ -2267,8 +2267,8 @@ export async function initSocket(
       });
 
       // 1:1 calls: generate a fresh shared E2EE key per call start (stored in Redis with TTL).
-      // Do NOT log the key value.
-      if (!isGroup && env.E2EE_1TO1) {
+      // Шифрование 1:1 включено всегда (флага E2EE_1TO1 больше нет). Do NOT log the key value.
+      if (!isGroup) {
         try {
           // Idempotent create-if-absent: repeated invites / glare must NOT regenerate the
           // key, or caller and callee land on different generations -> DECRYPTIONFAILED.
@@ -2412,16 +2412,13 @@ export async function initSocket(
       // and wire it into presence so everyone sees "IN_CALL" reliably (even though the web client
       // does not emit call:room:join for 1:1).
       if (!isGroup) {
-        // Ensure E2EE key exists (defense-in-depth).
-        if (env.E2EE_1TO1) {
-          try {
-            const existing = await getCallE2eeKey(conversationId);
-            if (!existing) {
-              await setCallE2eeKey(conversationId, generateCallE2eeSharedKeyBase64());
-            }
-          } catch (error) {
-            logger.error({ error, conversationId, userId }, "Failed to ensure call E2EE key");
-          }
+        // Ensure E2EE key exists (defense-in-depth). Тот же SET NX, что у invite и у
+        // GET /calls/:id/e2ee-key: «прочитать, потом записать» могло затереть ключ, который
+        // собеседник уже взял, — и звонок падал на расшифровке.
+        try {
+          await getOrCreateCallE2eeKey(conversationId);
+        } catch (error) {
+          logger.error({ error, conversationId, userId }, "Failed to ensure call E2EE key");
         }
         const startedAt = st?.startedAt ?? Date.now();
         const info = activeDirectCalls.get(conversationId) ?? { startedAt, participantsByUser: new Map<string, Set<string>>() };
