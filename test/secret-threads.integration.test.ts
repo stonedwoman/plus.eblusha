@@ -128,7 +128,7 @@ async function main() {
         threadId,
         msgId,
         createdAt: new Date().toISOString(),
-        headerJson: { v: 1, nonce: randomKeyB64() },
+        headerJson: { kind: "msg", v: 1, nonce: randomKeyB64() },
         ciphertext: randomKeyB64(),
         contentType: "text",
         schemaVersion: 1,
@@ -165,7 +165,7 @@ async function main() {
         threadId,
         msgId: msg2,
         createdAt: new Date(Date.now() + 1).toISOString(),
-        headerJson: { v: 1, nonce: randomKeyB64() },
+        headerJson: { kind: "msg", v: 1, nonce: randomKeyB64() },
         ciphertext: randomKeyB64(),
         contentType: "text",
         schemaVersion: 1,
@@ -181,7 +181,7 @@ async function main() {
         threadId,
         msgId: msg3,
         createdAt: new Date(Date.now() + 2).toISOString(),
-        headerJson: { v: 1, nonce: randomKeyB64() },
+        headerJson: { kind: "msg", v: 1, nonce: randomKeyB64() },
         ciphertext: randomKeyB64(),
         contentType: "text",
         schemaVersion: 1,
@@ -206,7 +206,12 @@ async function main() {
 }
 
 void main().then(
-  () => console.log("secret-threads.integration: ok"),
+  async () => {
+    console.log("secret-threads.integration: ok");
+    // Redis/Prisma/Socket.IO держат цикл событий — без явного выхода раннер снимает тест по таймауту.
+    await prisma.$disconnect().catch(() => undefined);
+    process.exit(0);
+  },
   (err) => {
     console.error("secret-threads.integration: failed", err);
     process.exit(1);

@@ -1,0 +1,145 @@
+import prisma from "./prisma";
+
+/**
+ * Смена состояния секретного треда (accept / decline) — ОДНА реализация для HTTP
+ * (`POST /threads/secret/:id/accept|decline`) и легаси-сокета (`secret:chat:accept|decline`).
+ *
+ * H08: раньше accept делал findUnique → проверки → безусловный update. Два устройства
+ * собеседника одновременно получали 200 (ключ уходил обоим), а accept, прочитавший тред
+ * до decline, переписывал CANCELLED обратно в ACTIVE. Теперь переход — один условный
+ * UPDATE (`WHERE secretStatus = PENDING` или «уже ACTIVE на ЭТОМ же устройстве»): Postgres
+ * перепроверяет условие на свежей версии строки, поэтому из гонки выходит ровно один
+ * победитель, а CANCELLED не воскресает.
+ *
+ * H09: легаси-сокет `secret:chat:accept` не проверял ни создателя, ни «уже принят другим
+ * устройством», ни `type`. Теперь он вызывает ту же функцию — правила у путей одинаковые.
+ */
+
+export type SecretThreadFailure = {
+  ok: false;
+  status: 403 | 404 | 409;
+  message: string;
+  code: string;
+};
+
+export type SecretAcceptSuccess = {
+  ok: true;
+  conversationId: string;
+  peerDeviceId: string;
+  participantIds: string[];
+  thread: any;
+};
+
+export type SecretDeclineSuccess = {
+  ok: true;
+  conversationId: string;
+  /** false — тред уже был CANCELLED (идемпотентный повтор): событий не рассылаем. */
+  changed: boolean;
+  participantIds: string[];
+};
+
+// Форма беседы для событий клиентам (как в threads.ts create/accept).
+export const secretThreadInclude = {
+  participants: {
+    include: {
+      user: { select: { id: true, username: true, displayName: true, avatarUrl: true } },
+    },
+  },
+} as const;
+
+const fail = (status: SecretThreadFailure["status"], message: string, code: string): SecretThreadFailure => ({
+  ok: false,
+  status,
+  message,
+  code,
+});
+
+// Тексты ошибок сохранены дословно: клиенты могли на них опираться.
+const NOT_FOUND = () => fail(404, "Secret thread not found", "SECRET_THREAD_NOT_FOUND");
+const FORBIDDEN = () => fail(403, "Forbidden", "FORBIDDEN");
+const CREATOR = () => fail(409, "The creator cannot accept their own invite", "SECRET_ACCEPT_BY_CREATOR");
+const DECLINED = () => fail(409, "Invite was declined", "SECRET_INVITE_DECLINED");
+const OTHER_DEVICE = () => fail(409, "Already accepted on another device", "SECRET_ACCEPTED_ON_OTHER_DEVICE");
+
+/**
+ * Принять приглашение на устройстве `deviceId`. Владение устройством (userId + не отозвано)
+ * проверяет ВЫЗЫВАЮЩИЙ (HTTP — resolveCurrentDeviceId, сокет — свой lookup).
+ */
+export async function acceptSecretThread(params: {
+  userId: string;
+  conversationId: string;
+  deviceId: string;
+}): Promise<SecretAcceptSuccess | SecretThreadFailure> {
+  const { userId, conversationId, deviceId } = params;
+
+  const conv = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    include: { participants: { select: { userId: true } } },
+  });
+  const c = conv as any;
+  if (!conv || c.type !== "SECRET" || c.isGroup) return NOT_FOUND();
+  const participantIds: string[] = c.participants.map((p: any) => p.userId);
+  if (!participantIds.includes(userId)) return FORBIDDEN();
+  // Принимает только СОБЕСЕДНИК: у создателя ключ уже есть.
+  if (c.createdById === userId) return CREATOR();
+  if (c.secretStatus === "CANCELLED") return DECLINED();
+  if (c.secretStatus === "ACTIVE" && c.secretPeerDeviceId && c.secretPeerDeviceId !== deviceId) return OTHER_DEVICE();
+
+  const outcome = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.conversation.updateMany({
+      where: {
+        id: conversationId,
+        type: "SECRET",
+        isGroup: false,
+        OR: [
+          { secretStatus: "PENDING" },
+          // Идемпотентный повтор с того же устройства (и старое ACTIVE без закреплённого устройства).
+          { secretStatus: "ACTIVE", secretPeerDeviceId: deviceId },
+          { secretStatus: "ACTIVE", secretPeerDeviceId: null },
+        ],
+      } as any,
+      data: { secretStatus: "ACTIVE", secretPeerDeviceId: deviceId } as any,
+    });
+    if (claimed.count === 0) {
+      // Проиграли гонку: перечитываем, чтобы ответить по делу.
+      const now = (await tx.conversation.findUnique({
+        where: { id: conversationId },
+        select: { secretStatus: true, secretPeerDeviceId: true },
+      })) as any;
+      if (!now) return NOT_FOUND();
+      if (now.secretStatus === "CANCELLED") return DECLINED();
+      return OTHER_DEVICE();
+    }
+    const thread = await tx.conversation.findUnique({
+      where: { id: conversationId },
+      include: secretThreadInclude,
+    });
+    return { thread };
+  });
+
+  if ("ok" in outcome) return outcome;
+  return { ok: true, conversationId, peerDeviceId: deviceId, participantIds, thread: outcome.thread };
+}
+
+/** Отклонить (собеседник) или отменить (создатель) — любой участник; → CANCELLED. */
+export async function declineSecretThread(params: {
+  userId: string;
+  conversationId: string;
+}): Promise<SecretDeclineSuccess | SecretThreadFailure> {
+  const { userId, conversationId } = params;
+  const conv = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    include: { participants: { select: { userId: true } } },
+  });
+  const c = conv as any;
+  if (!conv || c.type !== "SECRET" || c.isGroup) return NOT_FOUND();
+  const participantIds: string[] = c.participants.map((p: any) => p.userId);
+  if (!participantIds.includes(userId)) return FORBIDDEN();
+  if (c.secretStatus === "CANCELLED") return { ok: true, conversationId, changed: false, participantIds };
+
+  const res = await prisma.conversation.updateMany({
+    where: { id: conversationId, type: "SECRET", secretStatus: { not: "CANCELLED" } } as any,
+    data: { secretStatus: "CANCELLED" } as any,
+  });
+  return { ok: true, conversationId, changed: res.count > 0, participantIds };
+}

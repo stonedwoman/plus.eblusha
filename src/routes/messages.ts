@@ -8,6 +8,11 @@ import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 import { enqueueLinkPreview } from "../jobs/queue";
 import { rateLimit } from "../middlewares/rateLimit";
+import {
+  isSecretConversation,
+  logSecretCloudWriteBlocked,
+  rejectSecretCloudWrite,
+} from "../lib/secretLatch";
 
 const router = Router();
 
@@ -19,6 +24,19 @@ const messageReactionsWithUser = {
 type AuthedRequest = Request & { user?: { id: string } };
 
 router.use(authenticate);
+
+/** Беседа сообщения — для защёлки S1 (секретная беседа: облачные Message не трогаем). */
+async function conversationKind(conversationId: string) {
+  return prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { type: true, isSecret: true },
+  });
+}
+
+async function isConversationMember(conversationId: string, userId: string): Promise<boolean> {
+  const n = await prisma.conversationParticipant.count({ where: { conversationId, userId } });
+  return n > 0;
+}
 
 const previewParamsSchema = z.object({ messageId: z.string().cuid() });
 
@@ -61,11 +79,9 @@ router.get(
   }
 
   // Do not generate previews for secret chats (privacy).
-  const conv = await prisma.conversation.findUnique({
-    where: { id: message.conversationId },
-    select: { isSecret: true, secretStatus: true },
-  });
-  const isSecret = Boolean((conv as any)?.isSecret) && (conv as any)?.secretStatus !== "CANCELLED";
+  // В секретной беседе (в т.ч. CANCELLED) облачную строку не трогаем вовсе (S1).
+  const conv = await conversationKind(message.conversationId);
+  const isSecret = isSecretConversation(conv);
 
   const meta = (message as any).metadata && typeof (message as any).metadata === "object" ? (message as any).metadata : null;
   const existingPreview = meta?.linkPreview ?? null;
@@ -207,6 +223,16 @@ router.post("/react", async (req, res) => {
     res.status(404).json({ message: "Message not found" });
     return;
   }
+  // Реагировать можно только на сообщения своих бесед (раньше — на любое по id).
+  if (!(await isConversationMember(message.conversationId, userId))) {
+    res.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  if (isSecretConversation(await conversationKind(message.conversationId))) {
+    logSecretCloudWriteBlocked("POST /messages/react", { conversationId: message.conversationId, userId, messageId });
+    rejectSecretCloudWrite(res);
+    return;
+  }
 
   const reaction = await prisma.messageReaction.upsert({
     where: {
@@ -240,6 +266,15 @@ router.post("/unreact", async (req, res) => {
     res.status(404).json({ message: "Message not found" });
     return;
   }
+  if (!(await isConversationMember(message.conversationId, userId))) {
+    res.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  if (isSecretConversation(await conversationKind(message.conversationId))) {
+    logSecretCloudWriteBlocked("POST /messages/unreact", { conversationId: message.conversationId, userId, messageId });
+    rejectSecretCloudWrite(res);
+    return;
+  }
 
   await prisma.messageReaction.deleteMany({
     where: {
@@ -268,6 +303,10 @@ router.post("/delete", async (req, res) => {
   const msg = await prisma.message.findUnique({ where: { id: messageId } });
   if (!msg) return res.status(404).json({ message: "Not found" });
   if (msg.senderId !== userId) return res.status(403).json({ message: "Forbidden" });
+  if (isSecretConversation(await conversationKind(msg.conversationId))) {
+    logSecretCloudWriteBlocked("POST /messages/delete", { conversationId: msg.conversationId, userId, messageId });
+    return rejectSecretCloudWrite(res);
+  }
 
   // Fetch attachment URLs before deletion so we can attempt to delete blobs in S3 as well.
   const attachmentUrls = (
@@ -335,6 +374,11 @@ router.post("/update", async (req, res) => {
   });
   if (!membership) {
     res.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  if (isSecretConversation(await conversationKind(existing.conversationId))) {
+    logSecretCloudWriteBlocked("POST /messages/update", { conversationId: existing.conversationId, userId, messageId });
+    rejectSecretCloudWrite(res);
     return;
   }
 

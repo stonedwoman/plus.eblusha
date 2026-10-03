@@ -3,6 +3,7 @@ import IORedis from "ioredis";
 import env from "../../config/env";
 import logger from "../../config/logger";
 import prisma from "../../lib/prisma";
+import { isSecretConversation } from "../../lib/secretLatch";
 import { incCounter, setGauge } from "../../obs/metrics";
 import { publishMessageUpdate } from "../../realtime/events";
 import { getLinkPreviewQueueDepth, type LinkPreviewJob } from "../queue";
@@ -32,10 +33,10 @@ export function startLinkPreviewWorker() {
 
       const conv = await prisma.conversation.findUnique({
         where: { id: conversationId },
-        select: { isSecret: true, secretStatus: true },
+        select: { type: true, isSecret: true },
       });
-      const isSecret = Boolean((conv as any)?.isSecret) && (conv as any)?.secretStatus !== "CANCELLED";
-      if (isSecret) return { skipped: "secret_disabled" };
+      // В секретной беседе (любой статус) облачную строку не трогаем (S1, lib/secretLatch).
+      if (!conv || isSecretConversation(conv)) return { skipped: "secret_disabled" };
 
       const meta =
         message.metadata && typeof message.metadata === "object"

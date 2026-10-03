@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma";
 import { resolveCurrentDeviceId } from "../lib/currentDevice";
+import { acceptSecretThread, declineSecretThread } from "../lib/secretThreadState";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 
@@ -123,6 +124,8 @@ router.post("/secret", async (req, res) => {
 
 // The peer accepts the secret-chat invite on exactly ONE of their devices. Pins that device as the
 // key recipient and flips PENDING → ACTIVE; the creator then keys only this device.
+// Переход атомарный (условный UPDATE, см. lib/secretThreadState): из гонки двух устройств
+// выходит ровно один 200, accept после decline не воскрешает CANCELLED.
 router.post("/secret/:id/accept", async (req, res) => {
   const userId = (req as AuthedRequest).user!.id;
   const conversationId = String(req.params.id || "").trim();
@@ -137,52 +140,21 @@ router.post("/secret/:id/accept", async (req, res) => {
     return;
   }
 
-  const conv = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-    include: { participants: { select: { userId: true } } },
-  });
-  const c = conv as any;
-  if (!conv || c.type !== "SECRET" || c.isGroup) {
-    res.status(404).json({ message: "Secret thread not found" });
+  const result = await acceptSecretThread({ userId, conversationId, deviceId });
+  if (!result.ok) {
+    res.status(result.status).json({ message: result.message, code: result.code });
     return;
   }
-  const isMember = (conv as any).participants.some((p: any) => p.userId === userId);
-  if (!isMember) {
-    res.status(403).json({ message: "Forbidden" });
-    return;
-  }
-  // Only the PEER accepts (the creator's device already holds the key).
-  if (c.createdById === userId) {
-    res.status(409).json({ message: "The creator cannot accept their own invite" });
-    return;
-  }
-  if (c.secretStatus === "CANCELLED") {
-    res.status(409).json({ message: "Invite was declined" });
-    return;
-  }
-  // Idempotent: if already accepted on THIS device, just re-emit; a different device re-accepting
-  // is rejected so a second peer device can't hijack the key recipient.
-  if (c.secretStatus === "ACTIVE" && c.secretPeerDeviceId && c.secretPeerDeviceId !== deviceId) {
-    res.status(409).json({ message: "Already accepted on another device" });
-    return;
-  }
-
-  const updated = await prisma.conversation.update({
-    where: { id: conversationId },
-    data: { secretStatus: "ACTIVE", secretPeerDeviceId: deviceId } as any,
-    include: conversationInclude,
-  });
 
   try {
     const io = getIO();
-    const participantIds = (conv as any).participants.map((p: any) => p.userId);
-    for (const rid of participantIds) {
+    for (const rid of result.participantIds) {
       io?.to(userRoom(rid)).emit("secret:chat:accepted", { conversationId, peerDeviceId: deviceId });
-      io?.to(userRoom(rid)).emit("conversations:updated", { conversationId, conversation: updated });
+      io?.to(userRoom(rid)).emit("conversations:updated", { conversationId, conversation: result.thread });
     }
   } catch {}
 
-  res.json({ ok: true, conversationId, peerDeviceId: deviceId, thread: updated });
+  res.json({ ok: true, conversationId, peerDeviceId: deviceId, thread: result.thread });
 });
 
 // Decline (peer) or cancel (creator) a PENDING invite → CANCELLED, hidden on all devices.
@@ -194,38 +166,22 @@ router.post("/secret/:id/decline", async (req, res) => {
     return;
   }
 
-  const conv = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-    include: { participants: { select: { userId: true } } },
-  });
-  const c = conv as any;
-  if (!conv || c.type !== "SECRET" || c.isGroup) {
-    res.status(404).json({ message: "Secret thread not found" });
-    return;
-  }
-  const participantIds = (conv as any).participants.map((p: any) => p.userId);
-  if (!participantIds.includes(userId)) {
-    res.status(403).json({ message: "Forbidden" });
-    return;
-  }
-  if (c.secretStatus === "CANCELLED") {
-    res.json({ ok: true, conversationId }); // already gone — idempotent
+  const result = await declineSecretThread({ userId, conversationId });
+  if (!result.ok) {
+    res.status(result.status).json({ message: result.message, code: result.code });
     return;
   }
 
-  await prisma.conversation.update({
-    where: { id: conversationId },
-    data: { secretStatus: "CANCELLED" } as any,
-  });
+  if (result.changed) {
+    try {
+      const io = getIO();
+      for (const rid of result.participantIds) {
+        io?.to(userRoom(rid)).emit("conversations:deleted", { conversationId });
+      }
+    } catch {}
+  }
 
-  try {
-    const io = getIO();
-    for (const rid of participantIds) {
-      io?.to(userRoom(rid)).emit("conversations:deleted", { conversationId });
-    }
-  } catch {}
-
-  res.json({ ok: true, conversationId });
+  res.json({ ok: true, conversationId }); // already CANCELLED — idempotent
 });
 
 export default router;

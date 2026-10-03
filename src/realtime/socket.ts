@@ -11,6 +11,8 @@ import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
 import { decGauge, incGauge } from "../obs/metrics";
 import { enqueuePush } from "../jobs/queue";
+import { cloudMessageWritesAllowed } from "../lib/secretLatch";
+import { acceptSecretThread, declineSecretThread } from "../lib/secretThreadState";
 import { initCloudRealtime } from "../cloud/realtime";
 
 type PresenceGame = {
@@ -456,6 +458,15 @@ const callState: Map<string, { inviterId: string; inviterSocketId?: string; acce
 // reconnect loop or a malicious client cannot hold a callee in a permanent ring.
 const CALL_INVITE_MIN_INTERVAL_MS = 2_000;
 const lastCallInviteAt: Map<string, number> = new Map();
+// Легаси secret:chat:offer: не чаще раза в 30 с на (пользователь, тред) — см. обработчик.
+const SECRET_OFFER_MIN_INTERVAL_MS = 30_000;
+const lastSecretOfferAt: Map<string, number> = new Map();
+function sweepSecretOfferThrottle(now: number): void {
+  if (lastSecretOfferAt.size < 1000) return;
+  for (const [key, ts] of lastSecretOfferAt) {
+    if (now - ts >= SECRET_OFFER_MIN_INTERVAL_MS) lastSecretOfferAt.delete(key);
+  }
+}
 // Entries are only useful within the throttle window; sweep stale ones so the map
 // stays bounded regardless of how many (user, conversation) pairs ever placed a call.
 const CALL_INVITE_SWEEP_THRESHOLD = 1_000;
@@ -1097,36 +1108,39 @@ export async function initSocket(
     });
     const recipients = conv?.participants.map((p) => p.userId).filter((id) => id !== endedByUserId) ?? [];
 
-    try {
-      const content =
-        reason === "alone_timeout"
-          ? `Звонок продлился ${durationText} и был завершён автоматически`
-          : `Звонок продлился ${durationText} и был завершён`;
-      const msg = await prisma.message.create({
-        data: {
-          conversationId,
-          senderId: endedByUserId,
-          type: "SYSTEM",
-          content,
-          metadata: { ended: true, video: !!st?.video, duration: elapsedMs, reason } as any,
-        },
-      });
-      io.to(conversationId).emit("message:new", {
-        conversationId,
-        messageId: msg.id,
-        senderId: endedByUserId,
-        message: msg,
-      });
-      for (const rid of recipients) {
-        io.to(userRoom(rid)).emit("message:notify", {
+    // S1: в секретной беседе облачных записей (и системных) нет — lib/secretLatch.
+    if (await cloudMessageWritesAllowed(conversationId, conv)) {
+      try {
+        const content =
+          reason === "alone_timeout"
+            ? `Звонок продлился ${durationText} и был завершён автоматически`
+            : `Звонок продлился ${durationText} и был завершён`;
+        const msg = await prisma.message.create({
+          data: {
+            conversationId,
+            senderId: endedByUserId,
+            type: "SYSTEM",
+            content,
+            metadata: { ended: true, video: !!st?.video, duration: elapsedMs, reason } as any,
+          },
+        });
+        io.to(conversationId).emit("message:new", {
           conversationId,
           messageId: msg.id,
           senderId: endedByUserId,
           message: msg,
         });
+        for (const rid of recipients) {
+          io.to(userRoom(rid)).emit("message:notify", {
+            conversationId,
+            messageId: msg.id,
+            senderId: endedByUserId,
+            message: msg,
+          });
+        }
+      } catch (error) {
+        logger.warn({ error, conversationId, reason }, "Failed to create group call end message");
       }
-    } catch (error) {
-      logger.warn({ error, conversationId, reason }, "Failed to create group call end message");
     }
 
     io.to(conversationId).emit("call:ended", { conversationId, by: { id: endedByUserId } });
@@ -1214,7 +1228,8 @@ export async function initSocket(
     // Раньше grace-завершение не создавало системного сообщения — если пир закрыл вкладку
     // и никто не нажал «завершить», запись о звонке пропадала. Пишем её здесь (один раз,
     // под клеймом), зеркально ручному call:end; длительность — из info.startedAt.
-    if (graceClaimed && stForMsg && stForMsg.accepted) {
+    // S1: в секретной беседе запись о звонке не пишем (lib/secretLatch).
+    if (graceClaimed && stForMsg && stForMsg.accepted && (await cloudMessageWritesAllowed(conversationId))) {
       try {
         const elapsedMs = Math.max(0, Date.now() - (info.startedAt ?? Date.now()));
         const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
@@ -1307,49 +1322,52 @@ export async function initSocket(
           }
           // Record the unanswered call as missed (read for the caller) if the client
           // never did. Guarded by the pending-state check above, so no duplicate.
-          try {
-            const now = new Date();
-            const msg = await prisma.message.create({
-              data: {
-                conversationId,
-                senderId: inviterId,
-                type: "SYSTEM",
-                content: `Пропущенный звонок ${formatTime(now)}`,
-                metadata: { missed: true, video: !!st.video } as any,
-              },
-            });
-            await prisma.messageReceipt.create({ data: { messageId: msg.id, userId: inviterId, status: "READ" } });
-            io.to(conversationId).emit("message:new", {
-              conversationId,
-              messageId: msg.id,
-              senderId: inviterId,
-              message: msg,
-            });
-            // Выгруженному телефону от несостоявшегося разговора остаётся только это: пуш
-            // «входящий» уже отменён выше, и без alert-пуша о пропущенном человек узнал бы
-            // о звонке, лишь открыв приложение.
+          // S1: в секретной беседе облачных записей (и системных) нет — lib/secretLatch.
+          if (await cloudMessageWritesAllowed(conversationId, conv)) {
             try {
-              const inviter = await prisma.user.findUnique({
-                where: { id: inviterId },
-                select: { displayName: true, username: true },
-              });
-              enqueuePush(
-                conv.participants.map((p) => p.userId).filter((id) => id !== inviterId),
-                {
-                  kind: "message",
+              const now = new Date();
+              const msg = await prisma.message.create({
+                data: {
                   conversationId,
-                  messageId: msg.id,
                   senderId: inviterId,
-                  senderName: inviter?.displayName ?? inviter?.username ?? "пользователь",
-                  preview: "Пропущенный звонок",
+                  type: "SYSTEM",
+                  content: `Пропущенный звонок ${formatTime(now)}`,
+                  metadata: { missed: true, video: !!st.video } as any,
                 },
-                `msg-${msg.id}`,
-              );
+              });
+              await prisma.messageReceipt.create({ data: { messageId: msg.id, userId: inviterId, status: "READ" } });
+              io.to(conversationId).emit("message:new", {
+                conversationId,
+                messageId: msg.id,
+                senderId: inviterId,
+                message: msg,
+              });
+              // Выгруженному телефону от несостоявшегося разговора остаётся только это: пуш
+              // «входящий» уже отменён выше, и без alert-пуша о пропущенном человек узнал бы
+              // о звонке, лишь открыв приложение.
+              try {
+                const inviter = await prisma.user.findUnique({
+                  where: { id: inviterId },
+                  select: { displayName: true, username: true },
+                });
+                enqueuePush(
+                  conv.participants.map((p) => p.userId).filter((id) => id !== inviterId),
+                  {
+                    kind: "message",
+                    conversationId,
+                    messageId: msg.id,
+                    senderId: inviterId,
+                    senderName: inviter?.displayName ?? inviter?.username ?? "пользователь",
+                    preview: "Пропущенный звонок",
+                  },
+                  `msg-${msg.id}`,
+                );
+              } catch (error) {
+                logger.warn({ error, conversationId }, "Failed to enqueue missed-call push on ring timeout");
+              }
             } catch (error) {
-              logger.warn({ error, conversationId }, "Failed to enqueue missed-call push on ring timeout");
+              logger.warn({ error, conversationId }, "Failed to record missed-call on ring timeout");
             }
-          } catch (error) {
-            logger.warn({ error, conversationId }, "Failed to record missed-call on ring timeout");
           }
         } catch (error) {
           logger.warn({ error, conversationId }, "Failed to expire ringing call on timeout");
@@ -1897,42 +1915,43 @@ export async function initSocket(
       })();
     });
 
-    socket.on("secret:chat:accept", async ({ conversationId, deviceId }) => {
+    // ===== Легаси-сокет secret:chat:accept / decline / offer =====
+    // Честные клиенты (веб с 2026-02, Android org.eblusha.app, iOS) эти события НЕ шлют —
+    // принимают/отклоняют по HTTP /threads/secret/:id/accept|decline. Эмиттеры остались только
+    // в мёртвом коде легаси-обёртки /DATA/eblusha-plus/android (без вызовов). Обработчики не
+    // сносим (вдруг жив какой-то древний клиент), но правила у них теперь РОВНО как у HTTP:
+    // только V2-тред (type=SECRET, не группа), только участник, принимает не создатель,
+    // не «уже принят другим устройством», CANCELLED не воскрешается — общий код в
+    // lib/secretThreadState (атомарный условный UPDATE). Раньше (H09) любой участник, в т.ч.
+    // создатель, мог в любой момент переписать secretPeerDeviceId на своё устройство.
+    const isNonEmptyId = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0 && v.length <= 128;
+
+    socket.on("secret:chat:accept", async (payload) => {
+      const conversationId = (payload as any)?.conversationId;
+      const deviceId = (payload as any)?.deviceId;
       try {
-        const conv = await prisma.conversation.findUnique({
-          where: { id: conversationId },
-          include: { participants: true },
-        });
-        if (!conv || !(conv as any).isSecret) {
-          return;
-        }
-        if ((conv as any).secretStatus === "CANCELLED") return;
-        const isMember = conv.participants.some((p) => p.userId === userId);
-        if (!isMember) return;
-        const device = await (prisma as any).userDevice.findUnique({
-          where: { id: deviceId },
+        if (!isNonEmptyId(conversationId) || !isNonEmptyId(deviceId)) return;
+        const device = await prisma.userDevice.findUnique({
+          where: { id: deviceId.trim() },
           select: { id: true, userId: true, revokedAt: true },
         });
         if (!device || device.userId !== userId || device.revokedAt) {
+          logger.warn({ conversationId, userId }, "secret:chat:accept rejected: device is not the sender's live device");
           return;
         }
-        const updated = await prisma.conversation.update({
-          where: { id: conversationId },
-          data: {
-            secretStatus: "ACTIVE",
-            secretPeerDeviceId: deviceId,
-          } as any,
-          include: { participants: true },
-        });
-        const participantIds = updated.participants.map((p) => p.userId);
-        for (const pid of participantIds) {
+        const result = await acceptSecretThread({ userId, conversationId: conversationId.trim(), deviceId: device.id });
+        if (!result.ok) {
+          logger.warn({ conversationId, userId, code: result.code }, "secret:chat:accept rejected");
+          return;
+        }
+        for (const pid of result.participantIds) {
           io.to(userRoom(pid)).emit("secret:chat:accepted", {
-            conversationId,
-            peerDeviceId: deviceId,
+            conversationId: result.conversationId,
+            peerDeviceId: result.peerDeviceId,
           });
           io.to(userRoom(pid)).emit("conversations:updated", {
-            conversationId,
-            conversation: updated,
+            conversationId: result.conversationId,
+            conversation: result.thread,
           });
         }
       } catch (error) {
@@ -1940,54 +1959,60 @@ export async function initSocket(
       }
     });
 
-    socket.on("secret:chat:decline", async ({ conversationId }) => {
+    socket.on("secret:chat:decline", async (payload) => {
+      const conversationId = (payload as any)?.conversationId;
       try {
-        const conv = await prisma.conversation.findUnique({
-          where: { id: conversationId },
-          include: { participants: true },
-        });
-        if (!conv || !(conv as any).isSecret) {
+        if (!isNonEmptyId(conversationId)) return;
+        const result = await declineSecretThread({ userId, conversationId: conversationId.trim() });
+        if (!result.ok) {
+          logger.warn({ conversationId, userId, code: result.code }, "secret:chat:decline rejected");
           return;
         }
-        if ((conv as any).secretStatus === "CANCELLED") return;
-        const isMember = conv.participants.some((p) => p.userId === userId);
-        if (!isMember) return;
-
-        await prisma.conversation.update({
-          where: { id: conversationId },
-          data: { secretStatus: "CANCELLED" } as any,
-        });
-
-        const recipients = conv.participants.map((p) => p.userId);
-        for (const rid of recipients) {
-          io.to(userRoom(rid)).emit("conversations:deleted", { conversationId });
+        if (!result.changed) return;
+        for (const rid of result.participantIds) {
+          io.to(userRoom(rid)).emit("conversations:deleted", { conversationId: result.conversationId });
         }
       } catch (error) {
         logger.error({ error, conversationId, userId }, "Failed to decline secret chat");
       }
     });
 
-    socket.on("secret:chat:offer", async ({ conversationId }) => {
+    socket.on("secret:chat:offer", async (payload) => {
+      const conversationId = (payload as any)?.conversationId;
       try {
+        if (!isNonEmptyId(conversationId)) return;
         const conv = await prisma.conversation.findUnique({
-          where: { id: conversationId },
+          where: { id: conversationId.trim() },
           include: { participants: true },
         });
         if (!conv) {
           logger.warn({ conversationId, userId }, "Conversation not found in secret:chat:offer");
           return;
         }
-        // Only secret 1:1 conversations are eligible
-        const isSecret = (conv as any).isSecret as boolean | undefined;
-        if (!isSecret || conv.isGroup) {
-          logger.warn({ conversationId, userId, isSecret, isGroup: conv.isGroup }, "Conversation is not a secret 1:1 chat in secret:chat:offer");
+        const c = conv as any;
+        // Повторное приглашение шлёт только СОЗДАТЕЛЬ V2-треда и только пока тред ждёт ответа.
+        if (c.type !== "SECRET" || conv.isGroup) {
+          logger.warn({ conversationId, userId, type: c.type, isGroup: conv.isGroup }, "secret:chat:offer ignored: not a 1:1 SECRET thread");
           return;
         }
-        const isMember = conv.participants.some((p) => p.userId === userId);
-        if (!isMember) {
+        if (!conv.participants.some((p) => p.userId === userId)) {
           logger.warn({ conversationId, userId }, "User is not a member of conversation in secret:chat:offer");
           return;
         }
+        if (c.createdById !== userId || c.secretStatus !== "PENDING") {
+          logger.warn({ conversationId, userId, status: c.secretStatus }, "secret:chat:offer ignored: only the creator of a PENDING thread may re-offer");
+          return;
+        }
+        // Не чаще раза в SECRET_OFFER_MIN_INTERVAL_MS на тред: иначе это канал спама уведомлениями.
+        const nowTs = Date.now();
+        const throttleKey = `${userId}:${conv.id}`;
+        const lastTs = lastSecretOfferAt.get(throttleKey) ?? 0;
+        if (nowTs - lastTs < SECRET_OFFER_MIN_INTERVAL_MS) {
+          logger.info({ conversationId, userId }, "secret:chat:offer throttled");
+          return;
+        }
+        sweepSecretOfferThrottle(nowTs);
+        lastSecretOfferAt.set(throttleKey, nowTs);
         const recipient = conv.participants.find((p) => p.userId !== userId);
         if (!recipient) {
           logger.warn({ conversationId, userId }, "No recipient found for secret:chat:offer");
@@ -1999,8 +2024,8 @@ export async function initSocket(
         });
         const name = caller?.displayName ?? caller?.username ?? "пользователь";
         io.to(userRoom(recipient.userId)).emit("secret:chat:offer", {
-          conversationId,
-          from: { id: userId, name, deviceId: (conv as any).secretInitiatorDeviceId ?? null },
+          conversationId: conv.id,
+          from: { id: userId, name, deviceId: c.secretInitiatorDeviceId ?? null },
         });
       } catch (error) {
         logger.error({ error, conversationId, userId }, "Failed to handle secret:chat:offer");
@@ -2233,7 +2258,7 @@ export async function initSocket(
       // Для 1:1 бесед не создаем, так как есть входящий звонок с оверлеем и звуком
       // Для уже активного группового звонка повторное приглашение не должно создавать
       // дублирующее системное сообщение "X начал звонок".
-      if (isGroup && isFirstGroupInviter) {
+      if (isGroup && isFirstGroupInviter && (await cloudMessageWritesAllowed(conversationId, conv))) {
         try {
           const callTypeText = video ? "звонок с видео" : "звонок";
           const now = new Date();
@@ -2427,27 +2452,30 @@ export async function initSocket(
       // treat as missed call if not accepted yet (1:1)
       if (st && !st.accepted) {
         callState.delete(conversationId);
-        try {
-          const now = new Date();
-          const msg = await prisma.message.create({
-            data: {
+        // S1: в секретной беседе облачных записей (и системных) нет — lib/secretLatch.
+        if (await cloudMessageWritesAllowed(conversationId, conv)) {
+          try {
+            const now = new Date();
+            const msg = await prisma.message.create({
+              data: {
+                conversationId,
+                senderId: st.inviterId,
+                type: "SYSTEM",
+                content: `Пропущенный звонок ${formatTime(now)}`,
+                metadata: { missed: true, video: !!st.video } as any,
+              },
+            });
+            // Mark as read for inviter only
+            await prisma.messageReceipt.create({ data: { messageId: msg.id, userId: st.inviterId, status: "READ" } });
+            io.to(conversationId).emit("message:new", {
               conversationId,
+              messageId: msg.id,
               senderId: st.inviterId,
-              type: "SYSTEM",
-              content: `Пропущенный звонок ${formatTime(now)}`,
-              metadata: { missed: true, video: !!st.video } as any,
-            },
-          });
-          // Mark as read for inviter only
-          await prisma.messageReceipt.create({ data: { messageId: msg.id, userId: st.inviterId, status: "READ" } });
-          io.to(conversationId).emit("message:new", {
-            conversationId,
-            messageId: msg.id,
-            senderId: st.inviterId,
-            message: msg,
-          });
-        } catch (error) {
-          logger.warn({ error }, "Failed to create missed call message");
+              message: msg,
+            });
+          } catch (error) {
+            logger.warn({ error }, "Failed to create missed call message");
+          }
         }
       }
     });
@@ -2511,7 +2539,9 @@ export async function initSocket(
       const caller = await prisma.user.findUnique({ where: { id: userId }, select: { displayName: true, username: true } });
       const name = caller?.displayName ?? caller?.username ?? "пользователь";
 
-      if (endClaimed && st && !st.accepted) {
+      // S1: в секретной беседе запись о звонке не пишем (lib/secretLatch).
+      const callLogAllowed = endClaimed && st ? await cloudMessageWritesAllowed(conversationId, conv) : false;
+      if (endClaimed && st && !st.accepted && callLogAllowed) {
         // Пропущенный звонок (не был принят)
         try {
           const now = new Date();
@@ -2563,7 +2593,7 @@ export async function initSocket(
             logger.warn({ error, conversationId }, "Failed to enqueue missed-call push on call:end");
           }
         } catch {}
-      } else if (endClaimed && st && st.accepted) {
+      } else if (endClaimed && st && st.accepted && callLogAllowed) {
         // Завершенный активный звонок - создаем сообщение о завершении
         try {
           const { elapsedMs, durationText } = computeDuration();
@@ -2654,29 +2684,32 @@ export async function initSocket(
             callState.set(conversationId, { inviterId: userId, inviterSocketId: socket.id, accepted: true, video: callVideo, startedAt });
             
             // Создаем системное сообщение о начале звонка
-            try {
-              const callTypeText = callVideo ? "звонок с видео" : "звонок";
-              const now = new Date();
-              const msg = await prisma.message.create({
-                data: {
-                  conversationId,
-                  senderId: userId,
-                  type: "SYSTEM",
-                  content: `${name} начал ${callTypeText} ${formatTime(now)}`,
-                  metadata: { started: true, video: callVideo } as any,
-                },
-              });
-              // Отправляем событие о новом сообщении всем участникам беседы через комнату
-              io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
-              // Также отправляем message:notify для всех участников (кроме отправителя)
-              for (const p of conv.participants) {
-                if (p.userId !== userId) {
-                  io.to(userRoom(p.userId)).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+            // S1: в секретной беседе облачных записей (и системных) нет — lib/secretLatch.
+            if (await cloudMessageWritesAllowed(conversationId, conv)) {
+              try {
+                const callTypeText = callVideo ? "звонок с видео" : "звонок";
+                const now = new Date();
+                const msg = await prisma.message.create({
+                  data: {
+                    conversationId,
+                    senderId: userId,
+                    type: "SYSTEM",
+                    content: `${name} начал ${callTypeText} ${formatTime(now)}`,
+                    metadata: { started: true, video: callVideo } as any,
+                  },
+                });
+                // Отправляем событие о новом сообщении всем участникам беседы через комнату
+                io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
+                // Также отправляем message:notify для всех участников (кроме отправителя)
+                for (const p of conv.participants) {
+                  if (p.userId !== userId) {
+                    io.to(userRoom(p.userId)).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                  }
                 }
+                logger.info({ conversationId, userId, video: callVideo, messageId: msg.id }, "Call started message created in call:room:join (no callState)");
+              } catch (error) {
+                logger.error({ error, conversationId, userId, video: callVideo }, "Failed to create call started message in call:room:join");
               }
-              logger.info({ conversationId, userId, video: callVideo, messageId: msg.id }, "Call started message created in call:room:join (no callState)");
-            } catch (error) {
-              logger.error({ error, conversationId, userId, video: callVideo }, "Failed to create call started message in call:room:join");
             }
           } else {
             // callState существует, значит сообщение уже создано в call:invite

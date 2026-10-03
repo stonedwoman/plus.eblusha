@@ -5,6 +5,7 @@ import { Prisma } from "@prisma/client";
 import { deleteS3ObjectsByUrls } from "../lib/storageDeletion";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
+import { isSecretConversation, logSecretCloudWriteBlocked, rejectSecretCloudWrite } from "../lib/secretLatch";
 import env from "../config/env";
 import logger from "../config/logger";
 import { extractFirstUrl } from "../lib/linkPreview";
@@ -714,8 +715,8 @@ router.post("/:id/participants", async (req, res) => {
     select: { id: true, displayName: true, username: true },
   });
 
-  // Создаем системное сообщение о добавлении участников
-  if (addedUsers.length > 0) {
+  // Создаем системное сообщение о добавлении участников (в секретной беседе — нет, см. lib/secretLatch)
+  if (addedUsers.length > 0 && !isSecretConversation(conv as any)) {
     const addedNames = addedUsers.map((u) => u.displayName ?? u.username).join(", ");
     const messageContent = addedUsers.length === 1 
       ? `${inviterName} пригласил(а) ${addedNames} в беседу`
@@ -846,37 +847,40 @@ router.delete("/:id/participants/me", async (req, res) => {
   });
   const leavingUserName = leavingUser?.displayName ?? leavingUser?.username ?? "Пользователь";
 
-  // Создаем системное сообщение о выходе участника (перед удалением участия)
-  try {
-    const systemMessage = await prisma.message.create({
-      data: {
-        conversationId: id,
-        senderId: userId,
-        type: "SYSTEM",
-        content: `${leavingUserName} покинул(а) беседу`,
-        metadata: { action: "participant_left" } as any,
-      },
-    });
+  // Создаем системное сообщение о выходе участника (перед удалением участия).
+  // В секретной беседе облачных записей нет вовсе (lib/secretLatch) — выход проходит без неё.
+  if (!isSecretConversation(conv as any)) {
+    try {
+      const systemMessage = await prisma.message.create({
+        data: {
+          conversationId: id,
+          senderId: userId,
+          type: "SYSTEM",
+          content: `${leavingUserName} покинул(а) беседу`,
+          metadata: { action: "participant_left" } as any,
+        },
+      });
 
-    // Обновляем lastMessageAt для беседы
-    await prisma.conversation.update({
-      where: { id },
-      data: { lastMessageAt: new Date() },
-    });
+      // Обновляем lastMessageAt для беседы
+      await prisma.conversation.update({
+        where: { id },
+        data: { lastMessageAt: new Date() },
+      });
 
-    const io = getIO();
-    // Отправляем событие о новом сообщении всем участникам беседы
-    io?.to(id).emit("message:new", { conversationId: id, messageId: systemMessage.id, senderId: userId });
-    // Также отправляем message:notify для каждого участника (кроме того, кто уходит)
-    const allParticipants = conv.participants.map((p) => p.userId);
-    for (const pid of allParticipants) {
-      if (pid !== userId) {
-        io?.to(userRoom(pid)).emit("message:notify", { conversationId: id, messageId: systemMessage.id, senderId: userId });
+      const io = getIO();
+      // Отправляем событие о новом сообщении всем участникам беседы
+      io?.to(id).emit("message:new", { conversationId: id, messageId: systemMessage.id, senderId: userId });
+      // Также отправляем message:notify для каждого участника (кроме того, кто уходит)
+      const allParticipants = conv.participants.map((p) => p.userId);
+      for (const pid of allParticipants) {
+        if (pid !== userId) {
+          io?.to(userRoom(pid)).emit("message:notify", { conversationId: id, messageId: systemMessage.id, senderId: userId });
+        }
       }
+    } catch (error) {
+      // Игнорируем ошибки создания системного сообщения, чтобы не блокировать выход
+      console.error("Failed to create system message:", error);
     }
-  } catch (error) {
-    // Игнорируем ошибки создания системного сообщения, чтобы не блокировать выход
-    console.error("Failed to create system message:", error);
   }
 
   // Удаляем участие текущего пользователя
@@ -1156,8 +1160,12 @@ router.post(
     res.status(404).json({ message: "Conversation not found" });
     return;
   }
-  if ((conv as any).isSecret && (conv as any).secretStatus !== "ACTIVE") {
-    res.status(409).json({ message: "Secret conversation is not active" });
+  // S1: в секретную беседу (V2 type=SECRET или легаси isSecret) облачный канал закрыт целиком —
+  // и в ACTIVE тоже. Сюда же попадает пересылка В секретку (тот же маршрут с forward-метаданными).
+  // Честные клиенты шлют в секретку только через /secret/*; сюда — лишь ошибочный/старый/чужой.
+  if (isSecretConversation(conv as any)) {
+    logSecretCloudWriteBlocked("POST /conversations/send", { conversationId, userId });
+    rejectSecretCloudWrite(res);
     return;
   }
 

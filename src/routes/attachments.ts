@@ -19,6 +19,7 @@ import {
   EBP2_DEFAULT_CHUNK_SIZE,
 } from "../lib/storageEncryption";
 import { getStorageProvider } from "../lib/storage";
+import { isSecretConversation, rejectSecretCloudWrite } from "../lib/secretLatch";
 
 const router = Router();
 const objectPrefix = env.STORAGE_PREFIX.replace(/^\/|\/$/g, "");
@@ -140,6 +141,8 @@ router.post(
         conversationId: true,
         conversation: {
           select: {
+            type: true,
+            isSecret: true,
             participants: { select: { userId: true } },
           },
         },
@@ -154,6 +157,11 @@ router.post(
     );
     if (!isParticipant) {
       res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+    // S1: облачные вложения в секретной беседе не трогаем (lib/secretLatch).
+    if (isSecretConversation(msg.conversation)) {
+      rejectSecretCloudWrite(res);
       return;
     }
 

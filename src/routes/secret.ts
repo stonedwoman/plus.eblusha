@@ -17,6 +17,13 @@ import { deleteS3ObjectsByKeys } from "../lib/storageDeletion";
 import { resolveCurrentDeviceId } from "../lib/currentDevice";
 import { enqueuePush } from "../jobs/queue";
 import logger from "../config/logger";
+import {
+  SECRET_HEADER_INVALID_CODE,
+  headerKindForLog,
+  isValidSecretHeader,
+  secretHeaderEnforced,
+  secretHeaderProblems,
+} from "../lib/secretHeader";
 
 const router = Router();
 router.use(authenticate);
@@ -39,6 +46,62 @@ function bufferFromBase64(b64: string): Buffer {
 
 function base64FromBuffer(buf: Buffer): string {
   return Buffer.from(buf).toString("base64");
+}
+
+/**
+ * S2 на ВХОДЕ: проверка формы заголовков (lib/secretHeader). Возвращает true, если запрос
+ * надо отбить 400 (жёсткий режим и есть нарушения). В режиме SECRET_HEADER_ENFORCE=0 только
+ * пишет в лог `secret-header-invalid` (счётчик по kind и имена полей, без значений).
+ */
+function rejectInvalidSecretHeaders(
+  res: any,
+  route: string,
+  userId: string,
+  headers: unknown[],
+): boolean {
+  const invalid: Array<{ index: number; kind: string; problems: string[] }> = [];
+  headers.forEach((h, index) => {
+    const problems = secretHeaderProblems(h);
+    if (problems.length) invalid.push({ index, kind: headerKindForLog(h), problems });
+  });
+  if (invalid.length === 0) return false;
+  const enforce = secretHeaderEnforced();
+  const byKind: Record<string, number> = {};
+  for (const it of invalid) byKind[it.kind] = (byKind[it.kind] ?? 0) + 1;
+  logger.warn(
+    {
+      route,
+      userId,
+      enforce,
+      invalidCount: invalid.length,
+      total: headers.length,
+      byKind,
+      problems: Array.from(new Set(invalid.flatMap((it) => it.problems))),
+    },
+    "secret-header-invalid"
+  );
+  if (!enforce) return false;
+  res.status(400).json({
+    message: "Invalid secret headerJson",
+    code: SECRET_HEADER_INVALID_CODE,
+    invalid: invalid.slice(0, 20).map((it) => ({ index: it.index, problems: it.problems })),
+  });
+  return true;
+}
+
+/** S2 на ВЫДАЧЕ: лог о скрытых из pull/history записях неверной формы. */
+function logHiddenSecretRows(
+  route: string,
+  where: Record<string, string>,
+  rows: Array<{ msgId: string; headerJson: unknown }>,
+) {
+  if (!rows.length) return;
+  const byKind: Record<string, number> = {};
+  for (const r of rows) {
+    const k = headerKindForLog(r.headerJson);
+    byKind[k] = (byKind[k] ?? 0) + 1;
+  }
+  logger.warn({ route, ...where, hidden: rows.length, byKind }, "secret-header-hidden");
 }
 
 const sendSchema = z.object({
@@ -79,18 +142,31 @@ router.post("/send", rateLimit({ name: "secret_send", windowMs: 60_000, max: 300
   const redis = await getRedisClient();
 
   // Durable store first (Postgres), then Redis inbox/cache as accelerator.
-  const prepared = parsed.data.messages.map((msg) => ({
-    toDeviceId: msg.toDeviceId.trim(),
-    msgId: msg.msgId,
-    createdAt: new Date(msg.createdAt),
-    ciphertextBuf: bufferFromBase64(msg.ciphertext),
-    ttlSeconds: msg.ttlSeconds,
-    expiresAt: new Date(Date.now() + ((msg.ttlSeconds ?? 3600) * 1000)).toISOString(),
-    headerJson: msg.headerJson ?? { kind: "direct", v: 1 },
-    contentType: msg.contentType ?? "ref",
-    schemaVersion: msg.schemaVersion ?? 1,
-    attachment: msg.attachment,
-  }));
+  const prepared = parsed.data.messages.map((msg) => {
+    const expiresAt = new Date(Date.now() + ((msg.ttlSeconds ?? 3600) * 1000)).toISOString();
+    const headerJson = msg.headerJson ?? { kind: "direct", v: 1 };
+    return {
+      toDeviceId: msg.toDeviceId.trim(),
+      msgId: msg.msgId,
+      createdAt: new Date(msg.createdAt),
+      ciphertextBuf: bufferFromBase64(msg.ciphertext),
+      ttlSeconds: msg.ttlSeconds,
+      expiresAt,
+      // Ровно то, что ляжет в messages_secret и в Redis-кэш и уйдёт получателю.
+      storedHeader: {
+        ...(headerJson ?? {}),
+        ...(msg.attachment ? { attachment: msg.attachment } : {}),
+        expiresAt,
+      } as Record<string, unknown>,
+      contentType: msg.contentType ?? "ref",
+      schemaVersion: msg.schemaVersion ?? 1,
+      attachment: msg.attachment,
+    };
+  });
+
+  // S2: заголовок неверной формы навсегда клинит инбокс строгих клиентов (Android/iOS) —
+  // такой пакет не принимаем целиком (до записи в БД, без частичного приёма).
+  if (rejectInvalidSecretHeaders(res, "POST /secret/send", userId, prepared.map((m) => m.storedHeader))) return;
 
   await prisma.$transaction(async (tx) => {
     for (const m of prepared) {
@@ -102,11 +178,7 @@ router.post("/send", rateLimit({ name: "secret_send", windowMs: 60_000, max: 300
             senderUserId: userId,
             senderDeviceId,
             createdAt: m.createdAt,
-            headerJson: {
-              ...(m.headerJson ?? {}),
-              ...(m.attachment ? { attachment: m.attachment } : {}),
-              expiresAt: m.expiresAt,
-            },
+            headerJson: m.storedHeader as any,
             ciphertextBlob: m.ciphertextBuf,
             contentType: m.contentType,
             schemaVersion: m.schemaVersion,
@@ -140,11 +212,7 @@ router.post("/send", rateLimit({ name: "secret_send", windowMs: 60_000, max: 300
         senderUserId: userId,
         senderDeviceId,
         createdAt: m.createdAt.toISOString(),
-        headerJson: {
-          ...(m.headerJson ?? {}),
-          ...(m.attachment ? { attachment: m.attachment } : {}),
-          expiresAt: m.expiresAt,
-        },
+        headerJson: m.storedHeader,
         ciphertext: base64FromBuffer(m.ciphertextBuf),
         contentType: m.contentType,
         schemaVersion: m.schemaVersion,
@@ -241,6 +309,7 @@ async function handleInboxPull(req: Request, res: any, raw: unknown) {
 
   const out: any[] = [];
   const deadIds: string[] = [];
+  const hidden: Array<{ msgId: string; headerJson: unknown }> = [];
   for (let i = 0; i < uniqueIds.length; i += 1) {
     const id = uniqueIds[i]!;
     const payload = (cached[i] as any) ?? byMsgId.get(id) ?? null;
@@ -248,6 +317,14 @@ async function handleInboxPull(req: Request, res: any, raw: unknown) {
       // Unresolvable: payload cache expired AND no delivery row — it can never be served.
       // Left in place it clogs the head of the inbox list until fresh messages fall outside
       // the pull window (head-of-line blocking) — drop it server-side.
+      deadIds.push(id);
+      continue;
+    }
+    if (!isValidSecretHeader(payload.headerJson)) {
+      // S2 (H12): Android/iOS разбирают пачку одним массивом — один кривой заголовок роняет
+      // всю пачку, ack невозможен, инбокс клинит навсегда. Такую запись не отдаём и снимаем
+      // с инбокса этого устройства (честным клиентам её всё равно не разобрать).
+      hidden.push({ msgId: id, headerJson: payload.headerJson });
       deadIds.push(id);
       continue;
     }
@@ -261,6 +338,7 @@ async function handleInboxPull(req: Request, res: any, raw: unknown) {
   if (deadIds.length > 0) {
     void ackSecretInbox(redis, currentDeviceId, deadIds).catch(() => {});
   }
+  logHiddenSecretRows("inbox/pull", { deviceId: currentDeviceId }, hidden);
 
   res.json({
     deviceId: currentDeviceId,
@@ -349,6 +427,12 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
     res.status(409).json({ message: "Thread is not SECRET" });
     return;
   }
+  // S2: заголовок без kind (zod-дефолт `{}`) или с неверными типами клинит историю
+  // Android/iOS навсегда — не принимаем.
+  if (rejectInvalidSecretHeaders(res, "POST /secret/messages/push", userId, [parsed.data.headerJson])) return;
+  // S8 (X10): в закрытый тред сообщение по-прежнему принимаем (идемпотентность клиентов), но
+  // не будим собеседника — ни secret:notify, ни пуш «Секретное сообщение». PENDING будим как раньше.
+  const threadCancelled = (conv as any).secretStatus === "CANCELLED";
 
   const createdAt = new Date(parsed.data.createdAt);
   const ciphertextBuf = bufferFromBase64(parsed.data.ciphertext);
@@ -438,45 +522,50 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
   );
 
   const io = getIO();
-  for (const r of results) {
-    // No `inserted` gate: a sender retry after a lost HTTP response must still wake the
-    // device — the notify only triggers an idempotent inbox pull.
-    io?.to(`device:${r.toDeviceId}`).emit("secret:notify", { toDeviceId: r.toDeviceId, msgId: r.msgId });
-  }
-  // User-room fallback wake: a socket that missed its device-room join (connected before
-  // device bootstrap or a token without the did claim) would otherwise learn about the
-  // message only from the recipient's slow history poll. No ciphertext in the payload.
-  for (const uid of participantUserIds) {
-    io?.to(`user:${uid}`).emit("secret:notify", { msgId: parsed.data.msgId, threadId } as any);
+  if (!threadCancelled) {
+    for (const r of results) {
+      // No `inserted` gate: a sender retry after a lost HTTP response must still wake the
+      // device — the notify only triggers an idempotent inbox pull.
+      io?.to(`device:${r.toDeviceId}`).emit("secret:notify", { toDeviceId: r.toDeviceId, msgId: r.msgId });
+    }
+    // User-room fallback wake: a socket that missed its device-room join (connected before
+    // device bootstrap or a token without the did claim) would otherwise learn about the
+    // message only from the recipient's slow history poll. No ciphertext in the payload.
+    for (const uid of participantUserIds) {
+      io?.to(`user:${uid}`).emit("secret:notify", { msgId: parsed.data.msgId, threadId } as any);
+    }
   }
   // Alert-пуш на выгруженные телефоны: secret:notify выше доходит только до живого сокета.
   // Ни текста, ни шифртекста в пуше нет — лишь «кто» и «в какой беседе»; за содержимым
   // клиент сходит сам (secret: true). POST /send (конверты ключей) пуша не ставит.
-  try {
-    const me = (req as AuthedRequest).user;
-    let senderName = me?.displayName ?? me?.username ?? "";
-    if (!senderName) {
-      const sender = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { displayName: true, username: true },
-      });
-      senderName = sender?.displayName ?? sender?.username ?? "пользователь";
+  // S8: в CANCELLED-тред не пушим (иначе это спам «Секретное сообщение» в закрытый чат).
+  if (!threadCancelled) {
+    try {
+      const me = (req as AuthedRequest).user;
+      let senderName = me?.displayName ?? me?.username ?? "";
+      if (!senderName) {
+        const sender = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { displayName: true, username: true },
+        });
+        senderName = sender?.displayName ?? sender?.username ?? "пользователь";
+      }
+      enqueuePush(
+        participantUserIds.filter((uid) => uid !== userId),
+        {
+          kind: "message",
+          conversationId: threadId,
+          messageId: parsed.data.msgId,
+          senderId: userId,
+          senderName,
+          preview: "",
+          secret: true,
+        },
+        `secret-${parsed.data.msgId}`,
+      );
+    } catch (error) {
+      logger.warn({ error, threadId, msgId: parsed.data.msgId }, "secret: failed to enqueue push");
     }
-    enqueuePush(
-      participantUserIds.filter((uid) => uid !== userId),
-      {
-        kind: "message",
-        conversationId: threadId,
-        messageId: parsed.data.msgId,
-        senderId: userId,
-        senderName,
-        preview: "",
-        secret: true,
-      },
-      `secret-${parsed.data.msgId}`,
-    );
-  } catch (error) {
-    logger.warn({ error, threadId, msgId: parsed.data.msgId }, "secret: failed to enqueue push");
   }
 
   // Best-effort: if message is an attachment reference, persist metadata-only ref for GC/delete workflows.
@@ -684,9 +773,22 @@ router.get("/history", async (req, res) => {
     take: limit + 1,
   });
   const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const last = items.at(-1);
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
+  // Курсор — по СЫРОЙ странице: скрытые строки не должны сбивать пагинацию.
+  const last = pageRows.at(-1);
   const nextCursor = hasMore && last ? `${last.createdAt.toISOString()}|${last.msgId}` : null;
+  // S2 (H12): строку с заголовком неверной формы не отдаём — страница истории Android/iOS
+  // разбирается одним массивом, одна такая строка ломала тред навсегда.
+  const items = pageRows.filter((m: any) => isValidSecretHeader(m.headerJson));
+  if (items.length !== pageRows.length) {
+    logHiddenSecretRows(
+      "history",
+      { threadId },
+      pageRows
+        .filter((m: any) => !isValidSecretHeader(m.headerJson))
+        .map((m: any) => ({ msgId: m.msgId, headerJson: m.headerJson })),
+    );
+  }
 
   res.json({
     threadId,
