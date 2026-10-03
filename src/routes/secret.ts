@@ -89,11 +89,17 @@ function rejectInvalidSecretHeaders(
   return true;
 }
 
-/** S2 на ВЫДАЧЕ: лог о скрытых из pull/history записях неверной формы. */
-function logHiddenSecretRows(
+/**
+ * S2 на ВЫДАЧЕ: лог о записях неверной формы в pull/history.
+ * `hidden` — правило включено, запись не отдана (`secret-header-hidden`);
+ * `served` — аварийный режим SECRET_HEADER_ENFORCE=0, запись отдана как до волны 1
+ * (`secret-header-invalid-served`). Правило одно на входе и на выдаче — см. secretHeaderEnforced.
+ */
+function logInvalidSecretRows(
   route: string,
   where: Record<string, string>,
   rows: Array<{ msgId: string; headerJson: unknown }>,
+  action: "hidden" | "served",
 ) {
   if (!rows.length) return;
   const byKind: Record<string, number> = {};
@@ -101,7 +107,10 @@ function logHiddenSecretRows(
     const k = headerKindForLog(r.headerJson);
     byKind[k] = (byKind[k] ?? 0) + 1;
   }
-  logger.warn({ route, ...where, hidden: rows.length, byKind }, "secret-header-hidden");
+  logger.warn(
+    { route, ...where, [action]: rows.length, byKind },
+    action === "hidden" ? "secret-header-hidden" : "secret-header-invalid-served"
+  );
 }
 
 const sendSchema = z.object({
@@ -309,7 +318,8 @@ async function handleInboxPull(req: Request, res: any, raw: unknown) {
 
   const out: any[] = [];
   const deadIds: string[] = [];
-  const hidden: Array<{ msgId: string; headerJson: unknown }> = [];
+  const enforceHeaders = secretHeaderEnforced();
+  const invalidRows: Array<{ msgId: string; headerJson: unknown }> = [];
   for (let i = 0; i < uniqueIds.length; i += 1) {
     const id = uniqueIds[i]!;
     const payload = (cached[i] as any) ?? byMsgId.get(id) ?? null;
@@ -321,12 +331,16 @@ async function handleInboxPull(req: Request, res: any, raw: unknown) {
       continue;
     }
     if (!isValidSecretHeader(payload.headerJson)) {
-      // S2 (H12): Android/iOS разбирают пачку одним массивом — один кривой заголовок роняет
-      // всю пачку, ack невозможен, инбокс клинит навсегда. Такую запись не отдаём и снимаем
-      // с инбокса этого устройства (честным клиентам её всё равно не разобрать).
-      hidden.push({ msgId: id, headerJson: payload.headerJson });
-      deadIds.push(id);
-      continue;
+      invalidRows.push({ msgId: id, headerJson: payload.headerJson });
+      if (enforceHeaders) {
+        // S2 (H12): Android/iOS разбирают пачку одним массивом — один кривой заголовок роняет
+        // всю пачку, ack невозможен, инбокс клинит навсегда. Такую запись не отдаём и снимаем
+        // с инбокса этого устройства (строгим клиентам её всё равно не разобрать).
+        deadIds.push(id);
+        continue;
+      }
+      // Аварийный режим SECRET_HEADER_ENFORCE=0: вход такую запись принял (201) — значит
+      // отдаём, как до волны 1. Иначе она пропала бы молча у ВСЕХ получателей.
     }
     out.push(payload);
     // Best-effort cache repopulation for DB-sourced payloads.
@@ -338,7 +352,7 @@ async function handleInboxPull(req: Request, res: any, raw: unknown) {
   if (deadIds.length > 0) {
     void ackSecretInbox(redis, currentDeviceId, deadIds).catch(() => {});
   }
-  logHiddenSecretRows("inbox/pull", { deviceId: currentDeviceId }, hidden);
+  logInvalidSecretRows("inbox/pull", { deviceId: currentDeviceId }, invalidRows, enforceHeaders ? "hidden" : "served");
 
   res.json({
     deviceId: currentDeviceId,
@@ -778,17 +792,17 @@ router.get("/history", async (req, res) => {
   const last = pageRows.at(-1);
   const nextCursor = hasMore && last ? `${last.createdAt.toISOString()}|${last.msgId}` : null;
   // S2 (H12): строку с заголовком неверной формы не отдаём — страница истории Android/iOS
-  // разбирается одним массивом, одна такая строка ломала тред навсегда.
-  const items = pageRows.filter((m: any) => isValidSecretHeader(m.headerJson));
-  if (items.length !== pageRows.length) {
-    logHiddenSecretRows(
-      "history",
-      { threadId },
-      pageRows
-        .filter((m: any) => !isValidSecretHeader(m.headerJson))
-        .map((m: any) => ({ msgId: m.msgId, headerJson: m.headerJson })),
-    );
-  }
+  // разбирается одним массивом, одна такая строка ломала тред навсегда. В аварийном режиме
+  // SECRET_HEADER_ENFORCE=0 отдаём всё (как до волны 1): вход такие строки тогда принимает.
+  const enforceHeaders = secretHeaderEnforced();
+  const invalidRows = pageRows.filter((m: any) => !isValidSecretHeader(m.headerJson));
+  const items = enforceHeaders ? pageRows.filter((m: any) => isValidSecretHeader(m.headerJson)) : pageRows;
+  logInvalidSecretRows(
+    "history",
+    { threadId },
+    invalidRows.map((m: any) => ({ msgId: m.msgId, headerJson: m.headerJson })),
+    enforceHeaders ? "hidden" : "served",
+  );
 
   res.json({
     threadId,

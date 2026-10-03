@@ -2,7 +2,12 @@ import { Router, type Request } from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma";
 import { resolveCurrentDeviceId } from "../lib/currentDevice";
-import { acceptSecretThread, declineSecretThread } from "../lib/secretThreadState";
+import {
+  SECRET_ACCEPT_LOST_TO_DECLINE,
+  acceptSecretThread,
+  announceSecretThreadAccepted,
+  declineSecretThread,
+} from "../lib/secretThreadState";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 
@@ -146,13 +151,16 @@ router.post("/secret/:id/accept", async (req, res) => {
     return;
   }
 
+  // Рассылка + перепроверка ПОСЛЕ неё (гонка с decline): если тред уже отменён, участники
+  // последним получают conversations:deleted, а принявший — 409, как при обычном «поздно».
+  let live = true;
   try {
-    const io = getIO();
-    for (const rid of result.participantIds) {
-      io?.to(userRoom(rid)).emit("secret:chat:accepted", { conversationId, peerDeviceId: deviceId });
-      io?.to(userRoom(rid)).emit("conversations:updated", { conversationId, conversation: result.thread });
-    }
+    live = await announceSecretThreadAccepted(getIO(), result);
   } catch {}
+  if (!live) {
+    res.status(409).json(SECRET_ACCEPT_LOST_TO_DECLINE);
+    return;
+  }
 
   res.json({ ok: true, conversationId, peerDeviceId: deviceId, thread: result.thread });
 });

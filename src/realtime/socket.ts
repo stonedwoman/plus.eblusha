@@ -11,8 +11,8 @@ import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
 import { decGauge, incGauge } from "../obs/metrics";
 import { enqueuePush } from "../jobs/queue";
-import { cloudMessageWritesAllowed } from "../lib/secretLatch";
-import { acceptSecretThread, declineSecretThread } from "../lib/secretThreadState";
+import { cloudMessageWritesAllowed, isSecretConversation } from "../lib/secretLatch";
+import { acceptSecretThread, announceSecretThreadAccepted, declineSecretThread } from "../lib/secretThreadState";
 import { initCloudRealtime } from "../cloud/realtime";
 
 type PresenceGame = {
@@ -132,6 +132,39 @@ type CallStatusPayload = {
 
 const userRoom = (userId: string) => `user:${userId}`;
 const deviceRoom = (deviceId: string) => `device:${deviceId}`;
+
+/**
+ * Пуш «Пропущенный звонок» для СЕКРЕТНОЙ беседы. Облачной записи о звонке там нет (S1,
+ * lib/secretLatch), а в облаке пуш уходит вместе с ней (messageId = id записи). Звонки из
+ * секретки разрешены, входящий пуш при таймауте/сбросе отменяется (cancelRingPush) — без этого
+ * пуша владелец выгруженного телефона о звонке не узнал бы вовсе.
+ * kind "message" — иной kind Android (EblushaMessagingService) молча выбрасывает. messageId
+ * синтетический: Android и iOS (MessageNotifications) его не читают, записи Message не создаём.
+ * Текста нет (как и в облаке): имя звонившего + «Пропущенный звонок». Ключ дедупликации —
+ * по звонку (conversationId + startedAt): ring-timeout и call:end одного звонка дадут один пуш.
+ */
+function enqueueSecretMissedCallPush(params: {
+  conversationId: string;
+  inviterId: string;
+  inviterName: string;
+  recipientIds: string[];
+  callStartedAt?: number | undefined;
+}) {
+  const messageId = `missed-${params.conversationId}-${params.callStartedAt ?? Date.now()}`;
+  enqueuePush(
+    params.recipientIds.filter((id) => id !== params.inviterId),
+    {
+      kind: "message",
+      conversationId: params.conversationId,
+      messageId,
+      senderId: params.inviterId,
+      senderName: params.inviterName,
+      preview: "Пропущенный звонок",
+    },
+    `msg-${messageId}`,
+  );
+}
+
 const ACTIVE_CALL_PRESENCE_ROOM = "call:presence:active";
 const ACTIVE_CALL_CONVERSATION_ROOM_PREFIX = "call:presence:conversation:";
 const activeCallConversationRoom = (conversationId: string) => `${ACTIVE_CALL_CONVERSATION_ROOM_PREFIX}${conversationId}`;
@@ -1368,6 +1401,23 @@ export async function initSocket(
             } catch (error) {
               logger.warn({ error, conversationId }, "Failed to record missed-call on ring timeout");
             }
+          } else if (isSecretConversation(conv as any)) {
+            // Секретка: записи нет, но пуш о пропущенном нужен (см. enqueueSecretMissedCallPush).
+            try {
+              const inviter = await prisma.user.findUnique({
+                where: { id: inviterId },
+                select: { displayName: true, username: true },
+              });
+              enqueueSecretMissedCallPush({
+                conversationId,
+                inviterId,
+                inviterName: inviter?.displayName ?? inviter?.username ?? "пользователь",
+                recipientIds: conv.participants.map((p) => p.userId),
+                callStartedAt: st.startedAt,
+              });
+            } catch (error) {
+              logger.warn({ error, conversationId }, "Failed to enqueue secret missed-call push on ring timeout");
+            }
           }
         } catch (error) {
           logger.warn({ error, conversationId }, "Failed to expire ringing call on timeout");
@@ -1944,16 +1994,9 @@ export async function initSocket(
           logger.warn({ conversationId, userId, code: result.code }, "secret:chat:accept rejected");
           return;
         }
-        for (const pid of result.participantIds) {
-          io.to(userRoom(pid)).emit("secret:chat:accepted", {
-            conversationId: result.conversationId,
-            peerDeviceId: result.peerDeviceId,
-          });
-          io.to(userRoom(pid)).emit("conversations:updated", {
-            conversationId: result.conversationId,
-            conversation: result.thread,
-          });
-        }
+        // Та же рассылка, что у HTTP, с перепроверкой статуса после неё (гонка с decline).
+        const live = await announceSecretThreadAccepted(io, result);
+        if (!live) logger.warn({ conversationId, userId }, "secret:chat:accept lost the race to decline");
       } catch (error) {
         logger.error({ error, conversationId, userId }, "Failed to accept secret chat");
       }
@@ -2623,6 +2666,27 @@ export async function initSocket(
           }
         } catch (error) {
           logger.warn({ error }, "Failed to create call ended message");
+        }
+      } else if (endClaimed && st && !st.accepted && isSecretConversation(conv as any)) {
+        // Секретка, звонок сброшен до ответа: записи нет (S1), но пуш о пропущенном нужен
+        // (см. enqueueSecretMissedCallPush) — как и в облаке, имя звонившего.
+        try {
+          const inviter =
+            st.inviterId === userId
+              ? { displayName: caller?.displayName, username: caller?.username }
+              : await prisma.user.findUnique({
+                  where: { id: st.inviterId },
+                  select: { displayName: true, username: true },
+                });
+          enqueueSecretMissedCallPush({
+            conversationId,
+            inviterId: st.inviterId,
+            inviterName: inviter?.displayName ?? inviter?.username ?? name,
+            recipientIds: conv.participants.map((p) => p.userId),
+            callStartedAt: st.startedAt,
+          });
+        } catch (error) {
+          logger.warn({ error, conversationId }, "Failed to enqueue secret missed-call push on call:end");
         }
       }
       // Проигравший гонку (endClaimed=false): callState уже снят другим завершением,

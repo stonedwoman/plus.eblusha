@@ -270,11 +270,7 @@ router.post("/unreact", async (req, res) => {
     res.status(403).json({ message: "Forbidden" });
     return;
   }
-  if (isSecretConversation(await conversationKind(message.conversationId))) {
-    logSecretCloudWriteBlocked("POST /messages/unreact", { conversationId: message.conversationId, userId, messageId });
-    rejectSecretCloudWrite(res);
-    return;
-  }
+  // Снять свою реакцию можно и в секретке: это только убирает открытые данные (lib/secretLatch).
 
   await prisma.messageReaction.deleteMany({
     where: {
@@ -303,10 +299,9 @@ router.post("/delete", async (req, res) => {
   const msg = await prisma.message.findUnique({ where: { id: messageId } });
   if (!msg) return res.status(404).json({ message: "Not found" });
   if (msg.senderId !== userId) return res.status(403).json({ message: "Forbidden" });
-  if (isSecretConversation(await conversationKind(msg.conversationId))) {
-    logSecretCloudWriteBlocked("POST /messages/delete", { conversationId: msg.conversationId, userId, messageId });
-    return rejectSecretCloudWrite(res);
-  }
+  // Удаление в секретке разрешено: оно обнуляет content/metadata и сносит вложения и реакции,
+  // то есть только уменьшает объём открытых данных. Облачная строка, оказавшаяся в секретке
+  // (легаси/записанная до S1), отправитель так может стереть (lib/secretLatch).
 
   // Fetch attachment URLs before deletion so we can attempt to delete blobs in S3 as well.
   const attachmentUrls = (

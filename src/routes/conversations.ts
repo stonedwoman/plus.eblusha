@@ -2,10 +2,17 @@ import { Router, type Request } from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma";
 import { Prisma } from "@prisma/client";
-import { deleteS3ObjectsByUrls } from "../lib/storageDeletion";
+import { deleteS3ObjectsByKeys, deleteS3ObjectsByUrls } from "../lib/storageDeletion";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
-import { isSecretConversation, logSecretCloudWriteBlocked, rejectSecretCloudWrite } from "../lib/secretLatch";
+import {
+  isSecretConversation,
+  isSecretConversationById,
+  logSecretCloudWriteBlocked,
+  rejectSecretCloudWrite,
+} from "../lib/secretLatch";
+import { getRedisClient } from "../lib/redis";
+import { SECRET_MESSAGE_KEY_PREFIX } from "../lib/secretInbox";
 import env from "../config/env";
 import logger from "../config/logger";
 import { extractFirstUrl } from "../lib/linkPreview";
@@ -161,6 +168,13 @@ router.put("/:id/availability/me", async (req, res) => {
     return;
   }
 
+  // S1: в секретной беседе сервер не хранит открытых данных о переписке (lib/secretLatch).
+  if (await isSecretConversationById(id)) {
+    logSecretCloudWriteBlocked("PUT /conversations/:id/availability/me", { conversationId: id, userId });
+    rejectSecretCloudWrite(res);
+    return;
+  }
+
   const bodySchema = z.object({
     intervals: intervalSchema.array().max(2000),
   });
@@ -266,6 +280,13 @@ router.post("/:id/availability/proposals", async (req, res) => {
   });
   if (!membership) {
     res.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  // S1: заметка к предложению — открытый текст; в секретной беседе не принимаем (lib/secretLatch).
+  if (await isSecretConversationById(id)) {
+    logSecretCloudWriteBlocked("POST /conversations/:id/availability/proposals", { conversationId: id, userId });
+    rejectSecretCloudWrite(res);
     return;
   }
 
@@ -504,6 +525,20 @@ router.post("/", async (req, res) => {
 
   const { participantIds, title, isGroup = false, isSecret = false, initiatorDeviceId } = parsed.data;
   const userId = (req as AuthedRequest).user!.id;
+
+  // Легаси-создание секретки (`isSecret:true`, type=CLOUD) закрыто: такие беседы инертны (облачный
+  // канал закрыт S1, легаси-сокет accept/decline их не трогает), ни один клиент его не вызывает
+  // (веб, Android, iOS, WinUI создают через POST /threads/secret), а ветка «existing» находила
+  // V2-тред (у него тоже isSecret:true) и рассылала secret:chat:offer от ЛЮБОГО участника без
+  // троттла — в обход ограничений сокетного offer. Ветки isSecret ниже теперь недостижимы.
+  if (isSecret) {
+    logger.warn({ userId }, "legacy secret conversation create rejected (use POST /threads/secret)");
+    res.status(410).json({
+      message: "Legacy secret conversations are no longer supported; use POST /threads/secret",
+      code: "SECRET_LEGACY_CREATE_GONE",
+    });
+    return;
+  }
 
   const uniqueParticipantIds = Array.from(new Set([...participantIds, userId]));
 
@@ -782,6 +817,11 @@ router.patch("/:id", async (req, res) => {
   if (!conv) return res.status(404).json({ message: "Not found" });
   const isMember = conv.participants.some((p) => p.userId === userId);
   if (!isMember) return res.status(403).json({ message: "Forbidden" });
+  // S1: название и аватар — открытый текст при беседе; у секретки их нет (клиенты правят только группы).
+  if (isSecretConversation(conv as any)) {
+    logSecretCloudWriteBlocked("PATCH /conversations/:id", { conversationId: id, userId });
+    return rejectSecretCloudWrite(res);
+  }
 
   // avatarUrl is set by our upload pipeline and may be either an absolute URL
   // (e.g. CDN) or a relative proxy path like "/api/files/...". Accept both.
@@ -903,6 +943,54 @@ router.delete("/:id/participants/me", async (req, res) => {
   res.json({ success: true });
 });
 
+/**
+ * S6: уборка вне БД после удаления секретки (best-effort, ответ DELETE от неё не зависит).
+ * - Redis `secret_msg:<msgId>`: pull отдаёт закэшированный конверт БЕЗ проверки БД — без DEL
+ *   удалённая секретка ещё до TTL кэша (по умолчанию 1 ч) доставлялась бы из кэша. Сами id в
+ *   списках инбоксов не трогаем: pull, не найдя ни кэша, ни строки доставки, снимет их сам.
+ * - S3: .enc-объекты живых (deletedAt=null) refs этого треда — ровно то, что участник и так может
+ *   снести через /secret/attachments/delete {deleteAllThread}. Объект, на который ещё ссылается
+ *   живой ref ДРУГОГО треда, не трогаем.
+ */
+async function purgeDeletedSecretThread(
+  threadId: string,
+  msgIds: string[],
+  refs: Array<{ objectKey: string; deletedAt: Date | null }>,
+) {
+  if (msgIds.length) {
+    try {
+      const redis = await getRedisClient();
+      for (let i = 0; i < msgIds.length; i += 500) {
+        await redis.del(msgIds.slice(i, i + 500).map((m) => `${SECRET_MESSAGE_KEY_PREFIX}${m}`));
+      }
+    } catch (error) {
+      logger.warn({ error, threadId, count: msgIds.length }, "secret-thread-delete: redis cache purge failed");
+    }
+  }
+  let s3Keys: string[] = [];
+  try {
+    const liveKeys = Array.from(new Set(refs.filter((r) => !r.deletedAt).map((r) => r.objectKey).filter(Boolean)));
+    if (liveKeys.length) {
+      const stillUsed = new Set(
+        (
+          await prisma.secretAttachmentRef.findMany({
+            where: { objectKey: { in: liveKeys }, deletedAt: null },
+            select: { objectKey: true },
+          })
+        ).map((r) => r.objectKey),
+      );
+      s3Keys = liveKeys.filter((k) => !stillUsed.has(k));
+      if (s3Keys.length) void deleteS3ObjectsByKeys(s3Keys, { reason: `secret_thread_delete:${threadId}` });
+    }
+  } catch (error) {
+    logger.warn({ error, threadId }, "secret-thread-delete: attachment cleanup failed");
+  }
+  logger.info(
+    { threadId, secretMessages: msgIds.length, attachmentRefs: refs.length, s3Objects: s3Keys.length },
+    "secret-thread-delete: purged",
+  );
+}
+
 // Hard-delete a conversation (for all participants)
 router.delete("/:id", async (req, res) => {
   const { id } = req.params;
@@ -924,17 +1012,37 @@ router.delete("/:id", async (req, res) => {
     })
   ).map((a) => a.url);
 
-  await prisma.$transaction([
+  // S6 (H10): у секретки шифротекст лежит в messages_secret (+ deliveries_secret) и в .enc-объектах
+  // по secret_attachment_refs — внешнего ключа на Conversation у них нет, раньше они оставались
+  // сиротами навсегда. Удаляем в ТОЙ ЖЕ транзакции, что и беседу; DELETE … RETURNING отдаёт ровно
+  // удалённые msgId и ключи объектов (без гонки «собрали до транзакции — дописали после»).
+  // deliveries_secret уходят каскадом (FK msgId ON DELETE CASCADE). S3 и Redis — после коммита.
+  const secretThread = isSecretConversation(conv as any);
+  const purgeSecret = secretThread
+    ? [
+        prisma.$queryRaw<Array<{ msgId: string }>>`DELETE FROM "messages_secret" WHERE "threadId" = ${id} RETURNING "msgId"`,
+        prisma.$queryRaw<Array<{ objectKey: string; deletedAt: Date | null }>>`DELETE FROM "secret_attachment_refs" WHERE "threadId" = ${id} RETURNING "objectKey", "deletedAt"`,
+      ]
+    : [];
+
+  const txResults = await prisma.$transaction([
+    ...purgeSecret,
     prisma.messageReceipt.deleteMany({ where: { message: { conversationId: id } } }),
     prisma.messageAttachment.deleteMany({ where: { message: { conversationId: id } } }),
     prisma.messageReaction.deleteMany({ where: { message: { conversationId: id } } }),
     prisma.message.deleteMany({ where: { conversationId: id } }),
     prisma.conversationParticipant.deleteMany({ where: { conversationId: id } }),
     prisma.conversation.delete({ where: { id } }),
-  ]);
+  ] as any[]);
 
   if (attachmentUrls.length) {
     void deleteS3ObjectsByUrls(attachmentUrls, { reason: `conversation:${id}` });
+  }
+
+  if (secretThread) {
+    const deletedMsgIds = ((txResults[0] ?? []) as Array<{ msgId: string }>).map((r) => r.msgId);
+    const deletedRefs = (txResults[1] ?? []) as Array<{ objectKey: string; deletedAt: Date | null }>;
+    await purgeDeletedSecretThread(id, deletedMsgIds, deletedRefs);
   }
 
   // Notify participants

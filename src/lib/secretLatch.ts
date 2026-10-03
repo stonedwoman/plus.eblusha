@@ -19,6 +19,12 @@ import logger from "../config/logger";
  * запись в ней видна лишь как превью/счётчик непрочитанного в списке чатов, а хранит
  * открытые метаданные (имена, время и длительность звонков) в «секретной» беседе.
  * Инвариант «облачных Message в секретках — 0» так остаётся проверяемым одним SELECT.
+ *
+ * Та же защёлка — на прочий свободный текст, который сервер хранит открыто при беседе:
+ * заметка к предложению времени и «моё время» (/:id/availability/*), название и аватар
+ * (PATCH /conversations/:id). Честные клиенты в секретке эти маршруты не вызывают.
+ * Удаление и снятие реакции (/messages/delete, /messages/unreact) защёлка НЕ закрывает:
+ * они только уменьшают объём открытых данных (стереть уже лежащую облачную строку можно).
  */
 
 export const SECRET_E2EE_ONLY_CODE = "SECRET_E2EE_ONLY";
@@ -52,6 +58,14 @@ export async function cloudMessageWritesAllowed(
     logger.warn({ error, conversationId }, "secret-latch: conversation lookup failed, cloud write skipped");
     return false;
   }
+}
+
+/**
+ * Секретная ли беседа — по id, для маршрутов, где беседа не загружена (проверено только членство).
+ * Fail-closed, как cloudMessageWritesAllowed: не нашли или чтение упало → считаем секретной.
+ */
+export async function isSecretConversationById(conversationId: string): Promise<boolean> {
+  return !(await cloudMessageWritesAllowed(conversationId));
 }
 
 export function rejectSecretCloudWrite(res: Response): void {

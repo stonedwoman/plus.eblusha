@@ -1,6 +1,9 @@
 /**
  * Дыры секретных чатов, серверная волна 1: S1 (защёлка открытого текста), S2 (форма headerJson),
- * S4 (атомарный accept + легаси-сокет secret:chat:*), S8 (без пуша/notify в CANCELLED).
+ * S4 (атомарный accept + легаси-сокет secret:chat:*), S6 (DELETE секретки чистит шифротекст),
+ * S8 (без пуша/notify в CANCELLED) и правки по ревью волны 1 (аварийный режим S2 «принято ⇔
+ * отдаётся», порядок событий в гонке accept↔decline, пуш о пропущенном звонке в секретке,
+ * availability/PATCH в секретке, 410 на легаси-создание, delete/unreact в секретке разрешены).
  *
  * Запускать ТОЛЬКО в изолированной среде (боевые БД/Redis недоступны предохранителю guard.ts):
  *   test/secret-env/secret-test.sh run test/secret-holes-wave1.integration.test.ts
@@ -27,6 +30,10 @@ import {
 } from "../src/lib/secretInbox";
 import { getPushQueue } from "../src/jobs/queue";
 import { isValidSecretHeader, secretHeaderProblems } from "../src/lib/secretHeader";
+// Пространством имён: контрольный прогон этого же теста на коде ДО правок (где функции
+// announceSecretThreadAccepted ещё нет) должен падать шагом, а не компиляцией всего файла.
+import * as secretThreadState from "../src/lib/secretThreadState";
+import { getStorageProvider } from "../src/lib/storage/provider";
 
 const RUN = `ebst_w1_${Date.now().toString(36)}_${crypto.randomBytes(2).toString("hex")}`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -37,7 +44,7 @@ const sockets: ClientSocket[] = [];
 
 type Resp = { status: number; body: any };
 async function call(
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST" | "DELETE" | "PUT" | "PATCH",
   path: string,
   opts: { token?: string; device?: string; body?: unknown } = {}
 ): Promise<Resp> {
@@ -133,6 +140,31 @@ async function createCloudDirect(a: U, b: U): Promise<string> {
   const r = await call("POST", "/api/conversations", { token: a.token, body: { participantIds: [b.id] } });
   assert.ok(r.status === 201 || r.status === 200, `create cloud ${r.status} ${JSON.stringify(r.body)}`);
   return r.body.conversation.id as string;
+}
+
+/**
+ * Легаси-беседа `isSecret:true` при type=CLOUD (как её создавал старый POST /conversations {isSecret}).
+ * Сам маршрут теперь отвечает 410 — строим в БД как «худший случай» (такие могли остаться в базе).
+ */
+async function mkLegacySecretConv(a: U, b: U, status: "PENDING" | "ACTIVE"): Promise<string> {
+  const c = await prisma.conversation.create({
+    data: {
+      isGroup: false,
+      isSecret: true,
+      secretStatus: status,
+      createdById: a.id,
+      participants: { create: [{ userId: a.id }, { userId: b.id }] },
+    } as any,
+  });
+  return c.id;
+}
+
+/** Пуш-задачи «Пропущенный звонок» по беседе (в тестовой среде воркера пушей нет — задачи лежат). */
+async function missedCallPushJobs(conversationId: string) {
+  const jobs = await getPushQueue().getJobs(["waiting", "delayed", "prioritized", "paused", "active", "completed", "failed"]);
+  return jobs.filter(
+    (j: any) => j?.data?.payload?.conversationId === conversationId && j?.data?.payload?.preview === "Пропущенный звонок"
+  );
 }
 
 const msgCount = (conversationId: string) => prisma.message.count({ where: { conversationId } });
@@ -234,15 +266,31 @@ async function main() {
       assert.equal(r.status, 409, JSON.stringify(r.body));
       assert.equal(await msgCount(T1), 0);
     });
-    await step("S1 легаси isSecret (type=CLOUD) в ACTIVE → 409", async () => {
+    await step("легаси POST /conversations {isSecret:true} → 410, беседа не создана, offer не разослан", async () => {
       const legacyDev = await registerUuidDevice(A);
+      const before = await prisma.conversation.count({ where: { participants: { some: { userId: C.id } } } });
+      const sC = await connect(C, C.dev);
+      const offer = waitEvent(sC, "secret:chat:offer", () => true, 1200);
       const r0 = await call("POST", "/api/conversations", { token: A.token, body: { participantIds: [C.id], isSecret: true, initiatorDeviceId: legacyDev } });
-      assert.ok(r0.status === 201 || r0.status === 200, JSON.stringify(r0.body));
-      const L = r0.body.conversation.id as string;
+      assert.equal(r0.status, 410, JSON.stringify(r0.body));
+      assert.equal(r0.body.code, "SECRET_LEGACY_CREATE_GONE");
+      assert.equal(await offer, null, "secret:chat:offer не должен уходить");
+      assert.equal(await prisma.conversation.count({ where: { participants: { some: { userId: C.id } } } }), before);
+      // V2-тред A↔B (isSecret:true) раньше находился как existing и получал offer от любого участника
+      const sA0 = await connect(A, A.dev);
+      const offerToA = waitEvent(sA0, "secret:chat:offer", (p) => p?.conversationId === T1, 1200);
+      const legacyDevB = await registerUuidDevice(B);
+      const r1 = await call("POST", "/api/conversations", { token: B.token, body: { participantIds: [A.id], isSecret: true, initiatorDeviceId: legacyDevB } });
+      assert.equal(r1.status, 410, JSON.stringify(r1.body));
+      assert.equal(await offerToA, null, "offer по V2-треду через легаси-ветку не должен уходить");
+      sC.disconnect();
+      sA0.disconnect();
+    });
+    await step("S1 легаси isSecret (type=CLOUD, уже лежит в БД) в ACTIVE → 409", async () => {
+      const L = await mkLegacySecretConv(A, C, "ACTIVE");
       const row = await prisma.conversation.findUnique({ where: { id: L }, select: { type: true, isSecret: true } });
       assert.equal(row?.type, "CLOUD");
       assert.equal(row?.isSecret, true);
-      await prisma.conversation.update({ where: { id: L }, data: { secretStatus: "ACTIVE" } as any });
       const r = await call("POST", "/api/conversations/send", { token: A.token, body: { conversationId: L, type: "TEXT", content: "plain" } });
       assert.equal(r.status, 409, JSON.stringify(r.body));
       assert.equal(await msgCount(L), 0);
@@ -273,7 +321,7 @@ async function main() {
     });
 
     const T3 = await createSecretThread(A, C); // A↔C — для «уже лежащей» облачной строки
-    await step("S1 update/delete/react/unreact/preview/thumbnail по облачной строке в секретке → 409, строка не тронута", async () => {
+    await step("S1 update/react/preview/thumbnail по облачной строке в секретке → 409, строка не тронута; delete/unreact (стирают) → 200", async () => {
       const injected = await prisma.message.create({
         data: {
           conversationId: T3,
@@ -281,33 +329,70 @@ async function main() {
           type: "TEXT",
           content: "старый открытый текст",
           attachments: { create: [{ url: "/api/files/old.eblusha", type: "VIDEO" }] },
+          reactions: { create: [{ userId: C.id, emoji: "eyes" }] },
         },
         include: { attachments: true },
       });
       try {
         const upd = await call("POST", "/api/messages/update", { token: A.token, body: { messageId: injected.id, content: "новый" } });
         assert.equal(upd.status, 409, `update ${upd.status}`);
-        const re = await call("POST", "/api/messages/react", { token: C.token, body: { messageId: injected.id, emoji: "🔥" } });
+        const re = await call("POST", "/api/messages/react", { token: C.token, body: { messageId: injected.id, emoji: "fire" } });
         assert.equal(re.status, 409, `react ${re.status}`);
-        const ur = await call("POST", "/api/messages/unreact", { token: C.token, body: { messageId: injected.id, emoji: "🔥" } });
-        assert.equal(ur.status, 409, `unreact ${ur.status}`);
-        const del = await call("POST", "/api/messages/delete", { token: A.token, body: { messageId: injected.id } });
-        assert.equal(del.status, 409, `delete ${del.status}`);
+        assert.equal(await prisma.messageReaction.count({ where: { messageId: injected.id, emoji: "fire" } }), 0);
         const th = await call("POST", `/api/attachments/${injected.attachments[0]!.id}/thumbnail`, { token: A.token });
         assert.equal(th.status, 409, `thumbnail ${th.status} ${JSON.stringify(th.body)}`);
         assert.equal((await prisma.messageAttachment.findUnique({ where: { id: injected.attachments[0]!.id } }))?.metadata, null);
         const pv = await call("GET", `/api/messages/${injected.id}/preview`, { token: A.token });
         assert.equal(pv.status, 200);
         assert.equal(pv.body.disabled, true);
-        const after = await prisma.message.findUnique({ where: { id: injected.id } });
-        assert.equal(after?.content, "старый открытый текст");
-        assert.equal(after?.deletedAt, null);
-        assert.equal(after?.metadata, null, "preview не должен писать metadata");
+        const mid = await prisma.message.findUnique({ where: { id: injected.id } });
+        assert.equal(mid?.content, "старый открытый текст");
+        assert.equal(mid?.metadata, null, "preview не должен писать metadata");
+
+        // Стирание разрешено: оно только убирает открытые данные.
+        const ur = await call("POST", "/api/messages/unreact", { token: C.token, body: { messageId: injected.id, emoji: "eyes" } });
+        assert.equal(ur.status, 200, `unreact ${ur.status} ${JSON.stringify(ur.body)}`);
         assert.equal(await prisma.messageReaction.count({ where: { messageId: injected.id } }), 0);
+        const delOther = await call("POST", "/api/messages/delete", { token: C.token, body: { messageId: injected.id } });
+        assert.equal(delOther.status, 403, "удаляет только отправитель");
+        const del = await call("POST", "/api/messages/delete", { token: A.token, body: { messageId: injected.id } });
+        assert.equal(del.status, 200, `delete ${del.status} ${JSON.stringify(del.body)}`);
+        const after = await prisma.message.findUnique({ where: { id: injected.id } });
+        assert.equal(after?.content, null, "открытый текст стёрт");
+        assert.ok(after?.deletedAt, "помечено удалённым");
+        assert.equal(await prisma.messageAttachment.count({ where: { messageId: injected.id } }), 0);
       } finally {
+        await prisma.messageReaction.deleteMany({ where: { messageId: injected.id } });
         await prisma.messageAttachment.deleteMany({ where: { messageId: injected.id } });
         await prisma.message.delete({ where: { id: injected.id } });
       }
+    });
+
+    await step("S1 availability (PUT /me, POST proposals) и PATCH в секретке → 409, ничего не записано; облако — 200/201", async () => {
+      const now = Date.now();
+      const range = { startUtcISO: new Date(now + 3_600_000).toISOString(), endUtcISO: new Date(now + 7_200_000).toISOString() };
+      for (const conv of [T1, T3]) {
+        const me = await call("PUT", `/api/conversations/${conv}/availability/me`, { token: A.token, body: { intervals: [range] } });
+        assert.equal(me.status, 409, `availability/me ${me.status} ${JSON.stringify(me.body)}`);
+        assert.equal(me.body.code, "SECRET_E2EE_ONLY");
+        const pr = await call("POST", `/api/conversations/${conv}/availability/proposals`, { token: A.token, body: { ranges: [range], note: "открытая заметка" } });
+        assert.equal(pr.status, 409, `proposals ${pr.status}`);
+        const pa = await call("PATCH", `/api/conversations/${conv}`, { token: A.token, body: { title: "открытое название" } });
+        assert.equal(pa.status, 409, `patch ${pa.status}`);
+        assert.equal(await prisma.conversationAvailabilityInterval.count({ where: { conversationId: conv } }), 0);
+        assert.equal(await prisma.conversationAvailabilityProposal.count({ where: { conversationId: conv } }), 0);
+        assert.equal((await prisma.conversation.findUnique({ where: { id: conv }, select: { title: true } }))?.title ?? null, null);
+      }
+      // посторонний по-прежнему 403, а не 409 (членство проверяется раньше секретности)
+      const out = await call("PUT", `/api/conversations/${T1}/availability/me`, { token: C.token, body: { intervals: [range] } });
+      assert.equal(out.status, 403);
+      // контроль: облачная беседа
+      const me = await call("PUT", `/api/conversations/${CL}/availability/me`, { token: A.token, body: { intervals: [range] } });
+      assert.equal(me.status, 200, JSON.stringify(me.body));
+      const pr = await call("POST", `/api/conversations/${CL}/availability/proposals`, { token: A.token, body: { ranges: [range], note: "ok" } });
+      assert.equal(pr.status, 201, JSON.stringify(pr.body));
+      const pa = await call("PATCH", `/api/conversations/${CL}`, { token: A.token, body: { title: `${RUN} cloud` } });
+      assert.equal(pa.status, 200, JSON.stringify(pa.body));
     });
 
     // --- S1 сокетные пути: 1:1 звонки в секретке vs облаке
@@ -326,10 +411,24 @@ async function main() {
       await sleep(800);
     };
     for (const kind of ["decline", "end-unanswered", "end-accepted"] as const) {
-      await step(`S1 сокет 1:1 call ${kind}: секретка — 0 записей, облако — запись есть`, async () => {
+      await step(`S1 сокет 1:1 call ${kind}: секретка — 0 записей${kind === "end-unanswered" ? " (но пуш «Пропущенный звонок» есть)" : ""}, облако — запись есть`, async () => {
         const beforeCloud = await msgCount(CL);
+        const beforePushIds = new Set((await missedCallPushJobs(T1)).map((j: any) => j.id));
         await callScenario(T1, kind);
         assert.equal(await msgCount(T1), 0, "в секретке не должно появиться облачных Message");
+        const fresh = (await missedCallPushJobs(T1)).filter((j: any) => !beforePushIds.has(j.id));
+        if (kind === "end-unanswered") {
+          assert.equal(fresh.length, 1, `секретка: ровно один пуш о пропущенном (есть ${fresh.length})`);
+          const job: any = fresh[0];
+          assert.deepEqual(job.data.userIds, [B.id], "пуш — собеседнику, не звонившему");
+          assert.equal(job.data.payload.kind, "message");
+          assert.ok(String(job.data.payload.messageId).startsWith(`missed-${T1}-`), job.data.payload.messageId);
+          assert.equal(job.data.payload.senderId, A.id);
+          assert.ok(job.data.payload.senderName);
+          assert.equal(job.data.payload.secret, undefined);
+        } else {
+          assert.equal(fresh.length, 0, `${kind}: пуша о пропущенном быть не должно`);
+        }
         await callScenario(CL, kind);
         assert.equal(await msgCount(CL), beforeCloud + 1, "контроль: в облачной беседе запись о звонке пишется");
       });
@@ -556,24 +655,34 @@ async function main() {
       assert.ok(allIds.includes(valid.msgId) && !allIds.includes(badId));
     });
 
-    await step("S2 лог-режим SECRET_HEADER_ENFORCE=0: вход принимает, выдача всё равно прячет", async () => {
+    await step("S2 аварийный режим SECRET_HEADER_ENFORCE=0: «принято ⇔ отдаётся» — вход принимает, pull и history отдают", async () => {
+      const dev = R.devs[3]!;
+      const bad = secretEnvelope(dev, { kind: 5 });
+      const pb = pushBody({});
       process.env.SECRET_HEADER_ENFORCE = "0";
       try {
-        const dev = R.devs[3]!;
-        const bad = secretEnvelope(dev, { kind: 5 });
         const r = await call("POST", "/api/secret/send", { token: S.token, device: S.dev, body: { messages: [bad] } });
         assert.equal(r.status, 200, `log-mode send ${r.status}`);
         assert.equal(await prisma.secretMessage.count({ where: { msgId: bad.msgId } }), 1);
         const pull = await call("GET", "/api/secret/inbox/pull?limit=50", { token: R.token, device: dev });
-        assert.ok(!(pull.body.messages as any[]).some((m) => m.msgId === bad.msgId));
-        const pb = pushBody({});
+        assert.ok((pull.body.messages as any[]).some((m) => m.msgId === bad.msgId), "принятая запись должна отдаваться (не теряться молча)");
+        await sleep(300);
+        assert.ok(
+          (await redis.lRange(`${SECRET_INBOX_LIST_KEY_PREFIX}${dev}`, 0, -1)).includes(bad.msgId),
+          "в аварийном режиме pull запись с инбокса не снимает — ждёт ack клиента"
+        );
         const p = await call("POST", "/api/secret/messages/push", { token: S.token, device: S.dev, body: pb });
         assert.equal(p.status, 201, `log-mode push ${p.status}`);
         const h = await call("GET", `/api/secret/history?threadId=${T5}&limit=50`, { token: R.token, device: R.devs[1]! });
-        assert.ok(!(h.body.items as any[]).some((m) => m.msgId === pb.msgId));
+        assert.ok((h.body.items as any[]).some((m) => m.msgId === pb.msgId), "history в аварийном режиме отдаёт строку");
       } finally {
         delete process.env.SECRET_HEADER_ENFORCE;
       }
+      // Обратно в обычный режим: те же записи снова прячутся (правило одно на входе и выдаче).
+      const pull2 = await call("GET", "/api/secret/inbox/pull?limit=50", { token: R.token, device: dev });
+      assert.ok(!(pull2.body.messages as any[]).some((m) => m.msgId === bad.msgId));
+      const h2 = await call("GET", `/api/secret/history?threadId=${T5}&limit=50`, { token: R.token, device: R.devs[1]! });
+      assert.ok(!(h2.body.items as any[]).some((m) => m.msgId === pb.msgId));
     });
 
     // ------------------------------------------------------------------ S8
@@ -624,19 +733,65 @@ async function main() {
         assert.equal(st.secretPeerDeviceId, winner);
       }
     });
-    await step("S4 гонка accept ↔ decline: CANCELLED никогда не воскресает", async () => {
+    const recordThreadEvents = (s: ClientSocket, conversationId: string) => {
+      const seen: string[] = [];
+      for (const ev of ["secret:chat:accepted", "conversations:updated", "conversations:deleted"]) {
+        s.on(ev, (p: any) => {
+          if (p?.conversationId === conversationId) seen.push(ev);
+        });
+      }
+      return seen;
+    };
+    await step("S4 гонка accept ↔ decline: CANCELLED не воскресает, последнее событие у обоих — conversations:deleted", async () => {
+      const outcomes: string[] = [];
       for (let i = 0; i < 8; i += 1) {
         const X = await mkUser(`dx${i}`);
         const Y = await mkUser(`dy${i}`);
         const T = await createSecretThread(X, Y);
+        const sX = await connect(X, X.dev);
+        const sY = await connect(Y, Y.dev);
+        const evX = recordThreadEvents(sX, T);
+        const evY = recordThreadEvents(sY, T);
         const [acc, dec] = await Promise.all([
           call("POST", `/api/threads/secret/${T}/accept`, { token: Y.token, device: Y.dev }),
           call("POST", `/api/threads/secret/${T}/decline`, { token: X.token, device: X.dev }),
         ]);
+        await sleep(400);
+        sX.disconnect();
+        sY.disconnect();
         assert.equal(dec.status, 200);
         assert.ok(acc.status === 200 || acc.status === 409, `accept ${acc.status}`);
         assert.equal((await convState(T)).secretStatus, "CANCELLED", `iter ${i}: accept=${acc.status}`);
+        assert.equal(evX.at(-1), "conversations:deleted", `iter ${i} creator events: ${evX.join(",")}`);
+        assert.equal(evY.at(-1), "conversations:deleted", `iter ${i} peer events: ${evY.join(",")}`);
+        outcomes.push(`${acc.status}:${evX.join("+")}`);
       }
+      console.log(`       races: ${outcomes.join(" | ")}`);
+    });
+    await step("S4 гонка accept ↔ decline, худший порядок (decline между коммитом accept и рассылкой): accepted → deleted, 409", async () => {
+      const X = await mkUser("wx");
+      const Y = await mkUser("wy");
+      const T = await createSecretThread(X, Y);
+      const sX = await connect(X, X.dev);
+      const evX = recordThreadEvents(sX, T);
+      // 1) accept закоммитил ACTIVE (без рассылки — её делает announceSecretThreadAccepted)
+      const announce = (secretThreadState as any).announceSecretThreadAccepted;
+      assert.equal(typeof announce, "function", "нет announceSecretThreadAccepted (код до правки)");
+      const res = await secretThreadState.acceptSecretThread({ userId: Y.id, conversationId: T, deviceId: Y.dev });
+      assert.ok(res.ok, JSON.stringify(res));
+      assert.equal((await convState(T)).secretStatus, "ACTIVE");
+      // 2) decline успел до рассылки accept: CANCELLED + conversations:deleted
+      const d = await call("POST", `/api/threads/secret/${T}/decline`, { token: X.token });
+      assert.equal(d.status, 200);
+      await sleep(200);
+      assert.deepEqual(evX, ["conversations:deleted"]);
+      // 3) рассылка accept: старый код на этом закончил бы «принято/ACTIVE»
+      const live = await announce(io, res);
+      assert.equal(live, false, "тред уже отменён — accept должен проиграть");
+      await sleep(300);
+      assert.deepEqual(evX, ["conversations:deleted", "secret:chat:accepted", "conversations:updated", "conversations:deleted"]);
+      assert.equal((await convState(T)).secretStatus, "CANCELLED");
+      sX.disconnect();
     });
     const X = await mkUser("ax");
     const Y = await mkUser("ay", 1);
@@ -700,11 +855,8 @@ async function main() {
       st = await convState(T);
       assert.equal(st.secretPeerDeviceId, Q.devs[0], "secretPeerDeviceId не должен переписываться");
 
-      // CLOUD-легаси isSecret — не SECRET-тред, сокет его не трогает
-      const legacyDev = await registerUuidDevice(P);
-      const L = await call("POST", "/api/conversations", { token: P.token, body: { participantIds: [O.id], isSecret: true, initiatorDeviceId: legacyDev } });
-      assert.ok(L.status === 201 || L.status === 200, JSON.stringify(L.body));
-      const LId = L.body.conversation.id as string;
+      // CLOUD-легаси isSecret — не SECRET-тред, сокет его не трогает (создание теперь 410 — строим в БД)
+      const LId = await mkLegacySecretConv(P, O, "PENDING");
       sO.emit("secret:chat:accept", { conversationId: LId, deviceId: O.dev });
       await sleep(600);
       const lst = await convState(LId);
@@ -755,6 +907,96 @@ async function main() {
       assert.equal(await w2, null, "повтор в окне 30 с режется");
     });
 
+    // ------------------------------------------------------------------ S6
+    console.log("S6 — DELETE секретки чистит шифротекст");
+    await step("S6 DELETE /conversations/:id секретки: messages_secret, deliveries, refs, кэш Redis и .enc удалены; чужое не тронуто", async () => {
+      const P6 = await mkUser("s6p");
+      const Q6 = await mkUser("s6q", 1);
+      const O6 = await mkUser("s6o");
+      const T = await createSecretThread(P6, Q6);
+      const acc = await call("POST", `/api/threads/secret/${T}/accept`, { token: Q6.token, device: Q6.devs[0]! });
+      assert.equal(acc.status, 200, JSON.stringify(acc.body));
+      const TO = await createSecretThread(P6, O6); // другой тред того же создателя
+
+      const storage = getStorageProvider();
+      const kOwn = `uploads/${RUN}-s6-own.enc`;
+      const kShared = `uploads/${RUN}-s6-shared.enc`;
+      for (const k of [kOwn, kShared]) await storage.putObject(k, crypto.randomBytes(64));
+      assert.ok(await storage.headObject(kOwn));
+
+      const mkPush = (headerJson: Record<string, unknown>, contentType = "text") => ({
+        threadId: T,
+        msgId: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        headerJson,
+        ciphertext: b64(),
+        contentType,
+        schemaVersion: 1,
+        receiverDeviceIds: [P6.dev, Q6.devs[0]!, Q6.devs[1]!],
+      });
+      const m1 = mkPush({ kind: "msg", v: 1, nonce: b64() });
+      const m2 = mkPush({ kind: "msg", v: 1, nonce: b64(), attachment: { objectKey: kOwn, size: 64 } }, "attachment");
+      for (const m of [m1, m2]) {
+        const r = await call("POST", "/api/secret/messages/push", { token: P6.token, device: P6.dev, body: m });
+        assert.equal(r.status, 201, JSON.stringify(r.body));
+      }
+      for (const th of [T, TO]) {
+        const r = await call("POST", "/api/secret/attachments/ref", { token: P6.token, device: P6.dev, body: { threadId: th, objectKey: kShared } });
+        assert.equal(r.status, 201, JSON.stringify(r.body));
+      }
+      // конверт ключа через /secret/send: в БД threadId=null — к треду по столбцу не привязан, DELETE его не трогает
+      const keyEnv = secretEnvelope(Q6.devs[0]!, { kind: "key_package", v: 1, packageKind: "thread_key", threadId: T });
+      assert.equal((await call("POST", "/api/secret/send", { token: P6.token, device: P6.dev, body: { messages: [keyEnv] } })).status, 200);
+
+      const ids = [m1.msgId, m2.msgId];
+      assert.equal(await prisma.secretMessage.count({ where: { threadId: T } }), 2);
+      assert.equal(await prisma.secretDelivery.count({ where: { msgId: { in: ids } } }), 6);
+      assert.equal(await prisma.secretAttachmentRef.count({ where: { threadId: T } }), 2);
+      for (const id of ids) assert.equal(await redis.exists(`${SECRET_MESSAGE_KEY_PREFIX}${id}`), 1, "кэш до удаления есть");
+
+      const outsider = await call("DELETE", `/api/conversations/${T}`, { token: O6.token });
+      assert.equal(outsider.status, 403);
+      const del = await call("DELETE", `/api/conversations/${T}`, { token: Q6.token });
+      assert.equal(del.status, 200, JSON.stringify(del.body));
+
+      assert.equal(await prisma.conversation.count({ where: { id: T } }), 0);
+      assert.equal(await prisma.secretMessage.count({ where: { threadId: T } }), 0, "messages_secret треда удалены");
+      assert.equal(await prisma.secretDelivery.count({ where: { msgId: { in: ids } } }), 0, "deliveries_secret ушли каскадом");
+      assert.equal(await prisma.secretAttachmentRef.count({ where: { threadId: T } }), 0, "refs треда удалены");
+      for (const id of ids) assert.equal(await redis.exists(`${SECRET_MESSAGE_KEY_PREFIX}${id}`), 0, "кэш secret_msg снят");
+
+      // pull получателей: удалённые конверты не приходят и уходят из инбокса; чужой конверт /send — приходит
+      const pull1 = await call("GET", "/api/secret/inbox/pull?limit=50", { token: Q6.token, device: Q6.devs[1]! });
+      assert.equal(pull1.status, 200);
+      assert.deepEqual((pull1.body.messages as any[]).map((m) => m.msgId), []);
+      const pull0 = await call("GET", "/api/secret/inbox/pull?limit=50", { token: Q6.token, device: Q6.devs[0]! });
+      assert.deepEqual((pull0.body.messages as any[]).map((m) => m.msgId), [keyEnv.msgId]);
+      await sleep(300);
+      for (const dev of [Q6.devs[0]!, Q6.devs[1]!]) {
+        const left = await redis.lRange(`${SECRET_INBOX_LIST_KEY_PREFIX}${dev}`, 0, -1);
+        for (const id of ids) assert.ok(!left.includes(id), `${dev}: удалённый конверт должен уйти из инбокса`);
+      }
+      assert.equal(await prisma.secretMessage.count({ where: { msgId: keyEnv.msgId } }), 1, "конверт /send не тронут");
+
+      // S3: свой .enc удалён (после коммита, best-effort), общий с живым ref другого треда — на месте
+      for (let i = 0; i < 20 && (await storage.headObject(kOwn)); i += 1) await sleep(100);
+      assert.equal(await storage.headObject(kOwn), null, ".enc треда удалён");
+      assert.ok(await storage.headObject(kShared), "объект с живым ref другого треда не трогаем");
+      assert.equal(await prisma.secretAttachmentRef.count({ where: { threadId: TO, objectKey: kShared, deletedAt: null } }), 1);
+      await storage.deleteObject(kShared);
+    });
+    await step("S6 регрессия: DELETE облачной беседы — 200, сообщения и беседа удалены", async () => {
+      const a = await mkUser("s6ca");
+      const b = await mkUser("s6cb");
+      const cid = await createCloudDirect(a, b);
+      const s = await call("POST", "/api/conversations/send", { token: a.token, body: { conversationId: cid, type: "TEXT", content: "привет" } });
+      assert.equal(s.status, 201, JSON.stringify(s.body));
+      const d = await call("DELETE", `/api/conversations/${cid}`, { token: b.token });
+      assert.equal(d.status, 200, JSON.stringify(d.body));
+      assert.equal(await prisma.conversation.count({ where: { id: cid } }), 0);
+      assert.equal(await msgCount(cid), 0);
+    });
+
     // ------------------------------------------------------------------ S1: долгие сокетные пути
     console.log("S1 — долгие пути звонков (таймер «нет ответа» 60 с и обрыв принятого 15 с), ждём ~65 с");
     await step("S1 сокет: ring-timeout и grace-teardown не пишут записей в секретку (облако — пишут)", async () => {
@@ -782,6 +1024,11 @@ async function main() {
       await sleep(65_000);
       assert.equal(await msgCount(ring.secret), 0, "ring-timeout: в секретке 0");
       assert.equal(await msgCount(ring.cloud), 1, "ring-timeout: контроль — облако получило «Пропущенный звонок»");
+      const ringPushes: any[] = await missedCallPushJobs(ring.secret);
+      assert.equal(ringPushes.length, 1, `ring-timeout: в секретке пуш «Пропущенный звонок» без записи (есть ${ringPushes.length})`);
+      assert.deepEqual(ringPushes[0].data.userIds, [ring.b.id]);
+      assert.ok(String(ringPushes[0].data.payload.messageId).startsWith(`missed-${ring.secret}-`));
+      assert.equal((await missedCallPushJobs(ring.cloud)).length, 1, "контроль: облачный пуш по записи");
       assert.equal(await msgCount(grace.secret), 0, "grace: в секретке 0");
       assert.equal(await msgCount(grace.cloud), 1, "grace: контроль — облако получило «Звонок продлился»");
     });
@@ -792,9 +1039,22 @@ async function main() {
       assert.equal(await msgCount(T3), 0);
     });
 
-    await step("S1 инвариант: облачных Message во всех SECRET/isSecret беседах тестовой БД — 0", async () => {
-      const n = await prisma.message.count({ where: { conversation: { OR: [{ type: "SECRET" }, { isSecret: true }] } } as any });
+    await step("S1 инвариант: облачных Message в SECRET/isSecret беседах этого прогона — 0", async () => {
+      // По прогону, а не по всей тестовой БД: в ней могут лежать данные контрольных прогонов
+      // на НЕпропатченном коде (там записи в секретках и есть то, что тест ловит).
+      const n = await prisma.message.count({
+        where: {
+          conversation: {
+            OR: [{ type: "SECRET" }, { isSecret: true }],
+            participants: { some: { user: { username: { startsWith: RUN } } } },
+          },
+        } as any,
+      });
       assert.equal(n, 0);
+      const runConvs = await prisma.conversation.count({
+        where: { OR: [{ type: "SECRET" }, { isSecret: true }], participants: { some: { user: { username: { startsWith: RUN } } } } } as any,
+      });
+      assert.ok(runConvs >= 10, `проверка должна видеть секретки прогона (${runConvs})`);
     });
   } finally {
     for (const s of sockets) {

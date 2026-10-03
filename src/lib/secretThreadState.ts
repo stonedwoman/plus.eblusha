@@ -59,6 +59,8 @@ const NOT_FOUND = () => fail(404, "Secret thread not found", "SECRET_THREAD_NOT_
 const FORBIDDEN = () => fail(403, "Forbidden", "FORBIDDEN");
 const CREATOR = () => fail(409, "The creator cannot accept their own invite", "SECRET_ACCEPT_BY_CREATOR");
 const DECLINED = () => fail(409, "Invite was declined", "SECRET_INVITE_DECLINED");
+/** Ответ принявшему, если тред отменили между коммитом accept и рассылкой (announceSecretThreadAccepted). */
+export const SECRET_ACCEPT_LOST_TO_DECLINE = { message: "Invite was declined", code: "SECRET_INVITE_DECLINED" } as const;
 const OTHER_DEVICE = () => fail(409, "Already accepted on another device", "SECRET_ACCEPTED_ON_OTHER_DEVICE");
 
 /**
@@ -119,6 +121,51 @@ export async function acceptSecretThread(params: {
 
   if ("ok" in outcome) return outcome;
   return { ok: true, conversationId, peerDeviceId: deviceId, participantIds, thread: outcome.thread };
+}
+
+/** Минимум от socket.io-сервера, нужный для рассылки (getIO() в HTTP, io в сокете). */
+type RoomEmitter = { to(room: string): { emit(...args: any[]): unknown } };
+
+/**
+ * Разослать «принято» после успешного acceptSecretThread — ОДНА реализация для HTTP и сокета.
+ *
+ * Гонка accept ↔ decline: accept коммитит ACTIVE и только потом рассылает события, а decline
+ * (условный UPDATE без ожидания accept) может между ними перевести тред в CANCELLED и разослать
+ * `conversations:deleted`. Тогда последними у клиентов оказались бы `secret:chat:accepted` и
+ * `conversations:updated` (ACTIVE) уже отменённого треда: веб создателя по accepted начал бы
+ * отдавать thread_key в отменённый тред, а принявший получил бы 200.
+ *
+ * Поэтому статус перечитываем ПОСЛЕ рассылки (перечитка ДО неё окно не закрывает: decline мог бы
+ * закоммитить и разослать между перечиткой и emit). Если тред уже CANCELLED (или удалён), ещё раз
+ * шлём `conversations:deleted` участникам и возвращаем false — вызывающий отвечает 409. Если
+ * decline закоммитил ПОСЛЕ перечитки, его собственный `conversations:deleted` уйдёт позже наших
+ * событий. В обоих случаях последним событием у клиентов будет deleted.
+ *
+ * true — тред на момент перечитки живой (или перечитать не удалось: тогда ведём себя как раньше).
+ */
+export async function announceSecretThreadAccepted(
+  io: RoomEmitter | null | undefined,
+  result: SecretAcceptSuccess,
+): Promise<boolean> {
+  const rooms = result.participantIds.map((pid) => `user:${pid}`);
+  for (const room of rooms) {
+    io?.to(room).emit("secret:chat:accepted", { conversationId: result.conversationId, peerDeviceId: result.peerDeviceId });
+    io?.to(room).emit("conversations:updated", { conversationId: result.conversationId, conversation: result.thread });
+  }
+  let row: { secretStatus?: unknown } | null;
+  try {
+    row = (await prisma.conversation.findUnique({
+      where: { id: result.conversationId },
+      select: { secretStatus: true },
+    })) as any;
+  } catch {
+    return true;
+  }
+  if (row && row.secretStatus !== "CANCELLED") return true;
+  for (const room of rooms) {
+    io?.to(room).emit("conversations:deleted", { conversationId: result.conversationId });
+  }
+  return false;
 }
 
 /** Отклонить (собеседник) или отменить (создатель) — любой участник; → CANCELLED. */
