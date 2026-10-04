@@ -89,17 +89,30 @@
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         if (!d || d.ok !== true || !Array.isArray(d.bosses)) return;
+        // Боссы с фазами (Келл: FrozenKing, _p2, _p3) ставят ключ на каждой
+        // фазе, а побеждён босс только с последней — её и слушаем. Служебные
+        // «боссы» без ключа поражения или без русского имени в игре (Hive,
+        // TheHive) игрокам не видны — их не показываем.
+        var groups = {};
+        d.bosses.forEach(function (b) {
+          if (!b.k) return;
+          var key = siteKeyOf(b);
+          if (!key) return;
+          var known = BOSS_KEYS_ORDER.indexOf(key) >= 0;
+          if (!known && !b.ru) return;
+          var phase = /_p(\d+)$/.exec(String(b.p || ""));
+          var n = phase ? parseInt(phase[1], 10) : 1;
+          var g = groups[key];
+          if (!g || n > g.phase) groups[key] = { phase: n, dead: b.d === 1, name: b.ru || b.en || b.p, known: known };
+        });
         var live = {};
         var extra = [];
         var names = {};
-        d.bosses.forEach(function (b) {
-          var key = siteKeyOf(b);
-          if (!key) return;
-          live[key] = !!live[key] || b.d === 1;
-          if (b.ru || b.en) names[key] = b.ru || b.en;
-          if (BOSS_KEYS_ORDER.indexOf(key) < 0 && !extra.some(function (x) { return x.key === key; })) {
-            extra.push({ key: key, name: b.ru || b.en || b.p });
-          }
+        Object.keys(groups).forEach(function (key) {
+          var g = groups[key];
+          live[key] = g.dead;
+          names[key] = g.name;
+          if (!g.known) extra.push({ key: key, name: g.name });
         });
         var json = JSON.stringify([live, extra]);
         if (json === lastLiveJson) return;
