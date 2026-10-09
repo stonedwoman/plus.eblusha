@@ -3,6 +3,7 @@ import IORedis from "ioredis";
 import env from "../../config/env";
 import logger from "../../config/logger";
 import { sendPushToUsers } from "../../push";
+import { attachReadAt } from "../../push/readSync";
 import type { PushJob } from "../queue";
 
 /**
@@ -18,7 +19,9 @@ export function startPushWorker(): Worker<PushJob> {
   const worker = new Worker<PushJob>(
     "push",
     async (job) => {
-      const { userIds, payload, excludeDeviceIds } = job.data;
+      const { userIds, excludeDeviceIds } = job.data;
+      // read-пуш получает момент прочтения только здесь: «хвост» дребезга ждёт в очереди до 5 с.
+      const payload = await attachReadAt(userIds, job.data.payload, job.timestamp ?? Date.now());
       const { sent, retryable } = await sendPushToUsers(userIds, payload, { excludeDeviceIds });
       // Лог безусловный: sent===0 — самый ценный для диагностики случай (нет токенов?
       // все отфильтрованы? провайдер молчит?), и раньше он как раз проходил молча.

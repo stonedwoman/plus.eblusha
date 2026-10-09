@@ -4,6 +4,7 @@ import prisma from "../lib/prisma";
 import { getRedisClient } from "../lib/redis";
 import { resolveCurrentDeviceId } from "../lib/currentDevice";
 import { enqueuePush } from "../jobs/queue";
+import type { PushPayload } from "./types";
 
 /**
  * «Беседу прочитали на другом устройстве» → тихий пуш {kind:"read", conversationId} на iOS-устройства
@@ -31,6 +32,9 @@ export const READ_SYNC_WINDOW_MS = 5_000;
 
 const lastKey = (userId: string, conversationId: string) => `readsync:last:${userId}:${conversationId}`;
 const trailKey = (userId: string, conversationId: string) => `readsync:trail:${userId}:${conversationId}`;
+const atKey = (userId: string, conversationId: string) => `readsync:at:${userId}:${conversationId}`;
+/** Как apns-expiration у read-пуша: дольше пуш всё равно не живёт. */
+const READ_AT_TTL_MS = 3_600_000;
 
 export type ReadSyncOutcome = "sent" | "deferred" | "throttled" | "no-ios" | "error";
 
@@ -58,6 +62,10 @@ export async function notifyConversationRead(opts: {
     const excludeDeviceIds = readerDeviceId ? [readerDeviceId] : undefined;
     const redis = await getRedisClient();
     const last = lastKey(userId, conversationId);
+    // Момент прочтения — в пуш его подставит воркер (attachReadAt) уже при отправке: пуш-хвост
+    // уходит до 5 с спустя, и за это время в беседе могло прийти непрочитанное сообщение, баннер
+    // которого снимать нельзя. Пишем при КАЖДОМ событии, в том числе свёрнутом в хвост.
+    await redis.set(atKey(userId, conversationId), String(Date.now()), { PX: READ_AT_TTL_MS });
 
     // Передний пуш: окно свободно — занимаем его и шлём сразу.
     if ((await redis.set(last, "1", { NX: true, PX: READ_SYNC_WINDOW_MS })) === "OK") {
@@ -105,4 +113,30 @@ export function scheduleReadSync(req: Request, userId: string, conversationIds: 
       await notifyConversationRead({ userId, conversationId, readerDeviceId });
     }
   })();
+}
+
+/**
+ * Воркер, перед отправкой: дописать в read-пуш момент последнего прочтения (readAt); остальные
+ * пуши — как есть. Не бросает. Нет записи в Redis или он недоступен — берём fallbackMs (время
+ * постановки задачи: не позже настоящего прочтения, так что лишнего баннера не снимем). Совсем
+ * без времени пуш уходить не должен: приложение сняло бы вообще все баннеры беседы.
+ */
+export async function attachReadAt(
+  userIds: string[],
+  payload: PushPayload,
+  fallbackMs: number,
+): Promise<PushPayload> {
+  if (payload.kind !== "read" || payload.readAt !== undefined) return payload;
+  let readAt = fallbackMs;
+  try {
+    const userId = userIds[0];
+    if (userId) {
+      const raw = await (await getRedisClient()).get(atKey(userId, payload.conversationId));
+      const parsed = raw ? Number(raw) : NaN;
+      if (Number.isFinite(parsed) && parsed > 0) readAt = parsed;
+    }
+  } catch (error) {
+    logger.warn({ error, conversationId: payload.conversationId }, "read-sync: readAt lookup failed");
+  }
+  return { ...payload, readAt };
 }

@@ -30,7 +30,7 @@ import { signAccessToken } from "../src/utils/jwt";
 import { getPushQueue } from "../src/jobs/queue";
 import { buildRequest, type ApnsConfig } from "../src/push/apns";
 import { sendPushToUsers } from "../src/push";
-import { READ_SYNC_WINDOW_MS } from "../src/push/readSync";
+import { READ_SYNC_WINDOW_MS, attachReadAt } from "../src/push/readSync";
 
 // Подмена экспортов: index.ts зовёт apns_1.sendApns(...)/fcm_1.sendFcm(...) в момент вызова. `import * as` в CJS
 // даёт копию, а не живые экспорты — берём настоящий объект через require.
@@ -205,6 +205,18 @@ async function main() {
       const body = JSON.parse(req.body);
       assert.deepEqual(body, { aps: { "content-available": 1 }, kind: "read", conversationId: C });
     });
+    await step("readAt (число, мс) едет в теле рядом с kind/conversationId; остальное без изменений", async () => {
+      const C = "cm0abcdefghijklmnopqrstuv";
+      const req = buildRequest(cfg, tgt("apns"), { kind: "read", conversationId: C, readAt: 1_700_000_000_123 });
+      assert.ok(req);
+      assert.deepEqual(JSON.parse(req.body), {
+        aps: { "content-available": 1 },
+        kind: "read",
+        conversationId: C,
+        readAt: 1_700_000_000_123,
+      });
+      assert.equal(req.headers["apns-push-type"], "background");
+    });
     await step("в теле нет ни alert/sound/badge, ни текста", async () => {
       const req = buildRequest(cfg, tgt("apns"), { kind: "read", conversationId: "cm0abcdefghijklmnopqrstuv" });
       assert.ok(req);
@@ -287,8 +299,22 @@ async function main() {
       assert.ok(!jobs[0]!.opts.delay, "первый пуш уходит без задержки");
       await expectJobs(C1b, 1);
     });
+    let tEvent2 = 0;
+    await step("воркер подставляет readAt = момент прочтения (а не момент отправки)", async () => {
+      const at = (await attachReadAt([U.id], { kind: "read", conversationId: C1 }, 1)) as { readAt?: number };
+      assert.ok(typeof at.readAt === "number" && at.readAt >= t0 && at.readAt <= Date.now(), `readAt=${at.readAt}, t0=${t0}`);
+      // чужие виды пушей не трогаем, уже проставленный readAt не перезаписываем
+      const msg = { kind: "message", conversationId: C1, messageId: "m", senderId: "s", senderName: "n" } as const;
+      assert.equal(await attachReadAt([U.id], msg, 1), msg);
+      const fixed = { kind: "read", conversationId: C1, readAt: 42 } as const;
+      assert.equal(await attachReadAt([U.id], fixed, 1), fixed);
+      // нет записи в Redis → время постановки задачи, а не «сейчас»
+      const none = (await attachReadAt([U.id], { kind: "read", conversationId: "cm0nosuchconversation00000" }, 777)) as { readAt?: number };
+      assert.equal(none.readAt, 777);
+    });
     await step("2-е внутри окна → одна ОТЛОЖЕННАЯ задача на конец окна, 3-е → ничего", async () => {
       for (const c of [C1, C1b]) await mkMsg(c, V.id);
+      tEvent2 = Date.now();
       await Promise.all([markRead(U, iA, C1), markRead(U, iA, C1b)]);
       const jobs = await expectJobs(C1, 2);
       const tail = jobs[1]!;
@@ -303,6 +329,10 @@ async function main() {
       await sleep(700);
       assert.equal((await readJobs(C1)).length, 2, "3-е событие внутри окна не добавляет задач");
       assert.equal((await readJobs(C1b)).length, 2);
+      // Хвост уйдёт позже, но readAt в нём — время ПОСЛЕДНЕГО прочтения (3-го, свёрнутого), не 1-го и не отправки:
+      // сообщения, пришедшие после него, ещё не прочитаны, их баннеры приложение не тронет.
+      const at = (await attachReadAt([U.id], { kind: "read", conversationId: C1 }, 1)) as { readAt?: number };
+      assert.ok(typeof at.readAt === "number" && at.readAt >= tEvent2 && at.readAt <= Date.now(), `readAt=${at.readAt}`);
     });
     await step("хвост сам занимает следующее окно: событие после конца 1-го окна НЕ бьёт пушем впритык", async () => {
       await sleepUntil(t0 + 5600);
