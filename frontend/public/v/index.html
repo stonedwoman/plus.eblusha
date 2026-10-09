@@ -83,7 +83,7 @@
   <link rel="stylesheet" href="/v/norse.css?v=1" />
   <link rel="stylesheet" href="/v/cube.css?v=1" />
   <link rel="stylesheet" href="/v/options.css?v=1" />
-  <link rel="stylesheet" href="/v/layout.css?v=1" />
+  <link rel="stylesheet" href="/v/layout.css?v=1791620000" />
   <!-- Первый кадр — только когда нарисовано небо (#k-ready стоит после его
        скрипта): иначе куб повернётся на пустой бледный фон. -->
   <link rel="expect" href="#k-ready" blocking="render" />
@@ -163,6 +163,10 @@
       font-weight: 600;
       padding: 0.62rem 1.2rem;
       min-height: 2.7rem;
+    }
+
+    .hero__copy--alt {
+      margin-top: 0.4rem;
     }
 
     .tile {
@@ -1740,7 +1744,8 @@
                   <div id="code" class="code muted" aria-label="Код мира">…</div>
                 </div>
                 <span class="hero__seed" id="worldSeed"></span>
-                <button type="button" class="btn-primary hero__copy" id="copyBtn" disabled>Скопировать код</button>
+                <button type="button" class="btn-primary hero__copy" id="joinBtn" disabled title="Откроет Valheim в Steam и сразу подключит к серверу">Войти в игру</button>
+                <button type="button" class="btn-secondary hero__copy hero__copy--alt" id="copyBtn" disabled>Скопировать код</button>
               </div>
                 <a class="tile tile--opts" href="#settings" data-tilt data-layout-key="opts">
                   <span class="tile__body">
@@ -1861,6 +1866,8 @@
 
       var codeEl = document.getElementById("code");
       var copyBtn = document.getElementById("copyBtn");
+      var joinBtn = document.getElementById("joinBtn");
+      var lastPassword = null;
       var refreshBtn = document.getElementById("refreshBtn");
       var refreshLabel = document.getElementById("refreshLabel") || refreshBtn;
       var toast = document.getElementById("toast");
@@ -2127,11 +2134,14 @@
           codeEl.textContent = wc;
           codeEl.className = "code";
           copyBtn.disabled = false;
+          joinBtn.disabled = false;
           lastCode = String(wc);
+          lastPassword = data.password || null;
         } else {
           codeEl.textContent = data.error || "Код пока недоступен";
           codeEl.className = "code muted";
           copyBtn.disabled = true;
+          joinBtn.disabled = true;
           lastCode = null;
         }
 
@@ -2191,6 +2201,7 @@
           codeEl.textContent = String(e.message || e);
           codeEl.className = "code muted";
           copyBtn.disabled = true;
+          joinBtn.disabled = true;
           lastCode = null;
           setHeroStatus(false);
           renderRecent(cachedRecent);
@@ -2237,6 +2248,16 @@
 
       refreshBtn.addEventListener("click", function () {
         refreshFromServer();
+      });
+
+      // Скрытый параметр клиента Valheim: -joincode сам логинится в PlayFab и
+      // заходит по коду кроссплея. Steam один раз спросит, разрешить ли запуск
+      // с параметрами; если игра уже открыта, параметры не применятся.
+      joinBtn.addEventListener("click", function () {
+        if (!lastCode) return;
+        var args = "-joincode " + lastCode + (lastPassword ? " -password " + lastPassword : "");
+        window.location.href = "steam://run/892970//" + encodeURIComponent(args) + "/";
+        setToast("Открываем Valheim в Steam…", true);
       });
 
       copyBtn.addEventListener("click", function () {

@@ -148,6 +148,8 @@
 
 .hero__id[data-button="auto"] > .hero__copy {
   width: auto;
+  /* Кнопок две («Войти в игру» и «Скопировать код») — одной ширины. */
+  min-width: min(100%, 15rem);
   padding-left: 1.8rem;
   padding-right: 1.8rem;
 }
