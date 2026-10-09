@@ -47,15 +47,25 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
         NSLog("PushAppDelegate: alert-токен не выдан: %@", String(describing: error))
     }
 
-    // MARK: - Тихий background-пуш (call-cancel на alert-токен)
+    // MARK: - Тихий background-пуш (call-cancel, read на alert-токен)
 
-    /// Сервер шлёт отбой звонка на alert-токен БЕЗ баннера (content-available=1,
-    /// см. src/push/apns.ts): задача — молча убрать экран входящего.
+    /// Тихие пуши на alert-токен БЕЗ баннера (content-available=1, см. src/push/apns.ts):
+    ///  - call-cancel — молча убрать экран входящего;
+    ///  - read — беседу прочитали на ДРУГОМ устройстве: снять её баннеры из Центра
+    ///    уведомлений. Окно фонового пуша короткое, поэтому completionHandler зовём сразу,
+    ///    как только баннеры сняты (getDeliveredNotifications отвечает за миллисекунды).
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
+        if let read = ReadPush.parse(userInfo) {
+            MessageNotifications.shared.clearDelivered(conversationId: read.conversationId) { removed in
+                NSLog("PushAppDelegate: read-пуш, снято баннеров: %d", removed)
+                DispatchQueue.main.async { completionHandler(.newData) }
+            }
+            return
+        }
         if userInfo["kind"] as? String == "call-cancel" {
             CallKitController.shared.reportRemoteEnded(
                 conversationId: userInfo["conversationId"] as? String

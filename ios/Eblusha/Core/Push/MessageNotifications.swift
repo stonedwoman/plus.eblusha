@@ -44,22 +44,98 @@ final class MessageNotifications: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Снять доставленные уведомления беседы — при её прочтении в приложении. Сервер
-    /// группирует пуши по thread-id = conversationId; без этого после чтения чата
-    /// баннеры висели бы в Центре уведомлений, пока их не смахнут руками.
-    func clearDelivered(conversationId: String) {
+    /// Снять доставленные уведомления беседы — при её прочтении в приложении ИЛИ на другом
+    /// устройстве (тихий пуш kind=read, PushAppDelegate). Сервер группирует пуши по
+    /// thread-id = conversationId; без этого после чтения чата баннеры висели бы в Центре
+    /// уведомлений, пока их не смахнут руками.
+    /// completion — сколько снято; зовётся ВСЕГДА (и когда снимать нечего): фоновый пуш
+    /// обязан дёрнуть completionHandler в окне, которое даёт система.
+    func clearDelivered(conversationId: String, completion: ((Int) -> Void)? = nil) {
         let center = UNUserNotificationCenter.current()
         center.getDeliveredNotifications { list in
-            let ids = list
-                .filter {
-                    $0.request.content.threadIdentifier == conversationId
-                        || ($0.request.content.userInfo["conversationId"] as? String) == conversationId
-                }
-                .map { $0.request.identifier }
+            let ids = Self.identifiers(
+                in: list.map(DeliveredInfo.init), forConversation: conversationId
+            )
+            if !ids.isEmpty {
+                center.removeDeliveredNotifications(withIdentifiers: ids)
+            }
+            completion?(ids.count)
+        }
+    }
+
+    /// Возврат в приложение: снять баннеры бесед, которые к этому моменту прочитаны (пуш
+    /// kind=read мог не дойти — приложение выгружено пользователем, нет сети, Apple
+    /// придушила фоновые пуши). readConversationIds — беседы с unreadCount == 0 из свежего
+    /// списка бесед; deliveredBefore — момент НАЧАЛА запроса списка: баннер, пришедший после
+    /// него, список мог ещё не учесть, и его снимать нельзя.
+    func clearDeliveredForRead(_ readConversationIds: Set<String>, deliveredBefore: Date) {
+        guard !readConversationIds.isEmpty else { return }
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { list in
+            let ids = Self.staleIdentifiers(
+                in: list.map(DeliveredInfo.init),
+                readConversations: readConversationIds,
+                deliveredBefore: deliveredBefore
+            )
             if !ids.isEmpty {
                 center.removeDeliveredNotifications(withIdentifiers: ids)
             }
         }
+    }
+
+    /// Слепок доставленного уведомления: выбор «что снять» — чистая функция над ним, чтобы
+    /// его можно было проверить XCTest без UNUserNotificationCenter (UNNotification руками
+    /// не построить).
+    struct DeliveredInfo: Equatable {
+        let identifier: String
+        let threadIdentifier: String
+        /// userInfo["conversationId"] — запасной признак на случай пуша без thread-id.
+        let userInfoConversationId: String?
+        let kind: String?
+        let date: Date
+
+        init(identifier: String, threadIdentifier: String, userInfoConversationId: String?,
+             kind: String?, date: Date) {
+            self.identifier = identifier
+            self.threadIdentifier = threadIdentifier
+            self.userInfoConversationId = userInfoConversationId
+            self.kind = kind
+            self.date = date
+        }
+
+        init(_ n: UNNotification) {
+            let content = n.request.content
+            self.init(
+                identifier: n.request.identifier,
+                threadIdentifier: content.threadIdentifier,
+                userInfoConversationId: content.userInfo["conversationId"] as? String,
+                kind: content.userInfo["kind"] as? String,
+                date: n.date
+            )
+        }
+
+        func belongs(to conversationId: String) -> Bool {
+            threadIdentifier == conversationId || userInfoConversationId == conversationId
+        }
+    }
+
+    /// Все уведомления беседы — любого вида (в том числе баннер звонка): прочтение чата
+    /// закрывает и их.
+    static func identifiers(in list: [DeliveredInfo], forConversation conversationId: String) -> [String] {
+        list.filter { $0.belongs(to: conversationId) }.map(\.identifier)
+    }
+
+    /// Устаревшие баннеры сообщений: беседа прочитана, а баннер пришёл не позже начала
+    /// запроса списка. Только kind=message — баннер звонка и прочее чужая логика прочтения.
+    static func staleIdentifiers(
+        in list: [DeliveredInfo], readConversations: Set<String>, deliveredBefore: Date
+    ) -> [String] {
+        list.filter { n in
+            n.kind == "message"
+                && n.date <= deliveredBefore
+                && (readConversations.contains(n.threadIdentifier)
+                    || n.userInfoConversationId.map { readConversations.contains($0) } == true)
+        }.map(\.identifier)
     }
 
     // MARK: - UNUserNotificationCenterDelegate

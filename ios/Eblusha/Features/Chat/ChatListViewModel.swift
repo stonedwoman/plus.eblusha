@@ -341,7 +341,8 @@ final class ChatListViewModel: ObservableObject {
     }
 
     func refresh() {
-        lastRefresh = Date().timeIntervalSince1970
+        let startedAt = Date()
+        lastRefresh = startedAt.timeIntervalSince1970
         Task {
             ui.loading = ui.conversations.isEmpty
             ui.refreshing = !ui.conversations.isEmpty
@@ -361,6 +362,13 @@ final class ChatListViewModel: ObservableObject {
                 // Порядок задаёт репозиторий (lastMessageAt, а у беседы без сообщений —
                 // createdAt), здесь его не пересчитываем: две сортировки разошлись бы.
                 ui.conversations = list
+                // Прочитанное на другом устройстве: баннеры бесед без непрочитанных висеть не
+                // должны (пуш kind=read мог не дойти). Секретки пропускаем: их unreadCount с
+                // сервера не показатель (квитанций у них нет), снимаются при открытии чата.
+                MessageNotifications.shared.clearDeliveredForRead(
+                    Set(list.filter { !$0.isSecretV2 && $0.unreadCount == 0 }.map(\.id)),
+                    deliveredBefore: startedAt
+                )
             case .failure(let message, _):
                 ui.loading = false
                 ui.refreshing = false
