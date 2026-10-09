@@ -112,6 +112,12 @@ export async function sendPushToUsers(
   const urgent = isUrgent(payload);
   const chosen: PushTarget[] = [];
   for (const device of devices) {
+    // «Прочитано на другом устройстве» — только тихий пуш на iOS-alert-токен (APNs background
+    // на основной topic): VoIP-токен для него запрещён (см. выше), FCM/Android такого пуша не знает.
+    if (payload.kind === "read") {
+      if (device.alert?.provider === "apns") chosen.push(device.alert);
+      continue;
+    }
     if (urgent && device.voip) chosen.push(device.voip);
     else if (device.alert) chosen.push(device.alert);
   }

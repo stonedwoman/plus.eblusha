@@ -19,7 +19,7 @@ import { isUrgent } from "./types";
  *                  будит убитое iOS-приложение через PushKit).
  */
 
-type ApnsConfig = {
+export type ApnsConfig = {
   /** Приватный ключ из .p8 — PEM-текст, каким его отдаёт Apple Developer. */
   key: string;
   keyId: string;
@@ -137,12 +137,13 @@ function toCustomData(payload: PushPayload): Record<string, unknown> {
   return data;
 }
 
-type PreparedRequest = {
+export type PreparedRequest = {
   headers: Record<string, string>;
   body: string;
 };
 
-function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPayload): PreparedRequest | null {
+/** Экспорт — для теста полезной нагрузки (test/read-sync.integration.test.ts). */
+export function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPayload): PreparedRequest | null {
   const now = Math.floor(Date.now() / 1000);
   const urgent = isUrgent(payload);
 
@@ -220,6 +221,25 @@ function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPaylo
         },
         ...data,
       }),
+    };
+  }
+
+  if (payload.kind === "read") {
+    // Беседу прочитали на другом устройстве: тихий background-пуш, по которому приложение
+    // снимает свои доставленные баннеры (alert/sound/badge в нём быть не может). Для background
+    // Apple требует priority 5. Живёт час, а не «0» (доставить сейчас или выбросить): телефон
+    // мог быть без сети, и тогда баннеры, которые он получит позже, надо всё равно погасить.
+    // collapse-id: пока телефон недоступен, копится один пуш на беседу, а не очередь из них
+    // (лимит Apple на collapse-id — 64 байта).
+    return {
+      headers: {
+        "apns-topic": config.bundleId,
+        "apns-push-type": "background",
+        "apns-priority": "5",
+        "apns-expiration": String(now + 3600),
+        "apns-collapse-id": `read-${payload.conversationId}`.slice(0, 64),
+      },
+      body: JSON.stringify({ aps: { "content-available": 1 }, ...data }),
     };
   }
 

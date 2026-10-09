@@ -14,6 +14,8 @@ export type PushJob = {
 
 export type EnqueuePushOptions = {
   excludeDeviceIds?: string[] | undefined;
+  /** Отложить отправку (мс) — «хвостовой» пуш read-sync, см. push/readSync.ts. */
+  delayMs?: number | undefined;
 };
 
 export type LinkPreviewJob = {
@@ -91,12 +93,14 @@ export function enqueuePush(
   // о сообщениях молча не ставились в очередь вовсе, на всех платформах. Поэтому
   // разделитель меняем на дефис и в jobId двоеточий не оставляем никогда.
   const jobId = dedupeKey ? dedupeKey.replace(/:/g, "-") : undefined;
+  const delay = opts?.delayMs && opts.delayMs > 0 ? Math.round(opts.delayMs) : 0;
+  const jobOpts = jobId || delay ? { ...(jobId ? { jobId } : {}), ...(delay ? { delay } : {}) } : undefined;
   try {
     void getPushQueue()
       .add(
         "push",
         { userIds: recipients, payload, ...(excludeDeviceIds.length ? { excludeDeviceIds } : {}) },
-        jobId ? { jobId } : undefined,
+        jobOpts,
       )
       .catch((error) => {
         // Пуш — ускоритель поверх живого сокета, отправку сообщения он ронять не должен.

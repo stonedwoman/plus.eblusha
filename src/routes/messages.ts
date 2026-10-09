@@ -8,6 +8,7 @@ import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
 import { enqueueLinkPreview } from "../jobs/queue";
 import { rateLimit } from "../middlewares/rateLimit";
+import { scheduleReadSync } from "../push/readSync";
 import {
   isSecretConversation,
   logSecretCloudWriteBlocked,
@@ -162,6 +163,18 @@ router.post("/receipts", async (req, res) => {
   const { messageIds, status } = parsed.data;
   const userId = (req as AuthedRequest).user!.id;
 
+  // Для read-sync (тихий пуш «прочитано» на другие устройства): какие сообщения ЧУЖИХ людей этим
+  // запросом стали прочитанными впервые. Снимок статусов — до записи, иначе «было/стало» не отличить.
+  const isReadStatus = status === "READ" || status === "SEEN";
+  const alreadyRead = new Set<string>();
+  if (isReadStatus) {
+    const prev = await prisma.messageReceipt.findMany({
+      where: { userId, messageId: { in: messageIds }, status: { in: ["READ", "SEEN"] } },
+      select: { messageId: true },
+    });
+    for (const r of prev) alreadyRead.add(r.messageId);
+  }
+
   const ops = messageIds.map((messageId) =>
     prisma.messageReceipt.upsert({
       where: {
@@ -180,14 +193,17 @@ router.post("/receipts", async (req, res) => {
   if (messageIds.length > 0) {
     const meta = await prisma.message.findMany({
       where: { id: { in: messageIds } },
-      select: { id: true, conversationId: true },
+      select: { id: true, conversationId: true, senderId: true },
     });
     const byConv = new Map<string, string[]>();
+    const newlyReadConvs = new Set<string>();
     for (const m of meta) {
       const list = byConv.get(m.conversationId) ?? [];
       list.push(m.id);
       byConv.set(m.conversationId, list);
+      if (isReadStatus && m.senderId !== userId && !alreadyRead.has(m.id)) newlyReadConvs.add(m.conversationId);
     }
+    scheduleReadSync(req, userId, newlyReadConvs);
     const receiptByMessageId = new Map(receipts.map((receipt) => [receipt.messageId, receipt]));
     for (const [conversationId, ids] of byConv.entries()) {
       getIO()?.to(conversationId).emit("receipts:update", {
@@ -421,6 +437,15 @@ router.post("/mark-conversation-read", async (req, res) => {
   const { conversationId } = parsed.data;
   const userId = (req as AuthedRequest).user!.id;
 
+  // Секретная беседа: облачных Message (и квитанций) в ней нет, писать в БД нечего. Вызов
+  // нужен только как сигнал «прочитано здесь» — по нему другие iOS-устройства человека снимают
+  // баннеры (read-sync, см. push/readSync.ts). Чужую беседу молча игнорируем.
+  if (isSecretConversation(await conversationKind(conversationId))) {
+    if (await isConversationMember(conversationId, userId)) scheduleReadSync(req, userId, [conversationId]);
+    res.json({ success: true });
+    return;
+  }
+
   // Create receipts for messages without any receipt from this user
   const missing = await prisma.message.findMany({
     where: {
@@ -461,6 +486,8 @@ router.post("/mark-conversation-read", async (req, res) => {
       status: "READ",
       receipts: changedIds.map((messageId) => ({ messageId, userId, status: "READ" })),
     });
+    // Что-то реально стало прочитанным — другие iOS-устройства снимут баннеры беседы.
+    scheduleReadSync(req, userId, [conversationId]);
   }
   res.json({ success: true });
 });

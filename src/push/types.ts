@@ -32,6 +32,15 @@ export type PushPayload =
   | {
       kind: "call-cancel";
       conversationId: string;
+    }
+  | {
+      /**
+       * «Беседа прочитана на другом устройстве»: тихий пуш только для iOS (APNs background),
+       * по нему приложение снимает уже доставленные баннеры этой беседы. Ни текста, ни имён —
+       * только conversationId (для секретных бесед так же). На Android/FCM не уходит никогда.
+       */
+      kind: "read";
+      conversationId: string;
     };
 
 export type PushTarget = {
