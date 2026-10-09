@@ -32,6 +32,7 @@ import { ensureDeviceBootstrap, getStoredDeviceInfo, isElectron } from '../../do
 
 import { e2eeManager } from '../../domain/e2ee/e2eeManager'
 import { hasSecretThreadKey, ensureSecretThreadKey } from '../../domain/secret/secretThreadKeyStore'
+import { createSecretReadSignal } from '../../domain/secret/secretReadSignal'
 import { shareSecretThreadKeyToDevice } from '../../domain/secret/secretThreadSetup'
 import { fetchSecretHistory, sendSecretThreadText, sendSecretThreadAttachments, transformSecretHistoryItemToMessage } from '../../domain/secret/secretThreadMessaging'
 import { getSecretThreadKey, getSecretThreadKeyCandidates } from '../../domain/secret/secretThreadKeyStore'
@@ -4298,6 +4299,43 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }
 
+  // Секретка: облачных квитанций нет, на сервер уходит ТОЛЬКО «прочитано здесь» — один
+  // conversationId (domain/secret/secretReadSignal.ts). По нему сервер снимает баннеры беседы на
+  // айфонах человека (read-sync). markConversationReadNow для секреток по-прежнему ничего не делает:
+  // ни квитанций, ни оптимистичного обнуления счётчика.
+  const secretReadGateRef = useRef({ activeId: null as string | null, isSecretV2: false, onScreen: true })
+  secretReadGateRef.current = {
+    activeId,
+    isSecretV2: String(activeConversation?.type ?? '').toUpperCase() === 'SECRET',
+    // На узком экране беседа остаётся активной под списком (свайп назад) — тогда она не на экране.
+    onScreen: !isMobile || mobileView === 'conversation',
+  }
+  const secretReadSignalRef = useRef<ReturnType<typeof createSecretReadSignal> | null>(null)
+  if (!secretReadSignalRef.current) {
+    secretReadSignalRef.current = createSecretReadSignal({
+      send: (conversationId) => {
+        api.post('/messages/mark-conversation-read', { conversationId }).catch(() => {})
+      },
+      // Проверяется в момент отправки: беседа всё ещё активна и на экране, окно в фокусе, ключ на месте.
+      isEligible: (conversationId) => {
+        const gate = secretReadGateRef.current
+        return (
+          gate.activeId === conversationId &&
+          gate.isSecretV2 &&
+          gate.onScreen &&
+          canAutoMarkRead() &&
+          hasSecretThreadKey(conversationId)
+        )
+      },
+    })
+  }
+
+  function signalSecretRead() {
+    const gate = secretReadGateRef.current
+    if (!gate.activeId || !gate.isSecretV2) return
+    secretReadSignalRef.current?.request(gate.activeId)
+  }
+
   function markConversationReadNow() {
     if (!activeId) return
     const isSecretV2 = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
@@ -4349,11 +4387,13 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
       if (!canAutoMarkRead()) return
       markAllReadNow()
       markConversationReadNow()
+      signalSecretRead()
     }
     const onVis = () => {
       if (!canAutoMarkRead()) return
       markAllReadNow()
       markConversationReadNow()
+      signalSecretRead()
     }
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onVis)
@@ -4363,6 +4403,34 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, messagesQuery.data])
+
+  // Секретка открыта и читаема: выбрали беседу, пришёл ключ ЭТОЙ беседы, вернулись из списка на узком
+  // экране. Ключи других бесед (secretKeysVersion) сюда не должны попадать — отсюда флаг, а не версия.
+  const activeSecretHasKey = useMemo(
+    () => !!activeId && hasSecretThreadKey(activeId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeId, secretKeysVersion],
+  )
+  useEffect(() => {
+    signalSecretRead()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, activeConversation?.type, activeSecretHasKey, mobileView, isMobile])
+
+  // В открытой секретке появилось новое входящее (периодический refetch тех же данных не считается).
+  useEffect(() => {
+    const gate = secretReadGateRef.current
+    if (!gate.activeId || !gate.isSecretV2) return
+    secretReadSignalRef.current?.observeMessages(gate.activeId, messagesQuery.data, currentUserId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesQuery.data])
+
+  useEffect(() => {
+    if (!activeId) return
+    const closing = activeId
+    return () => secretReadSignalRef.current?.forgetSeen(closing)
+  }, [activeId])
+
+  useEffect(() => () => secretReadSignalRef.current?.cancel(), [])
 
   // batch sender for receipts
   function scheduleSendReceipts() {
