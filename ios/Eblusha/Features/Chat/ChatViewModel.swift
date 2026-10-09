@@ -1567,15 +1567,16 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    private func markRead() {
-        // Баннеры этой беседы снимаем и у секретных чатов — серверный markRead им не нужен.
+    /// internal, не private: секретная ветка (ChatViewModelSecret) зовёт его же.
+    func markRead() {
+        // Баннеры этой беседы снимаем и у секретных чатов.
         MessageNotifications.shared.clearDelivered(conversationId: conversationId)
-        guard !secretMode else { return }
         // Метка «досюда дочитано» — для разделителя непрочитанных на СЛЕДУЮЩЕМ входе.
         // Пишем на каждый вызов, включая троттлированные: серверный markRead всё равно
         // квитирует беседу целиком. Оптимистичные пузыри пропускаем — их createdAt идёт
         // с локальных часов и, если те спешат, метка съела бы чужие непрочитанные.
-        if let newest = ui.messages.last(where: { !Self.isOutgoingId($0.id) })?.createdAt {
+        // У секреток разделителя непрочитанных нет — метка им не нужна.
+        if !secretMode, let newest = ui.messages.last(where: { !Self.isOutgoingId($0.id) })?.createdAt {
             Self.rememberReadMark(conversationId, upTo: newest)
         }
         // В живом диалоге сообщения идут пачками; без троттла на каждое летел POST,
@@ -1594,6 +1595,8 @@ final class ChatViewModel: ObservableObject {
             return
         }
         lastMarkReadMs = now
+        // Секретки тоже: квитанций у них нет (сервер ничего не пишет), но именно этот вызов
+        // сообщает серверу «прочитано здесь» — по нему остальные iOS-устройства снимают баннеры.
         Task { _ = await repo.markConversationRead(conversationId) }
     }
 

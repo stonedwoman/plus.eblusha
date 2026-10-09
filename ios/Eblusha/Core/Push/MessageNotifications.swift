@@ -48,13 +48,19 @@ final class MessageNotifications: NSObject, UNUserNotificationCenterDelegate {
     /// устройстве (тихий пуш kind=read, PushAppDelegate). Сервер группирует пуши по
     /// thread-id = conversationId; без этого после чтения чата баннеры висели бы в Центре
     /// уведомлений, пока их не смахнут руками.
+    /// deliveredBefore — граница по времени прихода баннера: пришедшие ПОЗЖЕ не снимаем (read-пуш
+    /// мог опоздать, и за это время в беседе появилось непрочитанное сообщение). nil — снять все.
     /// completion — сколько снято; зовётся ВСЕГДА (и когда снимать нечего): фоновый пуш
     /// обязан дёрнуть completionHandler в окне, которое даёт система.
-    func clearDelivered(conversationId: String, completion: ((Int) -> Void)? = nil) {
+    func clearDelivered(
+        conversationId: String, deliveredBefore: Date? = nil, completion: ((Int) -> Void)? = nil
+    ) {
         let center = UNUserNotificationCenter.current()
         center.getDeliveredNotifications { list in
             let ids = Self.identifiers(
-                in: list.map(DeliveredInfo.init), forConversation: conversationId
+                in: list.map(DeliveredInfo.init),
+                forConversation: conversationId,
+                deliveredBefore: deliveredBefore
             )
             if !ids.isEmpty {
                 center.removeDeliveredNotifications(withIdentifiers: ids)
@@ -120,9 +126,13 @@ final class MessageNotifications: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// Все уведомления беседы — любого вида (в том числе баннер звонка): прочтение чата
-    /// закрывает и их.
-    static func identifiers(in list: [DeliveredInfo], forConversation conversationId: String) -> [String] {
-        list.filter { $0.belongs(to: conversationId) }.map(\.identifier)
+    /// закрывает и их. deliveredBefore != nil — только пришедшие не позже этой границы.
+    static func identifiers(
+        in list: [DeliveredInfo], forConversation conversationId: String, deliveredBefore: Date? = nil
+    ) -> [String] {
+        list.filter { n in
+            n.belongs(to: conversationId) && (deliveredBefore.map { n.date <= $0 } ?? true)
+        }.map(\.identifier)
     }
 
     /// Устаревшие баннеры сообщений: беседа прочитана, а баннер пришёл не позже начала

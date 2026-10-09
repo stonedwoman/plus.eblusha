@@ -60,7 +60,9 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         if let read = ReadPush.parse(userInfo) {
-            MessageNotifications.shared.clearDelivered(conversationId: read.conversationId) { removed in
+            MessageNotifications.shared.clearDelivered(
+                conversationId: read.conversationId, deliveredBefore: read.deliveredUpTo
+            ) { removed in
                 NSLog("PushAppDelegate: read-пуш, снято баннеров: %d", removed)
                 DispatchQueue.main.async { completionHandler(.newData) }
             }

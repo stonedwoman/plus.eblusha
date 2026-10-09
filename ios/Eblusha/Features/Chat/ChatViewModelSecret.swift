@@ -73,6 +73,8 @@ extension ChatViewModel {
             await secretRepo.onPeerAccepted(threadId: conversationId, peerDeviceId: acceptedDevice)
         }
         await loadSecret()
+        // Экран открыт и читаем: баннеры этой беседы здесь и на других iOS-устройствах гасим.
+        if ui.secretReady { markRead() }
         // Ключ мог быть на руках всё это время (или приехать только что, в syncInbox выше) —
         // тогда очередь уезжает сразу при входе, без ожидания нового события.
         flushSecretQueue()
@@ -371,6 +373,8 @@ extension ChatViewModel {
         ui.messages = dedupSortedSecret(ui.messages + [secretToMessage(m)])
         reconcileSecretOutbox()
         ui.typingName = nil
+        // Как appendRealtime в облачных чатах: входящее на открытом экране сразу прочитано.
+        if !m.isMine { markRead() }
     }
 
     /// Дедуп по id (первая копия побеждает) + сортировка по времени — общий мерж ленты.

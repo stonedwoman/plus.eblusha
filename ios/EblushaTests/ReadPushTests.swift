@@ -17,6 +17,28 @@ final class ReadPushTests: XCTestCase {
         XCTAssertEqual(ReadPush.parse(userInfo), ReadPush(conversationId: "c1"))
     }
 
+    func testParse_readAtMillisecondsFromServerClock() {
+        // APNs отдаёт число; в userInfo оно приходит NSNumber (Int64 или Double).
+        let r1 = ReadPush.parse(["kind": "read", "conversationId": "c1", "readAt": NSNumber(value: Int64(1_700_000_000_500))])
+        XCTAssertEqual(r1?.readAt, Date(timeIntervalSince1970: 1_700_000_000.5))
+        let r2 = ReadPush.parse(["kind": "read", "conversationId": "c1", "readAt": 1_700_000_000_500.0])
+        XCTAssertEqual(r2?.readAt, Date(timeIntervalSince1970: 1_700_000_000.5))
+        // граница снятия = момент прочтения + допуск на часы
+        XCTAssertEqual(
+            r1?.deliveredUpTo, Date(timeIntervalSince1970: 1_700_000_000.5 + ReadPush.clockTolerance)
+        )
+    }
+
+    func testParse_noOrBadReadAtMeansNoBound() {
+        for bad: Any in ["soon", 0, -5, Double.nan, Double.infinity] {
+            let r = ReadPush.parse(["kind": "read", "conversationId": "c1", "readAt": bad])
+            XCTAssertNotNil(r, "(bad)")
+            XCTAssertNil(r?.readAt, "(bad)")
+            XCTAssertNil(r?.deliveredUpTo, "(bad)")
+        }
+        XCTAssertNil(ReadPush.parse(["kind": "read", "conversationId": "c1"])?.deliveredUpTo)
+    }
+
     func testParse_otherKindsAreNotRead() {
         for kind in ["message", "call", "call-cancel", "READ", ""] {
             XCTAssertNil(ReadPush.parse(["kind": kind, "conversationId": "c1"]), kind)
@@ -50,6 +72,25 @@ final class ReadPushTests: XCTestCase {
         ]
         XCTAssertEqual(MessageNotifications.identifiers(in: list, forConversation: "c1"), ["a", "b", "call"])
         XCTAssertEqual(MessageNotifications.identifiers(in: list, forConversation: "nope"), [])
+    }
+
+    func testIdentifiers_deliveredBeforeKeepsBannersThatCameAfterTheRead() {
+        // Баннер сообщения, пришедшего ПОСЛЕ прочтения (read-пуш-хвост опоздал), остаётся.
+        let list = [
+            info("old", thread: "c1", at: t0.addingTimeInterval(-30)),
+            info("edge", thread: "c1", at: t0),
+            info("newer", thread: "c1", at: t0.addingTimeInterval(2)),
+            info("other-conv", thread: "c2", at: t0.addingTimeInterval(-30)),
+        ]
+        XCTAssertEqual(
+            MessageNotifications.identifiers(in: list, forConversation: "c1", deliveredBefore: t0),
+            ["old", "edge"]
+        )
+        // без границы (чтение на этом же телефоне / старый сервер) снимаются все
+        XCTAssertEqual(
+            MessageNotifications.identifiers(in: list, forConversation: "c1"),
+            ["old", "edge", "newer"]
+        )
     }
 
     func testStale_removesOnlyReadMessageBannersDeliveredBeforeFetch() {
