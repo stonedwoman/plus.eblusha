@@ -36,6 +36,9 @@ final class ChatListViewModel: ObservableObject {
         var conversations: [Conversation] = []
         /// Беседы, где прямо сейчас кто-то печатает («печатает…» в строке плитки).
         var typingConversations: Set<String> = []
+        /// Беседы, где печатает бот («Еблуша печатает…»): он не участник, и в личке двух людей
+        /// голое «печатает…» читалось бы как набор собеседника.
+        var botTypingConversations: Set<String> = []
         var error: String?
         /// НАШЕ присутствие (ONLINE/BACKGROUND/AWAY/IN_CALL/OFFLINE) для своей строки.
         var selfPresence = "OFFLINE"
@@ -69,6 +72,9 @@ final class ChatListViewModel: ObservableObject {
 
     // conversationId → момент последнего typing=true.
     private var typingRows: [String: TimeInterval] = [:]
+    // То же для бота: у него свой срок (пингует раз в ~3 с, сервер гасит через 10 с).
+    private var botTypingRows: [String: TimeInterval] = [:]
+    private static let botTypingTTL: TimeInterval = 12
     private var typingSweep: Task<Void, Never>?
 
     /// Звонки живут в ядре, а не в этом экране: список только читает состояние и просит
@@ -96,6 +102,9 @@ final class ChatListViewModel: ObservableObject {
             ui.conversations = cached
         }
         refresh()
+        // Есть ли на сервере бот и включён ли «Чат с Еблушей» — от этого зависят плашка
+        // «Спросить» и переключатель в профиле.
+        SystemBotStore.shared.load()
 
         // Состояние звонков в беседах (call:status / call:status:bulk) — общий стор.
         CallStatusStore.shared.$calls
@@ -129,7 +138,10 @@ final class ChatListViewModel: ObservableObject {
             .sink { [weak self] connected in
                 guard let self else { return }
                 // Ресинк после реконнекта: пока сокет лежал, события не доходили.
-                if connected && !self.socketConnected { self.scheduleRefresh() }
+                if connected && !self.socketConnected {
+                    self.scheduleRefresh()
+                    SystemBotStore.shared.load()
+                }
                 self.socketConnected = connected
                 self.recomputeSelfPresence()
             }
@@ -155,8 +167,18 @@ final class ChatListViewModel: ObservableObject {
 
     private func handle(_ event: RealtimeEvent) {
         switch event {
-        case .typing(let conversationId, let userId, let isTyping, _):
+        case .typing(let conversationId, let userId, let isTyping, _, let isBot):
             guard userId != repo.currentUserId() else { return }
+            if isBot || SystemBotStore.shared.isBotUser(userId) {
+                if isTyping {
+                    botTypingRows[conversationId] = Date().timeIntervalSince1970
+                    scheduleTypingSweep()
+                } else {
+                    botTypingRows.removeValue(forKey: conversationId)
+                }
+                bumpTyping()
+                return
+            }
             if isTyping {
                 typingRows[conversationId] = Date().timeIntervalSince1970
                 bumpTyping()
@@ -196,6 +218,10 @@ final class ChatListViewModel: ObservableObject {
                 senderId: senderId,
                 currentUserId: repo.currentUserId()
             )
+            // Ответ бота пришёл — «Еблуша печатает…» гаснет сразу, не дожидаясь срока.
+            if SystemBotStore.shared.isBotUser(senderId), botTypingRows.removeValue(forKey: conversationId) != nil {
+                bumpTyping()
+            }
             scheduleRefresh()
 
         case .conversationsChanged, .secretChatAccepted:
@@ -215,20 +241,22 @@ final class ChatListViewModel: ObservableObject {
 
     private func bumpTyping() {
         let now = Date().timeIntervalSince1970
-        ui.typingConversations = Set(
-            typingRows.filter { now - $0.value < Self.typingTTL }.keys
-        )
+        let people = Set(typingRows.filter { now - $0.value < Self.typingTTL }.keys)
+        let bot = Set(botTypingRows.filter { now - $0.value < Self.botTypingTTL }.keys)
+        if ui.typingConversations != people { ui.typingConversations = people }
+        if ui.botTypingConversations != bot { ui.botTypingConversations = bot }
     }
 
     /// Одна отложенная «уборка»: гасит индикатор, если typing=false потерялся.
     private func scheduleTypingSweep() {
         guard typingSweep == nil else { return }
         typingSweep = Task { [weak self] in
-            while let self, !self.typingRows.isEmpty {
+            while let self, !self.typingRows.isEmpty || !self.botTypingRows.isEmpty {
                 try? await Task.sleep(for: .seconds(1))
                 if Task.isCancelled { break }
                 let now = Date().timeIntervalSince1970
                 self.typingRows = self.typingRows.filter { now - $0.value < Self.typingTTL }
+                self.botTypingRows = self.botTypingRows.filter { now - $0.value < Self.botTypingTTL }
                 self.bumpTyping()
             }
             self?.typingSweep = nil
@@ -275,6 +303,18 @@ final class ChatListViewModel: ObservableObject {
 
     /// Удалить (1:1) / выйти (группа) / закрыть (секретный тред).
     func deleteConversation(_ c: Conversation) {
+        // «Чат с Еблушей» выключается, а не удаляется: история вернётся при повторном включении.
+        if c.isBotChat && !c.isSecretV2 {
+            SystemBotStore.shared.setBotChatEnabled(false) { [weak self] state in
+                guard let self else { return }
+                if state != nil {
+                    self.refresh()
+                } else {
+                    self.ui.error = SystemBotStore.shared.error ?? "Не удалось выключить чат с Еблушей"
+                }
+            }
+            return
+        }
         Task {
             // Жёсткое удаление секретки осиротило бы её E2EE-транспортные строки —
             // штатный демонтаж это decline → CANCELLED (скрыт на всех устройствах).

@@ -328,9 +328,12 @@ final class ChatRepository {
     // MARK: - Маппинг DTO → домен (порт toDomain из Kotlin)
 
     private func toDomain(_ dto: MessageDto, meId: String?) -> Message {
+        // Бот — по серверным столбцам (message.isBot / sender.isBot), не по metadata: её у людей
+        // сервер чистит, но верить ей всё равно нельзя.
+        let isBot = dto.isBot || dto.sender?.isBot == true
         let name = dto.sender.map { s in
             (s.displayName?.isEmpty == false ? s.displayName! : s.username)
-        } ?? "—"
+        } ?? (isBot ? SystemBotStore.displayName : "—")
         let isDeleted = dto.deletedAt != nil
         let mappedAttachments = dto.attachments.map { toAttachment($0) }
         let text: String
@@ -406,9 +409,14 @@ final class ChatRepository {
         if replyTo.count < 2, let rt = dto.replyTo {
             replyTo = [ReplyInfo(
                 id: rt.id, senderId: rt.senderId, content: rt.content,
-                createdAt: parseIsoToMillis(rt.createdAt)
+                createdAt: parseIsoToMillis(rt.createdAt),
+                isBot: rt.isBot == true
             )]
         }
+
+        // Сервер хранит адресованное боту с metadata.botAsk: true — по нему вопрос можно пометить.
+        var askedBot = false
+        if case .bool(true)? = dto.metadata?["botAsk"] { askedBot = true }
 
         return Message(
             id: dto.id,
@@ -430,7 +438,11 @@ final class ChatRepository {
             forwardFrom: Self.parseForwardFrom(dto.metadata),
             audioDurationSec: Self.parseAudioDuration(dto.metadata),
             waveform: Self.parseWaveform(dto.metadata),
-            linkPreview: Self.parseLinkPreview(dto.metadata)
+            linkPreview: Self.parseLinkPreview(dto.metadata),
+            isBot: isBot,
+            botKind: isBot ? dto.metadata?["bot"]?["kind"]?.stringValue : nil,
+            botTriggerId: isBot ? dto.metadata?["bot"]?["triggerMessageId"]?.stringValue : nil,
+            botAsk: askedBot
         )
     }
 
@@ -466,13 +478,15 @@ final class ChatRepository {
         }
         let last = dto.messages.first
         let online = !dto.isGroup && (other?.status == "ONLINE" || other?.status == "IN_CALL")
+        // «Чат с Еблушей»: признак сервера, а у сервера постарше — по составу (1:1 с ботом).
+        let isBotChat = dto.isBotChat || (!dto.isGroup && other?.isBot == true)
         return Conversation(
             id: dto.id,
             isGroup: dto.isGroup,
             isSecret: dto.isSecret,
             title: resolvedTitle,
             avatarUrl: dto.isGroup ? dto.avatarUrl : other?.avatarUrl,
-            lastMessageText: last.map(Self.previewFor),
+            lastMessageText: last.map { Self.listPreview($0, inBotChat: isBotChat) },
             lastMessageAt: parseIsoToMillis(dto.lastMessageAt) ?? last.flatMap { parseIsoToMillis($0.createdAt) },
             unreadCount: unreadCount,
             online: online,
@@ -483,8 +497,18 @@ final class ChatRepository {
             createdById: dto.createdById,
             secretStatus: dto.secretStatus,
             secretPeerDeviceId: dto.secretPeerDeviceId,
-            createdAt: parseIsoToMillis(dto.createdAt)
+            createdAt: parseIsoToMillis(dto.createdAt),
+            isBotChat: isBotChat
         )
+    }
+
+    /// Превью последнего сообщения в списке. Ответ бота в обычной беседе подписан «Еблуша: …»:
+    /// без подписи в личке он читался бы как реплика собеседника. В «Чате с Еблушей» и так ясно.
+    static func listPreview(_ m: MessageDto, inBotChat: Bool) -> String {
+        let text = previewFor(m)
+        guard !inBotChat, m.deletedAt == nil, m.isBot || m.sender?.isBot == true else { return text }
+        let name = m.sender?.displayName?.isEmpty == false ? m.sender!.displayName! : SystemBotStore.displayName
+        return "\(name): \(text)"
     }
 
     private static func previewFor(_ m: MessageDto) -> String {
@@ -600,6 +624,8 @@ final class ChatRepository {
         /// по умолчанию даёт nil, и порядок просто падает на lastMessageAt до первого
         /// успешного обновления списка.
         let createdAt: Int64?
+        /// Тоже добавлено позже: у старого кеша nil — значит «не чат с ботом».
+        let isBotChat: Bool?
     }
 
     private func persistCache(_ list: [Conversation]) {
@@ -612,7 +638,7 @@ final class ChatRepository {
                 otherLastSeen: $0.otherLastSeen, otherStatus: $0.otherStatus,
                 type: $0.type, createdById: $0.createdById,
                 secretStatus: $0.secretStatus, secretPeerDeviceId: $0.secretPeerDeviceId,
-                createdAt: $0.createdAt
+                createdAt: $0.createdAt, isBotChat: $0.isBotChat
             )
         }
         if let data = try? JSONEncoder().encode(cached) {
@@ -633,7 +659,7 @@ final class ChatRepository {
                 otherLastSeen: $0.otherLastSeen, otherStatus: $0.otherStatus,
                 type: $0.type, createdById: $0.createdById,
                 secretStatus: $0.secretStatus, secretPeerDeviceId: $0.secretPeerDeviceId,
-                createdAt: $0.createdAt
+                createdAt: $0.createdAt, isBotChat: $0.isBotChat ?? false
             )
         }
     }

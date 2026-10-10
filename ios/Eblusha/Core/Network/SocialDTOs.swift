@@ -72,9 +72,11 @@ struct UserCardDto: Decodable {
     var status: String?
     var lastSeenAt: String?
     var createdAt: String?
+    /// Системный бот «Еблуша» (docs/bot-system.md §6). Старый сервер поля не шлёт.
+    var isBot = false
 
     private enum CodingKeys: String, CodingKey {
-        case id, eblid, displayName, bio, avatarUrl, avatars, status, lastSeenAt, createdAt
+        case id, eblid, displayName, bio, avatarUrl, avatars, status, lastSeenAt, createdAt, isBot
     }
 
     init(from decoder: Decoder) throws {
@@ -88,6 +90,7 @@ struct UserCardDto: Decodable {
         status = try c.decodeIfPresent(String.self, forKey: .status)
         lastSeenAt = try c.decodeIfPresent(String.self, forKey: .lastSeenAt)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+        isBot = (try? c.decodeIfPresent(Bool.self, forKey: .isBot)) ?? false
     }
 }
 

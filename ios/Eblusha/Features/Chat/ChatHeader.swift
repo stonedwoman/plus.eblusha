@@ -199,6 +199,10 @@ struct ChatHeaderModel {
     var groupSubtitle: String?
     /// Состояние защиты секретки; nil — беседа не секретная.
     var secretState: SecretProtectionState?
+    /// «Чат с Еблушей»: фирменная «Б» и подпись «бот» вместо присутствия и местного времени.
+    var isBotChat = false
+    /// Печатает бот (он не участник беседы — в группе и в личке людей тоже бывает).
+    var botTyping = false
 }
 
 // MARK: - Центр панели навигации
@@ -241,7 +245,16 @@ struct ChatHeaderTitle: View {
     /// Порт шапочного Avatar веба (MessagesPane.tsx:451-466): точка присутствия здесь была
     /// всегда, а на iOS пропадала — статус читался только текстом, и офлайн выглядел
     /// ровно как «не загрузилось».
+    @ViewBuilder
     private var avatar: some View {
+        if model.isBotChat {
+            BotAvatar(size: 34)
+        } else {
+            peerAvatar
+        }
+    }
+
+    private var peerAvatar: some View {
         ZStack(alignment: .bottomTrailing) {
             AvatarView(name: model.title, avatarUrl: model.avatarUrl, size: 34)
             if model.isGroup {
@@ -275,6 +288,17 @@ struct ChatHeaderTitle: View {
             Text(model.isGroup ? "\(typing) печатает…" : "печатает…")
                 .font(.caption)
                 .foregroundStyle(Eb.brand)
+                .lineLimit(1)
+        } else if model.botTyping {
+            // Бот не участник: голое «печатает…» в личке читалось бы как набор собеседника.
+            Text(model.isBotChat ? "печатает…" : "\(SystemBotStore.displayName) печатает…")
+                .font(.caption)
+                .foregroundStyle(Eb.brand)
+                .lineLimit(1)
+        } else if model.isBotChat {
+            Text("бот")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Eb.brand600)
                 .lineLimit(1)
         } else if let secretState = model.secretState {
             // В секретке подпись — чип состояния защиты (он важнее присутствия).
@@ -361,7 +385,7 @@ struct ChatHeaderTitle: View {
 
     /// Пояс собеседника 1:1. В группах строки нет никогда (сервер там поля и не отдаёт).
     private var peerLocalTime: LocalTimeInfo? {
-        guard !model.isGroup, let peer = model.peerUserId else { return nil }
+        guard !model.isGroup, !model.isBotChat, let peer = model.peerUserId else { return nil }
         return localTimes.times[peer]
     }
 

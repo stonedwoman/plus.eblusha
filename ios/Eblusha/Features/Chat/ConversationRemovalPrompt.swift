@@ -8,8 +8,18 @@ import Foundation
 /// что строки лежали в двух вьюхах; теперь у обеих один источник.
 enum ConversationRemovalPrompt {
 
-    /// [isSecret] — секретный V2-тред, [isGroup] — групповая беседа (иначе диалог 1:1).
-    static func texts(isSecret: Bool, isGroup: Bool) -> (title: String, message: String, action: String) {
+    /// [isSecret] — секретный V2-тред, [isGroup] — групповая беседа (иначе диалог 1:1),
+    /// [isBotChat] — «Чат с Еблушей»: он не удаляется, а выключается (история сохраняется).
+    static func texts(
+        isSecret: Bool, isGroup: Bool, isBotChat: Bool = false
+    ) -> (title: String, message: String, action: String) {
+        if isBotChat && !isSecret {
+            return (
+                "Выключить чат с Еблушей?",
+                "Чат пропадёт из списка, переписка сохранится. Включить снова — в профиле, «Чат с Еблушей».",
+                "Выключить"
+            )
+        }
         if isSecret {
             return (
                 "Закрыть секретный чат?",

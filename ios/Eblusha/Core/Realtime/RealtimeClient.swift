@@ -188,7 +188,13 @@ final class RealtimeClient: ObservableObject {
             .receipts(conversationId: $0.conversationId, messageIds: $0.messageIds, userId: $0.userId, status: $0.status)
         }
         bind(socket, "conversation:typing_update", TypingPayload.self) {
-            .typing(conversationId: $0.conversationId, userId: $0.userId, isTyping: $0.isTyping, displayName: $0.displayName)
+            .typing(conversationId: $0.conversationId, userId: $0.userId, isTyping: $0.isTyping, displayName: $0.displayName, isBot: $0.isBot)
+        }
+        // «Чат с Еблушей» включили или выключили (здесь или на другом своём устройстве).
+        // Саму беседу список заберёт по conversations:new / conversations:deleted.
+        socket.on("bot:settings") { data, _ in
+            guard let dict = data.first as? [String: Any] else { return }
+            DispatchQueue.main.async { SystemBotStore.shared.applySettingsEvent(dict) }
         }
         bind(socket, "presence:update", PresencePayload.self) { payload in
             // Карту устройств держим отдельно от событий (см. PresenceDevices).

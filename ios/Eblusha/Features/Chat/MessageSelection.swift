@@ -153,13 +153,17 @@ struct ReplyDraftPreview: View {
                     .fill(Eb.brand)
                     .frame(width: 3, height: 34)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Eb.brand)
-                        .lineLimit(1)
-                    Text(
-                        (first.content?.isEmpty == false ? first.content! : "Вложение")
-                    )
+                    HStack(spacing: 5) {
+                        Text(title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Eb.brand)
+                            .lineLimit(1)
+                        // Ответ боту: он не участник, метка подсказывает, кому уйдёт вопрос.
+                        if messages.count < 2, first.isBot, !first.isMine { BotTag() }
+                    }
+                    // Разметку показываем разобранной: у ответов бота её много, и звёздочки
+                    // в однострочной цитате читались бы мусором.
+                    Text(ChatMarkdown.render(previewLine(first)))
                     .font(.caption)
                     .foregroundStyle(Eb.textMuted)
                     .lineLimit(1)
@@ -176,6 +180,13 @@ struct ReplyDraftPreview: View {
             .padding(.vertical, 6)
             .background(Eb.surface200)
         }
+    }
+
+    /// Одна строка текста цитаты: переводы строк схлопнуты (иначе lineLimit(1) показал бы
+    /// только первую строку — у ответа бота это часто заголовок без сути).
+    private func previewLine(_ message: Message) -> String {
+        guard let content = message.content, !content.isEmpty else { return "Вложение" }
+        return content.split(whereSeparator: \.isNewline).joined(separator: " ")
     }
 }
 

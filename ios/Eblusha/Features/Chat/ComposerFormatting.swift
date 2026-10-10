@@ -206,6 +206,12 @@ struct ComposerTextView: UIViewRepresentable {
     let onPasteImages: ([OutgoingFile]) -> Void
     /// Сколько строк видно до прокрутки — порт прежнего .lineLimit(1...5).
     var maxLines: CGFloat = 5
+    /// Ширина места под плашку «Еблуша» в начале ПЕРВОЙ строки (0 — плашки нет). Остальные
+    /// строки текста идут от края, как обычно: место вырезается exclusionPath'ом, а не отступом.
+    var leadingExclusion: CGFloat = 0
+    /// Backspace при каретке в самом начале и без выделения. true — нажатие «съедено» (убрали
+    /// плашку «Спросить»), false — обычное поведение поля.
+    var onBackspaceAtStart: (() -> Bool)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
 
@@ -244,6 +250,8 @@ struct ComposerTextView: UIViewRepresentable {
         coordinator.onText = { textBinding.wrappedValue = $0 }
         coordinator.onFocusChanged = { focusBinding.wrappedValue = $0 }
         coordinator.onPastedImages = onPasteImages
+        view.onBackspaceAtStart = onBackspaceAtStart
+        view.setLeadingExclusion(leadingExclusion)
 
         if view.text != text {
             view.text = text
@@ -374,6 +382,33 @@ struct ComposerTextView: UIViewRepresentable {
 final class ComposerUITextView: UITextView {
     /// В буфере картинка: забрать её в очередь вложений.
     var onPasteImages: (() -> Void)?
+    /// См. ComposerTextView.onBackspaceAtStart.
+    var onBackspaceAtStart: (() -> Bool)?
+    private var leadingExclusion: CGFloat = 0
+
+    /// Backspace в самом начале поля текст не меняет, и делегат о нём не узнаёт вовсе — поэтому
+    /// ловим его здесь. Набор с незавершённым вводом (марк-текст) не трогаем.
+    override func deleteBackward() {
+        let range = selectedRange
+        if range.location == 0, range.length == 0, markedTextRange == nil,
+           onBackspaceAtStart?() == true {
+            return
+        }
+        super.deleteBackward()
+    }
+
+    /// Место под плашку в начале первой строки. Высота — меньше строки, чтобы вырез не задел
+    /// вторую строку.
+    func setLeadingExclusion(_ width: CGFloat) {
+        let width = max(0, width.rounded(.up))
+        guard width != leadingExclusion else { return }
+        leadingExclusion = width
+        let line = font?.lineHeight ?? 20
+        textContainer.exclusionPaths = width > 0
+            ? [UIBezierPath(rect: CGRect(x: 0, y: 0, width: width, height: line * 0.8))]
+            : []
+        invalidateIntrinsicContentSize()
+    }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), UIPasteboard.general.hasImages { return true }

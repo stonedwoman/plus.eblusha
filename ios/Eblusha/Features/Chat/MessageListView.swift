@@ -67,6 +67,9 @@ struct MessageListView: View {
                 onEdit: onEdit,
                 onDelete: { vm.delete(messageId: $0.id) },
                 onOutgoing: { id, action in vm.handleOutgoing(id, action) },
+                onClarify: { vm.clarify($0) },
+                onBotQuickReply: { message, text in vm.quickReply(text, to: message) },
+                onOpenBotMap: { UIApplication.shared.open($0) },
                 decryptSecretAttachment: vm.ui.isSecret ? { await vm.decryptSecretAttachment($0) } : nil
             ),
             onReachedTop: { loadOlderIfPossible() },
@@ -164,6 +167,8 @@ struct MessageListView: View {
         // это id сообщений, на них держатся вклейка истории (isPrepend), прыжок к цитате
         // (scroll(to:)) и рамки плиток. Синтетическая строка сдвинула бы всё это.
         let unreadAnchorId = vm.ui.unreadAnchorId
+        let clarifyTargets = Self.botClarifyTargets(messages, byId: byId)
+        let answeredConfirms = Self.botAnsweredConfirms(messages)
 
         return messages.enumerated().map { index, message in
             let earlier = index > 0 ? messages[index - 1] : nil
@@ -189,9 +194,47 @@ struct MessageListView: View {
                 selected: vm.ui.selectedIds.contains(message.id),
                 highlighted: message.id == proxy.highlightedId,
                 quickSlots: quickSlots,
-                outgoingUpload: vm.ui.outgoing[message.id]
+                outgoingUpload: vm.ui.outgoing[message.id],
+                botClarifyTarget: clarifyTargets[message.id],
+                botConfirmAnswered: answeredConfirms.contains(message.id)
             )
         }
+    }
+
+    /// Где рисовать «Уточнить» и на что оно отвечает. Длинный ответ бот шлёт частями (текст по
+    /// кускам, потом картинки) — у всех частей одно обращение (metadata.bot.triggerMessageId).
+    /// Кнопка одна на ответ — под ПОСЛЕДНЕЙ частью, а отвечает она на ПЕРВУЮ: только первая
+    /// часть цитирует вопрос, и сервер передаст боту цепочку «вопрос → ответ → уточнение».
+    /// Ключ — id строки, где кнопка; значение — сообщение, на которое пойдёт ответ.
+    static func botClarifyTargets(_ messages: [Message], byId: [String: Message]) -> [String: Message] {
+        var first: [String: String] = [:]
+        var last: [String: String] = [:]
+        for message in messages where message.botCanBeClarified {
+            let key = message.botTriggerId ?? message.id
+            if first[key] == nil { first[key] = message.id }
+            last[key] = message.id
+        }
+        var result: [String: Message] = [:]
+        for (key, lastId) in last {
+            if let firstId = first[key], let target = byId[firstId] { result[lastId] = target }
+        }
+        return result
+    }
+
+    /// Вопросы бота «да/нет», на которые я уже ответил (своё сообщение ответом на вопрос): кнопки
+    /// «Да»/«Нет» под ними прячем — как веб, натив и Android (docs/bot-system.md §2; ревью 10.10).
+    /// Иначе повторное «да» уходило снова, и бот отвечал «срок истёк или уже выполнено».
+    static func botAnsweredConfirms(_ messages: [Message]) -> Set<String> {
+        var confirms = Set<String>()
+        var answered = Set<String>()
+        for message in messages {
+            if message.botIsConfirm {
+                confirms.insert(message.id)
+            } else if message.isMine, !message.deleted {
+                for reply in message.replyTo where confirms.contains(reply.id) { answered.insert(reply.id) }
+            }
+        }
+        return answered
     }
 
     private var scrollDownButton: some View {
@@ -316,6 +359,10 @@ struct MessageRowModel: Identifiable, Equatable {
     /// строка. Лежит В МОДЕЛИ, а не в окружении ленты, чтобы diffable-источник видел
     /// изменение прогресса и переконфигурировал ровно эту ячейку.
     let outgoingUpload: OutgoingUpload?
+    /// Под этой строкой — «Уточнить», и ответ уйдёт на это сообщение бота (nil — кнопки нет).
+    var botClarifyTarget: Message? = nil
+    /// Вопрос бота «да/нет», на который я уже ответил: «Да»/«Нет» не показываем.
+    var botConfirmAnswered = false
 
     var id: String { message.id }
 
@@ -355,6 +402,12 @@ struct MessageRowActions {
     let onDelete: (Message) -> Void
     /// Кнопки на ещё не отправленном пузыре: отмена, повтор, удаление.
     let onOutgoing: (String, OutgoingUploadAction) -> Void
+    /// «Уточнить» под ответом бота (сообщение — то, на которое пойдёт ответ).
+    let onClarify: (Message) -> Void
+    /// «Да»/«Нет» под вопросом-подтверждением бота.
+    let onBotQuickReply: (Message, String) -> Void
+    /// Карточка карты Valheim → живая карта.
+    let onOpenBotMap: (URL) -> Void
     let decryptSecretAttachment: ((MessageAttachment) async -> URL?)?
 }
 
@@ -1604,7 +1657,14 @@ private struct MessageCell: View {
                 swipe: swipe,
                 quickSlots: model.quickSlots,
                 onEdit: { actions?.onEdit(model.message) },
-                onDelete: { actions?.onDelete(model.message) }
+                onDelete: { actions?.onDelete(model.message) },
+                onClarify: model.botClarifyTarget.map { target -> () -> Void in
+                    { actions?.onClarify(target) }
+                },
+                onBotQuickReply: model.message.botIsConfirm && !model.botConfirmAnswered
+                    ? { (text: String) -> Void in actions?.onBotQuickReply(model.message, text) }
+                    : nil,
+                onOpenBotMap: { actions?.onOpenBotMap($0) }
             )
         }
         .padding(.horizontal, 10)

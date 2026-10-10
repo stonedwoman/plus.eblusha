@@ -15,6 +15,9 @@ struct EblushaApp: App {
                 } else if scenario.hasPrefix("header") {
                     // Стенд шапки беседы со строкой местного времени собеседника.
                     ChatHeaderDemo(scenarioId: scenario)
+                } else if scenario.hasPrefix("bot") {
+                    // Стенд бота «Еблуша»: пузыри, «Уточнить», карточка карты, режим «Спросить».
+                    BotChatDemo(scenarioId: scenario)
                 } else {
                     CallConnectingDemo(scenarioId: scenario)
                 }

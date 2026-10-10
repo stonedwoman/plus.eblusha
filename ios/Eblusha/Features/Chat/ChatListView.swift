@@ -106,6 +106,7 @@ struct ChatListView: View {
                 ConversationRow(
                     c: conversation,
                     typing: vm.ui.typingConversations.contains(conversation.id),
+                    botTyping: vm.ui.botTypingConversations.contains(conversation.id),
                     hasCloudSibling: hasCloudSibling,
                     call: call,
                     onTap: { onOpenChat(conversation) },
@@ -209,7 +210,7 @@ struct ChatListView: View {
         if let call, call.kind != .ended { return Eb.brand }
         if c.isSecretV2 { return secretGreen.opacity(0.45) }
         if c.unreadCount > 0 { return Eb.brand600 }
-        if c.online && !c.isGroup { return Eb.brand }
+        if c.online && !c.isGroup && !c.isBotChat { return Eb.brand }
         return Eb.borderStrong
     }
 
@@ -218,6 +219,7 @@ struct ChatListView: View {
     /// Короткая подпись свайпа — совпадает с кнопкой подтверждения в алерте.
     private func deleteShortTitle(_ c: Conversation) -> String {
         if c.isSecretV2 { return "Закрыть" }
+        if c.isBotChat { return "Выключить" }
         if c.isGroup { return "Выйти" }
         return "Удалить"
     }
@@ -225,6 +227,7 @@ struct ChatListView: View {
     /// Полная подпись пункта контекстного меню (как в прежней плитке).
     private func deleteMenuTitle(_ c: Conversation) -> String {
         if c.isSecretV2 { return "Закрыть секретный чат" }
+        if c.isBotChat { return "Выключить чат с Еблушей" }
         if c.isGroup { return "Выйти из беседы" }
         return "Удалить чат"
     }
@@ -233,7 +236,7 @@ struct ChatListView: View {
         // Тексты общие с шапкой открытого чата (ConversationRemovalPrompt): пока они
         // лежали в двух вьюхах, одно и то же действие спрашивалось по-разному.
         let (title, body, action) = ConversationRemovalPrompt.texts(
-            isSecret: target.isSecretV2, isGroup: target.isGroup
+            isSecret: target.isSecretV2, isGroup: target.isGroup, isBotChat: target.isBotChat
         )
         return Alert(
             title: Text(title),
@@ -430,6 +433,8 @@ extension View {
 private struct ConversationRow: View {
     let c: Conversation
     var typing = false
+    /// Печатает бот «Еблуша» (людской «печатает…» важнее — он и показывается первым).
+    var botTyping = false
     var hasCloudSibling = false
     /// Звонок в этой беседе (nil — звонка нет); считает ChatListViewModel.callTile.
     var call: CallTile?
@@ -503,7 +508,10 @@ private struct ConversationRow: View {
 
     @ViewBuilder
     private var avatar: some View {
-        if c.isSecretV2 {
+        if c.isBotChat {
+            // «Чат с Еблушей»: фирменная «Б» вместо картинки, без точки присутствия.
+            BotAvatar(size: 52)
+        } else if c.isSecretV2 {
             // Секретный тред: замок ВМЕСТО аватара — без фото и точки присутствия.
             ZStack {
                 Circle().fill(secretGreen.opacity(0.12))
@@ -574,8 +582,8 @@ private struct ConversationRow: View {
     /// Веб-ветку «N непрочитанных» не повторяем — справа уже висит числовой бейдж.
     @ViewBuilder
     private var subtitleLine: some View {
-        if typing {
-            Text("печатает…")
+        if typing || botTyping {
+            Text(typing ? "печатает…" : "\(SystemBotStore.displayName) печатает…")
                 .font(.subheadline)
                 .foregroundStyle(Eb.brand)
                 .lineLimit(1)
@@ -635,6 +643,8 @@ private struct ConversationRow: View {
             return (formatCallEndedLabel(endedAt), Eb.brand600)
         }
         if c.isGroup || c.isSecretV2 { return nil }
+        // Бот не «в сети» и не «был»: он просто бот.
+        if c.isBotChat { return ("БОТ", Eb.brand600) }
         let status = c.otherStatus?.uppercased()
         // Игра вытесняет обычный статус — как formatPresence веба (ChatsPage.tsx:5902-5912).
         // Нет данных об игре (сервер не прислал presence:game) — нет и строки про неё.
@@ -661,7 +671,7 @@ private struct ConversationRow: View {
     }
 
     private var peerGame: String? {
-        guard !c.isGroup, let peer = c.otherUserId else { return nil }
+        guard !c.isGroup, !c.isBotChat, let peer = c.otherUserId else { return nil }
         return presenceGames.games[peer]
     }
 
