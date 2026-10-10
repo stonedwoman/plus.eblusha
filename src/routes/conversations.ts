@@ -19,6 +19,14 @@ import { extractFirstUrl } from "../lib/linkPreview";
 import { enqueueLinkPreview } from "../jobs/queue";
 import { rateLimit } from "../middlewares/rateLimit";
 import { getPublicLocalTimes } from "../lib/localTime";
+import { resolveCurrentDeviceId } from "../lib/currentDevice";
+import {
+  loadAlertGate,
+  muteView,
+  parseMuteBody,
+  resolveMuteRequest,
+  setConversationMute,
+} from "../lib/conversationMute";
 import { publishNewMessage, SENT_MESSAGE_INCLUDE } from "../lib/messageFanout";
 import {
   BOT_SETTINGS_EVENT,
@@ -473,9 +481,14 @@ router.put("/:id/availability/proposals/:proposalId/reaction", async (req, res) 
 
 router.get("/", async (req, res) => {
   const userId = (req as AuthedRequest).user!.id;
+  // «Без звука» (docs/conversation-mute.md): serverNow — момент ДО чтения; от него клиент считает asOf
+  // списка (событие conversation:mute с at ≥ asOf новее списка).
+  const nowMs = Date.now();
 
   const conversations = await prisma.conversationParticipant.findMany({
     where: { userId },
+    // Свой mutedUntil — явно (глобально опущен в lib/prisma.ts); чужие в participants[] так и не уходят.
+    omit: { mutedUntil: false },
     include: {
       conversation: {
         include: {
@@ -518,7 +531,8 @@ router.get("/", async (req, res) => {
           receipts: { none: { userId, status: { in: ["READ", "SEEN"] } } },
         },
       });
-      return { ...cp, unreadCount } as any;
+      // Свой «Без звука»: истёкший срок → null; mutedForever — «Навсегда».
+      return { ...cp, ...muteView(cp.mutedUntil, nowMs), unreadCount } as any;
     })
   );
 
@@ -552,8 +566,50 @@ router.get("/", async (req, res) => {
     logger.warn({ error, userId }, "localtime: conversation list enrichment failed");
   }
 
-  res.json({ conversations: withUnread });
+  // Общий счётчик непрочитанного — без заглушённых бесед (тот же подсчёт, что APNs badge, push/badge.ts).
+  const totalUnread = withUnread.reduce(
+    (sum: number, cp: any) => sum + (cp.mutedUntil ? 0 : Number(cp.unreadCount) || 0),
+    0,
+  );
+
+  res.json({ conversations: withUnread, serverNow: new Date(nowMs).toISOString(), totalUnread });
 });
+
+/**
+ * «Без звука» беседы для себя (docs/conversation-mute.md). Тело — ровно одно из:
+ *   {for: "1h"|"8h"|"1d"|"1w"|"forever"} — срок по часам СЕРВЕРА (рекомендуется клиентам);
+ *   {until: ISO-8601} — точный срок (≤ now → включить звук, дальше 366 суток → «Навсегда»);
+ *   {until: null} — включить звук.
+ * 200 {conversationId, mutedUntil, mutedForever, serverNow} + conversation:mute во все свои сокеты.
+ * 400 MUTE_BAD_BODY; 404 NOT_A_PARTICIPANT — не участник или беседы нет (одинаково); 429 RATE_LIMITED.
+ * Любая беседа, где человек участник: группа, 1:1, секретная (любой статус), «Чат с Еблушей».
+ */
+router.post(
+  "/:id/mute",
+  rateLimit({ name: "conv_mute", windowMs: 60_000, max: 30 }),
+  async (req, res) => {
+    const userId = (req as AuthedRequest).user!.id;
+    const conversationId = String(req.params.id ?? "");
+    const parsed = parseMuteBody(req.body);
+    if (!parsed || !conversationId || conversationId.length > 64) {
+      res.status(400).json({ message: "Invalid mute request", code: "MUTE_BAD_BODY" });
+      return;
+    }
+    const until = resolveMuteRequest(parsed, Date.now());
+    let byDeviceId: string | null = null;
+    try {
+      byDeviceId = await resolveCurrentDeviceId(req);
+    } catch {
+      byDeviceId = null;
+    }
+    const out = await setConversationMute(userId, conversationId, until, byDeviceId);
+    if (!out) {
+      res.status(404).json({ message: "Conversation not found", code: "NOT_A_PARTICIPANT" });
+      return;
+    }
+    res.json(out);
+  },
+);
 
 router.post("/", async (req, res) => {
   const parsed = createConversationSchema.safeParse(req.body);
@@ -836,11 +892,17 @@ router.post("/:id/participants", async (req, res) => {
       const io = getIO();
       // Отправляем событие о новом сообщении всем участникам беседы
       io?.to(id).emit("message:new", { conversationId: id, messageId: systemMessage.id, senderId: userId });
-      // Также отправляем message:notify для каждого участника (кроме отправителя)
+      // Также отправляем message:notify для каждого участника (кроме отправителя); «Без звука» — muted.
       const allParticipants = updated?.participants.map((p) => p.userId) ?? [];
+      const alert = await loadAlertGate(id, { isGroup: conv.isGroup });
       for (const pid of allParticipants) {
         if (pid !== userId) {
-          io?.to(userRoom(pid)).emit("message:notify", { conversationId: id, messageId: systemMessage.id, senderId: userId });
+          io?.to(userRoom(pid)).emit("message:notify", {
+            conversationId: id,
+            messageId: systemMessage.id,
+            senderId: userId,
+            muted: !alert(pid),
+          });
         }
       }
     } catch (error) {
@@ -980,11 +1042,17 @@ router.delete("/:id/participants/me", async (req, res) => {
       const io = getIO();
       // Отправляем событие о новом сообщении всем участникам беседы
       io?.to(id).emit("message:new", { conversationId: id, messageId: systemMessage.id, senderId: userId });
-      // Также отправляем message:notify для каждого участника (кроме того, кто уходит)
+      // Также отправляем message:notify для каждого участника (кроме того, кто уходит); «Без звука» — muted.
       const allParticipants = conv.participants.map((p) => p.userId);
+      const alert = await loadAlertGate(id, { isGroup: conv.isGroup });
       for (const pid of allParticipants) {
         if (pid !== userId) {
-          io?.to(userRoom(pid)).emit("message:notify", { conversationId: id, messageId: systemMessage.id, senderId: userId });
+          io?.to(userRoom(pid)).emit("message:notify", {
+            conversationId: id,
+            messageId: systemMessage.id,
+            senderId: userId,
+            muted: !alert(pid),
+          });
         }
       }
     } catch (error) {

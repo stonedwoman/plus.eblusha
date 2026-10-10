@@ -122,6 +122,9 @@ const envSchema = z.object({
   // auto — прод, а при BadDeviceToken пробуем sandbox и запоминаем: dev-сборки из Xcode
   // и TestFlight/App Store живут на одном сервере одновременно.
   APNS_ENV: z.enum(["production", "sandbox", "auto"]).default("auto"),
+  // Число на значке iOS-приложения (aps.badge) в пушах о сообщениях: непрочитанное без заглушённых бесед
+  // (push/badge.ts). off по умолчанию: включать вместе с iOS-сборкой, которая сама сбрасывает значок.
+  APNS_BADGE: z.enum(["on", "off"]).default("off"),
 });
 
 const env = envSchema.parse(process.env);

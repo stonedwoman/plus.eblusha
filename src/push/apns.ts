@@ -142,8 +142,21 @@ export type PreparedRequest = {
   body: string;
 };
 
+/**
+ * Дополнения к одному запросу, которых нет в общем PushPayload (FCM их не получает).
+ * badge — число на значке приложения: общий счётчик непрочитанного БЕЗ заглушённых бесед
+ * (push/badge.ts). Ставится только в alert-пуш о сообщении и только при APNS_BADGE=on.
+ */
+export type ApnsRequestExtras = { badge?: number };
+export type ApnsSendExtras = { badgeByUser?: ReadonlyMap<string, number> };
+
 /** Экспорт — для теста полезной нагрузки (test/read-sync.integration.test.ts). */
-export function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPayload): PreparedRequest | null {
+export function buildRequest(
+  config: ApnsConfig,
+  target: PushTarget,
+  payload: PushPayload,
+  extras?: ApnsRequestExtras,
+): PreparedRequest | null {
   const now = Math.floor(Date.now() / 1000);
   const urgent = isUrgent(payload);
 
@@ -192,6 +205,9 @@ export function buildRequest(config: ApnsConfig, target: PushTarget, payload: Pu
           sound: "default",
           "mutable-content": 1,
           "thread-id": payload.conversationId,
+          ...(typeof extras?.badge === "number" && Number.isFinite(extras.badge) && extras.badge >= 0
+            ? { badge: Math.floor(extras.badge) }
+            : {}),
         },
         ...data,
       }),
@@ -441,7 +457,11 @@ function parseReason(body: string): string {
   }
 }
 
-export async function sendApns(targets: PushTarget[], payload: PushPayload): Promise<PushSendResult> {
+export async function sendApns(
+  targets: PushTarget[],
+  payload: PushPayload,
+  extras?: ApnsSendExtras,
+): Promise<PushSendResult> {
   const config = loadConfig();
   // Не настроено или ключ не подписывает JWT — повтор job'а ничего не изменит, retryable не ставим.
   if (!config || targets.length === 0) return { sent: 0, dead: [] };
@@ -454,7 +474,8 @@ export async function sendApns(targets: PushTarget[], payload: PushPayload): Pro
   // Запросы по очереди: устройств у пользователя единицы, мультиплексирование тут
   // ничего не выиграет (ср. цикл в fcm.ts). Соединения переиспользуются — см. getSession.
   for (const target of targets) {
-    const prepared = buildRequest(config, target, payload);
+    const badge = extras?.badgeByUser?.get(target.userId);
+    const prepared = buildRequest(config, target, payload, badge !== undefined ? { badge } : undefined);
     if (!prepared) continue; // например, message на voip-токен — туда нельзя
     // Порядок кластеров: сначала тот, где токен уже отвечал; в режиме auto при
     // BadDeviceToken пробуем второй — токен другой среды выглядит именно так.

@@ -1,7 +1,8 @@
 import prisma from "../lib/prisma";
 import logger from "../config/logger";
 import { sendFcm, isFcmConfigured } from "./fcm";
-import { sendApns, isApnsConfigured } from "./apns";
+import { sendApns, isApnsConfigured, type ApnsSendExtras } from "./apns";
+import { apnsBadgeEnabled, apnsBadges } from "./badge";
 import type { PushPayload, PushProvider, PushTarget } from "./types";
 import { isUrgent } from "./types";
 
@@ -126,9 +127,16 @@ export async function sendPushToUsers(
   const fcmTargets = chosen.filter((t) => t.provider === "fcm");
   const apnsTargets = chosen.filter((t) => t.provider !== "fcm");
 
+  // Значок iOS (APNS_BADGE=on): число непрочитанного без заглушённых бесед — по человеку, в момент отправки.
+  let apnsExtras: ApnsSendExtras | undefined;
+  if (payload.kind === "message" && apnsBadgeEnabled()) {
+    const badgeUsers = apnsTargets.filter((t) => t.provider === "apns").map((t) => t.userId);
+    if (badgeUsers.length > 0) apnsExtras = { badgeByUser: await apnsBadges(badgeUsers) };
+  }
+
   const [fcmResult, apnsResult] = await Promise.all([
     sendFcm(fcmTargets, payload),
-    sendApns(apnsTargets, payload),
+    apnsExtras ? sendApns(apnsTargets, payload, apnsExtras) : sendApns(apnsTargets, payload),
   ]);
   await dropDeadTokens([...fcmResult.dead, ...apnsResult.dead]);
   const sent = fcmResult.sent + apnsResult.sent;

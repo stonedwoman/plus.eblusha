@@ -3,6 +3,7 @@ import prisma from "./prisma";
 import { extractFirstUrl } from "./linkPreview";
 import { enqueueLinkPreview, enqueuePush } from "../jobs/queue";
 import { getIO } from "../realtime/socket";
+import { loadAlertGate } from "./conversationMute";
 
 /**
  * Рассылка только что созданного облачного сообщения — общая для POST /conversations/send
@@ -10,8 +11,9 @@ import { getIO } from "../realtime/socket";
  * изменения поведения:
  *   1. Conversation.lastMessageAt;
  *   2. message:new в комнату беседы (полный message);
- *   3. message:notify каждому участнику, кроме отправителя (комнаты user:<id>);
- *   4. пуш тем же получателям — без текста (push/types.ts);
+ *   3. message:notify каждому участнику, кроме отправителя (комнаты user:<id>), с muted: boolean —
+ *      «Без звука» для ЭТОГО получателя (lib/conversationMute.ts, docs/conversation-mute.md);
+ *   4. пуш тем же получателям — без текста (push/types.ts) — кроме тех, у кого muted: true;
  *   5. превью ссылки (воркер), если linkPreview не выключен и беседа не секретная.
  * Бот не участник беседы (кроме личного чата с ботом), поэтому получатели — ВСЕ участники,
  * кроме отправителя, а не «все, кроме меня» из состава беседы.
@@ -31,6 +33,8 @@ export interface FanoutMessage {
   createdAt: Date | string;
   attachments?: Array<{ type?: unknown }> | null;
   sender?: { displayName?: string | null; username?: string | null } | null;
+  /** Ответ на сообщение: в заглушённой группе ответ на МОЁ сообщение всё равно будит (conversationMuteRules). */
+  replyTo?: { senderId?: string | null } | null;
 }
 
 export async function publishNewMessage(opts: {
@@ -67,6 +71,12 @@ export async function publishNewMessage(opts: {
     include: { participants: true },
   });
   const recipients = convForNotify?.participants.map((p) => p.userId) ?? [];
+  // «Без звука»: кого будить (пуш, звук, плашка). Сообщение и message:notify доходят до всех — плитка,
+  // непрочитанное и порядок списка не меняются; muted: true говорит клиенту «не звени».
+  const alert = await loadAlertGate(conversationId, {
+    isGroup: Boolean(convForNotify?.isGroup),
+    replyToSenderId: message.replyTo?.senderId ?? null,
+  });
 
   for (const rid of recipients) {
     if (rid !== senderId) {
@@ -75,6 +85,7 @@ export async function publishNewMessage(opts: {
         messageId: message.id,
         senderId,
         message,
+        muted: !alert(rid),
       });
     }
   }
@@ -99,7 +110,7 @@ export async function publishNewMessage(opts: {
               ? "Файл"
               : "";
     enqueuePush(
-      recipients.filter((rid) => rid !== senderId),
+      recipients.filter((rid) => rid !== senderId && alert(rid)),
       {
         kind: "message",
         conversationId,

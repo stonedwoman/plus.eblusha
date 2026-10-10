@@ -129,6 +129,9 @@ model ConversationParticipant {
   userId         String
   role           ConversationRole @default(MEMBER)
   joinedAt       DateTime         @default(now())
+  /// «Без звука» беседы для этого участника, до какого момента (UTC, часы сервера); null или ≤ now — звук
+  /// включён; 2100-01-01T00:00:00Z — «Навсегда». Личная настройка: Prisma-клиент (src/lib/prisma.ts) опускает
+  /// поле глобально, читать только явно. Правила и контракт — src/lib/conversationMute.ts, docs/conversation-mute.md.
   mutedUntil     DateTime?
   conversation   Conversation     @relation(fields: [conversationId], references: [id])
   user           User             @relation(fields: [userId], references: [id])
