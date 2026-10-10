@@ -14,10 +14,12 @@
  *      молчаливые синонимы: не владельцу и вне его «Чата с Еблушей» они не отказывают, а уходят дальше
  *      (свободной формой к модели);
  *   4. привязка ника свободной фразой (детерминированные формы «мой ник в игре …», «отвяжи меня»);
- *   5. вопрос модели: лимиты → typing → контекст (история из задачи + цепочка ответов, core/context.ts)
- *      → Claude → разметка → ответ (+картинки), потом — то, что инструменты отложили на «после ответа»
- *      (план агента). Привязку персонажей к людям свободной фразой («Парасюха — это Саня», владелец —
- *      любых людей, остальные — себя) делает модель инструментом character_link (core/links.ts).
+ *   5. вопрос модели: лимиты → typing → память беседы (core/memory.ts: сводка давнего + свежий хвост, при
+ *      переполнении — сжатие недорогой моделью) → контекст (память + цепочка ответов, core/context.ts) →
+ *      Claude → проверка, не удалили ли запомненное, пока модель думала → разметка → ответ (+картинки),
+ *      потом — то, что инструменты отложили на «после ответа» (план агента). Привязку персонажей к людям
+ *      свободной фразой («Парасюха — это Саня», владелец — любых людей, остальные — себя) делает модель
+ *      инструментом character_link (core/links.ts).
  * Пишет бот только по разрешению из задачи (в беседу обращения) и в личный «Чат с Еблушей» человека
  * (уведомления владельцу). Журнал — без текста сообщений.
  */
@@ -42,7 +44,8 @@ import type {
 } from "../modules/api";
 import { Budget, budgetRefusalText, type CostBreakdown } from "./budget";
 import { builtinCommands, builtinTools } from "./builtins";
-import { buildContext, loadMessageImages } from "./context";
+import { buildContext, formatWhen, loadMessageImages, type HistoryFormat } from "./context";
+import { Memory, type MemoryLoad } from "./memory";
 import { downloadImage as realDownloadImage, ImageFetchError, isWikiImageUrl } from "./images";
 import { invocationText, isThanksOrLaugh } from "./invoke";
 import { hasHttpsLink, safeUrl, sanitizeMarkdown, splitMessage } from "./markup";
@@ -132,12 +135,18 @@ export class Bot {
    * Модулям: «да» без ответа (reply) относится к плану, только если план — последнее, что бот сказал.
    */
   private readonly lastBotMsg = new Map<string, string>();
+  /** Память о своих разговорах (сводка + хвост), core/memory.ts. */
+  private readonly memory: Memory;
+  private readonly format: HistoryFormat;
+  private lastPurge = 0;
 
   constructor(private readonly d: BotDeps) {
     this.now = d.now ?? Date.now;
     this.llmSlots = new Semaphore(d.cfg.maxConcurrentLlm);
     this.budget = new Budget(d.store, d.cfg, this.now);
-    this.commands = [...builtinCommands(this.budget, d.registry), ...d.registry.commands];
+    this.format = { timeZone: d.cfg.timeZone, ownerId: d.cfg.ownerUserId, botChars: d.cfg.memoryBotChars, userChars: d.cfg.memoryUserChars };
+    this.memory = new Memory({ cfg: d.cfg, api: d.api, store: d.store, llm: d.llm, now: () => this.now(), format: this.format });
+    this.commands = [...builtinCommands(this.budget, d.registry, { memory: d.cfg.memoryTailTokens > 0 }), ...d.registry.commands];
     // Встроенные инструменты модели (расход — владельцу свободной фразой «сколько потратили?»).
     for (const t of builtinTools(this.budget)) if (!d.registry.tools.has(t.name)) d.registry.tools.set(t.name, t);
     // Привязка персонажей к людям свободной фразой (владелец — любых, остальные — себя): только если
@@ -166,7 +175,19 @@ export class Bot {
     for (const m of this.d.registry.modules) {
       if (m.start) await m.start(this.coreServices());
     }
+    this.purgeMemory();
     this.d.log.info("bot.started", { botId: this.botId, modules: this.d.registry.modules.map((m) => m.name) });
+  }
+
+  /** Сводки бесед, к которым давно не обращались, — удалить (при старте и раз в 6 часов). */
+  private purgeMemory(): void {
+    this.lastPurge = this.now();
+    try {
+      const n = this.memory.purgeIdle();
+      if (n) this.d.log.info("memory.purged", { n });
+    } catch (e) {
+      this.d.log.warn("memory.purge_failed", { err: e as Error });
+    }
   }
 
   async stop(): Promise<void> {
@@ -246,6 +267,7 @@ export class Bot {
     }
     if (this.processed.has(m.id)) return Promise.resolve();
     this.processed.set(m.id, now);
+    if (now - this.lastPurge > 6 * 3600_000) this.purgeMemory();
     if (this.processed.size > 5000) {
       for (const [k] of this.processed) {
         this.processed.delete(k);
@@ -306,7 +328,7 @@ export class Bot {
     const parent = m.replyToId ? job.chain.find((x) => x.id === m.replyToId) ?? null : null;
     const requester = this.requesterOf(job.author.id, job.author.displayName ?? m.senderName);
     const text = invocationText(m.content);
-    log.info("message.addressed", { via: job.via, kind: conv.kind, len: text.length, chain: job.chain.length, rev: job.rev ?? 1, hist: job.history?.messages.length ?? null });
+    log.info("message.addressed", { via: job.via, kind: conv.kind, len: text.length, chain: job.chain.length, rev: job.rev ?? 1 });
 
     // 1. подтверждение команды владельца
     if (parent?.isBot && this.d.store.isConfirmationMessage(parent.id)) {
@@ -363,7 +385,7 @@ export class Bot {
     images: OutgoingImage[],
     signal: AbortSignal,
     log: Logger,
-    extra: { triggerId?: string; grantExpiresAt?: number; after?: Array<(replyIds: string[]) => Promise<void>> } = {}
+    extra: { triggerId?: string; grantExpiresAt?: number; after?: Array<(replyIds: string[]) => Promise<void>>; requestText?: string } = {}
   ): ToolContext {
     return {
       requester,
@@ -374,6 +396,7 @@ export class Bot {
       signal,
       log,
       now: new Date(this.now()),
+      ...(extra.triggerId && extra.requestText !== undefined ? { request: { messageId: extra.triggerId, text: extra.requestText } } : {}),
       ...(extra.triggerId && extra.grantExpiresAt
         ? {
             conversation: this.conversationHandle(
@@ -679,11 +702,7 @@ export class Bot {
   }
 
   // ---------------------------------------------------------------- вопрос модели
-  private contextNote(
-    conv: Conv,
-    requester: Requester,
-    hist: { mode: "botchat" | "recent" | null; count: number; windowMs: number | null } = { mode: null, count: 0, windowMs: null }
-  ): string {
+  private contextNote(conv: Conv, requester: Requester, mem: { load: MemoryLoad; count: number } | null = null): string {
     const d = new Date(this.now());
     const when = new Intl.DateTimeFormat("ru-RU", {
       timeZone: this.d.cfg.timeZone,
@@ -702,7 +721,7 @@ export class Bot {
           ? "Чат: личная переписка двух людей. Ответ увидят оба."
           : "Чат: личный «Чат с Еблушей» — ответ видит только этот человек."
     );
-    lines.push(`Спрашивает: «${requester.displayName}».${requester.isOwner ? " Это владелец бота и игровых серверов." : ""}`);
+    lines.push(`Спрашивает: «${requester.displayName}».${requester.isOwner ? " Это владелец бота и игровых серверов (в заголовках реплик — «(владелец)»)." : " Это не владелец."}`);
     if (this.d.registry.characters) {
       lines.push(
         requester.characters.length
@@ -710,12 +729,23 @@ export class Bot {
           : "Этот человек не привязан к персонажу Valheim (данные игроков ему недоступны, пока не привяжется фразой «Еблуша, мой ник в игре …»)."
       );
     }
-    if (hist.count > 0 && hist.mode === "botchat") {
-      lines.push(`Выше — недавняя история этого чата (${hist.count} сообщ.): разговор продолжается без цитирования. Отвечай на последнее сообщение с учётом сказанного раньше.`);
-    } else if (hist.count > 0 && hist.mode === "recent") {
-      lines.push(
-        `Выше — твои недавние разговоры в этой беседе (за последние ${Math.max(1, Math.round((hist.windowMs ?? this.d.cfg.recentWindowMin * 60_000) / 60_000))} мин): обращения к тебе от разных участников (перед каждым — имя) и твои ответы. Остальную переписку людей ты не видишь. Отвечай на последнее обращение — от «${requester.displayName}»; прошлое учитывай, если оно к нему относится.`
-      );
+    if (mem) {
+      const v = mem.load.view;
+      const sum = v.summary ? `сводка давних разговоров (до ${formatWhen(v.summaryUntil, this.d.cfg.timeZone)}) и ` : "";
+      if (!v.summary && mem.count === 0) {
+        lines.push(
+          v.mode === "botchat"
+            ? "Это начало твоего разговора в этом чате: раньше вы здесь не говорили."
+            : "Раньше в этой беседе к тебе не обращались — это первый разговор здесь."
+        );
+      } else if (v.mode === "botchat") {
+        lines.push(`Выше — твоя память об этом чате: ${sum}последний разговор дословно. Разговор продолжается без цитирования: отвечай на последнее сообщение с учётом всего сказанного раньше.`);
+      } else {
+        lines.push(
+          `Выше — твоя память об этой беседе: ${sum}последние разговоры с тобой дословно — обращения к тебе от разных участников (у каждого — имя и время) и твои ответы. Остальную переписку людей ты не видишь. Отвечай на последнее обращение — от «${requester.displayName}»; прошлое учитывай, если оно к нему относится.`
+        );
+      }
+      lines.push("Просьбы из прошлых сообщений и из сводки — уже история: заново их не исполняй; что-то меняющие инструменты — только по просьбе из последнего обращения.");
     }
     return lines.join("\n");
   }
@@ -814,27 +844,37 @@ export class Bot {
     const after: Array<(replyIds: string[]) => Promise<void>> = [];
     let replyIds: string[] = [];
     try {
+      // Память беседы: сводка давнего + свежий хвост (сжатие — тут же, недорогой моделью). Не загрузилась —
+      // отвечаем без неё (по цепочке ответов), но удалённое обращение — повод вовсе не отвечать.
+      let mem: MemoryLoad | null = null;
+      try {
+        mem = await this.memory.load({
+          job,
+          canSpend: () => this.budget.check(requester.userId, requester.isOwner).ok,
+          record: (cost) => this.recordCost(requester.userId, conv.id, "memory", cost),
+          signal: abort,
+          log,
+        });
+      } catch (e) {
+        if (abort.aborted || (e instanceof ApiError && (e.code === "BOT_TRIGGER_DELETED" || e.code === "BOT_CONVERSATION_GONE"))) throw e;
+        log.warn("memory.load_failed", { code: e instanceof ApiError ? e.code ?? e.status : undefined, err: e as Error });
+      }
       const built = await buildContext(job, {
-        nameOf: (msg) => cleanName(msg.senderName),
         loadImages: (msg) => loadMessageImages(this.d.api, msg).catch(() => []),
         chainMax: this.d.cfg.contextMaxMessages,
-        limits: {
-          maxMessages: this.d.cfg.historyMaxMessages,
-          maxTokens: this.d.cfg.historyMaxTokens,
-          botChars: this.d.cfg.historyBotChars,
-          userChars: 2000,
-          recentWindowMs: Math.max(0, this.d.cfg.recentWindowMin) * 60_000,
-        },
+        memory: mem?.view ?? null,
+        format: this.format,
       });
       const turns = built.turns;
       if (turns.length === 0) return;
       const effort = chooseEffort(text);
-      const ctx = this.toolContext(conv, requester, images, abort, log, { triggerId: m.id, grantExpiresAt: job.grantExpiresAt, after });
+      const ctx = this.toolContext(conv, requester, images, abort, log, { triggerId: m.id, grantExpiresAt: job.grantExpiresAt, after, requestText: text });
       const imageState = { count: 0, moduleData: false };
       const res = await this.d.llm.answer({
         turns,
         cacheAt: built.cacheAt,
-        contextNote: this.contextNote(conv, requester, { mode: built.historyMode, count: built.historyCount, windowMs: built.historyWindowMs }),
+        cacheTtl: this.d.cfg.memoryCacheTtl,
+        contextNote: this.contextNote(conv, requester, mem ? { load: mem, count: built.historyCount } : null),
         effort,
         userKey: crypto.createHash("sha256").update(`eblusha-bot:${requester.userId}`).digest("hex").slice(0, 32),
         tools: this.toolRuntime(ctx, imageState),
@@ -843,12 +883,20 @@ export class Bot {
       });
       this.recordCost(requester.userId, conv.id, "answer", res.cost);
 
+      // Пока модель думала, удалили (поправили) что-то из памяти — ответ мог это пересказать: не публикуем.
+      if (mem && (await this.memory.changedSince(conv.grant, mem, log))) {
+        log.info("answer.dropped", { ms: this.now() - started, code: "MEMORY_CHANGED" });
+        await this.sendReply(conv, m.id, "Пока я думал, кто-то удалил или поправил сообщение из нашего разговора — спроси, пожалуйста, ещё раз.", [], "notice");
+        return;
+      }
+
       let body: string;
       if (res.stop === "refusal") {
         body = "С этим я помочь не могу.";
       } else {
         const clean = sanitizeMarkdown(res.text);
-        body = clean.text;
+        // Заголовки памяти («⟦Имя · время⟧») модель иногда повторяет в начале ответа — людям они не нужны.
+        body = clean.text.replace(/^\s*(?:⟦[^⟧\n]{0,160}⟧\s*)+/u, "").trim();
         for (const im of clean.images) {
           if (images.length >= MAX_MODEL_IMAGES) break;
           if (imageState.moduleData && !isWikiImageUrl(im.url)) continue; // то же правило, что у attach_image
@@ -890,6 +938,12 @@ export class Bot {
         cacheRead: res.cost.cacheReadTokens,
         cacheWrite: res.cost.cacheWriteTokens,
         hist: built.historyCount,
+        sum: mem?.stats.summaryChars ?? null,
+        memTok: built.memoryTokens,
+        comp: mem?.stats.compactions ?? 0,
+        rebuilt: mem?.stats.rebuilt ?? false,
+        trimmed: mem?.stats.trimmed ?? 0,
+        memUsd: mem ? Number(mem.stats.usd.toFixed(4)) : 0,
         searches: res.cost.webSearches,
         fetches: res.cost.webFetches,
         model: res.servedBy,

@@ -45,11 +45,11 @@ export interface EbMessage {
 }
 
 // ─────────────── Очередь бота (контракт сервера: src/lib/botContract.ts в корне репозитория) ───────────────
-// Бот не участник бесед и не читает их: сервер кладёт в очередь BullMQ `bot` только сообщение,
-// адресованное боту, цепочку его ответов и (rev 2) историю — в «Чате с Еблушей» недавние сообщения чата,
-// в обычной беседе только разговоры с ботом. `v` — несовместимая смена (чужой `v` бот отвергает), `rev` —
-// добавочные поля: без них бот работает как раньше, лишние — пропускает. Так старый бот с новым сервером
-// и новый бот со старым сервером не ломаются.
+// Бот не участник бесед и не читает их: сервер кладёт в очередь BullMQ `bot` только сообщение, адресованное
+// боту, и цепочку его ответов. `v` — несовместимая смена (чужой `v` бот отвергает), `rev` — добавочное: без
+// него бот работает как раньше, лишнее — пропускает. rev ≥ 3 — у сервера есть POST /api/bot/history (память
+// бота о своих разговорах, BotHistoryPage). Так старый бот с новым сервером и новый бот со старым сервером
+// не ломаются.
 
 export type BotAddressVia = "name" | "command" | "reply" | "botchat" | "explicit";
 /** "bot" — личный «Чат с Еблушей» (ответ видит один человек), "dm" — личка двух людей, "group" — группа. */
@@ -74,17 +74,6 @@ export interface BotJobMessage {
   attachments: BotJobAttachment[];
 }
 
-/**
- * Контекст без цитирования (rev 2). "botchat" — последние сообщения «Чата с Еблушей» (обе стороны);
- * "recent" — обычная беседа: ТОЛЬКО обращения к боту и его ответы за windowMs до триггера. Без удалённых,
- * истёкших и триггера, от старшего к младшему; сообщения цепочки могут повторяться (дубли убирает бот).
- */
-export interface BotJobHistory {
-  mode: "botchat" | "recent";
-  windowMs: number | null;
-  messages: BotJobMessage[];
-}
-
 export interface BotJob {
   v: 1;
   /** Ревизия добавочных полей; нет — 1 (старый сервер: только цепочка). */
@@ -100,12 +89,10 @@ export interface BotJob {
   message: BotJobMessage;
   /** Предки триггера по replyTo: от старшего к родителю триггера (без триггера). */
   chain: BotJobMessage[];
-  /** rev 2: история (нет — старый сервер или не загрузилась). */
-  history?: BotJobHistory;
 }
 
-/** Сколько сообщений истории принимаем из задачи (сервер шлёт ≤ 60; остальное — мусор). */
-const HISTORY_ACCEPT_MAX = 200;
+/** Ревизия задачи, с которой у сервера есть POST /api/bot/history (память бота). */
+export const BOT_JOB_REV_MEMORY = 3;
 
 const ATT_TYPES = new Set(["IMAGE", "VIDEO", "AUDIO", "FILE"]);
 const MSG_TYPES = new Set(["TEXT", "IMAGE", "VIDEO", "AUDIO", "FILE"]);
@@ -141,21 +128,6 @@ function parseJobMessage(v: unknown): BotJobMessage | null {
   };
 }
 
-/** История задачи: кривая — undefined (задача остаётся годной: бот ответит по цепочке). */
-function parseHistory(v: unknown): BotJobHistory | undefined {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
-  const h = v as Record<string, unknown>;
-  if (h.mode !== "botchat" && h.mode !== "recent") return undefined;
-  const messages: BotJobMessage[] = [];
-  const raw = Array.isArray(h.messages) ? h.messages.slice(-HISTORY_ACCEPT_MAX) : [];
-  for (const x of raw) {
-    const p = parseJobMessage(x);
-    if (p) messages.push(p);
-  }
-  const windowMs = typeof h.windowMs === "number" && Number.isFinite(h.windowMs) && h.windowMs > 0 ? h.windowMs : null;
-  return { mode: h.mode, windowMs, messages };
-}
-
 /** Проверить задачу из очереди (данные чужого процесса — доверяем только форме). null — мусор. */
 export function parseBotJob(v: unknown): BotJob | null {
   if (!v || typeof v !== "object") return null;
@@ -174,11 +146,9 @@ export function parseBotJob(v: unknown): BotJob | null {
     if (p) chain.push(p);
   }
   const rev = typeof j.rev === "number" && Number.isInteger(j.rev) && j.rev > 0 ? j.rev : 1;
-  const history = parseHistory(j.history);
   return {
     v: 1,
     rev,
-    ...(history ? { history } : {}),
     kind: "message",
     enqueuedAt: j.enqueuedAt,
     grant: j.grant,
@@ -221,15 +191,73 @@ export interface BotPerson {
   eblid: string | null;
   /** Участник беседы обращения. */
   inConversation: boolean;
+  /** Только в matches: по чему сервер нашёл человека (нет — старый сервер). */
+  matchedBy?: "name" | "username" | "eblid";
 }
 
 export interface BotPeople {
   /** Участники беседы обращения (без бота). */
   participants: BotPerson[];
-  /** Найденные среди всех по запросу. */
+  /** Найденные по запросу (лучшие первыми). */
   matches: BotPerson[];
   /** Запрошенные по id. */
   users: BotPerson[];
+  /** Подходящих могло быть больше, чем отдано. */
+  truncated?: boolean;
+}
+
+// ─────────────── Память бота: POST /api/bot/history (контракт rev 3) ───────────────
+
+/** Сообщение истории: как в задаче, плюс ответ бота — на какое обращение, и когда исчезнет. */
+export interface BotHistoryMessage extends BotJobMessage {
+  triggerId?: string;
+  expiresAt?: string;
+}
+
+/** Журнал изменений памяти беседы (удалили/поправили то, что бот мог запомнить). */
+export interface BotMemoryStatus {
+  epoch: string;
+  /** Время сервера снимка (мс): следующий раз — changesSince. */
+  checkedAt: number;
+  /** Журнал ответить не может — пересобрать память с нуля. */
+  reset: boolean;
+  /** Самое раннее createdAt изменённого с changesSince (ISO) или null. */
+  changedFrom: string | null;
+}
+
+export interface BotHistoryPage {
+  mode: "botchat" | "recent";
+  messages: BotHistoryMessage[];
+  next: { at: string; id: string } | null;
+  memory: BotMemoryStatus;
+}
+
+/** Ответ сервера → BotHistoryPage (данные чужого процесса — доверяем только форме). null — мусор. */
+export function parseHistoryPage(v: unknown): BotHistoryPage | null {
+  if (!v || typeof v !== "object") return null;
+  const j = v as Record<string, unknown>;
+  if (j.mode !== "botchat" && j.mode !== "recent") return null;
+  const mem = j.memory as Record<string, unknown> | undefined;
+  if (!mem || typeof mem.epoch !== "string" || typeof mem.checkedAt !== "number") return null;
+  const messages: BotHistoryMessage[] = [];
+  for (const x of Array.isArray(j.messages) ? j.messages : []) {
+    const p = parseJobMessage(x);
+    if (!p) continue;
+    const r = x as Record<string, unknown>;
+    messages.push({ ...p, ...(str(r.triggerId) ? { triggerId: r.triggerId } : {}), ...(str(r.expiresAt) ? { expiresAt: r.expiresAt } : {}) });
+  }
+  const n = j.next as Record<string, unknown> | null | undefined;
+  return {
+    mode: j.mode,
+    messages,
+    next: n && str(n.at) && typeof n.id === "string" ? { at: n.at, id: n.id } : null,
+    memory: {
+      epoch: mem.epoch,
+      checkedAt: mem.checkedAt,
+      reset: mem.reset === true,
+      changedFrom: str(mem.changedFrom) ? mem.changedFrom : null,
+    },
+  };
 }
 
 export interface UploadResult {

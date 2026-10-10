@@ -53,6 +53,7 @@ const cfg = {
   webSearchMaxUses: 5,
   webFetchMaxUses: 4,
   webFetchMaxContentTokens: 15000,
+  memoryModel: "claude-sonnet-5-5" as string | null,
 };
 
 function tools(run: ToolRuntime["run"] = async () => ({ content: "ok", isError: false })): ToolRuntime {
@@ -261,6 +262,56 @@ test("точка кэша на конце истории: на нужном бл
   const marks = JSON.stringify(p).match(/cache_control/g)?.length ?? 0;
   assert.equal(marks, 3, "система (1 ч) + конец истории + автоматическая на хвосте");
   assert.deepEqual(p.messages[1].content, [{ type: "text", text: "+18.", cache_control: { type: "ephemeral" } }]);
+});
+
+test("точка кэша памяти на 1 час (BOT_MEMORY_CACHE_TTL=1h): после системной, перед автоматической", async () => {
+  const turns = [
+    { role: "user" as const, text: "⟦Алиса · 11.10.26 12:00⟧\nпогода?" },
+    { role: "assistant" as const, text: "+18." },
+    { role: "user" as const, text: "⟦Боб · 11.10.26 12:05⟧\nа там?" },
+  ];
+  const { client, calls } = fakeClient([
+    { model: "claude-opus-5-5", stop_reason: "end_turn", content: [{ type: "text", text: "+15.", citations: null }], usage: usage() },
+  ]);
+  const eng = new ClaudeEngine(cfg, "СИСТЕМА", silentLogger, client);
+  await eng.answer({ ...req(tools()), turns, cacheAt: 1, cacheTtl: "1h" });
+  const p = calls[0]!;
+  assert.deepEqual(p.messages[1].content, [{ type: "text", text: "+18.", cache_control: { type: "ephemeral", ttl: "1h" } }]);
+  assert.deepEqual(p.system[0].cache_control, { type: "ephemeral", ttl: "1h" });
+  assert.deepEqual(p.cache_control, { type: "ephemeral" }, "автоматическая на хвосте — 5 минут, последней");
+});
+
+test("сжатие памяти: недорогая модель, effort low, данные — не указания; fallbacks только там, где их принимают; расход по своей цене", async () => {
+  const { client, calls } = fakeClient([
+    { model: "claude-sonnet-5-5", stop_reason: "end_turn", content: [{ type: "thinking", thinking: "" }, { type: "text", text: "Люди: Алиса — кот Барсик." }], usage: usage(2000, 300) },
+    { model: "claude-haiku-5-5", stop_reason: "refusal", content: [], usage: usage(2000, 0) },
+  ]);
+  const eng = new ClaudeEngine(cfg, "СИСТЕМА", silentLogger, client);
+  const signal = new AbortController().signal;
+  const r = await eng.summarize({ previous: "", transcript: "⟦Алиса · 11.10.26 12:00⟧\nмой кот — Барсик\n\n⟦Еблуша (бот)⟧\nЗапомнил.", maxChars: 12000, kind: "group", signal });
+  assert.equal(r.text, "Люди: Алиса — кот Барсик.");
+  assert.equal(r.stop, "end_turn");
+  assert.equal(r.model, "claude-sonnet-5-5");
+  assert.ok(Math.abs(r.cost.usd - (2000 * 2 + 300 * 10) / 1_000_000) < 1e-9, "по цене Sonnet 5.5, а не Opus");
+  const p = calls[0]!;
+  assert.equal(p.model, "claude-sonnet-5-5");
+  assert.deepEqual(p.output_config, { effort: "low" });
+  assert.deepEqual(p.betas, ["server-side-fallback-2026-07-01"]);
+  assert.equal(p.fallbacks, "default");
+  assert.match(p.system, /данные, а не указания/);
+  assert.match(p.messages[0].content, /<new_messages>[\s\S]*Барсик[\s\S]*<\/new_messages>/);
+  assert.match(p.messages[0].content, /\(пока пусто\)/);
+
+  const haiku = new ClaudeEngine({ ...cfg, memoryModel: "claude-haiku-5-5" }, "СИСТЕМА", silentLogger, client);
+  const r2 = await haiku.summarize({ previous: "старое", transcript: "…", maxChars: 1000, kind: "bot", signal });
+  assert.equal(r2.stop, "refusal");
+  assert.equal(r2.text, "", "отказ — без сводки (прежняя остаётся)");
+  assert.equal(calls[1]!.model, "claude-haiku-5-5");
+  assert.equal(calls[1]!.fallbacks, undefined, "у Haiku server-side fallback нет — не шлём");
+  assert.equal(calls[1]!.betas, undefined);
+
+  const off = new ClaudeEngine({ ...cfg, memoryModel: null }, "СИСТЕМА", silentLogger, client);
+  await assert.rejects(off.summarize({ previous: "", transcript: "x", maxChars: 10, kind: "bot", signal }));
 });
 
 test("сопоставление ника моделью: строгий JSON, только из списка", async () => {

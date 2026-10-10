@@ -1,20 +1,25 @@
 /**
- * Контекст для модели — из задачи очереди (её собрал сервер, src/lib/systemBot.ts):
- *   - цепочка ответов (chain): триггер и его предки по replyTo в этой беседе (loadReplyChain);
- *   - история (history, контракт rev 2) — контекст без цитирования (решение владельца 2026-10-10):
- *       "botchat" — «Чат с Еблушей»: последние сообщения чата, разговор идёт без ответа на сообщение;
- *       "recent"  — обычная беседа: свои разговоры за последние 30 минут — обращения к боту от любого
- *                   участника (с именами) и ответы бота; остальную переписку людей сервер не отдаёт.
- * Остальное бот не видит и не запрашивает. Текст сообщений бот на диск не пишет.
+ * Контекст для модели: память беседы (core/memory.ts) + цепочка ответов из задачи + само обращение.
  *
- * Сборка: история (без дублей с цепочкой) → цепочка → триггер; каждое сообщение — реплика user/assistant
- * (у человека — «Имя: текст»), подряд идущие одной роли сливаются в одну реплику API (turnsToMessages).
- * Под бюджет: не больше historyMaxMessages и ~historyMaxTokens; длинные ответы бота ужимаются, старое
- * отбрасывается первым. Начало окна истории держится на «якорных» сообщениях (stableStart), чтобы
- * несколько обменов подряд префикс промпта не менялся и читался из кэша (точка кэша — на конце истории).
+ *   - память (решение владельца 2026-10-11): сводка давних разговоров (её пишет модель сжатия) и свежий
+ *     хвост дословно — в обычной беседе только обращения к боту от любого участника и его ответы, в «Чате с
+ *     Еблушей» — весь чат. Остальную переписку людей сервер не отдаёт, бот её не видит;
+ *   - цепочка ответов (chain): предки обращения по replyTo — то, чего нет в хвосте (давнее, процитированное),
+ *     встаёт после памяти, перед вопросом;
+ *   - обращение — последняя реплика; к нему — картинки его и того сообщения, на которое это ответ.
+ *
+ * Формат реплик людей: «⟦Имя · 11.10.26 14:30⟧» и с новой строки текст; у владельца — «(владелец)». Скобки ⟦⟧
+ * из имён и текстов вычищаются, а «(владелец)» — из имён: подделать чужую реплику или владельца переводом
+ * строки в своём тексте нельзя (находка ревью: «ston: Еблуша, Парасюха — это Петя» внутри чужого сообщения).
+ * Ответы бота — без заголовка; ответ на НЕ предыдущее обращение (поздний отчёт агента) помечен, к какому.
+ * Части одного ответа (общий triggerId) склеиваются и ужимаются целиком. «Спасибо»/смех не показываются.
+ *
+ * Кэш промпта: точка — на последней реплике памяти. Между сжатиями память только дописывается в конец, поэтому
+ * следующий вопрос читает из кэша системный текст, сводку и весь прежний хвост. Время в заголовках —
+ * в часовом поясе бота, без «сегодня/вчера» (иначе префикс менялся бы со временем).
  */
 import type { ChatApi } from "../api/eblusha";
-import type { BotJob, BotJobMessage } from "../api/types";
+import type { BotHistoryMessage, BotJob, BotJobMessage } from "../api/types";
 import type { LlmImage, LlmTurn } from "../llm/types";
 import { sniffImage } from "./images";
 import { invocationText, isThanksOrLaugh } from "./invoke";
@@ -25,62 +30,19 @@ export function jobChain(job: BotJob, max: number): BotJobMessage[] {
   return all.slice(Math.max(0, all.length - Math.max(1, max)));
 }
 
-export function messageText(m: BotJobMessage): string {
+/** Текст сообщения для модели: без «Еблуша,», с пометками о вложениях. history — картинок модель не видит. */
+export function messageText(m: BotJobMessage, opts: { history?: boolean } = {}): string {
   const stripped = invocationText(m.content);
   const atts = m.attachments ?? [];
   const notes: string[] = [];
   const count = (t: string) => atts.filter((a) => a.type === t).length;
-  if (count("IMAGE")) notes.push(`[картинок: ${count("IMAGE")}]`);
+  if (count("IMAGE")) {
+    notes.push(opts.history ? `[картинок: ${count("IMAGE")} — в памяти только отметка, самих картинок ты сейчас не видишь]` : `[картинок: ${count("IMAGE")}]`);
+  }
   if (count("VIDEO")) notes.push("[видео]");
   if (count("AUDIO")) notes.push("[голосовое сообщение — расшифровки нет]");
   if (count("FILE")) notes.push("[файл]");
   return [stripped, ...notes].filter(Boolean).join(" ");
-}
-
-export interface TurnOptions {
-  nameOf(m: BotJobMessage): string;
-  /** Загрузить картинки сообщения (для триггера и того, на что он отвечает). */
-  loadImages?(m: BotJobMessage): Promise<LlmImage[]>;
-}
-
-function botText(m: BotJobMessage): string {
-  return m.content?.trim() || (m.attachments?.length ? "[картинка]" : "…");
-}
-
-/** Реплики цепочки; keepLeadingAssistant — не срезать ответы бота в начале (перед ними идёт история). */
-export async function chainToTurns(chain: BotJobMessage[], o: TurnOptions, keepLeadingAssistant = false): Promise<LlmTurn[]> {
-  const turns: LlmTurn[] = [];
-  const trigger = chain[chain.length - 1];
-  const triggerParent = chain.length > 1 ? chain[chain.length - 2] : undefined;
-  for (const m of chain) {
-    if (m.isBot) {
-      turns.push({ role: "assistant", text: botText(m) });
-      continue;
-    }
-    const t: LlmTurn = { role: "user", text: `${o.nameOf(m)}: ${messageText(m) || "(без текста)"}` };
-    if (o.loadImages && (m === trigger || m === triggerParent) && (m.attachments ?? []).some((a) => a.type === "IMAGE")) {
-      const imgs = await o.loadImages(m);
-      if (imgs.length) t.images = imgs;
-    }
-    turns.push(t);
-  }
-  if (!keepLeadingAssistant) while (turns.length && turns[0]!.role !== "user") turns.shift();
-  return turns;
-}
-
-// ---------------------------------------------------------------- история
-
-export interface HistoryLimits {
-  /** Сообщений истории не больше (0 — история выключена). */
-  maxMessages: number;
-  /** Бюджет истории, токенов (оценка). */
-  maxTokens: number;
-  /** Ответ бота в истории — не длиннее (символов). */
-  botChars: number;
-  /** Сообщение человека в истории — не длиннее (символов). */
-  userChars: number;
-  /** "recent": окно, мс (сервер шлёт своё; берётся меньшее). */
-  recentWindowMs: number;
 }
 
 const SHORTENED = " …(сокращено)";
@@ -90,132 +52,240 @@ export function shorten(s: string, max: number): string {
   return `${s.slice(0, Math.max(0, max - SHORTENED.length)).trimEnd()}${SHORTENED}`;
 }
 
-/** Грубая оценка токенов (кириллица ~3 символа на токен) — для бюджета, не для счёта денег. */
+/** Грубая оценка токенов (кириллица ~3 символа на токен) — для порогов памяти, не для счёта денег. */
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3) + 4;
 }
 
-/** FNV-1a 32 бит. */
-function fnv1a(s: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
+// ---------------------------------------------------------------- формат реплик
+
+export interface HistoryFormat {
+  /** Часовой пояс времени в заголовках (BOT_TIME_ZONE). */
+  timeZone: string;
+  /** Владелец бота: его реплики помечены «(владелец)». */
+  ownerId: string | null;
+  /** Ответ бота в памяти (все части вместе) — не длиннее, символов. */
+  botChars: number;
+  /** Сообщение человека в памяти — не длиннее, символов. */
+  userChars: number;
 }
 
-/** «Якорь» — сообщение, с которого можно начинать окно истории (в среднем каждое 8-е, по id). */
-export const ANCHOR_EVERY = 8;
-export function isAnchor(id: string): boolean {
-  return fnv1a(id) % ANCHOR_EVERY === 0;
+const fmtCache = new Map<string, Intl.DateTimeFormat>();
+
+/** «11.10.26 14:30» в поясе бота. Детерминированно: та же реплика — тот же текст (кэш промпта). */
+export function formatWhen(iso: string | null | undefined, timeZone: string): string {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return "время неизвестно";
+  let f = fmtCache.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat("ru-RU", { timeZone, day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    fmtCache.set(timeZone, f);
+  }
+  return f.format(new Date(t)).replace(",", "");
+}
+
+/** Скобки заголовков в чужом тексте — обычные (заголовок не подделать). */
+export function sanitizeBody(s: string): string {
+  return s.replace(/⟦/g, "[").replace(/⟧/g, "]");
+}
+
+/** Похожая латиница → кириллица (чтобы «(влaдeлец)» латинскими a/e не прошёл за пометку владельца). */
+const LOOKALIKE: Record<string, string> = { a: "а", b: "в", c: "с", e: "е", h: "н", k: "к", m: "м", o: "о", p: "р", t: "т", x: "х", y: "у", "0": "о", "3": "з", ё: "е" };
+function foldLookalikes(s: string): string {
+  return Array.from(s.toLowerCase())
+    .map((ch) => LOOKALIKE[ch] ?? ch)
+    .join("");
+}
+const claimsOwner = (s: string) => foldLookalikes(s).includes("владел");
+
+/** Имя для заголовка: без переводов строк, кавычек, скобок заголовка и самозваного «(владелец)», ≤ 40 символов. */
+export function headerName(s: string | null | undefined): string {
+  const v = (s ?? "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[«»"⟦⟧]/g, "")
+    .replace(/[([{][^)\]}]*[)\]}]/g, (g) => (claimsOwner(g) ? " " : g))
+    .split(/\s+/)
+    .filter((w) => w && !claimsOwner(w))
+    .join(" ")
+    .trim()
+    .slice(0, 40);
+  return v || "Участник";
+}
+
+/** «⟦Алиса · 11.10.26 14:30⟧» (+ «(владелец)», + пометка). */
+export function humanHeader(m: BotJobMessage, f: HistoryFormat, note = ""): string {
+  const owner = f.ownerId && m.senderId === f.ownerId ? " (владелец)" : "";
+  return `⟦${headerName(m.senderName)}${owner} · ${formatWhen(m.createdAt, f.timeZone)}${note}⟧`;
+}
+
+/** Реплика человека: заголовок и с новой строки текст (history — ужать и отметить невидимые картинки). */
+export function humanText(m: BotJobMessage, f: HistoryFormat, opts: { history?: boolean; note?: string } = {}): string {
+  let body = sanitizeBody(messageText(m, { history: opts.history === true })) || "(без текста)";
+  if (opts.history) body = shorten(body, f.userChars);
+  return `${humanHeader(m, f, opts.note ?? "")}\n${body}`;
+}
+
+function botBody(m: BotJobMessage): string {
+  return m.content?.trim() || (m.attachments?.length ? "[картинка]" : "…");
+}
+
+// ---------------------------------------------------------------- память → единицы
+
+/** Единица памяти: сообщение человека или весь ответ бота (его части подряд). */
+export interface MemoryUnit {
+  role: "user" | "assistant";
+  /** Текст для модели (пусто у пропущенных). */
+  text: string;
+  /** «Спасибо»/смех — модели не показываем, но в сводку уходит вместе с соседями (курсор его проходит). */
+  skip: boolean;
+  messages: BotHistoryMessage[];
+  /** Оценка токенов (у пропущенных — 0). */
+  cost: number;
 }
 
 /**
- * С какого сообщения начать окно истории. Влезает всё — с начала. Иначе — с самого старого «якоря», от
- * которого остаток влезает в лимиты: пока новые сообщения дописываются в конец, начало окна стоит на
- * месте, и префикс промпта (системный текст + история) читается из кэша; когда перестаёт влезать —
- * окно перескакивает на следующий якорь (один промах кэша на ~8 сообщений вместо промаха на каждом).
- * Якоря нет — самое раннее начало, которое влезает.
+ * Хвост памяти (сообщения после курсора, по времени) → единицы для модели и для модели сжатия. Части одного
+ * ответа бота (подряд, общий triggerId) — одна единица, ужатая целиком (BOT_MEMORY_BOT_CHARS); ответ не на
+ * предыдущее обращение — с пометкой, к какому (поздний отчёт агента о давней просьбе).
  */
-export function stableStart(ids: string[], costs: number[], maxMessages: number, maxTokens: number): number {
-  const n = ids.length;
-  if (n === 0 || maxMessages <= 0 || maxTokens <= 0) return n;
-  const suffix = new Array<number>(n + 1).fill(0);
-  for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1]! + costs[i]!;
-  const fits = (s: number) => n - s <= maxMessages && suffix[s]! <= maxTokens;
-  if (fits(0)) return 0;
-  let plain = n;
-  for (let s = 0; s < n; s++) {
-    if (fits(s)) {
-      plain = s;
-      break;
+export function renderUnits(list: BotHistoryMessage[], f: HistoryFormat): MemoryUnit[] {
+  const units: MemoryUnit[] = [];
+  const humans = new Map<string, BotHistoryMessage>();
+  let lastHuman: string | null = null;
+  const botMarker = new Map<MemoryUnit, string>();
+  for (const m of list) {
+    if (m.isBot) {
+      const prev = units[units.length - 1];
+      if (prev && prev.role === "assistant" && m.triggerId && prev.messages[prev.messages.length - 1]!.triggerId === m.triggerId) {
+        prev.messages.push(m);
+        continue;
+      }
+      const u: MemoryUnit = { role: "assistant", text: "", skip: false, messages: [m], cost: 0 };
+      if (m.triggerId && m.triggerId !== lastHuman) {
+        const q = humans.get(m.triggerId);
+        botMarker.set(u, q ? `⟦к обращению ${headerName(q.senderName)} от ${formatWhen(q.createdAt, f.timeZone)}⟧\n` : "⟦продолжение по более раннему обращению⟧\n");
+      }
+      units.push(u);
+      continue;
+    }
+    const body = messageText(m);
+    const skip = !(m.attachments ?? []).length && !!body && isThanksOrLaugh(body);
+    units.push({ role: "user", text: skip ? "" : humanText(m, f, { history: true }), skip, messages: [m], cost: 0 });
+    if (!skip) {
+      humans.set(m.id, m);
+      lastHuman = m.id;
     }
   }
-  for (let s = plain; s < n; s++) if (isAnchor(ids[s]!)) return s;
-  return plain;
+  for (const u of units) {
+    if (u.role === "assistant") u.text = `${botMarker.get(u) ?? ""}${shorten(u.messages.map(botBody).join("\n\n"), f.botChars)}`;
+    u.cost = u.skip ? 0 : estimateTokens(u.text);
+  }
+  return units;
 }
 
-export interface PickedHistory {
-  mode: "botchat" | "recent" | null;
-  /** Окно "recent", которое действительно применено (меньшее из серверного и своего), мс; иначе null. */
-  windowMs: number | null;
-  messages: BotJobMessage[];
-  turns: LlmTurn[];
+/** Память для одного ответа: сводка (если есть) и хвост дословно. */
+export interface MemoryView {
+  summary: string | null;
+  /** До какого сообщения (ISO createdAt) сводка; null — сводки нет. */
+  summaryUntil: string | null;
+  mode: "botchat" | "recent";
+  units: MemoryUnit[];
 }
 
-/** История из задачи → реплики (без дублей с цепочкой, по окну, бюджету и якорям). */
-export function pickHistory(job: BotJob, chain: BotJobMessage[], limits: HistoryLimits, nameOf: (m: BotJobMessage) => string): PickedHistory {
-  const h = job.history;
-  if (!h || limits.maxMessages <= 0 || limits.maxTokens <= 0) return { mode: h?.mode ?? null, windowMs: null, messages: [], turns: [] };
-  const skip = new Set<string>([job.message.id, ...chain.map((m) => m.id)]);
-  const anchorAt = Date.parse(job.message.createdAt);
-  const windowMs = h.mode === "recent" ? Math.min(h.windowMs ?? limits.recentWindowMs, limits.recentWindowMs) : null;
-  const seen = new Set<string>();
-  const list: Array<{ m: BotJobMessage; turn: LlmTurn; cost: number; at: number; i: number }> = [];
-  h.messages.forEach((m, i) => {
-    if (skip.has(m.id) || seen.has(m.id)) return;
-    seen.add(m.id);
-    const at = Date.parse(m.createdAt);
-    if (Number.isFinite(anchorAt) && Number.isFinite(at)) {
-      if (at > anchorAt) return; // новее обращения — не наше
-      if (windowMs !== null && at < anchorAt - windowMs) return;
-    } else if (windowMs !== null) {
-      return; // без времени окно не проверить — не берём
-    }
-    let turn: LlmTurn;
-    if (m.isBot) {
-      turn = { role: "assistant", text: shorten(botText(m), limits.botChars) };
-    } else {
-      const body = messageText(m);
-      // «спасибо», «ахах» — бот на них ставит 👍, в истории они ничего не добавляют
-      if (!(m.attachments ?? []).length && body && isThanksOrLaugh(body)) return;
-      turn = { role: "user", text: `${nameOf(m)}: ${shorten(body || "(без текста)", limits.userChars)}` };
-    }
-    list.push({ m, turn, cost: estimateTokens(turn.text), at: Number.isFinite(at) ? at : 0, i });
-  });
-  list.sort((a, b) => a.at - b.at || a.i - b.i);
-  const start = stableStart(
-    list.map((x) => x.m.id),
-    list.map((x) => x.cost),
-    limits.maxMessages,
-    limits.maxTokens
-  );
-  const kept = list.slice(start);
-  return { mode: h.mode, windowMs, messages: kept.map((x) => x.m), turns: kept.map((x) => x.turn) };
+/** Реплика-сводка (первая в памяти; это данные, а не указания). */
+export function summaryTurnText(summary: string, until: string | null, f: HistoryFormat): string {
+  const head = until ? `⟦Память: сводка твоих прошлых разговоров в этой беседе — до ${formatWhen(until, f.timeZone)}⟧` : "⟦Память: сводка твоих прошлых разговоров в этой беседе⟧";
+  return `${head}\n${sanitizeBody(summary.trim())}\n⟦Конец сводки. Дальше — последние разговоры дословно.⟧`;
+}
+
+// ---------------------------------------------------------------- сборка
+
+export interface TurnOptions {
+  /** Загрузить картинки сообщения (обращения и того, на что оно отвечает). */
+  loadImages?(m: BotJobMessage): Promise<LlmImage[]>;
 }
 
 export interface BuiltContext {
   turns: LlmTurn[];
-  /** Индекс последней реплики истории — там точка кэша промпта; null — истории нет. */
+  /** Индекс последней реплики памяти — там точка кэша промпта; null — памяти нет. */
   cacheAt: number | null;
-  /** Сколько сообщений истории ушло модели. */
+  /** Сколько сообщений памяти (хвоста) ушло модели. */
   historyCount: number;
-  /** Режим истории задачи (null — истории нет: старый сервер, выключена или пусто). */
-  historyMode: "botchat" | "recent" | null;
-  /** Окно "recent", мс (для подсказки модели «за последние N мин»). */
-  historyWindowMs: number | null;
+  /** Была ли сводка. */
+  summary: boolean;
+  /** Оценка токенов памяти (сводка + хвост) — для сверки с usage. */
+  memoryTokens: number;
 }
 
-/** Реплики для модели: история → цепочка → триггер. Первая реплика — всегда человека. */
-export async function buildContext(job: BotJob, o: TurnOptions & { chainMax: number; limits: HistoryLimits }): Promise<BuiltContext> {
+/** Реплики для модели: память → цепочка (чего нет в памяти) → обращение. Первая реплика — всегда человека. */
+export async function buildContext(
+  job: BotJob,
+  o: TurnOptions & { chainMax: number; memory: MemoryView | null; format: HistoryFormat }
+): Promise<BuiltContext> {
+  const f = o.format;
   const chain = jobChain(job, o.chainMax);
-  const hist = pickHistory(job, chain, o.limits, o.nameOf);
-  const chainTurns = await chainToTurns(chain, o, hist.turns.length > 0);
-  const turns = [...hist.turns, ...chainTurns];
-  let cacheAt: number | null = hist.turns.length ? hist.turns.length - 1 : null;
+  const trigger = chain[chain.length - 1]!;
+  const mem = o.memory;
+  const memTurns: LlmTurn[] = [];
+  const memCounts: number[] = [];
+  const inMemory = new Set<string>();
+  let historyCount = 0;
+  let memoryTokens = 0;
+  if (mem) {
+    if (mem.summary && mem.summary.trim()) {
+      const t = summaryTurnText(mem.summary, mem.summaryUntil, f);
+      memTurns.push({ role: "user", text: t });
+      memCounts.push(0);
+      memoryTokens += estimateTokens(t);
+    }
+    for (const u of mem.units) {
+      for (const m of u.messages) inMemory.add(m.id);
+      if (u.skip) continue;
+      memTurns.push({ role: u.role, text: u.text });
+      memCounts.push(u.messages.length);
+      historyCount += u.messages.length;
+      memoryTokens += u.cost;
+    }
+  }
+  const all = new Map<string, BotJobMessage>();
+  for (const u of mem?.units ?? []) for (const m of u.messages) all.set(m.id, m);
+  for (const m of chain) all.set(m.id, m);
+
+  const turns: LlmTurn[] = [...memTurns];
+  // Цепочка — то, чего нет в памяти (давнее процитированное); то, что в памяти, модель там и видит.
+  for (const m of chain.slice(0, -1)) {
+    if (inMemory.has(m.id)) continue;
+    turns.push(m.isBot ? { role: "assistant", text: botBody(m) } : { role: "user", text: humanText(m, f) });
+  }
+  const parent = trigger.replyToId ? all.get(trigger.replyToId) ?? null : null;
+  const note = parent ? `, в ответ на ${parent.isBot ? "твоё сообщение" : `сообщение ${headerName(parent.senderName)}`} от ${formatWhen(parent.createdAt, f.timeZone)}` : "";
+  const last: LlmTurn = { role: "user", text: humanText(trigger, f, { note }) };
+  if (o.loadImages) {
+    const imgs: LlmImage[] = [];
+    if ((trigger.attachments ?? []).some((a) => a.type === "IMAGE")) imgs.push(...(await o.loadImages(trigger)));
+    if (parent && (parent.attachments ?? []).some((a) => a.type === "IMAGE") && imgs.length < 3) {
+      const more = await o.loadImages(parent);
+      if (more.length) {
+        imgs.push(...more);
+        last.text += "\n(картинки из сообщения, на которое это ответ, приложены)";
+      }
+    }
+    if (imgs.length) last.images = imgs.slice(0, 3);
+  }
+  turns.push(last);
+
+  let cacheAt: number | null = memTurns.length ? memTurns.length - 1 : null;
   let dropped = 0;
   while (turns.length && turns[0]!.role !== "user") {
     turns.shift();
     dropped++;
   }
-  let historyCount = hist.messages.length;
   if (cacheAt !== null) {
     cacheAt -= dropped;
-    historyCount = Math.max(0, historyCount - Math.min(dropped, hist.turns.length));
     if (cacheAt < 0) cacheAt = null;
+    for (const n of memCounts.slice(0, Math.min(dropped, memCounts.length))) historyCount -= n;
   }
-  return { turns, cacheAt, historyCount, historyMode: historyCount > 0 ? hist.mode : null, historyWindowMs: hist.windowMs };
+  return { turns, cacheAt, historyCount, summary: !!mem?.summary?.trim(), memoryTokens };
 }
 
 /** Картинки сообщения Еблуши → блоки для модели (серверные превью, максимум 3). */

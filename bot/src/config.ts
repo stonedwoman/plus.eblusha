@@ -51,17 +51,28 @@ export interface BotConfig {
   /** Сколько сообщений цепочки ответов отдавать модели. */
   contextMaxMessages: number;
   /**
-   * Контекст без цитирования (история из задачи, контракт rev 2): сколько сообщений истории отдавать
-   * модели. «Чат с Еблушей» — последние сообщения чата, обычная беседа — свои разговоры за окно.
-   * 0 — история выключена (только цепочка ответов, как раньше).
+   * Память о своих разговорах (решение владельца 2026-10-11, core/memory.ts): бот помнит ВСЕ свои разговоры
+   * в беседе — давнее сводкой, свежее дословно. Хвост длиннее memoryTailTokens (оценка) — старое сжимается в
+   * сводку, пока хвост не станет ≤ memoryTailKeepTokens. 0 — память выключена (только цепочка ответов).
    */
-  historyMaxMessages: number;
-  /** Бюджет истории, токенов (оценка: символы / 3). Старое отбрасывается первым. */
-  historyMaxTokens: number;
-  /** Длинный ответ бота в истории ужимается до стольких символов. */
-  historyBotChars: number;
-  /** Обычная беседа: окно «своих недавних разговоров», минут (сервер шлёт 30; бот может только сузить). */
-  recentWindowMin: number;
+  memoryTailTokens: number;
+  memoryTailKeepTokens: number;
+  /** Модель сжатия (недорогая): claude-sonnet-5-5 или claude-haiku-5-5; null — без сводки (только хвост). */
+  memoryModel: string | null;
+  /** Сводка не длиннее (оценка, токенов). */
+  memorySummaryTokens: number;
+  /** Сколько старого (оценка, токенов) сжимать за один вызов модели сжатия. */
+  memoryChunkTokens: number;
+  /** Вызовов модели сжатия на один ответ (дальше — догоняет на следующих обращениях). */
+  memoryMaxCalls: number;
+  /** Ответ бота в хвосте (все части вместе) — не длиннее (символов); длиннее — ужимается. */
+  memoryBotChars: number;
+  /** Сообщение человека в хвосте — не длиннее (символов). */
+  memoryUserChars: number;
+  /** Сводку беседы, к которой не обращались столько дней, удаляем (сервер хранит всё — соберётся заново). */
+  memoryIdleDays: number;
+  /** Срок кэша промпта на конце памяти: 5m (дешевле запись) или 1h (дороже запись, переживает паузы). */
+  memoryCacheTtl: "5m" | "1h";
   /** Сколько поисков/чтений страниц за один ответ. */
   webSearchMaxUses: number;
   webFetchMaxUses: number;
@@ -118,6 +129,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   if (!["debug", "info", "warn", "error"].includes(level)) throw new Error(`BOT_LOG_LEVEL=${level}`);
   const groupPlayerData = str(env, "BOT_GROUP_PLAYER_DATA", "all").toLowerCase();
   if (groupPlayerData !== "all" && groupPlayerData !== "requester") throw new Error(`BOT_GROUP_PLAYER_DATA=${groupPlayerData}: ждём all или requester`);
+  const memoryTailTokens = Math.floor(num(env, "BOT_MEMORY_TAIL_TOKENS", 25000));
+  const memoryTailKeepTokens = Math.floor(num(env, "BOT_MEMORY_TAIL_KEEP_TOKENS", Math.min(15000, Math.floor(memoryTailTokens * 0.6))));
+  const memoryModelRaw = str(env, "BOT_MEMORY_MODEL", "claude-sonnet-5-5");
+  const memoryCacheTtl = str(env, "BOT_MEMORY_CACHE_TTL", "5m");
+  if (memoryCacheTtl !== "5m" && memoryCacheTtl !== "1h") throw new Error(`BOT_MEMORY_CACHE_TTL=${memoryCacheTtl}: ждём 5m или 1h`);
   return {
     apiUrl: str(env, "BOT_API_URL", "http://127.0.0.1:4000").replace(/\/+$/, ""),
     redisUrl: str(env, "BOT_REDIS_URL", "redis://127.0.0.1:6379/0"),
@@ -137,10 +153,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     userDailyUsd: num(env, "BOT_USER_DAILY_USD", 2),
     requestMaxUsd: num(env, "BOT_REQUEST_MAX_USD", 1.5),
     contextMaxMessages: Math.max(1, Math.floor(num(env, "BOT_CONTEXT_MAX_MESSAGES", 12))),
-    historyMaxMessages: Math.floor(num(env, "BOT_HISTORY_MAX_MESSAGES", 40)),
-    historyMaxTokens: Math.floor(num(env, "BOT_HISTORY_MAX_TOKENS", 8000)),
-    historyBotChars: Math.max(200, Math.floor(num(env, "BOT_HISTORY_BOT_CHARS", 1500))),
-    recentWindowMin: Math.floor(num(env, "BOT_RECENT_WINDOW_MIN", 30)),
+    memoryTailTokens,
+    memoryTailKeepTokens: Math.min(memoryTailKeepTokens, memoryTailTokens),
+    memoryModel: memoryModelRaw.toLowerCase() === "off" ? null : memoryModelRaw,
+    memorySummaryTokens: Math.max(500, Math.floor(num(env, "BOT_MEMORY_SUMMARY_TOKENS", 4000))),
+    memoryChunkTokens: Math.max(2000, Math.floor(num(env, "BOT_MEMORY_CHUNK_TOKENS", 40000))),
+    memoryMaxCalls: Math.max(1, Math.floor(num(env, "BOT_MEMORY_MAX_CALLS", 4))),
+    memoryBotChars: Math.max(300, Math.floor(num(env, "BOT_MEMORY_BOT_CHARS", 4000))),
+    memoryUserChars: Math.max(300, Math.floor(num(env, "BOT_MEMORY_USER_CHARS", 3000))),
+    memoryIdleDays: Math.max(1, Math.floor(num(env, "BOT_MEMORY_IDLE_DAYS", 90))),
+    memoryCacheTtl,
     webSearchMaxUses: Math.floor(num(env, "BOT_WEB_SEARCH_MAX_USES", 5)),
     webFetchMaxUses: Math.floor(num(env, "BOT_WEB_FETCH_MAX_USES", 4)),
     webFetchMaxContentTokens: Math.floor(num(env, "BOT_WEB_FETCH_MAX_CONTENT_TOKENS", 15000)),
@@ -174,6 +196,12 @@ export function describeConfig(c: BotConfig): Record<string, unknown> {
     userDailyUsd: c.userDailyUsd,
     modules: c.modules,
     groupPlayerData: c.groupPlayerData,
-    history: { maxMessages: c.historyMaxMessages, maxTokens: c.historyMaxTokens, botChars: c.historyBotChars, recentWindowMin: c.recentWindowMin },
+    memory: {
+      tailTokens: c.memoryTailTokens,
+      keepTokens: c.memoryTailKeepTokens,
+      model: c.memoryModel ?? "off",
+      summaryTokens: c.memorySummaryTokens,
+      cacheTtl: c.memoryCacheTtl,
+    },
   };
 }

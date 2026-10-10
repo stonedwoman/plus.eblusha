@@ -5,7 +5,10 @@
  *   usage         — учёт расходов на модель по ответам: токены, поиски, $; БЕЗ текста;
  *   char_links    — привязка userId ↔ персонаж Valheim (у персонажа один человек);
  *   confirmations — ожидающие «да» команды владельца;
- *   notices       — «уже говорил» (подсказки, отказы) с ограничением частоты.
+ *   notices       — «уже говорил» (подсказки, отказы) с ограничением частоты;
+ *   memory        — память о своих разговорах (core/memory.ts): по беседе — сводка давнего (ТЕКСТ, написанный
+ *                   моделью сжатия по обращениям и ответам), курсор покрытия, версия, время. Источник правды —
+ *                   сервер: сводку можно удалить в любой момент, она соберётся заново из истории беседы.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -35,6 +38,31 @@ export interface ConfirmationRow {
   argsJson: string;
   expiresAt: number;
   usedAt: number | null;
+}
+
+/** Память бота об одной беседе (таблица memory). */
+export interface MemoryRow {
+  conversationId: string;
+  /** Сводка всего, что не дальше курсора (может быть пустой: тогда курсор — просто начало просмотра). */
+  summary: string;
+  /** Курсор покрытия: сообщения с (createdAt, id) ≤ (cursorAt, cursorId) уже в сводке. */
+  cursorAt: string;
+  cursorId: string;
+  /** Сколько сообщений свёрнуто в сводку. */
+  covered: number;
+  /** Номер ревизии сводки (растёт при каждом сжатии; с нуля — после пересборки). */
+  version: number;
+  /** Формат/промпт сжатия (MEMORY_FORMAT): сменился — сводка пересобирается. */
+  format: number;
+  /** Журнал изменений сервера: опознаватель и время сервера, до которого изменения уже учтены. */
+  epoch: string | null;
+  checkedAt: number | null;
+  /** Самое раннее expiresAt среди свёрнутого (мс): наступило — пересобрать без исчезнувшего. */
+  minExpiresAt: number | null;
+  updatedAt: number;
+  usedAt: number;
+  /** Последний сбой сжатия (мс) — не повторять каждый раз. */
+  failedAt: number | null;
 }
 
 export function utcDay(ts: number): string {
@@ -94,6 +122,22 @@ export class Store {
         key TEXT PRIMARY KEY,
         at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS memory (
+        conversation_id TEXT PRIMARY KEY,
+        summary TEXT NOT NULL,
+        cursor_at TEXT NOT NULL,
+        cursor_id TEXT NOT NULL,
+        covered INTEGER NOT NULL,
+        version INTEGER NOT NULL,
+        format INTEGER NOT NULL,
+        epoch TEXT,
+        checked_at INTEGER,
+        min_expires_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        used_at INTEGER NOT NULL,
+        failed_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS memory_used ON memory(used_at);
     `);
   }
 
@@ -274,6 +318,65 @@ export class Store {
     this.db
       .prepare(`INSERT INTO notices (key, at) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET at = MAX(at, excluded.at)`)
       .run(`mark:${key}`, at);
+  }
+
+  // ---------- память о разговорах ----------
+  getMemory(conversationId: string): MemoryRow | null {
+    const r = this.db.prepare(`SELECT * FROM memory WHERE conversation_id = ?`).get(conversationId) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    const n = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+    return {
+      conversationId: String(r.conversation_id),
+      summary: String(r.summary),
+      cursorAt: String(r.cursor_at),
+      cursorId: String(r.cursor_id),
+      covered: Number(r.covered),
+      version: Number(r.version),
+      format: Number(r.format),
+      epoch: r.epoch === null || r.epoch === undefined ? null : String(r.epoch),
+      checkedAt: n(r.checked_at),
+      minExpiresAt: n(r.min_expires_at),
+      updatedAt: Number(r.updated_at),
+      usedAt: Number(r.used_at),
+      failedAt: n(r.failed_at),
+    };
+  }
+
+  saveMemory(m: MemoryRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO memory (conversation_id, summary, cursor_at, cursor_id, covered, version, format, epoch, checked_at,
+           min_expires_at, updated_at, used_at, failed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(conversation_id) DO UPDATE SET summary = excluded.summary, cursor_at = excluded.cursor_at,
+           cursor_id = excluded.cursor_id, covered = excluded.covered, version = excluded.version, format = excluded.format,
+           epoch = excluded.epoch, checked_at = excluded.checked_at, min_expires_at = excluded.min_expires_at,
+           updated_at = excluded.updated_at, used_at = excluded.used_at, failed_at = excluded.failed_at`
+      )
+      .run(
+        m.conversationId,
+        m.summary,
+        m.cursorAt,
+        m.cursorId,
+        m.covered,
+        m.version,
+        m.format,
+        m.epoch,
+        m.checkedAt,
+        m.minExpiresAt,
+        m.updatedAt,
+        m.usedAt,
+        m.failedAt
+      );
+  }
+
+  dropMemory(conversationId: string): void {
+    this.db.prepare(`DELETE FROM memory WHERE conversation_id = ?`).run(conversationId);
+  }
+
+  /** Удалить сводки бесед, к которым не обращались с `before` (мс). Возвращает, сколько удалено. */
+  purgeIdleMemory(before: number): number {
+    return Number(this.db.prepare(`DELETE FROM memory WHERE used_at < ?`).run(before).changes);
   }
 
   // ---------- «уже говорил» ----------

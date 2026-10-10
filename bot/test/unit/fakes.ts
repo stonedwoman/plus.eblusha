@@ -1,16 +1,27 @@
 /**
  * Заглушки для юнит-тестов ядра: API Еблуши (/api/bot/*), «сервер» (кто адресован боту, цепочка
- * ответов, разрешения), модель. Ни одного сетевого вызова.
+ * ответов, разрешения, память — POST /api/bot/history с журналом изменений), модель. Ни одного сетевого вызова.
  */
-import { ApiError, type ChatApi } from "../../src/api/eblusha";
-import type { BotConversationKind, BotJob, BotJobHistory, BotJobMessage, BotPeople, BotPerson, BotPostInput, EbMessage } from "../../src/api/types";
+import { ApiError, type ChatApi, type HistoryQuery } from "../../src/api/eblusha";
+import type {
+  BotConversationKind,
+  BotHistoryMessage,
+  BotHistoryPage,
+  BotJob,
+  BotJobMessage,
+  BotPeople,
+  BotPerson,
+  BotPostInput,
+  EbMessage,
+} from "../../src/api/types";
 import { loadConfig, type BotConfig } from "../../src/config";
 import { Bot } from "../../src/core/bot";
 import { ZERO_COST, type CostBreakdown } from "../../src/core/budget";
+import { formatWhen } from "../../src/core/context";
 import { stripCommandPrefix, stripNamePrefix } from "../../src/core/invoke";
 import { Registry } from "../../src/core/registry";
 import { Store } from "../../src/core/store";
-import type { AnswerRequest, AnswerResult, LlmEngine } from "../../src/llm/types";
+import type { AnswerRequest, AnswerResult, LlmEngine, SummarizeRequest, SummarizeResult } from "../../src/llm/types";
 import { silentLogger } from "../../src/log";
 import type { BotModule, OutgoingImage } from "../../src/modules/api";
 
@@ -41,12 +52,12 @@ export const NAMES: Record<string, string> = {
   [SANYA2]: "Саня Иванов",
 };
 /** Люди мессенджера (для POST /api/bot/people): имя и EBLID. */
-export const DIRECTORY: Array<{ id: string; displayName: string; eblid: string }> = [
-  { id: OWNER, displayName: "Стон", eblid: "7001" },
-  { id: ALICE, displayName: "Алиса", eblid: "7002" },
-  { id: BOB, displayName: "Боб", eblid: "7003" },
-  { id: SANYA, displayName: "Саня Петров", eblid: "1111" },
-  { id: SANYA2, displayName: "Саня Иванов", eblid: "2222" },
+export const DIRECTORY: Array<{ id: string; displayName: string; eblid: string; username?: string }> = [
+  { id: OWNER, displayName: "Стон", eblid: "7001", username: "ston" },
+  { id: ALICE, displayName: "Алиса", eblid: "7002", username: "alice" },
+  { id: BOB, displayName: "Боб", eblid: "7003", username: "bob" },
+  { id: SANYA, displayName: "Саня Петров", eblid: "1111", username: "sanya_p" },
+  { id: SANYA2, displayName: "Саня Иванов", eblid: "2222", username: "sanya_i" },
 ];
 
 export const CONVS: Record<string, { kind: BotConversationKind; title: string | null; participantIds: string[] }> = {
@@ -58,13 +69,35 @@ export const CONVS: Record<string, { kind: BotConversationKind; title: string | 
 };
 const BOT_CHAT_OF: Record<string, string> = { [ALICE]: DM_ALICE, [OWNER]: DM_OWNER };
 
+/** Часовой пояс бота в тестах (BOT_TIME_ZONE по умолчанию). */
+export const TZ = "Europe/Moscow";
+
 let seq = 0;
 export function cuid(prefix = "cmsg"): string {
   seq++;
   return `${prefix}${String(seq).padStart(25 - prefix.length, "0")}`;
 }
 
+/** Ожидаемая реплика человека: «⟦Имя · дд.мм.гг чч:мм⟧» и текст (как core/context.ts → humanText). */
+export function said(m: { senderId: string; createdAt: string; sender?: { displayName?: string | null } | null }, body: string, note = ""): string {
+  const name = m.sender?.displayName ?? NAMES[m.senderId] ?? "Участник";
+  const owner = m.senderId === OWNER ? " (владелец)" : "";
+  return `⟦${name}${owner} · ${formatWhen(m.createdAt, TZ)}${note}⟧\n${body}`;
+}
+
+/** Часы «сервера»: время строго растёт (порядок истории — по времени, как на сервере). */
+let lastAt = 0;
+export function nextAt(): string {
+  lastAt = Math.max(Date.now(), lastAt + 1);
+  return new Date(lastAt).toISOString();
+}
+
 export type Sent = BotPostInput & { conversationId: string };
+
+const triggerOf = (m: EbMessage): string | null => {
+  const b = (m.metadata as { bot?: { triggerMessageId?: unknown } } | null | undefined)?.bot;
+  return typeof b?.triggerMessageId === "string" ? b.triggerMessageId : null;
+};
 
 export class FakeApi implements ChatApi {
   readonly baseUrl = "http://fake";
@@ -76,9 +109,14 @@ export class FakeApi implements ChatApi {
   uploads: Array<{ name: string; mime: string; size: number }> = [];
   /** grant → беседа (как Redis на сервере). */
   grants = new Map<string, string>();
+  /** grant → обращение (metadata.bot.triggerMessageId ответа; удалено — 409). */
+  grantTrigger = new Map<string, string>();
   /** У кого включён «Чат с Еблушей». */
   botChatOn = new Set<string>([ALICE, OWNER]);
-  history = new Map<string, EbMessage>();
+  /** Все сообщения «сервера» в порядке создания. */
+  all = new Map<string, EbMessage>();
+  /** Обращения к боту (metadata.botAsk на сервере). */
+  addressed = new Set<string>();
   /** Сервер отказывает в любой отправке (например, 409 BOT_TRIGGER_DELETED — вопрос удалили). */
   postError: ApiError | null = null;
   rejected = 0;
@@ -98,8 +136,15 @@ export class FakeApi implements ChatApi {
       throw this.postError;
     }
     let conversationId: string;
-    if (input.grant) conversationId = this.convOf(input.grant);
-    else {
+    let trigger: string | null = null;
+    if (input.grant) {
+      conversationId = this.convOf(input.grant);
+      trigger = this.grantTrigger.get(input.grant) ?? null;
+      if (trigger && this.all.get(trigger)?.deletedAt) {
+        this.rejected++;
+        throw new ApiError(409, "/api/bot/messages", "BOT_TRIGGER_DELETED", "HTTP 409 (BOT_TRIGGER_DELETED)");
+      }
+    } else {
       const chat = input.userId ? BOT_CHAT_OF[input.userId] : undefined;
       if (!chat || !this.botChatOn.has(input.userId!)) throw new ApiError(409, "/api/bot/messages", "BOT_CHAT_DISABLED", "HTTP 409 (BOT_CHAT_DISABLED)");
       conversationId = chat;
@@ -111,13 +156,14 @@ export class FakeApi implements ChatApi {
       senderId: BOT,
       type: input.type,
       content: input.content ?? null,
-      createdAt: new Date().toISOString(),
+      createdAt: nextAt(),
       replyToId: input.replyToId ?? null,
       attachments: (input.attachments ?? []).map((a) => ({ ...a })),
       isBot: true,
+      metadata: { bot: { v: 1, kind: input.kind ?? "answer", ...(trigger ? { triggerMessageId: trigger } : {}) } },
     };
     this.sentMessages.push(m);
-    this.history.set(m.id, m);
+    this.all.set(m.id, m);
     return m;
   }
   async typing(grant: string, typing: boolean) {
@@ -136,20 +182,104 @@ export class FakeApi implements ChatApi {
   /** Сервер без POST /api/bot/people (старый) — 404. */
   peopleAvailable = true;
   peopleCalls: Array<{ query?: string; ids?: string[] }> = [];
-  /** Как lookupBotPeople сервера: участники беседы, поиск по имени (и без последней буквы)/EBLID, имена по id. */
+  /** Как lookupBotPeople сервера: участники беседы, поиск по имени (и основе слова)/логину/EBLID, имена по id. */
   async people(grant: string, input: { query?: string; ids?: string[] }): Promise<BotPeople> {
     if (!this.peopleAvailable) throw new ApiError(404, "/api/bot/people", null, "HTTP 404 POST /api/bot/people");
     const conversationId = this.convOf(grant);
     this.peopleCalls.push({ ...input });
     const parts = new Set(CONVS[conversationId]?.participantIds ?? []);
-    const person = (u: { id: string; displayName: string; eblid: string }): BotPerson => ({ ...u, inConversation: parts.has(u.id) });
+    const person = (u: { id: string; displayName: string; eblid: string }): BotPerson => ({ id: u.id, displayName: u.displayName, eblid: u.eblid, inConversation: parts.has(u.id) });
     const q = (input.query ?? "").trim().toLowerCase().replace(/ё/g, "е");
     const variants = q ? [q, ...q.split(/\s+/).filter((w) => w.length >= 4).map((w) => w.slice(0, Math.max(3, w.length - 2)))] : [];
+    const matches: BotPerson[] = [];
+    for (const u of [...DIRECTORY, ...this.extraPeople]) {
+      const by = u.eblid === q ? "eblid" : u.username && u.username === q ? "username" : variants.some((v) => u.displayName.toLowerCase().replace(/ё/g, "е").includes(v)) ? "name" : null;
+      if (by) matches.push({ ...person(u), matchedBy: by });
+    }
     return {
       participants: DIRECTORY.filter((u) => parts.has(u.id)).map(person),
-      matches: q ? DIRECTORY.filter((u) => u.eblid === q || variants.some((v) => u.displayName.toLowerCase().replace(/ё/g, "е").includes(v))).map(person) : [],
+      matches: q ? matches : [],
       users: DIRECTORY.filter((u) => (input.ids ?? []).includes(u.id)).map(person),
     };
+  }
+  /** Ещё люди мессенджера (тесты поиска: «Оксана» по основе «Сан»). */
+  extraPeople: Array<{ id: string; displayName: string; eblid: string; username?: string }> = [];
+
+  // ---------------------------------------------------------------- память (POST /api/bot/history)
+  /** Сервер без маршрута (старый) — 404. */
+  historyAvailable = true;
+  historyCalls: HistoryQuery[] = [];
+  /** Журнал изменений: когда изменено и createdAt изменённого (как Redis сервера). */
+  memlog: Array<{ conversationId: string; changedAt: number; at: number }> = [];
+  epoch = "epoch-1";
+  /** Часы журнала: строго растут (на сервере удаление записывается до следующей проверки — без совпадений в мс). */
+  private clock = 0;
+  private tick(): number {
+    this.clock = Math.max(Date.now(), this.clock + 1);
+    return this.clock;
+  }
+
+  private relevant(m: EbMessage, mode: "botchat" | "recent"): boolean {
+    return mode === "botchat" || m.isBot === true || m.senderId === BOT || this.addressed.has(m.id);
+  }
+
+  /** Как loadBotHistoryPage + botMemoryStatus сервера, в порядке создания. */
+  async history(grant: string, input: HistoryQuery): Promise<BotHistoryPage> {
+    if (!this.historyAvailable) throw new ApiError(404, "/api/bot/history", null, "HTTP 404 POST /api/bot/history");
+    const conversationId = this.convOf(grant);
+    const trigger = this.grantTrigger.get(grant);
+    if (trigger && this.all.get(trigger)?.deletedAt) throw new ApiError(409, "/api/bot/history", "BOT_TRIGGER_DELETED", "HTTP 409");
+    this.historyCalls.push({ ...input });
+    const checkedAt = this.tick();
+    let reset = false;
+    let changedFrom: string | null = null;
+    if (input.changesSince !== undefined && input.changesSince !== null) {
+      if (input.epoch !== this.epoch) reset = true;
+      else {
+        const ch = this.memlog.filter((c) => c.conversationId === conversationId && c.changedAt >= input.changesSince!);
+        if (ch.length) changedFrom = new Date(Math.min(...ch.map((c) => c.at))).toISOString();
+      }
+    }
+    const mode = CONVS[conversationId]?.kind === "bot" ? "botchat" : "recent";
+    const seqAll = [...this.all.values()].filter((m) => m.conversationId === conversationId);
+    let start = 0;
+    if (input.after) {
+      const idx = input.after.id ? seqAll.findIndex((m) => m.id === input.after!.id) : -1;
+      if (idx >= 0) start = idx + 1;
+      else {
+        const a = Date.parse(input.after.at);
+        start = seqAll.findIndex((m) => (input.after!.id ? Date.parse(m.createdAt) > a : Date.parse(m.createdAt) >= a));
+        if (start < 0) start = seqAll.length;
+      }
+    }
+    const limit = input.limit ?? 200;
+    const rest = seqAll.slice(start).filter((m) => !m.deletedAt && this.relevant(m, mode));
+    const page = limit > 0 ? rest.slice(0, limit) : [];
+    const messages: BotHistoryMessage[] = page
+      .filter((m) => {
+        if (!(m.isBot || m.senderId === BOT)) return true;
+        const t = triggerOf(m);
+        if (!t) return true;
+        const tm = this.all.get(t);
+        return !!tm && !tm.deletedAt && (mode === "botchat" || this.addressed.has(t));
+      })
+      .map((m) => ({ ...jobMessage(m), ...(triggerOf(m) ? { triggerId: triggerOf(m)! } : {}) }));
+    const last = page[page.length - 1];
+    return {
+      mode,
+      messages,
+      next: limit > 0 && rest.length > page.length && last ? { at: last.createdAt, id: last.id } : null,
+      memory: { epoch: this.epoch, checkedAt, reset, changedFrom },
+    };
+  }
+
+  /** Человек удалил сообщение («Удалить»): сервер пишет журнал, если бот мог его запомнить. */
+  deleteMessage(id: string): void {
+    const m = this.all.get(id);
+    if (!m) throw new Error(`нет сообщения ${id}`);
+    m.deletedAt = new Date().toISOString();
+    const mode = CONVS[m.conversationId]?.kind === "bot" ? "botchat" : "recent";
+    if (this.relevant(m, mode)) this.memlog.push({ conversationId: m.conversationId, changedAt: this.tick(), at: Date.parse(m.createdAt) });
   }
 }
 
@@ -159,6 +289,9 @@ export class FakeLlm implements LlmEngine {
   reply: (req: AnswerRequest) => Promise<Partial<AnswerResult>> | Partial<AnswerResult> = () => ({ text: "Ответ модели **жирный**." });
   matchCalls: Array<{ input: string; known: string[] }> = [];
   matchReply: string | null = null;
+  /** Сжатие памяти: по умолчанию сводка = прежняя + новые реплики (тесты ищут в ней факты). */
+  summarizeCalls: SummarizeRequest[] = [];
+  summarizeReply: ((req: SummarizeRequest) => Partial<SummarizeResult> | Promise<Partial<SummarizeResult>>) | null = null;
   async answer(req: AnswerRequest): Promise<AnswerResult> {
     this.calls.push(req);
     const r = await this.reply(req);
@@ -168,6 +301,16 @@ export class FakeLlm implements LlmEngine {
   async matchCharacter(input: string, known: string[]) {
     this.matchCalls.push({ input, known });
     return { character: this.matchReply, cost: { ...ZERO_COST, usd: 0.001, inputTokens: 100, models: [this.model] } };
+  }
+  async summarize(req: SummarizeRequest): Promise<SummarizeResult> {
+    this.summarizeCalls.push(req);
+    const r = (await this.summarizeReply?.(req)) ?? {};
+    return {
+      text: r.text ?? `${req.previous ? `${req.previous}\n` : ""}${req.transcript}`,
+      cost: r.cost ?? { ...ZERO_COST, usd: 0.002, inputTokens: 500, outputTokens: 100, models: ["claude-sonnet-5-5"] },
+      model: "claude-sonnet-5-5",
+      stop: r.stop ?? "end_turn",
+    };
   }
 }
 
@@ -184,7 +327,7 @@ export function msg(p: Partial<EbMessage> & { conversationId: string; senderId: 
   return {
     id: p.id ?? cuid(),
     type: p.type ?? "TEXT",
-    createdAt: new Date().toISOString(),
+    createdAt: nextAt(),
     replyToId: p.replyToId ?? null,
     attachments: p.attachments ?? [],
     ...p,
@@ -219,25 +362,6 @@ export interface Harness {
   deliver(m: EbMessage, over?: Partial<BotJob>): Promise<BotJob | null>;
 }
 
-/**
- * История задачи по правилам сервера (src/lib/systemBot.ts → loadBotHistory): «Чат с Еблушей» — последние
- * 60 сообщений чата; обычная беседа — только обращения к боту и его ответы за 30 минут. Без удалённых и
- * без триггера.
- */
-export function serverHistory(all: EbMessage[], m: EbMessage, kind: BotConversationKind, addressed: Set<string>): BotJobHistory {
-  const own = all.filter((x) => x.conversationId === m.conversationId && x.id !== m.id && !x.deletedAt);
-  if (kind === "bot") return { mode: "botchat", windowMs: null, messages: own.slice(-60).map(jobMessage) };
-  const since = Date.parse(m.createdAt) - 30 * 60_000;
-  return {
-    mode: "recent",
-    windowMs: 30 * 60_000,
-    messages: own
-      .filter((x) => (x.isBot || x.senderId === BOT || addressed.has(x.id)) && Date.parse(x.createdAt) >= since)
-      .slice(-40)
-      .map(jobMessage),
-  };
-}
-
 export const PNG_1x1 = Buffer.from(
   "89504e470d0a1a0a0000000d49484452000000400000003008060000000000000000",
   "hex"
@@ -249,16 +373,19 @@ export async function harness(
     modules?: BotModule[];
     llm?: FakeLlm | null;
     now?: () => number;
-    /** Сервер кладёт историю (контракт rev 2), как новый сервер; без этого — задача как у старого (rev 1). */
-    history?: boolean;
+    /** Сервер с памятью (контракт rev 3: есть POST /api/bot/history); без этого — задача как у старого (rev 1). */
+    memory?: boolean;
     /** API без people() вовсе (совсем старый клиент). */
     noPeopleApi?: boolean;
+    /** Общие «сервер» и хранилище (перезапуск бота: тот же сервер, та же SQLite). */
+    api?: FakeApi;
+    store?: Store;
   } = {}
 ): Promise<Harness> {
-  const api = new FakeApi();
+  const api = opts.api ?? new FakeApi();
   if (opts.noPeopleApi) (api as { people?: unknown }).people = undefined;
   const llm = opts.llm === undefined ? new FakeLlm() : opts.llm;
-  const store = new Store(":memory:");
+  const store = opts.store ?? new Store(":memory:");
   const registry = new Registry();
   for (const m of opts.modules ?? []) registry.add(m);
   const images: OutgoingImage[] = [];
@@ -281,7 +408,6 @@ export async function harness(
   });
   await bot.start();
   let grantSeq = 0;
-  const addressed = new Set<string>();
   return {
     bot,
     api,
@@ -289,10 +415,10 @@ export async function harness(
     store,
     images,
     async deliver(m: EbMessage, over: Partial<BotJob> = {}) {
-      api.history.set(m.id, m);
+      api.all.set(m.id, m);
       const conv = CONVS[m.conversationId];
       if (!conv) return null;
-      const parent = m.replyToId ? api.history.get(m.replyToId) : undefined;
+      const parent = m.replyToId ? api.all.get(m.replyToId) : undefined;
       const text = m.content ?? "";
       const via =
         conv.kind === "bot"
@@ -307,20 +433,22 @@ export async function harness(
                 ? "reply"
                 : null;
       if (!via) return null;
-      addressed.add(m.id);
+      api.addressed.add(m.id);
       const chain: BotJobMessage[] = [];
       let pid = m.replyToId ?? null;
       while (pid && chain.length < 11) {
-        const p = api.history.get(pid);
-        if (!p || p.conversationId !== m.conversationId) break;
+        const p = api.all.get(pid);
+        if (!p || p.conversationId !== m.conversationId || p.deletedAt) break;
         chain.unshift(jobMessage(p));
         pid = p.replyToId ?? null;
       }
-      const grant = `grant_${++grantSeq}_xxxxxxxxxxxxxxxx`;
+      const grant = `grant_${grantSeq++}_${Math.random().toString(36).slice(2)}_xxxxxxxx`;
       api.grants.set(grant, m.conversationId);
+      api.grantTrigger.set(grant, m.id);
       const t = now();
       const job: BotJob = {
         v: 1,
+        ...(opts.memory ? { rev: 3 } : {}),
         kind: "message",
         enqueuedAt: t,
         grant,
@@ -330,7 +458,6 @@ export async function harness(
         author: { id: m.senderId, displayName: m.sender?.displayName ?? NAMES[m.senderId] ?? null },
         message: jobMessage(m),
         chain,
-        ...(opts.history ? { rev: 2, history: serverHistory([...api.history.values()], m, conv.kind, addressed) } : {}),
         ...over,
       };
       await bot.handleJob(job);

@@ -61,7 +61,7 @@ async function setup(o: { agent?: FakeAgent; followups?: boolean; store?: AdminS
   h.store.link(ALICE, "IiApaCiOxa", { linkedBy: ALICE, verified: true, replaceOwn: true, force: false });
   const toolResults: Setup["toolResults"] = [];
   h.llm.reply = async (req) => {
-    const last = req.turns.at(-1)!.text.replace(/^[^:]+:\s*/, "");
+    const last = req.turns.at(-1)!.text.replace(/^⟦[^⟧]*⟧\n?/, "");
     if (/^(включи|перезапусти|сделай|поставь)/i.test(last)) {
       toolResults.push(await req.tools.run("admin_request", { text: last }));
       return { text: "Сейчас разберусь, что для этого нужно, — пришлю план." };

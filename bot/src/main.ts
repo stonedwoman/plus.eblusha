@@ -23,9 +23,12 @@ import type { BotModule } from "./modules/api";
 import type { LlmEngine } from "./llm/types";
 
 const DISPLAY_NAME = "Еблуша";
-const BIO = "Бот мессенджера. Позови в любой беседе: «Еблуша, …». Продолжай ответом на моё сообщение.";
-/** Прежнее описание (с «/eb»): его заменяем, чужое (заданное вручную) — не трогаем. */
-const OLD_BIOS = new Set(["Бот мессенджера. Позови в любой беседе: «Еблуша, …» или /eb. Продолжай ответом на моё сообщение."]);
+const BIO = "Бот мессенджера. Позови в любой беседе: «Еблуша, …». Наши разговоры я помню — отвечать на моё сообщение не обязательно.";
+/** Прежние описания (с «/eb», «продолжай ответом»): их заменяем, чужое (заданное вручную) — не трогаем. */
+const OLD_BIOS = new Set([
+  "Бот мессенджера. Позови в любой беседе: «Еблуша, …» или /eb. Продолжай ответом на моё сообщение.",
+  "Бот мессенджера. Позови в любой беседе: «Еблуша, …». Продолжай ответом на моё сообщение.",
+]);
 
 /** Имя, описание и аватар (фирменная «Б») — один раз, если их ещё нет. */
 async function ensureProfile(api: EblushaApi, log: Logger, assetsDir: string): Promise<void> {
@@ -67,7 +70,7 @@ export async function startBot(cfg: BotConfig, log: Logger, opts: StartOptions =
     opts.llm !== undefined
       ? opts.llm
       : cfg.anthropicApiKey
-        ? new ClaudeEngine(cfg, buildSystemPrompt(registry.prompts), log.child({ c: "llm" }))
+        ? new ClaudeEngine(cfg, buildSystemPrompt(registry.prompts, { memory: cfg.memoryTailTokens > 0 }), log.child({ c: "llm" }))
         : null;
   if (!llm) log.warn("llm.disabled", { reason: "ANTHROPIC_API_KEY не задан — отвечаю шаблонами" });
   let engine: LlmEngine | null = llm;

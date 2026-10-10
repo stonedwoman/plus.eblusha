@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { chooseEffort } from "../../src/core/bot";
 import type { BotModule, ChatCommand } from "../../src/modules/api";
 import { ApiError } from "../../src/api/eblusha";
-import { ALICE, BOB, BOT, DM_ALICE, DM_OWNER, GROUP, harness, msg, OWNER, PAIR, PNG_1x1 } from "./fakes";
+import { formatWhen } from "../../src/core/context";
+import { ALICE, BOB, BOT, DM_ALICE, DM_OWNER, GROUP, harness, msg, OWNER, PAIR, PNG_1x1, said, TZ } from "./fakes";
 
 test("вызов: typing → модель → ответ ответом на вопрос, разметка почищена", async () => {
   const h = await harness();
@@ -13,7 +14,7 @@ test("вызов: typing → модель → ответ ответом на в�
 
   assert.equal(h.llm.calls.length, 1);
   const call = h.llm.calls[0]!;
-  assert.deepEqual(call.turns, [{ role: "user", text: "Алиса: что такое Valheim?" }]);
+  assert.deepEqual(call.turns, [{ role: "user", text: said(q, "что такое Valheim?") }]);
   assert.match(call.contextNote, /группа «Кобаны»/);
   assert.match(call.contextNote, /Спрашивает: «Алиса»/);
   assert.equal(call.effort, "medium");
@@ -43,10 +44,11 @@ test("без обращения и не ответом боту — молчим
 
 test("«Чат с Еблушей»: без обращения — вопрос модели; личка двух людей без обращения — боту не достаётся", async () => {
   const h = await harness();
-  const job = await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "какая погода в Бухаресте?" }));
+  const qb = msg({ conversationId: DM_ALICE, senderId: ALICE, content: "какая погода в Бухаресте?" });
+  const job = await h.deliver(qb);
   assert.equal(job?.via, "botchat");
   assert.equal(h.llm.calls.length, 1);
-  assert.deepEqual(h.llm.calls[0]!.turns, [{ role: "user", text: "Алиса: какая погода в Бухаресте?" }]);
+  assert.deepEqual(h.llm.calls[0]!.turns, [{ role: "user", text: said(qb, "какая погода в Бухаресте?") }]);
   assert.match(h.llm.calls[0]!.contextNote, /«Чат с Еблушей» — ответ видит только этот человек/);
   assert.equal(h.api.sent[0]!.conversationId, DM_ALICE);
 
@@ -73,9 +75,9 @@ test("продолжение по цепочке ответов: история 
   await h.deliver(q2);
   assert.equal(h.llm.calls.length, 2);
   assert.deepEqual(h.llm.calls[1]!.turns, [
-    { role: "user", text: "Алиса: сколько ног у паука?" },
+    { role: "user", text: said(q1, "сколько ног у паука?") },
     { role: "assistant", text: "ответ №1 (1 реплик)" },
-    { role: "user", text: "Боб: а у краба?" },
+    { role: "user", text: said(q2, "а у краба?", `, в ответ на твоё сообщение от ${formatWhen(a1.createdAt, TZ)}`) },
   ]);
   assert.equal(h.api.sent[1]!.replyToId, q2.id);
 });

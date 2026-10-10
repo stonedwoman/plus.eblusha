@@ -33,6 +33,8 @@ export interface AnswerRequest {
    * вопрос в том же разговоре читает системный текст и историю из кэша. null/нет — без этой точки.
    */
   cacheAt?: number | null;
+  /** Срок этой точки кэша: "5m" (по умолчанию) или "1h" (BOT_MEMORY_CACHE_TTL). */
+  cacheTtl?: "5m" | "1h";
   /** Сведения о запросе для модели (время, чат, кто спрашивает): уходят системным сообщением. */
   contextNote: string;
   effort: Effort;
@@ -56,9 +58,36 @@ export interface AnswerResult {
   servedBy: string;
 }
 
+/** Сжатие памяти беседы (core/memory.ts): прежняя сводка + следующие по времени реплики → новая сводка. */
+export interface SummarizeRequest {
+  /** Прежняя сводка (пусто — первая). */
+  previous: string;
+  /** Новые реплики, уже в формате памяти («⟦Имя · дата⟧» и текст; ответы бота — «⟦Еблуша⟧»). */
+  transcript: string;
+  /** Ориентир длины сводки, символов. */
+  maxChars: number;
+  /** Вид беседы: в обычной — обращения разных людей к боту, в «Чате с Еблушей» — разговор одного человека. */
+  kind: "bot" | "dm" | "group";
+  signal: AbortSignal;
+}
+
+export interface SummarizeResult {
+  text: string;
+  cost: CostBreakdown;
+  /** Модель, которая сжимала (для учёта расходов). */
+  model: string;
+  /** end_turn — сводка готова; refusal / max_tokens — не годится (прежняя остаётся), но деньги учтены. */
+  stop: "end_turn" | "max_tokens" | "refusal";
+}
+
 export interface LlmEngine {
   readonly model: string;
   answer(req: AnswerRequest): Promise<AnswerResult>;
   /** Какого персонажа из списка человек имел в виду (null — никакого). */
   matchCharacter(input: string, known: string[], signal: AbortSignal): Promise<{ character: string | null; cost: CostBreakdown }>;
+  /**
+   * Сжать память беседы недорогой моделью (BOT_MEMORY_MODEL). Нет метода или модели — память без сводки
+   * (только свежий хвост). Ошибка API — исключение; отказ и обрыв — stop (прежняя сводка остаётся).
+   */
+  summarize?(req: SummarizeRequest): Promise<SummarizeResult>;
 }

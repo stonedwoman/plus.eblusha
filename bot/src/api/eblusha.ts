@@ -11,7 +11,7 @@
  * входит паролем заново.
  */
 import type { Logger } from "../log";
-import type { BotPeople, BotPerson, BotPostInput, EbMessage, UploadResult } from "./types";
+import { parseHistoryPage, type BotHistoryPage, type BotPeople, type BotPerson, type BotPostInput, type EbMessage, type UploadResult } from "./types";
 
 const AUTH_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -50,11 +50,24 @@ export interface ChatApi {
    * обращения, поиск среди всех по имени/логину/EBLID (query), имена по id (ids). Старый сервер — 404.
    */
   people?(grant: string, input: { query?: string; ids?: string[] }): Promise<BotPeople>;
+  /**
+   * Память бота (POST /api/bot/history, контракт rev 3): страница его разговоров в беседе обращения после
+   * курсора `after` и журнал изменений с changesSince. Старый сервер — 404 (бот туда и не ходит: rev < 3).
+   */
+  history?(grant: string, input: HistoryQuery): Promise<BotHistoryPage>;
   upload(data: Buffer, filename: string, mime: string): Promise<UploadResult>;
   /** Скачать вложение Еблуши (/api/files/…); thumb — серверное превью картинки. */
   fetchFile(url: string, opts?: { thumb?: boolean; maxBytes?: number }): Promise<{ data: Buffer; mime: string } | null>;
   /** id бота (известен после первого входа). */
   readonly userId: string | null;
+}
+
+export interface HistoryQuery {
+  after?: { at: string; id: string } | null;
+  /** 0..500; 0 — только журнал изменений. */
+  limit?: number;
+  changesSince?: number | null;
+  epoch?: string | null;
 }
 
 interface Session {
@@ -230,8 +243,22 @@ export class EblushaApi implements ChatApi {
           displayName: typeof x.displayName === "string" ? x.displayName : null,
           eblid: typeof x.eblid === "string" ? x.eblid : null,
           inConversation: x.inConversation === true,
+          ...(x.matchedBy === "name" || x.matchedBy === "username" || x.matchedBy === "eblid" ? { matchedBy: x.matchedBy } : {}),
         }));
-    return { participants: list(j.participants), matches: list(j.matches), users: list(j.users) };
+    return { participants: list(j.participants), matches: list(j.matches), users: list(j.users), truncated: j.truncated === true };
+  }
+
+  async history(grant: string, input: HistoryQuery): Promise<BotHistoryPage> {
+    const j = await this.request<unknown>("POST", "/api/bot/history", {
+      grant,
+      ...(input.after ? { after: { at: input.after.at, id: input.after.id } } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.changesSince !== undefined && input.changesSince !== null ? { changesSince: input.changesSince } : {}),
+      ...(input.epoch ? { epoch: input.epoch } : {}),
+    });
+    const page = parseHistoryPage(j);
+    if (!page) throw new ApiError(502, "/api/bot/history", "BAD_REPLY", "history: unexpected reply");
+    return page;
   }
 
   async upload(data: Buffer, filename: string, mime: string): Promise<UploadResult> {

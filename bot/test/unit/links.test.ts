@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { BotModule } from "../../src/modules/api";
-import { bestPeople, isSelfWord, personScore, resolvePerson } from "../../src/core/links";
+import { bestPeople, isSelfWord, mentionsCharacter, mentionsPerson, personScore, resolvePerson } from "../../src/core/links";
 import type { BotPerson } from "../../src/api/types";
 import { ALICE, BOB, DM_OWNER, GAMERS, GROUP, harness, msg, NAMES, OWNER, SANYA, SANYA2, type Harness } from "./fakes";
 
@@ -181,6 +181,61 @@ test("поиск человека: «я», оценка по имени/EBLID/о
   const none = resolvePerson("Вася", { participants: [sanya], matches: [], users: [] });
   assert.equal(none.kind, "none");
   // сервер нашёл по логину (имя другое) — единственный такой и берётся
-  const byLogin = resolvePerson("sanya_p", { participants: [], matches: [p("s9", "Александр", "9999")], users: [] });
+  const byLogin = resolvePerson("sanya_p", { participants: [], matches: [{ ...p("s9", "Александр", "9999"), matchedBy: "username" }], users: [] });
   assert.equal(byLogin.kind === "ok" && byLogin.person.id, "s9");
+  // а по «основе» слова («Саня» → «Сан» → «Оксана») — не человек: без переспроса не берём (ревью 2026-10-11)
+  const oksana = { ...p("ok", "Оксана Петрова", "5555"), matchedBy: "name" as const };
+  assert.equal(resolvePerson("Саня", { participants: [p("o", "Стон", "7001", true)], matches: [oksana], users: [] }).kind, "none");
+  assert.equal(resolvePerson("Сане", { participants: [], matches: [oksana], users: [] }).kind, "none");
+  // старый сервер без matchedBy — тоже не берём наугад
+  assert.equal(resolvePerson("sanya_p", { participants: [], matches: [p("s9", "Александр", "9999")], users: [] }).kind, "none");
+});
+
+test("упоминание в обращении: персонаж (похожие буквы, падеж), человек (имя в падеже, EBLID)", () => {
+  assert.ok(mentionsCharacter("Парасюха — это Саня", "IiApaCiOxa"));
+  assert.ok(mentionsCharacter("отвяжи Парасюху", "IiApaCiOxa"));
+  assert.ok(mentionsCharacter("привяжи Парасюхой к Сане", "IiApaCiOxa"));
+  assert.ok(mentionsCharacter("РомаH — это я", "РомаH"));
+  assert.ok(!mentionsCharacter("какая погода?", "IiApaCiOxa"));
+  assert.ok(!mentionsCharacter("а Петя что спрашивал?", "IiApaCiOxa"));
+  const sanya = { displayName: "Саня Иванов", eblid: "2222" };
+  assert.ok(mentionsPerson("отвяжи Саню Иванова", sanya));
+  assert.ok(mentionsPerson("второй, 2222", sanya));
+  assert.ok(!mentionsPerson("какая погода? 22222", sanya));
+});
+
+test("владелец: «Парасюха — это Саня» без такого человека и с «Оксаной» по основе — переспрос, а не привязка постороннего", async () => {
+  const h = await harness({ modules: [vh()] });
+  h.api.extraPeople = [{ id: "coksana0000000000000000001", displayName: "Оксана Петрова", eblid: "5555" }];
+  // сервер находит «Оксану» только по основе «Ксан» (из «Ксаню») — это не тот человек
+  const r = await ask(h, DM_OWNER, OWNER, "Парасюха — это Ксаня", { action: "link", character: "Парасюха", person: "Ксаню" });
+  assert.equal(r.result, "person_not_found");
+  assert.equal(h.store.getLinkOwner("IiApaCiOxa"), null, "посторонний не привязан");
+});
+
+test("владелец в группе: варианты людей не из беседы — без EBLID (в «Чате с Еблушей» — с ним)", async () => {
+  const h = await harness({ modules: [vh()] });
+  const r = await ask(h, GROUP, OWNER, "РомаH — это Саня", { action: "link", character: "РомаH", person: "Саня" });
+  assert.equal(r.result, "ambiguous_person");
+  assert.deepEqual(r.candidates, ["Саня Петров (не из этой беседы)", "Саня Иванов (не из этой беседы)"]);
+  assert.match(String(r.hint), /Чате с Еблушей/);
+  const g = await ask(h, GAMERS, OWNER, "РомаH — это Саня", { action: "link", character: "РомаH", person: "Саня" });
+  assert.equal(g.result, "linked", "в «Игроках» Саня Петров — участник, он и берётся");
+});
+
+test("владелец: задеть другого можно только прямой просьбой в обращении (или ответом на переспрос)", async () => {
+  const h = await harness({ modules: [vh()] });
+  await ask(h, GAMERS, OWNER, "Парасюха — это Саня", { action: "link", character: "Парасюха", person: "Саня" });
+  // в обращении про погоду модель «вспомнила» старую просьбу — инструмент не исполняет
+  const r = await ask(h, GROUP, OWNER, "какая погода?", { action: "link", character: "IiApaCiOxa", person: "Боб" });
+  assert.equal(r.result, "not_requested_now");
+  assert.deepEqual(h.store.getCharacters(SANYA), ["IiApaCiOxa"]);
+  const u = await ask(h, GROUP, OWNER, "что нового?", { action: "unlink", character: "IiApaCiOxa", person: "" });
+  assert.equal(u.result, "not_requested_now");
+  const u2 = await ask(h, GAMERS, OWNER, "что нового?", { action: "unlink", character: "", person: "Саня" });
+  assert.equal(u2.result, "not_requested_now");
+  assert.deepEqual(h.store.getCharacters(SANYA), ["IiApaCiOxa"]);
+  // себе — можно и без упоминания (никого не задевает), а свою привязку снять — тоже
+  const me = await ask(h, GROUP, OWNER, "запомни меня как Рому", { action: "link", character: "РомаH", person: "я" });
+  assert.equal(me.result, "linked");
 });
