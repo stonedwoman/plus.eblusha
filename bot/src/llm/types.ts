@@ -28,6 +28,11 @@ export interface ToolRuntime {
 
 export interface AnswerRequest {
   turns: LlmTurn[];
+  /**
+   * Индекс реплики в turns, на конце которой ставится точка кэша промпта (конец истории беседы): следующий
+   * вопрос в том же разговоре читает системный текст и историю из кэша. null/нет — без этой точки.
+   */
+  cacheAt?: number | null;
   /** Сведения о запросе для модели (время, чат, кто спрашивает): уходят системным сообщением. */
   contextNote: string;
   effort: Effort;

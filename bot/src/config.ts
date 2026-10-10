@@ -50,6 +50,18 @@ export interface BotConfig {
 
   /** Сколько сообщений цепочки ответов отдавать модели. */
   contextMaxMessages: number;
+  /**
+   * Контекст без цитирования (история из задачи, контракт rev 2): сколько сообщений истории отдавать
+   * модели. «Чат с Еблушей» — последние сообщения чата, обычная беседа — свои разговоры за окно.
+   * 0 — история выключена (только цепочка ответов, как раньше).
+   */
+  historyMaxMessages: number;
+  /** Бюджет истории, токенов (оценка: символы / 3). Старое отбрасывается первым. */
+  historyMaxTokens: number;
+  /** Длинный ответ бота в истории ужимается до стольких символов. */
+  historyBotChars: number;
+  /** Обычная беседа: окно «своих недавних разговоров», минут (сервер шлёт 30; бот может только сузить). */
+  recentWindowMin: number;
   /** Сколько поисков/чтений страниц за один ответ. */
   webSearchMaxUses: number;
   webFetchMaxUses: number;
@@ -125,6 +137,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     userDailyUsd: num(env, "BOT_USER_DAILY_USD", 2),
     requestMaxUsd: num(env, "BOT_REQUEST_MAX_USD", 1.5),
     contextMaxMessages: Math.max(1, Math.floor(num(env, "BOT_CONTEXT_MAX_MESSAGES", 12))),
+    historyMaxMessages: Math.floor(num(env, "BOT_HISTORY_MAX_MESSAGES", 40)),
+    historyMaxTokens: Math.floor(num(env, "BOT_HISTORY_MAX_TOKENS", 8000)),
+    historyBotChars: Math.max(200, Math.floor(num(env, "BOT_HISTORY_BOT_CHARS", 1500))),
+    recentWindowMin: Math.floor(num(env, "BOT_RECENT_WINDOW_MIN", 30)),
     webSearchMaxUses: Math.floor(num(env, "BOT_WEB_SEARCH_MAX_USES", 5)),
     webFetchMaxUses: Math.floor(num(env, "BOT_WEB_FETCH_MAX_USES", 4)),
     webFetchMaxContentTokens: Math.floor(num(env, "BOT_WEB_FETCH_MAX_CONTENT_TOKENS", 15000)),
@@ -158,5 +174,6 @@ export function describeConfig(c: BotConfig): Record<string, unknown> {
     userDailyUsd: c.userDailyUsd,
     modules: c.modules,
     groupPlayerData: c.groupPlayerData,
+    history: { maxMessages: c.historyMaxMessages, maxTokens: c.historyMaxTokens, botChars: c.historyBotChars, recentWindowMin: c.recentWindowMin },
   };
 }

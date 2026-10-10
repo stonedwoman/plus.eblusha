@@ -13,9 +13,11 @@
  *   3. детерминированные команды (встроенные и модулей) — с проверкой доступа; команды владельца —
  *      молчаливые синонимы: не владельцу и вне его «Чата с Еблушей» они не отказывают, а уходят дальше
  *      (свободной формой к модели);
- *   4. привязка ника свободной фразой;
- *   5. вопрос модели: лимиты → typing → цепочка ответов → Claude → разметка → ответ (+картинки),
- *      потом — то, что инструменты отложили на «после ответа» (план агента).
+ *   4. привязка ника свободной фразой (детерминированные формы «мой ник в игре …», «отвяжи меня»);
+ *   5. вопрос модели: лимиты → typing → контекст (история из задачи + цепочка ответов, core/context.ts)
+ *      → Claude → разметка → ответ (+картинки), потом — то, что инструменты отложили на «после ответа»
+ *      (план агента). Привязку персонажей к людям свободной фразой («Парасюха — это Саня», владелец —
+ *      любых людей, остальные — себя) делает модель инструментом character_link (core/links.ts).
  * Пишет бот только по разрешению из задачи (в беседу обращения) и в личный «Чат с Еблушей» человека
  * (уведомления владельцу). Журнал — без текста сообщений.
  */
@@ -40,11 +42,12 @@ import type {
 } from "../modules/api";
 import { Budget, budgetRefusalText, type CostBreakdown } from "./budget";
 import { builtinCommands, builtinTools } from "./builtins";
-import { chainToTurns, jobChain, loadMessageImages } from "./context";
+import { buildContext, loadMessageImages } from "./context";
 import { downloadImage as realDownloadImage, ImageFetchError, isWikiImageUrl } from "./images";
 import { invocationText, isThanksOrLaugh } from "./invoke";
 import { hasHttpsLink, safeUrl, sanitizeMarkdown, splitMessage } from "./markup";
-import { cleanNick, fuzzyCharacter, matchCharacter, parseLinkIntent, readableName, type LinkIntent } from "./nick";
+import { characterMarkup, cleanName, createLinkTool, LINK_TOOL_NAME, selfLinkNotice } from "./links";
+import { cleanNick, fuzzyCharacter, matchCharacter, parseLinkIntent, type LinkIntent } from "./nick";
 import { accessDeniedText, apiSchema, hasAccess, Registry, validateInput } from "./registry";
 import { utcDay, type Store } from "./store";
 
@@ -84,11 +87,6 @@ export function chooseEffort(text: string): Effort {
   }
   if (t.length <= 40 && !t.includes("?")) return "low";
   return "medium";
-}
-
-function cleanName(s: string | null | undefined): string {
-  const v = (s ?? "").replace(/[\r\n\t]+/g, " ").replace(/[«»"]/g, "").trim().slice(0, 40);
-  return v || "Участник";
 }
 
 class Semaphore {
@@ -142,6 +140,22 @@ export class Bot {
     this.commands = [...builtinCommands(this.budget, d.registry), ...d.registry.commands];
     // Встроенные инструменты модели (расход — владельцу свободной фразой «сколько потратили?»).
     for (const t of builtinTools(this.budget)) if (!d.registry.tools.has(t.name)) d.registry.tools.set(t.name, t);
+    // Привязка персонажей к людям свободной фразой (владелец — любых, остальные — себя): только если
+    // есть справочник персонажей (модуль Valheim). Набор инструментов постоянный — кэш промпта не рвётся.
+    const characters = d.registry.characters;
+    if (characters && !d.registry.tools.has(LINK_TOOL_NAME)) {
+      const api = d.api;
+      d.registry.tools.set(
+        LINK_TOOL_NAME,
+        createLinkTool({
+          store: d.store,
+          characters,
+          ...(api.people ? { people: (grant: string, input: { query?: string; ids?: string[] }) => api.people!(grant, input) } : {}),
+          notifyOwner: (text) => this.notifyOwner(text),
+          now: () => this.now(),
+        })
+      );
+    }
     this.fetchImage = d.downloadImage ?? ((u, o) => realDownloadImage(u, o));
   }
 
@@ -292,7 +306,7 @@ export class Bot {
     const parent = m.replyToId ? job.chain.find((x) => x.id === m.replyToId) ?? null : null;
     const requester = this.requesterOf(job.author.id, job.author.displayName ?? m.senderName);
     const text = invocationText(m.content);
-    log.info("message.addressed", { via: job.via, kind: conv.kind, len: text.length, chain: job.chain.length });
+    log.info("message.addressed", { via: job.via, kind: conv.kind, len: text.length, chain: job.chain.length, rev: job.rev ?? 1, hist: job.history?.messages.length ?? null });
 
     // 1. подтверждение команды владельца
     if (parent?.isBot && this.d.store.isConfirmationMessage(parent.id)) {
@@ -630,8 +644,7 @@ export class Bot {
     log.info("link.linked", { target: targetUserId, verified: r.verified, by: requester.userId });
     const who = targetUserId === requester.userId ? "ты" : targetName;
     // «Привязал: ты — IiApaCiOxa (Парасюха).» — в скобках как ник читается по-русски.
-    const reading = readableName(r.character);
-    const name = `**${r.character}**${reading ? ` (${reading})` : ""}`;
+    const name = characterMarkup(r.character);
     await reply(
       r.verified
         ? `Привязал: ${who} — ${name}.`
@@ -640,9 +653,7 @@ export class Bot {
     // Привязка — самозаявление, а она открывает данные игроков (места, склады). Владельцу —
     // короткое уведомление о каждой новой самопривязке, чтобы чужака можно было снять.
     if (!requester.isOwner && !before.includes(r.character)) {
-      await this.notifyOwner(
-        `Новая привязка: «${requester.displayName}» назвался персонажем ${name}${conv.kind === "group" ? ` (в группе «${cleanName(conv.title ?? "без названия")}»)` : ""}. Если это не он — «Еблуша, отвяжи персонажа ${r.character}».`
-      );
+      await this.notifyOwner(selfLinkNotice(requester.displayName, r.character, { kind: conv.kind, title: conv.title }));
     }
   }
 
@@ -668,7 +679,11 @@ export class Bot {
   }
 
   // ---------------------------------------------------------------- вопрос модели
-  private contextNote(conv: Conv, requester: Requester): string {
+  private contextNote(
+    conv: Conv,
+    requester: Requester,
+    hist: { mode: "botchat" | "recent" | null; count: number; windowMs: number | null } = { mode: null, count: 0, windowMs: null }
+  ): string {
     const d = new Date(this.now());
     const when = new Intl.DateTimeFormat("ru-RU", {
       timeZone: this.d.cfg.timeZone,
@@ -693,6 +708,13 @@ export class Bot {
         requester.characters.length
           ? `Персонажи Valheim этого человека: ${requester.characters.map((c) => `«${cleanName(c)}»`).join(", ")}.`
           : "Этот человек не привязан к персонажу Valheim (данные игроков ему недоступны, пока не привяжется фразой «Еблуша, мой ник в игре …»)."
+      );
+    }
+    if (hist.count > 0 && hist.mode === "botchat") {
+      lines.push(`Выше — недавняя история этого чата (${hist.count} сообщ.): разговор продолжается без цитирования. Отвечай на последнее сообщение с учётом сказанного раньше.`);
+    } else if (hist.count > 0 && hist.mode === "recent") {
+      lines.push(
+        `Выше — твои недавние разговоры в этой беседе (за последние ${Math.max(1, Math.round((hist.windowMs ?? this.d.cfg.recentWindowMin * 60_000) / 60_000))} мин): обращения к тебе от разных участников (перед каждым — имя) и твои ответы. Остальную переписку людей ты не видишь. Отвечай на последнее обращение — от «${requester.displayName}»; прошлое учитывай, если оно к нему относится.`
       );
     }
     return lines.join("\n");
@@ -792,18 +814,27 @@ export class Bot {
     const after: Array<(replyIds: string[]) => Promise<void>> = [];
     let replyIds: string[] = [];
     try {
-      const chain = jobChain(job, this.d.cfg.contextMaxMessages);
-      const turns = await chainToTurns(chain, {
+      const built = await buildContext(job, {
         nameOf: (msg) => cleanName(msg.senderName),
         loadImages: (msg) => loadMessageImages(this.d.api, msg).catch(() => []),
+        chainMax: this.d.cfg.contextMaxMessages,
+        limits: {
+          maxMessages: this.d.cfg.historyMaxMessages,
+          maxTokens: this.d.cfg.historyMaxTokens,
+          botChars: this.d.cfg.historyBotChars,
+          userChars: 2000,
+          recentWindowMs: Math.max(0, this.d.cfg.recentWindowMin) * 60_000,
+        },
       });
+      const turns = built.turns;
       if (turns.length === 0) return;
       const effort = chooseEffort(text);
       const ctx = this.toolContext(conv, requester, images, abort, log, { triggerId: m.id, grantExpiresAt: job.grantExpiresAt, after });
       const imageState = { count: 0, moduleData: false };
       const res = await this.d.llm.answer({
         turns,
-        contextNote: this.contextNote(conv, requester),
+        cacheAt: built.cacheAt,
+        contextNote: this.contextNote(conv, requester, { mode: built.historyMode, count: built.historyCount, windowMs: built.historyWindowMs }),
         effort,
         userKey: crypto.createHash("sha256").update(`eblusha-bot:${requester.userId}`).digest("hex").slice(0, 32),
         tools: this.toolRuntime(ctx, imageState),
@@ -857,6 +888,8 @@ export class Bot {
         in: res.cost.inputTokens,
         out: res.cost.outputTokens,
         cacheRead: res.cost.cacheReadTokens,
+        cacheWrite: res.cost.cacheWriteTokens,
+        hist: built.historyCount,
         searches: res.cost.webSearches,
         fetches: res.cost.webFetches,
         model: res.servedBy,

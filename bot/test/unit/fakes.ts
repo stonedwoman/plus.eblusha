@@ -3,7 +3,7 @@
  * ответов, разрешения), модель. Ни одного сетевого вызова.
  */
 import { ApiError, type ChatApi } from "../../src/api/eblusha";
-import type { BotConversationKind, BotJob, BotJobMessage, BotPostInput, EbMessage } from "../../src/api/types";
+import type { BotConversationKind, BotJob, BotJobHistory, BotJobMessage, BotPeople, BotPerson, BotPostInput, EbMessage } from "../../src/api/types";
 import { loadConfig, type BotConfig } from "../../src/config";
 import { Bot } from "../../src/core/bot";
 import { ZERO_COST, type CostBreakdown } from "../../src/core/budget";
@@ -26,14 +26,35 @@ export const DM_OWNER = "cdmowner000000000000000001";
 export const GROUP = "cgroup00000000000000000001";
 /** Личка Алисы и Боба (kind "dm"): ответ бота видят оба. */
 export const PAIR = "cpair000000000000000000001";
+/** Саня Петров (EBLID 1111) — участник группы «Игроки»; Саня Иванов (EBLID 2222) — ни в одной беседе с ботом. */
+export const SANYA = "csanya00000000000000000001";
+export const SANYA2 = "csanya00000000000000000002";
+/** Группа «Игроки»: владелец, Алиса, Саня Петров. */
+export const GAMERS = "cgamers0000000000000000001";
 
-export const NAMES: Record<string, string> = { [BOT]: "Еблуша", [OWNER]: "Стон", [ALICE]: "Алиса", [BOB]: "Боб" };
+export const NAMES: Record<string, string> = {
+  [BOT]: "Еблуша",
+  [OWNER]: "Стон",
+  [ALICE]: "Алиса",
+  [BOB]: "Боб",
+  [SANYA]: "Саня Петров",
+  [SANYA2]: "Саня Иванов",
+};
+/** Люди мессенджера (для POST /api/bot/people): имя и EBLID. */
+export const DIRECTORY: Array<{ id: string; displayName: string; eblid: string }> = [
+  { id: OWNER, displayName: "Стон", eblid: "7001" },
+  { id: ALICE, displayName: "Алиса", eblid: "7002" },
+  { id: BOB, displayName: "Боб", eblid: "7003" },
+  { id: SANYA, displayName: "Саня Петров", eblid: "1111" },
+  { id: SANYA2, displayName: "Саня Иванов", eblid: "2222" },
+];
 
 export const CONVS: Record<string, { kind: BotConversationKind; title: string | null; participantIds: string[] }> = {
   [DM_ALICE]: { kind: "bot", title: null, participantIds: [ALICE] },
   [DM_OWNER]: { kind: "bot", title: null, participantIds: [OWNER] },
   [GROUP]: { kind: "group", title: "Кобаны", participantIds: [ALICE, BOB, OWNER] },
   [PAIR]: { kind: "dm", title: null, participantIds: [ALICE, BOB] },
+  [GAMERS]: { kind: "group", title: "Игроки", participantIds: [OWNER, ALICE, SANYA] },
 };
 const BOT_CHAT_OF: Record<string, string> = { [ALICE]: DM_ALICE, [OWNER]: DM_OWNER };
 
@@ -112,6 +133,24 @@ export class FakeApi implements ChatApi {
   async fetchFile() {
     return null;
   }
+  /** Сервер без POST /api/bot/people (старый) — 404. */
+  peopleAvailable = true;
+  peopleCalls: Array<{ query?: string; ids?: string[] }> = [];
+  /** Как lookupBotPeople сервера: участники беседы, поиск по имени (и без последней буквы)/EBLID, имена по id. */
+  async people(grant: string, input: { query?: string; ids?: string[] }): Promise<BotPeople> {
+    if (!this.peopleAvailable) throw new ApiError(404, "/api/bot/people", null, "HTTP 404 POST /api/bot/people");
+    const conversationId = this.convOf(grant);
+    this.peopleCalls.push({ ...input });
+    const parts = new Set(CONVS[conversationId]?.participantIds ?? []);
+    const person = (u: { id: string; displayName: string; eblid: string }): BotPerson => ({ ...u, inConversation: parts.has(u.id) });
+    const q = (input.query ?? "").trim().toLowerCase().replace(/ё/g, "е");
+    const variants = q ? [q, ...q.split(/\s+/).filter((w) => w.length >= 4).map((w) => w.slice(0, Math.max(3, w.length - 2)))] : [];
+    return {
+      participants: DIRECTORY.filter((u) => parts.has(u.id)).map(person),
+      matches: q ? DIRECTORY.filter((u) => u.eblid === q || variants.some((v) => u.displayName.toLowerCase().replace(/ё/g, "е").includes(v))).map(person) : [],
+      users: DIRECTORY.filter((u) => (input.ids ?? []).includes(u.id)).map(person),
+    };
+  }
 }
 
 export class FakeLlm implements LlmEngine {
@@ -180,13 +219,44 @@ export interface Harness {
   deliver(m: EbMessage, over?: Partial<BotJob>): Promise<BotJob | null>;
 }
 
+/**
+ * История задачи по правилам сервера (src/lib/systemBot.ts → loadBotHistory): «Чат с Еблушей» — последние
+ * 60 сообщений чата; обычная беседа — только обращения к боту и его ответы за 30 минут. Без удалённых и
+ * без триггера.
+ */
+export function serverHistory(all: EbMessage[], m: EbMessage, kind: BotConversationKind, addressed: Set<string>): BotJobHistory {
+  const own = all.filter((x) => x.conversationId === m.conversationId && x.id !== m.id && !x.deletedAt);
+  if (kind === "bot") return { mode: "botchat", windowMs: null, messages: own.slice(-60).map(jobMessage) };
+  const since = Date.parse(m.createdAt) - 30 * 60_000;
+  return {
+    mode: "recent",
+    windowMs: 30 * 60_000,
+    messages: own
+      .filter((x) => (x.isBot || x.senderId === BOT || addressed.has(x.id)) && Date.parse(x.createdAt) >= since)
+      .slice(-40)
+      .map(jobMessage),
+  };
+}
+
 export const PNG_1x1 = Buffer.from(
   "89504e470d0a1a0a0000000d49484452000000400000003008060000000000000000",
   "hex"
 );
 
-export async function harness(opts: { cfg?: Partial<BotConfig>; modules?: BotModule[]; llm?: FakeLlm | null; now?: () => number } = {}): Promise<Harness> {
+export async function harness(
+  opts: {
+    cfg?: Partial<BotConfig>;
+    modules?: BotModule[];
+    llm?: FakeLlm | null;
+    now?: () => number;
+    /** Сервер кладёт историю (контракт rev 2), как новый сервер; без этого — задача как у старого (rev 1). */
+    history?: boolean;
+    /** API без people() вовсе (совсем старый клиент). */
+    noPeopleApi?: boolean;
+  } = {}
+): Promise<Harness> {
   const api = new FakeApi();
+  if (opts.noPeopleApi) (api as { people?: unknown }).people = undefined;
   const llm = opts.llm === undefined ? new FakeLlm() : opts.llm;
   const store = new Store(":memory:");
   const registry = new Registry();
@@ -211,6 +281,7 @@ export async function harness(opts: { cfg?: Partial<BotConfig>; modules?: BotMod
   });
   await bot.start();
   let grantSeq = 0;
+  const addressed = new Set<string>();
   return {
     bot,
     api,
@@ -236,6 +307,7 @@ export async function harness(opts: { cfg?: Partial<BotConfig>; modules?: BotMod
                 ? "reply"
                 : null;
       if (!via) return null;
+      addressed.add(m.id);
       const chain: BotJobMessage[] = [];
       let pid = m.replyToId ?? null;
       while (pid && chain.length < 11) {
@@ -258,6 +330,7 @@ export async function harness(opts: { cfg?: Partial<BotConfig>; modules?: BotMod
         author: { id: m.senderId, displayName: m.sender?.displayName ?? NAMES[m.senderId] ?? null },
         message: jobMessage(m),
         chain,
+        ...(opts.history ? { rev: 2, history: serverHistory([...api.history.values()], m, conv.kind, addressed) } : {}),
         ...over,
       };
       await bot.handleJob(job);

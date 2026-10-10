@@ -11,7 +11,7 @@
  * входит паролем заново.
  */
 import type { Logger } from "../log";
-import type { BotPostInput, EbMessage, UploadResult } from "./types";
+import type { BotPeople, BotPerson, BotPostInput, EbMessage, UploadResult } from "./types";
 
 const AUTH_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -45,6 +45,11 @@ export interface ChatApi {
    * жизни обычного разрешения (агент Valheim ждёт перезапуска). Брать, пока grant жив.
    */
   followup?(grant: string): Promise<{ grant: string; expiresAt: number }>;
+  /**
+   * Люди для привязки персонажей (POST /api/bot/people, по живому разрешению): участники беседы
+   * обращения, поиск среди всех по имени/логину/EBLID (query), имена по id (ids). Старый сервер — 404.
+   */
+  people?(grant: string, input: { query?: string; ids?: string[] }): Promise<BotPeople>;
   upload(data: Buffer, filename: string, mime: string): Promise<UploadResult>;
   /** Скачать вложение Еблуши (/api/files/…); thumb — серверное превью картинки. */
   fetchFile(url: string, opts?: { thumb?: boolean; maxBytes?: number }): Promise<{ data: Buffer; mime: string } | null>;
@@ -208,6 +213,25 @@ export class EblushaApi implements ChatApi {
   async followup(grant: string): Promise<{ grant: string; expiresAt: number }> {
     const j = await this.request<{ grant: string; expiresAt: number }>("POST", "/api/bot/followup", { grant });
     return { grant: j.grant, expiresAt: Number(j.expiresAt) };
+  }
+
+  async people(grant: string, input: { query?: string; ids?: string[] }): Promise<BotPeople> {
+    const j = await this.request<Partial<Record<keyof BotPeople, unknown>>>("POST", "/api/bot/people", {
+      grant,
+      ...(input.query ? { query: input.query.slice(0, 64) } : {}),
+      ...(input.ids?.length ? { ids: input.ids.slice(0, 20) } : {}),
+    });
+    const list = (v: unknown): BotPerson[] =>
+      (Array.isArray(v) ? v : [])
+        .map((x) => x as Record<string, unknown>)
+        .filter((x) => x && typeof x.id === "string" && x.id.length > 0)
+        .map((x) => ({
+          id: x.id as string,
+          displayName: typeof x.displayName === "string" ? x.displayName : null,
+          eblid: typeof x.eblid === "string" ? x.eblid : null,
+          inConversation: x.inConversation === true,
+        }));
+    return { participants: list(j.participants), matches: list(j.matches), users: list(j.users) };
   }
 
   async upload(data: Buffer, filename: string, mime: string): Promise<UploadResult> {

@@ -12,8 +12,11 @@
  * - Ручной цикл инструментов: pause_turn (сервер исчерпал свои итерации) продолжаем, refusal
  *   и обрезанный tool_use — не исполняем; цена считается по usage каждого шага, и при
  *   превышении потолка ответа цикл обрывается.
- * - Кэш: точка на системном блоке (1 час — инструменты+промпт общие для всех запросов) и
- *   автоматическая точка на хвосте (5 минут — шаги одного цикла читают прошлый префикс).
+ * - Кэш: точка на системном блоке (1 час — инструменты+промпт общие для всех запросов), точка на конце
+ *   истории беседы (AnswerRequest.cacheAt, 5 минут — следующий вопрос в том же разговоре читает историю
+ *   из кэша; ядро держит начало окна истории на месте, core/context.ts → stableStart) и автоматическая
+ *   точка на хвосте (5 минут — шаги одного цикла читают прошлый префикс). Итого 3 из 4 допустимых;
+ *   порядок TTL — сначала 1 час, потом 5 минут, как требует API.
  */
 import Anthropic from "@anthropic-ai/sdk";
 import type {
@@ -33,16 +36,19 @@ import type { AnswerRequest, AnswerResult, LlmEngine, LlmTurn } from "./types";
 
 export const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
-export function turnsToMessages(turns: LlmTurn[], contextNote: string): BetaMessageParam[] {
+export function turnsToMessages(turns: LlmTurn[], contextNote: string, cacheAt: number | null = null): BetaMessageParam[] {
   const msgs: BetaMessageParam[] = [];
-  for (const t of turns) {
+  // Точка кэша на последней реплике — бессмысленна (там и так автоматическая) и запрещена с другим TTL.
+  const cacheIdx = cacheAt !== null && cacheAt >= 0 && cacheAt < turns.length - 1 ? cacheAt : -1;
+  for (const [i, t] of turns.entries()) {
     const content: BetaContentBlockParam[] = [];
     if (t.role === "user") {
       for (const img of t.images ?? []) {
         content.push({ type: "image", source: { type: "base64", media_type: img.mime, data: img.data.toString("base64") } });
       }
     }
-    content.push({ type: "text", text: t.text.trim() || (t.role === "user" ? "(пустое сообщение)" : "…") });
+    const text = t.text.trim() || (t.role === "user" ? "(пустое сообщение)" : "…");
+    content.push(i === cacheIdx ? { type: "text", text, cache_control: { type: "ephemeral" } } : { type: "text", text });
     const prev = msgs[msgs.length - 1];
     if (prev && prev.role === t.role && Array.isArray(prev.content)) {
       prev.content.push(...content);
@@ -181,7 +187,7 @@ export class ClaudeEngine implements LlmEngine {
         })
       ),
     ];
-    const messages = turnsToMessages(req.turns, req.contextNote);
+    const messages = turnsToMessages(req.turns, req.contextNote, req.cacheAt ?? null);
     let cost: CostBreakdown = ZERO_COST;
     let jsonRetries = 0;
     let servedBy = this.model;

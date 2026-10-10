@@ -233,6 +233,36 @@ test("история: одинаковые роли склеиваются, на
   assert.throws(() => turnsToMessages([{ role: "assistant", text: "x" }], ""));
 });
 
+test("точка кэша на конце истории: на нужном блоке, не на последней реплике; в запросе — 3 точки, сначала 1 час", async () => {
+  const turns = [
+    { role: "user" as const, text: "Алиса: погода в Сиднее?" },
+    { role: "assistant" as const, text: "+18." },
+    { role: "user" as const, text: "Боб: просто вопрос без ответа" },
+    { role: "user" as const, text: "Боб: а в Мельбурне?" },
+  ];
+  // история кончается репликой человека — склеивается с вопросом в одно сообщение, точка — на её блоке
+  const msgs = turnsToMessages(turns, "контекст", 2);
+  assert.deepEqual(msgs.map((m) => m.role), ["user", "assistant", "user", "system"]);
+  assert.deepEqual(msgs[2]!.content, [
+    { type: "text", text: "Боб: просто вопрос без ответа", cache_control: { type: "ephemeral" } },
+    { type: "text", text: "Боб: а в Мельбурне?" },
+  ]);
+  const plain = JSON.stringify(turnsToMessages(turns, "контекст"));
+  assert.ok(!plain.includes("cache_control"), "без истории — без точки");
+  assert.ok(!JSON.stringify(turnsToMessages(turns, "к", 3)).includes("cache_control"), "на последней реплике точки нет (там автоматическая)");
+  assert.ok(!JSON.stringify(turnsToMessages(turns, "к", 9)).includes("cache_control"));
+
+  const { client, calls } = fakeClient([
+    { model: "claude-opus-5-5", stop_reason: "end_turn", content: [{ type: "text", text: "+15.", citations: null }], usage: usage() },
+  ]);
+  const eng = new ClaudeEngine(cfg, "СИСТЕМА", silentLogger, client);
+  await eng.answer({ ...req(tools()), turns, cacheAt: 1 });
+  const p = calls[0]!;
+  const marks = JSON.stringify(p).match(/cache_control/g)?.length ?? 0;
+  assert.equal(marks, 3, "система (1 ч) + конец истории + автоматическая на хвосте");
+  assert.deepEqual(p.messages[1].content, [{ type: "text", text: "+18.", cache_control: { type: "ephemeral" } }]);
+});
+
 test("сопоставление ника моделью: строгий JSON, только из списка", async () => {
   const { client, calls } = fakeClient([
     { model: "claude-opus-5-5", stop_reason: "end_turn", content: [{ type: "text", text: "{\"character\":\"РомаH\"}" }], usage: usage(300, 20) },
