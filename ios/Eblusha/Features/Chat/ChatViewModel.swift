@@ -150,6 +150,12 @@ final class ChatViewModel: ObservableObject {
         /// Ключ этого секретного чата сменился (автоматически, по пакету проверенного
         /// участника — решение владельца). Не молча: плашка над лентой, как тост на вебе.
         var secretKeyRotated = false
+        // --- Карточки бота (Core/Cards, ChatViewModelCards.swift) ---
+        /// Идущее действие карточки: id сообщения → id действия (кнопка — «крутилка»).
+        var cardBusy: [String: String] = [:]
+        /// Выбор спросившего на карточке «поделиться перепиской» до нажатия «Поделиться»:
+        /// id сообщения → период и галка. Здесь, а не в ячейке: ячейки ленты переиспользуются.
+        var shareSelections: [String: ShareSelection] = [:]
     }
 
     @Published var ui = UiState()
@@ -158,8 +164,10 @@ final class ChatViewModel: ObservableObject {
     let realtime: RealtimeClient
     let conversationId: String
 
-    /// Кто мы — нужно вью для запоминания выбранных реакций.
-    var currentUserId: String? { repo.currentUserId() }
+    /// Кто мы — нужно вью для запоминания выбранных реакций и правам карточек бота.
+    var currentUserId: String? { viewerIdOverride ?? repo.currentUserId() }
+    /// Зритель без входа — только DEBUG-стенды карточек (BotCardsDemo).
+    var viewerIdOverride: String?
 
     /// Порядок ленты: по времени, а при совпадении — по id. Без тай-брейка сортировка
     /// пачки одновременных сообщений (альбом, системные строки звонка) не воспроизводима,
@@ -232,6 +240,12 @@ final class ChatViewModel: ObservableObject {
     /// Сторож ожидания ключей: по его срабатыванию экран признаёт, что ключи не доехали
     /// (веб-паритет). Хранится, чтобы приход ключа его отменял, а не гасил плашку задним числом.
     var secretKeysWatchdog: Task<Void, Never>?
+
+    // --- Карточки бота (логика — в ChatViewModelCards.swift) ---
+    /// Подтверждённое сервером сообщение-карточка на время оптимистичного вида: сбой вернёт его.
+    var cardConfirmed: [String: Message] = [:]
+    /// Подмена транспорта действий карточек: DEBUG-стенд отвечает «как сервер» без сети.
+    var cardTransportOverride: ((_ messageId: String, _ action: String, _ input: JSONValue?) async -> CardActOutcome)?
 
     static let pageSize = 80 // веб MESSAGES_PAGE_SIZE
     // >10 МБ уходит чанками (веб-паритет). Потолок — РОВНО серверный (multer limits.fileSize
@@ -371,7 +385,14 @@ final class ChatViewModel: ObservableObject {
             guard cid == conversationId, !secretMode else { return }
             appendRealtime(message)
 
-        case .messageUpdate(let cid, _), .messageReaction(let cid, _):
+        case .messageUpdate(let cid, let messageId, let info):
+            guard cid == conversationId, !secretMode else { return }
+            // Карточка бота меняется на месте, без перечитывания ленты (SPEC-share §2.4);
+            // остальное (правка, удаление, превью) — как раньше, тихим перечитыванием.
+            if applyMessageUpdate(messageId: messageId, info: info) { return }
+            scheduleReload()
+
+        case .messageReaction(let cid, _):
             guard cid == conversationId, !secretMode else { return }
             scheduleReload()
 
@@ -430,7 +451,9 @@ final class ChatViewModel: ObservableObject {
     private func applyPageOne(_ page: MessagesPage) {
         dropEchoedOutgoing(page.messages)
         var seen = Set<String>()
-        let merged = (page.messages + ui.messages)
+        // Карточка бота, чей `rev` на экране новее страницы (сокет обогнал REST), остаётся.
+        let fresh = BotCardRevision.merge(page: page.messages, existing: ui.messages)
+        let merged = (fresh + ui.messages)
             .filter { seen.insert($0.id).inserted }
             .sorted(by: Self.olderFirst)
         // Якорь считаем по ЭТОМУ списку и до присваивания: лента должна увидеть разделитель
@@ -526,7 +549,8 @@ final class ChatViewModel: ObservableObject {
         case .success(let page):
             pagedBack = true
             var seen = Set<String>()
-            let merged = (page.messages + ui.messages)
+            let fresh = BotCardRevision.merge(page: page.messages, existing: ui.messages)
+            let merged = (fresh + ui.messages)
                 .filter { seen.insert($0.id).inserted }
                 .sorted(by: Self.olderFirst)
             // Флаг выставляем В ТОМ ЖЕ обновлении, что и сами сообщения: лента читает его,
@@ -698,6 +722,15 @@ final class ChatViewModel: ObservableObject {
         guard !secretMode, message.isBot, !Self.isOutgoingId(message.id) else { return }
         ui.replyingTo = [message]
         ui.clarifyToken += 1
+    }
+
+    /// «Подумай лучше» под ответом бота: СРАЗУ уходит ответом на этот ответ (без нового API) —
+    /// бот возьмёт исходный вопрос и ответит самой мощной моделью (ThinkBetter).
+    func thinkBetter(_ message: Message) {
+        guard !secretMode, message.isBot, !Self.isOutgoingId(message.id) else { return }
+        let text = ThinkBetter.requestText(inBotChat: ui.isBotChat)
+        // В «Чате с Еблушей» всё и так боту, а botAsk:false там отключил бы его — ключа не кладём.
+        sendCloudText(text, reply: [message], botAsk: ui.isBotChat ? nil : true)
     }
 
     /// Облачная отправка текста: оптимистичный пузырь сразу, запрос — в очередь по порядку.

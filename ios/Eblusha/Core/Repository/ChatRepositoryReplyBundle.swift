@@ -7,7 +7,8 @@ import Foundation
 // preview (обрезка до 420) / createdAt (ISO, только когда известен).
 //
 // Приватные поля ChatRepository (api, session) из другого файла недоступны — extension
-// берёт тот же APIClient через AppContainer.shared (это ровно тот объект, что внутри),
+// берёт тот же APIClient через `apiClient` (раньше через AppContainer.shared: в приложении это
+// тот же объект, но в тестах он ходил бы в настоящую сеть мимо подменного транспорта),
 // а маппинг DTO → домен идёт через internal mapMessage.
 
 extension ChatRepository {
@@ -25,7 +26,7 @@ extension ChatRepository {
         botAsk: Bool? = nil
     ) async -> ApiResult<Message> {
         await safeApiCall {
-            let response: SendMessageResponse = try await AppContainer.shared.api.post(
+            let response: SendMessageResponse = try await apiClient.post(
                 "conversations/send",
                 body: SendMessageRequest(
                     conversationId: conversationId,

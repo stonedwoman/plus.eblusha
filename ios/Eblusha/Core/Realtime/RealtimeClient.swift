@@ -178,8 +178,8 @@ final class RealtimeClient: ObservableObject {
         bind(socket, "message:notify", MessageEventPayload.self) {
             .messageNotify(conversationId: $0.conversationId, messageId: $0.messageId, senderId: $0.senderId, message: $0.message)
         }
-        bind(socket, "message:update", MessageEventPayload.self) {
-            .messageUpdate(conversationId: $0.conversationId, messageId: $0.messageId)
+        bind(socket, "message:update", MessageUpdatePayload.self) {
+            .messageUpdate(conversationId: $0.conversationId, messageId: $0.messageId, info: $0.info)
         }
         bind(socket, "message:reaction", MessageEventPayload.self) {
             .messageReaction(conversationId: $0.conversationId, messageId: $0.messageId)

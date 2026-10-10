@@ -227,7 +227,7 @@ struct Message: Identifiable, Equatable {
     /// Сообщение системного бота «Еблуша» (серверный isBot, не metadata). Отправитель — не
     /// участник беседы: имя и вид берутся отсюда, а не из списка участников.
     var isBot = false
-    /// `metadata.bot.kind`: answer | command | notice | confirm | welcome (nil — не бот).
+    /// `metadata.bot.kind`: answer | command | notice | confirm | welcome | card (nil — не бот).
     var botKind: String?
     /// `metadata.bot.triggerMessageId`: на какое обращение ответ. Длинный ответ бот шлёт
     /// частями — у всех частей одно обращение, по нему части собираются в один ответ.
@@ -237,4 +237,11 @@ struct Message: Identifiable, Equatable {
     var botAskerId: String?
     /// Сервер пометил сообщение как обращение к боту (`metadata.botAsk`).
     var botAsk = false
+    /// Карточка бота (`metadata.bot.kind == "card"` + `metadata.card`, Core/Cards): таймер обещания,
+    /// «поделиться перепиской». Рисуется вместо текста, если `renderableCard` не nil; иначе
+    /// `content` — запасной текст сервера.
+    var card: BotCard?
+    /// `metadata.bot.depth`: "deep" — ответ «Подумай лучше» (самая мощная модель); под ним
+    /// кнопки «Подумай лучше» уже нет.
+    var botDepth: String?
 }
