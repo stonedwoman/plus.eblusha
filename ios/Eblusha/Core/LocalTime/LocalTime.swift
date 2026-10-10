@@ -124,9 +124,17 @@ final class PeerLocalTimeStore: ObservableObject {
 
     @Published private(set) var times: [String: LocalTimeInfo] = [:]
 
-    /// nil — убрать (не собеседник по 1:1, человек скрыл время, пояс неизвестен).
-    func set(userId: String, _ info: LocalTimeInfo?) {
+    /// Насколько свежо знание о собеседнике: момент НАЧАЛА запроса (список бесед, GET /users/:id/local-time) или
+    /// приход события. Ответ на запрос, ушедший раньше события `localtime:update`, событие не перетирает: иначе
+    /// собеседник скрыл время, событие убрало строку, а запоздавший список вернул бы её (как Android, ПК и веб).
+    private var asOf: [String: Date] = [:]
+
+    /// nil — убрать (не собеседник по 1:1, человек скрыл время, пояс неизвестен). `at` — когда это стало известно
+    /// (для ответа на запрос — момент начала запроса).
+    func set(userId: String, _ info: LocalTimeInfo?, asOf at: Date = Date()) {
         onMain {
+            if let known = self.asOf[userId], known > at { return }
+            self.asOf[userId] = at
             if let info {
                 if self.times[userId] != info { self.times[userId] = info }
             } else if self.times[userId] != nil {
@@ -135,12 +143,14 @@ final class PeerLocalTimeStore: ObservableObject {
         }
     }
 
-    /// Пачка из списка бесед: только те собеседники, о ком сервер вообще что-то сказал.
-    func apply(_ batch: [String: LocalTimeInfo?]) {
+    /// Пачка из списка бесед: только те собеседники, о ком сервер вообще что-то сказал. `at` — момент начала запроса.
+    func apply(_ batch: [String: LocalTimeInfo?], asOf at: Date = Date()) {
         guard !batch.isEmpty else { return }
         onMain {
             var next = self.times
             for (userId, info) in batch {
+                if let known = self.asOf[userId], known > at { continue }
+                self.asOf[userId] = at
                 if let info { next[userId] = info } else { next.removeValue(forKey: userId) }
             }
             if next != self.times { self.times = next }
@@ -149,6 +159,7 @@ final class PeerLocalTimeStore: ObservableObject {
 
     func clear() {
         onMain {
+            self.asOf = [:]
             if !self.times.isEmpty { self.times = [:] }
         }
     }

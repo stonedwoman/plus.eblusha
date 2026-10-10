@@ -195,6 +195,26 @@ final class LocalTimeDecodingTests: XCTestCase {
         store.set(userId: "p2", nil)
         XCTAssertTrue(store.times.isEmpty)
     }
+
+    /// Ответ на запрос, ушедший ДО события, событие не перетирает (как Android, ПК и веб): собеседник скрыл
+    /// время — событие убрало строку — запоздавший список бесед её не возвращает. Запрос, ушедший ПОСЛЕ, — новее.
+    func testStoreOlderResponseDoesNotOverwriteNewerEvent() {
+        let store = PeerLocalTimeStore()
+        let info = LocalTimeInfo(timeZone: "Asia/Krasnoyarsk", city: "Красноярск", offsetMinutes: 420)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        store.set(userId: "p", info, asOf: t0)
+        let listRequested = t0.addingTimeInterval(1)
+        store.set(userId: "p", nil, asOf: t0.addingTimeInterval(2)) // событие: скрыл время
+        store.apply(["p": .some(info)], asOf: listRequested)        // запоздавший список
+        XCTAssertNil(store.times["p"])
+        store.set(userId: "p", info, asOf: listRequested)           // запоздавший GET — тоже старее
+        XCTAssertNil(store.times["p"])
+        store.apply(["p": .some(info)], asOf: t0.addingTimeInterval(3)) // свежий список — новее события
+        XCTAssertEqual(store.times["p"], info)
+        store.clear()
+        store.set(userId: "p", info, asOf: t0)                      // после выхода память о свежести сброшена
+        XCTAssertEqual(store.times["p"], info)
+    }
 }
 
 // MARK: - Своя настройка и отчёт о поясе

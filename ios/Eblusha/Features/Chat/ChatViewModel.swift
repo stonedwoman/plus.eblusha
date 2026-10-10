@@ -1685,11 +1685,13 @@ final class ChatViewModel: ObservableObject {
     /// В группах строки нет — и запроса тоже.
     func refreshPeerLocalTime() { // internal: зовёт и секретная ветка
         guard !ui.isGroup, let peer = ui.peerUserId else { return }
+        // Момент начала запроса: событие, пришедшее, пока запрос летел, новее ответа (PeerLocalTimeStore.asOf).
+        let requestedAt = Date()
         Task {
             // Сбой (старый сервер без ручки, нет сети) строку не трогает — остаётся то, что
             // пришло со списком бесед или событием.
             if case .success(let info) = await repo.peerLocalTime(peer) {
-                PeerLocalTimeStore.shared.set(userId: peer, info)
+                PeerLocalTimeStore.shared.set(userId: peer, info, asOf: requestedAt)
             }
         }
     }

@@ -49,6 +49,8 @@ final class ChatRepository {
     func listConversations() async -> ApiResult<[Conversation]> {
         await safeApiCall {
             let me = session.currentUserId()
+            // Момент начала запроса: событие localtime:update, пришедшее, пока он летел, новее ответа.
+            let requestedAt = Date()
             let response: ConversationsResponse = try await api.get("conversations")
             let items = response.conversations
             for item in items {
@@ -73,7 +75,7 @@ final class ChatRepository {
                     }
                 }
             }
-            PeerLocalTimeStore.shared.apply(Self.peerLocalTimes(items.map(\.conversation), meId: me))
+            PeerLocalTimeStore.shared.apply(Self.peerLocalTimes(items.map(\.conversation), meId: me), asOf: requestedAt)
             let list = Self.sortedByFreshness(
                 items.map { toDomain($0.conversation, meId: me, unreadCount: $0.unreadCount) }
             )
