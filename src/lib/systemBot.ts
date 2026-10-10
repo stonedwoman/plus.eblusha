@@ -337,6 +337,8 @@ export async function createBotMessage(opts: {
   attachments?: BotMessageAttachmentInput[];
   kind: BotMessageKind;
   triggerMessageId?: string | null;
+  /** Автор обращения, по разрешению которого написан ответ (grant.authorId): ему можно удалить этот ответ. */
+  askerId?: string | null;
   linkPreview?: boolean;
 }) {
   const attachments = opts.attachments ?? [];
@@ -349,7 +351,12 @@ export async function createBotMessage(opts: {
       content: opts.content ?? null,
       replyToId: opts.replyToId ?? null,
       metadata: {
-        bot: { v: 1, kind: opts.kind, ...(opts.triggerMessageId ? { triggerMessageId: opts.triggerMessageId } : {}) },
+        bot: {
+          v: 1,
+          kind: opts.kind,
+          ...(opts.triggerMessageId ? { triggerMessageId: opts.triggerMessageId } : {}),
+          ...(opts.askerId ? { askerId: opts.askerId } : {}),
+        },
       } as Prisma.InputJsonValue,
       ...(attachments.length
         ? {
@@ -509,6 +516,48 @@ export function botTriggerOf(metadata: unknown): string | null {
   if (!b || typeof b !== "object" || Array.isArray(b)) return null;
   const t = (b as Record<string, unknown>).triggerMessageId;
   return typeof t === "string" && t.length > 0 ? t : null;
+}
+
+/** metadata.bot.askerId сообщения бота (автор обращения, на которое это ответ) или null — у старых ответов его нет. */
+export function botAskerOf(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const b = (metadata as Record<string, unknown>).bot;
+  if (!b || typeof b !== "object" || Array.isArray(b)) return null;
+  const a = (b as Record<string, unknown>).askerId;
+  return typeof a === "string" && a.length > 0 ? a : null;
+}
+
+/**
+ * Может ли `userId` удалить ЧУЖОЕ для него сообщение — ответ бота (удаление для всех, как своё).
+ * Да, если сообщение — не удалённое сообщение системного бота в обычной (не секретной) беседе,
+ * где `userId` участник, и:
+ *  - беседа — «Чат с Еблушей» (личка человека и бота): любое сообщение бота удаляет её человек-владелец;
+ *  - иначе — тот, кто спросил: `metadata.bot.askerId` (если сервер его положил — решает только он;
+ *    у отчёта агента Valheim это подтвердивший «да»), а у старых ответов без него — автор обращения
+ *    `metadata.bot.triggerMessageId` в этой же беседе (senderId у удалённого обращения остаётся).
+ * Сообщения людей и чужие пометки isBot сюда не попадают: false.
+ */
+export async function canDeleteBotMessage(
+  msg: { conversationId: string; senderId: string | null; isBot: boolean; metadata: unknown; deletedAt: Date | null },
+  userId: string,
+): Promise<boolean> {
+  if (!msg.isBot || msg.deletedAt || !msg.senderId) return false;
+  const bot = await getSystemBot();
+  if (!bot || bot.id !== msg.senderId || bot.id === userId) return false;
+  const conv = await prisma.conversation.findUnique({
+    where: { id: msg.conversationId },
+    select: { isGroup: true, type: true, isSecret: true, participants: { select: { userId: true } } },
+  });
+  if (!conv || conv.type === "SECRET" || conv.isSecret) return false;
+  const participantIds = conv.participants.map((p) => p.userId);
+  if (!participantIds.includes(userId)) return false;
+  if (isBotChatShape(conv, participantIds, bot.id)) return true;
+  const asker = botAskerOf(msg.metadata);
+  if (asker) return asker === userId;
+  const trigger = botTriggerOf(msg.metadata);
+  if (!trigger) return false;
+  const t = await prisma.message.findUnique({ where: { id: trigger }, select: { conversationId: true, senderId: true } });
+  return Boolean(t && t.conversationId === msg.conversationId && t.senderId === userId);
 }
 
 /** Части одного ответа бота пишутся, пока живо разрешение; окно поиска частей — с запасом. */

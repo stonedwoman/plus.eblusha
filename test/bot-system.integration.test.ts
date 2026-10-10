@@ -252,7 +252,7 @@ async function main() {
       assert.equal(answer.sender.displayName, "Еблуша");
       assert.equal(answer.replyTo.id, q1.id);
       assert.equal(answer.replyTo.isBot, false);
-      assert.deepEqual(answer.metadata.bot, { v: 1, kind: "answer", triggerMessageId: q1.id });
+      assert.deepEqual(answer.metadata.bot, { v: 1, kind: "answer", triggerMessageId: q1.id, askerId: A.id });
       await sleep(300);
       const n = eventsOf(sA, "message:new", (p) => p.messageId === answer.id);
       assert.equal(n.length, 1, "в комнату беседы");

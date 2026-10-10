@@ -9,6 +9,8 @@ import { getIO } from "../realtime/socket";
 import { enqueueLinkPreview } from "../jobs/queue";
 import { rateLimit } from "../middlewares/rateLimit";
 import { scheduleReadSync } from "../push/readSync";
+import logger from "../config/logger";
+import { canDeleteBotMessage } from "../lib/systemBot";
 import {
   isSecretConversation,
   logSecretCloudWriteBlocked,
@@ -327,7 +329,17 @@ router.post("/delete", async (req, res) => {
 
   const msg = await prisma.message.findUnique({ where: { id: messageId } });
   if (!msg) return res.status(404).json({ message: "Not found" });
-  if (msg.senderId !== userId) return res.status(403).json({ message: "Forbidden" });
+  if (msg.senderId !== userId) {
+    // Ответ бота — не «своё» сообщение, но его может удалить тот, кто спросил, а в «Чате с Еблушей» — его
+    // владелец (canDeleteBotMessage). Уже удалённый ответ бота участнику беседы — тот же успех (два устройства).
+    if (!(await canDeleteBotMessage(msg, userId))) {
+      if (msg.isBot && msg.deletedAt && (await isConversationMember(msg.conversationId, userId))) {
+        return res.json({ success: true });
+      }
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    logger.info({ messageId, conversationId: msg.conversationId, userId }, "bot: reply deleted by asker/owner");
+  }
   // Удаление в секретке разрешено: оно обнуляет content/metadata и сносит вложения и реакции,
   // то есть только уменьшает объём открытых данных. Облачная строка, оказавшаяся в секретке
   // (легаси/записанная до S1), отправитель так может стереть (lib/secretLatch).

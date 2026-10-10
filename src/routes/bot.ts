@@ -190,6 +190,7 @@ router.post("/messages", requireSystemBot, async (req, res) => {
 
   let conversationId: string;
   let triggerMessageId: string | null = null;
+  let askerId: string | null = null;
   if (b.grant) {
     const g = await grantOr410(res, b.grant);
     if (!g) return;
@@ -201,6 +202,7 @@ router.post("/messages", requireSystemBot, async (req, res) => {
     }
     conversationId = g.conversationId;
     triggerMessageId = g.triggerMessageId;
+    askerId = g.authorId;
   } else {
     const chat = await findActiveBotChat(b.userId!, bot.id);
     if (!chat) {
@@ -237,6 +239,7 @@ router.post("/messages", requireSystemBot, async (req, res) => {
     attachments: b.attachments ?? [],
     kind: (b.kind as "answer" | "command" | "notice" | "confirm" | undefined) ?? "answer",
     triggerMessageId,
+    askerId,
     linkPreview: b.linkPreview === true,
   });
   logger.info({ conversationId, messageId: message.id, via: b.grant ? "grant" : "notice" }, "bot: message posted");
