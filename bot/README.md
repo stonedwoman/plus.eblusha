@@ -401,7 +401,7 @@ test/secret-env/secret-test.sh run test/bot-memory-edge.integration.test.ts  # �
 Интеграционные тесты гоняются только в изолированной среде (тестовые Postgres/Redis, предохранитель
 `guard.ts`); модель там поддельная — ни сети, ни денег. После прогона: `secret-test.sh prod-proof '<EB_PROOF>'`.
 
-## Выкладка «бот — часть системы» (НЕ выложено; первая выкладка бота-участника — 2026-10-10)
+## Выкладка «бот — часть системы» (выложено 2026-10-10 ~17:01Z; первая выкладка бота-участника — 2026-10-10)
 
 Порядок важен: сначала backend (миграция и маршруты), потом бот.
 
@@ -431,7 +431,7 @@ test/secret-env/secret-test.sh run test/bot-memory-edge.integration.test.ts  # �
   Помощник для команд владельца — `bot/ops/README.md`.
 - Владельцу: включить себе «Чат с Еблушей» в настройках. Игрокам — привязать ник: «Еблуша, мой ник в игре …».
 
-## Выкладка связки с агентом Valheim (НЕ выложено)
+## Выкладка связки с агентом Valheim (выложено 2026-10-10 ~20:21Z)
 
 1. Backend (маршрут `POST /api/bot/followup`, без миграций): `build backend worker` и
    `up -d --no-deps --no-build backend worker` в тихое время.
@@ -445,7 +445,16 @@ test/secret-env/secret-test.sh run test/bot-memory-edge.integration.test.ts  # �
 4. Права: `/DATA/valheim/config/bepinex/webmap-bot.token` — `600`, владелец uid 1000 (игра в контейнере
    valheim и пользователь `node` бота — оба uid 1000; ops — root). Сделано 2026-10-10.
 
-## Выкладка памяти и привязки владельцем (НЕ выложено; ветка sysbot/context-ownerlink)
+## Выкладка памяти и привязки владельцем (выложено 2026-10-10 23:22Z = 02:22 МСК 11.10; ветка sysbot/context-ownerlink)
+
+Выложено 2026-10-10 23:21–23:22Z (02:21 МСК 11.10), HEAD `1c38f61d`, без ожидания звонков: `BOT_OWNER_USER_ID` в `.env`
+backend, `build backend worker` + `up -d --no-deps --no-build backend worker` (миграция
+`20261011090000_bot_memory_change` применилась при старте), затем бот `--profile bot up -d --no-deps --no-build
+--force-recreate eblusha-bot`. Метки отката — `deploy-backend:pre-ctx-695bfa65`, `deploy-worker:pre-ctx-695bfa65`,
+`eblusha-bot:pre-ctx-695bfa65`; бэкап (дамп Postgres, `bot.sqlite`, `.env` до правки) —
+`/DATA/eblusha-web-backups/ctx-20261010-2318/`. Сводку одной беседы пересобрать с нуля вручную: удалить её строку
+`memory` в `/data/bot.sqlite` (`DELETE FROM memory WHERE conversation_id = ?`) — следующее обращение дочитает
+историю с сервера и сожмёт заново.
 
 Миграция одна — новая пустая таблица `BotMemoryChange` (журнал изменений памяти), её применяет сам backend при
 старте (`prisma migrate deploy` в `docker-entrypoint.sh`); ни блокировок, ни переписывания данных. Контракт
