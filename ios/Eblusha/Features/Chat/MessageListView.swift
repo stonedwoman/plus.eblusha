@@ -168,6 +168,7 @@ struct MessageListView: View {
         // (scroll(to:)) и рамки плиток. Синтетическая строка сдвинула бы всё это.
         let unreadAnchorId = vm.ui.unreadAnchorId
         let clarifyTargets = Self.botClarifyTargets(messages, byId: byId)
+        let answeredConfirms = Self.botAnsweredConfirms(messages)
 
         return messages.enumerated().map { index, message in
             let earlier = index > 0 ? messages[index - 1] : nil
@@ -194,7 +195,8 @@ struct MessageListView: View {
                 highlighted: message.id == proxy.highlightedId,
                 quickSlots: quickSlots,
                 outgoingUpload: vm.ui.outgoing[message.id],
-                botClarifyTarget: clarifyTargets[message.id]
+                botClarifyTarget: clarifyTargets[message.id],
+                botConfirmAnswered: answeredConfirms.contains(message.id)
             )
         }
     }
@@ -217,6 +219,22 @@ struct MessageListView: View {
             if let firstId = first[key], let target = byId[firstId] { result[lastId] = target }
         }
         return result
+    }
+
+    /// Вопросы бота «да/нет», на которые я уже ответил (своё сообщение ответом на вопрос): кнопки
+    /// «Да»/«Нет» под ними прячем — как веб, натив и Android (docs/bot-system.md §2; ревью 10.10).
+    /// Иначе повторное «да» уходило снова, и бот отвечал «срок истёк или уже выполнено».
+    static func botAnsweredConfirms(_ messages: [Message]) -> Set<String> {
+        var confirms = Set<String>()
+        var answered = Set<String>()
+        for message in messages {
+            if message.botIsConfirm {
+                confirms.insert(message.id)
+            } else if message.isMine, !message.deleted {
+                for reply in message.replyTo where confirms.contains(reply.id) { answered.insert(reply.id) }
+            }
+        }
+        return answered
     }
 
     private var scrollDownButton: some View {
@@ -343,6 +361,8 @@ struct MessageRowModel: Identifiable, Equatable {
     let outgoingUpload: OutgoingUpload?
     /// Под этой строкой — «Уточнить», и ответ уйдёт на это сообщение бота (nil — кнопки нет).
     var botClarifyTarget: Message? = nil
+    /// Вопрос бота «да/нет», на который я уже ответил: «Да»/«Нет» не показываем.
+    var botConfirmAnswered = false
 
     var id: String { message.id }
 
@@ -1641,7 +1661,7 @@ private struct MessageCell: View {
                 onClarify: model.botClarifyTarget.map { target -> () -> Void in
                     { actions?.onClarify(target) }
                 },
-                onBotQuickReply: model.message.botIsConfirm
+                onBotQuickReply: model.message.botIsConfirm && !model.botConfirmAnswered
                     ? { (text: String) -> Void in actions?.onBotQuickReply(model.message, text) }
                     : nil,
                 onOpenBotMap: { actions?.onOpenBotMap($0) }

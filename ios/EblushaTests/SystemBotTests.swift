@@ -446,6 +446,21 @@ final class BotMessageUiTests: XCTestCase {
         XCTAssertEqual(targets.count, 2)
     }
 
+    func testConfirmButtonsHideAfterMyAnswer() {
+        let c1 = message("c1", bot: true, kind: "confirm", trigger: "q1")
+        let c2 = message("c2", bot: true, kind: "confirm", trigger: "q2")
+        var yes = Message(
+            id: "y", conversationId: "c", senderId: "me", senderName: "Я",
+            type: "TEXT", content: "да", createdAt: 0, isMine: true, isSystem: false
+        )
+        yes.replyTo = [ReplyInfo(id: "c1", senderId: "bot", content: "x", isBot: true)]
+        var foreign = message("f", bot: false)
+        foreign.replyTo = [ReplyInfo(id: "c2", senderId: "bot", content: "x", isBot: true)]
+        let answered = MessageListView.botAnsweredConfirms([c1, yes, c2, foreign])
+        XCTAssertEqual(answered, ["c1"], "мой ответ прячет кнопки, чужой — нет")
+        XCTAssertTrue(MessageListView.botAnsweredConfirms([yes, c1]).isEmpty, "ответ раньше вопроса не в счёт")
+    }
+
     func testConfirmGetsQuickAnswers() {
         XCTAssertTrue(message("c", bot: true, kind: "confirm").botIsConfirm)
         XCTAssertFalse(message("c", bot: false, kind: "confirm").botIsConfirm)
