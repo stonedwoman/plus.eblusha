@@ -81,6 +81,10 @@ final class AppContainer {
         // кто во что играл и где шёл звонок, нельзя.
         PresenceGames.shared.clear()
         CallStatusStore.shared.clear()
+        // Местное время собеседников прошлой сессии и её настройка в памяти (сама настройка
+        // хранится по userId и чужому аккаунту не достаётся).
+        PeerLocalTimeStore.shared.clear()
+        LocalTimeService.shared.resetForLogout()
     }
 
     /// Прогрев на старте: поднять сессию из Keychain (порт container.warmup()).

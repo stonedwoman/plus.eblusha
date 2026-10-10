@@ -29,6 +29,8 @@ extension ChatViewModel {
         secretMode = true
         secretPeers = await repo.conversationPeerUserIds(conversationId)
         ui.peerUserId = secretPeers.count == 1 ? secretPeers.first : nil
+        // Местное время собеседника показывается и в секретке (сервер отдаёт его по любой 1:1).
+        refreshPeerLocalTime()
         let meta = await repo.conversationMeta(conversationId)
         let amCreator = meta?.createdById != nil && meta?.createdById == repo.currentUserId()
         let header = await repo.conversationHeader(conversationId)
@@ -73,7 +75,10 @@ extension ChatViewModel {
             await secretRepo.onPeerAccepted(threadId: conversationId, peerDeviceId: acceptedDevice)
         }
         await loadSecret()
-        // Экран открыт и читаем: баннеры этой беседы здесь и на других iOS-устройствах гасим.
+        // История на экране: дальше «стала видна» значит «прочитал» (ChatReadGate).
+        autoReadReady = true
+        // Экран открыт и читаем: баннеры этой беседы здесь и на других устройствах гасим.
+        // Только если беседа реально на экране — это проверяет сам markRead().
         if ui.secretReady { markRead() }
         // Ключ мог быть на руках всё это время (или приехать только что, в syncInbox выше) —
         // тогда очередь уезжает сразу при входе, без ожидания нового события.
@@ -373,7 +378,8 @@ extension ChatViewModel {
         ui.messages = dedupSortedSecret(ui.messages + [secretToMessage(m)])
         reconcileSecretOutbox()
         ui.typingName = nil
-        // Как appendRealtime в облачных чатах: входящее на открытом экране сразу прочитано.
+        // Как appendRealtime в облачных чатах: входящее на открытом экране сразу прочитано
+        // (не на экране — markRead() молчит, см. ChatReadGate).
         if !m.isMine { markRead() }
     }
 

@@ -173,7 +173,8 @@ struct ChatView: View {
             repo: AppContainer.shared.chatRepository,
             realtime: AppContainer.shared.realtimeClient,
             conversationId: conversation.id,
-            secretRepo: AppContainer.shared.secretRepository
+            secretRepo: AppContainer.shared.secretRepository,
+            callCover: ChatReadGate.callCoverPublisher(AppContainer.shared.callManager)
         ))
     }
 
@@ -402,6 +403,8 @@ struct ChatView: View {
             // Открытая беседа звуком не отзывается: человек и так видит сообщение (то же
             // правило у веба). Остальные беседы озвучивает подписка списка.
             ChatSounds.setActiveConversation(conversation.id)
+            // Беседа на экране — с этого момента входящие в ней квитируются (ChatReadGate).
+            vm.onScreenShown(true)
         }
         // Плашка пересылки поджимает ленту снизу так же, как цитата ответа: последнее
         // сообщение не должно уехать под неё (onHeightChanged знает только про композер).

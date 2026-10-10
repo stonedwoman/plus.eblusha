@@ -189,6 +189,14 @@ final class ChatViewModel: ObservableObject {
     private var pendingReload: Task<Void, Never>?
     /// Хвостовой markRead: последняя пачка сообщений не должна остаться непрочитанной.
     private var markReadTrailing: Task<Void, Never>?
+    /// «Прочитано» уходит, только пока беседа реально на экране (ChatReadGate): ни из фона,
+    /// который держит звонок, ни из-под оверлея звонка, ни со снятого с экрана чата.
+    private(set) var readGate = ChatReadGate(appForeground: AppLifecycle.shared.isForeground)
+    /// Лента уже показала содержимое (облако — первая страница, секретка — история после
+    /// ключа): только тогда «стала видна» значит «прочитал». До этого «прочитано» отправит
+    /// сама загрузка — иначе серверный счётчик обнулился бы раньше, чем его снимет разделитель
+    /// непрочитанных.
+    var autoReadReady = false // internal: ставит и секретная ветка
     /// Автогашение плашки-итога: держим, чтобы новый итог отменял таймер прошлого.
     private var noticeDismiss: Task<Void, Never>?
     private var prependingReset: Task<Void, Never>?
@@ -233,8 +241,12 @@ final class ChatViewModel: ObservableObject {
         repo: ChatRepository,
         realtime: RealtimeClient,
         conversationId: String,
-        secretRepo: SecretRepository
+        secretRepo: SecretRepository,
+        callCover: AnyPublisher<Bool, Never>? = nil,
+        foreground: AnyPublisher<Bool, Never>? = nil
     ) {
+        // Передний план — по умолчанию AppLifecycle; тесты подставляют свой издатель.
+        let foreground = foreground ?? AppLifecycle.shared.$isForeground.eraseToAnyPublisher()
         self.repo = repo
         self.realtime = realtime
         self.conversationId = conversationId
@@ -258,19 +270,36 @@ final class ChatViewModel: ObservableObject {
         realtime.$connected
             .receive(on: DispatchQueue.main)
             .sink { [weak self] connected in
-                if connected && !wasConnected { self?.resyncAfterResume() }
+                if connected && !wasConnected {
+                    self?.resyncAfterResume()
+                    // Пока сокета не было, localtime:update собеседника мог потеряться.
+                    self?.refreshPeerLocalTime()
+                }
                 wasConnected = connected
             }
             .store(in: &cancellables)
 
         // Возврат приложения на экран — той же дорогой.
-        AppLifecycle.shared.$isForeground
+        foreground
             .removeDuplicates()
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] foreground in
                 if foreground { self?.resyncAfterResume() }
             }
+            .store(in: &cancellables)
+
+        // Видимость беседы для «прочитано» (ChatReadGate): передний план приложения…
+        foreground
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] foreground in self?.updateReadGate(appForeground: foreground) }
+            .store(in: &cancellables)
+        // …и полноэкранный звонок поверх всего приложения (свёрнутая плитка не мешает).
+        callCover?
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] covered in self?.updateReadGate(coveredByCall: covered) }
             .store(in: &cancellables)
 
         realtime.events
@@ -296,6 +325,8 @@ final class ChatViewModel: ObservableObject {
             ui.peerUserId = meta?.otherUserId
             ui.peerStatus = meta?.otherStatus
             ui.peerLastSeen = meta?.otherLastSeen
+            // Местное время собеседника под статусом: свежее с сервера при каждом открытии.
+            refreshPeerLocalTime()
         }
         let header = await repo.conversationHeader(conversationId)
         ui.headerAvatarUrl = header.avatarUrl
@@ -389,6 +420,8 @@ final class ChatViewModel: ObservableObject {
         // уже в первом снимке, иначе он появится вторым кадром и дёрнет позицию.
         resolveUnreadAnchorIfNeeded(in: merged)
         ui.messages = merged
+        // Лента показала содержимое — дальше «стала видна» значит «прочитал».
+        autoReadReady = true
         if !pagedBack {
             ui.hasMore = page.hasMore
             ui.nextCursor = page.nextCursor
@@ -596,7 +629,9 @@ final class ChatViewModel: ObservableObject {
         insertOrdered(message)
         ui.typingName = nil
         // Своё же эхо квитировать не нужно — это был лишний запрос на каждое отправленное
-        // сообщение и лишний повод серверу прислать нам наши же квитанции.
+        // сообщение и лишний повод серверу прислать нам наши же квитанции. Чужое — только
+        // если беседа реально на экране: это проверяет сам markRead() (ChatReadGate), иначе
+        // входящее из фона или из-под звонка гасило бы его уведомления на всех устройствах.
         if !message.isMine { markRead() }
         fetchMissingPreviews()
     }
@@ -1568,7 +1603,13 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// internal, не private: секретная ветка (ChatViewModelSecret) зовёт его же.
+    ///
+    /// Только пока беседа реально на экране (ChatReadGate): из фона (звонок держит сокет), из-под
+    /// оверлея звонка и со снятого с экрана чата НИЧЕГО не уходит — ни серверу, ни в Центр
+    /// уведомлений, ни в метку «досюда дочитано». Человек этого не видел; когда беседа станет
+    /// видна, «прочитано» уйдёт само (updateReadGate).
     func markRead() {
+        guard readGate.visible else { return }
         // Баннеры этой беседы снимаем и у секретных чатов.
         MessageNotifications.shared.clearDelivered(conversationId: conversationId)
         // Метка «досюда дочитано» — для разделителя непрочитанных на СЛЕДУЮЩЕМ входе.
@@ -1589,15 +1630,68 @@ final class ChatViewModel: ObservableObject {
             guard markReadTrailing == nil else { return }
             markReadTrailing = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(1.5 - sinceLast))
+                // Отменённый хвост ссылку не трогает: её уже сняли (flushTrailingRead), и
+                // на её месте может стоять новый хвост.
+                guard !Task.isCancelled else { return }
                 self?.markReadTrailing = nil
-                if !Task.isCancelled { self?.markRead() }
+                self?.markRead()
             }
             return
         }
         lastMarkReadMs = now
         // Секретки тоже: квитанций у них нет (сервер ничего не пишет), но именно этот вызов
-        // сообщает серверу «прочитано здесь» — по нему остальные iOS-устройства снимают баннеры.
+        // сообщает серверу «прочитано здесь» — по нему остальные устройства снимают баннеры.
         Task { _ = await repo.markConversationRead(conversationId) }
+    }
+
+    /// Экран беседы показан (ChatView.onAppear) / снят (onDisappear).
+    func onScreenShown(_ shown: Bool) {
+        updateReadGate(screenShown: shown)
+    }
+
+    /// Любая смена видимости беседы. Стала видна — отметить прочитанным сейчас (если лента уже
+    /// с содержимым); перестала — дослать хвост, который ждал окна троттла.
+    private func updateReadGate(screenShown: Bool? = nil, appForeground: Bool? = nil, coveredByCall: Bool? = nil) {
+        let wasVisible = readGate.visible
+        let became = readGate.update(screenShown: screenShown, appForeground: appForeground, coveredByCall: coveredByCall)
+        if became {
+            markReadIfReady()
+        } else if wasVisible && !readGate.visible {
+            flushTrailingRead()
+        }
+    }
+
+    /// «Стала видна»: облако — когда первая страница уже в ленте, секретка — когда ещё и ключ
+    /// на руках (без ключа сообщения не расшифрованы — читать нечего).
+    private func markReadIfReady() {
+        guard autoReadReady else { return }
+        if secretMode && !ui.secretReady { return }
+        markRead()
+    }
+
+    /// Беседа ушла с экрана, а хвостовой markRead ещё ждал окна троттла: пришедшее за эти
+    /// полторы секунды человек ВИДЕЛ — отмечаем сейчас, а не теряем (раньше хвост просто
+    /// отменялся, и последние сообщения оставались непрочитанными, а их уведомления — висеть
+    /// на других устройствах).
+    private func flushTrailingRead() {
+        guard let trailing = markReadTrailing else { return }
+        trailing.cancel()
+        markReadTrailing = nil
+        lastMarkReadMs = Date().timeIntervalSince1970
+        Task { _ = await repo.markConversationRead(conversationId) }
+    }
+
+    /// Местное время собеседника 1:1 (LocalTime.swift): при открытии и после переподключения.
+    /// В группах строки нет — и запроса тоже.
+    func refreshPeerLocalTime() { // internal: зовёт и секретная ветка
+        guard !ui.isGroup, let peer = ui.peerUserId else { return }
+        Task {
+            // Сбой (старый сервер без ручки, нет сети) строку не трогает — остаётся то, что
+            // пришло со списком бесед или событием.
+            if case .success(let info) = await repo.peerLocalTime(peer) {
+                PeerLocalTimeStore.shared.set(userId: peer, info)
+            }
+        }
     }
 
     // MARK: - Набор текста
@@ -1641,7 +1735,9 @@ final class ChatViewModel: ObservableObject {
 
     /// Уход с экрана: погасить typing. Комнату НЕ покидаем (веб-паритет).
     func onDisappear() {
-        markReadTrailing?.cancel()
+        // Беседа больше не на экране: дальше входящие не квитируются, а ждавший хвост
+        // «прочитано» досылается (updateReadGate → flushTrailingRead).
+        onScreenShown(false)
         pendingReload?.cancel()
         prependingReset?.cancel()
         setTyping(false)

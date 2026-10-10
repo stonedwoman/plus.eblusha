@@ -69,6 +69,24 @@ final class MessageNotifications: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// Пачка бесед, прочитанных на каком-то моём устройстве (сокет `conversation:read-self` и его
+    /// догон при подключении, ReadSelfBanners): у каждой своя граница — баннеры, пришедшие
+    /// позже неё, не снимаются. Одна проходка по Центру уведомлений на всю пачку.
+    func clearDelivered(upTo cutoffs: [String: Date], completion: ((Int) -> Void)? = nil) {
+        guard !cutoffs.isEmpty else {
+            completion?(0)
+            return
+        }
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { list in
+            let ids = Self.identifiers(in: list.map(DeliveredInfo.init), upTo: cutoffs)
+            if !ids.isEmpty {
+                center.removeDeliveredNotifications(withIdentifiers: ids)
+            }
+            completion?(ids.count)
+        }
+    }
+
     /// Возврат в приложение: снять баннеры бесед, которые к этому моменту прочитаны (пуш
     /// kind=read мог не дойти — приложение выгружено пользователем, нет сети, Apple
     /// придушила фоновые пуши). readConversationIds — беседы с unreadCount == 0 из свежего
@@ -132,6 +150,17 @@ final class MessageNotifications: NSObject, UNUserNotificationCenterDelegate {
     ) -> [String] {
         list.filter { n in
             n.belongs(to: conversationId) && (deliveredBefore.map { n.date <= $0 } ?? true)
+        }.map(\.identifier)
+    }
+
+    /// Пачечный вариант `identifiers(in:forConversation:deliveredBefore:)`: баннер снимается,
+    /// если его беседа есть в пачке и он пришёл не позже её границы. Как и одиночный путь —
+    /// любого вида (прочтение беседы закрывает и баннер звонка в ней).
+    static func identifiers(in list: [DeliveredInfo], upTo cutoffs: [String: Date]) -> [String] {
+        list.filter { n in
+            let cutoff = cutoffs[n.threadIdentifier] ?? n.userInfoConversationId.flatMap { cutoffs[$0] }
+            guard let cutoff else { return false }
+            return n.date <= cutoff
         }.map(\.identifier)
     }
 

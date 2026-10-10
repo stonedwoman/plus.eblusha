@@ -213,16 +213,22 @@ struct ChatHeaderTitle: View {
     @ObservedObject private var games = PresenceGames.shared
     @ObservedObject private var calls = CallStatusStore.shared
     @ObservedObject private var callManager = AppContainer.shared.callManager
+    @ObservedObject private var localTimes = PeerLocalTimeStore.shared
 
     var body: some View {
         HStack(spacing: 8) {
             avatar
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: peerLocalTime == nil ? 1 : 0) {
                 Text(model.title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 subtitle
+                // Местное время собеседника — третьей строкой ПОД статусом (в т.ч. под чипом
+                // секретки и под «печатает…»: строка не должна прыгать от набора текста).
+                if let info = peerLocalTime {
+                    PeerLocalTimeLine(info: info)
+                }
             }
         }
         // Цель нажатия — вся связка, а не только аватар: в панели он мелкий.
@@ -353,6 +359,12 @@ struct ChatHeaderTitle: View {
 
     // MARK: Производные
 
+    /// Пояс собеседника 1:1. В группах строки нет никогда (сервер там поля и не отдаёт).
+    private var peerLocalTime: LocalTimeInfo? {
+        guard !model.isGroup, let peer = model.peerUserId else { return nil }
+        return localTimes.times[peer]
+    }
+
     private var callState: CallStatusStore.Entry? { calls.calls[model.conversationId] }
 
     /// Фаза НАШЕГО звонка, если он идёт именно в этой беседе (иначе nil).
@@ -375,6 +387,27 @@ struct ChatHeaderTitle: View {
         guard let me = AppContainer.shared.sessionStore.currentUserId(),
               let state = callState, state.active else { return false }
         return state.participants.contains(me)
+    }
+}
+
+// MARK: - Местное время собеседника
+
+/// «14:30, Красноярск» мелкой серой строкой под статусом. Время идёт само: перерисовка на
+/// границе каждой минуты. Совпадает с моим (то же смещение) — строки нет вовсе.
+struct PeerLocalTimeLine: View {
+    let info: LocalTimeInfo
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            if let text = LocalTimeFormat.line(info, now: context.date, myTimeZone: .autoupdatingCurrent) {
+                Text(text)
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(Eb.textMuted)
+                    .lineLimit(1)
+                    .accessibilityLabel("Местное время собеседника: \(text)")
+            }
+        }
     }
 }
 

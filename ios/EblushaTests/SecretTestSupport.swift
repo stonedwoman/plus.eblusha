@@ -80,6 +80,9 @@ final class FakeServer {
     var publishAcceptLimit: Int?
     /// Ответ на DELETE /devices/{id} (отзыв устройства при выходе).
     var deleteDeviceStatus = 200
+    /// Дополнительные маршруты для тестов вне секреток (история беседы, «прочитано», местное
+    /// время). nil из замыкания — обычная маршрутизация.
+    var extraRoute: ((_ method: String, _ path: String, _ json: Any?) -> (Int, Data)?)?
 
     var calls: [Call] { lock.withLockT { _calls } }
 
@@ -120,6 +123,7 @@ final class FakeServer {
     }
 
     private func route(method: String, path: String, query: [String: String], json: Any?) -> (Int, Data) {
+        if let extra = extraRoute?(method, path, json) { return extra }
         switch (method, path) {
         case ("GET", "secret/inbox/pull"):
             guard pullStatus == 200 else { return (pullStatus, Self.data(["message": "Missing device"])) }

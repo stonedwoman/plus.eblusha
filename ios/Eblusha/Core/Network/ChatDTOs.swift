@@ -78,6 +78,29 @@ struct UserBriefDto: Decodable, Equatable {
     var avatarUrl: String?
     var status: String?
     var lastSeenAt: String?
+    /// Местное время собеседника (LocalTime.swift). Сервер кладёт его только собеседнику в
+    /// беседах 1:1 списка бесед; null — человек время скрыл или пояс неизвестен.
+    var localTime: LocalTimeInfo?
+    /// Поле `localTime` вообще было в ответе. Нужно отличать «сервер сказал null» (строку убрать)
+    /// от «сервер о поле не знает» (старая версия, группа, сам я — ничего не трогать).
+    var hasLocalTime = false
+
+    private enum CodingKeys: String, CodingKey {
+        case id, username, displayName, avatarUrl, status, lastSeenAt, localTime
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        username = try c.decode(String.self, forKey: .username)
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
+        avatarUrl = try c.decodeIfPresent(String.self, forKey: .avatarUrl)
+        status = try c.decodeIfPresent(String.self, forKey: .status)
+        lastSeenAt = try c.decodeIfPresent(String.self, forKey: .lastSeenAt)
+        hasLocalTime = c.contains(.localTime)
+        // Битый пояс не должен ронять весь список бесед — считаем его «неизвестен».
+        localTime = hasLocalTime ? ((try? c.decodeIfPresent(LocalTimeInfo.self, forKey: .localTime)) ?? nil) : nil
+    }
 }
 
 struct MessageDto: Decodable, Identifiable {

@@ -46,6 +46,8 @@ struct SettingsView: View {
     /// его же читает координатор автоплея. @AppStorage, а не своя обёртка над UserDefaults,
     /// ради перерисовки пикера: без наблюдения он остался бы с прежней галочкой.
     @AppStorage(VideoAutoplayMode.storageKey) private var videoAutoplayRaw = VideoAutoplayMode.wifi.rawValue
+    /// Своя настройка местного времени (сервер + событие localtime:settings с других устройств).
+    @ObservedObject private var localTime = LocalTimeService.shared
 
     init(onBack: (() -> Void)? = nil, onLogout: @escaping () -> Void) {
         self.onBack = onBack
@@ -101,6 +103,7 @@ struct SettingsView: View {
             avatarSection
             profileSection
             statusSection
+            localTimeSection
             mediaSection
             serverSection
             devicesSection
@@ -259,6 +262,49 @@ struct SettingsView: View {
     /// Выбор применяется сразу, без «Сохранить» (порт setStatus).
     private var statusBinding: Binding<String> {
         Binding(get: { currentStatus }, set: { vm.setStatus($0) })
+    }
+
+    // MARK: - Местное время
+
+    /// «Показывать моё местное время» (по умолчанию включено). Выключено — сервер не отдаёт мой
+    /// пояс никому; применяется сразу, без «Сохранить», и приходит на остальные мои устройства.
+    private var localTimeSection: some View {
+        Section {
+            Toggle(isOn: localTimeBinding) {
+                Text("Показывать моё местное время")
+                    .foregroundStyle(Eb.textPrimary)
+            }
+            .tint(Eb.brand)
+            .disabled(localTime.saving || localTime.serverSupported == false)
+            // Сверка с сервером при каждом показе: настройку могли поменять на другом устройстве.
+            .onAppear { localTime.loadOwn() }
+        } header: {
+            Text("Местное время")
+        } footer: {
+            Text(localTimeFooter)
+                .foregroundStyle(localTime.error == nil ? Eb.textMuted : Eb.error)
+        }
+        .ebRow()
+    }
+
+    private var localTimeBinding: Binding<Bool> {
+        Binding(get: { localTime.share?.share ?? true }, set: { localTime.setShare($0) })
+    }
+
+    private var localTimeFooter: String {
+        if let error = localTime.error { return error }
+        if localTime.serverSupported == false {
+            return "Сервер пока не умеет показывать местное время — настройка заработает после его обновления."
+        }
+        if localTime.share?.share == false {
+            return "Время скрыто: собеседники не видят, который у вас час."
+        }
+        var text = "В личных чатах собеседники видят под вашим статусом, который у вас час, например «14:30, Красноярск». В группах не показывается."
+        if let info = localTime.visibleToPeers {
+            let place = info.city ?? LocalTimeFormat.offsetLabel(seconds: LocalTimeFormat.offsetSeconds(info, at: Date()))
+            text += " Сейчас видно: \(place)."
+        }
+        return text
     }
 
     // MARK: - Медиа

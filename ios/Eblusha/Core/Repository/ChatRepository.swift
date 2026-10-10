@@ -73,6 +73,7 @@ final class ChatRepository {
                     }
                 }
             }
+            PeerLocalTimeStore.shared.apply(Self.peerLocalTimes(items.map(\.conversation), meId: me))
             let list = Self.sortedByFreshness(
                 items.map { toDomain($0.conversation, meId: me, unreadCount: $0.unreadCount) }
             )
@@ -82,6 +83,20 @@ final class ChatRepository {
             persistCache(list)
             return presentConversations(list)
         }
+    }
+
+    /// Местное время собеседников из списка бесед: только 1:1 (в группах сервер поля не кладёт,
+    /// а мы и не смотрим) и только у тех, о ком сервер что-то сказал — старый сервер без поля
+    /// карту не трогает. null → убрать строку.
+    static func peerLocalTimes(_ conversations: [ConversationDto], meId: String?) -> [String: LocalTimeInfo?] {
+        var result: [String: LocalTimeInfo?] = [:]
+        for conv in conversations where !conv.isGroup {
+            for p in conv.participants where p.userId != meId {
+                guard let user = p.user, user.hasLocalTime else { continue }
+                result[p.userId] = .some(user.localTime)
+            }
+        }
+        return result
     }
 
     func cachedConversations() -> [Conversation] {
@@ -269,6 +284,16 @@ final class ChatRepository {
                 "messages/mark-conversation-read",
                 body: MarkReadRequest(conversationId: conversationId)
             )
+        }
+    }
+
+    /// Местное время собеседника по 1:1 (GET /users/:id/local-time, LocalTime.swift).
+    /// .success(nil) — сервер сказал «не показывать» (не собеседник по 1:1, время скрыто, пояс
+    /// неизвестен); .failure — старый сервер (404) или нет сети: оставить то, что знаем.
+    func peerLocalTime(_ userId: String) async -> ApiResult<LocalTimeInfo?> {
+        await safeApiCall {
+            let dto: PeerLocalTimeDto = try await api.get("users/\(userId)/local-time")
+            return dto.localTime
         }
     }
 

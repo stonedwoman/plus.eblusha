@@ -127,6 +127,10 @@ final class RealtimeClient: ObservableObject {
             // Реконнект в фоне НЕ должен объявлять нас «в сети» — честно сообщаем
             // текущее состояние приложения.
             self.setForeground(AppLifecycle.shared.isForeground)
+            // Пояс телефона — на КАЖДОМ подключении и строго ПОСЛЕ presence:state: сервер
+            // выбирает, чей пояс показывать собеседникам, по «последнему устройству на переднем
+            // плане», и узнаёт о переднем плане именно из presence:state.
+            self.reportLocalTime()
             // Переприсоединяем комнаты — сервер их забыл вместе со старым соединением.
             for id in self.joinedConversations {
                 socket.emit("conversation:join", id)
@@ -221,6 +225,26 @@ final class RealtimeClient: ObservableObject {
         socket.on("call:status:bulk") { data, _ in
             guard let payload: CallStatusBulkPayload = Self.decode(data) else { return }
             CallStatusStore.shared.applyBulk(payload.statuses)
+        }
+        // Беседу прочитали на каком-то МОЁМ устройстве (или догон таких прочтений при
+        // подключении) — снять её баннеры, показанные не позже момента прочтения
+        // (ReadSelfSync.swift). Обычные беседы и секретки — одинаково.
+        socket.on("conversation:read-self") { data, _ in
+            guard let dict = data.first as? [String: Any],
+                  let event = ReadSelfEvent.parse(dict) else { return }
+            ReadSelfBanners.shared.enqueue(event)
+        }
+        // Местное время собеседника (LocalTime.swift): сменился его пояс или он скрыл/открыл
+        // время; null — строку убрать.
+        bind(socket, "localtime:update", LocalTimeUpdatePayload.self) { payload in
+            PeerLocalTimeStore.shared.set(userId: payload.userId, payload.localTime)
+            return nil
+        }
+        // Своя настройка «Показывать моё местное время» поменялась (здесь или на другом
+        // своём устройстве) — переключатель и напоминание для следующих отчётов.
+        socket.on("localtime:settings") { data, _ in
+            guard let dict = data.first as? [String: Any] else { return }
+            LocalTimeService.shared.onSettingsEvent(dict)
         }
         bind(socket, "secret:notify", SecretNotifyPayload.self) {
             .secretNotify(toDeviceId: $0.toDeviceId, msgId: $0.msgId)
@@ -359,6 +383,18 @@ final class RealtimeClient: ObservableObject {
             "visibility": active ? "visible" : "hidden",
             "source": "mobile",
         ] as [String: Any])
+    }
+
+    /// `localtime:report` с ответом: пояс телефона + напоминание о своей настройке
+    /// (LocalTimeService). Только по живому сокету — не буферизуется: следующий коннект
+    /// сообщит пояс сам.
+    func reportLocalTime() {
+        queue.async {
+            guard let socket = self.socket, socket.status == .connected else { return }
+            LocalTimeService.shared.report { payload, ack in
+                socket.emitWithAck("localtime:report", payload).timingOut(after: 15, callback: ack)
+            }
+        }
     }
 
     func sendTyping(conversationId: String, typing: Bool) {

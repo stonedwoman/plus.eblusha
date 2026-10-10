@@ -12,6 +12,9 @@ struct EblushaApp: App {
             if let scenario = CallConnectingDemo.requestedScenario {
                 if scenario.hasPrefix("mini") {
                     CallMiniDemo(scenarioId: scenario)
+                } else if scenario.hasPrefix("header") {
+                    // Стенд шапки беседы со строкой местного времени собеседника.
+                    ChatHeaderDemo(scenarioId: scenario)
                 } else {
                     CallConnectingDemo(scenarioId: scenario)
                 }

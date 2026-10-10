@@ -68,6 +68,11 @@ final class APIClient {
         try await request(path: path, method: "DELETE", query: [], body: Optional<Int>.none)
     }
 
+    /// PUT с JSON-телом (настройка местного времени — PUT /status/me/local-time).
+    func put<In: Encodable, Out: Decodable>(_ path: String, body: In) async throws -> Out {
+        try await request(path: path, method: "PUT", body: body)
+    }
+
     // MARK: - Внутренности
 
     private func request<In: Encodable, Out: Decodable>(
