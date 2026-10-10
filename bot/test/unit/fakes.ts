@@ -58,6 +58,9 @@ export class FakeApi implements ChatApi {
   /** У кого включён «Чат с Еблушей». */
   botChatOn = new Set<string>([ALICE, OWNER]);
   history = new Map<string, EbMessage>();
+  /** Сервер отказывает в любой отправке (например, 409 BOT_TRIGGER_DELETED — вопрос удалили). */
+  postError: ApiError | null = null;
+  rejected = 0;
 
   async me() {
     return { id: BOT, displayName: "Еблуша", avatarUrl: "/api/files/a.eblusha", bio: "бот" };
@@ -69,6 +72,10 @@ export class FakeApi implements ChatApi {
     return c;
   }
   async postMessage(input: BotPostInput): Promise<EbMessage> {
+    if (this.postError) {
+      this.rejected++;
+      throw this.postError;
+    }
     let conversationId: string;
     if (input.grant) conversationId = this.convOf(input.grant);
     else {

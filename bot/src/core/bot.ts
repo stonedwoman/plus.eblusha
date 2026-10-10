@@ -723,6 +723,11 @@ export class Bot {
         len: body.length,
       });
     } catch (e) {
+      // Вопрос удалили (или беседу), пока бот думал, — сервер ответ не примет, и извиняться туда незачем.
+      if (e instanceof ApiError && (e.code === "BOT_TRIGGER_DELETED" || e.code === "BOT_CONVERSATION_GONE")) {
+        log.info("answer.dropped", { ms: this.now() - started, code: e.code });
+        return;
+      }
       log.error("answer.failed", { ms: this.now() - started, err: e as Error });
       await this.sendReply(conv, m.id, "Что-то сломалось у меня внутри, попробуй ещё раз чуть позже.", [], "notice").catch(() => {});
     } finally {
@@ -784,6 +789,7 @@ export class Bot {
               originalName: img.name,
               size: img.data.length,
               objectKey: up.path ?? up.url.replace(/^\/api\/files\//, ""),
+              ...(img.link && safeUrl(img.link) ? { link: safeUrl(img.link)! } : {}),
             },
           });
         } catch (e) {

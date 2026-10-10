@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chooseEffort } from "../../src/core/bot";
 import type { BotModule, ChatCommand } from "../../src/modules/api";
-import { ALICE, BOB, BOT, DM_ALICE, DM_OWNER, GROUP, harness, msg, OWNER, PAIR } from "./fakes";
+import { ApiError } from "../../src/api/eblusha";
+import { ALICE, BOB, BOT, DM_ALICE, DM_OWNER, GROUP, harness, msg, OWNER, PAIR, PNG_1x1 } from "./fakes";
 
 test("вызов: typing → модель → ответ ответом на вопрос, разметка почищена", async () => {
   const h = await harness();
@@ -138,6 +139,44 @@ test("отказ модели → короткий отказ; ошибка → 
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, ещё?" }));
   assert.match(h.api.sent[1]!.content!, /сломалось/);
   assert.equal(h.api.typingEvents.filter((e) => e.startsWith("off:")).length, 2, "typing снят и после ошибки");
+});
+
+test("вопрос удалили, пока бот думал (409 BOT_TRIGGER_DELETED) — без извинений и повторов", async () => {
+  const h = await harness();
+  h.api.postError = new ApiError(409, "/api/bot/messages", "BOT_TRIGGER_DELETED", "HTTP 409 (BOT_TRIGGER_DELETED)");
+  await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "Еблуша, секретный вопрос" }));
+  assert.equal(h.llm.calls.length, 1);
+  assert.equal(h.api.rejected, 1, "одна попытка ответа, без «что-то сломалось» вдогонку");
+  assert.equal(h.api.typingEvents[h.api.typingEvents.length - 1], `off:${GROUP}`, "typing снят");
+});
+
+test("картинка с ссылкой (карточка карты) → metadata.link вложения, только https", async () => {
+  const mod: BotModule = {
+    name: "card",
+    tools: [
+      {
+        name: "card_tool",
+        description: "карточка",
+        access: "anyone",
+        inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+        async run(_i, ctx) {
+          ctx.attachImage({ data: PNG_1x1, mime: "image/png", width: 64, height: 48, name: "karta-valheim.png", link: "https://v.koban.uk/map/" });
+          ctx.attachImage({ data: PNG_1x1, mime: "image/png", width: 64, height: 48, name: "karta-2.png", link: "javascript:alert(1)" });
+          return "приложил";
+        },
+      },
+    ],
+  };
+  const h = await harness({ modules: [mod] });
+  h.llm.reply = async (req) => {
+    await req.tools.run("card_tool", {});
+    return { text: "Вот карта." };
+  };
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, покажи карту" }));
+  const img = h.api.sent.find((s) => s.type === "IMAGE")!;
+  assert.equal(img.attachments!.length, 2);
+  assert.equal(img.attachments![0]!.metadata!.link, "https://v.koban.uk/map/");
+  assert.equal(img.attachments![1]!.metadata!.link, undefined, "не https — ссылки нет");
 });
 
 test("источники дописываются, если модель их не дала", async () => {

@@ -61,6 +61,11 @@ export interface OutgoingImage {
   height: number;
   /** Имя файла во вложении, например «karta-kuraleska.png». */
   name: string;
+  /**
+   * Куда ведёт нажатие на картинку (только https): у карточки карты — живая карта. Уходит во
+   * вложение как metadata.link; клиенты открывают её вместо просмотрщика (docs/bot-system.md).
+   */
+  link?: string;
 }
 
 export interface ToolContext {

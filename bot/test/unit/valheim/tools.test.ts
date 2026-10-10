@@ -193,6 +193,8 @@ test("карточка карты: PNG прикладывается, скрыт�
   assert.equal(meta.format, "png");
   assert.equal(meta.width, img.width);
   assert.equal(meta.height, img.height);
+  assert.equal(img.name, "karta-valheim.png");
+  assert.equal(img.link, "https://v.koban.uk/map/", "нажатие на карточку — живая карта (metadata.link вложения)");
   assert.match(t, /На ней игроки: «IiApaCiOxa»/);
   assert.doesNotMatch(t, /Куралеска/, "скрытая на картинку не попадает");
   assert.match(t, /https:\/\/v\.koban\.uk\/map\//);

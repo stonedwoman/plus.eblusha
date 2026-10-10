@@ -594,7 +594,15 @@ export function createTools(world: VhWorld, cfg: ValheimConfig): BotTool<any>[] 
         link: mapLink.replace(/^https?:\/\//, "").replace(/\/$/, ""),
         markers,
       });
-      ctx.attachImage({ data: card.data, mime: card.mime, width: card.width, height: card.height, name: "karta-valheim.png" });
+      ctx.attachImage({
+        data: card.data,
+        mime: card.mime,
+        width: card.width,
+        height: card.height,
+        name: "karta-valheim.png",
+        // Нажатие на карточку — живая карта: явной ссылкой, а не догадкой клиента по тексту ответа.
+        ...(/^https:\/\//i.test(mapLink) ? { link: mapLink } : {}),
+      });
       const shown = markers.filter((m) => m.kind === "player" && Math.abs(m.x - c.x) <= radius && Math.abs(m.z - c.z) <= radius).map((m) => m.label);
       return {
         content: [
