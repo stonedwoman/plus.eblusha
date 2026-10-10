@@ -61,6 +61,11 @@ export async function startBot(cfg: BotConfig, log: Logger, opts: StartOptions =
         ? new ClaudeEngine(cfg, buildSystemPrompt(registry.prompts), log.child({ c: "llm" }))
         : null;
   if (!llm) log.warn("llm.disabled", { reason: "ANTHROPIC_API_KEY не задан — отвечаю шаблонами" });
+  if (llm instanceof ClaudeEngine) {
+    const p = await llm.probe();
+    if (p.ok) log.info("llm.probe_ok", { model: llm.model });
+    else log.error("llm.probe_failed", { status: p.status, why: p.message });
+  }
 
   let bot!: Bot;
   const rt = new Realtime(

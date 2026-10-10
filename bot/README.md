@@ -50,6 +50,7 @@ src/modules/index.ts   список модулей, включение чере�
 | `BOT_USERNAME`, `BOT_PASSWORD` | — | учётка бота; пишет `src/scripts/seedBotUser.ts` в `/DATA/eblusha-plus/.env.bot-account` (600) |
 | `BOT_OWNER_USER_ID` | — | id владельца: команды управления, `/eb расход`, привязка чужих ников |
 | `ANTHROPIC_API_KEY` | — | ключ модели; кладёт владелец в `/DATA/eblusha-plus/.env.bot`. Нет ключа — бот отвечает шаблонами |
+| `ANTHROPIC_WORKSPACE_ID` | — | `wrkspc_…`; обязателен для ключа, не привязанного к workspace (`sk-ant-usr…`), иначе API отвечает 400. При старте бот бесплатно проверяет ключ (`count_tokens`) и пишет `llm.probe_ok` / `llm.probe_failed` |
 | `BOT_API_URL` | `http://127.0.0.1:4000` | backend (HTTP и socket.io) |
 | `BOT_MODEL` | `claude-opus-5-5` | |
 | `BOT_MONTHLY_BUDGET_USD` / `BOT_DAILY_BUDGET_USD` | 60 / 6 | потолки на всех; дальше — шаблонный отказ |

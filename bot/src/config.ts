@@ -20,6 +20,11 @@ export interface BotConfig {
   /** userId владельца (ston): команды управления, расход, привязка чужих ников. */
   ownerUserId: string | null;
   anthropicApiKey: string | null;
+  /**
+   * Workspace для ключа, не привязанного к workspace (ключи вида sk-ant-usr…): без него API
+   * отвечает 400 «must include the anthropic-workspace-id header». Уходит параметром workspace_id.
+   */
+  anthropicWorkspaceId: string | null;
   model: string;
   /** Каталог для SQLite (учёт расходов, привязки ников, подтверждения). */
   dataDir: string;
@@ -92,6 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     password: str(env, "BOT_PASSWORD"),
     ownerUserId: optStr(env, "BOT_OWNER_USER_ID"),
     anthropicApiKey: optStr(env, "ANTHROPIC_API_KEY"),
+    anthropicWorkspaceId: optStr(env, "ANTHROPIC_WORKSPACE_ID"),
     model: str(env, "BOT_MODEL", "claude-opus-5-5"),
     dataDir: str(env, "BOT_DATA_DIR", "./data"),
     monthlyBudgetUsd: num(env, "BOT_MONTHLY_BUDGET_USD", 60),
@@ -122,6 +128,7 @@ export function describeConfig(c: BotConfig): Record<string, unknown> {
     apiUrl: c.apiUrl,
     owner: c.ownerUserId ? "set" : "unset",
     anthropicKey: c.anthropicApiKey ? "set" : "unset",
+    anthropicWorkspace: c.anthropicWorkspaceId ? "set" : "unset",
     model: c.model,
     dataDir: c.dataDir,
     monthlyBudgetUsd: c.monthlyBudgetUsd,

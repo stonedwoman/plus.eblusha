@@ -46,6 +46,7 @@ const usage = (input = 1000, output = 100, extra: Record<string, unknown> = {}) 
 
 const cfg = {
   anthropicApiKey: "k",
+  anthropicWorkspaceId: null as string | null,
   model: "claude-opus-5-5",
   maxTokens: 16000,
   maxToolIterations: 6,
@@ -99,6 +100,21 @@ test("параметры запроса: модель, fallbacks, мышлени
     { role: "user", content: [{ type: "text", text: "Алиса: вопрос" }] },
     { role: "system", content: "Сейчас: суббота." },
   ]);
+});
+
+test("workspace_id уходит в каждый запрос, если задан (ключи sk-ant-usr…)", async () => {
+  const { client, calls } = fakeClient([
+    { model: "claude-opus-5-5", stop_reason: "end_turn", content: [{ type: "text", text: "ок" }], usage: usage() },
+    { model: "claude-opus-5-5", stop_reason: "end_turn", content: [{ type: "text", text: "{\"character\":\"\"}" }], usage: usage() },
+  ]);
+  const eng = new ClaudeEngine({ ...cfg, anthropicWorkspaceId: "wrkspc_test" }, "S", silentLogger, client);
+  await eng.answer(req(tools()));
+  await eng.matchCharacter("x", ["y"], new AbortController().signal);
+  assert.equal(calls[0]!.workspace_id, "wrkspc_test");
+  assert.equal(calls[1]!.workspace_id, "wrkspc_test");
+  const { client: c2, calls: calls2 } = fakeClient([{ model: "claude-opus-5-5", stop_reason: "end_turn", content: [], usage: usage() }]);
+  await new ClaudeEngine(cfg, "S", silentLogger, c2).answer(req(tools()));
+  assert.equal("workspace_id" in calls2[0]!, false);
 });
 
 test("цикл инструментов: tool_use → наш инструмент → итог; pause_turn продолжается", async () => {

@@ -115,7 +115,14 @@ export class ClaudeEngine implements LlmEngine {
   constructor(
     private readonly cfg: Pick<
       BotConfig,
-      "anthropicApiKey" | "model" | "maxTokens" | "maxToolIterations" | "webSearchMaxUses" | "webFetchMaxUses" | "webFetchMaxContentTokens"
+      | "anthropicApiKey"
+      | "anthropicWorkspaceId"
+      | "model"
+      | "maxTokens"
+      | "maxToolIterations"
+      | "webSearchMaxUses"
+      | "webFetchMaxUses"
+      | "webFetchMaxContentTokens"
     >,
     systemPrompt: string,
     private readonly log: Logger,
@@ -124,6 +131,27 @@ export class ClaudeEngine implements LlmEngine {
     this.model = cfg.model;
     this.system = systemPrompt;
     this.client = client ?? new Anthropic({ apiKey: cfg.anthropicApiKey ?? undefined, maxRetries: 2, timeout: 180_000 });
+  }
+
+  private workspace(): { workspace_id?: string } {
+    return this.cfg.anthropicWorkspaceId ? { workspace_id: this.cfg.anthropicWorkspaceId } : {};
+  }
+
+  /**
+   * Проверка ключа при старте — бесплатно (count_tokens): ловит неверный ключ, ключ без
+   * workspace (нужен ANTHROPIC_WORKSPACE_ID), недоступную модель. Ответ бота от этого не зависит.
+   */
+  async probe(): Promise<{ ok: true } | { ok: false; status: number | null; message: string }> {
+    try {
+      await this.client.beta.messages.countTokens(
+        { model: this.model, messages: [{ role: "user", content: "ping" }], betas: [FALLBACK_BETA], ...this.workspace() },
+        { timeout: 20_000, maxRetries: 1 }
+      );
+      return { ok: true };
+    } catch (e) {
+      if (e instanceof Anthropic.APIError) return { ok: false, status: e.status ?? null, message: String(e.message).slice(0, 300) };
+      return { ok: false, status: null, message: e instanceof Error ? e.message.slice(0, 300) : String(e) };
+    }
   }
 
   private serverTools(): BetaToolUnion[] {
@@ -175,6 +203,7 @@ export class ClaudeEngine implements LlmEngine {
             metadata: { user_id: req.userKey },
             betas: [FALLBACK_BETA],
             fallbacks: "default",
+            ...this.workspace(),
           },
           { signal: req.signal }
         );
@@ -285,6 +314,7 @@ export class ClaudeEngine implements LlmEngine {
         },
         betas: [FALLBACK_BETA],
         fallbacks: "default",
+        ...this.workspace(),
       },
       { signal }
     );
