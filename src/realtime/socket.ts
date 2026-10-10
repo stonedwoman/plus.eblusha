@@ -70,6 +70,8 @@ type ServerToClientEvents = {
     userId: string;
     isTyping: boolean;
     displayName?: string | null;
+    /** «Печатает» системного бота «Еблуша» (routes/bot.ts): он не участник беседы — имя бери отсюда. */
+    isBot?: boolean;
   }) => void;
   "contacts:request:new": (payload: { contactId: string; from: { id: string; username: string } }) => void;
   "contacts:request:accepted": (payload: { contactId: string }) => void;
@@ -103,6 +105,8 @@ type ServerToClientEvents = {
   "localtime:update": (payload: { userId: string; localTime: LocalTimeInfo | null }) => void;
   /** Своя настройка «Показывать моё местное время» изменилась (с этого или другого устройства) — в user:<свой id>. */
   "localtime:settings": (payload: LocalTimeShareState) => void;
+  /** Своя настройка «Чат с Еблушей» изменилась (lib/systemBot.ts) — в user:<свой id>. */
+  "bot:settings": (payload: { botChatEnabled: boolean; conversationId: string | null }) => void;
 };
 
 type ClientToServerEvents = {
@@ -2225,6 +2229,19 @@ export async function initSocket(
       if (!isMember) {
         logger.warn({ conversationId, userId }, "User is not a member of conversation in call:invite");
         return;
+      }
+      // «Чат с Еблушей» (lib/systemBot.ts): бот звонки не принимает — сразу «отклонён», без звонка и
+      // без пуша (раньше бот-участник сам слал call:decline со своего сокета; сокета у бота больше нет).
+      if (!conv.isGroup) {
+        const botPeer = await prisma.user.findFirst({
+          where: { id: { in: conv.participants.map((p) => p.userId).filter((id) => id !== userId) }, isBot: true },
+          select: { id: true },
+        });
+        if (botPeer) {
+          io.to(userRoom(userId)).emit("call:declined", { conversationId, by: { id: botPeer.id } });
+          logger.info({ conversationId, userId }, "call:invite to the bot chat declined");
+          return;
+        }
       }
       // Rate-limit invites to prevent ring-spam / re-ring loops. Only throttle while a call
       // for this conversation is ALREADY tracked (re-emitting call:incoming resets the

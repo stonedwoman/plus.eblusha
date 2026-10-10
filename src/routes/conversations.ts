@@ -16,9 +16,19 @@ import { SECRET_MESSAGE_KEY_PREFIX } from "../lib/secretInbox";
 import env from "../config/env";
 import logger from "../config/logger";
 import { extractFirstUrl } from "../lib/linkPreview";
-import { enqueueLinkPreview, enqueuePush } from "../jobs/queue";
+import { enqueueLinkPreview } from "../jobs/queue";
 import { rateLimit } from "../middlewares/rateLimit";
 import { getPublicLocalTimes } from "../lib/localTime";
+import { publishNewMessage, SENT_MESSAGE_INCLUDE } from "../lib/messageFanout";
+import {
+  BOT_SETTINGS_EVENT,
+  detectBotAddress,
+  dispatchToBot,
+  getSystemBot,
+  isBotChatShape,
+  setBotChatEnabled,
+  takeBotMeta,
+} from "../lib/systemBot";
 import {
   forwardedHostedBlobUrlLikely,
   hostedForwardedAttachmentBlobExists,
@@ -57,7 +67,7 @@ const router = Router();
 const userRoom = (userId: string) => `user:${userId}`;
 
 const messageReactionsWithUser = {
-  include: { user: { select: { id: true, username: true, displayName: true } } },
+  include: { user: { select: { id: true, username: true, displayName: true, isBot: true } } },
 };
 
 router.use(authenticate);
@@ -479,6 +489,8 @@ router.get("/", async (req, res) => {
                   avatarUrl: true,
                   status: true,
                   lastSeenAt: true,
+                  // «Чат с Еблушей»: собеседник — системный бот (lib/systemBot.ts)
+                  isBot: true,
                 },
               },
             },
@@ -487,7 +499,7 @@ router.get("/", async (req, res) => {
             take: 1,
             orderBy: { createdAt: "desc" },
             include: {
-              sender: { select: { id: true, username: true, displayName: true } },
+              sender: { select: { id: true, username: true, displayName: true, isBot: true } },
             },
           },
         },
@@ -509,6 +521,13 @@ router.get("/", async (req, res) => {
       return { ...cp, unreadCount } as any;
     })
   );
+
+  // «Чат с Еблушей» (lib/systemBot.ts): 1:1 с системным ботом — клиенту готовым признаком, чтобы не
+  // вычислять по участникам (название «Еблуша», «Б», без звонков и «был в сети»).
+  for (const cp of withUnread) {
+    const conv = cp.conversation;
+    if (conv) conv.isBotChat = !conv.isGroup && (conv.participants ?? []).some((p: any) => p.user?.isBot === true);
+  }
 
   // Местное время собеседника — только в беседах 1:1 и только у собеседника (lib/localTime.ts):
   // participants[].user.localTime = {timeZone, city, offsetMinutes} | null. В группах поля нет.
@@ -565,6 +584,16 @@ router.post("/", async (req, res) => {
   }
 
   const uniqueParticipantIds = Array.from(new Set([...participantIds, userId]));
+
+  // Бот «Еблуша» — не участник бесед (lib/systemBot.ts): ни в группу, ни в личку. Он и так отвечает в
+  // любой обычной беседе по обращению, а личный чат с ним — настройка «Чат с Еблушей» (PUT /api/bot/settings).
+  if ((await prisma.user.count({ where: { id: { in: uniqueParticipantIds }, isBot: true } })) > 0) {
+    res.status(400).json({
+      message: isGroup ? "The bot cannot be added to conversations" : "Use the «Chat with Eblusha» setting",
+      code: isGroup ? "BOT_NOT_PARTICIPANT" : "BOT_CHAT_VIA_SETTINGS",
+    });
+    return;
+  }
 
   // Secret chats are only supported for non-group 1:1 conversations
   if (isSecret) {
@@ -729,6 +758,12 @@ router.post("/:id/participants", async (req, res) => {
   const { participantIds } = parsed.data;
   const existingIds = conv.participants.map((p) => p.userId);
   const newIds = participantIds.filter((id) => !existingIds.includes(id));
+
+  // Бот «Еблуша» в группы не добавляется: он отвечает в любой беседе по обращению (lib/systemBot.ts).
+  if (newIds.length && (await prisma.user.count({ where: { id: { in: newIds }, isBot: true } })) > 0) {
+    res.status(400).json({ message: "The bot cannot be added to conversations", code: "BOT_NOT_PARTICIPANT" });
+    return;
+  }
 
   if (newIds.length === 0) {
     res.status(400).json({ message: "All users are already participants" });
@@ -904,6 +939,17 @@ router.delete("/:id/participants/me", async (req, res) => {
   const isMember = conv.participants.some((p) => p.userId === userId);
   if (!isMember) return res.status(403).json({ message: "Forbidden" });
 
+  // «Чат с Еблушей»: выйти = выключить настройку (без системной записи «покинул беседу»; история
+  // остаётся и вернётся при включении). lib/systemBot.ts.
+  {
+    const bot = await getSystemBot();
+    if (bot && bot.id !== userId && isBotChatShape(conv, conv.participants.map((p) => p.userId), bot.id)) {
+      await setBotChatEnabled(userId, false);
+      res.json({ success: true });
+      return;
+    }
+  }
+
   // Получаем данные пользователя, который покидает беседу (до удаления участия)
   const leavingUser = await prisma.user.findUnique({
     where: { id: userId },
@@ -1073,6 +1119,15 @@ router.delete("/:id", async (req, res) => {
   const recipients = conv.participants.map((p) => p.userId);
   const io = getIO();
   for (const rid of recipients) io?.to(userRoom(rid)).emit("conversations:deleted", { conversationId: id });
+  // Удалён «Чат с Еблушей» — настройка у человека теперь «выключено» (другим его устройствам).
+  {
+    const bot = await getSystemBot();
+    if (bot && isBotChatShape(conv, recipients, bot.id)) {
+      for (const rid of recipients) {
+        if (rid !== bot.id) io?.to(userRoom(rid)).emit(BOT_SETTINGS_EVENT, { botChatEnabled: false, conversationId: null });
+      }
+    }
+  }
 
   res.json({ success: true });
 });
@@ -1135,11 +1190,11 @@ router.get("/:id/messages", async (req, res) => {
   })();
 
   const include = {
-    sender: { select: { id: true, username: true, displayName: true } },
+    sender: { select: { id: true, username: true, displayName: true, isBot: true } },
     attachments: true,
     reactions: messageReactionsWithUser,
     receipts: true,
-    replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+    replyTo: { select: { id: true, content: true, senderId: true, createdAt: true, isBot: true } },
   };
 
   let messages;
@@ -1275,6 +1330,13 @@ router.post(
     metadata !== undefined ? normalizeForwardSendMetadata(metadata as Record<string, unknown>) : metadata;
   const userId = (req as AuthedRequest).user!.id;
 
+  // Системный бот пишет только через POST /api/bot/messages (разрешение на беседу, isBot=true).
+  const bot = await getSystemBot();
+  if (bot && bot.id === userId) {
+    res.status(403).json({ message: "The bot posts via /api/bot/messages", code: "BOT_USE_BOT_API" });
+    return;
+  }
+
   const membership = await prisma.conversationParticipant.findFirst({
     where: { conversationId, userId },
   });
@@ -1287,6 +1349,7 @@ router.post(
   // Load conversation to determine whether this is a secret chat and compute TTL
   const conv = await prisma.conversation.findUnique({
     where: { id: conversationId },
+    include: { participants: { select: { userId: true } } },
   });
   if (!conv) {
     res.status(404).json({ message: "Conversation not found" });
@@ -1370,6 +1433,27 @@ router.post(
     expiresAt = new Date(Date.now() + ttlSeconds * 1000);
   }
 
+  // Обращение к боту «Еблуша» (lib/systemBot.ts): «Еблуша,»/«/eb» в начале, ответ на сообщение бота,
+  // любое сообщение в «Чате с Еблушей», metadata.botAsk клиента (true — «Спросить», false — «не боту»).
+  // Служебные ключи metadata (bot, isBot, botAsk) задаёт только сервер. Беседа здесь уже не секретная.
+  const { meta: metaFromClient, botAsk } = takeBotMeta(normalizedMetadata);
+  const participantIds = conv.participants.map((p) => p.userId);
+  let botVia: ReturnType<typeof detectBotAddress> = null;
+  if (bot) {
+    const isBotChat = isBotChatShape(conv, participantIds, bot.id);
+    let replyToIsBot = false;
+    if (replyToId && !isBotChat) {
+      const parent = await prisma.message.findUnique({
+        where: { id: replyToId },
+        select: { conversationId: true, isBot: true, senderId: true },
+      });
+      replyToIsBot = !!parent && parent.conversationId === conversationId && (parent.isBot || parent.senderId === bot.id);
+    }
+    botVia = detectBotAddress({ type, content, botAsk, isBotChat, replyToIsBot, isForward: !!forwardFromGuess });
+  }
+  // metadata.botAsk: true — «это вопрос боту» (клиенты могут пометить); ставит только сервер.
+  const metadataForDb = botVia ? { ...(metaFromClient ?? {}), botAsk: true } : metaFromClient;
+
   const message = await prisma.message.create({
     data: {
       conversationId,
@@ -1378,7 +1462,7 @@ router.post(
       content: content ?? null,
       replyToId: replyToId ?? null,
       ...(expiresAt ? { expiresAt } : {}),
-      ...(normalizedMetadata !== undefined ? { metadata: normalizedMetadata as any } : {}),
+      ...(metadataForDb !== undefined ? { metadata: metadataForDb as any } : {}),
       ...(attachmentsForDb && attachmentsForDb.length
         ? {
             attachments: {
@@ -1392,93 +1476,29 @@ router.post(
           }
         : {}),
     },
-    include: {
-      sender: { select: { id: true, username: true, displayName: true } },
-      attachments: true,
-      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
-    },
+    include: SENT_MESSAGE_INCLUDE,
   });
 
-  await prisma.conversation.update({
-    where: { id: conversationId },
-    data: { lastMessageAt: new Date() },
-  });
-
-  const io = getIO();
-  io?.to(conversationId).emit("message:new", {
+  // Рассылка (message:new, message:notify, пуш, превью ссылки) — lib/messageFanout.ts, общая с ботом.
+  await publishNewMessage({
     conversationId,
-    messageId: message.id,
-    senderId: userId,
     message,
+    senderId: userId,
+    secret: Boolean((conv as any).isSecret),
+    type,
+    content,
+    previewUserId: userId,
   });
 
-  // Immediate notify event for tiles/unread without waiting for queries
-  const convForNotify = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-    include: { participants: true },
-  });
-  const recipients = convForNotify?.participants.map((p) => p.userId) ?? [];
-
-  for (const rid of recipients) {
-    if (rid !== userId) {
-      io?.to(userRoom(rid)).emit("message:notify", {
-        conversationId,
-        messageId: message.id,
-        senderId: userId,
-        message,
-      });
-    }
+  // Задача боту — ПОСЛЕ сохранения и рассылки; сбой очереди отправку не ломает (dispatchToBot не бросает).
+  if (bot && botVia) {
+    await dispatchToBot({
+      botId: bot.id,
+      via: botVia,
+      conversation: { id: conversationId, isGroup: conv.isGroup, title: conv.title ?? null, participantIds },
+      message,
+    });
   }
-
-  // Push-уведомление тем же получателям. Текст сообщения НЕ отправляем: он ушёл бы через
-  // Google/Apple, а для секретных бесед сервер его и не должен показывать. Клиент покажет
-  // имя и пометку типа, остальное подтянет сам. Ошибки здесь безопасны — enqueuePush не бросает.
-  try {
-    const senderName =
-      (message as any)?.sender?.displayName || (message as any)?.sender?.username || "Сообщение";
-    const attachmentKind = Array.isArray((message as any)?.attachments) && (message as any).attachments.length > 0
-      ? String((message as any).attachments[0]?.type || "")
-      : "";
-    const preview =
-      attachmentKind === "IMAGE" ? "Фото"
-        : attachmentKind === "VIDEO" ? "Видео"
-        : attachmentKind === "AUDIO" ? "Голосовое сообщение"
-        : attachmentKind ? "Файл"
-        : "";
-    enqueuePush(
-      recipients.filter((rid) => rid !== userId),
-      {
-        kind: "message",
-        conversationId,
-        messageId: message.id,
-        senderId: userId,
-        senderName,
-        preview,
-        secret: Boolean(convForNotify?.isSecret),
-        // read-sync: момент сообщения по часам сервера — Android сравнит его с readAt (push/types.ts).
-        sentAt: new Date(message.createdAt).getTime(),
-      },
-      `msg:${message.id}`,
-    );
-  } catch (error) {
-    // Пуш — ускоритель поверх сокета, его сбой не должен влиять на отправку сообщения.
-    // Но молчать нельзя: ровно так первая версия этого блока падала незаметно.
-    logger.warn({ error, conversationId }, "Failed to enqueue message push");
-  }
-
-  // Link preview (Telegram-like unfurl): enqueue job and return immediately.
-  // Disabled for secret conversations to avoid metadata leaks.
-  try {
-    const isSecret = Boolean((conv as any).isSecret);
-    const contentForPreview = type === "TEXT" ? (content ?? null) : null;
-    const firstUrl = !isSecret ? extractFirstUrl(contentForPreview) : null;
-    if (firstUrl) {
-      void enqueueLinkPreview(
-        { messageId: message.id, conversationId, url: firstUrl },
-        { userId, conversationId }
-      ).catch(() => {});
-    }
-  } catch {}
 
   res.status(201).json({ message });
   }

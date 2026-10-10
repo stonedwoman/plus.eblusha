@@ -1,11 +1,13 @@
 #!/usr/bin/env npx ts-node
 /**
- * Учётка бота «Еблуша» (обычный User, без отдельного признака «бот» в схеме).
+ * Учётка системного бота «Еблуша» (User.isBot = true — см. src/lib/systemBot.ts).
  *
  * Создаёт пользователя (или проверяет, что он есть), задаёт пароль и пишет логин/пароль и id
  * владельца в env-файл сервиса бота с правами 600. Пароль генерируется и НИКУДА не печатается.
  * Повторный запуск ничего не меняет, если пароль в файле уже есть (--rotate-password — сменить).
  * Имя, описание и аватар (фирменная «Б») бот ставит себе сам при старте (bot/src/main.ts).
+ * Перевод уже существующего бота в «часть системы» (убрать из групп и контактов, чат с ботом) —
+ * src/scripts/setupSystemBot.ts.
  *
  * На сервере (из корня репозитория, боевая БД берётся из .env как у остальных скриптов):
  *   TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register src/scripts/seedBotUser.ts --account-file /DATA/eblusha-plus/.env.bot-account \
@@ -37,7 +39,7 @@ export async function ensureBotUser(
 ): Promise<EnsureBotUserResult> {
   const existing = await prisma.user.findUnique({
     where: { username: opts.username },
-    select: { id: true, passwordHash: true, deletedAt: true, bannedAt: true },
+    select: { id: true, passwordHash: true, deletedAt: true, bannedAt: true, isBot: true },
   });
   if (!existing) {
     const u = await prisma.user.create({
@@ -45,6 +47,7 @@ export async function ensureBotUser(
         username: opts.username,
         displayName: BOT_DISPLAY_NAME,
         bio: BOT_BIO,
+        isBot: true,
         passwordHash: await hashPassword(opts.password),
       },
       select: { id: true },
@@ -54,6 +57,7 @@ export async function ensureBotUser(
   if (existing.deletedAt || existing.bannedAt) {
     throw new Error(`пользователь ${opts.username} удалён или заблокирован — разберитесь вручную`);
   }
+  if (!existing.isBot) await prisma.user.update({ where: { id: existing.id }, data: { isBot: true } });
   const same = !opts.forcePassword && (await verifyPassword(opts.password, existing.passwordHash));
   if (!same) {
     await prisma.user.update({ where: { id: existing.id }, data: { passwordHash: await hashPassword(opts.password) } });

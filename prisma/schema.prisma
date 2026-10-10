@@ -33,6 +33,9 @@ model User {
   bannedReason                  String?
   /// Set by admin "delete account" — anonymized + permanently disabled. Not reversible.
   deletedAt                     DateTime?
+  /// Системный бот «Еблуша» (src/lib/systemBot.ts): не участник бесед, отвечает по обращению.
+  /// Ставит только src/scripts/seedBotUser.ts / setupSystemBot.ts — через API не меняется.
+  isBot                         Boolean                                    @default(false)
   contactsRequested             Contact[]                                  @relation("ContactRequester")
   contactsReceived              Contact[]                                  @relation("ContactAddressee")
   conversations                 ConversationParticipant[]
@@ -213,6 +216,9 @@ model Message {
   content        String?
   /// 0 = plaintext, 1 = encrypted (non-secret chats server-side encryption)
   contentEncV    Int                 @default(0)
+  /// Сообщение системного бота «Еблуша» (пишет только POST /api/bot/messages). Клиенты верят
+  /// ТОЛЬКО этому полю (и sender.isBot), а не metadata — metadata задаёт отправитель.
+  isBot          Boolean             @default(false)
   metadata       Json?
   replyToId      String?
   replyTo        Message?            @relation("MessageReplies", fields: [replyToId], references: [id])

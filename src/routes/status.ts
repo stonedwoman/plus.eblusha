@@ -60,6 +60,7 @@ router.get("/me", async (req, res) => {
       avatarHistory: true,
       status: true,
       lastSeenAt: true,
+      isBot: true,
     },
   });
 

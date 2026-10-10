@@ -33,6 +33,8 @@ router.get("/:id", async (req, res) => {
       status: true,
       lastSeenAt: true,
       createdAt: true,
+      // системный бот «Еблуша» (lib/systemBot.ts): карточка без «написать/позвонить/в контакты»
+      isBot: true,
     },
   });
   if (!user) {

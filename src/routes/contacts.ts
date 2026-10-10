@@ -44,7 +44,8 @@ router.get("/", async (req, res) => {
   };
 
   const contacts = await prisma.contact.findMany({
-    where: whereByFilter(),
+    // Системный бот «Еблуша» в контактах не бывает (lib/systemBot.ts); старые строки с ним не показываем.
+    where: { AND: [whereByFilter(), { requester: { isBot: false } }, { addressee: { isBot: false } }] },
     include: {
       requester: { select: { id: true, username: true, displayName: true, avatarUrl: true, status: true } },
       addressee: { select: { id: true, username: true, displayName: true, avatarUrl: true, status: true } },
@@ -85,7 +86,7 @@ router.post("/add", async (req, res) => {
   const target = byUserId
     ? await prisma.user.findUnique({
         where: { id: byUserId },
-        select: { id: true, username: true, displayName: true },
+        select: { id: true, username: true, displayName: true, isBot: true },
       })
     : await prisma.user.findFirst({
         where: {
@@ -96,11 +97,17 @@ router.post("/add", async (req, res) => {
             ...( /^\d{4}$/.test(identifier) ? [{ eblid: identifier }] : [] ),
           ],
         },
-        select: { id: true, username: true, displayName: true },
+        select: { id: true, username: true, displayName: true, isBot: true },
       });
 
   if (!target) {
     res.status(404).json({ message: "User not found" });
+    return;
+  }
+  // Бот «Еблуша» — часть системы, не контакт: отвечает в любой беседе по обращению, а личный чат
+  // с ним — настройка «Чат с Еблушей» (lib/systemBot.ts).
+  if (target.isBot) {
+    res.status(400).json({ message: "The bot is not a contact", code: "BOT_NOT_CONTACT" });
     return;
   }
   if (target.id === userId) {
@@ -222,7 +229,7 @@ router.get("/search", async (req, res) => {
   // EBLID exact match (4 digits)
   if (/^\d{4}$/.test(query)) {
     const user = await prisma.user.findFirst({
-      where: { eblid: query },
+      where: { eblid: query, isBot: false },
       select: { id: true, username: true, displayName: true, avatarUrl: true, status: true },
     });
     res.json({ results: user ? [user] : [] });
@@ -230,6 +237,7 @@ router.get("/search", async (req, res) => {
   }
   const results = await prisma.user.findMany({
     where: {
+      isBot: false,
       OR: [
         { username: { contains: query, mode: "insensitive" } },
         { email: { contains: query, mode: "insensitive" } },

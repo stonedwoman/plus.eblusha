@@ -148,6 +148,35 @@ export async function enqueueLinkPreview(
   return true;
 }
 
+// ─────────────────────────── Очередь бота «Еблуша» ───────────────────────────
+// Контракт задачи — BotJob в src/lib/botContract.ts (его же читает сервис бота bot/src/api/types.ts).
+// Кладёт её только конвейер отправки (src/lib/systemBot.ts → dispatchToBot), забирает сервис бота
+// (BullMQ Worker на той же очереди). Модель дорогая и не идемпотентная, поэтому attempts: 1 —
+// упавшую задачу не повторяем; jobId по id сообщения — повтор той же отправки задачи не задвоит.
+export const BOT_QUEUE_NAME = "bot";
+
+let botQueue: Queue | null = null;
+
+export function getBotQueue(): Queue {
+  if (botQueue) return botQueue;
+  botQueue = new Queue(BOT_QUEUE_NAME, {
+    connection: getConnection(),
+    defaultJobOptions: {
+      attempts: 1,
+      removeOnComplete: true,
+      // В задаче — текст обращения и цепочки: упавшие храним не дольше суток (для разбора), не больше 200.
+      removeOnFail: { age: 24 * 3600, count: 200 },
+    },
+  });
+  return botQueue;
+}
+
+/** Поставить задачу боту. Бросает — вызывающий (dispatchToBot) ловит и пишет в журнал. */
+export async function enqueueBotJob(data: unknown, messageId: string): Promise<void> {
+  // BullMQ запрещает двоеточие в custom jobId (см. enqueuePush).
+  await getBotQueue().add("message", data, { jobId: `msg-${messageId}`.replace(/:/g, "-") });
+}
+
 export async function getLinkPreviewQueueDepth(): Promise<number> {
   const queue = getLinkPreviewQueue();
   const [waiting, active, delayed] = await Promise.all([

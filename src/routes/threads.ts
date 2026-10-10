@@ -46,10 +46,15 @@ router.post("/secret", async (req, res) => {
 
   const peer = await prisma.user.findUnique({
     where: { id: peerUserId },
-    select: { id: true },
+    select: { id: true, isBot: true },
   });
   if (!peer) {
     res.status(404).json({ message: "Peer user not found" });
+    return;
+  }
+  // Бот «Еблуша» секретные чаты не читает и не пишет (lib/systemBot.ts): тред с ним не создаём.
+  if (peer.isBot) {
+    res.status(403).json({ message: "The bot does not take part in secret chats", code: "BOT_NO_SECRET" });
     return;
   }
 

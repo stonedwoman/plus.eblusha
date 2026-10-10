@@ -57,13 +57,13 @@ export function startLinkPreviewWorker() {
         where: { id: messageId },
         data: { metadata: nextMeta as any },
         include: {
-          sender: { select: { id: true, username: true, displayName: true } },
+          sender: { select: { id: true, username: true, displayName: true, isBot: true } },
           attachments: true,
           reactions: {
-            include: { user: { select: { id: true, username: true, displayName: true } } },
+            include: { user: { select: { id: true, username: true, displayName: true, isBot: true } } },
           },
           receipts: true,
-          replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+          replyTo: { select: { id: true, content: true, senderId: true, createdAt: true, isBot: true } },
         },
       });
 

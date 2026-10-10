@@ -18,6 +18,7 @@ import e2eeRouter from "./e2ee";
 import debugRouter from "./debug";
 import adminRouter from "./admin";
 import usersRouter from "./users";
+import botRouter from "./bot";
 import { createCloudRouter } from "../cloud";
 
 const router = Router();
@@ -31,6 +32,8 @@ router.use("/messages", messagesRouter);
 router.use("/mobile", mobileRouter);
 router.use("/status", statusRouter);
 router.use("/users", usersRouter);
+// Бот «Еблуша» — часть системы: профиль, настройка «Чат с Еблушей», ответы бота (src/lib/systemBot.ts).
+router.use("/bot", botRouter);
 router.use("/upload", uploadRouter);
 router.use("/attachments", attachmentsRouter);
 router.use("/devices", devicesRouter);

@@ -19,7 +19,7 @@ const router = Router();
 
 /** Shipped on every Message payload that includes reactions (tooltip / UI). */
 const messageReactionsWithUser = {
-  include: { user: { select: { id: true, username: true, displayName: true } } },
+  include: { user: { select: { id: true, username: true, displayName: true, isBot: true } } },
 };
 
 type AuthedRequest = Request & { user?: { id: string } };
@@ -57,11 +57,11 @@ router.get(
   const message = await prisma.message.findUnique({
     where: { id: messageId },
     include: {
-      sender: { select: { id: true, username: true, displayName: true } },
+      sender: { select: { id: true, username: true, displayName: true, isBot: true } },
       attachments: true,
       reactions: messageReactionsWithUser,
       receipts: true,
-      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true, isBot: true } },
     }
   });
 
@@ -104,11 +104,11 @@ router.get(
         } as any,
       },
       include: {
-        sender: { select: { id: true, username: true, displayName: true } },
+        sender: { select: { id: true, username: true, displayName: true, isBot: true } },
         attachments: true,
         reactions: messageReactionsWithUser,
         receipts: true,
-        replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+        replyTo: { select: { id: true, content: true, senderId: true, createdAt: true, isBot: true } },
       },
     });
     res.json({ message: updated, preview: null });
@@ -136,11 +136,11 @@ router.get(
       } as any,
     },
     include: {
-      sender: { select: { id: true, username: true, displayName: true } },
+      sender: { select: { id: true, username: true, displayName: true, isBot: true } },
       attachments: true,
       reactions: messageReactionsWithUser,
       receipts: true,
-      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true, isBot: true } },
     },
   });
 
@@ -420,11 +420,11 @@ router.post("/update", async (req, res) => {
     where: { id: messageId },
     data: { content, metadata: nextMeta },
     include: {
-      sender: { select: { id: true, username: true, displayName: true } },
+      sender: { select: { id: true, username: true, displayName: true, isBot: true } },
       attachments: true,
       reactions: messageReactionsWithUser,
       receipts: true,
-      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true } },
+      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true, isBot: true } },
     },
   });
 
