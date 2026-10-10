@@ -16,6 +16,8 @@
  *   - «Чат с Еблушей»: по умолчанию выключен; включение (беседа + приветствие + события), там всё —
  *     боту, уведомления в него, выключение/повторное включение (история цела), выход = выключение,
  *     звонок туда — сразу «отклонён»;
+ *   - ответ бота частями: ответ на любую часть приносит боту весь ответ и вопрос; удалённое обращение —
+ *     ответа нет (409); задачи, которых бот не взял, из очереди выбрасываются;
  *   - лимит обращений в минуту на человека.
  *
  *   test/secret-env/secret-test.sh run test/bot-system.integration.test.ts
@@ -31,7 +33,7 @@ import prisma from "../src/lib/prisma";
 import { getRedisClient } from "../src/lib/redis";
 import { initSocket } from "../src/realtime/socket";
 import { signAccessToken } from "../src/utils/jwt";
-import { getBotQueue } from "../src/jobs/queue";
+import { getBotQueue, pruneStaleBotJobs } from "../src/jobs/queue";
 import { ensureBotUser } from "../src/scripts/seedBotUser";
 import { BOT_DISPATCH_PER_MINUTE, BOT_GRANT_MAX_MESSAGES, BOT_SECRET_REFUSAL, resetSystemBotCache } from "../src/lib/systemBot";
 import type { BotJob } from "../src/lib/botContract";
@@ -340,6 +342,62 @@ async function main() {
       const hist = await call("GET", `/api/conversations/${direct}/messages?limit=50`, A.token);
       const th = hist.body.messages.find((x: any) => x.id === thanks.id);
       assert.equal(th.reactions[0].user.isBot, true, "реакция бота — с признаком у пользователя");
+    });
+
+    console.log("ответ частями, удалённое обращение, уборка очереди");
+    await step("ответ бота частями: ответ человека на ЛЮБУЮ часть (картинку, вторую) → в цепочке вопрос и все части ответа", async () => {
+      const q = await send(A, group, "Еблуша, расскажи длинно и с картой");
+      const j = (await jobOf(q.id))!;
+      const p1 = (await botPost({ grant: j.grant, content: "Часть 1", replyToId: q.id })).body.message;
+      const p2 = (await botPost({ grant: j.grant, content: "Часть 2" })).body.message;
+      const ir = await botPost({
+        grant: j.grant,
+        type: "IMAGE",
+        attachments: [{ url: "/api/files/karta.eblusha", type: "IMAGE", metadata: { originalName: "karta-valheim.png", link: "https://v.koban.uk/map/" } }],
+      });
+      assert.equal(ir.status, 201, JSON.stringify(ir.body));
+      const img = ir.body.message;
+      assert.equal(img.attachments[0].metadata.link, "https://v.koban.uk/map/", "ссылка карточки доходит до клиентов");
+      // Чужое обращение рядом по времени — не часть этого ответа.
+      const other = await send(B, group, "/eb другое");
+      const oj = (await jobOf(other.id))!;
+      const otherAns = (await botPost({ grant: oj.grant, content: "Другой ответ", replyToId: other.id })).body.message;
+      const whole = [q.id, p1.id, p2.id, img.id];
+      const onImage = await send(B, group, "а подробнее?", { replyToId: img.id });
+      const fj = (await jobOf(onImage.id))!;
+      assert.equal(fj.via, "reply");
+      assert.deepEqual(fj.chain.map((m) => m.id), whole, "ответ на картинку");
+      const onSecond = await send(B, group, "про вторую часть", { replyToId: p2.id });
+      assert.deepEqual((await jobOf(onSecond.id))!.chain.map((m) => m.id), whole, "ответ на вторую часть");
+      const onFirst = await send(B, group, "про первую", { replyToId: p1.id });
+      assert.deepEqual((await jobOf(onFirst.id))!.chain.map((m) => m.id), whole, "ответ на первую часть");
+      const onOther = await send(B, group, "а это?", { replyToId: otherAns.id });
+      assert.deepEqual((await jobOf(onOther.id))!.chain.map((m) => m.id), [other.id, otherAns.id], "одночастный ответ — как раньше");
+    });
+    await step("обращение удалили, пока бот думал → ответ, реакция и «печатает» — 409 BOT_TRIGGER_DELETED, ни строки в беседе", async () => {
+      const q = await send(A, group, "Еблуша, ой, это лишнее");
+      const j = (await jobOf(q.id))!;
+      const del = await call("POST", "/api/messages/delete", A.token, { messageId: q.id });
+      assert.equal(del.status, 200, JSON.stringify(del.body));
+      const r = await botPost({ grant: j.grant, content: "ОтветНаУдалённое", replyToId: q.id });
+      assert.equal(r.status, 409);
+      assert.equal(r.body.code, "BOT_TRIGGER_DELETED");
+      const t = await call("POST", "/api/bot/typing", BOT.token, { grant: j.grant, typing: true });
+      assert.equal(t.status, 409);
+      const t2 = await call("POST", "/api/bot/typing", BOT.token, { grant: j.grant, typing: false });
+      assert.equal(t2.status, 204, "погасить «печатает» можно всегда");
+      const rr = await call("POST", "/api/bot/react", BOT.token, { grant: j.grant, messageId: q.id, emoji: "👍" });
+      assert.equal(rr.status, 409);
+      assert.equal(await prisma.message.count({ where: { conversationId: group, content: "ОтветНаУдалённое" } }), 0);
+    });
+    await step("задачи, которых бот так и не взял, выбрасываются из очереди (текст обращений не копится в Redis)", async () => {
+      const q = await send(A, group, "Еблуша, ты где?");
+      assert.ok(await jobOf(q.id), "задача поставлена");
+      await sleep(30);
+      const removed = await pruneStaleBotJobs(10);
+      assert.ok(removed >= 1, `выброшено ${removed}`);
+      assert.equal(await jobOf(q.id), null);
+      assert.equal(await waitingCount(), 0);
     });
 
     console.log("бот не участник и не видит лишнего");

@@ -45,6 +45,7 @@ import {
  *   POST /api/bot/typing    { grant, typing: boolean } → 204; в комнату беседы
  *                           conversation:typing_update {conversationId, userId, isTyping, displayName, isBot:true}
  *   POST /api/bot/react     { grant, messageId, emoji } → 200 {reaction}; сообщение — из беседы обращения.
+ *   По grant: обращение удалено автором → 409 BOT_TRIGGER_DELETED (ответа, реакции и «печатает» уже не будет).
  */
 
 const router = Router();
@@ -157,6 +158,17 @@ async function grantOr410(res: Response, token: unknown): Promise<BotGrant | nul
   return g;
 }
 
+/**
+ * Человек удалил своё обращение, пока бот думал, — отвечать на него (и «печатать») уже нельзя: ответ
+ * пересказал бы удалённый вопрос всем участникам. true — обращение на месте.
+ */
+async function triggerAliveOr409(res: Response, g: BotGrant): Promise<boolean> {
+  const t = await prisma.message.findUnique({ where: { id: g.triggerMessageId }, select: { deletedAt: true } });
+  if (t && !t.deletedAt) return true;
+  res.status(409).json({ message: "The request message was deleted", code: "BOT_TRIGGER_DELETED" });
+  return false;
+}
+
 router.post("/messages", requireSystemBot, async (req, res) => {
   const bot = (req as BotRequest).systemBot!;
   const parsed = botMessageSchema.safeParse(req.body ?? {});
@@ -171,6 +183,7 @@ router.post("/messages", requireSystemBot, async (req, res) => {
   if (b.grant) {
     const g = await grantOr410(res, b.grant);
     if (!g) return;
+    if (!(await triggerAliveOr409(res, g))) return;
     if (!(await spendBotGrant(b.grant, "msg", BOT_GRANT_MAX_MESSAGES))) {
       res.status(429).json({ message: "Too many messages for this request", code: "BOT_GRANT_EXHAUSTED" });
       return;
@@ -245,6 +258,8 @@ router.post("/typing", requireSystemBot, async (req, res) => {
   }
   const g = await grantOr410(res, parsed.data.grant);
   if (!g) return;
+  // «Печатает» на удалённый вопрос не включаем; погасить — можно всегда.
+  if (parsed.data.typing && !(await triggerAliveOr409(res, g))) return;
   const key = g.conversationId;
   const prev = typingOff.get(key);
   if (prev) clearTimeout(prev);
@@ -276,6 +291,7 @@ router.post("/react", requireSystemBot, async (req, res) => {
   }
   const g = await grantOr410(res, parsed.data.grant);
   if (!g) return;
+  if (!(await triggerAliveOr409(res, g))) return;
   const msg = await prisma.message.findUnique({
     where: { id: parsed.data.messageId },
     select: { id: true, conversationId: true, deletedAt: true },

@@ -171,10 +171,30 @@ export function getBotQueue(): Queue {
   return botQueue;
 }
 
+/**
+ * Задача, которая ждёт бота дольше этого, ему уже не нужна (он сам выбрасывает задачи старше
+ * BOT_JOB_MAX_AGE_SEC, по умолчанию 10 мин) — а в ней текст обращения и цепочки. Если сервис бота лежит
+ * (или ещё не выложен), такие задачи иначе копились бы в Redis (и в его снимках на диске) бессрочно.
+ */
+export const BOT_JOB_WAIT_MAX_MS = 30 * 60 * 1000;
+const BOT_PRUNE_EVERY_MS = 5 * 60 * 1000;
+let botPrunedAt = 0;
+
+/** Выбросить из очереди бота задачи, ждущие дольше graceMs. Возвращает, сколько выброшено. */
+export async function pruneStaleBotJobs(graceMs: number = BOT_JOB_WAIT_MAX_MS): Promise<number> {
+  botPrunedAt = Date.now();
+  const removed = await getBotQueue().clean(graceMs, 1000, "wait");
+  return removed.length;
+}
+
 /** Поставить задачу боту. Бросает — вызывающий (dispatchToBot) ловит и пишет в журнал. */
 export async function enqueueBotJob(data: unknown, messageId: string): Promise<void> {
   // BullMQ запрещает двоеточие в custom jobId (см. enqueuePush).
   await getBotQueue().add("message", data, { jobId: `msg-${messageId}`.replace(/:/g, "-") });
+  // Заодно (не чаще раза в 5 мин) — уборка задач, которых бот так и не взял.
+  if (Date.now() - botPrunedAt > BOT_PRUNE_EVERY_MS) {
+    void pruneStaleBotJobs().catch(() => undefined);
+  }
 }
 
 export async function getLinkPreviewQueueDepth(): Promise<number> {

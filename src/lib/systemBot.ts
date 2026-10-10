@@ -466,23 +466,65 @@ function jobMessage(m: MessageRowForJob): BotJobMessage {
   };
 }
 
-/** Предки сообщения по replyTo (от старшего к родителю), только эта беседа, без удалённых/истёкших/системных. */
+/** metadata.bot.triggerMessageId сообщения бота (на какое обращение это ответ) или null. */
+export function botTriggerOf(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const b = (metadata as Record<string, unknown>).bot;
+  if (!b || typeof b !== "object" || Array.isArray(b)) return null;
+  const t = (b as Record<string, unknown>).triggerMessageId;
+  return typeof t === "string" && t.length > 0 ? t : null;
+}
+
+/** Части одного ответа бота пишутся, пока живо разрешение; окно поиска частей — с запасом. */
+const BOT_ANSWER_PARTS_WINDOW_MS = (BOT_GRANT_TTL_SECONDS + 5 * 60) * 1000;
+
+/**
+ * Предки сообщения по replyTo (от старшего к родителю), только эта беседа, без удалённых/истёкших/системных.
+ *
+ * Ответ бота на одно обращение бывает несколькими сообщениями (длинный текст частями, картинки отдельно),
+ * а replyTo (цитата вопроса) есть только у ПЕРВОЙ части. Ответ человека на любую часть — продолжение
+ * всего ответа: в цепочку идут все части этого ответа (общий metadata.bot.triggerMessageId), а дальше
+ * вверх — от обращения. Иначе ответ на картинку или вторую часть приносил боту одну эту часть, без
+ * вопроса и остального текста (а клиенты ставят «Уточнить» по-разному).
+ */
 export async function loadReplyChain(conversationId: string, parentId: string | null, max: number): Promise<BotJobMessage[]> {
   const out: BotJobMessage[] = [];
   const seen = new Set<string>();
   const now = new Date();
+  const include = { sender: { select: { displayName: true } }, attachments: true } as const;
+  const usable = (m: { conversationId: string; deletedAt: Date | null; expiresAt: Date | null; type: string }) =>
+    m.conversationId === conversationId && !m.deletedAt && !(m.expiresAt && m.expiresAt <= now) && m.type !== "SYSTEM" && m.type !== "CALL";
   let pid = parentId;
   while (pid && out.length < max && !seen.has(pid)) {
     seen.add(pid);
-    const m = await prisma.message.findUnique({
-      where: { id: pid },
-      include: { sender: { select: { displayName: true } }, attachments: true },
-    });
-    if (!m || m.conversationId !== conversationId || m.deletedAt) break;
-    if (m.expiresAt && m.expiresAt <= now) break;
-    if (m.type === "SYSTEM" || m.type === "CALL") break;
+    const m = await prisma.message.findUnique({ where: { id: pid }, include });
+    if (!m || !usable(m)) break;
+    const trigger = m.isBot ? botTriggerOf(m.metadata) : null;
+    if (trigger) {
+      const at = m.createdAt.getTime();
+      const near = await prisma.message.findMany({
+        where: {
+          conversationId,
+          isBot: true,
+          deletedAt: null,
+          createdAt: { gte: new Date(at - BOT_ANSWER_PARTS_WINDOW_MS), lte: new Date(at + BOT_ANSWER_PARTS_WINDOW_MS) },
+        },
+        orderBy: { createdAt: "asc" },
+        take: 60,
+        include,
+      });
+      const parts = near.filter((p) => p.id === m.id || (usable(p) && botTriggerOf(p.metadata) === trigger && !seen.has(p.id)));
+      if (parts.length > 1 && parts.some((p) => p.id === m.id) && out.length + parts.length <= max) {
+        for (const p of parts) seen.add(p.id);
+        out.unshift(...parts.map((p) => jobMessage(p as MessageRowForJob)));
+        // Вверх — от первой части (она цитирует обращение), а без цитаты — от самого обращения.
+        pid = parts[0]!.replyToId ?? trigger;
+        continue;
+      }
+    }
     out.unshift(jobMessage(m as MessageRowForJob));
-    pid = m.replyToId;
+    // Часть ответа без цитаты (картинка, продолжение текста) — всё равно ведёт к обращению.
+    pid = m.replyToId ?? trigger;
   }
   return out;
 }
