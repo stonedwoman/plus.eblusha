@@ -20,8 +20,9 @@
 # Команды:
 #   up [--ref REF]          поднять Postgres+Redis, создать .env.test, sync, migrate deploy
 #   sync [--ref REF]        код → work/ (по умолчанию рабочее дерево, с незакоммиченными правками;
-#                           --ref REF = git archive REF, рабочее дерево не трогается);
-#                           node_modules — при смене package-lock.json; prisma generate — при смене схемы;
+#                           --ref REF = git archive REF, рабочее дерево не трогается); бот bot/ — тоже;
+#                           node_modules — при смене package-lock.json (bot/node_modules — при смене
+#                           bot/package-lock.json); prisma generate — при смене схемы;
 #                           prisma migrate deploy — всегда
 #   run [--ref REF] [--no-sync] [--timeout SEC] FILE...
 #                           прогнать тест(ы); пути относительно корня репозитория (test/xxx.test.ts);
@@ -142,7 +143,13 @@ do_sync() {
     sha="$(git -C "$REPO" rev-parse --verify "${ref}^{commit}")" || fail "нет такого ref: $ref"
     log "код из git $ref ($sha) → $WORK"
     rm -rf "${WORK:?}/src" "${WORK:?}/test" "${WORK:?}/prisma"
-    git -C "$REPO" archive "$sha" src test prisma package.json package-lock.json tsconfig.json prisma.config.ts |
+    local -a paths=(src test prisma package.json package-lock.json tsconfig.json prisma.config.ts)
+    # бот (bot/) — отдельный пакет; в старых коммитах его нет
+    if git -C "$REPO" cat-file -e "$sha:bot" 2>/dev/null; then
+      find "$WORK/bot" -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} + 2>/dev/null || true
+      paths+=(bot)
+    fi
+    git -C "$REPO" archive "$sha" "${paths[@]}" |
       tar -x -C "$WORK"
     # харнесс — всегда из рабочего дерева: в старых коммитах его может не быть
     mkdir -p "$WORK/test/secret-env"
@@ -152,6 +159,10 @@ do_sync() {
     log "код из рабочего дерева $REPO (с незакоммиченными правками) → $WORK"
     local d f
     for d in src test prisma; do rsync -a --delete "$REPO/$d/" "$WORK/$d/"; done
+    # бот (bot/) — свой пакет: код без его node_modules/dist/data (зависимости — ниже)
+    if [[ -d "$REPO/bot" ]]; then
+      rsync -a --delete --exclude /node_modules/ --exclude /dist/ --exclude /data/ "$REPO/bot/" "$WORK/bot/"
+    fi
     for f in package.json package-lock.json tsconfig.json prisma.config.ts; do cp -a "$REPO/$f" "$WORK/$f"; done
     echo "worktree HEAD=$(git -C "$REPO" rev-parse HEAD) +uncommitted, $(date -Is)" >"$WORK/.synced-from"
   fi
@@ -161,6 +172,13 @@ do_sync() {
     rsync -a --delete --exclude '/.prisma/' "$REPO/node_modules/" "$WORK/node_modules/"
     cp "$REPO/package-lock.json" "$WORK/.deps-lock"
     rm -f "$WORK/.schema-generated"
+  fi
+
+  if [[ -f "$REPO/bot/package-lock.json" ]] && { [[ ! -d "$WORK/bot/node_modules" ]] || ! cmp -s "$REPO/bot/package-lock.json" "$WORK/.bot-deps-lock"; }; then
+    log "копирую bot/node_modules"
+    mkdir -p "$WORK/bot"
+    rsync -a --delete "$REPO/bot/node_modules/" "$WORK/bot/node_modules/"
+    cp "$REPO/bot/package-lock.json" "$WORK/.bot-deps-lock"
   fi
 
   # dotenv (cwd) и Prisma-клиент (work/node_modules/.prisma/client/../../../.env) читают ЭТОТ файл

@@ -1,0 +1,235 @@
+/**
+ * ClaudeEngine без сети: подменяем клиент SDK объектом с тем же интерфейсом
+ * (beta.messages.stream(...).finalMessage(), beta.messages.create(...)).
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import type Anthropic from "@anthropic-ai/sdk";
+import { ClaudeEngine, echoContent, finalText, turnsToMessages } from "../../src/llm/claude";
+import { silentLogger } from "../../src/log";
+import type { ToolRuntime } from "../../src/llm/types";
+
+type Params = Record<string, any>;
+
+function fakeClient(responses: Array<Record<string, unknown>>) {
+  const calls: Params[] = [];
+  const client = {
+    beta: {
+      messages: {
+        stream(params: Params) {
+          calls.push(structuredClone(params));
+          const r = responses.shift();
+          if (!r) throw new Error("лишний вызов модели");
+          return { finalMessage: async () => r };
+        },
+        async create(params: Params) {
+          calls.push(structuredClone(params));
+          const r = responses.shift();
+          if (!r) throw new Error("лишний вызов модели");
+          return r;
+        },
+      },
+    },
+  };
+  return { client: client as unknown as Anthropic, calls };
+}
+
+const usage = (input = 1000, output = 100, extra: Record<string, unknown> = {}) => ({
+  input_tokens: input,
+  output_tokens: output,
+  cache_creation_input_tokens: 0,
+  cache_read_input_tokens: 0,
+  server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
+  iterations: null,
+  ...extra,
+});
+
+const cfg = {
+  anthropicApiKey: "k",
+  model: "claude-opus-5-5",
+  maxTokens: 16000,
+  maxToolIterations: 6,
+  webSearchMaxUses: 5,
+  webFetchMaxUses: 4,
+  webFetchMaxContentTokens: 15000,
+};
+
+function tools(run: ToolRuntime["run"] = async () => ({ content: "ok", isError: false })): ToolRuntime {
+  return {
+    defs: [{ name: "valheim_status", description: "статус", input_schema: { type: "object", properties: {}, required: [], additionalProperties: false } }],
+    run,
+  };
+}
+
+const req = (t: ToolRuntime, maxUsd = 1) => ({
+  turns: [{ role: "user" as const, text: "Алиса: вопрос" }],
+  contextNote: "Сейчас: суббота.",
+  effort: "medium" as const,
+  userKey: "abc",
+  tools: t,
+  signal: new AbortController().signal,
+  maxUsd,
+});
+
+test("параметры запроса: модель, fallbacks, мышление, усилие, кэш, инструменты", async () => {
+  const { client, calls } = fakeClient([
+    { model: "claude-opus-5-5", stop_reason: "end_turn", content: [{ type: "text", text: "Привет!", citations: null }], usage: usage() },
+  ]);
+  const eng = new ClaudeEngine(cfg, "СИСТЕМА", silentLogger, client);
+  const r = await eng.answer(req(tools()));
+  assert.equal(r.text, "Привет!");
+  assert.equal(r.stop, "end_turn");
+  const p = calls[0]!;
+  assert.equal(p.model, "claude-opus-5-5");
+  assert.deepEqual(p.betas, ["server-side-fallback-2026-07-01"]);
+  assert.equal(p.fallbacks, "default");
+  assert.deepEqual(p.thinking, { type: "adaptive" });
+  assert.deepEqual(p.output_config, { effort: "medium" });
+  assert.deepEqual(p.system, [{ type: "text", text: "СИСТЕМА", cache_control: { type: "ephemeral", ttl: "1h" } }]);
+  assert.deepEqual(p.cache_control, { type: "ephemeral" });
+  assert.deepEqual(p.metadata, { user_id: "abc" });
+  assert.equal(p.tool_choice, undefined, "принудительного выбора инструмента нет (на Opus 5.5 это 400)");
+  assert.deepEqual(p.tools[0], { type: "web_search_20260209", name: "web_search", max_uses: 5 });
+  assert.deepEqual(p.tools[1], { type: "web_fetch_20260209", name: "web_fetch", max_uses: 4, max_content_tokens: 15000 });
+  assert.equal(p.tools[2].name, "valheim_status");
+  assert.equal(p.tools[2].strict, true);
+  assert.equal(p.tools[2].eager_input_streaming, true);
+  // контекст — системным сообщением после последней реплики человека
+  assert.deepEqual(p.messages, [
+    { role: "user", content: [{ type: "text", text: "Алиса: вопрос" }] },
+    { role: "system", content: "Сейчас: суббота." },
+  ]);
+});
+
+test("цикл инструментов: tool_use → наш инструмент → итог; pause_turn продолжается", async () => {
+  const ran: unknown[] = [];
+  const { client, calls } = fakeClient([
+    {
+      model: "claude-opus-5-5",
+      stop_reason: "pause_turn",
+      content: [{ type: "server_tool_use", id: "srv1", name: "web_search", input: { query: "x" } }],
+      usage: usage(500, 50, { server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } }),
+    },
+    {
+      model: "claude-opus-5-5",
+      stop_reason: "tool_use",
+      content: [
+        { type: "thinking", thinking: "", signature: "sig" },
+        { type: "tool_use", id: "tu1", name: "valheim_status", input: {} },
+      ],
+      usage: usage(),
+    },
+    {
+      model: "claude-opus-5-5",
+      stop_reason: "end_turn",
+      content: [
+        { type: "text", text: "Сервер жив. ", citations: [{ type: "web_search_result_location", url: "https://a.example/x", title: "A", cited_text: "", encrypted_index: "" }] },
+        { type: "text", text: "Всё.", citations: null },
+      ],
+      usage: usage(),
+    },
+  ]);
+  const eng = new ClaudeEngine(cfg, "S", silentLogger, client);
+  const r = await eng.answer(
+    req(
+      tools(async (name, input) => {
+        ran.push([name, input]);
+        return { content: "{\"online\":2}", isError: false };
+      })
+    )
+  );
+  assert.deepEqual(ran, [["valheim_status", {}]]);
+  assert.equal(r.text, "Сервер жив. Всё.");
+  assert.deepEqual(r.sources, [{ url: "https://a.example/x", title: "A" }]);
+  assert.equal(r.cost.webSearches, 1);
+  assert.equal(calls.length, 3);
+  // после pause_turn — то же без новой реплики человека
+  assert.equal(calls[1]!.messages.at(-1).role, "assistant");
+  // после tool_use — ассистент (с thinking как был) и результаты одним сообщением
+  const last = calls[2]!.messages;
+  assert.equal(last.at(-2).role, "assistant");
+  assert.equal(last.at(-2).content[0].type, "thinking");
+  assert.deepEqual(last.at(-1), { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "{\"online\":2}" }] });
+});
+
+test("отказ модели — без текста, с категорией; инструменты отказавшего хода не исполняются", async () => {
+  let ran = 0;
+  const { client } = fakeClient([
+    { model: "claude-opus-5-5", stop_reason: "refusal", stop_details: { type: "refusal", category: "bio", explanation: null }, content: [{ type: "tool_use", id: "t", name: "valheim_status", input: {} }], usage: usage() },
+  ]);
+  const r = await new ClaudeEngine(cfg, "S", silentLogger, client).answer(
+    req(
+      tools(async () => {
+        ran++;
+        return { content: "", isError: false };
+      })
+    )
+  );
+  assert.equal(r.stop, "refusal");
+  assert.equal(r.refusalCategory, "bio");
+  assert.equal(r.text, "");
+  assert.equal(ran, 0);
+});
+
+test("потолок цены ответа обрывает цикл инструментов", async () => {
+  const { client, calls } = fakeClient([
+    { model: "claude-opus-5-5", stop_reason: "tool_use", content: [{ type: "text", text: "Ищу…" }, { type: "tool_use", id: "t", name: "valheim_status", input: {} }], usage: usage(200_000, 1000) },
+  ]);
+  const r = await new ClaudeEngine(cfg, "S", silentLogger, client).answer(req(tools(), 0.5));
+  assert.equal(r.stop, "budget");
+  assert.equal(calls.length, 1);
+  assert.ok(r.cost.usd > 0.5);
+});
+
+test("fallback посреди ответа: текст — только после границы, эхо по правилам", () => {
+  const content = [
+    { type: "thinking", thinking: "", signature: "a" },
+    { type: "text", text: "частичный ответ", citations: null },
+    { type: "server_tool_use", id: "s1", name: "web_search", input: {} },
+    { type: "web_search_tool_result", tool_use_id: "s1", content: [] },
+    { type: "server_tool_use", id: "s2", name: "web_search", input: {} },
+    { type: "tool_use", id: "t1", name: "x", input: {} },
+    { type: "fallback", from: { model: "claude-opus-5-5" }, to: { model: "claude-opus-5" }, trigger: { type: "refusal" } },
+    { type: "thinking", thinking: "", signature: "b" },
+    { type: "text", text: "полный ответ", citations: null },
+  ] as any[];
+  assert.equal(finalText(content), "полный ответ");
+  const echoed = echoContent(content).map((b: any) => b.type + (b.id ? `:${b.id}` : ""));
+  assert.deepEqual(echoed, ["text", "server_tool_use:s1", "web_search_tool_result", "fallback", "thinking", "text"]);
+  assert.equal(echoContent(content.slice(-2)).length, 2, "без fallback — как есть");
+});
+
+test("история: одинаковые роли склеиваются, начинается с человека, картинки — base64", () => {
+  const msgs = turnsToMessages(
+    [
+      { role: "assistant", text: "ранний ответ бота" },
+      { role: "user", text: "А: раз", images: [{ mime: "image/png", data: Buffer.from("png") }] },
+      { role: "user", text: "Б: два" },
+      { role: "assistant", text: "ответ" },
+      { role: "user", text: "А: три" },
+    ],
+    "контекст"
+  );
+  assert.equal(msgs[0]!.role, "user");
+  assert.equal((msgs[0]!.content as any[]).length, 3);
+  assert.deepEqual((msgs[0]!.content as any[])[0], { type: "image", source: { type: "base64", media_type: "image/png", data: Buffer.from("png").toString("base64") } });
+  assert.deepEqual(msgs.map((m) => m.role), ["user", "assistant", "user", "system"]);
+  assert.throws(() => turnsToMessages([{ role: "assistant", text: "x" }], ""));
+});
+
+test("сопоставление ника моделью: строгий JSON, только из списка", async () => {
+  const { client, calls } = fakeClient([
+    { model: "claude-opus-5-5", stop_reason: "end_turn", content: [{ type: "text", text: "{\"character\":\"РомаH\"}" }], usage: usage(300, 20) },
+    { model: "claude-opus-5-5", stop_reason: "end_turn", content: [{ type: "text", text: "{\"character\":\"Чужой\"}" }], usage: usage(300, 20) },
+  ]);
+  const eng = new ClaudeEngine(cfg, "S", silentLogger, client);
+  const r1 = await eng.matchCharacter("Ромка", ["РомаH", "IiApaCiOxa"], new AbortController().signal);
+  assert.equal(r1.character, "РомаH");
+  assert.ok(r1.cost.usd > 0);
+  const p = calls[0]!;
+  assert.equal(p.output_config.effort, "low");
+  assert.deepEqual(p.output_config.format.schema.properties.character.enum, ["РомаH", "IiApaCiOxa", ""]);
+  assert.equal(p.fallbacks, "default");
+  const r2 = await eng.matchCharacter("x", ["РомаH"], new AbortController().signal);
+  assert.equal(r2.character, null);
+});

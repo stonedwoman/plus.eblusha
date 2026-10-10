@@ -242,10 +242,52 @@ services:
     networks:
       - eblusha-net
 
+  # Бот «Еблуша» (bot/, отдельный пакет): обычный пользователь мессенджера, ходит в backend по HTTP
+  # и socket.io, к модели — напрямую на api.anthropic.com (выход stoned через Румынию, прокси не нужен).
+  # ПРОФИЛЬ bot: общий `up -d` стека бота НЕ поднимает. Запуск: `... --profile bot up -d eblusha-bot`.
+  # network_mode: host — модулю Valheim нужен WebMap на 127.0.0.1:3010 (слушает только loopback);
+  # backend при этом — 127.0.0.1:4000 (порт опубликован на loopback хоста).
+  # Секреты: ../.env.bot-account — логин/пароль бота и id владельца (src/scripts/seedBotUser.ts),
+  #          ../.env.bot         — ANTHROPIC_API_KEY (кладёт владелец; без него бот отвечает шаблонами).
+  # Состояние (SQLite: расходы, привязки ников, подтверждения) — том eblusha-bot-data. Подробности: bot/README.md.
+  eblusha-bot:
+    profiles: ["bot"]
+    build:
+      context: ../bot
+      dockerfile: Dockerfile
+    image: eblusha-bot:latest
+    container_name: eblusha-bot
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - path: ../.env.bot-account
+        required: false
+      - path: ../.env.bot
+        required: false
+    environment:
+      BOT_API_URL: http://127.0.0.1:${BACKEND_PORT:-4000}
+      BOT_DATA_DIR: /data
+    volumes:
+      - eblusha-bot-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - backend
+
 volumes:
   eblusha-postgres-data:
   eblusha-redis-data:
   eblusha-upload-tmp:
+  eblusha-bot-data:
 
 networks:
   eblusha-net:

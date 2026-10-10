@@ -1,0 +1,23 @@
+{
+  "name": "eblusha-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Бот «Еблуша» для мессенджера Еблуша",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "main": "dist/src/main.js",
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --disable-warning=ExperimentalWarning dist/src/main.js",
+    "test": "tsc -p tsconfig.json && node --disable-warning=ExperimentalWarning --test \"dist/test/unit/**/*.test.js\""
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.133.0",
+    "socket.io-client": "^4.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3"
+  }
+}
