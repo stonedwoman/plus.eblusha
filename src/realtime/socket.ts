@@ -33,6 +33,12 @@ type ServerToClientEvents = {
   "presence:game:snapshot:batch": (payload: { items: { userId: string; ts: number; game: PresenceGame | null; reason?: PresenceGameClearReason }[] }) => void;
   "message:new": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "receipts:update": (payload: { conversationId: string; messageIds: string[]; userId?: string; status?: "DELIVERED" | "READ" | "SEEN"; receipts?: any[] }) => void;
+  /**
+   * read-sync: беседу прочитали на одном из устройств ЭТОГО же пользователя (в т.ч. на текущем —
+   * byDeviceId). Уходит в комнату user:<id>, то есть на все его сокеты. Клиент снимает уведомления
+   * беседы, показанные не позже readAt (+1 с на часы). Обычные и секретные беседы. См. push/readSync.ts.
+   */
+  "conversation:read-self": (payload: { conversationId: string; readAt: number; byDeviceId?: string }) => void;
   "message:update": (payload: { conversationId: string; messageId: string; reason: string; message?: any }) => void;
   "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "message:reaction": (payload: { conversationId: string; messageId: string; senderId: string }) => void;

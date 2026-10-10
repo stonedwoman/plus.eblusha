@@ -112,6 +112,57 @@ function toDataPayload(payload: PushPayload): Record<string, string> {
   return flat;
 }
 
+/** Объект `message` запроса FCM v1 для одного адресата. */
+export type FcmMessage = {
+  token: string;
+  data: Record<string, string>;
+  android: {
+    priority: "HIGH" | "NORMAL";
+    ttl: string;
+    collapse_key?: string;
+  };
+};
+
+/**
+ * Собрать `message` для одного адресата. Экспорт — для теста полезной нагрузки
+ * (test/read-sync.integration.test.ts).
+ *
+ * Всегда только data: уведомление рисует само приложение. Иначе система показала бы своё поверх
+ * нашего, а в свёрнутом виде мы бы не смогли поднять звонок.
+ */
+export function buildFcmMessage(target: PushTarget, payload: PushPayload): FcmMessage {
+  const data = toDataPayload(payload);
+  if (payload.kind === "read") {
+    // «Прочитано на другом устройстве»: приложение снимает свои уведомления беседы, показанные не
+    // позже readAt. Срочности нет — NORMAL (в Doze доставят в окно обслуживания; живой
+    // ConnectionService и так получил то же по сокету). ttl час, как apns-expiration: телефон мог
+    // быть без сети, а уведомления, полученные им до прочтения, всё равно надо погасить.
+    // collapse_key на беседу: пока телефон недоступен или FCM придерживает пуши, ждёт ОДИН —
+    // последний, с самым поздним readAt, — а не очередь. Помнить: FCM хранит не больше 4 разных
+    // collapse_key на устройство (лишние — какие повезёт) и троттлит collapsible-пуши (пачка 20,
+    // потом 1 в 3 мин — задерживает, не теряет); добирать остальное — делу клиента при переподключении.
+    return {
+      token: target.token,
+      data,
+      android: {
+        priority: "NORMAL",
+        ttl: "3600s",
+        collapse_key: `read-${payload.conversationId}`,
+      },
+    };
+  }
+  const urgent = isUrgent(payload);
+  return {
+    token: target.token,
+    data,
+    android: {
+      priority: urgent ? "HIGH" : "NORMAL",
+      // Звонок бессмысленно доставлять с опозданием: 60 секунд — наш ring-timeout.
+      ttl: urgent ? "60s" : "86400s",
+    },
+  };
+}
+
 export async function sendFcm(targets: PushTarget[], payload: PushPayload): Promise<PushSendResult> {
   const account = loadServiceAccount();
   if (!account || targets.length === 0) return { sent: 0, dead: [] };
@@ -121,8 +172,6 @@ export async function sendFcm(targets: PushTarget[], payload: PushPayload): Prom
   if (!accessToken) return { sent: 0, dead: [], retryable: true };
 
   const url = `https://fcm.googleapis.com/v1/projects/${account.project_id}/messages:send`;
-  const data = toDataPayload(payload);
-  const urgent = isUrgent(payload);
   const dead: string[] = [];
   let sent = 0;
   let retryable = false;
@@ -137,19 +186,7 @@ export async function sendFcm(targets: PushTarget[], payload: PushPayload): Prom
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          message: {
-            token: target.token,
-            // Только data: уведомление рисует само приложение. Иначе система показала бы
-            // своё поверх нашего, а в свёрнутом виде мы бы не смогли поднять звонок.
-            data,
-            android: {
-              priority: urgent ? "HIGH" : "NORMAL",
-              // Звонок бессмысленно доставлять с опозданием: 60 секунд — наш ring-timeout.
-              ttl: urgent ? "60s" : "86400s",
-            },
-          },
-        }),
+        body: JSON.stringify({ message: buildFcmMessage(target, payload) }),
       });
       if (res.ok) {
         sent += 1;

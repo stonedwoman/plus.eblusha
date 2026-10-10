@@ -1,18 +1,27 @@
 /**
- * read-sync: «беседу прочитали на другом устройстве» → тихий пуш {kind:"read", conversationId} на iOS.
+ * read-sync: «беседу прочитали на одном устройстве» → остальные устройства того же человека снимают
+ * уведомления: сокет-событие conversation:read-self в комнату пользователя + тихий пуш
+ * {kind:"read", conversationId, readAt} на iOS (APNs) и Android (FCM).
  *
  * Что проверяется:
  *   A. Полезная нагрузка APNs (buildRequest, без сети): background, priority 5, collapse-id read-<C>,
  *      aps = только content-available, в теле только kind+conversationId (ни текста, ни имён);
  *      на VoIP-токен read не уходит; collapse-id не длиннее 64 байт.
- *   B. Выбор получателей (sendPushToUsers с подменёнными sendApns/sendFcm): только iOS-alert-токены,
- *      без VoIP, без FCM, без отозванных устройств, без excludeDeviceIds.
+ *   A2. Полезная нагрузка FCM (buildFcmMessage, без сети): только data (без notification), все значения —
+ *      строки, readAt строкой; priority NORMAL, ttl 3600s, collapse_key read-<C>; message/call не изменились.
+ *   B. Выбор получателей (sendPushToUsers с подменёнными sendApns/sendFcm): iOS-alert-токены и Android
+ *      (FCM), без VoIP, без отозванных устройств, без excludeDeviceIds.
  *   C. Маршруты на настоящих Redis/BullMQ (воркера пушей в тестовой среде нет — задачи лежат в очереди):
  *      mark-conversation-read и receipts(READ) ставят ровно одну задачу, исключая устройство-читатель;
- *      нет iOS-токенов / читатель — единственный iOS / ничего не изменилось / DELIVERED / уже прочитано /
- *      свои сообщения / посторонний в секретке — задач нет и окно дребезга не занято;
+ *      нет push-токенов / читатель — единственное push-устройство / ничего не изменилось / DELIVERED /
+ *      уже прочитано / свои сообщения / посторонний в секретке — задач нет и окно дребезга не занято;
  *      дребезг: 1-е событие сразу, 2-е — одна отложенная задача на конец окна, 3-е — ничего,
  *      после окна — снова сразу; хвост сам занимает следующее окно; секретная беседа — так же, без записи в БД.
+ *   D. Сокет-событие conversation:read-self (настоящие socket.io-клиенты, в комнаты бесед НЕ входят):
+ *      приходит на все сокеты читающего человека (и на само читающее устройство, byDeviceId), ни одного —
+ *      собеседнику и постороннему; без дребезга; при «нечего читать» / DELIVERED / постороннем в секретке —
+ *      нет; без push-токенов — есть. И сквозной путь задача → воркер (attachReadAt) → sendPushToUsers:
+ *      readAt в пуше РОВНО тот же, что в сокет-событии; FCM уходит на Android, APNs на iPhone, кроме читателя.
  *
  * Запускать ТОЛЬКО в изолированной среде (guard.ts не пустит к боевым БД/Redis):
  *   test/secret-env/secret-test.sh run test/read-sync.integration.test.ts
@@ -29,8 +38,10 @@ import { initSocket } from "../src/realtime/socket";
 import { signAccessToken } from "../src/utils/jwt";
 import { getPushQueue } from "../src/jobs/queue";
 import { buildRequest, type ApnsConfig } from "../src/push/apns";
+import { buildFcmMessage } from "../src/push/fcm";
 import { sendPushToUsers } from "../src/push";
-import { READ_SYNC_WINDOW_MS, attachReadAt } from "../src/push/readSync";
+import { READ_SYNC_WINDOW_MS, attachReadAt, notifyConversationRead } from "../src/push/readSync";
+import { io as ioClient } from "socket.io-client";
 
 // Подмена экспортов: index.ts зовёт apns_1.sendApns(...)/fcm_1.sendFcm(...) в момент вызова. `import * as` в CJS
 // даёт копию, а не живые экспорты — берём настоящий объект через require.
@@ -145,6 +156,66 @@ function assertCleanPayload(job: any, conversationId: string, userId: string) {
   assert.deepEqual(job.data.userIds, [userId]);
 }
 
+// ---------------------------------------------------------------- сокеты (настоящие socket.io-клиенты)
+type Sock = { s: ReturnType<typeof ioClient>; events: any[]; label: string };
+const openSockets: Sock[] = [];
+/** Сокет человека u; deviceId — как у настоящего клиента, через did в токене. В комнаты бесед НЕ входит. */
+async function connectSock(u: U, label: string, deviceId?: string): Promise<Sock> {
+  const token = signAccessToken({ sub: u.id, tokenId: crypto.randomUUID(), ...(deviceId ? { did: deviceId } : {}) });
+  const s = ioClient(baseUrl, { auth: { token }, transports: ["websocket"], forceNew: true, reconnection: false });
+  await new Promise<void>((resolve, reject) => {
+    s.once("connect", () => resolve());
+    s.once("connect_error", reject);
+  });
+  const sock: Sock = { s, events: [], label };
+  s.on("conversation:read-self", (e: any) => sock.events.push(e));
+  openSockets.push(sock);
+  return sock;
+}
+const evFor = (sock: Sock, conversationId: string) => sock.events.filter((e) => e?.conversationId === conversationId);
+/** Ждём, пока на сокет придёт ровно n событий read-self по беседе. */
+async function waitEvents(sock: Sock, conversationId: string, n: number, ms = 2500): Promise<any[]> {
+  const t0 = Date.now();
+  while (evFor(sock, conversationId).length < n && Date.now() - t0 < ms) await sleep(20);
+  await sleep(50); // лишнее (дубль) тоже должно успеть прийти, чтобы equal его поймал
+  const got = evFor(sock, conversationId);
+  assert.equal(got.length, n, `${sock.label}: ждали ${n} событий read-self по ${conversationId}, пришло ${got.length}`);
+  return got;
+}
+async function expectNoEvents(socks: Sock[], conversationId: string, waitMs = 700) {
+  await sleep(waitMs);
+  for (const s of socks) assert.equal(evFor(s, conversationId).length, 0, `${s.label}: не должно быть read-self по ${conversationId}`);
+}
+
+// ---------------------------------------------------------------- «воркер» с подменёнными провайдерами
+type Delivered = { apns: string[]; fcm: string[]; apnsPayload: any; fcmPayload: any; fcmTargets: any[]; apnsProviders: string[] };
+/** Ровно то, что делает push.worker.ts с задачей (attachReadAt → sendPushToUsers), но без сети. */
+async function deliver(job: any): Promise<Delivered> {
+  const origApns = apnsExports.sendApns;
+  const origFcm = fcmExports.sendFcm;
+  const out: Delivered = { apns: [], fcm: [], apnsPayload: null, fcmPayload: null, fcmTargets: [], apnsProviders: [] };
+  apnsExports.sendApns = async (targets: any[], payload: any) => {
+    out.apns = targets.map((t) => t.deviceId).sort();
+    out.apnsProviders = targets.map((t) => t.provider);
+    out.apnsPayload = payload;
+    return { sent: targets.length, dead: [] };
+  };
+  fcmExports.sendFcm = async (targets: any[], payload: any) => {
+    out.fcm = targets.map((t) => t.deviceId).sort();
+    out.fcmTargets = targets;
+    out.fcmPayload = payload;
+    return { sent: targets.length, dead: [] };
+  };
+  try {
+    const payload = await attachReadAt(job.data.userIds, job.data.payload, job.timestamp ?? Date.now());
+    await sendPushToUsers(job.data.userIds, payload, { excludeDeviceIds: job.data.excludeDeviceIds });
+  } finally {
+    apnsExports.sendApns = origApns;
+    fcmExports.sendFcm = origFcm;
+  }
+  return out;
+}
+
 type StepResult = { name: string; ok: boolean; err?: string };
 const results: StepResult[] = [];
 async function step(name: string, fn: () => Promise<void>) {
@@ -179,10 +250,14 @@ async function main() {
     const iB = await mkDevice(U, "iB", { token: tok() });
     const aC = await mkDevice(U, "aC", { token: tok(), provider: "fcm" });
     const iD = await mkDevice(U, "iD", { token: tok(), revoked: true });
-    await mkDevice(U, "eE");
-    // W — только Android; X — единственный iPhone (он же читатель); Y — iPhone, но посторонний для беседы.
+    const eE = await mkDevice(U, "eE"); // ПК (натив) без push-токенов
+    // W — только Android (+ ПК без токенов); X — единственный iPhone (он же читатель); Y — iPhone, но посторонний
+    // для беседы; Z — устройства без push-токенов вовсе (только ПК/веб).
     const W = await mkUser("w");
-    await mkDevice(W, "wA", { token: tok(), provider: "fcm" });
+    const wA = await mkDevice(W, "wA", { token: tok(), provider: "fcm" });
+    const wB = await mkDevice(W, "wB");
+    const Z = await mkUser("z");
+    const zA = await mkDevice(Z, "zA");
     const X = await mkUser("x");
     const xA = await mkDevice(X, "xA", { token: tok() });
     const Y = await mkUser("y");
@@ -233,6 +308,39 @@ async function main() {
       assert.ok(Buffer.byteLength(req.headers["apns-collapse-id"] ?? "") <= 64);
     });
 
+    // ================================================================ A2. полезная нагрузка FCM
+    console.log("A2 — полезная нагрузка FCM");
+    const fcmTgt = { userId: U.id, deviceId: aC, token: "fcm-token-1", provider: "fcm" as const };
+    await step("read → только data {kind, conversationId, readAt-строкой}; NORMAL, ttl 3600s, collapse_key read-<C>", async () => {
+      const C = "cm0abcdefghijklmnopqrstuv";
+      const msg = buildFcmMessage(fcmTgt, { kind: "read", conversationId: C, readAt: 1_700_000_000_123 });
+      assert.deepEqual(msg, {
+        token: "fcm-token-1",
+        data: { kind: "read", conversationId: C, readAt: "1700000000123" },
+        android: { priority: "NORMAL", ttl: "3600s", collapse_key: `read-${C}` },
+      });
+      // ни notification-блока (ни на верхнем уровне, ни в android), ни текста/имён
+      const raw = JSON.stringify({ message: msg });
+      for (const bad of ["notification", "title", "body", "senderName", "preview", "messageId", "sound"]) {
+        assert.ok(!raw.includes(`"${bad}"`), `в FCM-сообщении не должно быть ${bad}`);
+      }
+      for (const v of Object.values(msg.data)) assert.equal(typeof v, "string", "FCM data — только строки");
+    });
+    await step("read без readAt (старый путь) → в data только kind+conversationId", async () => {
+      const msg = buildFcmMessage(fcmTgt, { kind: "read", conversationId: "cm0abcdefghijklmnopqrstuv" });
+      assert.deepEqual(msg.data, { kind: "read", conversationId: "cm0abcdefghijklmnopqrstuv" });
+    });
+    await step("контроль: message — NORMAL/86400s без collapse_key, call — HIGH/60s (как было)", async () => {
+      const m = buildFcmMessage(fcmTgt, { kind: "message", conversationId: "c", messageId: "m", senderId: "s", senderName: "n" });
+      assert.deepEqual(m.android, { priority: "NORMAL", ttl: "86400s" });
+      assert.deepEqual(m.data, { kind: "message", conversationId: "c", messageId: "m", senderId: "s", senderName: "n" });
+      const c = buildFcmMessage(fcmTgt, { kind: "call", conversationId: "c", callerId: "s", callerName: "n", video: true });
+      assert.deepEqual(c.android, { priority: "HIGH", ttl: "60s" });
+      assert.equal(c.data.video, "true");
+      const cc = buildFcmMessage(fcmTgt, { kind: "call-cancel", conversationId: "c" });
+      assert.deepEqual(cc.android, { priority: "HIGH", ttl: "60s" });
+    });
+
     // ================================================================ B. выбор получателей
     console.log("B — выбор получателей в sendPushToUsers");
     const origApns = apnsExports.sendApns;
@@ -252,19 +360,25 @@ async function main() {
         apnsSeen = [];
         fcmSeen = [];
         await sendPushToUsers([U.id], { kind: "read", conversationId: "cm0abcdefghijklmnopqrstuv" }, { excludeDeviceIds: exclude });
-        return { apns: apnsSeen.map((t) => `${t.deviceId}:${t.provider}`).sort(), fcm: fcmSeen.length };
+        return {
+          apns: apnsSeen.map((t) => `${t.deviceId}:${t.provider}`).sort(),
+          fcm: fcmSeen.map((t) => `${t.deviceId}:${t.provider}`).sort(),
+        };
       };
-      await step("read уходит на iOS-alert-токены обоих iPhone; без VoIP, без Android, без отозванного", async () => {
+      await step("read уходит на alert-токены: оба iPhone (APNs) и Android (FCM); без VoIP, без отозванного", async () => {
         const r = await pick();
         assert.deepEqual(r.apns, [`${iA}:apns`, `${iB}:apns`].sort());
-        assert.equal(r.fcm, 0);
-        assert.ok(!r.apns.some((x) => x.startsWith(iD)));
+        assert.deepEqual(r.fcm, [`${aC}:fcm`]);
+        assert.ok(![...r.apns, ...r.fcm].some((x) => x.startsWith(iD)));
         assert.ok(!r.apns.some((x) => x.includes("apns-voip")));
       });
-      await step("excludeDeviceIds убирает читающее устройство", async () => {
+      await step("excludeDeviceIds убирает читающее устройство (iPhone или Android)", async () => {
         const r = await pick([iA]);
         assert.deepEqual(r.apns, [`${iB}:apns`]);
-        assert.equal(r.fcm, 0);
+        assert.deepEqual(r.fcm, [`${aC}:fcm`]);
+        const r2 = await pick([aC]);
+        assert.deepEqual(r2.apns, [`${iA}:apns`, `${iB}:apns`].sort());
+        assert.deepEqual(r2.fcm, []);
       });
       await step("контроль: message по-прежнему идёт и на Android, call — на VoIP", async () => {
         apnsSeen = [];
@@ -356,10 +470,28 @@ async function main() {
       await expectNoJobs(C);
       assert.equal(await redisHas(lastKey(U.id, C)), false, "окно дребезга не занято");
     });
-    await step("у человека нет iOS-токенов (только Android) → задач нет, окно не занято", async () => {
+    await step("у человека нет push-токенов вовсе → задач нет, окно не занято", async () => {
+      const C = await mkConv(Z, V);
+      await mkMsg(C, V.id);
+      assert.equal((await markRead(Z, zA, C)).status, 200);
+      await expectNoJobs(C);
+      assert.equal(await redisHas(lastKey(Z.id, C)), false);
+    });
+    await step("только Android (читают на другом устройстве) → задача, уходит на FCM", async () => {
       const C = await mkConv(W, V);
       await mkMsg(C, V.id);
-      assert.equal((await markRead(W, undefined, C)).status, 200);
+      assert.equal((await markRead(W, wB, C)).status, 200);
+      const jobs = await expectJobs(C, 1);
+      assertCleanPayload(jobs[0], C, W.id);
+      assert.deepEqual(jobs[0]!.data.excludeDeviceIds, [wB]);
+      const d = await deliver(jobs[0]);
+      assert.deepEqual(d.fcm, [wA]);
+      assert.deepEqual(d.apns, []);
+    });
+    await step("читатель — единственное push-устройство (Android) → задач нет, окно не занято", async () => {
+      const C = await mkConv(W, V);
+      await mkMsg(C, V.id);
+      assert.equal((await markRead(W, wA, C)).status, 200);
       await expectNoJobs(C);
       assert.equal(await redisHas(lastKey(W.id, C)), false);
     });
@@ -428,7 +560,159 @@ async function main() {
       assert.ok((jobs[1]!.opts.delay ?? 0) > 3000);
       assert.deepEqual(jobs[1]!.data.excludeDeviceIds, [iB]);
     });
+
+    // ================================================================ D. сокет + сквозной путь до провайдеров
+    console.log("D — сокет conversation:read-self и путь задача → воркер → провайдеры");
+    // Ни один сокет не входит в комнату беседы (conversation:join не шлём): событие обязано дойти
+    // через комнату пользователя, где бы клиент ни «сидел».
+    const sUi = await connectSock(U, "U/iPhone iA", iA);
+    const sUa = await connectSock(U, "U/Android aC", aC);
+    const sUpc = await connectSock(U, "U/ПК eE", eE);
+    const sUweb = await connectSock(U, "U/веб без устройства");
+    const sV = await connectSock(V, "V (собеседник)");
+    const sY = await connectSock(Y, "Y (посторонний)", yA);
+    const sZ = await connectSock(Z, "Z (без push)", zA);
+    const allU = [sUi, sUa, sUpc, sUweb];
+
+    await step("ПК читает → событие на ВСЕ сокеты U (и на сам ПК), больше никому; readAt = момент запроса; byDeviceId = ПК", async () => {
+      const C = await mkConv(U, V);
+      await mkMsg(C, V.id);
+      const before = Date.now();
+      assert.equal((await markRead(U, eE, C)).status, 200);
+      const after = Date.now();
+      const evs: any[] = [];
+      for (const s of allU) evs.push((await waitEvents(s, C, 1))[0]);
+      for (const e of evs) {
+        assert.deepEqual(Object.keys(e).sort(), ["byDeviceId", "conversationId", "readAt"], "в событии ровно три поля");
+        assert.equal(e.conversationId, C);
+        assert.equal(e.byDeviceId, eE);
+        assert.equal(typeof e.readAt, "number");
+        assert.ok(e.readAt >= before && e.readAt <= after, `readAt=${e.readAt} вне [${before}, ${after}]`);
+        assert.equal(e.readAt, evs[0].readAt, "один readAt на всех");
+      }
+      await expectNoEvents([sV, sY, sZ], C, 300);
+
+      // Тот же readAt — в пуше: Android (FCM) и оба iPhone (APNs alert, не VoIP); у ПК токена нет.
+      const jobs = await expectJobs(C, 1);
+      assert.deepEqual(jobs[0]!.data.excludeDeviceIds, [eE]);
+      const d = await deliver(jobs[0]);
+      assert.deepEqual(d.fcm, [aC]);
+      assert.deepEqual(d.apns, [iA, iB].sort());
+      assert.ok(d.apnsProviders.every((p) => p === "apns"), `APNs-провайдеры: ${d.apnsProviders}`);
+      assert.deepEqual(d.fcmPayload, { kind: "read", conversationId: C, readAt: evs[0].readAt });
+      assert.deepEqual(d.apnsPayload, d.fcmPayload);
+      // (as any: deepEqual выше сузил тип до {kind: string}, а здесь нужен PushPayload — это тот же объект)
+      assert.deepEqual(buildFcmMessage(d.fcmTargets[0], d.fcmPayload as any).data, {
+        kind: "read",
+        conversationId: C,
+        readAt: String(evs[0].readAt),
+      });
+    });
+    await step("iPhone читает → FCM на Android, APNs только второму iPhone; byDeviceId = iA", async () => {
+      const C = await mkConv(U, V);
+      await mkMsg(C, V.id);
+      await markRead(U, iA, C);
+      for (const s of allU) assert.equal((await waitEvents(s, C, 1))[0].byDeviceId, iA);
+      const d = await deliver((await expectJobs(C, 1))[0]);
+      assert.deepEqual(d.fcm, [aC]);
+      assert.deepEqual(d.apns, [iB]);
+    });
+    await step("Android читает → FCM никому (Android один), APNs обоим iPhone; byDeviceId = aC", async () => {
+      const C = await mkConv(U, V);
+      await mkMsg(C, V.id);
+      await markRead(U, aC, C);
+      for (const s of allU) assert.equal((await waitEvents(s, C, 1))[0].byDeviceId, aC);
+      const d = await deliver((await expectJobs(C, 1))[0]);
+      assert.deepEqual(d.fcm, []);
+      assert.deepEqual(d.apns, [iA, iB].sort());
+    });
+    await step("читатель не определён (нет X-Device-Id) → в событии нет byDeviceId; пуш всем трём", async () => {
+      const C = await mkConv(U, V);
+      await mkMsg(C, V.id);
+      await markRead(U, undefined, C);
+      for (const s of allU) {
+        const [e] = await waitEvents(s, C, 1);
+        assert.deepEqual(Object.keys(e).sort(), ["conversationId", "readAt"]);
+      }
+      const d = await deliver((await expectJobs(C, 1))[0]);
+      assert.deepEqual(d.fcm, [aC]);
+      assert.deepEqual(d.apns, [iA, iB].sort());
+    });
+    await step("без дребезга: 2-е прочтение внутри окна → 2-е событие сразу, readAt растёт; хвост-пуш несёт readAt 2-го", async () => {
+      const C = await mkConv(U, V);
+      await mkMsg(C, V.id);
+      await markRead(U, eE, C);
+      const [e1] = await waitEvents(sUa, C, 1);
+      await sleep(30);
+      await mkMsg(C, V.id);
+      await markRead(U, eE, C);
+      const evs = await waitEvents(sUa, C, 2, 1000); // окно пуша 5 с — событие его не ждёт
+      const e2 = evs[1];
+      assert.ok(e2.readAt > e1.readAt, `readAt не вырос: ${e1.readAt} → ${e2.readAt}`);
+      const jobs = await expectJobs(C, 2);
+      assert.ok((jobs[1]!.opts.delay ?? 0) > 3000, "пуш-хвост отложен на конец окна");
+      const d = await deliver(jobs[1]);
+      assert.equal(d.fcmPayload.readAt, e2.readAt);
+      assert.equal(d.apnsPayload.readAt, e2.readAt);
+    });
+    await step("receipts: READ чужих → по событию на беседу (две беседы одним запросом); DELIVERED/повтор/SEEN прочитанного/своё → нет", async () => {
+      const C = await mkConv(U, V);
+      const C2 = await mkConv(U, V);
+      const m = await mkMsg(C, V.id);
+      const m2 = await mkMsg(C2, V.id);
+      await receipts(U, iA, [m, m2], "DELIVERED");
+      await expectNoEvents(allU, C, 500);
+      await receipts(U, iA, [m, m2], "READ");
+      for (const s of allU) {
+        assert.equal((await waitEvents(s, C, 1))[0].byDeviceId, iA);
+        assert.equal((await waitEvents(s, C2, 1))[0].byDeviceId, iA);
+      }
+      await receipts(U, iA, [m], "READ");
+      await receipts(U, iA, [m], "SEEN");
+      await receipts(U, iA, [await mkMsg(C, U.id)], "READ");
+      await sleep(600);
+      for (const s of allU) assert.equal(evFor(s, C).length, 1, `${s.label}: повтор/своё не дают событий`);
+      await expectNoEvents([sV, sY, sZ], C, 0);
+    });
+    await step("mark-conversation-read без новых непрочитанных → события нет", async () => {
+      const C = await mkConv(U, V);
+      await markRead(U, eE, C);
+      await expectNoEvents(allU, C);
+    });
+    await step("секретка: участник → событие на все сокеты U + пуш FCM/APNs; посторонний → ни у кого ничего", async () => {
+      const S = await mkConv(U, V, { secret: true });
+      assert.equal((await markRead(U, eE, S)).status, 200);
+      for (const s of allU) assert.equal((await waitEvents(s, S, 1))[0].byDeviceId, eE);
+      await expectNoEvents([sV, sY, sZ], S, 0);
+      const d = await deliver((await expectJobs(S, 1))[0]);
+      assert.deepEqual(d.fcm, [aC]);
+      assert.deepEqual(d.apns, [iA, iB].sort());
+      const S2 = await mkConv(U, V, { secret: true });
+      assert.equal((await markRead(Y, yA, S2)).status, 200);
+      await expectNoEvents([...allU, sV, sY, sZ], S2);
+    });
+    await step("у человека нет push-токенов → сокет-событие всё равно приходит, задач нет", async () => {
+      const C = await mkConv(Z, V);
+      await mkMsg(C, V.id);
+      await markRead(Z, zA, C);
+      assert.equal((await waitEvents(sZ, C, 1))[0].byDeviceId, zA);
+      await expectNoJobs(C);
+    });
+    await step("readAt в Redis только растёт: более раннее прочтение не затирает позднее", async () => {
+      const C = await mkConv(U, V);
+      const T = Date.now();
+      const readAtNow = async () => ((await attachReadAt([U.id], { kind: "read", conversationId: C }, 1)) as { readAt?: number }).readAt;
+      await notifyConversationRead({ userId: U.id, conversationId: C, readerDeviceId: eE, readAt: T });
+      assert.equal(await readAtNow(), T);
+      await notifyConversationRead({ userId: U.id, conversationId: C, readerDeviceId: eE, readAt: T - 1000 });
+      assert.equal(await readAtNow(), T, "раннее не затёрло позднее");
+      await notifyConversationRead({ userId: U.id, conversationId: C, readerDeviceId: eE, readAt: T + 7 });
+      assert.equal(await readAtNow(), T + 7);
+      const ttl = await (await getRedisClient()).pTTL(`readsync:at:${U.id}:${C}`);
+      assert.ok(ttl > 3_500_000 && ttl <= 3_600_000, `TTL readAt ${ttl} мс — час`);
+    });
   } finally {
+    for (const s of openSockets) s.s.close();
     io.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
