@@ -69,6 +69,18 @@
   «Чата с Еблушей» без звонков; «Удалить» при выборе нескольких), `ConversationListPane`, `ChatModals`
   (карточка бота, меню сообщения с «Удалить» у ответа бота, настройка).
 - Живой стенд без модели: `test/bot-client-stand.ts` (+ `frontend/vite.stand.config.ts`).
+- «Подумай лучше» — рядом с «Уточнить» (`botThinkBetterTarget`: там же, под последней частью; нет под
+  `metadata.bot.depth = "deep"` и если я уже попросил): сразу ответ «Еблуша, подумай лучше» (в «Чате с
+  Еблушей» — «Подумай лучше») на первую часть ответа, без нового API. Кнопки — `ui/components/bot/BotAnswerActions.tsx`.
+- Карточки бота (Bot Cards v1: `metadata.bot.kind = "card"` + `metadata.card`, спецификации
+  `scratchpad/promise-timer/SPEC-share.md` §2 и `SPEC.md`): `domain/cards/` — конверт и права
+  (`cardEnvelope.ts`), свежая версия по `rev` (`cardStore.ts`), одни часы на приложение и смещение часов
+  сервера (`cardClock.ts`), действия `POST /api/cards/:messageId/act` (`cardActions.ts`, `cardHttp.ts`),
+  событие `message:update {reason:"card"}` (`cardEvents.ts`), виды типов `promiseCard.ts` (таймер обещания)
+  и `shareCard.ts` («поделиться перепиской»), общие векторы `vectors/*.json`. Рисовалки —
+  `ui/components/bot/{BotCardView,PromiseTimerCard,ShareCard}.tsx`. `ChatMessageRow` рисует карточку вместо
+  текста (неизвестная версия/тип — запасной текст `content`), у таймера без reply-шапки, без «Уточнить».
+  Стенд всех состояний (dev): `/__dev/bot-cards` (`?viewer=petya`, `?rm=1`, `?narrow=1`, `?smoke=1`).
 
 ## Внутренняя структура `ChatsPage.tsx`
 

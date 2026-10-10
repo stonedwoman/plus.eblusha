@@ -8,7 +8,7 @@
  *   - распознать обращение в начале текста — ТЕ ЖЕ правила, что у сервера (src/lib/systemBot.ts:
  *     stripBotNamePrefix / stripBotCommandPrefix), чтобы плашка «Спросить» в поле ввода не врала;
  *   - режим «Спросить» в композере: когда показывать плашку и что слать в metadata.botAsk;
- *   - «Уточнить» под многочастным ответом, «Да/Нет» под подтверждением, карточка карты;
+ *   - «Уточнить» и «Подумай лучше» под многочастным ответом, «Да/Нет» под подтверждением, карточка карты;
  *   - «Удалить» у ответа бота — тому, кто спросил, и владельцу «Чата с Еблушей».
  * Загрузка профиля бота и подписка на bot:settings — useSystemBot.ts.
  */
@@ -82,8 +82,9 @@ export function isBotMessage(m: any, botId?: string | null): boolean {
   return !!botId && m.senderId != null && String(m.senderId) === botId
 }
 
-export type BotMessageKind = 'answer' | 'command' | 'notice' | 'confirm' | 'welcome'
-const KINDS: readonly BotMessageKind[] = ['answer', 'command', 'notice', 'confirm', 'welcome']
+/** card — карточка бота (таймер обещания, «поделиться перепиской»): domain/cards/cardEnvelope.ts. */
+export type BotMessageKind = 'answer' | 'command' | 'notice' | 'confirm' | 'welcome' | 'card'
+const KINDS: readonly BotMessageKind[] = ['answer', 'command', 'notice', 'confirm', 'welcome', 'card']
 
 /** metadata объекта или строки JSON; null — нет/не объект. */
 function parseMeta(m: any): any {
@@ -240,8 +241,15 @@ export function botClarifyTarget(list: any[], index: number, botId?: string | nu
   const { kind, triggerMessageId } = botMessageInfo(m)
   if (kind !== 'answer' && kind !== 'command') return null
   if (typeof m.id === 'string' && m.id.startsWith('tmp-')) return null
+  // Карточка (таймер, «поделиться перепиской») с тем же обращением — не часть ответа: «Уточнить» не должен
+  // отвечать на неё (ответ по согласию приходит отдельным сообщением на тот же вопрос).
   const sameAnswer = (x: any) =>
-    !!x && !x.deletedAt && isBotMessage(x, botId) && !!triggerMessageId && botMessageInfo(x).triggerMessageId === triggerMessageId
+    !!x &&
+    !x.deletedAt &&
+    isBotMessage(x, botId) &&
+    !isBotCardKind(x) &&
+    !!triggerMessageId &&
+    botMessageInfo(x).triggerMessageId === triggerMessageId
   // Не последняя часть — кнопка будет ниже.
   for (let j = index + 1; j < list.length; j++) {
     const x = list[j]
@@ -257,6 +265,60 @@ export function botClarifyTarget(list: any[], index: number, botId?: string | nu
     first = x
   }
   return first
+}
+
+/** Сообщение бота — карточка (metadata.bot.kind "card"; "promise" — таймер до поправок SPEC-share §2.8). */
+export function isBotCardKind(m: any): boolean {
+  const k = parseMeta(m)?.bot?.kind
+  return k === 'card' || k === 'promise'
+}
+
+// ───────────────────────────── «Подумай лучше» ─────────────────────────────
+
+/** Текст ответа на сообщение бота по кнопке «Подумай лучше» (бот распознаёт его сам). */
+export const BOT_THINK_BETTER_TEXT = 'Еблуша, подумай лучше'
+/** В «Чате с Еблушей» всё и так боту — без обращения. */
+export const BOT_THINK_BETTER_TEXT_BOT_CHAT = 'Подумай лучше'
+
+export function botThinkBetterText(isBotChat: boolean): string {
+  return isBotChat ? BOT_THINK_BETTER_TEXT_BOT_CHAT : BOT_THINK_BETTER_TEXT
+}
+
+/** Ответ уже «подумал лучше» (metadata.bot.depth = "deep") — повторно кнопку не предлагаем. */
+export function isDeepBotAnswer(m: any): boolean {
+  return parseMeta(m)?.bot?.depth === 'deep'
+}
+
+const THINK_RE = /^\s*(?:еблуша\s*[,:!]\s*)?подумай\s+(?:лучше|ещё|еще|как\s+следует|глубже)(?=$|[\s.,!?…)])/iu
+
+/** Текст — просьба «подумай лучше» (наша кнопка или рукой). */
+export function isThinkBetterRequestText(text: unknown): boolean {
+  return THINK_RE.test(String(text ?? '').replace(/ё/g, 'е').replace(/Ё/g, 'Е'))
+}
+
+/**
+ * «Подумай лучше» — там же и по тем же правилам, что «Уточнить»: под последней частью ответа, ответ
+ * уходит на ПЕРВУЮ часть (у неё replyToId → вопрос, сервер соберёт цепочку). Не показываем: под
+ * карточками и не-ответами (их «Уточнить» тоже не получает), под ответом, который уже «подумал лучше»
+ * (depth="deep" у любой его части), и если я уже попросил (моё «подумай лучше» ответом на этот ответ).
+ */
+export function botThinkBetterTarget(list: any[], index: number, botId?: string | null, meId?: string | null): any | null {
+  const target = botClarifyTarget(list, index, botId)
+  if (!target) return null
+  const start = list.indexOf(target)
+  for (let j = start >= 0 ? start : index; j <= index; j++) {
+    const x = list[j]
+    if (x && !x.deletedAt && isDeepBotAnswer(x)) return null
+  }
+  if (meId) {
+    for (let j = index + 1; j < list.length; j++) {
+      const x = list[j]
+      if (!x || x.deletedAt || String(x.senderId ?? '') !== String(meId)) continue
+      const rid = x.replyTo?.id ?? x.replyToId
+      if (rid != null && String(rid) === String(target.id) && isThinkBetterRequestText(x.content)) return null
+    }
+  }
+  return target
 }
 
 /** На вопрос-подтверждение бота уже ответили (своим сообщением в ответ на него). */

@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   BOT_LIVE_MAP_URL,
   BOT_SECRET_REFUSAL_FALLBACK,
+  BOT_THINK_BETTER_TEXT,
   botClarifyTarget,
   botMapCardLink,
+  botThinkBetterTarget,
+  botThinkBetterText,
+  isBotCardKind,
+  isThinkBetterRequestText,
   botMessageInfo,
   botReplyAskerId,
   canDeleteBotReply,
@@ -303,5 +308,74 @@ describe('«Удалить» у ответа бота — тому, кто сп�
     expect(canDeleteMessageForAll(list[1], { meId: 'me', botId: BOT, conversation: group, list })).toBe(true)
     expect(canDeleteMessageForAll(q('q2', 'sanya'), { meId: 'me', botId: BOT, conversation: group, list })).toBe(false)
     expect(canDeleteMessageForAll(list[1], { meId: 'sanya', botId: BOT, conversation: group, list })).toBe(false)
+  })
+})
+
+describe('«Подумай лучше» под ответом бота', () => {
+  const ans = (id: string, trig: string | null, extra: Record<string, unknown> = {}, kind = 'answer') => ({
+    id,
+    senderId: BOT,
+    isBot: true,
+    metadata: { bot: { v: 1, kind, ...(trig ? { triggerMessageId: trig } : {}), ...extra } },
+  })
+  const human = (id: string, sender = 'me', replyToId?: string, content = 'Еблуша, вопрос') => ({
+    id,
+    senderId: sender,
+    isBot: false,
+    content,
+    ...(replyToId ? { replyTo: { id: replyToId } } : {}),
+  })
+
+  it('там же, где «Уточнить»: под последней частью, ответ — на первую часть', () => {
+    const list = [human('q1'), ans('a1', 'q1'), ans('a2', 'q1')]
+    expect(botThinkBetterTarget(list, 1, BOT, 'me')).toBeNull()
+    expect(botThinkBetterTarget(list, 2, BOT, 'me')?.id).toBe('a1')
+  })
+
+  it('под ответом depth="deep" (уже подумал лучше) кнопки нет; «Уточнить» — есть', () => {
+    const list = [human('q1'), ans('a1', 'q1', { depth: 'deep', model: 'claude-fable-5-1' })]
+    expect(botThinkBetterTarget(list, 1, BOT, 'me')).toBeNull()
+    expect(botClarifyTarget(list, 1, BOT)?.id).toBe('a1')
+    // deep только у второй части — тоже весь ответ «глубокий»
+    const list2 = [human('q1'), ans('a1', 'q1'), ans('a2', 'q1', { depth: 'deep' })]
+    expect(botThinkBetterTarget(list2, 2, BOT, 'me')).toBeNull()
+  })
+
+  it('не под карточками, подтверждениями и уведомлениями', () => {
+    const list = [human('q1'), ans('c1', 'q1', {}, 'card'), ans('k1', null, {}, 'confirm'), ans('n1', null, {}, 'notice')]
+    expect(botThinkBetterTarget(list, 1, BOT, 'me')).toBeNull()
+    expect(botThinkBetterTarget(list, 2, BOT, 'me')).toBeNull()
+    expect(botThinkBetterTarget(list, 3, BOT, 'me')).toBeNull()
+  })
+
+  it('я уже попросил «подумай лучше» ответом на этот ответ — у меня кнопки нет, у других есть', () => {
+    const list = [human('q1'), ans('a1', 'q1'), human('t1', 'me', 'a1', 'Еблуша, подумай лучше')]
+    expect(botThinkBetterTarget(list, 1, BOT, 'me')).toBeNull()
+    expect(botThinkBetterTarget(list, 1, BOT, 'sanya')?.id).toBe('a1')
+    // обычное уточнение ответом — не мешает
+    const list2 = [human('q1'), ans('a1', 'q1'), human('t1', 'me', 'a1', 'Еблуша, а подробнее?')]
+    expect(botThinkBetterTarget(list2, 1, BOT, 'me')?.id).toBe('a1')
+  })
+
+  it('карточка с тем же обращением — не часть ответа: «Уточнить» не цепляется к ней', () => {
+    // Карточка «поделиться перепиской» (ответ на вопрос), потом ответ по согласию — на тот же вопрос.
+    const list = [human('q1'), ans('card1', 'q1', {}, 'card'), ans('a1', 'q1')]
+    expect(botClarifyTarget(list, 2, BOT)?.id).toBe('a1')
+    expect(botThinkBetterTarget(list, 2, BOT, 'me')?.id).toBe('a1')
+    expect(isBotCardKind(list[1])).toBe(true)
+    expect(isBotCardKind({ metadata: { bot: { kind: 'promise' } } })).toBe(true)
+    expect(isBotCardKind(list[2])).toBe(false)
+  })
+
+  it('текст: «Еблуша, подумай лучше» и в «Чате с Еблушей» — «Подумай лучше»; распознаём варианты', () => {
+    expect(botThinkBetterText(false)).toBe(BOT_THINK_BETTER_TEXT)
+    expect(botThinkBetterText(false)).toBe('Еблуша, подумай лучше')
+    expect(botThinkBetterText(true)).toBe('Подумай лучше')
+    for (const t of ['Еблуша, подумай лучше', 'подумай лучше', 'Подумай ещё', 'еблуша: подумай как следует!', 'Подумай глубже.']) {
+      expect(isThinkBetterRequestText(t)).toBe(true)
+    }
+    for (const t of ['подумай', 'Еблуша, подумай о погоде', 'не подумай лучше', 'подумай лучшее']) {
+      expect(isThinkBetterRequestText(t)).toBe(false)
+    }
   })
 })

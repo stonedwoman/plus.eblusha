@@ -24,6 +24,8 @@ const ElectronMigrationDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/
 const CallLockDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/CallLockDemo')) : null
 // Dev-стенд «местного времени собеседника» под статусом в шапке 1:1 — только dev.
 const LocalTimeDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/LocalTimeDemo')) : null
+// Dev-стенд карточек бота (таймер обещания, «поделиться перепиской», «Подумай лучше») — только dev.
+const BotCardsDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/BotCardsDemo')) : null
 
 
 const withSuspense = (node: ReactNode) => (
@@ -35,6 +37,12 @@ const messengerRoutes: RouteObject[] = [
   ...(ElectronMigrationDemo ? [{ path: '/__dev/electron-migration', element: withSuspense(<ElectronMigrationDemo />) }] : []),
   ...(CallLockDemo ? [{ path: '/__dev/call-lock', element: withSuspense(<CallLockDemo />) }] : []),
   ...(LocalTimeDemo ? [{ path: '/__dev/local-time', element: withSuspense(<LocalTimeDemo />) }] : []),
+  ...(BotCardsDemo
+    ? [
+        { path: '/__dev/bot-cards', element: withSuspense(<BotCardsDemo />) },
+        { path: '/__dev/promise-timer', element: withSuspense(<BotCardsDemo />) },
+      ]
+    : []),
   {
     path: '/auth',
     element: <PublicRoute />,

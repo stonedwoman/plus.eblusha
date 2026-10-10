@@ -1,0 +1,191 @@
+/*
+ * «Поделиться перепиской» (SPEC-share.md §6, эталон scratchpad/promise-timer/mock-share.html).
+ */
+
+.eb-sc {
+  width: 353px; /* пузырь min(380px, 100%) минус поля пузыря бота */
+}
+.eb-sc .eb-card-tag {
+  margin-bottom: 8px;
+}
+.eb-sc[data-closed='1'] .eb-card-tag {
+  opacity: 0.55;
+}
+.eb-sc[data-closed='1'] {
+  color: var(--text-muted, #9aa0a8);
+}
+.eb-sc[data-closed='1'] b {
+  color: #c3c8cf;
+}
+.eb-sc-q {
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+.eb-sc-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.eb-sc-line + .eb-sc-line {
+  margin-top: 3px;
+}
+.eb-sc-muted {
+  font-size: 12px;
+  color: var(--text-muted, #9aa0a8);
+}
+.eb-sc-muted b {
+  color: #cfd3d9;
+}
+.eb-sc-foot {
+  font-size: 11.5px;
+  color: var(--text-muted, #9aa0a8);
+  margin: 8px 0 0;
+}
+.eb-sc-ok {
+  color: #4ade80;
+  font-weight: 800;
+}
+
+.eb-sc-warn {
+  font-size: 12.5px;
+  color: #f5a524;
+  background: rgba(245, 165, 36, 0.1);
+  border: 1px solid rgba(245, 165, 36, 0.25);
+  border-radius: 10px;
+  padding: 6px 9px;
+  margin-bottom: 10px;
+}
+
+.eb-sc-chips {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.eb-sc-chip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-height: 46px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(226, 92, 42, 0.42);
+  background: rgba(226, 92, 42, 0.08);
+  color: #f3a37f;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.eb-sc-chip small {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-muted, #9aa0a8);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.eb-sc-chip:hover:not([aria-disabled='true']) {
+  background: rgba(226, 92, 42, 0.16);
+  border-color: rgba(226, 92, 42, 0.6);
+}
+.eb-sc-chip[aria-checked='true'] {
+  background: rgba(226, 92, 42, 0.22);
+  border-color: rgba(226, 92, 42, 0.7);
+  color: #ffd9c7;
+}
+.eb-sc-chip[aria-checked='true'] small {
+  color: #e9c3b1;
+}
+.eb-sc-chip[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: default;
+}
+.eb-sc-chip:focus-visible {
+  outline: 2px solid #f08a5d;
+  outline-offset: 2px;
+}
+
+.eb-sc-photos {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  user-select: none;
+  min-height: 24px;
+}
+.eb-sc-photos input {
+  width: 18px;
+  height: 18px;
+  accent-color: #e38b0a;
+  margin: 0;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.eb-sc-photos small {
+  color: var(--text-muted, #9aa0a8);
+  font-size: 12px;
+}
+.eb-sc-photos[data-off='1'] {
+  opacity: 0.45;
+  cursor: default;
+}
+.eb-sc-photos[data-off='1'] input {
+  cursor: default;
+}
+.eb-sc .eb-card-actions {
+  margin-top: 0;
+}
+.eb-sc-right {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.eb-sc-dots::after {
+  content: '…';
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+  overflow: hidden;
+  vertical-align: bottom;
+  animation: eb-sc-dots 1.2s steps(4, end) infinite;
+}
+@keyframes eb-sc-dots {
+  from {
+    width: 0;
+  }
+  to {
+    width: 1.2em;
+  }
+}
+.eb-rm .eb-sc-dots::after {
+  animation: none;
+  width: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .eb-sc-dots::after {
+    animation: none;
+    width: auto;
+  }
+}
+
+/* Узко (< 300): «чипы» в столбик, счёт справа */
+@container (max-width: 299px) {
+  .eb-sc-chips {
+    grid-template-columns: 1fr;
+  }
+  .eb-sc-chip {
+    flex-direction: row;
+    justify-content: space-between;
+    min-height: 40px;
+    padding: 4px 10px;
+  }
+}

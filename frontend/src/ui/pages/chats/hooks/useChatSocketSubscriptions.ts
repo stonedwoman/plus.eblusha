@@ -1,5 +1,6 @@
 import { useEffect, type Dispatch, type SetStateAction } from 'react'
 import { socket } from '../../../../core/realtime'
+import { applyCardUpdateEvent, isStaleCardMessage } from '../../../../domain/cards/cardEvents'
 
 export function useChatSocketSubscriptions(opts: {
   activeId: string | null
@@ -107,6 +108,12 @@ export function useChatSocketSubscriptions(opts: {
       if (!payload) return
       const conversationId = payload.conversationId
       if (!activeId || conversationId !== activeId) return
+      // Карточка бота (reason "card"; таймер до поправок — "promise"): свежая версия по rev и смещение часов
+      // сервера — сразу в хранилище карточек; старее того, что уже в кэше, — сообщение не трогаем.
+      if (applyCardUpdateEvent(payload)) {
+        const old = client.getQueryData(['messages', activeId])
+        if (isStaleCardMessage(old, payload.message)) return
+      }
       if (payload.message && payload.message.id) {
         // Позицию при изменении высоты (напр. подгрузка превью ссылки) держит общий
         // scroll-anchor в ChatsPage (ResizeObserver контейнера) — доп. флаг не нужен.

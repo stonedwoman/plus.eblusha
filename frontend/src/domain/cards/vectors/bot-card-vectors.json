@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "about": "Общий конверт карточек бота (SPEC-share.md §2.9): сообщение → рисовать ли карточку; карточка + зритель + now → видимые действия; последовательность версий → какая принята.",
+  "parse": [
+    {
+      "name": "share v1 от бота — карточка",
+      "message": { "id": "m1", "isBot": true, "content": "🔒 …", "metadata": { "bot": { "v": 1, "kind": "card", "triggerMessageId": "q1", "askerId": "roma" }, "card": { "v": 1, "type": "share", "id": "s1", "rev": 3, "state": "pending", "closed": false, "actions": [], "data": {} } } },
+      "expect": { "render": true, "type": "share", "rev": 3, "source": "card" }
+    },
+    {
+      "name": "promise v1 от бота (sender.isBot) — карточка",
+      "message": { "id": "m2", "sender": { "id": "bot", "isBot": true }, "metadata": { "bot": { "v": 1, "kind": "card" }, "card": { "v": 1, "type": "promise", "id": "p1", "rev": 1, "state": "running", "actions": [], "data": {} } } },
+      "expect": { "render": true, "type": "promise", "rev": 1, "closed": false }
+    },
+    {
+      "name": "metadata строкой JSON",
+      "message": { "id": "m3", "isBot": true, "metadata": "{\"bot\":{\"v\":1,\"kind\":\"card\"},\"card\":{\"v\":1,\"type\":\"share\",\"id\":\"s2\",\"rev\":2,\"state\":\"granted\",\"actions\":[],\"data\":{}}}" },
+      "expect": { "render": true, "type": "share", "rev": 2 }
+    },
+    { "name": "неизвестный тип → запасной текст", "message": { "id": "m4", "isBot": true, "metadata": { "bot": { "v": 1, "kind": "card" }, "card": { "v": 1, "type": "poll", "id": "x", "rev": 1, "state": "open", "data": {} } } }, "expect": { "render": false } },
+    { "name": "v: 2 → запасной текст", "message": { "id": "m5", "isBot": true, "metadata": { "bot": { "v": 1, "kind": "card" }, "card": { "v": 2, "type": "share", "id": "x", "rev": 1, "state": "pending", "data": {} } } }, "expect": { "render": false } },
+    { "name": "нет data → запасной текст", "message": { "id": "m6", "isBot": true, "metadata": { "bot": { "v": 1, "kind": "card" }, "card": { "v": 1, "type": "share", "id": "x", "rev": 1, "state": "pending" } } }, "expect": { "render": false } },
+    { "name": "isBot: false с metadata.card (подделка) → обычный текст", "message": { "id": "m7", "isBot": false, "sender": { "id": "u", "isBot": true }, "metadata": { "bot": { "v": 1, "kind": "card" }, "card": { "v": 1, "type": "share", "id": "x", "rev": 1, "state": "pending", "data": {} } } }, "expect": { "render": false } },
+    { "name": "сообщение человека без признака бота → обычный текст", "message": { "id": "m8", "senderId": "u", "metadata": { "bot": { "v": 1, "kind": "card" }, "card": { "v": 1, "type": "share", "id": "x", "rev": 1, "state": "pending", "data": {} } } }, "expect": { "render": false } },
+    { "name": "kind answer с card → обычный ответ", "message": { "id": "m9", "isBot": true, "metadata": { "bot": { "v": 1, "kind": "answer" }, "card": { "v": 1, "type": "share", "id": "x", "rev": 1, "state": "pending", "data": {} } } }, "expect": { "render": false } },
+    { "name": "удалённое сообщение → не карточка", "message": { "id": "m10", "isBot": true, "deletedAt": "2026-10-11T11:00:00.000Z", "metadata": { "bot": { "v": 1, "kind": "card" }, "card": { "v": 1, "type": "share", "id": "x", "rev": 1, "state": "pending", "data": {} } } }, "expect": { "render": false } },
+    {
+      "name": "таймер до поправок (kind promise, metadata.promise v1) → карточка, действия из cancelBy/reopen",
+      "message": { "id": "m11", "isBot": true, "metadata": { "bot": { "v": 1, "kind": "promise", "promiseId": "p9" }, "promise": { "v": 1, "id": "p9", "rev": 4, "state": "running", "cancelBy": ["roma", "owner"], "reopen": null, "deadlineAt": "2026-10-11T11:15:00.000Z" } } },
+      "expect": { "render": true, "type": "promise", "rev": 4, "source": "legacy-promise", "actions": ["arrived", "cancel"] }
+    },
+    {
+      "name": "таймер до поправок, отменён с «Вернуть»",
+      "message": { "id": "m12", "isBot": true, "metadata": { "bot": { "v": 1, "kind": "promise" }, "promise": { "v": 1, "id": "p9", "rev": 5, "state": "cancelled", "cancelBy": ["roma"], "reopen": { "until": "2026-10-11T11:07:00.000Z", "by": ["roma"] } } } },
+      "expect": { "render": true, "closed": true, "actions": ["reopen"] }
+    }
+  ],
+  "actions": [
+    {
+      "name": "who.any — любой участник",
+      "card": { "closed": false, "actions": [{ "id": "arrived", "who": { "any": true }, "until": null }, { "id": "cancel", "who": { "ids": ["roma"] }, "until": null }] },
+      "viewer": "petya",
+      "now": "2026-10-11T11:00:00.000Z",
+      "expect": ["arrived"]
+    },
+    {
+      "name": "who.ids со зрителем",
+      "card": { "closed": false, "actions": [{ "id": "arrived", "who": { "any": true }, "until": null }, { "id": "cancel", "who": { "ids": ["roma"] }, "until": null }] },
+      "viewer": "roma",
+      "now": "2026-10-11T11:00:00.000Z",
+      "expect": ["arrived", "cancel"]
+    },
+    {
+      "name": "until в прошлом — действие скрыто",
+      "card": { "closed": false, "actions": [{ "id": "share", "who": { "ids": ["roma"] }, "until": "2026-10-11T11:30:00.000Z" }] },
+      "viewer": "roma",
+      "now": "2026-10-11T11:30:00.000Z",
+      "expect": []
+    },
+    {
+      "name": "until в будущем — видно",
+      "card": { "closed": false, "actions": [{ "id": "share", "who": { "ids": ["roma"] }, "until": "2026-10-11T11:30:00.000Z" }] },
+      "viewer": "roma",
+      "now": "2026-10-11T11:29:59.000Z",
+      "expect": ["share"]
+    },
+    {
+      "name": "closed: действия без until не видны, с until — видны («Вернуть»)",
+      "card": { "closed": true, "actions": [{ "id": "arrived", "who": { "any": true }, "until": null }, { "id": "reopen", "who": { "ids": ["roma"] }, "until": "2026-10-11T11:02:00.000Z" }] },
+      "viewer": "roma",
+      "now": "2026-10-11T11:00:00.000Z",
+      "expect": ["reopen"]
+    },
+    {
+      "name": "зритель неизвестен — ничего",
+      "card": { "closed": false, "actions": [{ "id": "arrived", "who": { "any": true }, "until": null }] },
+      "viewer": null,
+      "now": "2026-10-11T11:00:00.000Z",
+      "expect": []
+    }
+  ],
+  "rev": [
+    { "name": "события 3, 2, 4 → итог 4", "offers": [3, 2, 4], "expect": { "final": 4, "accepted": [true, false, true] } },
+    { "name": "равный rev не принимается", "offers": [1, 1], "expect": { "final": 1, "accepted": [true, false] } },
+    { "name": "из ленты rev 5, событие rev 4 опоздало — остаётся 5", "offers": [5, 4], "expect": { "final": 5, "accepted": [true, false] } }
+  ]
+}

@@ -12,7 +12,7 @@ import { lazy, Fragment } from 'react'
 import { api } from '../../../../utils/api'
 import type { AxiosError } from 'axios'
 
-import { Quote, Check, Reply, ExternalLink } from 'lucide-react'
+import { Quote, Check, ExternalLink } from 'lucide-react'
 import { AvailabilityButton } from '../../../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../../../features/availability/AvailabilityOverlay'
 
@@ -38,12 +38,18 @@ import { extractFirstPreviewableUrl } from '../../../../js/link-detect'
 import { renderMessageText } from '../chatsTextRender'
 import { openUrlSystemBrowser } from '../chatsEmbeds'
 import { BotTag } from '../../../components/bot/BotUi'
+import { BotAnswerActions } from '../../../components/bot/BotAnswerActions'
+import { BotCardView } from '../../../components/bot/BotCardView'
+import type { BotCardEnv } from '../../../components/bot/botCardEnv'
+import { botCardOfMessage } from '../../../../domain/cards/cardEnvelope'
+import { httpCardTransport } from '../../../../domain/cards/cardHttp'
 import {
   BOT_BRAND_ORANGE,
   botClarifyTarget,
   botDisplayName,
   botMapCardLink,
   botMessageInfo,
+  botThinkBetterTarget,
   isBotConfirmAnswered,
   isBotMessage,
   stripMarkdownForPreview,
@@ -78,6 +84,9 @@ export interface ChatMessageRowCtx {
   /** Быстрые «Да»/«Нет» под вопросом-подтверждением бота. */
   sendBotConfirmAnswer: (msg: any, answer: 'да' | 'нет') => void
   botConfirmBusyId: string | null
+  /** «Подумай лучше»: сразу ответ на сообщение бота текстом «Еблуша, подумай лучше». */
+  sendBotThinkBetter: (msg: any) => void
+  botThinkBusyId: string | null
   activeConversation: any
   activeId: any
   attachmentDecryptMap: any
@@ -124,7 +133,7 @@ export function renderChatMessageAtIndex(
                   forwardBundleSuppressMetaFooter?: boolean,
   ctx: ChatMessageRowCtx = {} as any,
 ) {
-  const { botId, botProfile, activeIsBotChat, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId } = ctx
+  const { botId, botProfile, activeIsBotChat, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId, sendBotThinkBetter, botThinkBusyId } = ctx
   const { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, virtuosoRef, visibleObserver } = ctx
                   const i = rowIndex
                   const m = fullList[i]
@@ -149,6 +158,11 @@ export function renderChatMessageAtIndex(
                   })()
                   // Сообщение бота «Еблуша»: верим только isBot сервера (Message.isBot / sender.isBot).
                   const botMsg = isBotMessage(m, botId)
+                  // Карточка бота (таймер обещания, «поделиться перепиской»): рисуется вместо текста; неизвестная
+                  // версия/тип → null → обычный пузырь с запасным текстом content (domain/cards/cardEnvelope.ts).
+                  const botCard = botMsg ? botCardOfMessage(m) : null
+                  // У таймера reply-шапки нет: карточка сама пишет «попросил Рома» и цитату обещания (SPEC.md §4.2).
+                  const replyToForUi = botCard?.type === 'promise' ? null : m.replyTo
                   const canSelectForMulti = !isPendingMessage && m.type !== 'SYSTEM'
                   const multiSelectAnchorId =
                     forwardBundleInner && forwardBundleRepresentativeMessageId
@@ -255,7 +269,7 @@ export function renderChatMessageAtIndex(
                   const senderAccentColor = botMsg ? BOT_BRAND_ORANGE : nameColorForUser(m.senderId)
                   // Бот — третий в любой беседе: его имя и «бот» видны и в личке двух людей.
                   const showGroupSenderName = (isGroupConv || (botMsg && !activeIsBotChat)) && !isPrevSame
-                  const replyPayload = m.replyTo as { id?: string; content?: string | null; senderId?: string; isBot?: boolean } | undefined
+                  const replyPayload = replyToForUi as { id?: string; content?: string | null; senderId?: string; isBot?: boolean } | undefined
                   const quotedSenderId = replyPayload?.senderId
                   const quotedUserForReply = quotedSenderId ? usersById[quotedSenderId] : undefined
                   // Цитата ответа боту (replyTo.isBot): автор — «Еблуша», хоть он и не участник беседы.
@@ -280,14 +294,14 @@ export function renderChatMessageAtIndex(
                     ? coerceParsedMessageInstant(quotedMessageForSingleReply.createdAt)
                     : null
                   const singleReplyInnerTimeLabel = formatSmallBubbleTimeLabel(singleReplyQuotedAt)
-                  const replyBundleEntries = parseReplyQuoteBundleEntries(m)
+                  const replyBundleEntries = botCard?.type === 'promise' ? null : parseReplyQuoteBundleEntries(m)
                   const showMultiReplyQuote = !!(replyBundleEntries && replyBundleEntries.length >= 2)
-                  const hasReplyUi = !!(m.replyTo || showMultiReplyQuote)
+                  const hasReplyUi = !!(replyToForUi || showMultiReplyQuote)
                   const replySenderActionPhrase =
                     !forwardBundleInner && hasReplyUi
                       ? showMultiReplyQuote && replyBundleEntries
                         ? formatSenderReplyActionPhrase(replyBundleEntries.length)
-                        : m.replyTo
+                        : replyToForUi
                           ? formatSenderReplySingleActionPhrase()
                           : null
                       : null
@@ -689,7 +703,7 @@ export function renderChatMessageAtIndex(
                               )
                             })}
                           </div>
-                        ) : m.replyTo ? (
+                        ) : replyToForUi ? (
                           <div className="msg-reply-quote-bundle">
                             <div className="msg-forward-bundle__item">
                               <div
@@ -801,9 +815,24 @@ export function renderChatMessageAtIndex(
                           </div>
                         ) : null}
                         <>
-                          <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                            {renderMessageText(m.content, botMsg ? { forceMarkdown: true } : undefined)}
-                          </div>
+                          {botCard ? (
+                            <BotCardView
+                              message={m}
+                              env={{
+                                viewer: { id: currentUserId != null ? String(currentUserId) : null, displayName: String(me?.displayName ?? me?.username ?? '') },
+                                transport: httpCardTransport,
+                                client,
+                                conversationId: m.conversationId ? String(m.conversationId) : activeId,
+                                resolveName: (uid: string) => usersById[uid]?.displayName ?? null,
+                                resolveAvatar: (uid: string) => usersById[uid]?.avatarUrl ?? null,
+                                onScrollToMessage: (mid: string) => scrollToMessageById(mid),
+                              } satisfies BotCardEnv}
+                            />
+                          ) : (
+                            <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                              {renderMessageText(m.content, botMsg ? { forceMarkdown: true } : undefined)}
+                            </div>
+                          )}
                           {(() => {
                             if (botNoPreview) return null
                             const firstUrl = extractFirstPreviewableUrl(m.content)
@@ -1517,46 +1546,22 @@ export function renderChatMessageAtIndex(
                           })()}
                         </>
                         {(() => {
-                          // Под ответом бота: «Уточнить» (ответ на него в режиме «Спросить»), под вопросом-
-                          // подтверждением — «Да» / «Нет» (уходят ответом на него). docs/bot-system.md §2.
-                          if (!botMsg || forwardBundleInner || multiSelectMode || isPendingMessage) return null
+                          // Под ответом бота: «Уточнить» (ответ на него в режиме «Спросить») и «Подумай лучше»
+                          // (сразу ответ «Еблуша, подумай лучше»), под вопросом-подтверждением — «Да» / «Нет».
+                          // docs/bot-system.md §2. Под карточками (таймер, «поделиться перепиской») — ничего.
+                          if (!botMsg || botCard || forwardBundleInner || multiSelectMode || isPendingMessage) return null
                           const clarifyTarget = botClarifyTarget(fullList, i, botId)
+                          const thinkTarget = botThinkBetterTarget(fullList, i, botId, currentUserId != null ? String(currentUserId) : null)
                           const isConfirm = botMessageInfo(m).kind === 'confirm' && !isBotConfirmAnswered(fullList, i, currentUserId)
-                          if (!clarifyTarget && !isConfirm) return null
+                          if (!clarifyTarget && !thinkTarget && !isConfirm) return null
                           const confirmBusy = botConfirmBusyId != null && String(botConfirmBusyId) === String(m.id)
+                          const thinkBusy = !!thinkTarget && botThinkBusyId != null && String(botThinkBusyId) === String(thinkTarget.id)
                           return (
-                            <div className="eb-bot-actions">
-                              {isConfirm ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="eb-bot-action eb-bot-action--yes"
-                                    disabled={confirmBusy}
-                                    onClick={(e) => { e.stopPropagation(); sendBotConfirmAnswer(m, 'да') }}
-                                  >
-                                    Да
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="eb-bot-action"
-                                    disabled={confirmBusy}
-                                    onClick={(e) => { e.stopPropagation(); sendBotConfirmAnswer(m, 'нет') }}
-                                  >
-                                    Нет
-                                  </button>
-                                </>
-                              ) : null}
-                              {clarifyTarget ? (
-                                <button
-                                  type="button"
-                                  className="eb-bot-action"
-                                  title="Задать Еблуше уточняющий вопрос — ответом на его сообщение"
-                                  onClick={(e) => { e.stopPropagation(); startBotClarify(clarifyTarget) }}
-                                >
-                                  <Reply size={13} strokeWidth={2.4} /> Уточнить
-                                </button>
-                              ) : null}
-                            </div>
+                            <BotAnswerActions
+                              confirm={isConfirm ? { busy: confirmBusy, onAnswer: (a) => sendBotConfirmAnswer(m, a) } : null}
+                              clarify={clarifyTarget ? () => startBotClarify(clarifyTarget) : null}
+                              think={thinkTarget ? { busy: thinkBusy, onThink: () => sendBotThinkBetter(thinkTarget) } : null}
+                            />
                           )
                         })()}
                         {(() => {

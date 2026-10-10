@@ -1,0 +1,338 @@
+/*
+ * Таймер обещания (SPEC.md §10, эталон scratchpad/promise-timer/mock.html).
+ * Цвета одни на всех клиентах: идёт #e38b0a, последняя минута #f5a524, опаздывает #ef4444 (мелкий текст
+ * #f87171), пришёл #22c55e (текст #4ade80), серое #9aa0a8.
+ */
+
+.eb-pt {
+  --c: #e38b0a;
+  width: 333px; /* пузырь min(360px, 100%) минус поля пузыря бота */
+}
+.eb-pt[data-view='final'] {
+  --c: #f5a524;
+}
+.eb-pt[data-view='late'],
+.eb-pt[data-view='lateArrived'] {
+  --c: #ef4444;
+}
+.eb-pt[data-view='onTime'] {
+  --c: #22c55e;
+}
+.eb-pt[data-view='cancelled'],
+.eb-pt[data-view='unresolved'] {
+  --c: #9aa0a8;
+}
+
+.eb-pt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+.eb-pt-req {
+  font-size: 12px;
+  color: var(--text-muted, #9aa0a8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.eb-pt-who {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+.eb-pt-ring {
+  position: relative;
+  flex: 0 0 60px;
+  width: 60px;
+  height: 60px;
+}
+.eb-pt-ring > svg {
+  position: absolute;
+  inset: 0;
+  width: 60px;
+  height: 60px;
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+.eb-pt-ring .eb-pt-trk {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 4;
+}
+.eb-pt-ring .eb-pt-arc {
+  fill: none;
+  stroke: var(--c);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 175.93;
+  stroke-dashoffset: 0;
+  transition: stroke 300ms ease;
+}
+/* Убывание: ОДНА CSS-анимация на весь срок, отрицательная задержка = уже прошло (без перерисовок React) */
+.eb-pt[data-view='running'] .eb-pt-arc--deplete,
+.eb-pt[data-view='final'] .eb-pt-arc--deplete {
+  animation-name: eb-pt-deplete;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+@keyframes eb-pt-deplete {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 175.93;
+  }
+}
+.eb-pt[data-view='final'] .eb-pt-ring > svg {
+  animation: eb-pt-glow 1s ease-in-out infinite;
+}
+@keyframes eb-pt-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(245, 165, 36, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 6px rgba(245, 165, 36, 0.55));
+  }
+}
+.eb-pt[data-view='late'] .eb-pt-arc {
+  animation: eb-pt-breathe 2s ease-in-out infinite;
+}
+/* Срок только что вышел / только что пришёл: кольцо дозаполняется против часовой за 400 мс */
+.eb-pt[data-view='late'] .eb-pt-arc.eb-pt-arc--fill {
+  animation: eb-pt-fill 400ms ease-out both, eb-pt-breathe 2s ease-in-out 400ms infinite;
+}
+.eb-pt[data-view='onTime'] .eb-pt-arc.eb-pt-arc--fill,
+.eb-pt[data-view='lateArrived'] .eb-pt-arc.eb-pt-arc--fill {
+  animation: eb-pt-fill 400ms ease-out both;
+}
+@keyframes eb-pt-fill {
+  from {
+    stroke-dashoffset: 175.93;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes eb-pt-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+.eb-pt[data-view='lateArrived'] .eb-pt-arc {
+  opacity: 0.55;
+}
+.eb-pt[data-view='cancelled'] .eb-pt-arc,
+.eb-pt[data-view='unresolved'] .eb-pt-arc {
+  stroke-dasharray: 4 6;
+  opacity: 0.4;
+  stroke-linecap: butt;
+}
+
+.eb-pt-ava {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.eb-pt[data-view='cancelled'] .eb-pt-ava,
+.eb-pt[data-view='unresolved'] .eb-pt-ava {
+  filter: grayscale(0.8) brightness(0.8);
+}
+.eb-pt-badge {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #22c55e;
+  color: #0f1217;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--bubble-bg, #221c19);
+}
+.eb-pt-badge.eb-pt-badge--pop {
+  animation: eb-pt-pop 200ms ease-out both;
+}
+@keyframes eb-pt-pop {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.eb-pt-meta {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.eb-pt-name {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.eb-pt-quote {
+  font-size: 14px;
+  font-style: italic;
+  color: #d9dce1;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.eb-pt-quote--deleted {
+  color: var(--text-muted, #9aa0a8);
+}
+.eb-pt-sub {
+  font-size: 12px;
+  color: var(--text-muted, #9aa0a8);
+  display: flex;
+  gap: 2px 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.eb-pt-chip {
+  font-size: 11px;
+  font-weight: 700;
+  color: #f08a5d;
+  background: rgba(226, 92, 42, 0.12);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.eb-pt-clock {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+.eb-pt-left {
+  min-width: 0;
+}
+.eb-pt-digits {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  color: var(--text-primary, #f1f3f6);
+  transition: color 300ms ease;
+  white-space: nowrap;
+}
+.eb-pt-digits--wide {
+  min-width: 7ch;
+}
+.eb-pt[data-view='final'] .eb-pt-digits {
+  color: #f5a524;
+}
+.eb-pt[data-view='late'] .eb-pt-digits,
+.eb-pt[data-view='lateArrived'] .eb-pt-digits {
+  color: #f87171;
+}
+.eb-pt[data-view='onTime'] .eb-pt-digits {
+  color: #4ade80;
+}
+.eb-pt[data-view='cancelled'] .eb-pt-digits,
+.eb-pt[data-view='unresolved'] .eb-pt-digits {
+  color: var(--text-muted, #9aa0a8);
+}
+.eb-pt-cap {
+  font-size: 12px;
+  color: var(--text-muted, #9aa0a8);
+  margin-top: 2px;
+}
+.eb-pt[data-view='late'] .eb-pt-cap {
+  color: #f87171;
+}
+.eb-pt-result {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+.eb-pt[data-view='onTime'] .eb-pt-result {
+  color: #4ade80;
+}
+.eb-pt[data-view='lateArrived'] .eb-pt-result {
+  color: #f87171;
+}
+.eb-pt-right {
+  text-align: right;
+  flex: 0 0 auto;
+}
+.eb-pt-until {
+  font-size: 13px;
+  color: var(--text-muted, #9aa0a8);
+  white-space: nowrap;
+}
+.eb-pt-label {
+  font-size: 12px;
+  color: var(--text-muted, #9aa0a8);
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+/* Узко (< 300): «до 14:15» уходит строкой под цифры */
+@container (max-width: 299px) {
+  .eb-pt-clock {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .eb-pt-right {
+    text-align: left;
+  }
+}
+
+/* «Меньше движения»: без свечения и дыхания, переходы мгновенно, кольцо шагает раз в секунду (JS) */
+.eb-rm .eb-pt-ring > svg,
+.eb-rm .eb-pt-arc,
+.eb-rm .eb-pt-badge {
+  animation: none !important;
+  filter: none !important;
+}
+.eb-rm .eb-pt-arc,
+.eb-rm .eb-pt-digits {
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .eb-pt-ring > svg,
+  .eb-pt-arc,
+  .eb-pt-badge {
+    animation: none !important;
+    filter: none !important;
+  }
+  .eb-pt-arc,
+  .eb-pt-digits {
+    transition: none !important;
+  }
+}
