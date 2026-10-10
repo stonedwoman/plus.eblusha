@@ -1,11 +1,13 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma";
+import env from "../config/env";
 import logger from "../config/logger";
 import { authenticate } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rateLimit";
 import { getIO } from "../realtime/socket";
 import { isSecretConversation } from "../lib/secretLatch";
+import { BOT_HISTORY_PAGE_DEFAULT, BOT_HISTORY_PAGE_MAX, BOT_HISTORY_PAGES_PER_GRANT } from "../lib/botContract";
 import {
   BOT_FOLLOWUP_MAX_MESSAGES,
   BOT_FOLLOWUP_TTL_SECONDS,
@@ -18,12 +20,14 @@ import {
   BOT_NOTICES_PER_HOUR,
   BOT_SECRET_REFUSAL,
   BotNotConfiguredError,
+  botMemoryStatus,
   botRateOk,
   createBotFollowupGrant,
   createBotMessage,
   findActiveBotChat,
   getBotChatState,
   getSystemBot,
+  loadBotHistoryPage,
   lookupBotPeople,
   readBotGrant,
   setBotChatEnabled,
@@ -57,12 +61,22 @@ import {
  *                           ≤ BOT_FOLLOWUP_MAX_MESSAGES сообщений, BOT_FOLLOWUP_TTL_SECONDS, без реакций;
  *                           только по живому обычному разрешению (из продолжения — 400 BOT_FOLLOWUP_NESTED),
  *                           не больше BOT_FOLLOWUPS_PER_GRANT (429 BOT_GRANT_EXHAUSTED).
- *   POST /api/bot/people    { grant, query?: string(≤64), ids?: cuid[](≤20) } → 200 {participants, matches, users}:
+ *   POST /api/bot/people    { grant, query?: string(≤64), ids?: cuid[](≤20) } → 200 {participants, matches, users, truncated}:
  *                           люди для привязки персонажей владельцем (lookupBotPeople): участники беседы
- *                           обращения, поиск среди всех по имени/логину(точно)/EBLID, имена по id. Каждый —
- *                           {id, displayName, eblid, inConversation}; логин не отдаётся. Только по живому
- *                           обычному разрешению (продолжение — 400 BOT_FOLLOWUP_NESTED), ≤ BOT_GRANT_MAX_LOOKUPS
- *                           на обращение (429 BOT_GRANT_EXHAUSTED). В журнал — без текста запроса.
+ *                           обращения, поиск по имени/логину(точно)/EBLID, имена по id (без удалённых и заблокированных). Каждый —
+ *                           {id, displayName, eblid, inConversation}, в matches ещё matchedBy (name|username|eblid);
+ *                           логин не отдаётся. Сервер знает владельца (env BOT_OWNER_USER_ID) — только по его
+ *                           обращению (иначе 403 BOT_OWNER_ONLY) и среди всех людей; не знает — по любому, но
+ *                           только среди людей с общей беседой со спрашивающим. Только по живому обычному
+ *                           разрешению (продолжение — 400 BOT_FOLLOWUP_NESTED), ≤ BOT_GRANT_MAX_LOOKUPS на
+ *                           обращение (429 BOT_GRANT_EXHAUSTED). В журнал — без текста запроса.
+ *   POST /api/bot/history   { grant, after?: {at: ISO, id} | null, limit?: 0..500, changesSince?: ms | null,
+ *                             epoch?: string | null } → 200 BotHistoryPage {mode, messages, next, memory}:
+ *                           память бота о своих разговорах в беседе обращения (контракт rev 3, botContract.ts):
+ *                           «Чат с Еблушей» — весь чат, обычная беседа — только обращения к боту и его ответы;
+ *                           memory — журнал изменений (удалили/поправили запомненное → бот пересобирает сводку).
+ *                           Только по живому обычному разрешению (продолжение — 400 BOT_FOLLOWUP_NESTED),
+ *                           ≤ BOT_HISTORY_PAGES_PER_GRANT страниц на обращение (429 BOT_GRANT_EXHAUSTED).
  *   По grant: обращение удалено автором → 409 BOT_TRIGGER_DELETED (ответа, реакции и «печатает» уже не будет).
  */
 
@@ -389,6 +403,14 @@ router.post("/people", requireSystemBot, async (req, res) => {
     res.status(400).json({ message: "Not available for a follow-up grant", code: "BOT_FOLLOWUP_NESTED" });
     return;
   }
+  // Привязывать других людей может только владелец бота. Сервер его знает (BOT_OWNER_USER_ID) — ищем только
+  // по его обращению и среди всех; не знает — среди тех, с кем у спрашивающего есть общая беседа: так ни
+  // ошибка в боте, ни обманутая модель не переберут имена и EBLID всей базы.
+  const ownerId = env.BOT_OWNER_USER_ID ?? null;
+  if (ownerId && g.authorId !== ownerId) {
+    res.status(403).json({ message: "Only the bot owner's requests may look people up", code: "BOT_OWNER_ONLY" });
+    return;
+  }
   if (!(await writableConversation(g.conversationId))) {
     res.status(409).json({ message: "Conversation is not writable for the bot", code: "BOT_CONVERSATION_GONE" });
     return;
@@ -400,14 +422,81 @@ router.post("/people", requireSystemBot, async (req, res) => {
   const result = await lookupBotPeople({
     conversationId: g.conversationId,
     botId: bot.id,
+    authorId: g.authorId,
+    scope: ownerId ? "all" : "shared",
     query: parsed.data.query,
     ids: parsed.data.ids,
   });
   logger.info(
-    { conversationId: g.conversationId, query: parsed.data.query ? true : false, ids: parsed.data.ids?.length ?? 0, matches: result.matches.length },
+    {
+      conversationId: g.conversationId,
+      query: parsed.data.query ? true : false,
+      ids: parsed.data.ids?.length ?? 0,
+      matches: result.matches.length,
+      scope: ownerId ? "all" : "shared",
+    },
     "bot: people lookup",
   );
   res.json(result);
+});
+
+const historySchema = z
+  .object({
+    grant: z.string().min(1).max(100),
+    after: z
+      .object({ at: z.string().datetime(), id: z.string().max(64) })
+      .strict()
+      .nullable()
+      .optional(),
+    limit: z.number().int().min(0).max(BOT_HISTORY_PAGE_MAX).optional(),
+    changesSince: z.number().int().nonnegative().nullable().optional(),
+    epoch: z.string().max(64).nullable().optional(),
+  })
+  .strict();
+
+router.post("/history", requireSystemBot, async (req, res) => {
+  const parsed = historySchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid payload" });
+    return;
+  }
+  const b = parsed.data;
+  const g = await grantOr410(res, b.grant);
+  if (!g) return;
+  if (g.followup) {
+    res.status(400).json({ message: "Not available for a follow-up grant", code: "BOT_FOLLOWUP_NESTED" });
+    return;
+  }
+  // Обращение удалили — отвечать на него не будут, и память беседы ему не нужна.
+  if (!(await triggerAliveOr409(res, g))) return;
+  if (!(await writableConversation(g.conversationId))) {
+    res.status(409).json({ message: "Conversation is not writable for the bot", code: "BOT_CONVERSATION_GONE" });
+    return;
+  }
+  if (!(await spendBotGrant(b.grant, "history", BOT_HISTORY_PAGES_PER_GRANT))) {
+    res.status(429).json({ message: "Too many history pages for this request", code: "BOT_GRANT_EXHAUSTED" });
+    return;
+  }
+  // Сначала журнал (его checkedAt — ДО чтения сообщений), потом сами сообщения.
+  const memory = await botMemoryStatus(g.conversationId, { changesSince: b.changesSince ?? null, epoch: b.epoch ?? null });
+  const page = await loadBotHistoryPage({
+    conversationId: g.conversationId,
+    kind: g.kind,
+    after: b.after ? { at: new Date(b.after.at), id: b.after.id } : null,
+    limit: b.limit ?? BOT_HISTORY_PAGE_DEFAULT,
+  });
+  logger.info(
+    {
+      conversationId: g.conversationId,
+      mode: page.mode,
+      n: page.messages.length,
+      more: page.next !== null,
+      reset: memory.reset,
+      changed: memory.changedFrom !== null,
+    },
+    "bot: history",
+  );
+  res.json({ ...page, memory });
 });
 
 export default router;

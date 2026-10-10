@@ -57,7 +57,7 @@ class ScriptedLlm implements LlmEngine {
   toolResults: Array<{ content: string; isError: boolean }> = [];
   async answer(req: AnswerRequest): Promise<AnswerResult> {
     this.calls.push(req);
-    const last = req.turns[req.turns.length - 1]!.text.replace(/^[^:]+:\s*/, "");
+    const last = req.turns[req.turns.length - 1]!.text.replace(/^⟦[^⟧]*⟧\n?/, "");
     let text = "ОтветМодели42.";
     if (/^(включи|поставь|сделай)/i.test(last)) {
       this.toolResults.push(await req.tools.run("admin_request", { text: last }));

@@ -10,7 +10,13 @@ import { enqueueLinkPreview } from "../jobs/queue";
 import { rateLimit } from "../middlewares/rateLimit";
 import { scheduleReadSync } from "../push/readSync";
 import logger from "../config/logger";
-import { canDeleteBotMessage } from "../lib/systemBot";
+import {
+  botAskSurvivesEdit,
+  canDeleteBotMessage,
+  isBotChatConversation,
+  isBotMemoryMessage,
+  noteBotMemoryChange,
+} from "../lib/systemBot";
 import {
   isSecretConversation,
   logSecretCloudWriteBlocked,
@@ -362,6 +368,9 @@ router.post("/delete", async (req, res) => {
   if (attachmentUrls.length) {
     void deleteS3ObjectsByUrls(attachmentUrls, { reason: `message:${messageId}` });
   }
+  // Память бота: удалили обращение к нему, его ответ или сообщение «Чата с Еблушей» — запись в журнал
+  // изменений (бот пересоберёт сводку, если это уже в ней). Сбой журнала удаление не ломает.
+  if (await isBotMemoryMessage(msg).catch(() => false)) await noteBotMemoryChange(msg.conversationId, msg);
   getIO()?.to(msg.conversationId).emit("message:update", { conversationId: msg.conversationId, messageId, reason: "deleted" });
   res.json({ success: true });
 });
@@ -386,7 +395,17 @@ router.post("/update", async (req, res) => {
 
   const existing = await prisma.message.findUnique({
     where: { id: messageId },
-    select: { id: true, conversationId: true, senderId: true, deletedAt: true, type: true, metadata: true },
+    select: {
+      id: true,
+      conversationId: true,
+      senderId: true,
+      deletedAt: true,
+      type: true,
+      metadata: true,
+      content: true,
+      createdAt: true,
+      replyToId: true,
+    },
   });
   if (!existing) {
     res.status(404).json({ message: "Message not found" });
@@ -427,6 +446,21 @@ router.post("/update", async (req, res) => {
     editedAt,
     editVersion: prevVer + 1,
   } as any;
+  // Бот «Еблуша»: обращение «Еблуша, …», исправленное в текст без обращения, — уже не вопрос боту (снимаем
+  // botAsk, иначе новый текст ушёл бы в его память). Ответ на сообщение бота и «Чат с Еблушей» — обращения и так.
+  let botMemoryTouched = false;
+  if ((meta as any).botAsk === true) {
+    botMemoryTouched = true;
+    if (!botAskSurvivesEdit(existing.content, content)) {
+      const parent = existing.replyToId
+        ? await prisma.message.findUnique({ where: { id: existing.replyToId }, select: { conversationId: true, isBot: true } })
+        : null;
+      const replyToBot = !!parent && parent.conversationId === existing.conversationId && parent.isBot;
+      if (!replyToBot && !(await isBotChatConversation(existing.conversationId).catch(() => false))) delete nextMeta.botAsk;
+    }
+  } else if (await isBotChatConversation(existing.conversationId).catch(() => false)) {
+    botMemoryTouched = true;
+  }
 
   const updated = await prisma.message.update({
     where: { id: messageId },
@@ -440,6 +474,9 @@ router.post("/update", async (req, res) => {
     },
   });
 
+  // Память бота: поправленное обращение (или сообщение «Чата с Еблушей»), уже вошедшее в его сводку, — повод
+  // пересобрать сводку (журнал изменений). Сбой журнала правку не ломает.
+  if (botMemoryTouched) await noteBotMemoryChange(existing.conversationId, existing);
   getIO()?.to(existing.conversationId).emit("message:update", {
     conversationId: existing.conversationId,
     messageId,

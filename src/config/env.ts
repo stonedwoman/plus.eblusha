@@ -122,6 +122,13 @@ const envSchema = z.object({
   // auto — прод, а при BadDeviceToken пробуем sandbox и запоминаем: dev-сборки из Xcode
   // и TestFlight/App Store живут на одном сервере одновременно.
   APNS_ENV: z.enum(["production", "sandbox", "auto"]).default("auto"),
+  // Владелец бота «Еблуша» (тот же id, что BOT_OWNER_USER_ID в .env.bot-account). Задан — поиск людей для
+  // привязки персонажей (POST /api/bot/people) только по обращению владельца и среди всех людей; не задан —
+  // по обращению любого, но только среди тех, с кем у спрашивающего есть общая беседа (src/routes/bot.ts).
+  BOT_OWNER_USER_ID: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() ? v.trim() : undefined)),
 });
 
 const env = envSchema.parse(process.env);

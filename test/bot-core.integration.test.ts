@@ -241,7 +241,8 @@ async function main() {
     assert.equal(a1.content, "ОтветМодели42: **всё хорошо**.");
     assert.equal(a1.conversationId, group.id);
     assert.equal(a1.isBot, true);
-    assert.deepEqual(llm.calls[0]!.turns, [{ role: "user", text: "Алиса: Как дела у паука?" }]);
+    assert.equal(llm.calls[0]!.turns.length, 1);
+    assert.match(llm.calls[0]!.turns[0]!.text, /^⟦Алиса · \d\d\.\d\d\.\d\d \d\d:\d\d⟧\nКак дела у паука\?$/);
     assert.match(llm.calls[0]!.contextNote, /группа «.+ группа», участников: 3/);
     assert.equal(await prisma.conversationParticipant.count({ where: { conversationId: group.id, userId: botId } }), 0);
     const typing = sockEvents.filter((e) => e.event === "conversation:typing_update" && e.payload?.userId === botId && e.payload?.conversationId === group.id);
@@ -256,8 +257,8 @@ async function main() {
     const q2 = await send(tB, { conversationId: group.id, content: "подробнее про лапки", replyToId: a1.id });
     await botReplyTo(q2);
     assert.deepEqual(llm.calls[1]!.turns.map((t) => t.role), ["user", "assistant", "user"]);
-    assert.equal(llm.calls[1]!.turns[2]!.text, "Боб: подробнее про лапки");
-    console.log("[bot-it] ok: продолжение ответом на сообщение бота — с историей цепочки");
+    assert.match(llm.calls[1]!.turns[2]!.text, /^⟦Боб · [^⟧]*, в ответ на твоё сообщение от [^⟧]*⟧\nподробнее про лапки$/);
+    console.log("[bot-it] ok: продолжение ответом на сообщение бота — с историей (память беседы + цепочка)");
 
     // ---------- «спасибо» → 👍 ----------
     const thanks = await send(tA, { conversationId: group.id, content: "спасибо!", replyToId: a1.id });
