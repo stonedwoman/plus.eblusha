@@ -5,6 +5,9 @@ import {
   botClarifyTarget,
   botMapCardLink,
   botMessageInfo,
+  botReplyAskerId,
+  canDeleteBotReply,
+  canDeleteMessageForAll,
   computeBotAsk,
   detectBotAddressPrefix,
   isBotChatConversation,
@@ -216,5 +219,89 @@ describe('кнопки под сообщениями бота', () => {
     expect(botMapCardLink({ type: 'IMAGE', metadata: { link: 'javascript:alert(1)', originalName: 'x.png' } }, msg)).toBeNull()
     expect(botMapCardLink({ type: 'IMAGE', metadata: { originalName: 'wiki.png' } }, msg)).toBeNull()
     expect(botMapCardLink({ type: 'IMAGE', metadata: { originalName: 'karta-valheim.png' } }, { senderId: 'u', isBot: false })).toBeNull()
+  })
+})
+
+describe('«Удалить» у ответа бота — тому, кто спросил, и владельцу «Чата с Еблушей»', () => {
+  const group = { id: 'g1', isGroup: true, participants: [{ user: { id: 'me' } }, { user: { id: 'sanya' } }] }
+  const botChat = { id: 'bc1', isGroup: false, isBotChat: true, participants: [{ user: { id: 'me' } }, { user: { id: BOT, isBot: true } }] }
+  const q = (id: string, senderId: string) => ({ id, conversationId: 'g1', senderId, isBot: false, content: 'Еблуша, вопрос' })
+  const part = (id: string, trig: string | null, extra: Record<string, unknown> = {}, kind = 'answer') => ({
+    id,
+    conversationId: 'g1',
+    senderId: BOT,
+    isBot: true,
+    metadata: { bot: { v: 1, kind, ...(trig ? { triggerMessageId: trig } : {}) } },
+    ...extra,
+  })
+
+  it('кто спросил: подсказка сервера askerId важнее всего остального', () => {
+    const m = part('a1', 'q1', { replyTo: { id: 'q1', senderId: 'sanya' } })
+    ;(m.metadata.bot as any).askerId = 'me'
+    expect(botReplyAskerId(m, [q('q1', 'sanya')])).toBe('me')
+  })
+
+  it('кто спросил без подсказки: цитата первой части, само обращение в ленте, первая часть того же ответа', () => {
+    const first = part('a1', 'q1', { replyTo: { id: 'q1', senderId: 'me' } })
+    const second = part('a2', 'q1')
+    expect(botReplyAskerId(first, [])).toBe('me')
+    // Вторая часть без replyToId: обращение есть в ленте…
+    expect(botReplyAskerId(second, [q('q1', 'sanya'), second])).toBe('sanya')
+    // …или его не загрузили, но есть первая часть с цитатой.
+    expect(botReplyAskerId(second, [first, second])).toBe('me')
+    // Цитата не на обращение (replyTo ≠ triggerMessageId) — не признак того, кто спросил.
+    expect(botReplyAskerId(part('a3', 'q9', { replyTo: { id: 'other', senderId: 'me' } }), [])).toBeNull()
+    expect(botReplyAskerId(part('n1', null, {}, 'notice'), [])).toBeNull()
+    // Старый ответ без triggerMessageId: обращение — то, на что бот ответил.
+    expect(botReplyAskerId(part('o1', null, { replyTo: { id: 'q0', senderId: 'sanya' } }), [])).toBe('sanya')
+    expect(botReplyAskerId(part('o2', null, { replyToId: 'q0' }), [q('q0', 'me')])).toBe('me')
+  })
+
+  it('тот, кто спросил, — может; остальные участники — нет', () => {
+    const list = [q('q1', 'me'), part('a1', 'q1', { replyTo: { id: 'q1', senderId: 'me' } }), part('a2', 'q1')]
+    for (const m of list.slice(1)) {
+      expect(canDeleteBotReply(m, { meId: 'me', botId: BOT, conversation: group, list })).toBe(true)
+      expect(canDeleteBotReply(m, { meId: 'sanya', botId: BOT, conversation: group, list })).toBe(false)
+    }
+  })
+
+  it('отчёт о долгой задаче — ответом на «да»: удалить может подтвердивший, а не тот, кто просил план', () => {
+    const list = [
+      q('q1', 'sanya'),
+      part('plan', 'q1', { replyTo: { id: 'q1', senderId: 'sanya' } }, 'confirm'),
+      { id: 'yes', conversationId: 'g1', senderId: 'me', content: 'да', replyTo: { id: 'plan', senderId: BOT, isBot: true } },
+      part('rep', 'yes', { replyTo: { id: 'yes', senderId: 'me' } }, 'command'),
+    ]
+    expect(canDeleteBotReply(list[1], { meId: 'me', botId: BOT, conversation: group, list })).toBe(false)
+    expect(canDeleteBotReply(list[1], { meId: 'sanya', botId: BOT, conversation: group, list })).toBe(true)
+    expect(canDeleteBotReply(list[3], { meId: 'me', botId: BOT, conversation: group, list })).toBe(true)
+    expect(canDeleteBotReply(list[3], { meId: 'sanya', botId: BOT, conversation: group, list })).toBe(false)
+  })
+
+  it('«Чат с Еблушей»: владелец удаляет любое сообщение бота, даже приветствие и уведомление без обращения', () => {
+    const welcome = { ...part('w1', null, {}, 'welcome'), conversationId: 'bc1' }
+    const notice = { ...part('n1', null, {}, 'notice'), conversationId: 'bc1' }
+    expect(canDeleteBotReply(welcome, { meId: 'me', botId: BOT, conversation: botChat, list: [welcome] })).toBe(true)
+    expect(canDeleteBotReply(notice, { meId: 'me', botId: BOT, conversation: botChat, list: [notice] })).toBe(true)
+    // Не та беседа — не считается.
+    expect(canDeleteBotReply({ ...notice, conversationId: 'g1' }, { meId: 'me', botId: BOT, conversation: botChat, list: [] })).toBe(false)
+  })
+
+  it('не ответ бота, удалённое, временное, неизвестный я — нет', () => {
+    const list = [q('q1', 'me')]
+    expect(canDeleteBotReply(q('q2', 'sanya'), { meId: 'me', botId: BOT, conversation: group, list })).toBe(false)
+    expect(canDeleteBotReply(part('a1', 'q1', { deletedAt: '2026-10-10T00:00:00Z' }), { meId: 'me', botId: BOT, conversation: group, list })).toBe(false)
+    expect(canDeleteBotReply(part('tmp-1', 'q1'), { meId: 'me', botId: BOT, conversation: group, list })).toBe(false)
+    expect(canDeleteBotReply(part('a1', 'q1'), { meId: null, botId: BOT, conversation: botChat, list })).toBe(false)
+    // Человек подделал metadata.bot (сервер такое вырезает) — без isBot это не ответ бота.
+    expect(canDeleteBotReply({ ...q('q3', 'sanya'), metadata: { bot: { kind: 'answer', askerId: 'me' } } }, { meId: 'me', botId: BOT, conversation: group, list })).toBe(false)
+  })
+
+  it('удалить для всех: своё — всегда, ответ бота — по правилам выше, чужое — нет', () => {
+    const list = [q('q1', 'me'), part('a1', 'q1', { replyTo: { id: 'q1', senderId: 'me' } })]
+    expect(canDeleteMessageForAll(list[0], { meId: 'me', botId: BOT, conversation: group, list })).toBe(true)
+    expect(canDeleteMessageForAll(list[1], { meId: 'me', botId: BOT, conversation: group, list })).toBe(true)
+    expect(canDeleteMessageForAll(q('q2', 'sanya'), { meId: 'me', botId: BOT, conversation: group, list })).toBe(false)
+    expect(canDeleteMessageForAll(list[1], { meId: 'sanya', botId: BOT, conversation: group, list })).toBe(false)
   })
 })

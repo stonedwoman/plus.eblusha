@@ -64,7 +64,7 @@ import { formatReplyBundleHeader, formatForwardSourcePhraseAfterName, renderSyst
 
 import { renderChatMessageAtIndex as extractedRenderChatMessageAtIndex } from './ChatMessageRow'
 import { BotAskChip, isCaretAtEditorStart } from '../../../components/bot/BotUi'
-import { botClarifyTarget, isBotConfirmAnswered, isBotMessage, isBotUser, withBotAskMeta, type BotAskState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
+import { botClarifyTarget, canDeleteMessageForAll, isBotConfirmAnswered, isBotMessage, isBotUser, withBotAskMeta, type BotAskState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
 
 export interface MessagesPaneCtx {
   // ── Бот «Еблуша» (docs/bot-system.md) ──
@@ -1477,26 +1477,32 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                   }}
                   onClick={async () => {
                     const msgs = getSelectedMessagesOrdered()
-                    const mine = msgs.filter((m: any) => m.senderId === me?.id)
+                    // Свои + ответы бота на мои обращения (и всё от бота в моём «Чате с Еблушей»).
+                    const mine = msgs.filter((m: any) =>
+                      canDeleteMessageForAll(m, { meId: me?.id, botId, conversation: activeConversation, list: displayedMessages }),
+                    )
                     if (!mine.length) {
                       systemToast.error('Среди выбранных нет ваших сообщений')
                       return
                     }
+                    const withBot = mine.some((m: any) => m.senderId !== me?.id)
                     const ok = await systemConfirm({
                       title: 'Удалить сообщения',
-                      message: `Удалить ${mine.length} ваших сообщений?`,
+                      message: withBot ? `Удалить выбранные сообщения (${mine.length}) — ваши и ответы Еблуши?` : `Удалить ${mine.length} ваших сообщений?`,
                       confirmText: 'Удалить',
                       cancelText: 'Отмена',
                       danger: true,
                     })
                     if (!ok) return
+                    let failed = 0
                     for (const m of mine) {
                       try {
                         await api.post('/messages/delete', { messageId: m.id })
                       } catch {
-                        /* next */
+                        failed += 1
                       }
                     }
+                    if (failed && withBot) systemToast.error(`Не удалось удалить: ${failed} из ${mine.length}`)
                     if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
                     clearMessageMultiSelect()
                   }}

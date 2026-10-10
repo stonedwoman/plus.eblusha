@@ -25,7 +25,7 @@ import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
 import { LocalTimeSettingsSection } from '../../../components/LocalTimeSettingsSection'
 import { BotChatSettingsSection } from '../../../components/bot/BotUi'
-import { isBotChatConversation, isBotUser, type BotChatState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
+import { canDeleteBotReply, canDeleteMessageForAll, isBotChatConversation, isBotUser, type BotChatState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
 import { canForwardFromConversation } from '../../../../domain/secret/secretInboxGuards'
@@ -2610,27 +2610,33 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                     style={{ color: '#ffffff' }}
                     onClick={async () => {
                       const msgs = getSelectedMessagesOrdered()
-                      const mine = msgs.filter((m: any) => m.senderId === me?.id)
+                      // Свои + ответы бота на мои обращения (и всё от бота в моём «Чате с Еблушей»).
+                      const mine = msgs.filter((m: any) =>
+                        canDeleteMessageForAll(m, { meId: me?.id, botId, conversation: activeConversation, list: displayedMessages }),
+                      )
                       if (!mine.length) {
                         systemToast.error('Среди выбранных нет ваших сообщений')
                         setContextMenu({ open: false, x: 0, y: 0, messageId: null })
                         return
                       }
+                      const withBot = mine.some((m: any) => m.senderId !== me?.id)
                       const ok = await systemConfirm({
                         title: 'Удалить сообщения',
-                        message: `Удалить ${mine.length} ваших сообщений?`,
+                        message: withBot ? `Удалить выбранные сообщения (${mine.length}) — ваши и ответы Еблуши?` : `Удалить ${mine.length} ваших сообщений?`,
                         confirmText: 'Удалить',
                         cancelText: 'Отмена',
                         danger: true,
                       })
                       if (!ok) return
+                      let failed = 0
                       for (const m of mine) {
                         try {
                           await api.post('/messages/delete', { messageId: m.id })
                         } catch {
-                          /* next */
+                          failed += 1
                         }
                       }
+                      if (failed && withBot) systemToast.error(`Не удалось удалить: ${failed} из ${mine.length}`)
                       if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
                       clearMessageMultiSelect()
                       setContextMenu({ open: false, x: 0, y: 0, messageId: null })
@@ -2697,14 +2703,20 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                 {(() => {
                   const mid = contextMenu.messageId!
                   const found = (displayedMessages || []).find((mm: any) => mm.id === mid)
-                  const canDelete = found?.senderId === me?.id
-                  if (!canDelete) return null
+                  const own = !!found && found?.senderId === me?.id
+                  // Ответ бота «Еблуша» удаляет тот, кто спросил, а в «Чате с Еблушей» — его владелец
+                  // (решение владельца 12): для всех, тем же /messages/delete; права проверит сервер.
+                  const botReply =
+                    !own && canDeleteBotReply(found, { meId: me?.id, botId, conversation: activeConversation, list: displayedMessages })
+                  if (!own && !botReply) return null
                   return (
                     <button style={{ color: '#ffffff' }} onClick={async () => {
                       try {
                         await api.post('/messages/delete', { messageId: contextMenu.messageId })
                         if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
-                      } catch {}
+                      } catch {
+                        if (botReply) systemToast.error('Не удалось удалить ответ Еблуши')
+                      }
                       setContextMenu({ open: false, x: 0, y: 0, messageId: null })
                     }}>Удалить</button>
                   )

@@ -8,7 +8,8 @@
  *   - распознать обращение в начале текста — ТЕ ЖЕ правила, что у сервера (src/lib/systemBot.ts:
  *     stripBotNamePrefix / stripBotCommandPrefix), чтобы плашка «Спросить» в поле ввода не врала;
  *   - режим «Спросить» в композере: когда показывать плашку и что слать в metadata.botAsk;
- *   - «Уточнить» под многочастным ответом, «Да/Нет» под подтверждением, карточка карты.
+ *   - «Уточнить» под многочастным ответом, «Да/Нет» под подтверждением, карточка карты;
+ *   - «Удалить» у ответа бота — тому, кто спросил, и владельцу «Чата с Еблушей».
  * Загрузка профиля бота и подписка на bot:settings — useSystemBot.ts.
  */
 
@@ -84,8 +85,8 @@ export function isBotMessage(m: any, botId?: string | null): boolean {
 export type BotMessageKind = 'answer' | 'command' | 'notice' | 'confirm' | 'welcome'
 const KINDS: readonly BotMessageKind[] = ['answer', 'command', 'notice', 'confirm', 'welcome']
 
-/** metadata.bot = {v:1, kind, triggerMessageId?} — подсказка сервера (кнопки), не признак бота. */
-export function botMessageInfo(m: any): { kind: BotMessageKind | null; triggerMessageId: string | null } {
+/** metadata объекта или строки JSON; null — нет/не объект. */
+function parseMeta(m: any): any {
   let md: any = m?.metadata
   if (typeof md === 'string') {
     try {
@@ -94,7 +95,12 @@ export function botMessageInfo(m: any): { kind: BotMessageKind | null; triggerMe
       md = null
     }
   }
-  const b = md && typeof md === 'object' ? md.bot : null
+  return md && typeof md === 'object' ? md : null
+}
+
+/** metadata.bot = {v:1, kind, triggerMessageId?} — подсказка сервера (кнопки), не признак бота. */
+export function botMessageInfo(m: any): { kind: BotMessageKind | null; triggerMessageId: string | null } {
+  const b = parseMeta(m)?.bot
   const kind = b && typeof b === 'object' && KINDS.includes(b.kind) ? (b.kind as BotMessageKind) : null
   const triggerMessageId = b && typeof b === 'object' ? str(b.triggerMessageId) : null
   return { kind, triggerMessageId }
@@ -265,6 +271,76 @@ export function isBotConfirmAnswered(list: any[], index: number, meId?: string |
     if (rid != null && String(rid) === String(m.id)) return true
   }
   return false
+}
+
+// ───────────────────────────── Удаление ответа бота ─────────────────────────────
+
+/**
+ * Кто спросил — автор обращения, на которое ответил бот. Подсказка сервера `metadata.bot.askerId`
+ * (её ставит сервер; если она есть — верим только ей). У ответов без подсказки — отправитель обращения
+ * `metadata.bot.triggerMessageId` (у старых ответов без него — сообщения, на которое бот ответил), как
+ * его проверяет сервер: из цитаты (первая часть ответа отвечает на обращение), из загруженной ленты или из
+ * цитаты первой части того же ответа (у остальных частей `replyToId` нет). null — не узнать.
+ */
+export function botReplyAskerId(m: any, list?: readonly any[] | null): string | null {
+  const b = parseMeta(m)?.bot
+  if (b && typeof b === 'object') {
+    const hinted = str(b.askerId)
+    if (hinted) return hinted
+  }
+  // Без triggerMessageId (старые ответы) обращением считается то, на что ответил бот, — как на сервере.
+  const metaTrigger = botMessageInfo(m).triggerMessageId
+  const trigger = metaTrigger ?? str(m?.replyTo?.id) ?? str(m?.replyToId)
+  if (!trigger) return null
+  const fromQuote = (x: any): string | null => {
+    const r = x?.replyTo
+    if (!r || typeof r !== 'object' || String(r.id ?? '') !== trigger) return null
+    return str(r.senderId)
+  }
+  const own = fromQuote(m)
+  if (own) return own
+  const arr = Array.isArray(list) ? list : []
+  const t = arr.find((x) => x && String(x.id ?? '') === trigger)
+  if (t) {
+    const sid = str(t.senderId)
+    if (sid) return sid
+  }
+  if (!metaTrigger) return null
+  for (const x of arr) {
+    if (!x || !isBotMessage(x) || botMessageInfo(x).triggerMessageId !== metaTrigger) continue
+    const sid = fromQuote(x)
+    if (sid) return sid
+  }
+  return null
+}
+
+/**
+ * «Удалить» у ответа бота (решение владельца 12): ответ может удалить тот, кто спросил, а в «Чате с
+ * Еблушей» — его владелец (единственный человек в этой беседе — тот, кто её открыл). Удаление — для
+ * всех, тем же POST /messages/delete, что и своё сообщение; права всё равно проверяет сервер.
+ */
+export function canDeleteBotReply(
+  m: any,
+  o: { meId?: string | null; botId?: string | null; conversation?: any; list?: readonly any[] | null },
+): boolean {
+  if (!m || typeof m !== 'object' || m.deletedAt || !o.meId) return false
+  if (!isBotMessage(m, o.botId) || m.type === 'SYSTEM') return false
+  if (typeof m.id !== 'string' || !m.id || m.id.startsWith('tmp-')) return false
+  const conv = o.conversation
+  const sameConv = !conv?.id || m.conversationId == null || String(m.conversationId) === String(conv.id)
+  if (sameConv && isBotChatConversation(conv, o.botId)) return true
+  const asker = botReplyAskerId(m, o.list)
+  return !!asker && asker === String(o.meId)
+}
+
+/** Что я могу удалить для всех: своё сообщение или ответ бота на моё обращение. */
+export function canDeleteMessageForAll(
+  m: any,
+  o: { meId?: string | null; botId?: string | null; conversation?: any; list?: readonly any[] | null },
+): boolean {
+  if (!m || typeof m !== 'object' || !o.meId) return false
+  if (m.senderId != null && String(m.senderId) === String(o.meId)) return true
+  return canDeleteBotReply(m, o)
 }
 
 /**
