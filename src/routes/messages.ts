@@ -160,8 +160,25 @@ router.post("/receipts", async (req, res) => {
     return;
   }
 
-  const { messageIds, status } = parsed.data;
   const userId = (req as AuthedRequest).user!.id;
+  const { status } = parsed.data;
+
+  // Квитанции — только на сообщения бесед, где человек участник. Остальные id (чужая беседа, вышел из
+  // группы, несуществующее сообщение) молча отбрасываются: ответ тот же 200, по нему нельзя узнать,
+  // существует ли сообщение. Раньше посторонний мог поставить «прочитано» в чужой беседе — и это
+  // разлеталось её участникам событием receipts:update.
+  const meta = await prisma.message.findMany({
+    where: {
+      id: { in: Array.from(new Set(parsed.data.messageIds)) },
+      conversation: { participants: { some: { userId } } },
+    },
+    select: { id: true, conversationId: true, senderId: true },
+  });
+  const messageIds = meta.map((m) => m.id);
+  if (messageIds.length === 0) {
+    res.json({ receipts: [] });
+    return;
+  }
 
   // Для read-sync (тихий пуш «прочитано» на другие устройства): какие сообщения ЧУЖИХ людей этим
   // запросом стали прочитанными впервые. Снимок статусов — до записи, иначе «было/стало» не отличить.
@@ -190,11 +207,7 @@ router.post("/receipts", async (req, res) => {
   const receipts = await prisma.$transaction(ops);
 
   // Notify participants in affected conversations to refresh receipts
-  if (messageIds.length > 0) {
-    const meta = await prisma.message.findMany({
-      where: { id: { in: messageIds } },
-      select: { id: true, conversationId: true, senderId: true },
-    });
+  {
     const byConv = new Map<string, string[]>();
     const newlyReadConvs = new Set<string>();
     for (const m of meta) {
@@ -437,11 +450,20 @@ router.post("/mark-conversation-read", async (req, res) => {
   const { conversationId } = parsed.data;
   const userId = (req as AuthedRequest).user!.id;
 
+  // Не участник (чужая беседа, вышел из группы, беседы нет) — тихо 200 без действий, для любых бесед
+  // одинаково: по ответу нельзя узнать ни существование беседы, ни секретная ли она. Раньше обычная
+  // ветка ставила постороннему квитанции READ на все сообщения чужой беседы и рассылала её участникам
+  // receipts:update.
+  if (!(await isConversationMember(conversationId, userId))) {
+    res.json({ success: true });
+    return;
+  }
+
   // Секретная беседа: облачных Message (и квитанций) в ней нет, писать в БД нечего. Вызов
-  // нужен только как сигнал «прочитано здесь» — по нему другие iOS-устройства человека снимают
-  // баннеры (read-sync, см. push/readSync.ts). Чужую беседу молча игнорируем.
+  // нужен только как сигнал «прочитано здесь» — по нему другие устройства человека снимают
+  // уведомления (read-sync, см. push/readSync.ts).
   if (isSecretConversation(await conversationKind(conversationId))) {
-    if (await isConversationMember(conversationId, userId)) scheduleReadSync(req, userId, [conversationId]);
+    scheduleReadSync(req, userId, [conversationId]);
     res.json({ success: true });
     return;
   }
