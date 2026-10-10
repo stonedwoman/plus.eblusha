@@ -179,16 +179,24 @@ test/secret-env/secret-test.sh run test/bot-core.integration.test.ts     # яд�
 Интеграционный тест гоняется только в изолированной среде (тестовые Postgres/Redis, предохранитель
 `guard.ts`); модель там поддельная — ни сети, ни денег. После прогона: `secret-test.sh prod-proof '<EB_PROOF>'`.
 
-## Выкладка (ещё не делалась)
+## Выкладка (сделана 2026-10-10)
 
-1. `npx ts-node src/scripts/seedBotUser.ts --env-file /DATA/eblusha-plus/.env.bot-account --owner-username <логин владельца>`
+Состояние: учётка `eblusha_bot` создана (EBLID 7087), `.env.bot-account` записан, `valheim-ops` установлен,
+контейнер `eblusha-bot` запущен. Если API не принимает ключ из `.env.bot` (400/401/403 при старте —
+в журнале `llm.probe_failed` и `llm.disabled`), бот работает без модели: команды, привязка ников, 👍, а на
+вопросы честно отвечает «мозги ещё не подключены». После правки `.env.bot` — снова шаг 4 с `--force-recreate`
+(`docker restart` окружение из env-файлов НЕ перечитывает).
+
+1. `TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register src/scripts/seedBotUser.ts --account-file /DATA/eblusha-plus/.env.bot-account --owner-username <логин владельца>`
    (из корня репозитория; создаёт пользователя `eblusha_bot`, пароль генерируется и не печатается).
-2. Владелец кладёт `ANTHROPIC_API_KEY=…` в `/DATA/eblusha-plus/.env.bot` (600).
+2. Владелец кладёт `ANTHROPIC_API_KEY=…` в `/DATA/eblusha-plus/.env.bot` (600); для ключа `sk-ant-usr…`
+   (не привязан к workspace) там же нужен `ANTHROPIC_WORKSPACE_ID=wrkspc_…`.
 3. Valheim: токен канала мода должен существовать до запуска бота (compose его монтирует и без файла
    не стартует). Если мод ещё не выкладывали — создать заранее, мод возьмёт этот же:
    `f=/DATA/valheim/config/bepinex/webmap-bot.token; [ -f $f ] || (umask 077; openssl rand -hex 32 > $f; chown 1000:1000 $f)`.
    Помощник для команд владельца — `bot/ops/README.md` (без него бот работает, но рестарт/бэкап/мир недоступны).
-4. `docker compose -f deploy/docker-compose.full.yml --env-file .env --profile bot up -d --build eblusha-bot`
+4. `docker compose -f deploy/docker-compose.full.yml --env-file .env --profile bot up -d --build --no-deps eblusha-bot`
+   (`--no-deps` — чтобы compose не трогал backend из `depends_on`)
    (сервис в профиле `bot`: общий `up -d` стека его не поднимает).
 5. Людям: добавить бота в контакты по его EBLID (`GET /api/status/me` бота) или в группу; игрокам —
    привязать ник: «Еблуша, мой ник в игре …».

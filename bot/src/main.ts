@@ -61,10 +61,20 @@ export async function startBot(cfg: BotConfig, log: Logger, opts: StartOptions =
         ? new ClaudeEngine(cfg, buildSystemPrompt(registry.prompts), log.child({ c: "llm" }))
         : null;
   if (!llm) log.warn("llm.disabled", { reason: "ANTHROPIC_API_KEY не задан — отвечаю шаблонами" });
+  let engine: LlmEngine | null = llm;
   if (llm instanceof ClaudeEngine) {
     const p = await llm.probe();
     if (p.ok) log.info("llm.probe_ok", { model: llm.model });
-    else log.error("llm.probe_failed", { status: p.status, why: p.message });
+    else {
+      log.error("llm.probe_failed", { status: p.status, why: p.message });
+      // 400/401/403 — ключ не принят (нет workspace, отозван, нет прав): само это не пройдёт,
+      // поэтому честно отвечаю «мозги не подключены», а не «что-то сломалось» на каждый вопрос.
+      // Сеть (status null), 429 и 5xx — временное: модель остаётся включённой.
+      if (p.status === 400 || p.status === 401 || p.status === 403) {
+        engine = null;
+        log.warn("llm.disabled", { reason: "ключ модели не принят API — шаблоны до перезапуска с исправленным .env.bot" });
+      }
+    }
   }
 
   let bot!: Bot;
@@ -82,7 +92,7 @@ export async function startBot(cfg: BotConfig, log: Logger, opts: StartOptions =
     },
     log.child({ c: "socket" })
   );
-  bot = new Bot({ cfg, api, rt, store, llm, registry, log: log.child({ c: "core" }) });
+  bot = new Bot({ cfg, api, rt, store, llm: engine, registry, log: log.child({ c: "core" }) });
   await bot.start();
   rt.start();
 

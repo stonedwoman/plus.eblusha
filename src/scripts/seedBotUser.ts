@@ -8,9 +8,11 @@
  * Имя, описание и аватар (фирменная «Б») бот ставит себе сам при старте (bot/src/main.ts).
  *
  * На сервере (из корня репозитория, боевая БД берётся из .env как у остальных скриптов):
- *   npx ts-node src/scripts/seedBotUser.ts --env-file /DATA/eblusha-plus/.env.bot-account \
+ *   TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register src/scripts/seedBotUser.ts --account-file /DATA/eblusha-plus/.env.bot-account \
  *     [--username eblusha_bot] [--owner-username <логин владельца>] [--rotate-password]
  * или в контейнере backend после пересборки: node dist/scripts/seedBotUser.js …
+ * Флаг называется --account-file, а не --env-file: Node 22 сам перехватывает «--env-file» в любом
+ * месте командной строки и падает «not found», если файла ещё нет (старое имя тоже принимается).
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -92,8 +94,8 @@ function arg(name: string): string | null {
 }
 
 async function main(): Promise<void> {
-  const envFile = arg("--env-file");
-  if (!envFile) throw new Error("нужен --env-file /путь/к/.env.bot-account");
+  const envFile = arg("--account-file") ?? arg("--env-file");
+  if (!envFile) throw new Error("нужен --account-file /путь/к/.env.bot-account");
   const prisma = (await import("../lib/prisma")).default;
   try {
     const current = readEnvFile(envFile);
