@@ -42,9 +42,12 @@ private func messageCanDelete(_ message: Message) -> Bool {
 }
 
 /// Пункты меню в том же составе и порядке, что были в нижнем листе (веб-паритет).
+/// `canDelete` — решение вью-модели беседы (`ChatViewModel.canDelete`): кроме своего, «Удалить»
+/// есть у ответа бота автору обращения и в «Чате с Еблушей» (решение владельца 12). nil — только своё.
 func messageActionItems(
     message: Message,
     canForward: Bool,
+    canDelete: Bool? = nil,
     onReply: @escaping () -> Void,
     onCopy: @escaping () -> Void,
     onForward: @escaping () -> Void,
@@ -75,7 +78,7 @@ func messageActionItems(
     items.append(MessageActionItem(
         id: "select", title: "Выбрать", icon: "checkmark.circle", action: onSelect
     ))
-    if messageCanDelete(message) {
+    if canDelete ?? messageCanDelete(message) {
         items.append(MessageActionItem(
             id: "delete", title: "Удалить", icon: "trash", destructive: true, action: onDelete
         ))

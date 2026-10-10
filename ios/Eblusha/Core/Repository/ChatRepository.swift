@@ -442,6 +442,9 @@ final class ChatRepository {
             isBot: isBot,
             botKind: isBot ? dto.metadata?["bot"]?["kind"]?.stringValue : nil,
             botTriggerId: isBot ? dto.metadata?["bot"]?["triggerMessageId"]?.stringValue : nil,
+            botAskerId: isBot
+                ? dto.metadata?["bot"]?["askerId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+                : nil,
             botAsk: askedBot
         )
     }

@@ -168,6 +168,59 @@ extension Message {
     var botIsConfirm: Bool { isBot && !deleted && !isMine && botKind == "confirm" }
 }
 
+// MARK: - Удаление ответа бота
+
+/// «Удалить» у ответа бота (решение владельца 12, docs/bot-system.md): ответ может удалить тот, кто
+/// спросил (автор обращения), а в «Чате с Еблушей» — его владелец (единственный человек там). Удаление —
+/// для всех, тем же POST /messages/delete, что и своё сообщение; права всё равно проверяет сервер.
+/// Правило то же, что у веба (`canDeleteBotReply`, domain/bot/systemBot.ts) и остальных клиентов.
+enum BotReplyDeletion {
+
+    /// Кто спросил. Подсказка сервера `metadata.bot.askerId` — если она есть, верим только ей. Без неё
+    /// (ответы старше подсказки) — отправитель обращения `metadata.bot.triggerMessageId`, как его
+    /// проверяет сервер: из цитаты самого сообщения (первая часть ответа отвечает на обращение), из
+    /// загруженной ленты или из цитаты первой части того же ответа (у остальных частей цитаты нет).
+    /// У ответа без `triggerMessageId` (старые) обращение — то, на что он отвечает (как у веба).
+    /// Цитаты берём только у сообщений бота: их `replyTo` — столбец сервера, а у людей мультиответ
+    /// собирается из metadata, которую пишет клиент. nil — не узнать (тогда пункта нет).
+    static func askerId(of message: Message, in messages: [Message]) -> String? {
+        if let hinted = message.botAskerId, !hinted.isEmpty { return hinted }
+        let metaTrigger = message.botTriggerId.flatMap { $0.isEmpty ? nil : $0 }
+        guard let trigger = metaTrigger ?? message.replyTo.first?.id, !trigger.isEmpty else { return nil }
+        func fromQuote(_ m: Message) -> String? {
+            guard m.isBot, let quote = m.replyTo.first(where: { $0.id == trigger }),
+                  !quote.senderId.isEmpty else { return nil }
+            return quote.senderId
+        }
+        if let own = fromQuote(message) { return own }
+        if let asked = messages.first(where: { $0.id == trigger }), !asked.senderId.isEmpty {
+            return asked.senderId
+        }
+        // Первая часть того же ответа. Её triggerMessageId не сверяем: у удалённой части сервер
+        // стирает metadata, а цитата (столбец replyToId) остаётся — и по-прежнему указывает на вопрос.
+        guard metaTrigger != nil else { return nil }
+        for part in messages {
+            if let sender = fromQuote(part) { return sender }
+        }
+        return nil
+    }
+
+    /// Можно ли мне удалить это сообщение бота. Не бот, удалённое, системное — нет (своё сообщение
+    /// решает обычное правило `isMine`). `isBotChat` и `messages` — беседы, где лежит сообщение.
+    static func canDelete(_ message: Message, myId: String?, isBotChat: Bool, messages: [Message]) -> Bool {
+        guard message.isBot, !message.isMine, !message.deleted, !message.isSystem else { return false }
+        guard let myId, !myId.isEmpty else { return false }
+        if isBotChat { return true }
+        return askerId(of: message, in: messages) == myId
+    }
+
+    /// Что я могу удалить для всех: своё неудалённое или ответ бота на моё обращение.
+    static func canDeleteForAll(_ message: Message, myId: String?, isBotChat: Bool, messages: [Message]) -> Bool {
+        if message.isMine { return !message.deleted }
+        return canDelete(message, myId: myId, isBotChat: isBotChat, messages: messages)
+    }
+}
+
 // MARK: - Профиль и настройка
 
 struct BotProfile: Codable, Equatable {

@@ -1377,16 +1377,35 @@ final class ChatViewModel: ObservableObject {
             return
         }
         guard !secretMode else { return }
+        let fromBot = ui.messages.first { $0.id == messageId }?.isBot == true
         // Помечаем СРАЗУ: лента удалённые не показывает, и пузырь исчезает по нажатию,
         // а не через секунду-две, всё это время показывая исходный текст серым курсивом.
         setDeletedLocally(messageId, deleted: true)
         Task {
             if case .failure = await repo.deleteMessage(messageId: messageId) {
                 setDeletedLocally(messageId, deleted: false)
+                // Ответ бота удаляет не его отправитель — сервер может отказать (спросил другой).
+                // Молча вернувшийся пузырь выглядел бы сбоем нажатия.
+                if fromBot { ui.error = "Не получилось удалить ответ Еблуши" }
             } else {
                 reloadSilently()
             }
         }
+    }
+
+    /// «Удалить» (для всех): своё сообщение или ответ бота на МОЁ обращение, а в «Чате с Еблушей» —
+    /// любой ответ бота (решение владельца 12, docs/bot-system.md). Секретки бот не видит.
+    func canDelete(_ message: Message) -> Bool {
+        if secretMode { return message.isMine && !message.deleted }
+        return BotReplyDeletion.canDeleteForAll(
+            message, myId: repo.currentUserId(), isBotChat: ui.isBotChat, messages: ui.messages
+        )
+    }
+
+    /// id выбранных, которые удалятся по «Удалить»: свои неудалённые и ответы бота, что мне можно
+    /// удалить (`canDelete`).
+    private func deletableSelectedIds() -> [String] {
+        ui.messages.filter { ui.selectedIds.contains($0.id) && canDelete($0) }.map(\.id)
     }
 
     private func setDeletedLocally(_ messageId: String, deleted: Bool) {
@@ -1445,19 +1464,16 @@ final class ChatViewModel: ObservableObject {
         ui.messages.filter { ui.selectedIds.contains($0.id) }
     }
 
-    /// Сколько из выбранного реально удалится: сервер разрешает удалять только СВОИ и
-    /// ещё не удалённые (src/routes/messages.ts). Кнопка подписывалась общим числом
-    /// выбранных и обещала больше, чем делала: выбрал 7 своих и чужих — исчезнет 3.
-    var deletableSelectedCount: Int {
-        ui.messages.filter { ui.selectedIds.contains($0.id) && $0.isMine && !$0.deleted }.count
-    }
+    /// Сколько из выбранного реально удалится: сервер разрешает удалять только СВОИ
+    /// ещё не удалённые и ответы бота на мои обращения (src/routes/messages.ts). Кнопка
+    /// подписывалась общим числом выбранных и обещала больше, чем делала: выбрал 7 своих
+    /// и чужих — исчезнет 3.
+    var deletableSelectedCount: Int { deletableSelectedIds().count }
 
-    /// Пакетное удаление выбранных НАШИХ сообщений (серверное удаление — для всех).
+    /// Пакетное удаление выбранных НАШИХ сообщений и ответов бота нам (серверное удаление — для всех).
     func deleteSelected() {
         if secretMode { clearSelection(); return }
-        let ids = ui.messages
-            .filter { ui.selectedIds.contains($0.id) && $0.isMine && !$0.deleted }
-            .map(\.id)
+        let ids = deletableSelectedIds()
         clearSelection()
         Task {
             var deleted: Set<String> = []

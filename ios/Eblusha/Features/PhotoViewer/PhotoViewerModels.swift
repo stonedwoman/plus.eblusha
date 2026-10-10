@@ -22,6 +22,9 @@ struct PhotoViewerItem: Identifiable, Equatable {
     let isMine: Bool
     let createdAt: Int64           // миллисекунды эпохи
     let caption: String?           // текст сообщения, если есть (пустое → nil)
+    /// Сообщение можно удалить для всех (решает вью-модель беседы: своё или ответ бота автору
+    /// обращения). nil — старое правило «только своё» (`isMine`).
+    var deletable: Bool? = nil
 }
 
 extension PhotoViewerItem {
@@ -54,6 +57,9 @@ extension PhotoViewerItem {
         guard let w = attachment.width, let h = attachment.height, w > 0, h > 0 else { return nil }
         return CGSize(width: w, height: h)
     }
+
+    /// Показывать «Удалить» у кадра.
+    var canDelete: Bool { deletable ?? isMine }
 
     /// E2EE-вложение: по url лежит шифртекст, картинка есть только после decrypt.
     var isSecret: Bool { attachment.secretNonce != nil }
@@ -89,7 +95,7 @@ struct PhotoViewerCallbacks {
     var onClose: () -> Void
     var onReply: (PhotoViewerItem) -> Void
     var onForward: (PhotoViewerItem) -> Void
-    var onDelete: (PhotoViewerItem) -> Void          // только для isMine
+    var onDelete: (PhotoViewerItem) -> Void          // только для item.canDelete
     var onShowInChat: (PhotoViewerItem) -> Void      // закрыть и промотать к сообщению
     /// Центральный кадр сменился (пролистали галерею или прыгнули по ленте миниатюр):
     /// чат под просмотрщиком подводит плитку этого кадра в видимую область, чтобы закрытие

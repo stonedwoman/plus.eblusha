@@ -453,6 +453,8 @@ struct ChatView: View {
                 target: target,
                 quickSlots: quickSlots,
                 canForward: !vm.ui.isSecret,
+                // Ответ бота удаляет и тот, кто спросил (решение владельца 12).
+                canDelete: vm.canDelete(target.message),
                 // Пока меню открыто, лента могла сдвинуться пришедшими сообщениями —
                 // копия возвращается в АКТУАЛЬНУЮ рамку строки, а не в снятую при открытии.
                 bubbleFrameProvider: { id in listProxy.bubbleFrameInWindow(messageId: id) },
@@ -641,7 +643,8 @@ struct ChatView: View {
                     senderName: sender,
                     isMine: m.isMine,
                     createdAt: m.createdAt,
-                    caption: trimmed.isEmpty ? nil : trimmed
+                    caption: trimmed.isEmpty ? nil : trimmed,
+                    deletable: vm.canDelete(m)
                 ))
             }
         }

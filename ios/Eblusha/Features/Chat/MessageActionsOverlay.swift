@@ -105,6 +105,9 @@ struct MessageActionsOverlay: View {
     let target: MessageActionsTarget
     let quickSlots: [String]
     let canForward: Bool
+    /// «Удалить» в меню (`ChatViewModel.canDelete`): своё и ответ бота автору обращения.
+    /// nil — старое правило «только своё».
+    var canDelete: Bool? = nil
     /// Свежая рамка пузыря в окне на момент закрытия: пока меню открыто, в ленту могли
     /// прийти сообщения и сдвинуть строку. nil — строки на экране нет, просто гаснем.
     let bubbleFrameProvider: (String) -> CGRect?
@@ -306,6 +309,7 @@ struct MessageActionsOverlay: View {
         messageActionItems(
             message: target.message,
             canForward: canForward,
+            canDelete: canDelete,
             onReply: onReply,
             onCopy: onCopy,
             onForward: onForward,

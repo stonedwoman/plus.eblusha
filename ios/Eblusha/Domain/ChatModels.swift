@@ -232,6 +232,9 @@ struct Message: Identifiable, Equatable {
     /// `metadata.bot.triggerMessageId`: на какое обращение ответ. Длинный ответ бот шлёт
     /// частями — у всех частей одно обращение, по нему части собираются в один ответ.
     var botTriggerId: String?
+    /// `metadata.bot.askerId`: кто спросил (автор обращения). Подсказку ставит сервер; у
+    /// старых ответов её нет — тогда автора ищем по обращению (`BotReplyDeletion.askerId`).
+    var botAskerId: String?
     /// Сервер пометил сообщение как обращение к боту (`metadata.botAsk`).
     var botAsk = false
 }
