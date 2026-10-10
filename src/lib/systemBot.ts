@@ -2,20 +2,24 @@ import crypto from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import logger from "../config/logger";
 import prisma from "./prisma";
-import { getRedisClient, type RedisClient } from "./redis";
+import { getRedisClient } from "./redis";
 import { publishNewMessage, SENT_MESSAGE_INCLUDE } from "./messageFanout";
 import { enqueueBotJob } from "../jobs/queue";
 import { getIO } from "../realtime/socket";
 import {
   BOT_JOB_CHAIN_MAX,
   BOT_JOB_REV,
-  BOT_MEMLOG_MAX,
+  BOT_MEMLOG_EPOCH,
+  BOT_MEMLOG_OVERLAP_MS,
+  BOT_MEMLOG_PAGE,
+  BOT_MEMLOG_RETENTION_DAYS,
   type BotAddressVia,
   type BotConversationKind,
   type BotHistoryMessage,
   type BotJob,
   type BotJobAttachment,
   type BotJobMessage,
+  type BotMemoryChange,
   type BotMemoryStatus,
 } from "./botContract";
 
@@ -31,7 +35,7 @@ import {
  *    POST /api/bot/history (loadBotHistoryPage): в обычной беседе ТОЛЬКО разговоры с ботом (обращения от
  *    любого участника + его ответы) за всё время, БЕЗ остальной переписки людей; в «Чате с Еблушей» — весь
  *    чат. Удалили или поправили сообщение, которое бот мог запомнить, — запись в журнал изменений
- *    (noteBotMemoryChange, Redis), бот по нему пересобирает свою сводку (botMemoryStatus).
+ *    (botMemoryChangeOps, Postgres, в той же транзакции), бот по нему пересобирает сводку (botMemoryStatus).
  *  - Ответ бот публикует POST /api/bot/messages с разрешением (grant) из задачи: только в ту беседу,
  *    где к нему обратились, ограниченным числом сообщений и в течение BOT_GRANT_TTL_SECONDS.
  *    Сообщение бота — обычное облачное Message с isBot=true от системного пользователя (User.isBot),
@@ -728,66 +732,61 @@ export async function loadBotHistoryPage(args: {
   return { mode, messages, next: more && last ? { at: last.createdAt.toISOString(), id: last.id } : null };
 }
 
-const MEMLOG_EPOCH_KEY = "bot:memlog:epoch";
-const memlogKey = (conversationId: string) => `bot:memlog:${conversationId}`;
-const memlogFloorKey = (conversationId: string) => `bot:memlog:floor:${conversationId}`;
-
-/** Опознаватель журнала изменений: создаётся один раз; пропал (Redis потерял данные) — новый, и бот всё пересоберёт. */
-async function memlogEpoch(redis: RedisClient): Promise<string> {
-  const cur = await redis.get(MEMLOG_EPOCH_KEY);
-  if (cur) return cur;
-  const fresh = crypto.randomBytes(9).toString("base64url");
-  const created = await redis.set(MEMLOG_EPOCH_KEY, fresh, { NX: true });
-  if (created) return fresh;
-  return (await redis.get(MEMLOG_EPOCH_KEY)) ?? fresh;
-}
-
 /**
- * Журнал изменений памяти бота: в беседе удалили или поправили сообщение, которое бот мог запомнить
- * (isBotMemoryMessage). Бот, у которого это сообщение уже в сводке, пересоберёт её с нуля (botMemoryStatus).
- * Без срока жизни, не больше BOT_MEMLOG_MAX записей на беседу; «пол» — время самой новой вытесненной записи.
- * Никогда не бросает: сбой журнала не ломает удаление и правку.
+ * Журнал изменений памяти бота (таблица BotMemoryChange): в беседе удалили или поправили сообщение, которое бот
+ * мог запомнить (isBotMemoryMessage). Операции — в ТУ ЖЕ транзакцию, что удаление/правка (prisma.$transaction):
+ * запись не теряется ни при сбое Redis, ни при падении процесса между коммитом и записью, ни при откате Redis к
+ * старому снимку (находка ревью: журнал в Redis без AOF это допускал). Заодно — чистка записей беседы старше
+ * BOT_MEMLOG_RETENTION_DAYS. Время записи — время сервера (как checkedAt в botMemoryStatus).
  */
-export async function noteBotMemoryChange(conversationId: string, message: { id: string; createdAt: Date }): Promise<void> {
-  try {
-    const redis = await getRedisClient();
-    await memlogEpoch(redis);
-    const now = Date.now();
-    const key = memlogKey(conversationId);
-    await redis.zAdd(key, [{ score: now, value: `${new Date(message.createdAt).getTime()}:${message.id}:${now}` }]);
-    const n = await redis.zCard(key);
-    if (n > BOT_MEMLOG_MAX) {
-      const drop = await redis.zRangeWithScores(key, 0, n - BOT_MEMLOG_MAX - 1);
-      const floor = Math.max(...drop.map((d) => Number(d.score)));
-      const prev = Number(await redis.get(memlogFloorKey(conversationId))) || 0;
-      if (floor > prev) await redis.set(memlogFloorKey(conversationId), String(floor));
-      await redis.zRemRangeByRank(key, 0, n - BOT_MEMLOG_MAX - 1);
-    }
-  } catch (error) {
-    logger.warn({ error, conversationId, messageId: message.id }, "bot: memory change log failed");
-  }
+export function botMemoryChangeOps(
+  message: { id: string; conversationId: string; createdAt: Date },
+  kind: BotMemoryChange["kind"],
+  now: Date = new Date(),
+): Prisma.PrismaPromise<unknown>[] {
+  return [
+    prisma.botMemoryChange.create({
+      data: { conversationId: message.conversationId, messageId: message.id, messageCreatedAt: new Date(message.createdAt), kind, createdAt: now },
+    }),
+    prisma.botMemoryChange.deleteMany({
+      where: { conversationId: message.conversationId, createdAt: { lt: new Date(now.getTime() - BOT_MEMLOG_RETENTION_DAYS * 86_400_000) } },
+    }),
+  ];
 }
 
 /**
  * Что изменилось в памяти беседы с момента `changesSince` (время сервера из прошлого ответа). checkedAt
- * берётся ДО чтения сообщений: изменение, случившееся во время чтения, попадёт в следующий ответ (лишняя
- * пересборка лучше пропущенного удаления). Нет changesSince — бот только начинает (сводки нет), проверять нечего.
+ * берётся ДО чтения журнала и сообщений: изменение, случившееся во время чтения, попадёт в следующий ответ
+ * (лишняя пересборка лучше пропущенного удаления). Запись, чья транзакция закоммитилась позже своей отметки
+ * времени, не потеряется: отдаём с запасом BOT_MEMLOG_OVERLAP_MS, повторы бот отсеивает по id. Нет
+ * changesSince — бот только начинает (сводки нет), проверять нечего.
  */
 export async function botMemoryStatus(conversationId: string, q: { changesSince: number | null; epoch: string | null }): Promise<BotMemoryStatus> {
   const checkedAt = Date.now();
-  const redis = await getRedisClient();
-  const epoch = await memlogEpoch(redis);
-  if (q.changesSince === null) return { epoch, checkedAt, reset: false, changedFrom: null };
-  if (q.epoch !== epoch) return { epoch, checkedAt, reset: true, changedFrom: null };
-  const floor = Number(await redis.get(memlogFloorKey(conversationId))) || 0;
-  if (floor && q.changesSince <= floor) return { epoch, checkedAt, reset: true, changedFrom: null };
-  const values = await redis.zRange(memlogKey(conversationId), q.changesSince, "+inf", { BY: "SCORE" });
-  let min: number | null = null;
-  for (const v of values) {
-    const at = Number(String(v).split(":")[0]);
-    if (Number.isFinite(at)) min = min === null ? at : Math.min(min, at);
+  const epoch = BOT_MEMLOG_EPOCH;
+  if (q.changesSince === null) return { epoch, checkedAt, reset: false, changedFrom: null, changes: [], truncated: false };
+  if (q.epoch !== epoch || q.changesSince < checkedAt - BOT_MEMLOG_RETENTION_DAYS * 86_400_000) {
+    return { epoch, checkedAt, reset: true, changedFrom: null, changes: [], truncated: false };
   }
-  return { epoch, checkedAt, reset: false, changedFrom: min === null ? null : new Date(min).toISOString() };
+  const where = { conversationId, createdAt: { gt: new Date(q.changesSince - BOT_MEMLOG_OVERLAP_MS) } };
+  const rows = await prisma.botMemoryChange.findMany({ where, orderBy: { createdAt: "asc" }, take: BOT_MEMLOG_PAGE + 1 });
+  const truncated = rows.length > BOT_MEMLOG_PAGE;
+  const page = truncated ? rows.slice(0, BOT_MEMLOG_PAGE) : rows;
+  let min: Date | null = null;
+  if (truncated) {
+    const agg = await prisma.botMemoryChange.aggregate({ where, _min: { messageCreatedAt: true } });
+    min = agg._min.messageCreatedAt ?? null;
+  } else {
+    for (const r of page) if (!min || r.messageCreatedAt < min) min = r.messageCreatedAt;
+  }
+  const changes: BotMemoryChange[] = page.map((r) => ({
+    id: r.id,
+    messageId: r.messageId,
+    at: r.messageCreatedAt.toISOString(),
+    kind: r.kind === "edited" ? "edited" : "deleted",
+    loggedAt: r.createdAt.getTime(),
+  }));
+  return { epoch, checkedAt, reset: false, changedFrom: min ? min.toISOString() : null, changes, truncated };
 }
 
 /** Беседа — «Чат с Еблушей» (бот среди участников). Бота нет — false. Обычно — один поиск по уникальному ключу. */

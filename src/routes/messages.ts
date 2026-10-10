@@ -15,7 +15,7 @@ import {
   canDeleteBotMessage,
   isBotChatConversation,
   isBotMemoryMessage,
-  noteBotMemoryChange,
+  botMemoryChangeOps,
 } from "../lib/systemBot";
 import {
   isSecretConversation,
@@ -358,19 +358,21 @@ router.post("/delete", async (req, res) => {
     })
   ).map((a) => a.url);
 
+  // Память бота: удалили обращение к нему, его ответ или сообщение «Чата с Еблушей» — запись в журнал изменений
+  // в той же транзакции (бот пересоберёт сводку, если это уже в ней). Не смогли понять — пишем (лишняя запись
+  // стоит боту разве что пересборки, пропущенная оставила бы удалённое в его памяти).
+  const botMemory = msg.deletedAt ? false : await isBotMemoryMessage(msg).catch(() => true);
   await prisma.$transaction([
     prisma.messageAttachment.deleteMany({ where: { messageId } }),
     prisma.messageReaction.deleteMany({ where: { messageId } }),
     prisma.message.update({ where: { id: messageId }, data: { deletedAt: new Date(), content: null, metadata: Prisma.DbNull } }),
+    ...(botMemory ? botMemoryChangeOps(msg, "deleted") : []),
   ]);
 
   // Best-effort S3 deletion (do not block the response; do not throw).
   if (attachmentUrls.length) {
     void deleteS3ObjectsByUrls(attachmentUrls, { reason: `message:${messageId}` });
   }
-  // Память бота: удалили обращение к нему, его ответ или сообщение «Чата с Еблушей» — запись в журнал
-  // изменений (бот пересоберёт сводку, если это уже в ней). Сбой журнала удаление не ломает.
-  if (await isBotMemoryMessage(msg).catch(() => false)) await noteBotMemoryChange(msg.conversationId, msg);
   getIO()?.to(msg.conversationId).emit("message:update", { conversationId: msg.conversationId, messageId, reason: "deleted" });
   res.json({ success: true });
 });
@@ -462,21 +464,22 @@ router.post("/update", async (req, res) => {
     botMemoryTouched = true;
   }
 
-  const updated = await prisma.message.update({
-    where: { id: messageId },
-    data: { content, metadata: nextMeta },
-    include: {
-      sender: { select: { id: true, username: true, displayName: true, isBot: true } },
-      attachments: true,
-      reactions: messageReactionsWithUser,
-      receipts: true,
-      replyTo: { select: { id: true, content: true, senderId: true, createdAt: true, isBot: true } },
-    },
-  });
-
   // Память бота: поправленное обращение (или сообщение «Чата с Еблушей»), уже вошедшее в его сводку, — повод
-  // пересобрать сводку (журнал изменений). Сбой журнала правку не ломает.
-  if (botMemoryTouched) await noteBotMemoryChange(existing.conversationId, existing);
+  // пересобрать сводку: запись в журнал изменений в той же транзакции, что правка.
+  const [updated] = await prisma.$transaction([
+    prisma.message.update({
+      where: { id: messageId },
+      data: { content, metadata: nextMeta },
+      include: {
+        sender: { select: { id: true, username: true, displayName: true, isBot: true } },
+        attachments: true,
+        reactions: messageReactionsWithUser,
+        receipts: true,
+        replyTo: { select: { id: true, content: true, senderId: true, createdAt: true, isBot: true } },
+      },
+    }),
+    ...(botMemoryTouched ? botMemoryChangeOps(existing, "edited") : []),
+  ]);
   getIO()?.to(existing.conversationId).emit("message:update", {
     conversationId: existing.conversationId,
     messageId,

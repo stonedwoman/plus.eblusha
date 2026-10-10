@@ -60,6 +60,11 @@ export interface ChatInfo {
    * (как «кто в игре»: непривязанным — только число). Хелпер — playerDataVisible() в core/registry.
    */
   playerDataOk: boolean;
+  /**
+   * Память бота о разговорах в этой беседе по этому обращению: "full" — всё (давнее сводкой), "recent" — недавнее
+   * дословно (сжатие выключено), "off" — нет (выключена, старый сервер). Для подсказки «что умею».
+   */
+  memory?: "full" | "recent" | "off";
 }
 
 export interface OutgoingImage {

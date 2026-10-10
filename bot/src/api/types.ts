@@ -214,15 +214,29 @@ export interface BotHistoryMessage extends BotJobMessage {
   expiresAt?: string;
 }
 
+/** Запись журнала изменений: какое сообщение (createdAt — at) удалили или поправили. */
+export interface BotMemoryChange {
+  id: string;
+  messageId: string;
+  at: string;
+  kind: "deleted" | "edited";
+  /** Когда записано (мс, время сервера). */
+  loggedAt: number;
+}
+
 /** Журнал изменений памяти беседы (удалили/поправили то, что бот мог запомнить). */
 export interface BotMemoryStatus {
   epoch: string;
-  /** Время сервера снимка (мс): следующий раз — changesSince. */
+  /** Время сервера снимка (мс): следующий раз — changesSince (сервер отдаёт с запасом — повторы отсеять по id). */
   checkedAt: number;
   /** Журнал ответить не может — пересобрать память с нуля. */
   reset: boolean;
   /** Самое раннее createdAt изменённого с changesSince (ISO) или null. */
   changedFrom: string | null;
+  /** Сами изменения; null — сервер их не прислал (тогда — только changedFrom). */
+  changes: BotMemoryChange[] | null;
+  /** Изменений больше, чем в changes. */
+  truncated: boolean;
 }
 
 export interface BotHistoryPage {
@@ -256,7 +270,22 @@ export function parseHistoryPage(v: unknown): BotHistoryPage | null {
       checkedAt: mem.checkedAt,
       reset: mem.reset === true,
       changedFrom: str(mem.changedFrom) ? mem.changedFrom : null,
+      changes: Array.isArray(mem.changes) ? mem.changes.map(parseMemoryChange).filter((c): c is BotMemoryChange => c !== null) : null,
+      truncated: mem.truncated === true,
     },
+  };
+}
+
+function parseMemoryChange(v: unknown): BotMemoryChange | null {
+  if (!v || typeof v !== "object") return null;
+  const c = v as Record<string, unknown>;
+  if (!str(c.id) || !str(c.messageId) || !str(c.at) || !Number.isFinite(Date.parse(c.at))) return null;
+  return {
+    id: c.id,
+    messageId: c.messageId,
+    at: c.at,
+    kind: c.kind === "edited" ? "edited" : "deleted",
+    loggedAt: typeof c.loggedAt === "number" && Number.isFinite(c.loggedAt) ? c.loggedAt : 0,
   };
 }
 

@@ -11,6 +11,7 @@ import path from "node:path";
 import { Store, utcDay } from "../../src/core/store";
 import type { BotModule } from "../../src/modules/api";
 import { ALICE, BOB, DM_ALICE, DM_OWNER, FakeApi, GAMERS, GROUP, harness, msg, NAMES, OWNER, PAIR, said, type Harness } from "./fakes";
+import { ApiError } from "../../src/api/eblusha";
 
 /** Маленькие пороги, чтобы сжатие случалось за несколько обменов. */
 const SMALL = { memoryTailTokens: 300, memoryTailKeepTokens: 150, memoryChunkTokens: 200, memoryMaxCalls: 10, userDailyQuestions: 1000 };
@@ -196,6 +197,13 @@ test("выключатель BOT_MEMORY_TAIL_TOKENS=0: памяти нет, по
   const on = await harness({ memory: true });
   await ask(on, GROUP, ALICE, "Еблуша, что ты умеешь?");
   assert.match(on.api.sent.at(-1)!.content ?? "", /все наши разговоры в этой беседе я помню/);
+  // обещать ровно ту память, что есть: старый сервер (задача rev 1) — без неё; сжатие выключено — «недавние»
+  const old = await harness({ memory: false });
+  await ask(old, GROUP, ALICE, "Еблуша, что ты умеешь?");
+  assert.ok(!/помню/.test(old.api.sent.at(-1)!.content ?? ""), "новый бот со старым сервером памяти не обещает");
+  const recent = await harness({ memory: true, cfg: { memoryModel: null } });
+  await ask(recent, GROUP, ALICE, "Еблуша, что ты умеешь?");
+  assert.match(recent.api.sent.at(-1)!.content ?? "", /недавние наши разговоры в этой беседе я помню/);
 });
 
 test("сжатие сломалось — ответ уходит, лишнее на этот раз отрезано, повтор не раньше чем через 10 минут", async () => {
@@ -212,7 +220,7 @@ test("сжатие сломалось — ответ уходит, лишнее 
   assert.ok(est < 450, `хвост урезан до порога (${est})`);
 });
 
-test("удалили запомненное, пока модель думала, — ответ не публикуется (мог пересказать удалённое)", async () => {
+test("удалили то, что модель видела, пока она думала, — ответ не публикуется; вопрос не остаётся в памяти", async () => {
   const h = await harness({ memory: true });
   await ask(h, GROUP, ALICE, "Еблуша, личное: я беременна");
   const personal = [...h.api.all.values()].at(-2)!;
@@ -221,10 +229,217 @@ test("удалили запомненное, пока модель думала,
     return { text: "Алиса недавно писала про беременность." };
   };
   await ask(h, GROUP, BOB, "Еблуша, что нового у Алисы?");
+  const q = [...h.api.all.values()].filter((m) => !m.isBot).at(-1)!;
   const last = h.api.sent.at(-1)!;
-  assert.match(last.content ?? "", /удалил или поправил сообщение/);
+  assert.match(last.content ?? "", /удалили сообщение — спроси, пожалуйста, ещё раз/);
   assert.equal(last.kind, "notice");
   assert.ok(!h.api.sent.some((s) => (s.content ?? "").includes("беременность")));
+  assert.ok(h.store.memorySkips(GROUP).has(q.id), "отменённый вопрос — в memory_skip");
+  h.llm.reply = () => ({ text: "ок" });
+  await ask(h, GROUP, BOB, "Еблуша, спрошу ещё раз: что нового?");
+  assert.ok(!allText(h).includes("что нового у Алисы?"), "отменённый вопрос и отказ в памяти не видны");
+});
+
+test("правка своего вопроса, пока модель думает, и изменения того, чего модель не видела, ответ НЕ отменяют (находки ревью)", async () => {
+  const h = await harness({ memory: true });
+  h.llm.reply = () => ({ text: "ок" });
+  await ask(h, GROUP, BOB, "Еблуша, давний вопрос Боба");
+  // (а) Алиса правит опечатку в своём вопросе, пока модель думает
+  h.llm.reply = () => {
+    const mine = [...h.api.all.values()].filter((m) => m.senderId === ALICE).at(-1)!;
+    h.api.editMessage(mine.id, "Еблуша, сколько будет 2+2? опечатка");
+    return { text: "Четыре." };
+  };
+  await ask(h, GROUP, ALICE, "Еблуша, сколько будет 2+2? опечтака");
+  assert.equal(h.api.sent.at(-1)!.content, "Четыре.", "ответ на поправленный вопрос ушёл");
+  // (б) пока модель отвечает Алисе, Боб пишет новое обращение и тут же удаляет его — модель его не видела
+  h.llm.reply = () => {
+    const fresh = msg({ conversationId: GROUP, senderId: BOB, content: "Еблуша, ой не то" });
+    h.api.all.set(fresh.id, fresh);
+    h.api.addressed.add(fresh.id);
+    h.api.deleteMessage(fresh.id);
+    return { text: "Солнечно." };
+  };
+  await ask(h, GROUP, ALICE, "Еблуша, какая погода?");
+  assert.equal(h.api.sent.at(-1)!.content, "Солнечно.");
+  // (в) а удаление давнего вопроса Боба, который модель видела в памяти, — отменяет
+  const old = [...h.api.all.values()].find((m) => m.content === "Еблуша, давний вопрос Боба")!;
+  h.llm.reply = () => {
+    h.api.deleteMessage(old.id);
+    return { text: "Боб спрашивал давнее." };
+  };
+  await ask(h, GROUP, ALICE, "Еблуша, что спрашивал Боб?");
+  assert.match(h.api.sent.at(-1)!.content ?? "", /удалили сообщение/);
+});
+
+test("сервер без списка изменений (только changedFrom): удалённое в сводке — всё равно пересборка", async () => {
+  const h = await harness({ memory: true, cfg: SMALL });
+  h.api.memlogListOff = true;
+  h.llm.reply = () => ({ text: "ок" });
+  await ask(h, GROUP, ALICE, "Еблуша, секрет: пароль Ананас777");
+  const secret = [...h.api.all.values()].at(-2)!;
+  for (let i = 1; i <= 16; i++) await ask(h, GROUP, BOB, `Еблуша, вопрос ${i}`);
+  assert.match(h.store.getMemory(GROUP)!.summary, /Ананас777/);
+  h.api.deleteMessage(secret.id);
+  await ask(h, GROUP, BOB, "Еблуша, дальше");
+  assert.ok(!h.store.getMemory(GROUP)!.summary.includes("Ананас777"), "пересобрано без удалённого");
+});
+
+test("журнал отдаётся с запасом по времени — уже учтённая запись второй пересборки не вызывает", async () => {
+  const h = await harness({ memory: true, cfg: SMALL });
+  h.llm.reply = () => ({ text: "ок" });
+  await ask(h, GROUP, ALICE, "Еблуша, секрет 5151");
+  const secret = [...h.api.all.values()].at(-2)!;
+  for (let i = 1; i <= 16; i++) await ask(h, GROUP, BOB, `Еблуша, вопрос ${i}`);
+  h.api.deleteMessage(secret.id);
+  const before = h.llm.summarizeCalls.length;
+  await ask(h, GROUP, BOB, "Еблуша, раз");
+  await ask(h, GROUP, BOB, "Еблуша, два");
+  await ask(h, GROUP, BOB, "Еблуша, три");
+  const fromScratch = h.llm.summarizeCalls.slice(before).filter((c) => c.previous === "").length;
+  assert.equal(fromScratch, 1, "пересборка с нуля — ровно одна, хотя запись журнала приходила трижды (запас 10 с)");
+  assert.ok(h.store.getMemory(GROUP)!.seenChanges.length >= 1);
+});
+
+test("память неполная — модель это знает и не говорит «мы не говорили»: сбой сжатия, старый сервер, не загрузилась", async () => {
+  // сжатие сломалось → часть хвоста не показана
+  const h = await harness({ memory: true, cfg: SMALL });
+  h.llm.reply = () => ({ text: "ок" });
+  h.llm.summarizeReply = () => ({ stop: "refusal", text: "" });
+  for (let i = 1; i <= 24; i++) await ask(h, GROUP, BOB, `Еблуша, вопрос ${i}`);
+  const note = h.llm.calls.at(-1)!.contextNote;
+  assert.match(note, /Память сейчас неполная: часть разговоров/);
+  assert.match(note, /не утверждай, что этого не было/);
+  assert.doesNotMatch(note, /первый разговор здесь/);
+  // старый сервер (задача rev 1): системный текст обещал память — заметка честно говорит, что её нет
+  const old = await harness({ memory: false });
+  old.llm.reply = () => ({ text: "ок" });
+  await ask(old, GROUP, ALICE, "Еблуша, что я у тебя вчера спрашивала?");
+  assert.match(old.llm.calls.at(-1)!.contextNote, /Память об этой беседе сейчас недоступна/);
+  // сервер не отдал историю (5xx) — так же
+  const down = await harness({ memory: true });
+  down.llm.reply = () => ({ text: "ок" });
+  down.api.history = async () => {
+    throw new Error("HTTP 502");
+  };
+  await ask(down, GROUP, ALICE, "Еблуша, о чём мы договорились?");
+  assert.match(down.llm.calls.at(-1)!.contextNote, /Память об этой беседе сейчас недоступна/);
+  // а полная память — без этой оговорки
+  const ok = await harness({ memory: true });
+  ok.llm.reply = () => ({ text: "ок" });
+  await ask(ok, GROUP, ALICE, "Еблуша, привет");
+  await ask(ok, GROUP, ALICE, "Еблуша, что я спрашивала?");
+  assert.doesNotMatch(ok.llm.calls.at(-1)!.contextNote, /неполная|недоступна/);
+});
+
+test("сжатие выключено (BOT_MEMORY_MODEL=off): курсор двигается, давнее забывается без перечитывания, модель знает, до какого момента", async () => {
+  const h = await harness({ memory: true, cfg: { ...SMALL, memoryModel: null } });
+  h.llm.reply = () => ({ text: "ок" });
+  await ask(h, GROUP, ALICE, "Еблуша, самое первое");
+  for (let i = 1; i <= 24; i++) await ask(h, GROUP, BOB, `Еблуша, вопрос ${i}`);
+  const row = h.store.getMemory(GROUP)!;
+  assert.equal(row.summary, "");
+  assert.ok(row.forgotten > 0 && row.forgottenAt, "забытое посчитано");
+  assert.equal(h.llm.summarizeCalls.length, 0);
+  assert.ok(!allText(h).includes("самое первое"));
+  assert.match(h.llm.calls.at(-1)!.contextNote, /ты помнишь не полностью/);
+  // между «забываниями» память только дописывается (кэш), а не срезается спереди на каждом вопросе
+  const a = h.llm.calls.at(-1)!.turns;
+  await ask(h, GROUP, BOB, "Еблуша, ещё");
+  const b = h.llm.calls.at(-1)!.turns;
+  if (h.store.getMemory(GROUP)!.forgotten === row.forgotten) assert.deepEqual(b.slice(0, a.length - 1), a.slice(0, -1));
+  // и история после курсора, а не с начала беседы
+  const q = h.api.historyCalls.filter((c) => (c.limit ?? 0) > 0).at(-1)!;
+  assert.ok(q.after && q.after.id, "чтение — от курсора");
+});
+
+test("кусок, который не сжимается раз за разом, пропускается после 3 неудач; пауза между попытками растёт", async () => {
+  let t = Date.now();
+  const h = await harness({ memory: true, cfg: SMALL, now: () => t });
+  h.llm.reply = () => ({ text: "ок" });
+  h.llm.summarizeReply = () => ({ stop: "refusal", text: "" });
+  for (let i = 1; i <= 20; i++) await ask(h, GROUP, BOB, `Еблуша, вопрос ${i}`);
+  assert.equal(h.llm.summarizeCalls.length, 1);
+  assert.equal(h.store.getMemory(GROUP)!.fails, 1);
+  t += 11 * 60_000; // пауза 10 мин прошла
+  await ask(h, GROUP, BOB, "Еблуша, ещё 1");
+  assert.equal(h.llm.summarizeCalls.length, 2);
+  t += 11 * 60_000; // вторая пауза — 20 мин: ещё рано
+  await ask(h, GROUP, BOB, "Еблуша, ещё 2");
+  assert.equal(h.llm.summarizeCalls.length, 2, "пауза удвоилась");
+  t += 10 * 60_000;
+  await ask(h, GROUP, BOB, "Еблуша, ещё 3");
+  assert.ok(h.llm.summarizeCalls.length >= 3);
+  const row = h.store.getMemory(GROUP)!;
+  assert.ok(row.forgotten > 0, "третья неудача — кусок пропущен (забыт), память не застряла");
+  assert.equal(row.fails, 0);
+});
+
+test("уведомления бота до первого вопроса в «Чате с Еблушей» модель видит — и не говорит «раньше вы не говорили»", async () => {
+  const h = await harness({ memory: true });
+  h.llm.reply = () => ({ text: "ок" });
+  assert.ok(await h.bot.notifyUser(OWNER, "Сервер Valheim перезапущен в 03:00.", []));
+  await ask(h, DM_OWNER, OWNER, "что за уведомление ты мне прислал?");
+  const c = h.llm.calls.at(-1)!;
+  assert.deepEqual(c.turns.map((t) => t.role), ["user", "assistant", "user"]);
+  assert.match(c.turns[1]!.text, /перезапущен в 03:00/);
+  assert.doesNotMatch(c.contextNote, /начало твоего разговора/);
+});
+
+test("отказ по лимитам: вопрос и отказ в память не попадают (поток таких сообщений память не раздувает)", async () => {
+  const h = await harness({ memory: true, cfg: { userDailyQuestions: 1 } });
+  h.llm.reply = () => ({ text: "ок" });
+  await ask(h, GROUP, BOB, "Еблуша, первый вопрос");
+  await ask(h, GROUP, BOB, "Еблуша, СПАМ СПАМ СПАМ");
+  assert.match(h.api.sent.at(-1)!.content ?? "", /лимит|исчерпан|на сегодня/i);
+  await ask(h, GROUP, ALICE, "Еблуша, а ты что помнишь?");
+  const t = allText(h);
+  assert.ok(t.includes("первый вопрос"));
+  assert.ok(!t.includes("СПАМ"), "отказанный вопрос в памяти не виден");
+});
+
+test("сжатие — в пределах лимитов: не дороже половины потолка ответа, потраченное вычитается из потолка ответа", async () => {
+  const h = await harness({ memory: true, cfg: { ...SMALL, requestMaxUsd: 0.5, memoryChunkTokens: 2000 } });
+  h.llm.reply = () => ({ text: "ок" });
+  const perAnswer = new Map<number, number>();
+  h.llm.summarizeReply = (req) => {
+    const i = h.llm.calls.length;
+    perAnswer.set(i, (perAnswer.get(i) ?? 0) + 1);
+    return { text: `${req.previous}\n${req.transcript}`.slice(-1500), cost: { usd: 0.1, inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, webSearches: 0, webFetches: 0, models: ["claude-sonnet-5-5"] } };
+  };
+  // сразу длинная история (как после пересборки): сжимать есть что, и не один кусок
+  for (let i = 1; i <= 40; i++) {
+    const m = msg({ conversationId: DM_OWNER, senderId: OWNER, content: `старое ${i} ${"слово ".repeat(30)}` });
+    h.api.all.set(m.id, m);
+  }
+  await ask(h, DM_OWNER, OWNER, "ну что?");
+  // потолок сжатия на ответ — половина от $0.5: при запасе $0.15 на шаг — два сжатия по $0.1, третьего нет
+  assert.equal(perAnswer.get(0), 2, "не больше, чем позволяет половина потолка ответа");
+  assert.ok(Math.abs(h.llm.calls[0]!.maxUsd - 0.3) < 1e-9, "потраченное на сжатие ($0.2) вычтено из потолка ответа");
+  assert.match(h.llm.calls[0]!.contextNote, /Память сейчас неполная/, "что не сжалось — модель знает, что не видит");
+});
+
+test("сжатие не пробивает личный лимит: остаток меньше шага — не сжимаем", async () => {
+  const h = await harness({ memory: true, cfg: { ...SMALL, userDailyUsd: 0.1, userDailyQuestions: 1000 } });
+  h.llm.reply = () => ({ text: "ок", cost: { usd: 0.01, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, webSearches: 0, webFetches: 0, models: ["claude-opus-5-5"] } });
+  for (let i = 1; i <= 40; i++) {
+    const m = msg({ conversationId: GROUP, senderId: BOB, content: `Еблуша, старое ${i} ${"слово ".repeat(30)}` });
+    h.api.all.set(m.id, m);
+    h.api.addressed.add(m.id);
+  }
+  await ask(h, GROUP, BOB, "Еблуша, ну что?");
+  assert.equal(h.llm.summarizeCalls.length, 0, "у Боба на сегодня $0.1 — сжатие ($0.15 запас) не начинаем");
+  assert.equal(h.api.sent.at(-1)!.content, "ок", "а ответ — уходит");
+});
+
+test("беседы больше нет (409 BOT_CONVERSATION_GONE) — её сводка на диске бота удаляется", async () => {
+  const h = await harness({ memory: true, cfg: SMALL });
+  h.llm.reply = () => ({ text: "ок" });
+  for (let i = 1; i <= 16; i++) await ask(h, GROUP, BOB, `Еблуша, вопрос ${i}`);
+  assert.ok(h.store.getMemory(GROUP)!.summary);
+  h.api.postError = new ApiError(409, "/api/bot/messages", "BOT_CONVERSATION_GONE", "HTTP 409");
+  await ask(h, GROUP, BOB, "Еблуша, ну?");
+  assert.equal(h.store.getMemory(GROUP), null);
 });
 
 test("вопросы подряд: ответ на первый (пришёл позже второго) — в памяти на своём месте; чужой более новый вопрос — нет", async () => {

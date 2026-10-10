@@ -7,6 +7,7 @@ import type {
   BotConversationKind,
   BotHistoryMessage,
   BotHistoryPage,
+  BotMemoryChange,
   BotJob,
   BotJobMessage,
   BotPeople,
@@ -209,9 +210,13 @@ export class FakeApi implements ChatApi {
   /** Сервер без маршрута (старый) — 404. */
   historyAvailable = true;
   historyCalls: HistoryQuery[] = [];
-  /** Журнал изменений: когда изменено и createdAt изменённого (как Redis сервера). */
-  memlog: Array<{ conversationId: string; changedAt: number; at: number }> = [];
+  /** Журнал изменений: когда изменено и createdAt изменённого (как таблица BotMemoryChange сервера). */
+  memlog: Array<{ id: string; conversationId: string; messageId: string; kind: "deleted" | "edited"; changedAt: number; at: number }> = [];
   epoch = "epoch-1";
+  /** Как сервер: журнал отдаётся с запасом по времени до changesSince (BOT_MEMLOG_OVERLAP_MS). */
+  memlogOverlapMs = 10_000;
+  /** Сервер не присылает список изменений (только changedFrom) — проверка запасного пути бота. */
+  memlogListOff = false;
   /** Часы журнала: строго растут (на сервере удаление записывается до следующей проверки — без совпадений в мс). */
   private clock = 0;
   private tick(): number {
@@ -233,11 +238,13 @@ export class FakeApi implements ChatApi {
     const checkedAt = this.tick();
     let reset = false;
     let changedFrom: string | null = null;
+    let changes: BotMemoryChange[] = [];
     if (input.changesSince !== undefined && input.changesSince !== null) {
       if (input.epoch !== this.epoch) reset = true;
       else {
-        const ch = this.memlog.filter((c) => c.conversationId === conversationId && c.changedAt >= input.changesSince!);
+        const ch = this.memlog.filter((c) => c.conversationId === conversationId && c.changedAt > input.changesSince! - this.memlogOverlapMs);
         if (ch.length) changedFrom = new Date(Math.min(...ch.map((c) => c.at))).toISOString();
+        changes = ch.map((c) => ({ id: c.id, messageId: c.messageId, at: new Date(c.at).toISOString(), kind: c.kind, loggedAt: c.changedAt }));
       }
     }
     const mode = CONVS[conversationId]?.kind === "bot" ? "botchat" : "recent";
@@ -269,8 +276,26 @@ export class FakeApi implements ChatApi {
       mode,
       messages,
       next: limit > 0 && rest.length > page.length && last ? { at: last.createdAt, id: last.id } : null,
-      memory: { epoch: this.epoch, checkedAt, reset, changedFrom },
+      memory: { epoch: this.epoch, checkedAt, reset, changedFrom, changes: this.memlogListOff ? null : changes, truncated: false },
     };
+  }
+
+  private logChange(m: EbMessage, kind: "deleted" | "edited"): void {
+    const mode = CONVS[m.conversationId]?.kind === "bot" ? "botchat" : "recent";
+    if (!this.relevant(m, mode)) return;
+    this.memlog.push({ id: `chg${this.memlog.length + 1}`, conversationId: m.conversationId, messageId: m.id, kind, changedAt: this.tick(), at: Date.parse(m.createdAt) });
+  }
+
+  /**
+   * Человек поправил сообщение: как POST /messages/update — журнал, если бот мог его запомнить; «Еблуша, …»,
+   * исправленное в текст без обращения, перестаёт быть обращением (keepAddress: false).
+   */
+  editMessage(id: string, content: string, opts: { keepAddress?: boolean } = {}): void {
+    const m = this.all.get(id);
+    if (!m) throw new Error(`нет сообщения ${id}`);
+    this.logChange(m, "edited");
+    m.content = content;
+    if (opts.keepAddress === false) this.addressed.delete(id);
   }
 
   /** Человек удалил сообщение («Удалить»): сервер пишет журнал, если бот мог его запомнить. */
@@ -278,8 +303,7 @@ export class FakeApi implements ChatApi {
     const m = this.all.get(id);
     if (!m) throw new Error(`нет сообщения ${id}`);
     m.deletedAt = new Date().toISOString();
-    const mode = CONVS[m.conversationId]?.kind === "bot" ? "botchat" : "recent";
-    if (this.relevant(m, mode)) this.memlog.push({ conversationId: m.conversationId, changedAt: this.tick(), at: Date.parse(m.createdAt) });
+    this.logChange(m, "deleted");
   }
 }
 

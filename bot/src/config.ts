@@ -57,9 +57,12 @@ export interface BotConfig {
    */
   memoryTailTokens: number;
   memoryTailKeepTokens: number;
-  /** Модель сжатия (недорогая): claude-sonnet-5-5 или claude-haiku-5-5; null — без сводки (только хвост). */
+  /**
+   * Модель сжатия (недорогая): claude-sonnet-5-5 или claude-haiku-5-5; null (BOT_MEMORY_MODEL=off) — без сводки:
+   * давнее, вытесняемое из хвоста, забывается (и бот так и говорит).
+   */
   memoryModel: string | null;
-  /** Сводка не длиннее (оценка, токенов). */
+  /** Сводка не длиннее (токенов; модели — как ориентир в знаках, ~2 знака русского текста на токен). */
   memorySummaryTokens: number;
   /** Сколько старого (оценка, токенов) сжимать за один вызов модели сжатия. */
   memoryChunkTokens: number;
@@ -156,7 +159,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     memoryTailTokens,
     memoryTailKeepTokens: Math.min(memoryTailKeepTokens, memoryTailTokens),
     memoryModel: memoryModelRaw.toLowerCase() === "off" ? null : memoryModelRaw,
-    memorySummaryTokens: Math.max(500, Math.floor(num(env, "BOT_MEMORY_SUMMARY_TOKENS", 4000))),
+    memorySummaryTokens: Math.max(500, Math.floor(num(env, "BOT_MEMORY_SUMMARY_TOKENS", 6000))),
     memoryChunkTokens: Math.max(2000, Math.floor(num(env, "BOT_MEMORY_CHUNK_TOKENS", 40000))),
     memoryMaxCalls: Math.max(1, Math.floor(num(env, "BOT_MEMORY_MAX_CALLS", 4))),
     memoryBotChars: Math.max(300, Math.floor(num(env, "BOT_MEMORY_BOT_CHARS", 4000))),

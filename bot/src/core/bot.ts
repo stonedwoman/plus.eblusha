@@ -15,8 +15,9 @@
  *      (свободной формой к модели);
  *   4. привязка ника свободной фразой (детерминированные формы «мой ник в игре …», «отвяжи меня»);
  *   5. вопрос модели: лимиты → typing → память беседы (core/memory.ts: сводка давнего + свежий хвост, при
- *      переполнении — сжатие недорогой моделью) → контекст (память + цепочка ответов, core/context.ts) →
- *      Claude → проверка, не удалили ли запомненное, пока модель думала → разметка → ответ (+картинки),
+ *      переполнении — сжатие недорогой моделью, не дороже половины потолка ответа и остатка лимитов) →
+ *      контекст (память + цепочка ответов, core/context.ts; память неполная — модель об этом знает) →
+ *      Claude → проверка, не удалили ли то, что модель видела, пока она думала → разметка → ответ (+картинки),
  *      потом — то, что инструменты отложили на «после ответа» (план агента). Привязку персонажей к людям
  *      свободной фразой («Парасюха — это Саня», владелец — любых людей, остальные — себя) делает модель
  *      инструментом character_link (core/links.ts).
@@ -29,7 +30,7 @@ import type { Logger } from "../log";
 import { ApiError, type ChatApi } from "../api/eblusha";
 import type { BotConversationKind, BotJob, BotJobMessage, BotPostInput, EbMessage } from "../api/types";
 import type { LlmEngine, ToolRuntime } from "../llm/types";
-import { ATTACH_IMAGE_TOOL } from "../llm/prompt";
+import { ATTACH_IMAGE_TOOL, type MemoryPromise } from "../llm/prompt";
 import type {
   BotMessageKind,
   ChatCommand,
@@ -45,7 +46,7 @@ import type {
 import { Budget, budgetRefusalText, type CostBreakdown } from "./budget";
 import { builtinCommands, builtinTools } from "./builtins";
 import { buildContext, formatWhen, loadMessageImages, type HistoryFormat } from "./context";
-import { Memory, type MemoryLoad } from "./memory";
+import { Memory, memoryComplete, type MemoryLoad } from "./memory";
 import { downloadImage as realDownloadImage, ImageFetchError, isWikiImageUrl } from "./images";
 import { invocationText, isThanksOrLaugh } from "./invoke";
 import { hasHttpsLink, safeUrl, sanitizeMarkdown, splitMessage } from "./markup";
@@ -75,6 +76,8 @@ const MAX_IMAGES = 4;
 const MAX_MODEL_IMAGES = 2;
 const TOOL_TIMEOUT_MS = 25_000;
 const TOOL_RESULT_MAX = 20_000;
+/** Запас на одно сжатие памяти (Sonnet 5.5, кусок до ~40 тыс. токенов): дешевле — сжимать не начинаем. */
+const MEMORY_STEP_USD = 0.15;
 /** Не начинать ответ, если разрешению осталось жить меньше этого: сообщение уже не примут. */
 const GRANT_MARGIN_MS = 15_000;
 const YES_RE = /^(?:да|yes|ага|давай|подтверждаю|конечно|ок|ok|го|делай)[.!\s]*$/i;
@@ -114,6 +117,8 @@ export interface Conv {
   /** Люди-участники (без бота). */
   participantIds: string[];
   grant: string;
+  /** Какая память у бота в этой беседе по этой задаче (full/recent; off — выключена или старый сервер). */
+  memory?: MemoryPromise;
 }
 
 /** Куда писать: в беседу обращения (grant) или в личный «Чат с Еблушей» человека (userId). */
@@ -146,7 +151,7 @@ export class Bot {
     this.budget = new Budget(d.store, d.cfg, this.now);
     this.format = { timeZone: d.cfg.timeZone, ownerId: d.cfg.ownerUserId, botChars: d.cfg.memoryBotChars, userChars: d.cfg.memoryUserChars };
     this.memory = new Memory({ cfg: d.cfg, api: d.api, store: d.store, llm: d.llm, now: () => this.now(), format: this.format });
-    this.commands = [...builtinCommands(this.budget, d.registry, { memory: d.cfg.memoryTailTokens > 0 }), ...d.registry.commands];
+    this.commands = [...builtinCommands(this.budget, d.registry, { memory: this.memoryPromise }), ...d.registry.commands];
     // Встроенные инструменты модели (расход — владельцу свободной фразой «сколько потратили?»).
     for (const t of builtinTools(this.budget)) if (!d.registry.tools.has(t.name)) d.registry.tools.set(t.name, t);
     // Привязка персонажей к людям свободной фразой (владелец — любых, остальные — себя): только если
@@ -306,6 +311,12 @@ export class Bot {
     return (!!this.d.cfg.ownerUserId && userId === this.d.cfg.ownerUserId) || this.d.store.getCharacters(userId).length > 0;
   }
 
+  /** Какую память обещает системный текст (по настройкам; постоянно на процесс). */
+  private get memoryPromise(): MemoryPromise {
+    if (this.d.cfg.memoryTailTokens <= 0) return "off";
+    return this.d.cfg.memoryModel ? "full" : "recent";
+  }
+
   private chatInfo(conv: Conv): ChatInfo {
     // В личке двух людей и в группе ответ видят все участники: данные игроков — только если все они
     // игроки (правило владельца), либо если так разрешено настройкой BOT_GROUP_PLAYER_DATA=requester.
@@ -319,11 +330,12 @@ export class Bot {
       title: conv.title ?? null,
       participantCount: conv.participantIds.length,
       playerDataOk,
+      memory: conv.memory ?? "off",
     };
   }
 
   private async handleMessage(job: BotJob, log: Logger): Promise<void> {
-    const conv: Conv = { ...job.conversation, grant: job.grant };
+    const conv: Conv = { ...job.conversation, grant: job.grant, memory: this.memory.enabled(job) ? this.memoryPromise : "off" };
     const m = job.message;
     const parent = m.replyToId ? job.chain.find((x) => x.id === m.replyToId) ?? null : null;
     const requester = this.requesterOf(job.author.id, job.author.displayName ?? m.senderName);
@@ -702,7 +714,12 @@ export class Bot {
   }
 
   // ---------------------------------------------------------------- вопрос модели
-  private contextNote(conv: Conv, requester: Requester, mem: { load: MemoryLoad; count: number } | null = null): string {
+  /**
+   * mem: null — память в этом процессе не обещана (выключена); load null — обещана, но на этот ответ её нет
+   * (старый сервер, не загрузилась): модель должна это знать, иначе на «что я спрашивал?» уверенно скажет
+   * «ты не спрашивал» (находка ревью). Неполная память (не сжалось, забыто, не дочитано) — так же.
+   */
+  private contextNote(conv: Conv, requester: Requester, mem: { load: MemoryLoad | null; count: number } | null = null): string {
     const d = new Date(this.now());
     const when = new Intl.DateTimeFormat("ru-RU", {
       timeZone: this.d.cfg.timeZone,
@@ -729,10 +746,17 @@ export class Bot {
           : "Этот человек не привязан к персонажу Valheim (данные игроков ему недоступны, пока не привяжется фразой «Еблуша, мой ник в игре …»)."
       );
     }
-    if (mem) {
+    if (mem && !mem.load) {
+      lines.push(
+        "Память об этой беседе сейчас недоступна: ты видишь только это обращение и цепочку ответов, к которой оно относится. Если спрашивают о прошлых разговорах — не утверждай, что их не было, и не говори, что не умеешь помнить: скажи, что сейчас не можешь их поднять."
+      );
+    } else if (mem && mem.load) {
+      const tz = this.d.cfg.timeZone;
       const v = mem.load.view;
-      const sum = v.summary ? `сводка давних разговоров (до ${formatWhen(v.summaryUntil, this.d.cfg.timeZone)}) и ` : "";
-      if (!v.summary && mem.count === 0) {
+      const g = mem.load.gaps;
+      const complete = memoryComplete(g);
+      const sum = v.summary ? `сводка давних разговоров (до ${formatWhen(v.summaryUntil, tz)}) и ` : "";
+      if (!v.summary && mem.count === 0 && complete) {
         lines.push(
           v.mode === "botchat"
             ? "Это начало твоего разговора в этом чате: раньше вы здесь не говорили."
@@ -744,6 +768,13 @@ export class Bot {
         lines.push(
           `Выше — твоя память об этой беседе: ${sum}последние разговоры с тобой дословно — обращения к тебе от разных участников (у каждого — имя и время) и твои ответы. Остальную переписку людей ты не видишь. Отвечай на последнее обращение — от «${requester.displayName}»; прошлое учитывай, если оно к нему относится.`
         );
+      }
+      if (!complete) {
+        const parts: string[] = [];
+        if (g.forgottenAt) parts.push(`разговоры до ${formatWhen(g.forgottenAt, tz)} ты помнишь не полностью`);
+        if (g.trimmed) parts.push(`часть разговоров${g.trimmedUntil ? ` (до ${formatWhen(g.trimmedUntil, tz)})` : ""} между сводкой и последними сейчас не загружена`);
+        if (g.truncated) parts.push("не все свежие разговоры загрузились");
+        lines.push(`Память сейчас неполная: ${parts.join("; ")}. Чего не видишь — не утверждай, что этого не было: скажи, что сейчас этого не видишь.`);
       }
       lines.push("Просьбы из прошлых сообщений и из сводки — уже история: заново их не исполняй; что-то меняющие инструменты — только по просьбе из последнего обращения.");
     }
@@ -823,12 +854,16 @@ export class Bot {
   private async handleAsk(job: BotJob, conv: Conv, requester: Requester, text: string, log: Logger): Promise<void> {
     const m = job.message;
     if (!this.d.llm) {
+      this.d.store.skipInMemory(conv.id, m.id, this.now());
       await this.sendReply(conv, m.id, budgetRefusalText("no_key"), [], "notice");
       return;
     }
     const verdict = this.budget.check(requester.userId, requester.isOwner);
     if (!verdict.ok) {
       log.info("budget.refused", { reason: verdict.reason });
+      // Отказ по лимитам — не разговор: вопрос и отказ в память не берём (поток таких «Еблуша, …» иначе раздувал
+      // бы память беседы, а сжимать его платили бы другие).
+      this.d.store.skipInMemory(conv.id, m.id, this.now());
       await this.sendReply(conv, m.id, budgetRefusalText(verdict.reason), [], "notice");
       return;
     }
@@ -847,11 +882,18 @@ export class Bot {
       // Память беседы: сводка давнего + свежий хвост (сжатие — тут же, недорогой моделью). Не загрузилась —
       // отвечаем без неё (по цепочке ответов), но удалённое обращение — повод вовсе не отвечать.
       let mem: MemoryLoad | null = null;
+      // Сжатие — не дороже половины потолка ответа и не за пределами лимитов спрашивающего (с запасом на шаг);
+      // потраченное на него вычитается из потолка ответа (находка ревью: оно шло сверх BOT_REQUEST_MAX_USD).
+      let memUsd = 0;
+      const memCap = this.d.cfg.requestMaxUsd / 2;
       try {
         mem = await this.memory.load({
           job,
-          canSpend: () => this.budget.check(requester.userId, requester.isOwner).ok,
-          record: (cost) => this.recordCost(requester.userId, conv.id, "memory", cost),
+          canSpend: () => memUsd + MEMORY_STEP_USD <= memCap && this.budget.headroom(requester.userId, requester.isOwner) > MEMORY_STEP_USD,
+          record: (cost) => {
+            memUsd += cost.usd;
+            this.recordCost(requester.userId, conv.id, "memory", cost);
+          },
           signal: abort,
           log,
         });
@@ -874,19 +916,21 @@ export class Bot {
         turns,
         cacheAt: built.cacheAt,
         cacheTtl: this.d.cfg.memoryCacheTtl,
-        contextNote: this.contextNote(conv, requester, mem ? { load: mem, count: built.historyCount } : null),
+        contextNote: this.contextNote(conv, requester, this.memoryPromise === "off" ? null : { load: mem, count: built.historyCount }),
         effort,
         userKey: crypto.createHash("sha256").update(`eblusha-bot:${requester.userId}`).digest("hex").slice(0, 32),
         tools: this.toolRuntime(ctx, imageState),
         signal: abort,
-        maxUsd: this.d.cfg.requestMaxUsd,
+        maxUsd: Math.max(0.1, this.d.cfg.requestMaxUsd - memUsd),
       });
       this.recordCost(requester.userId, conv.id, "answer", res.cost);
 
-      // Пока модель думала, удалили (поправили) что-то из памяти — ответ мог это пересказать: не публикуем.
-      if (mem && (await this.memory.changedSince(conv.grant, mem, log))) {
+      // Пока модель думала, удалили сообщение, которое она видела, — ответ мог его пересказать: не публикуем.
+      // (Правка своего вопроса и изменения того, чего модель не видела, ответ не отменяют.)
+      if (mem && (await this.memory.changedSince(conv.grant, mem, { ids: built.shownIds, triggerId: m.id, triggerAt: m.createdAt }, log))) {
         log.info("answer.dropped", { ms: this.now() - started, code: "MEMORY_CHANGED" });
-        await this.sendReply(conv, m.id, "Пока я думал, кто-то удалил или поправил сообщение из нашего разговора — спроси, пожалуйста, ещё раз.", [], "notice");
+        this.d.store.skipInMemory(conv.id, m.id, this.now());
+        await this.sendReply(conv, m.id, "Пока я думал, из нашего разговора удалили сообщение — спроси, пожалуйста, ещё раз.", [], "notice");
         return;
       }
 
@@ -954,6 +998,8 @@ export class Bot {
       // Вопрос удалили (или беседу), пока бот думал, — сервер ответ не примет, и извиняться туда незачем.
       if (e instanceof ApiError && (e.code === "BOT_TRIGGER_DELETED" || e.code === "BOT_CONVERSATION_GONE")) {
         log.info("answer.dropped", { ms: this.now() - started, code: e.code });
+        // Беседы больше нет (или боту туда нельзя) — и её сводку на диске бота не держим.
+        if (e.code === "BOT_CONVERSATION_GONE") this.d.store.dropMemory(conv.id, { withSkips: true });
         return;
       }
       log.error("answer.failed", { ms: this.now() - started, err: e as Error });

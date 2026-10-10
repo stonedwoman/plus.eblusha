@@ -70,7 +70,7 @@ export async function startBot(cfg: BotConfig, log: Logger, opts: StartOptions =
     opts.llm !== undefined
       ? opts.llm
       : cfg.anthropicApiKey
-        ? new ClaudeEngine(cfg, buildSystemPrompt(registry.prompts, { memory: cfg.memoryTailTokens > 0 }), log.child({ c: "llm" }))
+        ? new ClaudeEngine(cfg, buildSystemPrompt(registry.prompts, { memory: cfg.memoryTailTokens <= 0 ? "off" : cfg.memoryModel ? "full" : "recent" }), log.child({ c: "llm" }))
         : null;
   if (!llm) log.warn("llm.disabled", { reason: "ANTHROPIC_API_KEY не задан — отвечаю шаблонами" });
   let engine: LlmEngine | null = llm;

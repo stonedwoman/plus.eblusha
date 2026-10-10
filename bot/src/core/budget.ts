@@ -179,6 +179,22 @@ export class Budget {
     return { ok: true };
   }
 
+  /**
+   * Сколько ещё можно потратить на этого человека прямо сейчас, $: до ближайшего потолка (месяц — для всех; сутки
+   * на всех и личный суточный — кроме владельца). 0 — check() уже отказал бы. Для сжатия памяти: оно идёт до
+   * ответа, и личный лимит не должен пробиваться им насквозь (находка ревью).
+   */
+  headroom(userId: string, isOwner: boolean): number {
+    if (!this.check(userId, isOwner).ok) return 0;
+    const t = this.now();
+    let h = this.cfg.monthlyBudgetUsd - this.store.spentMonth(utcMonth(t)) - RESERVE_USD;
+    if (!isOwner) {
+      h = Math.min(h, this.cfg.dailyBudgetUsd - this.store.spentDay(utcDay(t)) - RESERVE_USD);
+      h = Math.min(h, this.cfg.userDailyUsd - this.store.userDay(userId, utcDay(t)).usd);
+    }
+    return Math.max(0, h);
+  }
+
   record(userId: string, conversationId: string, kind: string, model: string, c: CostBreakdown): void {
     this.store.recordUsage({
       ts: this.now(),

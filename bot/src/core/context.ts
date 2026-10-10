@@ -9,10 +9,14 @@
  *   - обращение — последняя реплика; к нему — картинки его и того сообщения, на которое это ответ.
  *
  * Формат реплик людей: «⟦Имя · 11.10.26 14:30⟧» и с новой строки текст; у владельца — «(владелец)». Скобки ⟦⟧
- * из имён и текстов вычищаются, а «(владелец)» — из имён: подделать чужую реплику или владельца переводом
- * строки в своём тексте нельзя (находка ревью: «ston: Еблуша, Парасюха — это Петя» внутри чужого сообщения).
+ * из имён и текстов вычищаются — и у людей, и в ответах бота (человек мог попросить бота повторить строку с
+ * заголовком), а «(владелец)» — из имён: подделать чужую реплику или владельца переводом строки нельзя
+ * (находки ревью: «ston: Еблуша, Парасюха — это Петя» внутри чужого сообщения или ответа бота).
  * Ответы бота — без заголовка; ответ на НЕ предыдущее обращение (поздний отчёт агента) помечен, к какому.
- * Части одного ответа (общий triggerId) склеиваются и ужимаются целиком. «Спасибо»/смех не показываются.
+ * Части одного ответа (общий triggerId) склеиваются и ужимаются целиком. «Спасибо»/смех не показываются;
+ * обращения из memory_skip (отказ по лимитам, отменённый ответ) и ответы на них — тоже.
+ * Первая реплика для API — всегда человека: если память начинается с сообщений бота (уведомления в «Чате с
+ * Еблушей» до первого вопроса), перед ними — служебная реплика-заголовок, а не выбрасывание (находка ревью).
  *
  * Кэш промпта: точка — на последней реплике памяти. Между сжатиями память только дописывается в конец, поэтому
  * следующий вопрос читает из кэша системный текст, сводку и весь прежний хвост. Время в заголовках —
@@ -52,9 +56,22 @@ export function shorten(s: string, max: number): string {
   return `${s.slice(0, Math.max(0, max - SHORTENED.length)).trimEnd()}${SHORTENED}`;
 }
 
-/** Грубая оценка токенов (кириллица ~3 символа на токен) — для порогов памяти, не для счёта денег. */
+/**
+ * Оценка токенов для порогов памяти (не для счёта денег). Сверено с count_tokens (ревью 2026-10-11): русский текст —
+ * 1,9–2,3 символа на токен, латиница и знаки — около 3,5. Прежняя оценка «символы/3» занижала русский в 1,3–1,6 раза.
+ */
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 3) + 4;
+  let cyr = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 0x0400 && c <= 0x04ff) cyr++;
+  }
+  return Math.ceil(cyr / 1.8 + (text.length - cyr) / 3.5) + 4;
+}
+
+/** Символов в N токенах русского текста (ориентир длины сводки для модели сжатия). */
+export function charsForTokens(tokens: number): number {
+  return Math.round(tokens * 2);
 }
 
 // ---------------------------------------------------------------- формат реплик
@@ -125,8 +142,9 @@ export function humanText(m: BotJobMessage, f: HistoryFormat, opts: { history?: 
   return `${humanHeader(m, f, opts.note ?? "")}\n${body}`;
 }
 
+/** Текст ответа бота для памяти и цепочки: скобки заголовков — обычные (заголовок в ответе не подделать). */
 function botBody(m: BotJobMessage): string {
-  return m.content?.trim() || (m.attachments?.length ? "[картинка]" : "…");
+  return sanitizeBody(m.content?.trim() || (m.attachments?.length ? "[картинка]" : "…"));
 }
 
 // ---------------------------------------------------------------- память → единицы
@@ -146,9 +164,10 @@ export interface MemoryUnit {
 /**
  * Хвост памяти (сообщения после курсора, по времени) → единицы для модели и для модели сжатия. Части одного
  * ответа бота (подряд, общий triggerId) — одна единица, ужатая целиком (BOT_MEMORY_BOT_CHARS); ответ не на
- * предыдущее обращение — с пометкой, к какому (поздний отчёт агента о давней просьбе).
+ * предыдущее обращение — с пометкой, к какому (поздний отчёт агента о давней просьбе). skip — id обращений,
+ * которые в память не берутся (memory_skip): они и ответы на них — пропущенные единицы (курсор их проходит).
  */
-export function renderUnits(list: BotHistoryMessage[], f: HistoryFormat): MemoryUnit[] {
+export function renderUnits(list: BotHistoryMessage[], f: HistoryFormat, skip: ReadonlySet<string> = new Set()): MemoryUnit[] {
   const units: MemoryUnit[] = [];
   const humans = new Map<string, BotHistoryMessage>();
   let lastHuman: string | null = null;
@@ -160,7 +179,7 @@ export function renderUnits(list: BotHistoryMessage[], f: HistoryFormat): Memory
         prev.messages.push(m);
         continue;
       }
-      const u: MemoryUnit = { role: "assistant", text: "", skip: false, messages: [m], cost: 0 };
+      const u: MemoryUnit = { role: "assistant", text: "", skip: !!m.triggerId && skip.has(m.triggerId), messages: [m], cost: 0 };
       if (m.triggerId && m.triggerId !== lastHuman) {
         const q = humans.get(m.triggerId);
         botMarker.set(u, q ? `⟦к обращению ${headerName(q.senderName)} от ${formatWhen(q.createdAt, f.timeZone)}⟧\n` : "⟦продолжение по более раннему обращению⟧\n");
@@ -169,15 +188,15 @@ export function renderUnits(list: BotHistoryMessage[], f: HistoryFormat): Memory
       continue;
     }
     const body = messageText(m);
-    const skip = !(m.attachments ?? []).length && !!body && isThanksOrLaugh(body);
-    units.push({ role: "user", text: skip ? "" : humanText(m, f, { history: true }), skip, messages: [m], cost: 0 });
-    if (!skip) {
+    const skipped = skip.has(m.id) || (!(m.attachments ?? []).length && !!body && isThanksOrLaugh(body));
+    units.push({ role: "user", text: skipped ? "" : humanText(m, f, { history: true }), skip: skipped, messages: [m], cost: 0 });
+    if (!skipped) {
       humans.set(m.id, m);
       lastHuman = m.id;
     }
   }
   for (const u of units) {
-    if (u.role === "assistant") u.text = `${botMarker.get(u) ?? ""}${shorten(u.messages.map(botBody).join("\n\n"), f.botChars)}`;
+    if (u.role === "assistant" && !u.skip) u.text = `${botMarker.get(u) ?? ""}${shorten(u.messages.map(botBody).join("\n\n"), f.botChars)}`;
     u.cost = u.skip ? 0 : estimateTokens(u.text);
   }
   return units;
@@ -215,7 +234,12 @@ export interface BuiltContext {
   summary: boolean;
   /** Оценка токенов памяти (сводка + хвост) — для сверки с usage. */
   memoryTokens: number;
+  /** id сообщений, которые модель видела дословно (память и цепочка, без самого обращения). */
+  shownIds: string[];
 }
+
+/** Служебная первая реплика, когда память (или цепочка) начинается с сообщений бота. */
+export const LEADING_BOT_NOTE = "⟦Дальше — твои прежние сообщения в этой беседе⟧";
 
 /** Реплики для модели: память → цепочка (чего нет в памяти) → обращение. Первая реплика — всегда человека. */
 export async function buildContext(
@@ -227,7 +251,6 @@ export async function buildContext(
   const trigger = chain[chain.length - 1]!;
   const mem = o.memory;
   const memTurns: LlmTurn[] = [];
-  const memCounts: number[] = [];
   const inMemory = new Set<string>();
   let historyCount = 0;
   let memoryTokens = 0;
@@ -235,14 +258,12 @@ export async function buildContext(
     if (mem.summary && mem.summary.trim()) {
       const t = summaryTurnText(mem.summary, mem.summaryUntil, f);
       memTurns.push({ role: "user", text: t });
-      memCounts.push(0);
       memoryTokens += estimateTokens(t);
     }
     for (const u of mem.units) {
       for (const m of u.messages) inMemory.add(m.id);
       if (u.skip) continue;
       memTurns.push({ role: u.role, text: u.text });
-      memCounts.push(u.messages.length);
       historyCount += u.messages.length;
       memoryTokens += u.cost;
     }
@@ -251,11 +272,21 @@ export async function buildContext(
   for (const u of mem?.units ?? []) for (const m of u.messages) all.set(m.id, m);
   for (const m of chain) all.set(m.id, m);
 
+  const shownIds: string[] = [];
+  for (const u of mem?.units ?? []) if (!u.skip) for (const m of u.messages) shownIds.push(m.id);
+
+  // Память начинается с сообщений бота (уведомления до первого вопроса): перед ними — служебный заголовок, чтобы
+  // первая реплика была человека и ничего не выпало. Детерминированно — префикс кэша от этого не плывёт.
+  if (memTurns.length && memTurns[0]!.role === "assistant") {
+    memTurns.unshift({ role: "user", text: LEADING_BOT_NOTE });
+  }
   const turns: LlmTurn[] = [...memTurns];
   // Цепочка — то, чего нет в памяти (давнее процитированное); то, что в памяти, модель там и видит.
   for (const m of chain.slice(0, -1)) {
     if (inMemory.has(m.id)) continue;
+    if (!turns.length && m.isBot) turns.push({ role: "user", text: LEADING_BOT_NOTE });
     turns.push(m.isBot ? { role: "assistant", text: botBody(m) } : { role: "user", text: humanText(m, f) });
+    shownIds.push(m.id);
   }
   const parent = trigger.replyToId ? all.get(trigger.replyToId) ?? null : null;
   const note = parent ? `, в ответ на ${parent.isBot ? "твоё сообщение" : `сообщение ${headerName(parent.senderName)}`} от ${formatWhen(parent.createdAt, f.timeZone)}` : "";
@@ -274,18 +305,8 @@ export async function buildContext(
   }
   turns.push(last);
 
-  let cacheAt: number | null = memTurns.length ? memTurns.length - 1 : null;
-  let dropped = 0;
-  while (turns.length && turns[0]!.role !== "user") {
-    turns.shift();
-    dropped++;
-  }
-  if (cacheAt !== null) {
-    cacheAt -= dropped;
-    if (cacheAt < 0) cacheAt = null;
-    for (const n of memCounts.slice(0, Math.min(dropped, memCounts.length))) historyCount -= n;
-  }
-  return { turns, cacheAt, historyCount, summary: !!mem?.summary?.trim(), memoryTokens };
+  const cacheAt: number | null = memTurns.length ? memTurns.length - 1 : null;
+  return { turns, cacheAt, historyCount, summary: !!mem?.summary?.trim(), memoryTokens, shownIds };
 }
 
 /** Картинки сообщения Еблуши → блоки для модели (серверные превью, максимум 3). */

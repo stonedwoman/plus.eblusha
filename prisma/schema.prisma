@@ -237,6 +237,22 @@ model Message {
   @@index([replyToId])
 }
 
+/// Журнал изменений памяти бота «Еблуша» (src/lib/systemBot.ts → botMemoryChangeOps / botMemoryStatus):
+/// в беседе удалили или поправили сообщение, которое бот мог запомнить. Пишется в той же транзакции, что
+/// удаление/правка; по нему бот пересобирает сводку. Без текста сообщений. Без связи с Conversation —
+/// удаление беседы его не задевает; записи старше BOT_MEMLOG_RETENTION_DAYS чистятся при записи.
+model BotMemoryChange {
+  id               String   @id @default(cuid())
+  conversationId   String
+  messageId        String
+  messageCreatedAt DateTime
+  /// deleted | edited
+  kind             String
+  createdAt        DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
 model MessageAttachment {
   id        String         @id @default(cuid())
   createdAt DateTime       @default(now())

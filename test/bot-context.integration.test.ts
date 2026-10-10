@@ -9,8 +9,10 @@
  *   - задача rev 3: истории в ней нет; старый бот (замороженный разбор rev 1) и новый её разбирают;
  *   - POST /api/bot/history: только бот, по живому обычному разрешению; в обычной беседе — ВСЕ обращения и
  *     ответы бота без окна (без болтовни людей, удалённого, истёкшего, системного, ответов на удалённое);
- *     в «Чате с Еблушей» — весь чат без приветствия; страницы по курсору; журнал изменений (удаление, правка,
- *     смена epoch); правка «Еблуша, …» в текст без обращения снимает botAsk;
+ *     в «Чате с Еблушей» — весь чат без приветствия; страницы по курсору; журнал изменений в Postgres (удаление,
+ *     правка, смена epoch, запас по времени, срок хранения; не в Redis); правка «Еблуша, …» в текст без обращения
+ *     снимает botAsk, и превью ссылки его не возвращает; обращение, задача по которому не ушла (частота), — без
+ *     botAsk;
  *   - POST /api/bot/people: без логинов; сервер не знает владельца — только люди с общей беседой; знает —
  *     только по обращению владельца; matchedBy; без удалённых по ids.
  * Часть 2 — с ботом: «а в Мельбурне?» без цитирования (и давние обращения видны); «Чат с Еблушей» без лимита
@@ -35,6 +37,7 @@ import { getRedisClient } from "../src/lib/redis";
 import { initSocket } from "../src/realtime/socket";
 import { signAccessToken } from "../src/utils/jwt";
 import { getBotQueue } from "../src/jobs/queue";
+import { mergeLinkPreviewMetadata } from "../src/jobs/workers/linkPreview.worker";
 import { BOT_GRANT_MAX_LOOKUPS, resetSystemBotCache } from "../src/lib/systemBot";
 import type { BotHistoryPage, BotJob } from "../src/lib/botContract";
 import { ensureBotUser } from "../src/scripts/seedBotUser";
@@ -254,14 +257,26 @@ async function main() {
     assert.deepEqual((await history(grant, { limit: 0 })).messages, [], "limit 0 — только журнал");
     console.log("[bot-ctx] ok: /api/bot/history — «recent»: все разговоры с ботом без окна, без чужой переписки, страницы по курсору");
 
-    // журнал изменений: удалили ответ бота (это может спросивший) → changedFrom; чужой epoch → reset
+    // журнал изменений (Postgres, в транзакции удаления): удалили ответ бота (это может спросивший) → запись
     const since = h1.memory.checkedAt;
     assert.equal((await call("POST", "/api/messages/delete", A.token, { messageId: b2.id })).status, 200);
+    const jrow = await prisma.botMemoryChange.findFirst({ where: { conversationId: g1.id, messageId: b2.id } });
+    assert.ok(jrow && jrow.kind === "deleted" && jrow.messageCreatedAt.getTime() === b2.createdAt.getTime(), "запись журнала — в Postgres");
+    assert.equal((await redis.keys("bot:memlog:*")).length, 0, "журнал не в Redis (его потеря при сбое Redis больше не теряет удаления)");
     const h2 = await history(grant, { limit: 0, changesSince: since, epoch: h1.memory.epoch });
     assert.equal(h2.memory.changedFrom, b2.createdAt.toISOString(), "удаление ответа бота — в журнале");
     assert.equal(h2.memory.reset, false);
-    assert.equal((await history(grant, { limit: 0, changesSince: h2.memory.checkedAt, epoch: h1.memory.epoch })).memory.changedFrom, null, "после проверки — чисто");
+    assert.deepEqual(h2.memory.changes!.map((c) => [c.messageId, c.kind, c.at]), [[b2.id, "deleted", b2.createdAt.toISOString()]]);
+    // запас по времени: сразу после проверки та же запись приходит ещё раз (бот отсеет её по id), позже — нет
+    const h3 = await history(grant, { limit: 0, changesSince: h2.memory.checkedAt, epoch: h1.memory.epoch });
+    assert.deepEqual(h3.memory.changes!.map((c) => c.id), h2.memory.changes!.map((c) => c.id), "запас 10 с — повтор с тем же id");
+    assert.equal((await history(grant, { limit: 0, changesSince: h2.memory.checkedAt + 20_000, epoch: h1.memory.epoch })).memory.changedFrom, null, "позже — чисто");
     assert.equal((await history(grant, { limit: 0, changesSince: since, epoch: "чужой" })).memory.reset, true, "чужой epoch — пересобрать с нуля");
+    assert.equal(
+      (await history(grant, { limit: 0, changesSince: Date.now() - 200 * 86_400_000, epoch: h1.memory.epoch })).memory.reset,
+      true,
+      "бот отстал дольше срока хранения журнала — с нуля"
+    );
     assert.ok(!(await history(grant)).messages.some((m) => m.id === b2.id));
     // правка: «Еблуша, …» → текст без обращения — уже не обращение (botAsk снят, в журнале, ответ на него не отдаётся)
     const e1 = await send(A.token, g1.id, "Еблуша, кто сильнее — тролль или кабан?");
@@ -272,14 +287,40 @@ async function main() {
     const e1row = await prisma.message.findUnique({ where: { id: e1.id }, select: { metadata: true } });
     assert.equal((e1row!.metadata as Record<string, unknown>).botAsk, undefined, "botAsk снят правкой");
     const afterEdit = await history(grant, { changesSince: before.checkedAt, epoch: before.epoch });
-    assert.equal(afterEdit.memory.changedFrom, new Date(e1.createdAt).toISOString(), "правка обращения — в журнале");
+    // (changedFrom — самое раннее из записей с запасом 10 с: сюда попадает и только что удалённый b2)
+    assert.ok(Date.parse(afterEdit.memory.changedFrom!) <= Date.parse(e1.createdAt), "правка обращения — в журнале");
     assert.ok(!afterEdit.messages.some((m) => m.id === e1.id || m.id === eb.id), "исправленное в текст для людей и ответ на него боту не отдаются");
+    assert.ok(
+      afterEdit.memory.changes!.some((c) => c.messageId === e1.id && c.kind === "edited" && c.at === new Date(e1.createdAt).toISOString()),
+      "правка помечена как правка (ответ бота из-за неё не отменяется)"
+    );
+    assert.ok(await prisma.botMemoryChange.findFirst({ where: { messageId: e1.id, kind: "edited" } }), "в той же транзакции, что правка");
+    // превью ссылки дописывается в ТЕКУЩУЮ metadata: правка, снявшая botAsk, не откатывается; удалённое не трогается
+    const lp = await send(A.token, g1.id, "Еблуша, глянь https://example.invalid/статья");
+    await jobOf(lp.id);
+    assert.equal((await call("POST", "/api/messages/update", A.token, { messageId: lp.id, content: "Боб, глянь https://example.invalid/статья" })).status, 200);
+    assert.equal(await mergeLinkPreviewMetadata(lp.id, { linkPreviewUrl: "https://example.invalid/статья", linkPreviewAttemptedAt: new Date().toISOString() }), 1);
+    const lpMeta = (await prisma.message.findUnique({ where: { id: lp.id }, select: { metadata: true } }))!.metadata as Record<string, unknown>;
+    assert.equal(lpMeta.botAsk, undefined, "превью не вернуло botAsk");
+    assert.ok(lpMeta.editedAt && lpMeta.linkPreviewUrl, "правка и превью — обе на месте");
+    assert.equal((await call("POST", "/api/messages/delete", A.token, { messageId: lp.id })).status, 200);
+    assert.equal(await mergeLinkPreviewMetadata(lp.id, { linkPreviewUrl: "x" }), 0, "удалённому превью не дописывается");
+    assert.equal((await prisma.message.findUnique({ where: { id: lp.id }, select: { metadata: true } }))!.metadata, null);
+    // задача не ушла (частота обращений) — botAsk снят: бот этого вопроса не видел, в его память он не ляжет
+    await redis.set(`bot:rate:${B.id}`, "1000", { EX: 60 });
+    const rl = await call("POST", "/api/conversations/send", B.token, { conversationId: g1.id, type: "TEXT", content: "Еблуша, спам по частоте" });
+    assert.equal(rl.status, 201);
+    await redis.del(`bot:rate:${B.id}`);
+    const rlRow = await prisma.message.findUnique({ where: { id: rl.body.message.id }, select: { metadata: true } });
+    assert.equal(((rlRow!.metadata ?? {}) as Record<string, unknown>).botAsk, undefined, "botAsk снят");
+    assert.equal(await queue.getJob(`msg-${rl.body.message.id}`), undefined, "задачи нет");
+    assert.ok(!(await history(grant)).messages.some((m) => m.id === rl.body.message.id), "в истории для памяти бота его нет");
     // правка ответа боту (без имени в тексте) обращением остаётся
     const r1 = await send(B.token, g1.id, "а это почему?", { replyToId: b1.id });
     await jobOf(r1.id);
     assert.equal((await call("POST", "/api/messages/update", B.token, { messageId: r1.id, content: "а это почему так?" })).status, 200);
     assert.equal(((await prisma.message.findUnique({ where: { id: r1.id }, select: { metadata: true } }))!.metadata as Record<string, unknown>).botAsk, true);
-    console.log("[bot-ctx] ok: журнал изменений (удаление, правка, epoch); правка «Еблуша, …» в текст для людей снимает обращение");
+    console.log("[bot-ctx] ok: журнал изменений в Postgres (удаление, правка, epoch, запас, срок); правка снимает обращение, превью его не возвращает; не ушедшая задача — без botAsk");
 
     // ---------- POST /api/bot/people ----------
     (env as { BOT_OWNER_USER_ID?: string | undefined }).BOT_OWNER_USER_ID = undefined;

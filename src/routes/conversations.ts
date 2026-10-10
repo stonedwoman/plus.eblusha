@@ -1492,12 +1492,19 @@ router.post(
 
   // Задача боту — ПОСЛЕ сохранения и рассылки; сбой очереди отправку не ломает (dispatchToBot не бросает).
   if (bot && botVia) {
-    await dispatchToBot({
+    const dispatched = await dispatchToBot({
       botId: bot.id,
       via: botVia,
       conversation: { id: conversationId, isGroup: conv.isGroup, title: conv.title ?? null, participantIds },
       message,
     });
+    // Задача не ушла (частота обращений, сбой очереди) — бот этого вопроса не видел и не ответит: снимаем
+    // botAsk, иначе он лёг бы в память бота вопросом без ответа (и поток таких сообщений раздувал бы её).
+    if (!dispatched) {
+      await prisma.$executeRaw`UPDATE "Message" SET "metadata" = "metadata" - 'botAsk' WHERE "id" = ${message.id} AND jsonb_typeof("metadata") = 'object'`.catch(
+        (error: unknown) => logger.warn({ error, messageId: message.id }, "bot: botAsk cleanup failed"),
+      );
+    }
   }
 
   res.status(201).json({ message });

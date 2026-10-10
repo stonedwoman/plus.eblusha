@@ -8,7 +8,11 @@
  *   notices       — «уже говорил» (подсказки, отказы) с ограничением частоты;
  *   memory        — память о своих разговорах (core/memory.ts): по беседе — сводка давнего (ТЕКСТ, написанный
  *                   моделью сжатия по обращениям и ответам), курсор покрытия, версия, время. Источник правды —
- *                   сервер: сводку можно удалить в любой момент, она соберётся заново из истории беседы.
+ *                   сервер: сводку можно удалить в любой момент, она соберётся заново из истории беседы;
+ *   memory_skip   — обращения, которые в память не берутся (отказ по лимитам, ответ отменён): только id.
+ *
+ * secure_delete: удалённое (выброшенная сводка) затирается нулями, а не остаётся в свободных страницах файла
+ * (находка ревью: текст сводки переживал её удаление); после удаления сводок — ещё и сброс WAL.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -63,6 +67,25 @@ export interface MemoryRow {
   usedAt: number;
   /** Последний сбой сжатия (мс) — не повторять каждый раз. */
   failedAt: number | null;
+  /** Сбоев сжатия подряд (на одном и том же куске): растёт пауза, после нескольких кусок пропускается. */
+  fails: number;
+  /**
+   * Сколько сообщений свёрнуто БЕЗ сводки (сжатие выключено, кусок так и не сжался) и до какого createdAt (ISO):
+   * этих разговоров бот не помнит — и модели так и говорится.
+   */
+  forgotten: number;
+  forgottenAt: string | null;
+  /** id записей журнала изменений, уже учтённых (сервер отдаёт журнал с запасом — не учитывать дважды). */
+  seenChanges: string[];
+}
+
+function parseIds(v: unknown): string[] {
+  try {
+    const a = JSON.parse(typeof v === "string" ? v : "[]") as unknown;
+    return Array.isArray(a) ? a.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 export function utcDay(ts: number): string {
@@ -81,6 +104,7 @@ export class Store {
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 3000;
+      PRAGMA secure_delete = ON;
       CREATE TABLE IF NOT EXISTS usage (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts INTEGER NOT NULL,
@@ -135,10 +159,29 @@ export class Store {
         min_expires_at INTEGER,
         updated_at INTEGER NOT NULL,
         used_at INTEGER NOT NULL,
-        failed_at INTEGER
+        failed_at INTEGER,
+        fails INTEGER NOT NULL DEFAULT 0,
+        forgotten INTEGER NOT NULL DEFAULT 0,
+        forgotten_at TEXT,
+        seen_changes TEXT NOT NULL DEFAULT '[]'
       );
       CREATE INDEX IF NOT EXISTS memory_used ON memory(used_at);
+      CREATE TABLE IF NOT EXISTS memory_skip (
+        conversation_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        PRIMARY KEY (conversation_id, message_id)
+      );
+      CREATE INDEX IF NOT EXISTS memory_skip_at ON memory_skip(at);
     `);
+    // Таблица memory из ранней сборки этой ветки — без новых столбцов: добавить (уже есть — SQLite откажет, это норма).
+    for (const col of ["fails INTEGER NOT NULL DEFAULT 0", "forgotten INTEGER NOT NULL DEFAULT 0", "forgotten_at TEXT", "seen_changes TEXT NOT NULL DEFAULT '[]'"]) {
+      try {
+        this.db.exec(`ALTER TABLE memory ADD COLUMN ${col}`);
+      } catch {
+        /* столбец уже есть */
+      }
+    }
   }
 
   close(): void {
@@ -339,6 +382,10 @@ export class Store {
       updatedAt: Number(r.updated_at),
       usedAt: Number(r.used_at),
       failedAt: n(r.failed_at),
+      fails: Number(r.fails ?? 0) || 0,
+      forgotten: Number(r.forgotten ?? 0) || 0,
+      forgottenAt: r.forgotten_at === null || r.forgotten_at === undefined ? null : String(r.forgotten_at),
+      seenChanges: parseIds(r.seen_changes),
     };
   }
 
@@ -346,12 +393,14 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO memory (conversation_id, summary, cursor_at, cursor_id, covered, version, format, epoch, checked_at,
-           min_expires_at, updated_at, used_at, failed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           min_expires_at, updated_at, used_at, failed_at, fails, forgotten, forgotten_at, seen_changes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(conversation_id) DO UPDATE SET summary = excluded.summary, cursor_at = excluded.cursor_at,
            cursor_id = excluded.cursor_id, covered = excluded.covered, version = excluded.version, format = excluded.format,
            epoch = excluded.epoch, checked_at = excluded.checked_at, min_expires_at = excluded.min_expires_at,
-           updated_at = excluded.updated_at, used_at = excluded.used_at, failed_at = excluded.failed_at`
+           updated_at = excluded.updated_at, used_at = excluded.used_at, failed_at = excluded.failed_at,
+           fails = excluded.fails, forgotten = excluded.forgotten, forgotten_at = excluded.forgotten_at,
+           seen_changes = excluded.seen_changes`
       )
       .run(
         m.conversationId,
@@ -366,17 +415,51 @@ export class Store {
         m.minExpiresAt,
         m.updatedAt,
         m.usedAt,
-        m.failedAt
+        m.failedAt,
+        m.fails,
+        m.forgotten,
+        m.forgottenAt,
+        JSON.stringify(m.seenChanges.slice(-500))
       );
   }
 
-  dropMemory(conversationId: string): void {
+  /**
+   * Выбросить сводку беседы (затирается: secure_delete) и сбросить WAL, где могла остаться её копия. withSkips —
+   * и пометки «не брать в память» (беседы больше нет).
+   */
+  dropMemory(conversationId: string, opts: { withSkips?: boolean } = {}): void {
     this.db.prepare(`DELETE FROM memory WHERE conversation_id = ?`).run(conversationId);
+    if (opts.withSkips) this.db.prepare(`DELETE FROM memory_skip WHERE conversation_id = ?`).run(conversationId);
+    this.checkpoint();
   }
 
   /** Удалить сводки бесед, к которым не обращались с `before` (мс). Возвращает, сколько удалено. */
   purgeIdleMemory(before: number): number {
-    return Number(this.db.prepare(`DELETE FROM memory WHERE used_at < ?`).run(before).changes);
+    const n = Number(this.db.prepare(`DELETE FROM memory WHERE used_at < ?`).run(before).changes);
+    this.db.prepare(`DELETE FROM memory_skip WHERE at < ?`).run(before);
+    if (n) this.checkpoint();
+    return n;
+  }
+
+  /** Обращение не брать в память беседы (и ответ на него): отказ по лимитам, ответ отменён. */
+  skipInMemory(conversationId: string, messageId: string, at = Date.now()): void {
+    this.db
+      .prepare(`INSERT INTO memory_skip (conversation_id, message_id, at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`)
+      .run(conversationId, messageId, at);
+  }
+
+  memorySkips(conversationId: string): Set<string> {
+    const rows = this.db.prepare(`SELECT message_id FROM memory_skip WHERE conversation_id = ?`).all(conversationId) as Array<{ message_id: string }>;
+    return new Set(rows.map((r) => String(r.message_id)));
+  }
+
+  /** Перенести WAL в файл и обнулить его: копии удалённых страниц там не остаются. Сбой — не страшно. */
+  private checkpoint(): void {
+    try {
+      this.db.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
+    } catch {
+      /* занято — в следующий раз */
+    }
   }
 
   // ---------- «уже говорил» ----------

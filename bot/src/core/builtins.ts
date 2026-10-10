@@ -21,23 +21,30 @@ function spendText(budget: Budget): string {
   ].join("\n");
 }
 
-export function builtinCommands(budget: Budget, registry: Registry, opts: { memory?: boolean } = {}): ChatCommand<any>[] {
-  const memory = opts.memory !== false;
+export function builtinCommands(budget: Budget, registry: Registry, opts: { memory?: boolean | "full" | "recent" | "off" } = {}): ChatCommand<any>[] {
+  const configured = opts.memory === false ? "off" : opts.memory === true || opts.memory === undefined ? "full" : opts.memory;
   const help: ChatCommand<true> = {
     name: "help",
     access: "anyone",
     match: (t) => (HELP_RE.test(t.trim()) ? true : null),
     async run(_a, ctx) {
+      // Обещать ровно ту память, что есть по этому обращению (старый сервер — без неё).
+      const mode = configured === "off" || ctx.chat.memory === "off" ? "off" : configured;
+      const memory = mode !== "off";
       const lines = [
         "**Я — Еблуша.** Отвечаю на что угодно, умею искать в интернете и давать ссылки на источники. Команды не нужны — пиши как человеку.",
         "",
         "- Позвать в любой беседе: начни сообщение с «Еблуша,» (или «Еблуша:», «Еблуша!»).",
-        memory
+        mode === "full"
           ? "- Продолжить разговор: снова «Еблуша, …» — все наши разговоры в этой беседе я помню (давние — кратко), можно спросить и «что я спрашивал вчера?»."
-          : "- Продолжить разговор: ответь на моё сообщение.",
+          : mode === "recent"
+            ? "- Продолжить разговор: снова «Еблуша, …» — недавние наши разговоры в этой беседе я помню (самые давние со временем забываю)."
+            : "- Продолжить разговор: ответь на моё сообщение.",
         "- Остальную переписку я не вижу — только обращения ко мне и свои ответы.",
-        memory
+        mode === "full"
           ? "- Личный «Чат с Еблушей» (включается в настройках): там можно без обращения, и весь разговор я помню."
+          : memory
+            ? "- Личный «Чат с Еблушей» (включается в настройках): там можно без обращения, и недавний разговор я помню."
           : "- Личный «Чат с Еблушей» (включается в настройках): там можно без обращения.",
         "- «Спасибо» в ответ — поставлю 👍.",
         "- В секретных чатах я не работаю.",

@@ -9,6 +9,22 @@ import { publishMessageUpdate } from "../../realtime/events";
 import { getLinkPreviewQueueDepth, type LinkPreviewJob } from "../queue";
 import { fetchLinkPreview } from "./linkPreview.fetchers";
 
+/**
+ * Дописать ключи превью в ТЕКУЩУЮ metadata сообщения одним UPDATE (jsonb ||), только у неудалённого. Превью
+ * качается секундами — за это время сообщение могли поправить (правка снимает metadata.botAsk у «Еблуша, …»,
+ * исправленного в текст для людей, и ставит editedAt) или удалить; запись прочитанной до скачивания копии
+ * вернула бы botAsk (текст для людей снова попал бы в память бота) и стёрла бы editedAt (находка ревью).
+ * Возвращает, сколько строк обновлено (0 — сообщения нет или оно удалено).
+ */
+export async function mergeLinkPreviewMetadata(messageId: string, patch: Record<string, unknown>): Promise<number> {
+  return prisma.$executeRaw`
+    UPDATE "Message"
+       SET "metadata" = (CASE WHEN jsonb_typeof("metadata") = 'object' THEN "metadata" ELSE '{}'::jsonb END)
+                        || ${JSON.stringify(patch)}::jsonb
+     WHERE "id" = ${messageId}
+       AND "deletedAt" IS NULL`;
+}
+
 let workerInstance: Worker<LinkPreviewJob> | null = null;
 export function startLinkPreviewWorker() {
   if (workerInstance) return workerInstance;
@@ -46,16 +62,17 @@ export function startLinkPreviewWorker() {
 
       const preview = await fetchLinkPreview(url);
       const nowISO = new Date().toISOString();
-      const nextMeta: any = {
-        ...(meta && typeof meta === "object" ? meta : {}),
+      const patch: Record<string, unknown> = {
         linkPreviewAttemptedAt: nowISO,
         linkPreviewUrl: url,
         ...(preview ? { linkPreview: preview } : {}),
       };
 
-      const updated = await prisma.message.update({
+      // Не перезаписываем metadata копией, прочитанной до скачивания, — дописываем ключи превью в текущую.
+      if ((await mergeLinkPreviewMetadata(messageId, patch)) === 0) return { skipped: "gone" };
+
+      const updated = await prisma.message.findUniqueOrThrow({
         where: { id: messageId },
-        data: { metadata: nextMeta as any },
         include: {
           sender: { select: { id: true, username: true, displayName: true, isBot: true } },
           attachments: true,
